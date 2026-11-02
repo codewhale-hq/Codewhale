@@ -15,13 +15,36 @@ pub(super) struct StdioTransport {
 }
 
 impl StdioTransport {
+    #[cfg(test)]
     pub(super) fn spawn(
         server_name: &str,
         command: &str,
         config: &McpServerConfig,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self> {
-        let (session, stdout) = BrokerSession::spawn(server_name, command, config, cancel_token)?;
+        Self::spawn_with_auth_context(
+            server_name,
+            command,
+            config,
+            cancel_token,
+            super::process_mcp_auth_context(),
+        )
+    }
+
+    pub(super) fn spawn_with_auth_context(
+        server_name: &str,
+        command: &str,
+        config: &McpServerConfig,
+        cancel_token: tokio_util::sync::CancellationToken,
+        auth_context: std::sync::Arc<dyn codewhale_runtime::credentials::AuthContext>,
+    ) -> Result<Self> {
+        let (session, stdout) = BrokerSession::spawn_with_auth_context(
+            server_name,
+            command,
+            config,
+            cancel_token,
+            auth_context,
+        )?;
         Ok(Self {
             session,
             reader: tokio::io::BufReader::new(stdout),

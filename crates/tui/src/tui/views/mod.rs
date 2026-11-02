@@ -1200,6 +1200,7 @@ pub enum ViewAction {
 
 pub trait ModalView: std::any::Any {
     fn kind(&self) -> ModalKind;
+    fn set_locale(&mut self, _locale: Locale) {}
     fn input_context_id(&self) -> usize {
         0
     }
@@ -1261,6 +1262,7 @@ pub trait ModalView: std::any::Any {
 
 #[derive(Default)]
 pub struct ViewStack {
+    locale: Option<Locale>,
     views: Vec<Box<dyn ModalView>>,
     /// Focus-context texture prototype mode (#4823). `Off` by default, which
     /// keeps the render output byte-identical to the pre-prototype path.
@@ -1297,6 +1299,7 @@ impl ViewStack {
     pub fn new() -> Self {
         Self {
             views: Vec::new(),
+            locale: None,
             focus_texture: FocusTextureMode::Off,
             focus_texture_theme: None,
             top_since: None,
@@ -1329,12 +1332,33 @@ impl ViewStack {
         self.focus_texture_theme = Some(theme);
     }
 
+    pub fn set_locale(&mut self, locale: Locale) {
+        if self.locale == Some(locale) {
+            return;
+        }
+        self.locale = Some(locale);
+        for view in &mut self.views {
+            view.set_locale(locale);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.views.is_empty()
     }
 
     pub fn top_kind(&self) -> Option<ModalKind> {
         self.views.last().map(|view| view.kind())
+    }
+
+    pub(crate) fn remove_owned_evidence_pagers(&mut self) {
+        let top = self.top_identity();
+        self.views.retain_mut(|view| {
+            !view
+                .as_any_mut()
+                .downcast_mut::<crate::tui::pager::PagerView>()
+                .is_some_and(|pager| pager.has_owned_evidence())
+        });
+        self.note_top_change(top);
     }
 
     /// Remove the approval card deciding exactly `gate` at any depth, not
@@ -1439,7 +1463,10 @@ impl ViewStack {
         self.views.last().map(|view| view.occupied_region(area))
     }
 
-    pub fn push<V: ModalView + 'static>(&mut self, view: V) {
+    pub fn push<V: ModalView + 'static>(&mut self, mut view: V) {
+        if let Some(locale) = self.locale {
+            view.set_locale(locale);
+        }
         let kind = view.kind();
         let top = self.top_identity();
         self.views.push(Box::new(view));
@@ -1450,7 +1477,10 @@ impl ViewStack {
     /// Push an already-boxed view back onto the stack. Used by call sites
     /// that pop a view, mutate it externally, and need to restore it without
     /// the generic `push` re-boxing dance.
-    pub fn push_boxed(&mut self, view: Box<dyn ModalView>) {
+    pub fn push_boxed(&mut self, mut view: Box<dyn ModalView>) {
+        if let Some(locale) = self.locale {
+            view.set_locale(locale);
+        }
         let kind = view.kind();
         let top = self.top_identity();
         self.views.push(view);

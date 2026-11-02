@@ -24,7 +24,7 @@ use crate::redact::redact_secrets;
 /// PM, APC, and standalone two-byte ESC sequences. OSC 8 hyperlink wrappers
 /// (`ESC ] 8 ; … BEL` / `ESC \`) are stripped along with the rest.
 pub fn strip_ansi_into(s: &str, out: &mut String) {
-    strip_ansi_impl(s, out, false);
+    strip_ansi_impl(s, &mut |text| out.push_str(text), false);
 }
 
 /// Drop control bytes from a streaming text chunk, keeping printable
@@ -112,7 +112,7 @@ pub fn hidden_chars(text: &str) -> Vec<(usize, char)> {
 /// (including OSC 8 hyperlink wrappers), cursor movement, DCS, lone control
 /// bytes — is still removed; only the styling survives.
 pub fn strip_ansi_keep_sgr_into(s: &str, out: &mut String) {
-    strip_ansi_impl(s, out, true);
+    strip_ansi_impl(s, &mut |text| out.push_str(text), true);
 }
 
 /// Length in bytes of the UTF-8 sequence that starts with `lead`. Falls back
@@ -130,7 +130,15 @@ pub fn utf8_seq_len(lead: u8) -> usize {
     }
 }
 
-fn strip_ansi_impl(s: &str, out: &mut String, keep_sgr: bool) {
+#[expect(
+    missing_docs,
+    reason = "Callback form of the existing documented ANSI scanner"
+)]
+pub fn visit_ansi_text(s: &str, mut emit: impl FnMut(&str)) {
+    strip_ansi_impl(s, &mut emit, false);
+}
+
+fn strip_ansi_impl(s: &str, out: &mut impl FnMut(&str), keep_sgr: bool) {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -154,7 +162,7 @@ fn strip_ansi_impl(s: &str, out: &mut String, keep_sgr: bool) {
                         && final_byte == b'm'
                         && let Ok(seq) = std::str::from_utf8(&bytes[i..j])
                     {
-                        out.push_str(seq);
+                        out(seq);
                     }
                     i = j;
                     continue;
@@ -192,7 +200,7 @@ fn strip_ansi_impl(s: &str, out: &mut String, keep_sgr: bool) {
                 i += 1;
                 continue;
             }
-            out.push(b as char);
+            out(&s[i..i + 1]);
             i += 1;
         } else {
             // UTF-8 multi-byte sequence: copy the whole code point intact.
@@ -201,7 +209,7 @@ fn strip_ansi_impl(s: &str, out: &mut String, keep_sgr: bool) {
             let len = utf8_seq_len(b);
             let end = (i + len).min(bytes.len());
             if let Ok(chunk) = std::str::from_utf8(&bytes[i..end]) {
-                out.push_str(chunk);
+                out(chunk);
             }
             i = end;
         }

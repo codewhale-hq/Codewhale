@@ -88,7 +88,9 @@ async fn trust_warning_is_internal_and_tracks_current_state() {
     engine.refresh_system_prompt_with_reason("model");
     engine.emit_session_updated().await;
     let event = handle.rx_event.write().await.recv().await.unwrap();
-    let Event::SessionUpdated { messages, .. } = event else {
+    let Event::SessionUpdated {
+        source: _,
+        messages, .. } = event else {
         panic!("expected session update");
     };
     assert_eq!(
@@ -1563,83 +1565,10 @@ fn final_tool_scenario() {
     }
 }
 
-// === #103 transparent stream-retry policy =====================================
+// === Proven pre-dispatch retry budget =========================================
 
 #[test]
 fn stream_retry_scenario() {
-    // Scenario consolidation of: stream_retry_zero_content_then_error_is_transparently_retried, stream_retry_after_content_received_surfaces_error, stream_retry_respects_cancellation, stream_retry_budget_caps_resumes_in_mechanism, stream_retry_threshold_relaxed_to_five
-    // from stream_retry_zero_content_then_error_is_transparently_retried
-    {
-        // Case 2 from issue #103: stream yielded ZERO content then errored.
-        // The decoder hit Err on the very first poll → engine should retry
-        // because DeepSeek hasn't billed and the user has seen nothing.
-        assert!(
-            super::should_transparently_retry_stream(
-                false,
-                0,
-                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-                false
-            ),
-            "first attempt with no content must be eligible for transparent retry"
-        );
-        assert!(
-            super::should_transparently_retry_stream(
-                false,
-                1,
-                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-                false
-            ),
-            "second attempt (one prior retry) with no content must still be eligible"
-        );
-    }
-    // from stream_retry_after_content_received_surfaces_error
-    {
-        // Case 3 from issue #103: stream yielded content then errored. We must
-        // NOT transparently retry — the model has emitted billed output tokens
-        // and the UI has streamed deltas; resending would double-bill and the
-        // user would see the same prefix twice.
-        assert!(
-            !super::should_transparently_retry_stream(
-                true,
-                0,
-                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-                false
-            ),
-            "any content received → no transparent retry, even with full budget"
-        );
-        assert!(
-            !super::should_transparently_retry_stream(
-                true,
-                1,
-                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-                false
-            ),
-            "any content received → no transparent retry on subsequent attempts"
-        );
-    }
-    // from stream_retry_respects_cancellation
-    {
-        // Cancellation overrides every other condition. If the user pressed
-        // Esc / Ctrl-C, do not silently re-issue the request behind their back.
-        assert!(
-            !super::should_transparently_retry_stream(
-                false,
-                0,
-                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-                true
-            ),
-            "cancelled turn must not be transparently retried"
-        );
-        assert!(
-            !super::should_transparently_retry_stream(
-                false,
-                1,
-                super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
-                true
-            ),
-            "cancelled turn must not be transparently retried even with budget"
-        );
-    }
     // from stream_retry_budget_caps_resumes_in_mechanism
     {
         // "At most one bounded retry per drop" is enforced by types, not by a
@@ -1664,22 +1593,18 @@ fn stream_retry_scenario() {
     }
     // from stream_retry_threshold_relaxed_to_five
     {
-        // Case 1+4 from issue #103: the consecutive-error threshold for marking
-        // the turn failed was relaxed from 3 → 5 in v0.6.7 because the new
-        // HTTP/2 keepalive defaults make spurious decode errors rarer.
-        // This test pins the constant so a future regression to 3 fails loudly.
+        // Historical values remain parsed for configuration compatibility.
+        // They do not authorize replay or tolerance of an admitted stream error.
         assert_eq!(
             super::DEFAULT_STREAM_MAX_ERRORS,
             5,
-            "the consecutive-stream-error threshold should be 5; \
-             lowering it back to 3 will fail mid-turn under transient flakiness"
+            "the historical error-count compatibility value remains5"
         );
         // And a regression guard on the transparent-retry cap.
         assert_eq!(
             super::DEFAULT_STREAM_MAX_TRANSPARENT_RETRIES,
             2,
-            "transparent-retry cap should be 2; raising it risks hammering the \
-             provider on real outages"
+            "the historical transparent-retry compatibility value remains2"
         );
     }
 }

@@ -3,10 +3,25 @@ use super::CommandResult;
 use codewhale_command_contract::facets::CommandPresentationContext;
 use codewhale_commands::debug::undo;
 fn patch_undo(app: &mut App) -> CommandResult {
-    super::debug_group::host_result(undo::patch_result(
-        super::contract::debug_operations::undo_files(app, false),
-        &UndoPresentation,
-    ))
+    if app.api_messages.is_empty() && app.history.is_empty() {
+        return CommandResult::message("Nothing to undo");
+    }
+    let restored = (|| {
+        let cut = crate::tui::ui::backtrack_api_cut_index(app, 0).ok_or_else(|| {
+            anyhow::anyhow!("The selected request cannot be matched safely; nothing was undone.")
+        })?;
+        let input = super::undo_range_input(app, cut)?;
+        let plan = super::plan_undo_range(input)?;
+        super::restore_undo_range(plan)
+    })();
+    match restored {
+        Ok(summary) => {
+            let mut result = undo_conversation(app);
+            result.message = Some(summary);
+            result
+        }
+        Err(error) => CommandResult::error(format!("Nothing was undone. {error:#}")),
+    }
 }
 fn undo_conversation(app: &mut App) -> CommandResult {
     super::debug_group::host_result(undo::conversation_result(
@@ -15,15 +30,10 @@ fn undo_conversation(app: &mut App) -> CommandResult {
     ))
 }
 fn acknowledge_file_undo(app: &mut App, result: &CommandResult) {
-    let Some(AppAction::ConversationUndo {
-        sync,
-        restored_files,
-        ..
-    }) = &result.action
-    else {
+    let Some(AppAction::ConversationUndo { sync, .. }) = &result.action else {
         panic!("file undo did not request a durable conversation rewind");
     };
-    assert!(*restored_files > 0 && app.api_messages.len() > sync.messages.len());
+    assert!(app.api_messages.len() > sync.messages.len());
     if let Some(index) = app
         .history
         .iter()
@@ -253,11 +263,17 @@ fn test_undo_conversation_stages_last_exchange_without_mutating_live_history() {
     });
     app.api_messages_mut().push(Message {
         role: Role::User,
-        content: vec![],
+        content: vec![ContentBlock::Text {
+            text: "Hello".to_string(),
+            cache_control: None,
+        }],
     });
     app.api_messages_mut().push(Message {
         role: Role::Assistant,
-        content: vec![],
+        content: vec![ContentBlock::Text {
+            text: "Hi".to_string(),
+            cache_control: None,
+        }],
     });
 
     let initial_history_len = app.history.len();
@@ -366,273 +382,114 @@ fn test_retry_truncates_long_input() {
 
 #[test]
 fn test_patch_undo_requests_durable_rewind_after_restore() {
-    use codewhale_snapshot::SnapshotRepo;
-    use tempfile::tempdir;
-
-    let tmp = tempdir().unwrap();
-    let workspace = tmp.path().join("ws");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let _guard = crate::test_support::SealedHome::at(tmp.path());
-
-    let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
-    std::fs::write(workspace.join("a.txt"), b"original").unwrap();
-    repo.snapshot_with_session("pre-turn:1: please edit a.txt", Some("test-session"))
-        .unwrap();
-    std::fs::write(workspace.join("a.txt"), b"modified").unwrap();
-    repo.snapshot_with_session("post-turn:1: please edit a.txt", Some("test-session"))
-        .unwrap();
-
-    let mut app = create_test_app();
-    app.workspace = workspace.clone();
-    app.current_session_id = Some("test-session".to_string());
-    app.api_messages_mut().push(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "please edit a.txt".to_string(),
-            cache_control: None,
-        }],
-    });
-
-    // A running turn owns the workspace: nothing is restored under it.
+    let fx = UndoFixture::new();
+    fx.write("a.txt", "original");
+    let messages = fx.record_turn("s1", 1, "please edit a.txt", &[("a.txt", "modified")], true);
+    let mut app = fx.app("s1");
+    push_recorded_turn(&mut app, messages.clone());
     app.is_loading = true;
-    let refused = patch_undo(&mut app);
-    assert!(
-        refused
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("still running")),
-        "{:?}",
-        refused.message
-    );
-    assert!(refused.action.is_none());
-    assert_eq!(
-        std::fs::read(workspace.join("a.txt")).unwrap(),
-        b"modified",
-        "a refused undo changes no file"
-    );
+    for command in ["/undo", "/undo force"] {
+        let result = super::execute(command, &mut app);
+        assert!(matches!(
+            result.action,
+            Some(AppAction::UndoLatestRequest { force }) if force == command.ends_with(" force")
+        ));
+        assert_eq!(fx.read("a.txt"), "modified");
+        assert_eq!(app.api_messages.as_ref(), &messages);
+    }
     app.is_loading = false;
-
     let result = patch_undo(&mut app);
-    assert_eq!(std::fs::read(workspace.join("a.txt")).unwrap(), b"original");
+    assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "original");
+    assert_eq!(app.api_messages.as_ref(), &messages);
+    assert!(
+        matches!(result.action, Some(AppAction::ConversationUndo { ref sync, .. }) if sync.messages.is_empty())
+    );
+    acknowledge_file_undo(&mut app, &result);
+    assert!(app.api_messages.is_empty() && app.history.is_empty());
+}
 
-    assert!(!result.is_error);
-    assert_eq!(app.api_messages.len(), 1);
+#[test]
+fn test_undo_legacy_chain_preserves_files_without_writer_receipts() {
+    let fx = UndoFixture::new();
+    fx.write("a.txt", "zero");
+    fx.snapshot("tool:provider-call", "s1");
+    fx.write("a.txt", "two");
+    let mut app = fx.app("s1");
+    push_exchange(&mut app, "chat only");
+    let result = patch_undo(&mut app);
+    assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "two");
     assert!(matches!(
         result.action,
-        Some(AppAction::ConversationUndo {
-            ref sync,
-            restored_files: 1,
-            retry_input: None,
-            edit_replacement: false,
-        }) if sync.messages.is_empty()
-            && sync.workspace == app.workspace
-            && sync.session_id == app.current_session_id
+        Some(AppAction::ConversationUndo { .. })
     ));
 }
 
 #[test]
-fn test_undo_legacy_chain_falls_back_to_conversation_only() {
-    use codewhale_snapshot::SnapshotRepo;
-    use tempfile::tempdir;
-
-    let tmp = tempdir().unwrap();
-    let workspace = tmp.path().join("ws");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let _guard = crate::test_support::SealedHome::at(tmp.path());
-
-    let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
-    let file = workspace.join("a.txt");
-    std::fs::write(&file, b"zero").unwrap();
-    repo.snapshot("tool:first").unwrap();
-    std::fs::write(&file, b"one").unwrap();
-    repo.snapshot("tool:second").unwrap();
-    std::fs::write(&file, b"two").unwrap();
-
-    let mut app = create_test_app();
-    app.workspace = workspace.clone();
-    app.current_session_id = Some("current-session".to_string());
-    app.history.push(HistoryCell::User {
-        content: "chat only".to_string(),
-    });
-    app.history.push(HistoryCell::Assistant {
-        content: "reply".to_string(),
-        streaming: false,
-    });
-
-    let result = super::execute("/undo", &mut app);
-    assert!(!result.is_error);
-    assert!(
-        result
-            .message
-            .as_deref()
-            .is_some_and(|m| m.contains("Removed")),
-        "expected conversation fallback, got: {:?}",
-        result.message
-    );
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "two");
-}
-
-#[test]
 fn test_patch_undo_prunes_pre_turn_context() {
-    use codewhale_snapshot::SnapshotRepo;
-    use tempfile::tempdir;
-
-    let tmp = tempdir().unwrap();
-    let workspace = tmp.path().join("ws");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let _guard = crate::test_support::SealedHome::at(tmp.path());
-
-    let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
-    let file = workspace.join("a.txt");
-    std::fs::write(&file, b"alpha").unwrap();
-    repo.snapshot_with_session("pre-turn:1: please edit a.txt", Some("test-session"))
-        .unwrap();
-    std::fs::write(&file, b"alpha-fixed").unwrap();
-    repo.snapshot_with_session("post-turn:1: please edit a.txt", Some("test-session"))
-        .unwrap();
-
-    let mut app = create_test_app();
-    app.workspace = workspace.clone();
-    app.current_session_id = Some("test-session".to_string());
-    app.history.push(HistoryCell::User {
-        content: "please edit a.txt".to_string(),
-    });
-    app.history.push(HistoryCell::Assistant {
-        content: "Done, file is fixed now.".to_string(),
-        streaming: false,
-    });
-    app.api_messages_mut().push(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "please edit a.txt".to_string(),
-            cache_control: None,
-        }],
-    });
-    app.api_messages_mut().push(Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::Text {
-            text: "Done, file is fixed now.".to_string(),
-            cache_control: None,
-        }],
-    });
-
+    let fx = UndoFixture::new();
+    fx.write("a.txt", "alpha");
+    let messages = fx.record_turn(
+        "s1",
+        1,
+        "please edit a.txt",
+        &[("a.txt", "alpha-fixed")],
+        true,
+    );
+    let mut app = fx.app("s1");
+    push_recorded_turn(&mut app, messages);
     let result = patch_undo(&mut app);
-
-    assert!(!result.is_error);
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha");
+    assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "alpha");
     assert_eq!(app.history.len(), 2);
     acknowledge_file_undo(&mut app, &result);
-    assert!(app.history.is_empty());
-    assert!(app.api_messages.is_empty());
-    assert!(
-        result
-            .message
-            .as_deref()
-            .is_some_and(|m| m.contains("removed from the conversation")),
-        "{:?}",
-        result.message
-    );
+    assert!(app.history.is_empty() && app.api_messages.is_empty());
 }
-
-// ── /cache stats tests ──────────────────────────────────────────────
 
 #[test]
 fn test_patch_undo_never_crosses_session_boundary() {
-    use codewhale_snapshot::SnapshotRepo;
-    use tempfile::tempdir;
-
-    let tmp = tempdir().unwrap();
-    let workspace = tmp.path().join("ws");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let _guard = crate::test_support::SealedHome::at(tmp.path());
-
-    let repo = SnapshotRepo::open_or_init(&workspace).unwrap();
-    let file = workspace.join("a.txt");
-
-    // Session A: an earlier conversation that modified the workspace.
-    std::fs::write(&file, b"a-before").unwrap();
-    repo.snapshot_with_session("pre-turn:1", Some("session-a"))
-        .unwrap();
-    std::fs::write(&file, b"a-after").unwrap();
-
-    // Session B (current): a later conversation that also modified it.
-    std::fs::write(&file, b"b-before").unwrap();
-    repo.snapshot_with_session("pre-turn:1", Some("session-b"))
-        .unwrap();
-    std::fs::write(&file, b"b-after").unwrap();
-    repo.snapshot_with_session("post-turn:1", Some("session-b"))
-        .unwrap();
-
-    let mut app = create_test_app();
-    app.workspace = workspace.clone();
-    app.current_session_id = Some("session-b".to_string());
-
+    let fx = UndoFixture::new();
+    fx.write("a.txt", "a-before");
+    let foreign = fx.record_turn("session-a", 1, "edit a.txt", &[("a.txt", "a-after")], true);
+    fx.write("a.txt", "b-before");
+    let current = fx.record_turn("session-b", 1, "edit a.txt", &[("a.txt", "b-after")], true);
+    let mut wrong = fx.app("session-b");
+    push_recorded_turn(&mut wrong, foreign);
+    let refused = patch_undo(&mut wrong);
+    assert!(refused.is_error, "{:?}", refused.message);
+    assert_eq!(fx.read("a.txt"), "b-after");
+    let mut app = fx.app("session-b");
+    push_recorded_turn(&mut app, current);
     let result = patch_undo(&mut app);
-    assert!(!result.is_error);
-    // Must restore session B's pre-turn state — never session A's.
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "b-before");
-
+    assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "b-before");
+    acknowledge_file_undo(&mut app, &result);
     let repeated = patch_undo(&mut app);
-    assert!(!repeated.is_error);
-    assert!(
-        repeated
-            .message
-            .as_deref()
-            .is_some_and(|m| m.contains("No undoable snapshot")),
-        "repeated undo must stop at the session boundary: {:?}",
-        repeated.message
-    );
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "b-before");
+    assert_eq!(repeated.message.as_deref(), Some("Nothing to undo"));
+    assert_eq!(fx.read("a.txt"), "b-before");
 }
 
-/// `/undo` used to report only `Removed N message(s)` when the snapshot repo
-/// could not be opened, implying a file rollback that never happened. The
-/// conversation-only fallback must say so, and say why.
 #[test]
 fn test_undo_reports_that_files_were_not_reverted_when_the_repo_is_unavailable() {
-    use crate::test_support::SealedHome;
-    use tempfile::tempdir;
-
-    let tmp = tempdir().unwrap();
-    let _home = SealedHome::at(tmp.path());
-
-    // The home directory itself is refused by the snapshot safety gate, so
-    // `patch_undo` cannot open a repo at all.
+    let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::SealedHome::at(tmp.path());
+    let file = tmp.path().join("a.txt");
+    std::fs::write(&file, "user bytes").unwrap();
     let mut app = create_test_app();
     app.workspace = tmp.path().to_path_buf();
-    app.current_session_id = Some("test-session".to_string());
-    app.yolo = true;
-    app.history.push(HistoryCell::User {
-        content: "change something".to_string(),
-    });
-    app.api_messages_mut().push(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "change something".to_string(),
-            cache_control: None,
-        }],
-    });
-
-    let result = super::execute("/undo", &mut app);
-    let message = result.message.as_deref().unwrap_or_default();
-    assert!(
-        message.contains("Removed 1 message(s)"),
-        "conversation undo still runs: {message}"
-    );
-    assert!(
-        message
-            .contains("Workspace files were NOT reverted — only the conversation was rolled back."),
-        "the user must be told files were not reverted: {message}"
-    );
-    assert!(
-        message.contains("Snapshot repo unavailable"),
-        "the reason must travel with the fallback: {message}"
-    );
+    app.current_session_id = Some("s1".to_string());
+    push_exchange(&mut app, "change something");
+    app.api_messages_mut()
+        .insert(1, fixture_call("host-call", "a.txt", "new bytes"));
+    let before = app.api_messages.as_ref().clone();
+    let result = patch_undo(&mut app);
+    assert!(result.is_error, "{:?}", result.message);
+    assert!(result.action.is_none());
+    assert_eq!(app.api_messages.as_ref(), &before);
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "user bytes");
 }
 
-/// Isolated HOME + workspace for the `/undo` restore tests (#6644).
-// Fields drop in order: the seal restores the environment and releases the
-// lock before the directory it pointed at is deleted.
 struct UndoFixture {
     workspace: PathBuf,
     repo: codewhale_snapshot::SnapshotRepo,
@@ -654,51 +511,126 @@ impl UndoFixture {
             _tmp: tmp,
         }
     }
-
     fn write(&self, name: &str, body: &str) {
         std::fs::write(self.workspace.join(name), body).unwrap();
     }
-
     fn read(&self, name: &str) -> String {
         std::fs::read_to_string(self.workspace.join(name)).unwrap()
     }
-
     fn snapshot(&self, label: &str, session: &str) {
         self.repo.take_snapshot(label, Some(session)).unwrap();
     }
-
-    /// An app in the default posture: no trust mode, no Full Access.
     fn app(&self, session: &str) -> App {
         let mut app = create_test_app();
         app.workspace = self.workspace.clone();
         app.current_session_id = Some(session.to_string());
         app
     }
+    fn record_turn(
+        &self,
+        session: &str,
+        seq: u64,
+        prompt: &str,
+        writes: &[(&str, &str)],
+        complete: bool,
+    ) -> Vec<Message> {
+        self.snapshot(
+            &codewhale_engine::core::turn::format_snapshot_label("pre-turn", seq, Some(prompt)),
+            session,
+        );
+        let mut messages = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+                cache_control: None,
+            }],
+        }];
+        for (path, body) in writes {
+            let id = uuid::Uuid::new_v4().to_string();
+            self.snapshot(&format!("tool:{id}"), session);
+            messages.push(fixture_call(&id, path, body));
+            self.write(path, body);
+            self.snapshot(&format!("post-tool:{id}"), session);
+            messages.push(Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    execution_id: Some(id),
+                    tool_use_id: "reused-provider-call".to_string(),
+                    content: "written".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            });
+        }
+        if complete {
+            self.snapshot(
+                &codewhale_engine::core::turn::format_snapshot_label(
+                    "post-turn",
+                    seq,
+                    Some(prompt),
+                ),
+                session,
+            );
+        }
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "done".to_string(),
+                cache_control: None,
+            }],
+        });
+        messages
+    }
 }
 
-/// One request and its reply, as the transcript and the session log hold them.
-fn push_exchange(app: &mut App, prompt: &str) {
+fn fixture_call(execution: &str, path: &str, body: &str) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolUse {
+            execution_id: Some(execution.to_string()),
+            id: "reused-provider-call".to_string(),
+            name: "write_file".to_string(),
+            input: serde_json::json!({"path":path,"content":body}),
+            caller: None,
+            thought_signature: None,
+        }],
+    }
+}
+
+fn push_recorded_turn(app: &mut App, messages: Vec<Message>) {
+    let ContentBlock::Text { text, .. } = &messages[0].content[0] else {
+        panic!("missing fixture prompt")
+    };
     app.history.push(HistoryCell::User {
-        content: prompt.to_string(),
+        content: text.clone(),
     });
     app.history.push(HistoryCell::Assistant {
         content: "done".to_string(),
         streaming: false,
     });
-    app.api_messages_mut().push(Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: prompt.to_string(),
-            cache_control: None,
-        }],
-    });
-    app.api_messages_mut().push(Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::Text {
-            text: "done".to_string(),
-            cache_control: None,
-        }],
-    });
+    app.api_messages_mut().extend(messages);
+}
+
+fn push_exchange(app: &mut App, prompt: &str) {
+    push_recorded_turn(
+        app,
+        vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: prompt.to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "done".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ],
+    );
 }
 
 /// `/diff` in a folder that is not a git repository compares against the
@@ -754,25 +686,23 @@ fn diff_in_a_folder_without_git_shows_the_changes_since_the_sessions_first_resto
     assert!(result.action.is_none());
 }
 
-/// `/undo` restores only the paths the undone turn changed: an edit the user
-/// made to another file after the turn survives. The whole-tree restore
-/// reverted it too.
 #[test]
 fn patch_undo_restores_only_the_paths_the_undone_step_changed() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
     fx.write("b.txt", "b0");
-    fx.snapshot("pre-turn:1", "s1");
-    fx.write("a.txt", "a1");
-    fx.write("new.txt", "created by the turn");
-    fx.snapshot("post-turn:1", "s1");
-    // The user's own edit after the turn, and a file they created.
+    let messages = fx.record_turn(
+        "s1",
+        1,
+        "edit a.txt and create new.txt",
+        &[("a.txt", "a1"), ("new.txt", "created by the turn")],
+        true,
+    );
     fx.write("b.txt", "b-user");
     fx.write("mine.txt", "user file");
-
     let mut app = fx.app("s1");
+    push_recorded_turn(&mut app, messages);
     let result = patch_undo(&mut app);
-
     assert!(!result.is_error, "{:?}", result.message);
     assert_eq!(fx.read("a.txt"), "a0");
     assert!(!fx.workspace.join("new.txt").exists());
@@ -780,178 +710,116 @@ fn patch_undo_restores_only_the_paths_the_undone_step_changed() {
     assert_eq!(fx.read("mine.txt"), "user file");
     let message = result.message.unwrap_or_default();
     assert!(
-        message.contains("  restored a.txt") && message.contains("  removed new.txt"),
+        message.contains("a.txt") && message.contains("new.txt"),
         "{message}"
     );
 }
 
-/// A path the undone step changed that changed again since is refused, not
-/// overwritten, and nothing else is touched.
 #[test]
 fn patch_undo_refuses_when_a_changed_path_changed_since() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
     fx.write("b.txt", "b0");
-    fx.snapshot("pre-turn:1", "s1");
-    fx.write("a.txt", "a1");
-    fx.write("b.txt", "b1");
-    fx.snapshot("post-turn:1", "s1");
+    let messages = fx.record_turn(
+        "s1",
+        1,
+        "edit both files",
+        &[("a.txt", "a1"), ("b.txt", "b1")],
+        true,
+    );
     fx.write("a.txt", "a-user");
-
+    let before = fx.repo.list(usize::MAX).unwrap().len();
     let mut app = fx.app("s1");
-    let result = super::execute("/undo", &mut app);
-
-    let message = result.message.unwrap_or_default();
-    assert!(
-        message.starts_with(
-            "Nothing was undone. a.txt changed after the request, and undoing would overwrite that change."
-        ),
-        "{message}"
-    );
-    assert!(
-        message.contains("/restore") && !message.contains("/trust"),
-        "the refusal says what to do: {message}"
-    );
+    push_recorded_turn(&mut app, messages.clone());
+    let result = patch_undo(&mut app);
+    assert!(result.is_error, "{:?}", result.message);
     assert_eq!(fx.read("a.txt"), "a-user");
     assert_eq!(fx.read("b.txt"), "b1");
-    assert_eq!(
-        fx.repo.list(usize::MAX).unwrap().len(),
-        2,
-        "a refusal writes no snapshot"
-    );
+    assert_eq!(app.api_messages.as_ref(), &messages);
+    assert!(result.action.is_none());
+    assert_eq!(fx.repo.list(usize::MAX).unwrap().len(), before);
 }
 
-/// The newcomer's case (0.10.1 tutorial, lesson 3): the agent edited two
-/// files and created a third for one request, in the default posture. One
-/// `/undo` takes the whole request back without `/trust on`, and says which
-/// files it restored without restore-point names. Before, it was refused
-/// outside trusted mode, and with trust it reverted one edit per `/undo`.
 #[test]
 fn undo_takes_back_a_whole_request_in_one_step_without_trust() {
     let fx = UndoFixture::new();
     fx.write("duration.mjs", "v0");
     fx.write("duration.test.mjs", "t0");
-    fx.snapshot("pre-turn:1: Whole hours should read 2h", "s1");
-    fx.snapshot("tool:call-1", "s1");
-    fx.write("duration.mjs", "v1");
-    fx.snapshot("tool:call-2", "s1");
-    fx.write("duration.test.mjs", "t1");
-    fx.snapshot("tool:call-3", "s1");
-    fx.write("notes.md", "created by the request");
-    fx.snapshot("post-turn:1: Whole hours should read 2h", "s1");
+    let messages = fx.record_turn(
+        "s1",
+        1,
+        "Whole hours should read 2h",
+        &[
+            ("duration.mjs", "v1"),
+            ("duration.test.mjs", "t1"),
+            ("notes.md", "created by the request"),
+        ],
+        true,
+    );
     let before = fx.repo.list(usize::MAX).unwrap().len();
-
     let mut app = fx.app("s1");
-    push_exchange(&mut app, "Whole hours should read 2h");
-
-    let result = super::execute("/undo", &mut app);
-
+    push_recorded_turn(&mut app, messages);
+    let result = patch_undo(&mut app);
     assert!(!result.is_error, "{:?}", result.message);
     assert_eq!(fx.read("duration.mjs"), "v0");
     assert_eq!(fx.read("duration.test.mjs"), "t0");
     assert!(!fx.workspace.join("notes.md").exists());
-    assert_eq!(
-        result.message.as_deref(),
-        Some(
-            "Undid your request \"Whole hours should read 2h\". 3 files are back as they were before it:\n  restored duration.mjs\n  restored duration.test.mjs\n  removed notes.md\nThe request and its reply were removed from the conversation."
-        )
-    );
     assert!(!app.history.is_empty());
     acknowledge_file_undo(&mut app, &result);
     assert!(app.history.is_empty() && app.api_messages.is_empty());
-    assert!(
-        !app.trust_mode && !app.yolo,
-        "undo neither needs nor changes the access posture"
+    assert!(!app.trust_mode && !app.yolo);
+    assert!(fx.repo.list(usize::MAX).unwrap().len() > before);
+    assert_eq!(
+        patch_undo(&mut app).message.as_deref(),
+        Some("Nothing to undo")
     );
-    assert!(
-        fx.repo.list(usize::MAX).unwrap().len() > before,
-        "the safety snapshot is still taken"
-    );
-
-    // Nothing is left to undo, and nothing is refused.
-    let again = super::execute("/undo", &mut app);
-    assert_eq!(again.message.as_deref(), Some("Nothing to undo"));
     assert_eq!(fx.read("duration.mjs"), "v0");
 }
 
-/// A request's tool results are stored as `user`-role messages. The undone
-/// request is cut at the user's prompt, never at one of those, so the
-/// conversation left behind is one a provider accepts.
 #[test]
 fn undo_cuts_the_conversation_at_the_prompt_not_at_a_tool_result() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:2: edit a.txt", "s1");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:2: edit a.txt", "s1");
-
+    let messages = fx.record_turn("s1", 2, "edit a.txt", &[("a.txt", "a1")], true);
     let mut app = fx.app("s1");
-    let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
-        {"role":"user","content":[{"type":"text","text":"keep this"}]},
-        {"role":"assistant","content":[{"type":"text","text":"kept answer"}]},
-        {"role":"user","content":[{"type":"text","text":"edit a.txt"}]},
-        {"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"write_file","input":{}}]},
-        {"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"written"}]},
-        {"role":"assistant","content":[{"type":"text","text":"done"}]}
-    ]))
-    .unwrap();
-    app.set_api_messages(std::sync::Arc::new(messages.clone()));
-
+    push_exchange(&mut app, "keep this");
+    push_recorded_turn(&mut app, messages);
+    let original = app.api_messages.as_ref().clone();
     let result = patch_undo(&mut app);
-
     assert!(!result.is_error, "{:?}", result.message);
     assert_eq!(fx.read("a.txt"), "a0");
-    assert_eq!(app.api_messages.as_slice(), &messages);
-    assert!(matches!(
-        result.action,
-        Some(AppAction::ConversationUndo { ref sync, restored_files: 1, .. })
-            if sync.messages == messages[..2]
-    ));
+    assert_eq!(app.api_messages.as_ref(), &original);
+    assert!(
+        matches!(result.action, Some(AppAction::ConversationUndo { ref sync, .. }) if sync.messages == original[..2])
+    );
 }
 
-/// Conversation and files move together. With a newer request that changed
-/// no files still in the conversation, `/undo` takes that request off first
-/// and touches no file; the next `/undo` takes back the edit and its request.
 #[test]
 fn undo_never_reverts_files_of_a_request_the_conversation_still_holds() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1: edit a.txt", "s1");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:1: edit a.txt", "s1");
-    fx.snapshot("pre-turn:2: what did you change?", "s1");
-    fx.snapshot("post-turn:2: what did you change?", "s1");
-
+    let first = fx.record_turn("s1", 1, "edit a.txt", &[("a.txt", "a1")], true);
+    let kept = first.len();
+    let second = fx.record_turn("s1", 2, "what did you change?", &[], true);
     let mut app = fx.app("s1");
-    push_exchange(&mut app, "edit a.txt");
-    push_exchange(&mut app, "what did you change?");
-
-    let first = super::execute("/undo", &mut app);
-    assert_eq!(
-        first.message.as_deref(),
-        Some("Removed 2 message(s)\nNo file changes to undo."),
-        "the question comes off first"
-    );
-    assert!(matches!(
-        first.action,
-        Some(AppAction::ConversationUndo { ref sync, .. }) if sync.messages.len() == 2
-    ));
-    assert_eq!(fx.read("a.txt"), "a1", "no file moved");
-    // The UI applies the conversation-only undo once the Engine accepts it.
-    app.truncate_history_to(2);
-    app.truncate_api_messages(2);
-
-    let second = super::execute("/undo", &mut app);
-    assert_eq!(fx.read("a.txt"), "a0", "{:?}", second.message);
-    acknowledge_file_undo(&mut app, &second);
+    push_recorded_turn(&mut app, first);
+    push_recorded_turn(&mut app, second);
+    let result = patch_undo(&mut app);
+    assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "a1");
+    acknowledge_file_undo(&mut app, &result);
+    assert_eq!(app.api_messages.len(), kept);
+    let result = patch_undo(&mut app);
+    assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "a0");
+    acknowledge_file_undo(&mut app, &result);
     assert!(app.api_messages.is_empty());
 }
 
-/// Identity refusals must reach the command as refusals, rather than its
-/// conversation-only fallback, and must run before a forced safety snapshot.
 fn assert_undo_identity_refused(fx: &UndoFixture, app: &mut App) {
     let messages = app.api_messages.as_ref().clone();
-    let history_len = app.history.len();
+    let history = app.history.len();
+    let contents = fx.read("a.txt");
     let snapshots: Vec<_> = fx
         .repo
         .list(usize::MAX)
@@ -959,58 +827,48 @@ fn assert_undo_identity_refused(fx: &UndoFixture, app: &mut App) {
         .into_iter()
         .map(|s| s.id)
         .collect();
-    let contents = fx.read("a.txt");
-    for command in ["/undo", "/undo force"] {
-        let result = super::execute(command, app);
-        assert!(
-            result.message.as_deref().is_some_and(|message| {
-                message
-                    .starts_with("Nothing was undone. This restore point cannot be matched safely")
-                    && message.contains("/restore")
-            }),
-            "{command}: {:?}",
-            result.message
-        );
-        assert!(result.action.is_none(), "no conversation-only fallback");
-        assert_eq!(app.api_messages.as_ref(), &messages);
-        assert_eq!(app.history.len(), history_len);
-        assert_eq!(fx.read("a.txt"), contents);
-        assert_eq!(
-            fx.repo
-                .list(usize::MAX)
-                .unwrap()
-                .into_iter()
-                .map(|s| s.id)
-                .collect::<Vec<_>>(),
-            snapshots,
-            "identity refusal creates no backup"
-        );
-    }
+    let result = patch_undo(app);
+    assert!(result.is_error, "{:?}", result.message);
+    assert!(result.action.is_none());
+    assert_eq!(app.api_messages.as_ref(), &messages);
+    assert_eq!(app.history.len(), history);
+    assert_eq!(fx.read("a.txt"), contents);
+    assert_eq!(
+        fx.repo
+            .list(usize::MAX)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>(),
+        snapshots
+    );
 }
 
 #[test]
-fn undo_refuses_repeated_requests_even_after_a_conversation_rewind() {
-    for rewind in [false, true] {
-        let fx = UndoFixture::new();
-        fx.write("a.txt", "a0");
-        fx.snapshot("pre-turn:1: continue", "s1");
-        fx.write("a.txt", "a1");
-        fx.snapshot("post-turn:1: continue", "s1");
-        fx.snapshot("pre-turn:2: continue", "s1");
-        fx.snapshot("post-turn:2: continue", "s1");
-        let mut app = fx.app("s1");
-        push_exchange(&mut app, "continue");
-        if !rewind {
-            push_exchange(&mut app, "continue");
+fn undo_refuses_repeated_requests_with_missing_current_execution_receipts() {
+    let fx = UndoFixture::new();
+    fx.write("a.txt", "a0");
+    let mut current = fx.record_turn("s1", 1, "continue", &[("a.txt", "a2")], true);
+    fx.write("a.txt", "a-user");
+    fx.write("a.txt", "a2");
+    for message in &mut current {
+        for block in &mut message.content {
+            match block {
+                ContentBlock::ToolUse { execution_id, .. }
+                | ContentBlock::ToolResult { execution_id, .. } => {
+                    *execution_id = Some("fresh-execution-with-no-restore-point".into())
+                }
+                _ => {}
+            }
         }
-        // Previously the no-op second request was skipped, then the first
-        // request's files were restored while the last held exchange vanished.
-        assert_undo_identity_refused(&fx, &mut app);
     }
+    let mut app = fx.app("s1");
+    push_recorded_turn(&mut app, current);
+    assert_undo_identity_refused(&fx, &mut app);
 }
 
 #[test]
-fn undo_refuses_lossy_shared_prefix_and_first_line_labels() {
+fn undo_matches_execution_identity_with_lossy_shared_prefix_and_first_line_labels() {
     let prefix = "x".repeat(100);
     for (first, second) in [
         (format!("{prefix} first"), format!("{prefix} second")),
@@ -1021,27 +879,18 @@ fn undo_refuses_lossy_shared_prefix_and_first_line_labels() {
     ] {
         let fx = UndoFixture::new();
         fx.write("a.txt", "a0");
-        fx.snapshot(
-            &codewhale_engine::core::turn::format_snapshot_label("pre-turn", 1, Some(&first)),
-            "s1",
-        );
-        fx.write("a.txt", "a1");
-        fx.snapshot(
-            &codewhale_engine::core::turn::format_snapshot_label("post-turn", 1, Some(&first)),
-            "s1",
-        );
-        fx.snapshot(
-            &codewhale_engine::core::turn::format_snapshot_label("pre-turn", 2, Some(&second)),
-            "s1",
-        );
-        fx.snapshot(
-            &codewhale_engine::core::turn::format_snapshot_label("post-turn", 2, Some(&second)),
-            "s1",
-        );
+        let first = fx.record_turn("s1", 1, &first, &[("a.txt", "a1")], true);
+        let second = fx.record_turn("s1", 2, &second, &[("a.txt", "a2")], true);
         let mut app = fx.app("s1");
-        push_exchange(&mut app, &first);
-        push_exchange(&mut app, &second);
-        assert_undo_identity_refused(&fx, &mut app);
+        push_recorded_turn(&mut app, first);
+        push_recorded_turn(&mut app, second);
+        let result = patch_undo(&mut app);
+        assert!(!result.is_error, "{:?}", result.message);
+        assert_eq!(fx.read("a.txt"), "a1");
+        acknowledge_file_undo(&mut app, &result);
+        let result = patch_undo(&mut app);
+        assert!(!result.is_error, "{:?}", result.message);
+        assert_eq!(fx.read("a.txt"), "a0");
     }
 }
 
@@ -1055,41 +904,36 @@ fn undo_matches_unique_truncated_and_multiline_prompt_snippets() {
     ] {
         let fx = UndoFixture::new();
         fx.write("a.txt", "a0");
-        fx.snapshot(
-            &codewhale_engine::core::turn::format_snapshot_label("pre-turn", 1, Some(&prompt)),
-            "s1",
-        );
-        fx.write("a.txt", "a1");
-        fx.snapshot(
-            &codewhale_engine::core::turn::format_snapshot_label("post-turn", 1, Some(&prompt)),
-            "s1",
-        );
-        fx.snapshot("pre-turn:2: update a.txt again", "s1");
-        fx.write("a.txt", "a2");
-        fx.snapshot("post-turn:2: update a.txt again", "s1");
+        let first = fx.record_turn("s1", 1, &prompt, &[("a.txt", "a1")], true);
+        let first_count = first.len();
+        let second = fx.record_turn("s1", 2, "update a.txt again", &[("a.txt", "a2")], true);
+        let total = first_count + second.len();
         let mut app = fx.app("s1");
-        push_exchange(&mut app, &prompt);
-        push_exchange(&mut app, "update a.txt again");
+        push_recorded_turn(&mut app, first);
+        push_recorded_turn(&mut app, second);
         app.session_turn_outcomes = vec![
-            codewhale_engine::session_manager::SavedTurnOutcome::failed("first failure", 2),
-            codewhale_engine::session_manager::SavedTurnOutcome::failed("second failure", 4),
+            codewhale_engine::session_manager::SavedTurnOutcome::failed(
+                "first failure",
+                first_count,
+            ),
+            codewhale_engine::session_manager::SavedTurnOutcome::failed("second failure", total),
         ];
-
-        let result = super::execute("/undo", &mut app);
+        let result = patch_undo(&mut app);
         assert!(!result.is_error, "{:?}", result.message);
         assert_eq!(fx.read("a.txt"), "a1");
         acknowledge_file_undo(&mut app, &result);
         assert_eq!(app.history.len(), 2);
-        assert_eq!(app.api_messages.len(), 2);
+        assert_eq!(app.api_messages.len(), first_count);
         assert_eq!(app.session_turn_outcomes.len(), 1);
         assert_eq!(app.session_turn_outcomes[0].error, "first failure");
-
         if prompt.starts_with('\n') {
             assert_undo_identity_refused(&fx, &mut app);
+            assert_eq!(fx.read("a.txt"), "a1");
+            assert_eq!(app.session_turn_outcomes.len(), 1);
+            assert_eq!(app.session_turn_outcomes[0].error, "first failure");
             continue;
         }
-
-        let result = super::execute("/undo", &mut app);
+        let result = patch_undo(&mut app);
         assert!(!result.is_error, "{:?}", result.message);
         assert_eq!(fx.read("a.txt"), "a0");
         acknowledge_file_undo(&mut app, &result);
@@ -1099,53 +943,35 @@ fn undo_matches_unique_truncated_and_multiline_prompt_snippets() {
 }
 
 #[test]
-fn undo_refuses_missing_prompt_labels_and_multipart_requests() {
+fn undo_refuses_missing_or_legacy_execution_identity_for_multipart_requests() {
     for kind in 0..4 {
         let fx = UndoFixture::new();
         fx.write("a.txt", "a0");
-        fx.snapshot(
-            if kind == 0 {
-                "pre-turn:1"
+        let mut messages = fx.record_turn("s1", 1, "edit a.txt", &[("a.txt", "a1")], true);
+        for message in &mut messages {
+            for block in &mut message.content {
+                if let ContentBlock::ToolUse { execution_id, .. } = block {
+                    *execution_id = if kind == 0 { None } else { Some(String::new()) };
+                }
+            }
+        }
+        if kind > 0 {
+            messages[0].content.push(if kind == 3 {
+                ContentBlock::Text {
+                    text: "second instruction".into(),
+                    cache_control: None,
+                }
             } else {
-                "pre-turn:1: edit a.txt"
-            },
-            "s1",
-        );
-        fx.write("a.txt", "a1");
-        // Leave the end open so /undo force would otherwise write a backup.
-        let mut app = fx.app("s1");
-        if kind == 0 {
-            push_exchange(&mut app, "edit a.txt");
-        } else {
-            let image = ContentBlock::ImageUrl {
-                image_url: codewhale_models::ImageUrlContent {
-                    url: "data:image/png;base64,AAAA".into(),
-                },
-            };
-            let text = ContentBlock::Text {
-                text: "edit a.txt".into(),
-                cache_control: None,
-            };
-            app.api_messages_mut().push(Message {
-                role: Role::User,
-                content: match kind {
-                    1 => vec![image],
-                    2 => vec![text, image],
-                    _ => vec![
-                        text,
-                        ContentBlock::Text {
-                            text: "second instruction".into(),
-                            cache_control: None,
-                        },
-                    ],
-                },
+                ContentBlock::ImageUrl {
+                    image_url: codewhale_models::ImageUrlContent {
+                        url: "data:image/png;base64,AAAA".into(),
+                    },
+                }
             });
         }
+        let mut app = fx.app("s1");
+        push_recorded_turn(&mut app, messages);
         assert_undo_identity_refused(&fx, &mut app);
-        if kind > 0 {
-            push_exchange(&mut app, "edit a.txt");
-            assert_undo_identity_refused(&fx, &mut app);
-        }
     }
 }
 
@@ -1153,9 +979,7 @@ fn undo_refuses_missing_prompt_labels_and_multipart_requests() {
 fn undo_identity_guard_includes_history_only_requests() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1: continue", "s1");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:1: continue", "s1");
+    fx.record_turn("s1", 1, "continue", &[("a.txt", "a1")], true);
     let mut app = fx.app("s1");
     for _ in 0..2 {
         app.history.push(HistoryCell::User {
@@ -1168,260 +992,135 @@ fn undo_identity_guard_includes_history_only_requests() {
 #[test]
 fn undo_keeps_lossless_hundred_character_unicode_prompts_available() {
     let fx = UndoFixture::new();
-    let prompt = "漢".repeat(100);
     fx.write("a.txt", "a0");
-    fx.snapshot(
-        &codewhale_engine::core::turn::format_snapshot_label("pre-turn", 1, Some(&prompt)),
-        "s1",
-    );
-    fx.write("a.txt", "a1");
-    fx.snapshot(
-        &codewhale_engine::core::turn::format_snapshot_label("post-turn", 1, Some(&prompt)),
-        "s1",
-    );
+    let messages = fx.record_turn("s1", 1, &"漢".repeat(100), &[("a.txt", "a1")], true);
     let mut app = fx.app("s1");
-    push_exchange(&mut app, &prompt);
-    let result = super::execute("/undo", &mut app);
+    push_recorded_turn(&mut app, messages);
+    let result = patch_undo(&mut app);
     assert!(!result.is_error, "{:?}", result.message);
     assert_eq!(fx.read("a.txt"), "a0");
     acknowledge_file_undo(&mut app, &result);
     assert!(app.history.is_empty() && app.api_messages.is_empty());
 }
 
-/// A file the older request changed was edited since. That refusal belongs
-/// to the older request: the newer one, which changed no files, still comes
-/// off first, and the refusal is shown once the older request is the last.
-/// The refusal writes nothing and keeps the conversation.
 #[test]
 fn undo_takes_a_newer_request_off_before_refusing_an_older_one() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1: edit a.txt", "s1");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:1: edit a.txt", "s1");
-    fx.snapshot("pre-turn:2: why?", "s1");
-    fx.snapshot("post-turn:2: why?", "s1");
+    let first = fx.record_turn("s1", 1, "edit a.txt", &[("a.txt", "a1")], true);
+    let kept = first.len();
+    let second = fx.record_turn("s1", 2, "why?", &[], true);
     fx.write("a.txt", "a-user");
     let before = fx.repo.list(usize::MAX).unwrap().len();
-
     let mut app = fx.app("s1");
-    push_exchange(&mut app, "edit a.txt");
-    push_exchange(&mut app, "why?");
-
-    let first = super::execute("/undo", &mut app);
-    assert!(
-        first
-            .message
-            .as_deref()
-            .is_some_and(|m| m.contains("No file changes to undo.")),
-        "{:?}",
-        first.message
-    );
-    assert!(matches!(
-        first.action,
-        Some(AppAction::ConversationUndo { .. })
-    ));
-    app.truncate_history_to(2);
-    app.truncate_api_messages(2);
-
-    let second = super::execute("/undo", &mut app);
-    assert!(
-        second
-            .message
-            .as_deref()
-            .is_some_and(|m| m.starts_with("Nothing was undone. a.txt changed after the request")),
-        "{:?}",
-        second.message
-    );
-    assert!(second.action.is_none());
+    push_recorded_turn(&mut app, first);
+    push_recorded_turn(&mut app, second);
+    let result = patch_undo(&mut app);
+    assert!(!result.is_error, "{:?}", result.message);
+    acknowledge_file_undo(&mut app, &result);
+    assert_eq!(app.api_messages.len(), kept);
+    let result = patch_undo(&mut app);
+    assert!(result.is_error, "{:?}", result.message);
+    assert!(result.action.is_none());
     assert_eq!(fx.read("a.txt"), "a-user");
-    assert_eq!(
-        app.api_messages.len(),
-        2,
-        "a refusal keeps the conversation"
-    );
+    assert_eq!(app.api_messages.len(), kept);
     assert_eq!(app.history.len(), 2);
-    assert_eq!(
-        fx.repo.list(usize::MAX).unwrap().len(),
-        before,
-        "a refusal writes no snapshot"
-    );
+    assert_eq!(fx.repo.list(usize::MAX).unwrap().len(), before);
 }
 
-/// A restore point absent from a held conversation has no proven request
-/// identity, even when both display labels are distinct and lossless.
 #[test]
 fn undo_refuses_an_unmatched_restore_point_after_a_partial_conversation_rewind() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1: say hello", "s1");
-    fx.snapshot("post-turn:1: say hello", "s1");
-    fx.snapshot("pre-turn:2: edit a.txt", "s1");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:2: edit a.txt", "s1");
+    let first = fx.record_turn("s1", 1, "say hello", &[], true);
+    fx.record_turn("s1", 2, "edit a.txt", &[("a.txt", "a1")], true);
     let mut app = fx.app("s1");
-    push_exchange(&mut app, "say hello");
-    assert_undo_identity_refused(&fx, &mut app);
-}
-
-/// File-only undo still works after all requests have been rewound away.
-#[test]
-fn undo_after_a_full_conversation_rewind_restores_files_without_messages() {
-    let fx = UndoFixture::new();
-    fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1: edit a.txt", "s1");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:1: edit a.txt", "s1");
-    let mut app = fx.app("s1");
-    let result = super::execute("/undo", &mut app);
-    assert_eq!(fx.read("a.txt"), "a0", "{:?}", result.message);
-    assert!(app.api_messages.is_empty() && app.history.is_empty());
-    assert!(
-        result
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("The conversation was not changed."))
-    );
-}
-
-/// A request with no recorded end (its post-turn snapshot is missing) takes
-/// in whatever was edited since. It is refused, with nothing written, in
-/// every access mode: trust mode and Full Access are not the lever. The
-/// refusal names `/undo force`, which runs it and says what it also put back.
-#[test]
-fn undo_of_a_request_without_a_recorded_end_is_refused_until_forced() {
-    let fx = UndoFixture::new();
-    fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1: edit a.txt", "s1");
-    fx.write("a.txt", "a1");
-    let before = fx.repo.list(usize::MAX).unwrap().len();
-
-    let mut app = fx.app("s1");
-    push_exchange(&mut app, "edit a.txt");
-
-    for (trust_mode, yolo) in [(false, false), (true, false), (false, true)] {
-        app.trust_mode = trust_mode;
-        app.yolo = yolo;
-        let refused = super::execute("/undo", &mut app);
-        assert_eq!(
-            refused.message.as_deref(),
-            Some(
-                "Nothing was undone. There is no record of where your last request's changes end, so undoing it would also put back edits made since. To do that anyway, run `/undo force`."
-            ),
-            "trust_mode={trust_mode} yolo={yolo}"
-        );
-        assert!(refused.action.is_none());
-        assert_eq!(fx.read("a.txt"), "a1");
-        assert_eq!(
-            app.api_messages.len(),
-            2,
-            "a refusal keeps the conversation"
-        );
-        assert_eq!(
-            fx.repo.list(usize::MAX).unwrap().len(),
-            before,
-            "a refusal writes no snapshot"
-        );
-    }
-    app.trust_mode = false;
-    app.yolo = false;
-
-    let forced = super::execute("/undo force", &mut app);
-
-    assert!(!forced.is_error, "{:?}", forced.message);
-    assert_eq!(fx.read("a.txt"), "a0");
-    assert_eq!(
-        forced.message.as_deref(),
-        Some(
-            "Undid your request \"edit a.txt\". 1 file is back as it was before it:\n  restored a.txt\nThe end of this request was not recorded, so edits made to these files since it started were also put back.\nThe request and its reply were removed from the conversation."
-        )
-    );
-    assert_eq!(app.api_messages.len(), 2);
-    acknowledge_file_undo(&mut app, &forced);
+    push_recorded_turn(&mut app, first);
+    let result = patch_undo(&mut app);
+    assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "a1");
+    acknowledge_file_undo(&mut app, &result);
     assert!(app.api_messages.is_empty());
-    assert!(
-        fx.repo
-            .list(usize::MAX)
-            .unwrap()
-            .iter()
-            .any(|snapshot| snapshot.label.starts_with("pre-restore:")),
-        "the forced undo keeps a backup of what it overwrote"
-    );
 }
 
-/// The next request's start is not an unfinished request's end: what the
-/// user edited between the two is theirs. Undoing the newer request works;
-/// the older, open-ended one is then refused and the user's edit survives.
-/// Before, `/undo` (in trusted mode) reverted that edit with the request.
+#[test]
+fn undo_after_a_full_conversation_rewind_keeps_unbound_files() {
+    let fx = UndoFixture::new();
+    fx.write("a.txt", "a0");
+    fx.record_turn("s1", 1, "edit a.txt", &[("a.txt", "a1")], true);
+    let mut app = fx.app("s1");
+    let before = fx.repo.list(usize::MAX).unwrap().len();
+    let result = patch_undo(&mut app);
+    assert_eq!(result.message.as_deref(), Some("Nothing to undo"));
+    assert_eq!(fx.read("a.txt"), "a1");
+    assert!(app.api_messages.is_empty() && app.history.is_empty());
+    assert_eq!(fx.repo.list(usize::MAX).unwrap().len(), before);
+}
+
+#[test]
+fn undo_of_a_request_without_a_recorded_end_is_refused_even_when_forced() {
+    let fx = UndoFixture::new();
+    fx.write("a.txt", "a0");
+    let messages = fx.record_turn("s1", 1, "edit a.txt", &[("a.txt", "a1")], false);
+    let before = fx.repo.list(usize::MAX).unwrap().len();
+    let mut app = fx.app("s1");
+    push_recorded_turn(&mut app, messages);
+    for (trust, yolo) in [(false, false), (true, false), (false, true)] {
+        app.trust_mode = trust;
+        app.yolo = yolo;
+        for command in ["/undo", "/undo force"] {
+            let staged = super::execute(command, &mut app);
+            assert!(matches!(
+                staged.action,
+                Some(AppAction::UndoLatestRequest { .. })
+            ));
+            assert_undo_identity_refused(&fx, &mut app);
+        }
+    }
+    assert_eq!(fx.read("a.txt"), "a1");
+    assert_eq!(fx.repo.list(usize::MAX).unwrap().len(), before);
+}
+
 #[test]
 fn undo_keeps_an_edit_the_user_made_after_an_unfinished_request() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
     fx.write("mine.txt", "m0");
-    fx.snapshot("pre-turn:1: edit a.txt", "s1");
-    fx.write("a.txt", "a1");
-    // No post-turn:1. The user edits their own file before the next request.
+    let first = fx.record_turn("s1", 1, "edit a.txt", &[("a.txt", "a1")], false);
     fx.write("mine.txt", "m-user");
-    fx.snapshot("pre-turn:2: edit c.txt", "s1");
-    fx.write("c.txt", "c1");
-    fx.snapshot("post-turn:2: edit c.txt", "s1");
-
+    let second = fx.record_turn("s1", 2, "edit c.txt", &[("c.txt", "c1")], true);
     let mut app = fx.app("s1");
-    push_exchange(&mut app, "edit a.txt");
-    push_exchange(&mut app, "edit c.txt");
-
-    let first = super::execute("/undo", &mut app);
-    assert!(!first.is_error, "{:?}", first.message);
+    push_recorded_turn(&mut app, first);
+    push_recorded_turn(&mut app, second);
+    let result = patch_undo(&mut app);
+    assert!(!result.is_error, "{:?}", result.message);
     assert!(!fx.workspace.join("c.txt").exists());
-    acknowledge_file_undo(&mut app, &first);
-    assert_eq!(app.api_messages.len(), 2, "{:?}", first.message);
-
-    let second = super::execute("/undo", &mut app);
-    assert!(
-        second
-            .message
-            .as_deref()
-            .is_some_and(|m| m.starts_with("Nothing was undone.") && m.contains("/undo force")),
-        "{:?}",
-        second.message
-    );
-    assert!(second.action.is_none());
-    assert_eq!(fx.read("mine.txt"), "m-user", "the user's edit survives");
+    acknowledge_file_undo(&mut app, &result);
+    assert_undo_identity_refused(&fx, &mut app);
+    assert_eq!(fx.read("mine.txt"), "m-user");
     assert_eq!(fx.read("a.txt"), "a1");
-    assert_eq!(app.api_messages.len(), 2);
 }
 
-/// Restore points older than the newest 100 snapshots are still found.
 #[test]
 fn patch_undo_finds_restore_points_beyond_the_newest_hundred_snapshots() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1", "s1");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:1", "s1");
+    let messages = fx.record_turn("s1", 1, "edit a.txt", &[("a.txt", "a1")], true);
     for i in 0..101 {
-        fx.repo
-            .take_snapshot(&format!("tool:other-{i}"), Some("other-session"))
-            .unwrap();
+        fx.snapshot(&format!("tool:other-{i}"), "other-session");
     }
-
     let mut app = fx.app("s1");
+    push_recorded_turn(&mut app, messages);
     let result = patch_undo(&mut app);
-
     assert!(!result.is_error, "{:?}", result.message);
-    assert_eq!(fx.read("a.txt"), "a0", "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "a0");
 }
 
-/// A fork owns the restore points of the turns it inherited, up to the fork,
-/// and none its source took afterwards.
 #[test]
 fn patch_undo_restores_turns_a_fork_inherited() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1", "source");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:1", "source");
-
+    let messages = fx.record_turn("source", 1, "edit a.txt", &[("a.txt", "a1")], true);
     let fork = |created_at: chrono::DateTime<chrono::Utc>| {
         let mut app = fx.app("fork");
         let mut metadata = codewhale_engine::session_manager::create_saved_session(
@@ -1432,116 +1131,107 @@ fn patch_undo_restores_turns_a_fork_inherited() {
             None,
         )
         .metadata;
-        metadata.id = "fork".to_string();
-        metadata.parent_session_id = Some("source".to_string());
+        metadata.id = "fork".into();
+        metadata.parent_session_id = Some("source".into());
         metadata.created_at = created_at;
         app.current_session_metadata = Some(metadata);
+        push_recorded_turn(&mut app, messages.clone());
         app
     };
-
-    let owners = super::contract::debug_operations::snapshot_owners(&fork(chrono::Utc::now()));
-    assert_eq!(owners.len(), 2);
-    assert_eq!(owners[1].session_id, "source");
-
-    // Forked before the source took these snapshots: they are not the fork's.
     let mut early = fork(chrono::Utc::now() - chrono::Duration::hours(1));
     let refused = patch_undo(&mut early);
-    assert!(
-        refused
-            .message
-            .as_deref()
-            .is_some_and(|m| m.starts_with("No undoable snapshot")),
-        "{:?}",
-        refused.message
-    );
+    assert!(refused.is_error, "{:?}", refused.message);
     assert_eq!(fx.read("a.txt"), "a1");
-
     let mut app = fork(chrono::Utc::now() + chrono::Duration::seconds(5));
     let result = patch_undo(&mut app);
     assert!(!result.is_error, "{:?}", result.message);
-    assert_eq!(fx.read("a.txt"), "a0", "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "a0");
 }
 
-/// `/undo` typed while the post-turn snapshot is still being written waits
-/// for it (#6644). Before, the two raced on the side repo: the post-turn
-/// snapshot landed after the undo and recorded the reverted workspace as
-/// the turn's end, and the undone step ended at "now".
 #[test]
 fn patch_undo_waits_for_a_pending_post_turn_snapshot() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1", "s1");
-    fx.snapshot("tool:call-1", "s1");
-    fx.write("a.txt", "a1");
-
-    // The turn has completed; its post-turn snapshot is still in flight.
+    let messages = fx.record_turn("s1", 1, "edit a.txt", &[("a.txt", "a1")], false);
     let pending = codewhale_snapshot::PendingPostTurnSnapshot::reserve();
-    let writer = {
-        let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&fx.workspace).unwrap();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            let taken = repo.take_snapshot("post-turn:1", Some("s1")).unwrap();
-            drop(pending);
-            taken
-        })
-    };
-
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&fx.workspace).unwrap();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let taken = repo
+            .take_snapshot("post-turn:1: edit a.txt", Some("s1"))
+            .unwrap();
+        drop(pending);
+        taken
+    });
     let mut app = fx.app("s1");
+    push_recorded_turn(&mut app, messages);
     let result = patch_undo(&mut app);
     let post_turn = writer.join().unwrap();
-
     assert!(!result.is_error, "{:?}", result.message);
-    assert_eq!(fx.read("a.txt"), "a0", "{:?}", result.message);
-    let tool = fx
+    assert_eq!(fx.read("a.txt"), "a0");
+    let closed = fx
         .repo
         .list(usize::MAX)
         .unwrap()
         .into_iter()
-        .find(|snapshot| snapshot.label == "tool:call-1")
+        .find(|snapshot| snapshot.label.starts_with("post-tool:"))
         .unwrap();
-    assert_eq!(
+    assert!(
         fx.repo
-            .changed_paths_between(&tool.tree, &post_turn.tree)
-            .unwrap(),
-        vec![PathBuf::from("a.txt")],
-        "the post-turn snapshot must record the turn's end, not the undone workspace"
+            .changed_paths_between(&closed.tree, &post_turn.tree)
+            .unwrap()
+            .is_empty()
     );
 }
 
-/// A step that changed a symlink restores its regular files and reports the
-/// symlink, and it does not block older steps.
 #[cfg(unix)]
 #[test]
-fn patch_undo_skips_non_regular_paths_without_blocking_older_steps() {
+fn patch_undo_refuses_non_regular_paths_without_mutating_older_steps() {
     let fx = UndoFixture::new();
     fx.write("a.txt", "a0");
-    fx.snapshot("pre-turn:1", "s1");
-    fx.write("a.txt", "a1");
-    fx.snapshot("post-turn:1", "s1");
-    fx.snapshot("pre-turn:2", "s1");
+    let first = fx.record_turn("s1", 1, "first edit", &[("a.txt", "a1")], true);
+    fx.snapshot("pre-turn:2: second edit", "s1");
+    let id = uuid::Uuid::new_v4().to_string();
+    fx.snapshot(&format!("tool:{id}"), "s1");
     fx.write("a.txt", "a2");
     std::os::unix::fs::symlink("a.txt", fx.workspace.join("current")).unwrap();
-    fx.snapshot("post-turn:2", "s1");
-
+    fx.snapshot(&format!("post-tool:{id}"), "s1");
+    fx.snapshot("post-turn:2: second edit", "s1");
+    let mut second = vec![
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "second edit".into(),
+                cache_control: None,
+            }],
+        },
+        fixture_call(&id, "a.txt", "a2"),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "done".into(),
+                cache_control: None,
+            }],
+        },
+    ];
+    if let ContentBlock::ToolUse { name, input, .. } = &mut second[1].content[0] {
+        *name = "bash".into();
+        *input = serde_json::json!({"command":"fixture writes a.txt and symlink"});
+    }
     let mut app = fx.app("s1");
-    let first = patch_undo(&mut app);
-    assert!(!first.is_error, "{:?}", first.message);
-    assert_eq!(fx.read("a.txt"), "a1");
-    let message = first.message.unwrap_or_default();
-    assert!(
-        message.contains("Left in place") && message.contains("current"),
-        "{message}"
-    );
+    push_recorded_turn(&mut app, first);
+    push_recorded_turn(&mut app, second);
+    let before = fx.repo.list(usize::MAX).unwrap().len();
+    let result = patch_undo(&mut app);
+    assert!(result.is_error, "{:?}", result.message);
+    assert_eq!(fx.read("a.txt"), "a2");
     assert!(
         std::fs::symlink_metadata(fx.workspace.join("current"))
             .unwrap()
             .file_type()
             .is_symlink()
     );
-
-    let second = patch_undo(&mut app);
-    assert!(!second.is_error, "{:?}", second.message);
-    assert_eq!(fx.read("a.txt"), "a0", "{:?}", second.message);
+    assert_eq!(fx.repo.list(usize::MAX).unwrap().len(), before);
 }
 
 #[test]

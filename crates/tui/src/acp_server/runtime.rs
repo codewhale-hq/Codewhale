@@ -91,20 +91,56 @@ impl AcpServer {
         {
             Ok(terminal) => terminal,
             Err(error) => {
-                self.interrupt_claimed_turn(&thread_id, &turn.id).await?;
-                let settled = tokio::time::timeout(Duration::from_secs(30), async {
+                if let Err(interrupt) = self.interrupt_claimed_turn(&thread_id, &turn.id).await {
+                    let message = format!(
+                        "ACP projection failed ({error}); Core interruption is unconfirmed ({interrupt}); inspect without replay"
+                    );
+                    return Err(error.context(message));
+                }
+                let settled = match tokio::time::timeout(Duration::from_secs(30), async {
                     loop {
                         let detail = self.runtime.get_thread_detail(&thread_id).await?;
-                        if let Some(record) = detail.turns.into_iter().find(|record| record.id == turn.id && !matches!(record.status, RuntimeTurnStatus::Queued | RuntimeTurnStatus::InProgress)) { return Ok::<_, anyhow::Error>(record); }
+                        if let Some(record) = detail.turns.into_iter().find(|record| {
+                            record.id == turn.id
+                                && !matches!(
+                                    record.status,
+                                    RuntimeTurnStatus::Queued | RuntimeTurnStatus::InProgress
+                                )
+                        }) {
+                            return Ok::<_, anyhow::Error>(record);
+                        }
                         tokio::time::sleep(Duration::from_millis(25)).await;
                     }
-                }).await.map_err(|_| anyhow!("ACP projection failed ({error}); Core cancellation is still unconfirmed, inspect its canonical receipt"))??;
-                self.save_checkpoint(&thread_id, &session_id).await?;
+                })
+                .await
+                {
+                    Ok(Ok(settled)) => settled,
+                    Ok(Err(read)) => {
+                        let message = format!(
+                            "ACP projection failed ({error}); Core terminal receipt unavailable ({read}); inspect without replay"
+                        );
+                        return Err(error.context(message));
+                    }
+                    Err(_) => {
+                        let message = format!(
+                            "ACP projection failed ({error}); Core cancellation is still unconfirmed, inspect its canonical receipt"
+                        );
+                        return Err(error.context(message));
+                    }
+                };
+                if let Err(checkpoint) = self.save_checkpoint(&thread_id, &session_id).await {
+                    let message = format!(
+                        "ACP projection failed ({error}); actual Core terminal is {:?}; checkpoint failed ({checkpoint}); inspect without replay",
+                        settled.status
+                    );
+                    return Err(error.context(message));
+                }
                 claim.armed = false;
-                return Err(anyhow!(
+                let message = format!(
                     "ACP projection failed ({error}); actual Core terminal is {:?}; partial receipts retained",
                     settled.status
-                ));
+                );
+                return Err(error.context(message));
             }
         };
         claim.armed = false;
@@ -197,7 +233,15 @@ impl AcpServer {
             tokio::select! {
                 () = async { match cancel_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => return Err(anyhow!("Core cancellation remains nonterminal; ACP cannot report a fabricated cancelled receipt")),
                 line = reader.next_line(), if !eof => {
-                    let Some(line) = line? else {
+                    let line = match line {
+                        Ok(line) => line,
+                        Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                            write_jsonrpc_error(writer, None, -32700, error.to_string()).await?;
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    let Some(line) = line else {
                         eof = true; cancelled = true; projection.permissions.clear(); self.interrupt_claimed_turn(thread, turn).await?;
                         cancel_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(30)); continue;
                     };

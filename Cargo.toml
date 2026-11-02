@@ -4,6 +4,7 @@ members = [
     "crates/agent",
     "crates/agent-contract",
     "crates/app-server",
+    "crates/app-server-protocol",
     "crates/build-support",
     "crates/cli",
     "crates/cloud-facts",

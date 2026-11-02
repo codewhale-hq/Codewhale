@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use codewhale_app_server_protocol::runtime::DynamicToolSpec;
 use codewhale_config::route::CapabilityState;
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext};
-use codewhale_protocol::runtime::DynamicToolSpec;
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use serde_json::{Value, json};
@@ -198,8 +198,7 @@ impl StructuredState {
             working_set.summary_block(&workspace, &crate::tools::file::working_set_read_allowed);
 
         let subagent_snapshots = if let Some(handle) = subagents {
-            let mut guard = handle.write().await;
-            guard.cleanup_for_session(active_session_id, Duration::from_secs(60 * 60));
+            let guard = handle.read().await;
             guard
                 .list_for_session(active_session_id)
                 .into_iter()
@@ -316,6 +315,7 @@ pub struct EngineConfig {
     pub notes_path: PathBuf,
     /// Path to the MCP configuration file.
     pub mcp_config_path: PathBuf,
+    pub mcp_auth_context: crate::mcp::McpAuthContext,
     /// OAuth callback overrides (`mcp_oauth_callback_port` / `_url`) so the
     /// self-serve MCP login tool honors a pre-registered redirect URI the
     /// same way `/mcp login` does.
@@ -514,11 +514,9 @@ pub struct EngineConfig {
     /// from `[tui].stream_max_duration_secs`. Pre-R1 this was the hard-coded
     /// `DEFAULT_STREAM_MAX_DURATION_SECS`.
     pub stream_max_duration: Duration,
-    /// Stream-level retry budgets (#6700): whole-request resumes (also spent
-    /// by stream-open failures, #6699), in-stream transparent retries, and
-    /// the per-stream error streak. Resolved from `[tui].stream_max_resumes`,
-    /// `[tui].stream_max_transparent_retries` and `[tui].stream_max_errors`;
-    /// the defaults are the historical compiled-in values.
+    /// Proven pre-dispatch open retries from `[tui].stream_max_resumes`.
+    /// The parsed max_transparent_retries/max_errors values are inactive
+    /// compatibility fields and cannot authorize an inference POST replay.
     pub stream_retry_limits: turn_budget::StreamRetryLimits,
     /// Bounded wait for SSE response headers (#6700). Resolved from
     /// `[tui].stream_open_timeout_secs`, then
@@ -598,6 +596,7 @@ impl Default for EngineConfig {
             trust_mode: false,
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
+            mcp_auth_context: Default::default(),
             mcp_oauth_callback_port: None,
             mcp_oauth_callback_url: None,
             skills_dir: codewhale_skills::default_skills_dir(),
@@ -727,6 +726,7 @@ impl CancelReason {
 /// Handle to communicate with the engine
 #[derive(Clone)]
 pub struct EngineHandle {
+    mcp_auth_context: Arc<dyn codewhale_runtime::credentials::AuthContext>,
     goal_state: SharedGoalState,
     pub sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement,
     /// Send operations to the engine
@@ -827,6 +827,10 @@ impl CompactionCancellationState {
 }
 
 impl EngineHandle {
+    pub fn mcp_auth_context(&self) -> Arc<dyn codewhale_runtime::credentials::AuthContext> {
+        Arc::clone(&self.mcp_auth_context)
+    }
+
     #[must_use]
     pub fn subagent_manager(&self) -> SharedSubAgentManager {
         self.subagent_manager.clone()
@@ -2642,6 +2646,7 @@ impl Engine {
             child_host,
         };
         let handle = EngineHandle {
+            mcp_auth_context: Arc::clone(&engine.config.mcp_auth_context.0),
             goal_state: engine.config.goal_state.clone(),
             sandbox_enforcement,
             tx_op,
@@ -2740,7 +2745,13 @@ impl Engine {
         self.apply_runtime_mode_policy(&authority);
         self.discard_kernels_if_narrowed(&prior).await;
 
+        let previous_source = self.session.snapshot_source.clone();
+        self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::turn(
+            turn_id.clone(),
+            None,
+        ));
         start_permit.send(Event::TurnStarted {
+            previous_source,
             turn_id: turn_id.clone(),
             created_at: chrono::Utc::now(),
             route: None,
@@ -3298,6 +3309,7 @@ impl Engine {
         system_prompt: Option<codewhale_models::SystemPrompt>,
         system_prompt_override: bool,
     ) {
+        self.session.snapshot_source = None;
         self.session.tool_activation_cache.clear();
         let compaction_checkpoint =
             compaction_checkpoint_for_restore(&messages, system_prompt.clone());
@@ -3345,6 +3357,7 @@ impl Engine {
         let total_tokens =
             self.session.total_usage.input_tokens + self.session.total_usage.output_tokens;
         SessionSnapshot {
+            source: self.session.snapshot_source.clone(),
             session_id: self.session.id.clone(),
             messages: self.session.messages.to_vec(),
             total_tokens,
@@ -4043,12 +4056,28 @@ impl Engine {
                                 )
                             };
                             let event = if due {
-                                let mut manager = self.subagent_manager.write().await;
-                                manager.cleanup_for_session(
-                                    &active_session_id,
-                                    Duration::from_secs(60 * 60),
-                                );
-                                agent_list_event(&manager, &active_session_id)
+                                let manager = self.subagent_manager.clone();
+                                let session_id = active_session_id.clone();
+                                match codewhale_runtime::runtime_control::owner_work(move || {
+                                    let mut manager = manager.blocking_write();
+                                    manager.cleanup_for_session(
+                                        &session_id,
+                                        Duration::from_secs(60 * 60),
+                                    )?;
+                                    Ok(agent_list_event(&manager, &session_id))
+                                })
+                                .await
+                                {
+                                    Ok(event) => event,
+                                    Err(error) => {
+                                        let _ = self
+                                            .send_event(Event::error(ErrorEnvelope::transient(
+                                                format!("Failed to clean up sub-agents: {error}"),
+                                            )))
+                                            .await;
+                                        continue;
+                                    }
+                                }
                             } else {
                                 let manager = self.subagent_manager.read().await;
                                 agent_list_event(&manager, &active_session_id)
@@ -4074,11 +4103,16 @@ impl Engine {
                         }
                         Op::CancelSubAgent { agent_id } => {
                             let active_session_id = self.session.id.clone();
-                            let cancelled = self
-                                .subagent_manager
-                                .write()
-                                .await
-                                .cancel_agent_for_session(&active_session_id, &agent_id);
+                            let manager = self.subagent_manager.clone();
+                            let session_id = active_session_id.clone();
+                            let target = agent_id.clone();
+                            let cancelled =
+                                codewhale_runtime::runtime_control::owner_work(move || {
+                                    manager
+                                        .blocking_write()
+                                        .cancel_agent_for_session(&session_id, &target)
+                                })
+                                .await;
                             let result = match cancelled {
                                 Ok(snapshot) => {
                                     let snapshot = crate::tools::subagent::settle_requested_child(
@@ -4151,18 +4185,27 @@ impl Engine {
                             let active_session_id = self.session.id.clone();
                             let runtime = self.off_turn_subagent_runtime();
                             let manager_handle = Arc::clone(&self.subagent_manager);
-                            let (outcome, refresh) = {
-                                let mut manager = self.subagent_manager.write().await;
-                                let outcome = manager
-                                    .continue_child_from_user_for_session(
-                                        &active_session_id,
-                                        manager_handle,
-                                        runtime,
-                                        &agent_id,
-                                        &text,
-                                    )
-                                    .map_err(|err| err.to_string());
-                                (outcome, agent_list_event(&manager, &active_session_id))
+                            let manager = Arc::clone(&manager_handle);
+                            let session = active_session_id.clone();
+                            let target = agent_id.clone();
+                            let result =
+                                codewhale_runtime::runtime_control::owner_work(move || {
+                                    let mut manager = manager.blocking_write();
+                                    let outcome = manager
+                                        .continue_child_from_user_for_session(
+                                            &session,
+                                            manager_handle,
+                                            runtime,
+                                            &target,
+                                            &text,
+                                        )
+                                        .map_err(|err| err.to_string());
+                                    Ok((outcome, agent_list_event(&manager, &session)))
+                                })
+                                .await;
+                            let (outcome, refresh) = match result {
+                                Ok((outcome, refresh)) => (outcome, Some(refresh)),
+                                Err(error) => (Err(error.to_string()), None),
                             };
                             let _ = self
                                 .send_event(Event::SubAgentFollowUp {
@@ -4171,7 +4214,9 @@ impl Engine {
                                     outcome,
                                 })
                                 .await;
-                            if let Err(_e) = self.tx_event.try_send(refresh) {
+                            if let Some(refresh) = refresh
+                                && self.tx_event.try_send(refresh).is_err()
+                            {
                                 tracing::debug!(
                                     "Event channel full; dropping FollowUpSubAgent refresh"
                                 );
@@ -4306,6 +4351,7 @@ impl Engine {
                             self.config.fleet_roster = roster;
                         }
                         Op::SyncSession {
+                            control,
                             session_id,
                             messages,
                             system_prompt,
@@ -4314,12 +4360,6 @@ impl Engine {
                             workspace,
                             mode,
                         } => {
-                            // A fresh conversation arrives with its own
-                            // sources: re-arm the guard and rebuild the notice
-                            // from the assembly that installs its header.
-                            self.instruction_guard_key = None;
-                            self.pending_instruction_notices.clear();
-                            self.session.instruction_assembly = None;
                             let plugin_workspace_changed =
                                 self.plugin_registry.workspace() != workspace.as_path();
                             let previous_session_id = self.session.id.clone();
@@ -4330,7 +4370,8 @@ impl Engine {
                             } else {
                                 previous_session_id.clone()
                             };
-                            let closed_session_id = self.install_synced_session_id(next_session_id);
+                            let closed_session_id = (next_session_id != previous_session_id)
+                                .then_some(previous_session_id);
                             // SyncSession installs a conversation's identity; an id
                             // change IS a conversation boundary in this runtime —
                             // callers must pass their own conversation id for
@@ -4341,11 +4382,28 @@ impl Engine {
                             // the new conversation (#5372). Same-session reloads
                             // keep their id and are deliberately left untouched.
                             if let Some(closed_session_id) = closed_session_id {
-                                let finalized = self
-                                    .subagent_manager
-                                    .write()
-                                    .await
-                                    .finalize_session_close_for_session(&closed_session_id);
+                                let manager = self.subagent_manager.clone();
+                                let session_id = closed_session_id.clone();
+                                let finalized =
+                                    codewhale_runtime::runtime_control::owner_work(move || {
+                                        manager
+                                            .blocking_write()
+                                            .finalize_session_close_for_session(&session_id)
+                                    })
+                                    .await;
+                                let finalized = match finalized {
+                                    Ok(finalized) => finalized,
+                                    Err(error) => {
+                                        let _ = self
+                                            .send_event(Event::error(ErrorEnvelope::transient(
+                                                format!(
+                                                    "Failed to close sub-agent session {closed_session_id}; session was not switched: {error}"
+                                                ),
+                                            )))
+                                            .await;
+                                        continue;
+                                    }
+                                };
                                 crate::tools::subagent::settle_requested_children_for_session(
                                     &self.subagent_manager,
                                     &closed_session_id,
@@ -4360,11 +4418,20 @@ impl Engine {
                                     );
                                 }
                             }
+                            // A fresh conversation arrives with its own
+                            // sources: re-arm the guard and rebuild the notice
+                            // from the assembly that installs its header.
+                            self.instruction_guard_key = None;
+                            self.pending_instruction_notices.clear();
+                            self.session.instruction_assembly = None;
+                            let _ = self.install_synced_session_id(next_session_id);
                             self.restore_session_history(
                                 messages,
                                 system_prompt,
                                 system_prompt_override,
                             );
+                            self.session.snapshot_source =
+                                Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
                             self.session.model = model;
                             self.session.workspace = workspace.clone();
@@ -4414,6 +4481,7 @@ impl Engine {
                             self.emit_session_updated().await;
                         }
                         Op::RewindConversation {
+                            control,
                             expected,
                             messages,
                             tx,
@@ -4433,6 +4501,8 @@ impl Engine {
                                 self.session.system_prompt.clone(),
                                 self.session.system_prompt_override,
                             );
+                            self.session.snapshot_source =
+                                Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
                             let _ = tx.send(Some(self.session_snapshot()));
@@ -4697,19 +4767,41 @@ impl Engine {
 
             // #freeze: flush any sub-agent checkpoint that the hot-path debounce
             // coalesced away, so a graceful shutdown keeps the latest progress.
-            {
-                let mut manager = self.subagent_manager.write().await;
-                let children = manager.list_for_session(&self.session.id);
+            let manager = self.subagent_manager.clone();
+            let session_id = self.session.id.clone();
+            let owner_agent_id = self
+                .child_host
+                .as_ref()
+                .map(|owner| owner.authority.owner_agent_id.clone());
+            let shutdown = codewhale_runtime::runtime_control::owner_work(move || {
+                let mut manager = manager.blocking_write();
+                let children = manager.list_for_session(&session_id);
+                let mut failure = None;
                 for child in children {
-                    let owned = self.child_host.as_ref().is_none_or(|owner| {
-                        child.parent_run_id.as_deref()
-                            == Some(owner.authority.owner_agent_id.as_str())
-                    });
-                    if owned && child.status == SubAgentStatus::Running {
-                        let _ = manager.cancel_agent_for_session(&self.session.id, &child.agent_id);
+                    let owned = owner_agent_id
+                        .as_ref()
+                        .is_none_or(|owner| child.parent_run_id.as_deref() == Some(owner.as_str()));
+                    if owned
+                        && child.status == SubAgentStatus::Running
+                        && let Err(error) =
+                            manager.cancel_agent_for_session(&session_id, &child.agent_id)
+                    {
+                        failure.get_or_insert(error);
                     }
                 }
-                manager.flush_pending_persist();
+                if let Err(error) = manager.flush_pending_persist() {
+                    failure.get_or_insert(error);
+                }
+                failure.map_or(Ok(()), Err)
+            })
+            .await;
+            if let Err(error) = shutdown {
+                let _ = self
+                    .send_event(Event::error(ErrorEnvelope::transient(format!(
+                        "Sub-agent shutdown is uncertain: {error}"
+                    ))))
+                    .await;
+                child_result = Some(Err(error));
             }
             crate::tools::subagent::settle_requested_children_for_session(
                 &self.subagent_manager,
@@ -4719,7 +4811,19 @@ impl Engine {
                     .map(|child| child.authority.owner_agent_id.as_str()),
             )
             .await;
-            self.subagent_manager.write().await.flush_pending_persist();
+            let manager = self.subagent_manager.clone();
+            if let Err(error) = codewhale_runtime::runtime_control::owner_work(move || {
+                manager.blocking_write().flush_pending_persist()
+            })
+            .await
+            {
+                let _ = self
+                    .send_event(Event::error(ErrorEnvelope::transient(format!(
+                        "Sub-agent shutdown checkpoint is uncertain: {error}"
+                    ))))
+                    .await;
+                child_result = Some(Err(error));
+            }
 
             // #420: graceful MCP shutdown — send SIGTERM and give stdio servers
             // a brief window to exit before drop fires SIGKILL via kill_on_drop.
@@ -4772,6 +4876,7 @@ impl Engine {
         }
         let _ = self
             .send_event(Event::SessionUpdated {
+                source: self.session.snapshot_source.clone(),
                 checkpoint: None,
                 session_id: self.session.id.clone(),
                 messages: self.session.messages.snapshot(),
@@ -6116,6 +6221,7 @@ impl Engine {
                 .with_max_spawn_depth(self.config.max_spawn_depth)
                 .with_step_api_timeout(self.config.subagent_api_timeout)
                 .with_speech_output_dir(self.config.speech_output_dir.clone())
+                .with_mcp_auth_context(Arc::clone(&self.config.mcp_auth_context.0))
                 .with_mcp_pool(mcp_pool.clone())
                 .with_todos(self.config.todos.clone())
                 .with_parent_completion_tx(self.tx_subagent_completion.clone())
@@ -6891,7 +6997,13 @@ impl Engine {
         // Emit turn started event IMMEDIATELY so the UI knows the turn is
         // active. The snapshot below can take 30+ seconds on slow filesystems
         // (e.g. WSL2 /mnt/c) and must not delay the TurnStarted event.
+        let previous_source = self.session.snapshot_source.clone();
+        self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::turn(
+            turn.id.clone(),
+            submission_id.clone(),
+        ));
         start_permit.send(Event::TurnStarted {
+            previous_source,
             turn_id: turn.id.clone(),
             created_at: turn_started_at,
             route: Some(turn_route),
@@ -7799,6 +7911,7 @@ impl Engine {
         .with_max_spawn_depth(self.config.max_spawn_depth)
         .with_step_api_timeout(self.config.subagent_api_timeout)
         .with_speech_output_dir(self.config.speech_output_dir.clone())
+        .with_mcp_auth_context(Arc::clone(&self.config.mcp_auth_context.0))
         .with_mcp_pool(self.mcp_pool.clone())
         .with_todos(self.config.todos.clone())
         .with_parent_completion_tx(self.tx_subagent_completion.clone())
@@ -8200,10 +8313,15 @@ impl Engine {
 
     async fn ensure_mcp_pool(&mut self) -> Result<Arc<AsyncMutex<McpPool>>, ToolError> {
         if let Some(pool) = self.mcp_pool.clone() {
-            pool.lock()
-                .await
-                .bind_caller_plugins(Arc::clone(&self.plugin_registry))
+            let mut held = pool.lock().await;
+            if !Arc::ptr_eq(&held.auth_context(), &self.config.mcp_auth_context.0) {
+                return Err(ToolError::not_available(
+                    "MCP pool belongs to another credential authority",
+                ));
+            }
+            held.bind_caller_plugins(Arc::clone(&self.plugin_registry))
                 .map_err(|error| ToolError::not_available(error.to_string()))?;
+            drop(held);
             self.ensure_mcp_supervisor();
             return Ok(pool);
         }
@@ -8213,26 +8331,31 @@ impl Engine {
         // file and `/mcp reload` recover in-process — but the person is told
         // that the configured servers are gone, not left to find no tools.
         let mut load_failure = None;
-        let mut pool = McpPool::from_config_path_with_workspace_and_plugins(
+        let mut pool = McpPool::from_config_path_with_workspace_and_plugins_and_auth_context(
             &self.session.mcp_config_path,
             &self.session.workspace,
             Arc::clone(&self.plugin_registry),
+            Arc::clone(&self.config.mcp_auth_context.0),
         )
         .unwrap_or_else(|e| {
             let reason = crate::mcp::format_mcp_error_for_display(&e);
             tracing::warn!("MCP config unavailable: {reason}");
             load_failure = Some(reason);
-            McpPool::empty_with_workspace_config_sources(
+            McpPool::empty_with_workspace_config_sources_and_auth_context(
                 &self.session.mcp_config_path,
                 &self.session.workspace,
                 Arc::clone(&self.plugin_registry),
+                Arc::clone(&self.config.mcp_auth_context.0),
             )
             .unwrap_or_else(|fallback_error| {
                 tracing::warn!(
                     "MCP reload source setup failed: {}",
                     crate::mcp::format_mcp_error_for_display(&fallback_error)
                 );
-                McpPool::new(McpConfig::default())
+                McpPool::new_with_auth_context(
+                    McpConfig::default(),
+                    Arc::clone(&self.config.mcp_auth_context.0),
+                )
             })
         });
         if let Some(reason) = load_failure {
@@ -8748,7 +8871,7 @@ impl Engine {
         let Some(pool) = self.mcp_pool.as_ref() else {
             return state;
         };
-        let (pending, errors, timeouts, network_policy, generation, backend) = {
+        let (pending, errors, timeouts, network_policy, generation, backend, auth_context) = {
             let mut pool = pool.lock().await;
             let (pending, errors) = pool.take_pending_connects_for(names);
             (
@@ -8758,6 +8881,7 @@ impl Engine {
                 pool.cloned_network_policy(),
                 pool.current_catalog_generation(),
                 pool.backend(),
+                pool.auth_context(),
             )
         };
         for (name, error) in errors {
@@ -8766,8 +8890,14 @@ impl Engine {
         }
         state.catalog_generation = generation;
         state.names = pending.iter().map(|(name, _)| name.clone()).collect();
-        state.connects =
-            McpPool::spawn_pending_connects(pending, timeouts, network_policy, generation, backend);
+        state.connects = McpPool::spawn_pending_connects_with_auth_context(
+            pending,
+            timeouts,
+            network_policy,
+            generation,
+            backend,
+            auth_context,
+        );
         state
     }
 
@@ -8858,7 +8988,15 @@ impl Engine {
         // those marked `lazy = true`, which connect on demand — a selected
         // turn, a `/mcp` connect, or a lazy tool-name resolution.
         let requested = self.explicit_mcp_tool_names(self.config.allowed_tools.as_deref());
-        let (pending, auth_errors, timeouts, network_policy, catalog_generation, backend) = {
+        let (
+            pending,
+            auth_errors,
+            timeouts,
+            network_policy,
+            catalog_generation,
+            backend,
+            auth_context,
+        ) = {
             let mut pool = pool.lock().await;
             match refresh {
                 McpConnectRefresh::IfChanged => {
@@ -8891,6 +9029,7 @@ impl Engine {
                 pool.cloned_network_policy(),
                 pool.current_catalog_generation(),
                 pool.backend(),
+                pool.auth_context(),
             )
         };
 
@@ -8925,12 +9064,13 @@ impl Engine {
             async move {
                 let mut remaining: HashSet<String> =
                     pending.iter().map(|(name, _)| name.clone()).collect();
-                let mut connects = McpPool::spawn_pending_connects(
+                let mut connects = McpPool::spawn_pending_connects_with_auth_context(
                     pending,
                     timeouts,
                     network_policy,
                     catalog_generation,
                     backend,
+                    auth_context,
                 );
                 let mut connection_errors = HashMap::new();
                 while let Some(joined) = connects.join_next().await {
@@ -9052,17 +9192,19 @@ impl Engine {
                     pool.cloned_network_policy(),
                     pool.current_catalog_generation(),
                     pool.backend(),
+                    pool.auth_context(),
                 )
             })
         };
         let attempt = match prepared {
-            Ok((pending, timeouts, network_policy, generation, backend)) => {
-                let mut connects = McpPool::spawn_pending_connects(
+            Ok((pending, timeouts, network_policy, generation, backend, auth_context)) => {
+                let mut connects = McpPool::spawn_pending_connects_with_auth_context(
                     vec![pending],
                     timeouts,
                     network_policy,
                     generation,
                     backend,
+                    auth_context,
                 );
                 let connection = match connects.join_next().await {
                     Some(Ok((_, connection))) => connection,
@@ -9361,7 +9503,11 @@ impl Engine {
                 }
                 None => Default::default(),
             };
-        tool_catalog::configure_composition_entry(catalog, batch.as_deref(), &members);
+        if tool_catalog::configure_composition_entry(catalog, batch.as_deref(), &members) {
+            self.session
+                .pending_prefix_change_reason
+                .get_or_insert_with(|| "tool_surface".to_string());
+        }
         let previous =
             self.session.messages.iter().rev().find(|message| {
                 crate::runtime_handoff::is_mcp_server_instructions_message(message)
@@ -10354,27 +10500,32 @@ fn apply_patch_permission_paths(input: &Value) -> Vec<String> {
 }
 
 /// Spawn the engine in a background task
-pub fn spawn_engine(
+pub async fn spawn_engine(
     config: EngineConfig,
     api_config: &Config,
     mcp_handoff: Option<crate::mcp::McpHandoff>,
 ) -> EngineHandle {
-    let (engine, handle) = Engine::new(config, api_config);
-    engine
-        .mcp_pool_slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .handoff = mcp_handoff;
+    let api_config = api_config.clone();
+    let (engine, handle) = codewhale_runtime::runtime_control::owner_work(move || {
+        let (engine, handle) = Engine::new(config, &api_config);
+        engine
+            .mcp_pool_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .handoff = mcp_handoff;
 
+        Ok((Box::new(engine), handle))
+    })
+    .await
+    .expect("Engine initialization owner failed");
     // Box the run future before supervision. An extra async wrapper embeds
     // the large engine state again in both its own and the supervisor's poll
     // frames, which can overflow an ordinary worker-thread stack.
     spawn_supervised(
         "engine-event-loop",
         std::panic::Location::caller(),
-        Box::pin(engine.run()),
+        Box::pin((*engine).run()),
     );
-
     handle
 }
 
@@ -10552,6 +10703,7 @@ pub fn mock_engine_handle() -> MockEngineHandle {
     )));
     let compaction_cancellation = Arc::new(StdMutex::new(CompactionCancellationState::default()));
     let handle = EngineHandle {
+        mcp_auth_context: crate::mcp::process_mcp_auth_context(),
         goal_state: new_shared_goal_state(),
         sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
         tx_op,
@@ -11069,11 +11221,9 @@ use self::streaming::TOOL_CALL_START_MARKERS;
 #[cfg(test)]
 use self::streaming::filter_tool_call_delta;
 use self::streaming::{
-    ContentBlockKind, StreamResume, StreamRetryBudget, ToolCallDeltaFilterState, ToolUseState,
+    ContentBlockKind, StreamRetryBudget, ToolCallDeltaFilterState, ToolUseState,
     contains_fake_tool_wrapper, filter_tool_call_delta_with_state, flush_tool_call_delta_state,
-    should_resume_after_network_drop, should_resume_after_sleep,
-    should_resume_interactive_after_network_drop, should_transparently_retry_stream,
-    sleep_gap_detected, stream_read_error_user_message,
+    stream_read_error_user_message,
 };
 use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, EXECUTE_TOOLS_TOOL_NAME, JS_EXECUTION_TOOL_NAME, ToolSurfacePolicy,

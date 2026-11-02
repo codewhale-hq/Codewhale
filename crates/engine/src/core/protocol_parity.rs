@@ -594,6 +594,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             created_at,
             route,
             submission_id,
+            ..
         } => wire::EventMsg::TurnStarted {
             thread_id,
             session_id,
@@ -698,7 +699,8 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
                 interrupted: *interrupted,
             }
         }
-        Event::CompactionStarted { id, auto, message } => wire::EventMsg::CompactionStarted {
+        Event::CompactionStarted { id, auto, message, ..
+        } => wire::EventMsg::CompactionStarted {
             thread_id,
             session_id,
             id: id.clone(),
@@ -993,6 +995,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             },
         },
         Event::SessionUpdated {
+            source: _,
             checkpoint: _,
             session_id: engine_session_id,
             messages,
@@ -1254,6 +1257,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             model,
             workspace,
             mode,
+            ..
         } => wire_op::Op::SyncSession {
             engine_session_id: session_id.clone(),
             messages: messages.iter().map(to_value).collect(),
@@ -1267,6 +1271,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             expected,
             messages,
             tx: _,
+            ..
         } => wire_op::Op::RewindConversation {
             expected: to_value(expected),
             messages: messages.iter().map(to_value).collect(),
@@ -1576,6 +1581,7 @@ mod tests {
                 result: Err(ToolError::Timeout { seconds: 9 }),
             },
             Event::TurnStarted {
+                previous_source: None,
                 turn_id: "turn-1".into(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -1711,6 +1717,8 @@ mod tests {
     #[test]
     fn conditional_rewind_projection_preserves_expected_state_and_reply_owner() {
         let expected = crate::core::ops::SessionSnapshot {
+            source: None,
+
             session_id: "observed-conversation".into(),
             messages: vec![],
             total_tokens: 9,
@@ -1724,6 +1732,7 @@ mod tests {
         };
         let (tx, mut receive) = tokio::sync::oneshot::channel();
         let op = Op::RewindConversation {
+            control: crate::core::ops::SessionControlId::new(),
             expected: Box::new(expected.clone()),
             messages: vec![],
             tx,

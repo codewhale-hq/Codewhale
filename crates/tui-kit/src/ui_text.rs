@@ -285,6 +285,255 @@ pub fn grapheme_display_width(grapheme: &str) -> usize {
     UnicodeWidthStr::width(grapheme)
 }
 
+pub const MAX_DISPLAY_GRAPHEME_BYTES: usize = 32 * 1024;
+
+pub struct DisplayGrapheme<'a> {
+    pub text: &'a str,
+    pub cells: &'a [(char, usize)],
+    pub width: usize,
+    pub clipped_bytes: usize,
+    pub escaped: bool,
+}
+
+pub struct DisplayNormalizer {
+    pending: String,
+    cells: Vec<(char, usize)>,
+    cursor: unicode_segmentation::GraphemeCursor,
+    column: usize,
+    clipped_bytes: usize,
+    clipped_tag: usize,
+    exact: bool,
+    escaping: bool,
+}
+
+impl DisplayNormalizer {
+    #[must_use]
+    pub fn new(start_column: usize) -> Self {
+        Self {
+            pending: String::new(),
+            cells: Vec::new(),
+            cursor: unicode_segmentation::GraphemeCursor::new(0, usize::MAX, true),
+            column: start_column,
+            clipped_bytes: 0,
+            clipped_tag: 0,
+            exact: false,
+            escaping: false,
+        }
+    }
+
+    #[must_use]
+    pub fn new_exact(start_column: usize) -> Self {
+        let mut normalizer = Self::new(start_column);
+        normalizer.exact = true;
+        normalizer
+    }
+
+    pub fn push(&mut self, text: &str, tag: usize, emit: &mut impl FnMut(DisplayGrapheme<'_>)) {
+        for ch in text.chars() {
+            if codewhale_secrets::sanitize::is_bidi_control(ch) {
+                continue;
+            }
+            let ch = if ch != '\t' && (ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')) {
+                ' '
+            } else {
+                ch
+            };
+            if self.escaping {
+                if ch.is_whitespace() {
+                    self.escaping = false;
+                } else {
+                    self.emit_escape(ch, tag, emit);
+                    continue;
+                }
+            }
+            if self.clipped_bytes > 0 {
+                if ch.is_whitespace() {
+                    self.emit_clipped(emit);
+                } else {
+                    self.clipped_bytes = self.clipped_bytes.saturating_add(ch.len_utf8());
+                    continue;
+                }
+            }
+            if ch == '\t' {
+                let column = self
+                    .column
+                    .saturating_add(grapheme_display_width(&self.pending));
+                for _ in 0..(4 - column % 4) {
+                    self.scalar(' ', tag, emit);
+                }
+            } else {
+                self.scalar(ch, tag, emit);
+            }
+        }
+    }
+
+    pub fn finish(&mut self, emit: &mut impl FnMut(DisplayGrapheme<'_>)) {
+        if self.clipped_bytes > 0 {
+            self.emit_clipped(emit);
+        }
+        self.emit_pending(emit);
+        self.escaping = false;
+    }
+
+    fn scalar(&mut self, ch: char, tag: usize, emit: &mut impl FnMut(DisplayGrapheme<'_>)) {
+        let mut encoded = [0; 4];
+        let text = ch.encode_utf8(&mut encoded);
+        'scalar: loop {
+            let start = self.pending.len();
+            loop {
+                match self.cursor.next_boundary(text, start) {
+                    Ok(Some(boundary)) if boundary == start => {
+                        self.emit_pending(emit);
+                        continue 'scalar;
+                    }
+                    Err(unicode_segmentation::GraphemeIncomplete::PreContext(end)) => {
+                        if end > 0
+                            && let Some(context) = self.pending.get(..end)
+                        {
+                            self.cursor.provide_context(context, 0);
+                        } else {
+                            self.overflow(ch, tag, emit);
+                            return;
+                        }
+                    }
+                    Err(unicode_segmentation::GraphemeIncomplete::NextChunk) => break,
+                    _ => {
+                        self.overflow(ch, tag, emit);
+                        return;
+                    }
+                }
+            }
+            let needed = self.pending.len().saturating_add(text.len());
+            if needed > MAX_DISPLAY_GRAPHEME_BYTES {
+                self.overflow(ch, tag, emit);
+                return;
+            }
+            if needed > self.pending.capacity() {
+                let capacity = needed
+                    .max(self.pending.capacity().saturating_mul(2))
+                    .max(64)
+                    .min(MAX_DISPLAY_GRAPHEME_BYTES);
+                self.pending
+                    .reserve_exact(capacity.saturating_sub(self.pending.len()));
+            }
+            self.pending.push(ch);
+            self.cells.push((ch, tag));
+            return;
+        }
+    }
+
+    fn overflow(&mut self, ch: char, tag: usize, emit: &mut impl FnMut(DisplayGrapheme<'_>)) {
+        self.clipped_tag = self.cells.first().map_or(tag, |&(_, tag)| tag);
+        if self.exact {
+            self.emit_ascii(r"[\u{…}]", self.clipped_tag, true, emit);
+            for index in 0..self.cells.len() {
+                let (pending, tag) = self.cells[index];
+                self.emit_escape(pending, tag, emit);
+            }
+            self.emit_escape(ch, tag, emit);
+            self.escaping = true;
+        } else {
+            self.clipped_bytes = self.pending.len().saturating_add(ch.len_utf8());
+        }
+        self.pending.clear();
+        self.cells.clear();
+        self.cursor = unicode_segmentation::GraphemeCursor::new(0, usize::MAX, true);
+    }
+
+    fn emit_escape(&mut self, ch: char, tag: usize, emit: &mut impl FnMut(DisplayGrapheme<'_>)) {
+        let mut bytes = [0; 10];
+        let mut length = 0;
+        for escaped in ch.escape_unicode() {
+            bytes[length] = escaped as u8;
+            length += 1;
+        }
+        let text = std::str::from_utf8(&bytes[..length]).expect("Unicode escapes are ASCII");
+        self.emit_ascii(text, tag, false, emit);
+    }
+
+    fn emit_ascii(
+        &mut self,
+        text: &str,
+        tag: usize,
+        escaped: bool,
+        emit: &mut impl FnMut(DisplayGrapheme<'_>),
+    ) {
+        let mut cells = [(' ', tag); 64];
+        let mut length = 0;
+        for ch in text.chars() {
+            cells[length] = (ch, tag);
+            length += 1;
+        }
+        emit(DisplayGrapheme {
+            text,
+            cells: &cells[..length],
+            width: length,
+            clipped_bytes: 0,
+            escaped,
+        });
+        self.column = self.column.saturating_add(length);
+    }
+
+    fn emit_pending(&mut self, emit: &mut impl FnMut(DisplayGrapheme<'_>)) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let width = grapheme_display_width(&self.pending);
+        emit(DisplayGrapheme {
+            text: &self.pending,
+            cells: &self.cells,
+            width,
+            clipped_bytes: 0,
+            escaped: false,
+        });
+        self.column = self.column.saturating_add(width);
+        self.pending.clear();
+        self.cells.clear();
+        self.cursor = unicode_segmentation::GraphemeCursor::new(0, usize::MAX, true);
+    }
+
+    fn emit_clipped(&mut self, emit: &mut impl FnMut(DisplayGrapheme<'_>)) {
+        let text = format!("[… {} B …]", self.clipped_bytes);
+        self.cells
+            .extend(text.chars().map(|ch| (ch, self.clipped_tag)));
+        let width = grapheme_display_width(&text);
+        emit(DisplayGrapheme {
+            text: &text,
+            cells: &self.cells,
+            width,
+            clipped_bytes: self.clipped_bytes,
+            escaped: false,
+        });
+        self.column = self.column.saturating_add(width);
+        self.clipped_bytes = 0;
+        self.cells.clear();
+    }
+}
+
+pub fn display_graphemes<'a>(
+    pieces: impl Iterator<Item = (&'a str, usize)>,
+    start_column: usize,
+    mut emit: impl FnMut(DisplayGrapheme<'_>),
+) {
+    let mut normalizer = DisplayNormalizer::new(start_column);
+    for (text, tag) in pieces {
+        normalizer.push(text, tag, &mut emit);
+    }
+    normalizer.finish(&mut emit);
+}
+
+pub fn display_graphemes_exact<'a>(
+    pieces: impl Iterator<Item = (&'a str, usize)>,
+    start_column: usize,
+    mut emit: impl FnMut(DisplayGrapheme<'_>),
+) {
+    let mut normalizer = DisplayNormalizer::new_exact(start_column);
+    for (text, tag) in pieces {
+        normalizer.push(text, tag, &mut emit);
+    }
+    normalizer.finish(&mut emit);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

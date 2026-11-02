@@ -689,7 +689,7 @@ fn default_denied_subtrees() -> Vec<(PathBuf, &'static str, DenyScope)> {
 }
 
 fn runtime_daemon_socket_dirs() -> Vec<(PathBuf, &'static str, DenyScope)> {
-    use codewhale_app_server::daemon_socket::{SocketPathInputs, resolve_socket_path};
+    use codewhale_paths::daemon_socket::{SocketPathInputs, resolve_socket_path};
     let live = SocketPathInputs::from_environment(None).unwrap_or_else(|_| SocketPathInputs {
         xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR")
             .filter(|value| !value.is_empty())

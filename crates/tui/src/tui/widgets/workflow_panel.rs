@@ -25,6 +25,7 @@ use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 /// Maximum phase summary chips shown in the expanded body.
 const MAX_PHASE_SUMMARY: usize = 6;
+const MAX_SUMMARY_CHILD_ROWS: usize = 64;
 /// Newest rejected dispatches retained by the panel. The workflow journal is
 /// the durable, unbounded source of truth; this is only a compact UI tail.
 const MAX_DISPATCH_FAILURES_RETAINED: usize = 12;
@@ -99,6 +100,7 @@ impl WorkflowPanelLifecycle {
 /// Per-task / per-worker row status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowRowStatus {
+    Unknown,
     Pending,
     Running,
     Waiting,
@@ -112,6 +114,7 @@ impl WorkflowRowStatus {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            Self::Unknown => "unknown",
             Self::Pending => "pending",
             Self::Running => "running",
             Self::Waiting => "waiting",
@@ -128,6 +131,7 @@ impl WorkflowRowStatus {
     #[must_use]
     pub fn display_label(self, locale: Locale) -> std::borrow::Cow<'static, str> {
         match self {
+            Self::Unknown => tr(locale, MessageId::WorkflowReceiptUnknown),
             Self::Waiting => tr(locale, MessageId::WorkflowStatusWaiting),
             other => std::borrow::Cow::Borrowed(other.label()),
         }
@@ -150,7 +154,7 @@ impl WorkflowRowStatus {
 
     fn color(self) -> ratatui::style::Color {
         match self {
-            Self::Pending => palette::TEXT_MUTED,
+            Self::Unknown | Self::Pending => palette::TEXT_MUTED,
             // Running is the normal state of a live row, so it reads neutral
             // (#6503). Waiting covers `needs_user` / `blocked`, which do want
             // attention; failure red stays reserved for actual failure.
@@ -164,6 +168,7 @@ impl WorkflowRowStatus {
 
     fn from_ir_status(status: &str) -> Self {
         match status {
+            "unknown" => Self::Unknown,
             "succeeded" | "completed" | "success" | "done" => Self::Succeeded,
             "failed" | "error" => Self::Failed,
             "cancelled" | "canceled" => Self::Cancelled,
@@ -374,6 +379,7 @@ pub struct WorkflowPanelGateLine {
 pub struct WorkflowPanelPhase {
     pub title: String,
     pub rows: Vec<WorkflowPanelRow>,
+    pub omitted_child_count: u64,
 }
 
 /// One workflow task dispatch rejected before a child agent existed.
@@ -416,6 +422,7 @@ impl WorkflowPanelPhase {
         Self {
             title: title.into(),
             rows: Vec::new(),
+            omitted_child_count: 0,
         }
     }
 
@@ -426,6 +433,7 @@ impl WorkflowPanelPhase {
         let mut cancelled = 0usize;
         for row in &self.rows {
             match row.status {
+                WorkflowRowStatus::Unknown => {}
                 WorkflowRowStatus::Succeeded => done += 1,
                 WorkflowRowStatus::Running
                 | WorkflowRowStatus::Pending
@@ -441,7 +449,7 @@ impl WorkflowPanelPhase {
     /// the unlabelled `[0✓ 5… 0! 0⊘]` glyph counters.
     fn counts_text(&self, locale: Locale, separator: &str) -> String {
         let (done, running, failed, cancelled) = self.counts();
-        let counts = [
+        let mut counts = [
             (running, MessageId::WorkflowCountRunning),
             (done, MessageId::WorkflowCountDone),
             (failed, MessageId::WorkflowCountFailed),
@@ -451,6 +459,18 @@ impl WorkflowPanelPhase {
         .filter(|(count, _)| *count > 0)
         .map(|(count, id)| count_text(locale, id, count))
         .collect::<Vec<_>>();
+        let unknown = self
+            .rows
+            .iter()
+            .filter(|row| row.status == WorkflowRowStatus::Unknown)
+            .count() as u64;
+        let unknown = unknown.saturating_add(self.omitted_child_count);
+        if unknown > 0 {
+            counts.push(format!(
+                "{unknown} {}",
+                tr(locale, MessageId::WorkflowReceiptUnknown)
+            ));
+        }
         if counts.is_empty() {
             tr(locale, MessageId::WorkflowNoTasksYet).into_owned()
         } else {
@@ -607,7 +627,9 @@ impl WorkflowPanelEvent {
                     .filter(|status| {
                         !matches!(
                             status,
-                            WorkflowRowStatus::Running | WorkflowRowStatus::Pending
+                            WorkflowRowStatus::Running
+                                | WorkflowRowStatus::Pending
+                                | WorkflowRowStatus::Unknown
                         )
                     })
                     .unwrap_or(WorkflowRowStatus::Failed);
@@ -770,6 +792,10 @@ impl WorkflowPanel {
                     .unwrap_or("Work");
                 panel.phases.push(WorkflowPanelPhase::new(title));
                 let phase_idx = panel.phases.len() - 1;
+                panel.phases[phase_idx].omitted_child_count = phase_val
+                    .get("omitted_child_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 if let Some(rows) = phase_val.get("rows").and_then(Value::as_array) {
                     for row in rows {
                         let task_id = row
@@ -829,7 +855,9 @@ impl WorkflowPanel {
             // count still surfaces on the history card.
             if child_count > 0 {
                 let mut phase = WorkflowPanelPhase::new("Work");
-                for i in 0..child_count {
+                let shown = child_count.min(MAX_SUMMARY_CHILD_ROWS as u64) as usize;
+                phase.omitted_child_count = child_count.saturating_sub(shown as u64);
+                for i in 0..shown {
                     let id = value
                         .get("child_ids")
                         .and_then(Value::as_array)
@@ -845,7 +873,7 @@ impl WorkflowPanel {
                         strength: None,
                         worktree: false,
                         workspace: None,
-                        status: WorkflowRowStatus::Succeeded,
+                        status: WorkflowRowStatus::Unknown,
                         started_at_ms: at_ms,
                         completed_at_ms: value.get("completed_at_ms").and_then(Value::as_u64),
                         error: None,
@@ -853,7 +881,7 @@ impl WorkflowPanel {
                         // A bare child-count summary carries no receipt at all;
                         // the row must show that rather than infer one (#4039).
                         route: WorkflowRowRoute::default(),
-                        usage: Some(WorkflowRowUsage::default()),
+                        usage: None,
                     });
                 }
                 panel.phases.push(phase);
@@ -1143,15 +1171,10 @@ impl WorkflowPanel {
             })
             .collect();
         if !children.is_empty() {
-            let more = self
-                .phases
-                .iter()
-                .map(|p| p.rows.len())
-                .sum::<usize>()
-                .saturating_sub(children.len());
+            let more = self.done_total().1.saturating_sub(children.len() as u64);
             let mut body = children.join(" · ");
             if more > 0 {
-                body = format!("{body} · +{more} more");
+                body = format!("+{more} more · {body}");
             }
             lines.push(Line::from(Span::styled(
                 truncate_line_to_width(&format!("children: {body}"), content_width),
@@ -1177,9 +1200,14 @@ impl WorkflowPanel {
                         mark = role_mark(row.profile.as_deref()),
                         label = short_label(&row.label, 14),
                         track = lane_track(row, max_elapsed, 16, now_ms()),
-                        elapsed = codewhale_command_contract::elapsed::format_elapsed_ms(
-                            row_elapsed_ms(row, now_ms())
-                        ),
+                        elapsed = if row.status == WorkflowRowStatus::Unknown {
+                            tr(self.locale, MessageId::WorkflowReceiptUnknown).into_owned()
+                        } else {
+                            codewhale_command_contract::elapsed::format_elapsed_ms(row_elapsed_ms(
+                                row,
+                                now_ms(),
+                            ))
+                        },
                         status = row.status.display_label(self.locale),
                     ),
                     content_width,
@@ -1789,16 +1817,17 @@ impl WorkflowPanel {
     }
 
     #[must_use]
-    pub fn done_total(&self) -> (usize, usize) {
+    pub fn done_total(&self) -> (usize, u64) {
         let mut done = 0usize;
-        let mut total = 0usize;
+        let mut total = 0u64;
         for phase in &self.phases {
             for row in &phase.rows {
-                total += 1;
-                if !row.status.is_running() {
-                    done += 1;
+                total = total.saturating_add(1);
+                if !row.status.is_running() && row.status != WorkflowRowStatus::Unknown {
+                    done = done.saturating_add(1);
                 }
             }
+            total = total.saturating_add(phase.omitted_child_count);
         }
         (done, total)
     }
@@ -1824,21 +1853,23 @@ impl WorkflowPanel {
         (failed, cancelled)
     }
 
-    /// Rows by outcome: `(succeeded, failed, cancelled, total)`. Rejected
-    /// dispatches are not rows, so they are not in these counts.
+    /// Known row outcomes and total children, including omitted summaries.
+    /// Rejected dispatches are not children and stay outside these counts.
     #[must_use]
-    pub fn row_outcomes(&self) -> (usize, usize, usize, usize) {
-        self.phases.iter().map(WorkflowPanelPhase::counts).fold(
-            (0, 0, 0, 0),
-            |acc, (done, running, failed, cancelled)| {
+    pub fn row_outcomes(&self) -> (usize, usize, usize, u64) {
+        self.phases
+            .iter()
+            .fold((0usize, 0usize, 0usize, 0u64), |acc, phase| {
+                let (done, _, failed, cancelled) = phase.counts();
                 (
-                    acc.0 + done,
-                    acc.1 + failed,
-                    acc.2 + cancelled,
-                    acc.3 + done + running + failed + cancelled,
+                    acc.0.saturating_add(done),
+                    acc.1.saturating_add(failed),
+                    acc.2.saturating_add(cancelled),
+                    acc.3
+                        .saturating_add(phase.rows.len() as u64)
+                        .saturating_add(phase.omitted_child_count),
                 )
-            },
-        )
+            })
     }
 
     /// The run's name on one-line surfaces: the goal's first sentence. The
@@ -2061,6 +2092,7 @@ fn workflow_phase_run_json(phase: &WorkflowPanelPhase) -> Value {
     json!({
         "title": phase.title,
         "rows": phase.rows.iter().map(workflow_row_run_json).collect::<Vec<_>>(),
+        "omitted_child_count": phase.omitted_child_count,
     })
 }
 
@@ -2353,6 +2385,9 @@ fn role_mark(profile: Option<&str>) -> &'static str {
 }
 
 fn row_elapsed_ms(row: &WorkflowPanelRow, now_ms: u64) -> u64 {
+    if row.status == WorkflowRowStatus::Unknown {
+        return 0;
+    }
     row.completed_at_ms
         .unwrap_or(now_ms)
         .saturating_sub(row.started_at_ms)
@@ -2368,6 +2403,7 @@ fn lane_track(row: &WorkflowPanelRow, max_elapsed_ms: u64, width: usize, now_ms:
             as usize
     };
     let end = match row.status {
+        WorkflowRowStatus::Unknown => "? ",
         WorkflowRowStatus::Succeeded => "OK",
         WorkflowRowStatus::Failed | WorkflowRowStatus::SchemaFailed => "!!",
         WorkflowRowStatus::Cancelled => "XX",

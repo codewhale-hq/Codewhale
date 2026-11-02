@@ -723,7 +723,7 @@ impl OwnerRegistry {
     pub fn register_avatar(
         &mut self,
         params: &RegisterParams,
-        pack: codewhale_ratatui::avatar::Pack,
+        pack: codewhale_protocol::avatar::Pack,
         png: Vec<Vec<u8>>,
         host_generation: u64,
     ) -> Result<u64, String> {

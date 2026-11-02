@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -455,13 +455,8 @@ pub fn hard_cap_tool_result(
     content.push_str("\n[truncated: true]");
     content
 }
-/// Per-step API-call timeout retry budget. A `create_message` call that
-/// exceeds `step_api_timeout` is re-issued up to this many times (with
-/// exponential backoff) before the step is interrupted with a preserved
-/// checkpoint. Dogfooding showed a single 120s stall wiping out every child
-/// in a fan-out one by one even though the provider call was live-but-slow,
-/// so a timeout now gets the same retry dignity as a transient provider
-/// error (kimi-code comparison, FINISH-0.9.4 entry #40).
+/// Proven pre-dispatch connection timeout retry budget. A dispatched timeout
+/// retains an unknown outcome and checkpoint without automatic replay.
 const SUBAGENT_API_TIMEOUT_MAX_RETRIES: u32 = 5;
 /// Initial backoff for a timed-out per-step API call; doubles per retry and
 /// is capped at [`SUBAGENT_API_TIMEOUT_MAX_BACKOFF`].
@@ -472,9 +467,8 @@ const SUBAGENT_API_TIMEOUT_MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// children that all time out together does not re-fire in lockstep.
 const SUBAGENT_API_TIMEOUT_BACKOFF_JITTER_FACTOR: f64 = 0.2;
 /// Per-step LLM API call timeout. Each `create_message` request must complete
-/// within this window or the attempt is treated as timed out (and retried up
-/// to [`SUBAGENT_API_TIMEOUT_MAX_RETRIES`] times before interrupting the
-/// step). Prevents a single stuck API call from blocking the sub-agent
+/// within this window or the unknown dispatched outcome interrupts the step.
+/// Prevents a single stuck API call from blocking the sub-agent
 /// indefinitely.
 /// Legacy fallback for the per-step DeepSeek API timeout. The active timeout
 /// now travels on `SubAgentRuntime::step_api_timeout` so users can override
@@ -504,7 +498,8 @@ const SUBAGENT_TRANSCRIPT_MESSAGE_BUDGET_BYTES: usize = 1024 * 1024;
 const SUBAGENT_TRANSCRIPT_ARTIFACT_SCHEMA_VERSION: u32 = 2;
 const SUBAGENT_TRANSCRIPT_ARTIFACT_DIR: &str = "subagent-transcripts";
 const SUBAGENT_STATE_SCHEMA_VERSION: u32 = 1;
-const SUBAGENT_STATE_FILE: &str = "subagents.v1.json";
+const SUBAGENT_STATE_FILE: &str = "subagents.v3.json";
+const LEGACY_SUBAGENT_STATE_FILE: &str = "subagents.v1.json";
 const SUBAGENT_STATE_LOCK_FILE: &str = "subagents.v1.lock";
 const SUBAGENT_RESTART_REASON: &str = "Interrupted by process restart";
 const SUBAGENT_SESSION_CLOSED_REASON: &str = "Interrupted: parent session closed";
@@ -1020,6 +1015,14 @@ pub struct AgentWorkerRecord {
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub pending_request: Option<PendingRequestView>,
     pub status: AgentWorkerStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_generation: Option<u32>,
+    #[serde(default)]
+    pub prepared_previous_attempt_unsettled: bool,
+    #[serde(default)]
+    pub launch_admission_version: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recovery_interrupted: bool,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1046,6 +1049,8 @@ pub struct AgentWorkerRecord {
 
 #[derive(Clone)]
 pub struct CoordinationRegistrationSnapshot {
+    store_revision: u64,
+    writer_sequence: u64,
     worker_records: HashMap<String, AgentWorkerRecord>,
     coordination: CoordinationLedger,
     worker_origins: HashMap<String, WorkerOrigin>,
@@ -1113,6 +1118,10 @@ impl AgentWorkerRecord {
             recommended_action,
             pending_request: None,
             status: AgentWorkerStatus::Starting,
+            prepared_generation: None,
+            prepared_previous_attempt_unsettled: false,
+            launch_admission_version: 1,
+            recovery_interrupted: false,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             started_at_ms: None,
@@ -1124,6 +1133,56 @@ impl AgentWorkerRecord {
             parked_at_turn_end: false,
             events: VecDeque::new(),
         }
+    }
+    fn prepared_attempt(&self, spec: AgentWorkerSpec, sequence: &mut u64, now_ms: u64) -> Self {
+        let generation = spec
+            .launch_manifest
+            .as_ref()
+            .expect("validated launch manifest")
+            .generation;
+        let mut record = self.clone();
+        let settled = matches!(
+            self.status,
+            AgentWorkerStatus::Completed | AgentWorkerStatus::Failed | AgentWorkerStatus::Cancelled
+        ) && self.launch_admission_version == 1
+            && !self.recovery_interrupted;
+        let unstarted = self.started_at_ms.is_none()
+            && (self.prepared_generation.is_some()
+                || self.launch_admission_version == 1
+                    && (self.status == AgentWorkerStatus::Starting || self.recovery_interrupted)
+                    && self
+                        .spec
+                        .launch_manifest
+                        .as_ref()
+                        .is_some_and(|manifest| manifest.generation == 1));
+        record.prepared_previous_attempt_unsettled =
+            self.prepared_previous_attempt_unsettled || !(settled || unstarted);
+        record.spec = spec;
+        record.prepared_generation = Some(generation);
+        record.recovery_interrupted = false;
+        record.status = AgentWorkerStatus::Starting;
+        record.started_at_ms = None;
+        record.completed_at_ms = None;
+        record.result_summary = None;
+        record.error = None;
+        record.pending_request = None;
+        record.steps_taken = 0;
+        record.parked_at_turn_end = false;
+        record.recommended_action =
+            recommended_action_for_worker_status(record.status, &record.spec);
+        record.updated_at_ms = now_ms;
+        let message = format!("Fleet launch generation {generation} prepared");
+        record.latest_message = Some(message.clone());
+        SubAgentManager::push_worker_event(
+            sequence,
+            &mut record,
+            AgentWorkerStatus::Starting,
+            Some(message),
+            Some(0),
+            None,
+            now_ms,
+        );
+        record
     }
 }
 
@@ -2336,6 +2395,35 @@ impl Default for PersistedSubAgentState {
 
 impl PersistedSubAgentState {
     fn validate_worker_origins(&self) -> Result<(), String> {
+        for worker in &self.workers {
+            if worker.launch_admission_version > 1 {
+                return Err("unsupported Fleet launch admission protocol".into());
+            }
+            if worker.prepared_previous_attempt_unsettled && worker.prepared_generation.is_none() {
+                return Err("unsettled previous Fleet attempt has no prepared generation".into());
+            }
+            if worker.recovery_interrupted && worker.status != AgentWorkerStatus::Interrupted {
+                return Err("invalid recovered worker lifecycle".into());
+            }
+            if let Some(generation) = worker.prepared_generation {
+                if generation == 0
+                    || !worker
+                        .spec
+                        .launch_manifest
+                        .as_ref()
+                        .is_some_and(|manifest| manifest.generation == generation)
+                    || worker.status != AgentWorkerStatus::Starting
+                    || worker.started_at_ms.is_some()
+                    || worker.completed_at_ms.is_some()
+                    || self
+                        .agents
+                        .iter()
+                        .any(|agent| agent.id == worker.spec.worker_id)
+                {
+                    return Err("invalid prepared Fleet launch generation".into());
+                }
+            }
+        }
         match (self.schema_version, self.worker_origins.as_ref()) {
             (1, None) => Ok(()),
             (2, Some(origins))
@@ -3078,6 +3166,7 @@ pub struct SubAgentRuntime {
     pub workflow_response_schema: Option<Value>,
     /// The parent's MCP pool if available.
     pub mcp_pool: Option<std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>>,
+    pub mcp_auth_context: std::sync::Arc<dyn codewhale_runtime::credentials::AuthContext>,
     /// Per-step DeepSeek API timeout for the child's `create_message` call.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=3600) at
     /// engine construction so a slow but legitimate model turn does not
@@ -3195,6 +3284,7 @@ impl SubAgentRuntime {
             fork_context: None,
             workflow_response_schema: None,
             mcp_pool: None,
+            mcp_auth_context: crate::mcp::process_mcp_auth_context(),
             step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
             api_timeout_retry_base_backoff: SUBAGENT_API_TIMEOUT_INITIAL_BACKOFF,
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
@@ -3281,6 +3371,14 @@ impl SubAgentRuntime {
     pub fn with_agent_tool_surface_options(mut self, options: AgentToolSurfaceOptions) -> Self {
         self.speech_output_dir = options.speech_output_dir.clone();
         self.agent_tool_surface_options = options;
+        self
+    }
+
+    pub fn with_mcp_auth_context(
+        mut self,
+        auth_context: std::sync::Arc<dyn codewhale_runtime::credentials::AuthContext>,
+    ) -> Self {
+        self.mcp_auth_context = auth_context;
         self
     }
 
@@ -3527,6 +3625,7 @@ impl SubAgentRuntime {
             fork_context: self.fork_context.clone(),
             workflow_response_schema: None,
             mcp_pool: self.mcp_pool.clone(),
+            mcp_auth_context: std::sync::Arc::clone(&self.mcp_auth_context),
             step_api_timeout: self.step_api_timeout,
             api_timeout_retry_base_backoff: self.api_timeout_retry_base_backoff,
             tool_timeout: self.tool_timeout,
@@ -3685,6 +3784,13 @@ fn owner_state_from_worker_status(status: AgentWorkerStatus) -> OwnerState {
     }
 }
 
+#[derive(Clone)]
+struct PendingTerminalResult {
+    result: SubAgentResult,
+    worker: Option<(AgentWorkerRecord, u64)>,
+    prepared: bool,
+}
+
 /// A running sub-agent instance.
 pub struct SubAgent {
     pub id: String,
@@ -3721,6 +3827,7 @@ pub struct SubAgent {
     /// queued (#1961). Competing cancellation/interrupt paths must treat the
     /// claim as terminal ownership and leave the task to finalize.
     completion_claimed: bool,
+    pending_terminal_result: Option<PendingTerminalResult>,
     /// Process-local terminal fan-in sinks. Never serialized; restored agents
     /// have no live parent/mailbox/event consumers and are reconciled directly
     /// to interrupted state during load.
@@ -3779,6 +3886,7 @@ impl SubAgent {
             owner_session_id: String::new(),
             workspace,
             completion_claimed: false,
+            pending_terminal_result: None,
             terminal_delivery: None,
             work_lifecycle: None,
             input_tx: Some(input_tx),
@@ -3988,6 +4096,8 @@ pub struct SubAgentManager {
     worker_records: HashMap<String, AgentWorkerRecord>,
     worker_event_seq: u64,
     persist_sequence: std::sync::atomic::AtomicU64,
+    store_authority: Option<Arc<SubAgentStoreAuthority>>,
+    foreign_live_owners: HashSet<String>,
     coordination: CoordinationLedger,
     admitted_coordination_roots: HashMap<PathBuf, AdmittedCoordinationRoot>,
     worker_origins: HashMap<String, WorkerOrigin>,
@@ -4504,6 +4614,8 @@ impl SubAgentManager {
             worker_records: HashMap::new(),
             worker_event_seq: 0,
             persist_sequence: std::sync::atomic::AtomicU64::new(0),
+            store_authority: None,
+            foreign_live_owners: HashSet::new(),
             coordination: CoordinationLedger::default(),
             admitted_coordination_roots: HashMap::new(),
             worker_origins: HashMap::new(),
@@ -5051,6 +5163,21 @@ impl SubAgentManager {
         mut decision: DecisionRecord,
         workspace: &Path,
     ) -> Result<DecisionRecord, String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .record_coordination_decision_in_workspace(decision, workspace)
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+
         self.ensure_coordination_process_lock()?;
         if let Some(root) = self.admitted_coordination_root(workspace) {
             root.validate()?;
@@ -5115,6 +5242,21 @@ impl SubAgentManager {
         owner: &str,
         expected_version: u32,
     ) -> Result<DecisionRecord, String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .update_coordination_decision(decision_id, status, owner, expected_version)
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+
         self.ensure_coordination_process_lock()?;
         self.coordination
             .update_decision_status(decision_id, status, owner, expected_version)
@@ -5135,6 +5277,33 @@ impl SubAgentManager {
         verifier_evidence_handles: Vec<String>,
         verification_outcome: String,
     ) -> Result<ReconciliationReceipt, String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .reconcile_coordination(
+                            subject,
+                            owner,
+                            input_decisions,
+                            outcome,
+                            evidence_handles,
+                            candidate_handles,
+                            retry_count,
+                            retry_limit,
+                            reviewer_evidence_handles,
+                            verifier_evidence_handles,
+                            verification_outcome,
+                        )
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+
         self.ensure_coordination_process_lock()?;
         let expected_owner = self.nearest_common_fan_in_owner(&input_decisions)?;
         if owner != expected_owner {
@@ -5538,6 +5707,21 @@ impl SubAgentManager {
         exact_files: Vec<String>,
         contracts: Vec<String>,
     ) -> Result<PersistedWriteClaim, String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .expand_write_claim(owner, roots, exact_files, contracts)
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+
         self.ensure_coordination_process_lock()?;
         let Some(existing) = self
             .coordination
@@ -5610,6 +5794,21 @@ impl SubAgentManager {
         &mut self,
         owner: Option<String>,
     ) -> Result<Vec<String>, String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .release_stale_write_claims(owner)
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+
         self.ensure_coordination_process_lock()?;
         let active = self.active_coordination_owners();
         let released = self
@@ -5731,12 +5930,35 @@ impl SubAgentManager {
 
     #[must_use]
     fn with_state_path(mut self, path: PathBuf) -> Self {
-        self.state_path = Some(path);
+        self.state_path = Some(path.clone());
+        match SubAgentStoreAuthority::open(&self.state_root, &path, &self.current_session_boot_id) {
+            Ok(authority) => self.store_authority = Some(authority),
+            Err(error) => {
+                self.coordination_snapshot_read_only = true;
+                tracing::warn!(target: "subagent", %error, "delegated store admission failed; writable state remains refused");
+            }
+        }
         self
     }
 
     fn require_coordination_process_lock(mut self) -> Self {
         self.coordination_process_lock_required = true;
+        if self.store_authority.is_none()
+            && let Some(path) = self.state_path.as_ref()
+        {
+            match SubAgentStoreAuthority::open(
+                &self.state_root,
+                path,
+                &self.current_session_boot_id,
+            ) {
+                Ok(authority) => self.store_authority = Some(authority),
+                Err(error) => {
+                    self.coordination_snapshot_read_only = true;
+                    tracing::warn!(target: "subagent", %error, "delegated store migration or admission failed; no durable writes are admitted");
+                    return self;
+                }
+            }
+        }
         *self
             .coordination_process_lock
             .get_mut()
@@ -5837,6 +6059,250 @@ impl SubAgentManager {
         true
     }
 
+    pub(crate) fn owns_store_record(&self, id: &str) -> bool {
+        self.state_path.is_none()
+            || self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.owned.lock().contains(id))
+    }
+
+    pub(crate) fn with_store_transaction<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        if self.state_path.is_none() {
+            return operation(self);
+        }
+        self.ensure_coordination_process_lock()
+            .map_err(anyhow::Error::msg)?;
+        let authority = self.store_authority.clone().ok_or_else(|| {
+            anyhow!("delegated durable store admission failed; inspect before retrying")
+        })?;
+        if authority.is_current_transaction() {
+            return operation(self);
+        }
+        let lease = authority.begin()?;
+        let image = authority.current_image()?;
+        self.coordination = image.state.coordination.clone();
+        self.foreign_live_owners =
+            live_foreign_store_owners(&image, &authority.path, &authority.writer);
+        let owned = authority.owned.lock().clone();
+        let agent_ids = image
+            .state
+            .agents
+            .iter()
+            .map(|agent| agent.id.clone())
+            .collect::<HashSet<_>>();
+        let worker_ids = image
+            .state
+            .workers
+            .iter()
+            .map(|record| record.spec.worker_id.clone())
+            .collect::<HashSet<_>>();
+        self.agents
+            .retain(|id, _| owned.contains(id) || agent_ids.contains(id));
+        self.worker_records
+            .retain(|id, _| owned.contains(id) || worker_ids.contains(id));
+        self.worker_origins
+            .retain(|id, _| owned.contains(id) || worker_ids.contains(id));
+        let mut adopted = Vec::new();
+        for persisted in &image.state.agents {
+            if !owned.contains(&persisted.id) {
+                let agent = self.restore_persisted_agent(persisted.clone());
+                self.agents.insert(agent.id.clone(), agent);
+                if !worker_ids.contains(&persisted.id)
+                    && !image
+                        .record_writers
+                        .get(&persisted.id)
+                        .is_some_and(|writer| authority.writer_is_live(writer))
+                {
+                    authority.owned.lock().insert(persisted.id.clone());
+                    adopted.push(persisted.id.clone());
+                }
+            }
+        }
+        for record in &image.state.workers {
+            let refreshed_generation = owned.contains(&record.spec.worker_id)
+                && !image
+                    .state
+                    .agents
+                    .iter()
+                    .any(|agent| agent.id == record.spec.worker_id)
+                && self
+                    .worker_records
+                    .get(&record.spec.worker_id)
+                    .is_some_and(|local| {
+                        record
+                            .spec
+                            .launch_manifest
+                            .as_ref()
+                            .map_or(0, |manifest| manifest.generation)
+                            > local
+                                .spec
+                                .launch_manifest
+                                .as_ref()
+                                .map_or(0, |manifest| manifest.generation)
+                    });
+            if refreshed_generation {
+                self.worker_records.insert(
+                    record.spec.worker_id.clone(),
+                    normalize_worker_record(record.clone()),
+                );
+            }
+            if !owned.contains(&record.spec.worker_id) {
+                self.worker_records.insert(
+                    record.spec.worker_id.clone(),
+                    normalize_worker_record(record.clone()),
+                );
+                let writer_live = image
+                    .record_writers
+                    .get(&record.spec.worker_id)
+                    .is_some_and(|writer| authority.writer_is_live(writer));
+                if !writer_live {
+                    authority.owned.lock().insert(record.spec.worker_id.clone());
+                    adopted.push(record.spec.worker_id.clone());
+                }
+                let origin = image
+                    .state
+                    .worker_origins
+                    .as_ref()
+                    .and_then(|origins| origins.get(&record.spec.worker_id))
+                    .cloned()
+                    .unwrap_or_else(|| WorkerOrigin::legacy(record.owner_session_id.clone()));
+                self.worker_origins
+                    .insert(record.spec.worker_id.clone(), origin);
+            }
+            self.worker_event_seq = self
+                .worker_event_seq
+                .max(record.events.back().map_or(0, |event| event.seq));
+        }
+        for worker_id in &adopted {
+            if let Some(record) = self.worker_records.get(worker_id)
+                && record.prepared_generation.is_none()
+                && matches!(
+                    record.status,
+                    AgentWorkerStatus::Queued
+                        | AgentWorkerStatus::Starting
+                        | AgentWorkerStatus::Running
+                        | AgentWorkerStatus::ModelWait
+                        | AgentWorkerStatus::RunningTool
+                )
+            {
+                let steps_taken = record.steps_taken;
+                self.record_worker_event(
+                    worker_id,
+                    AgentWorkerStatus::Interrupted,
+                    Some(SUBAGENT_RESTART_REASON.to_string()),
+                    Some(steps_taken),
+                    None,
+                );
+                self.worker_records
+                    .get_mut(worker_id)
+                    .expect("recovered worker exists")
+                    .recovery_interrupted = true;
+            }
+        }
+        if image.state.schema_version == 2 {
+            self.worker_origin_schema = 2;
+        }
+        self.resume_targets = image.state.resume_targets.clone();
+        self.persist_sequence.fetch_max(
+            image
+                .writer_sequences
+                .get(&authority.writer)
+                .copied()
+                .unwrap_or(0),
+            std::sync::atomic::Ordering::AcqRel,
+        );
+        let adoption = if adopted.is_empty() {
+            Ok(())
+        } else {
+            self.persist_state_synchronously()
+        };
+        let mut result = match adoption {
+            Ok(()) => operation(self),
+            Err(error) => Err(error),
+        };
+        if result.is_ok()
+            && authority.transaction.lock().as_ref().is_some_and(|tx| {
+                tx.publishes == 0 && self.coordination != tx.image.state.coordination
+            })
+        {
+            result = match self.persist_state_synchronously() {
+                Ok(()) => result,
+                Err(error) => Err(error),
+            };
+        }
+        if result.is_err() {
+            let committed = read_durable_subagent_store(&authority.state_root, &authority.path)
+                .or_else(|_| authority.current_image())?;
+            *authority.owned.lock() = committed
+                .record_writers
+                .iter()
+                .filter(|(_, writer)| *writer == &authority.writer)
+                .map(|(id, _)| id.clone())
+                .collect();
+            self.foreign_live_owners =
+                live_foreign_store_owners(&committed, &authority.path, &authority.writer);
+            self.coordination = committed.state.coordination;
+            let origins = committed.state.worker_origins.unwrap_or_else(|| {
+                committed
+                    .state
+                    .workers
+                    .iter()
+                    .map(|record| {
+                        (
+                            record.spec.worker_id.clone(),
+                            WorkerOrigin::legacy(record.owner_session_id.clone()),
+                        )
+                    })
+                    .collect()
+            });
+            self.worker_records = committed
+                .state
+                .workers
+                .into_iter()
+                .map(normalize_worker_record)
+                .map(|record| (record.spec.worker_id.clone(), record))
+                .collect();
+            self.worker_origins = origins;
+            self.worker_origin_schema = committed.state.schema_version;
+            self.resume_targets = committed.state.resume_targets;
+        }
+        drop(lease);
+        result
+    }
+
+    fn persist_terminal_candidate(
+        &self,
+        worker_id: &str,
+        payload: PersistedSubAgentState,
+    ) -> Result<Option<AgentWorkerRecord>> {
+        self.ensure_coordination_process_lock()
+            .map_err(anyhow::Error::msg)?;
+        if self.state_path.is_none() {
+            return Ok(None);
+        }
+        let authority = self
+            .store_authority
+            .as_ref()
+            .ok_or_else(|| anyhow!("delegated terminal store authority is unavailable"))?;
+        anyhow::ensure!(
+            authority.is_current_transaction(),
+            "terminal publication requires its owned store transaction"
+        );
+        authority.publish(&payload, Some(worker_id), None)?;
+        let image = authority.current_image()?;
+        let record = image
+            .state
+            .workers
+            .into_iter()
+            .find(|record| record.spec.worker_id == worker_id)
+            .ok_or_else(|| anyhow!("committed terminal worker receipt is unavailable"))?;
+        Ok(Some(record))
+    }
+
     /// Build the [`PersistedSubAgentState`] snapshot from the current fleet.
     ///
     /// This is a cheap clone operation that runs under the caller's lock.
@@ -5914,11 +6380,13 @@ impl SubAgentManager {
     fn persist_state(&self) -> Result<std::thread::JoinHandle<()>> {
         self.ensure_coordination_process_lock()
             .map_err(anyhow::Error::msg)?;
-        let Some((path, payload)) = self.build_persist_payload()? else {
-            // Nothing to persist — return a no-op handle.
+        let Some((_, payload)) = self.build_persist_payload()? else {
             return Ok(std::thread::spawn(|| {}));
         };
-        let state_root = self.state_root.clone();
+        let authority = self
+            .store_authority
+            .clone()
+            .ok_or_else(|| anyhow!("delegated store authority is unavailable"))?;
         let writer_locks = self
             .coordination_process_lock
             .lock()
@@ -5927,24 +6395,25 @@ impl SubAgentManager {
             .cloned()
             .chain(self.workspace_writer_locks.values().cloned())
             .collect::<Vec<_>>();
-        // Spawn disk I/O off the write-lock hot path.  `payload` is fully
-        // owned (cloned from `self.agents`) so it is `Send` and safe to move.
-        let handle = std::thread::spawn(move || {
+        Ok(std::thread::spawn(move || {
             let _writer_locks = writer_locks;
-            if let Err(err) = write_json_atomic(&state_root, &path, &payload) {
-                tracing::warn!(target: "subagent", ?err, "failed to persist sub-agent state");
+            if let Err(error) = authority.publish(&payload, None, None) {
+                tracing::warn!(target: "subagent", %error, "failed to persist sub-agent checkpoint");
             }
-        });
-        Ok(handle)
+        }))
     }
 
     fn persist_state_synchronously(&self) -> Result<()> {
         self.ensure_coordination_process_lock()
             .map_err(anyhow::Error::msg)?;
-        let Some((path, payload)) = self.build_persist_payload()? else {
+        let Some((_, payload)) = self.build_persist_payload()? else {
             return Ok(());
         };
-        write_json_atomic(&self.state_root, &path, &payload)
+        let authority = self
+            .store_authority
+            .as_ref()
+            .ok_or_else(|| anyhow!("delegated store authority is unavailable"))?;
+        authority.publish(&payload, None, None)
     }
 
     /// Fire-and-forget persist — logs errors, drops the join handle.
@@ -5998,21 +6467,85 @@ impl SubAgentManager {
     ///
     /// Unlike `persist_state`, this performs disk I/O **synchronously** to
     /// guarantee data is flushed before the process exits.
-    pub fn flush_pending_persist(&mut self) {
-        if let Err(error) = self.ensure_coordination_process_lock() {
-            tracing::warn!(target: "subagent", %error, "skipping persist without state-root coordination lock");
-            return;
-        }
+    pub fn flush_pending_persist(&mut self) -> Result<()> {
+        self.ensure_coordination_process_lock()
+            .map_err(anyhow::Error::msg)?;
         if self.persist_pending {
+            self.persist_state_synchronously()?;
             self.last_persist_at = Some(Instant::now());
             self.persist_pending = false;
-            // Synchronous disk I/O — safe because we are shutting down and no
-            // callers depend on releasing the write lock quickly.
-            if let Ok(Some((path, payload))) = self.build_persist_payload()
-                && let Err(err) = write_json_atomic(&self.state_root, &path, &payload)
-            {
-                tracing::warn!(target: "subagent", ?err, "failed to flush pending sub-agent state");
-            }
+        }
+        Ok(())
+    }
+
+    fn restore_persisted_agent(&self, persisted: PersistedSubAgent) -> SubAgent {
+        let nickname = persisted
+            .nickname
+            .filter(|name| generated_whale_name_base(&persisted.id, name).is_none());
+        let mut status = persisted.status;
+        if matches!(status, SubAgentStatus::Running)
+            && !self.foreign_live_owners.contains(&persisted.id)
+        {
+            status = SubAgentStatus::Interrupted(SUBAGENT_RESTART_REASON.to_string());
+        }
+
+        let started_at = instant_from_duration(Duration::from_millis(persisted.duration_ms));
+        // Empty vec on disk → None (full inheritance, v0.6.6 default).
+        // Non-empty vec → Some(list) (preserves narrow scope from older sessions).
+        let allowed_tools = if persisted.allowed_tools.is_empty() {
+            None
+        } else {
+            Some(persisted.allowed_tools)
+        };
+        let mut assignment = persisted.assignment;
+        canonicalize_persisted_advisory_role(&mut assignment.role);
+        SubAgent {
+            id: persisted.id.clone(),
+            session_name: persisted
+                .session_name
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| persisted.id.clone()),
+            fork_context: persisted.fork_context,
+            workspace: persisted
+                .workspace
+                .unwrap_or_else(|| self.workspace.clone()),
+            agent_type: persisted.agent_type,
+            prompt: persisted.prompt,
+            assignment,
+            model: if persisted.model.is_empty() {
+                "unknown".to_string()
+            } else {
+                persisted.model
+            },
+            // v0.8.68 and earlier persisted generated whale text. It may
+            // have been chosen under a different UI language, so never
+            // replay it into a new session. Explicit custom names survive.
+            nickname,
+            status,
+            result: persisted.result,
+            steps_taken: persisted.steps_taken,
+            checkpoint: persisted.checkpoint,
+            needs_input: persisted.needs_input,
+            started_at,
+            last_activity_at: started_at,
+            heartbeat_timeout: None,
+            allowed_tools,
+            // Empty string when loading pre-#405 records; the
+            // manager treats that the same as a non-matching id —
+            // i.e. agent classified as prior-session.
+            session_boot_id: persisted.session_boot_id,
+            owner_session_id: persisted.owner_session_id,
+            completion_claimed: false,
+            pending_terminal_result: None,
+            terminal_delivery: None,
+            work_lifecycle: None,
+            input_tx: None,
+            task_handle: None,
+            stop_token: None,
+            requested_stop: None,
+            unsettled_launch: None,
+            unsettled_foreground: None,
+            activation: None,
         }
     }
 
@@ -6031,7 +6564,7 @@ impl SubAgentManager {
                 &self.state_root,
                 &Path::new(".deepseek")
                     .join("state")
-                    .join(SUBAGENT_STATE_FILE),
+                    .join(LEGACY_SUBAGENT_STATE_FILE),
             )?;
             if legacy.exists() {
                 tracing::info!(
@@ -6046,7 +6579,10 @@ impl SubAgentManager {
         };
 
         let raw = read_subagent_state_file(&self.state_root, &path)?;
-        let state = serde_json::from_str::<PersistedSubAgentState>(&raw)?;
+        let store = decode_subagent_store(&raw, true)?;
+        self.foreign_live_owners =
+            live_foreign_store_owners(&store, &path, &self.current_session_boot_id);
+        let state = store.state;
         state
             .validate_worker_origins()
             .map_err(anyhow::Error::msg)?;
@@ -6078,72 +6614,8 @@ impl SubAgentManager {
         self.coordination = coordination;
         self.resume_targets = state.resume_targets;
         for persisted in state.agents {
-            let nickname = persisted
-                .nickname
-                .filter(|name| generated_whale_name_base(&persisted.id, name).is_none());
-            let mut status = persisted.status;
-            if matches!(status, SubAgentStatus::Running) {
-                status = SubAgentStatus::Interrupted(SUBAGENT_RESTART_REASON.to_string());
-            }
-
-            let started_at = instant_from_duration(Duration::from_millis(persisted.duration_ms));
-            // Empty vec on disk → None (full inheritance, v0.6.6 default).
-            // Non-empty vec → Some(list) (preserves narrow scope from older sessions).
-            let allowed_tools = if persisted.allowed_tools.is_empty() {
-                None
-            } else {
-                Some(persisted.allowed_tools)
-            };
-            let mut assignment = persisted.assignment;
-            canonicalize_persisted_advisory_role(&mut assignment.role);
-            let agent = SubAgent {
-                id: persisted.id.clone(),
-                session_name: persisted
-                    .session_name
-                    .filter(|name| !name.trim().is_empty())
-                    .unwrap_or_else(|| persisted.id.clone()),
-                fork_context: persisted.fork_context,
-                workspace: persisted
-                    .workspace
-                    .unwrap_or_else(|| self.workspace.clone()),
-                agent_type: persisted.agent_type,
-                prompt: persisted.prompt,
-                assignment,
-                model: if persisted.model.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    persisted.model
-                },
-                // v0.8.68 and earlier persisted generated whale text. It may
-                // have been chosen under a different UI language, so never
-                // replay it into a new session. Explicit custom names survive.
-                nickname,
-                status,
-                result: persisted.result,
-                steps_taken: persisted.steps_taken,
-                checkpoint: persisted.checkpoint,
-                needs_input: persisted.needs_input,
-                started_at,
-                last_activity_at: started_at,
-                heartbeat_timeout: None,
-                allowed_tools,
-                // Empty string when loading pre-#405 records; the
-                // manager treats that the same as a non-matching id —
-                // i.e. agent classified as prior-session.
-                session_boot_id: persisted.session_boot_id,
-                owner_session_id: persisted.owner_session_id,
-                completion_claimed: false,
-                terminal_delivery: None,
-                work_lifecycle: None,
-                input_tx: None,
-                task_handle: None,
-                stop_token: None,
-                requested_stop: None,
-                unsettled_launch: None,
-                unsettled_foreground: None,
-                activation: None,
-            };
-            self.agents.insert(persisted.id, agent);
+            let agent = self.restore_persisted_agent(persisted);
+            self.agents.insert(agent.id.clone(), agent);
         }
         for worker in state.workers {
             let worker = normalize_worker_record(worker);
@@ -6173,6 +6645,8 @@ impl SubAgentManager {
         let orphaned = self
             .worker_records
             .values()
+            .filter(|record| !self.foreign_live_owners.contains(&record.spec.worker_id))
+            .filter(|record| record.prepared_generation.is_none())
             .filter(|record| {
                 matches!(
                     record.status,
@@ -6193,6 +6667,10 @@ impl SubAgentManager {
                 Some(*steps_taken),
                 None,
             );
+            self.worker_records
+                .get_mut(worker_id)
+                .expect("recovered worker exists")
+                .recovery_interrupted = true;
         }
         orphaned.len()
     }
@@ -6209,19 +6687,22 @@ impl SubAgentManager {
     /// or prior-session owners stay put — a sibling session's live claim must
     /// never be released by this process.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn finalize_session_close(&mut self) -> usize {
-        self.finalize_session_close_inner(None)
+    pub fn finalize_session_close(&mut self) -> Result<usize> {
+        self.with_store_transaction(|held| held.finalize_session_close_inner(None))
     }
 
-    pub fn finalize_session_close_for_session(&mut self, active_session_id: &str) -> usize {
-        self.finalize_session_close_inner(Some(active_session_id))
+    pub fn finalize_session_close_for_session(&mut self, active_session_id: &str) -> Result<usize> {
+        self.with_store_transaction(|held| {
+            held.finalize_session_close_inner(Some(active_session_id))
+        })
     }
 
-    fn finalize_session_close_inner(&mut self, active_session_id: Option<&str>) -> usize {
+    fn finalize_session_close_inner(&mut self, active_session_id: Option<&str>) -> Result<usize> {
         let reason = SUBAGENT_SESSION_CLOSED_REASON;
         let running_agent_ids = self
             .agents
             .values()
+            .filter(|agent| self.owns_store_record(&agent.id))
             .filter(|agent| agent.status == SubAgentStatus::Running)
             .filter(|agent| {
                 active_session_id
@@ -6238,7 +6719,7 @@ impl SubAgentManager {
             terminal.status = SubAgentStatus::Interrupted(reason.to_string());
             terminal.result = Some(reason.to_string());
             terminal.needs_input = None;
-            if self.finish_terminal_result(agent_id, terminal, true, true) {
+            if self.finish_terminal_result(agent_id, terminal, true, true)? {
                 finalized += 1;
             }
         }
@@ -6254,6 +6735,7 @@ impl SubAgentManager {
         let live_worker_ids = self
             .worker_records
             .values()
+            .filter(|record| self.owns_store_record(&record.spec.worker_id))
             .filter(|record| !record.status.is_terminal())
             .filter(|record| !draining.contains(&record.spec.worker_id))
             .filter(|record| {
@@ -6292,15 +6774,21 @@ impl SubAgentManager {
         self.coordination.prune_claim_scopes();
         // Drop finalized agents from the in-memory roster so they can never
         // be counted active again. Prior-session archive rows remain.
-        self.agents.retain(|id, _| !finalized_owners.contains(id));
-        let _ = self.persist_state_synchronously();
+        let finalized_agents = self
+            .agents
+            .extract_if(|id, _| finalized_owners.contains(id))
+            .collect::<Vec<_>>();
+        if let Err(error) = self.persist_state_synchronously() {
+            self.agents.extend(finalized_agents);
+            return Err(error);
+        }
         tracing::debug!(
             target: "subagent",
             finalized,
             released,
             "finalized sub-agent fleet on session close"
         );
-        finalized
+        Ok(finalized)
     }
 
     fn sorted_worker_records(&self) -> Vec<AgentWorkerRecord> {
@@ -6318,7 +6806,12 @@ impl SubAgentManager {
             let oldest_terminal = self
                 .worker_records
                 .values()
-                .filter(|record| record.status.is_terminal())
+                .filter(|record| {
+                    self.owns_store_record(&record.spec.worker_id)
+                        && record.prepared_generation.is_none()
+                        && !record.recovery_interrupted
+                        && record.status.is_terminal()
+                })
                 .filter(|record| {
                     self.agents
                         .get(&record.spec.worker_id)
@@ -6374,6 +6867,9 @@ impl SubAgentManager {
         runtime_origin_turn_id: Option<String>,
     ) {
         let worker_id = spec.worker_id.clone();
+        if let Some(authority) = self.store_authority.as_ref() {
+            authority.owned.lock().insert(worker_id.clone());
+        }
         let now_ms = epoch_millis_now();
         let mut record = AgentWorkerRecord::new_for_session(
             normalize_worker_spec(spec),
@@ -6382,7 +6878,8 @@ impl SubAgentManager {
             precomputed_evidence,
         );
         record.runtime_origin_turn_id = runtime_origin_turn_id;
-        self.push_worker_event(
+        Self::push_worker_event(
+            &mut self.worker_event_seq,
             &mut record,
             AgentWorkerStatus::Starting,
             Some("starting".to_string()),
@@ -6414,6 +6911,21 @@ impl SubAgentManager {
         spec: &AgentWorkerSpec,
         origin: &WorkerOrigin,
     ) -> Result<(), String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .preflight_worker_coordination_in_origin(spec, origin)
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+
         self.validate_worker_origin(origin)?;
         self.check_worker_origin_capacity(Some(&spec.worker_id), origin)?;
         let origin_workspace = self.coordination_workspace_in_origin(
@@ -6482,6 +6994,21 @@ impl SubAgentManager {
         mut spec: AgentWorkerSpec,
         origin: WorkerOrigin,
     ) -> Result<(), String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .register_worker_with_coordination_in_origin(spec, origin)
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+
         self.validate_worker_origin(&origin)?;
         self.check_worker_origin_capacity(Some(&spec.worker_id), &origin)?;
         let origin_workspace = self.coordination_workspace_in_origin(
@@ -6576,6 +7103,16 @@ impl SubAgentManager {
 
     pub fn coordination_registration_snapshot(&self) -> CoordinationRegistrationSnapshot {
         CoordinationRegistrationSnapshot {
+            store_revision: self.store_authority.as_ref().map_or(0, |authority| {
+                authority
+                    .revision
+                    .load(std::sync::atomic::Ordering::Acquire)
+            }),
+            writer_sequence: self.store_authority.as_ref().map_or(0, |authority| {
+                authority
+                    .published_sequence
+                    .load(std::sync::atomic::Ordering::Acquire)
+            }),
             worker_records: self.worker_records.clone(),
             coordination: self.coordination.clone(),
             worker_origins: self.worker_origins.clone(),
@@ -6587,6 +7124,34 @@ impl SubAgentManager {
         &mut self,
         snapshot: CoordinationRegistrationSnapshot,
     ) -> Result<(), String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .restore_coordination_registration_snapshot(snapshot)
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+        if let Some(authority) = self.store_authority.as_ref() {
+            let revision = authority
+                .revision
+                .load(std::sync::atomic::Ordering::Acquire);
+            let published = authority
+                .published_sequence
+                .load(std::sync::atomic::Ordering::Acquire);
+            if revision > snapshot.store_revision.saturating_add(1)
+                || published <= snapshot.writer_sequence
+            {
+                return Err("Fleet compensation snapshot is stale; committed worker records were retained for reconciliation".into());
+            }
+        }
+
         self.worker_records = snapshot.worker_records;
         self.coordination = snapshot.coordination;
         self.worker_origins = snapshot.worker_origins;
@@ -6608,10 +7173,12 @@ impl SubAgentManager {
     /// persist forever and cascade-lock other agents"). A claim cannot contend
     /// for an owner that cannot write.
     fn is_live_coordination_owner(&self, id: &str) -> bool {
-        self.agents.get(id).is_some_and(|agent| {
-            agent.status == SubAgentStatus::Running && !self.is_from_prior_session(agent)
-        }) || self.worker_records.get(id).is_some_and(|record| {
-            !record.status.is_terminal()
+        self.foreign_live_owners.contains(id)
+            || self.agents.get(id).is_some_and(|agent| {
+                agent.status == SubAgentStatus::Running && !self.is_from_prior_session(agent)
+            })
+            || self.worker_records.get(id).is_some_and(|record| {
+                !record.status.is_terminal()
                 // A headless worker (no paired agent entry) that reaches
                 // WaitingForUser can never be answered: no user path will
                 // resume or finalize it, so counting it live leaks its claim
@@ -6633,7 +7200,7 @@ impl SubAgentManager {
                     .agents
                     .get(id)
                     .is_some_and(|agent| self.is_from_prior_session(agent))
-        })
+            })
     }
 
     /// Resolve a normalized claim path against this manager's coordination
@@ -6923,15 +7490,30 @@ impl SubAgentManager {
             .map_err(|error| format!("failed to persist test worker spec: {error}"))
     }
 
-    /// Persist the next exact launch generation for a Fleet restart without
-    /// changing the worker's authority, route, prompt, or retained lifecycle
-    /// evidence. The Fleet manager validates the full spec against the task
+    /// Persist the next exact launch generation as prepared for a Fleet restart,
+    /// preserving the worker's authority, route, prompt and retained events.
+    /// The Fleet manager validates the full spec against the task
     /// lease before calling this; this local check makes generation the only
     /// field that can change through this narrow seam.
     pub fn advance_registered_worker_generation(
         &mut self,
         spec: AgentWorkerSpec,
     ) -> Result<(), String> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self
+                .with_store_transaction(|manager| {
+                    manager
+                        .advance_registered_worker_generation(spec)
+                        .map_err(anyhow::Error::msg)
+                })
+                .map_err(|error| error.to_string());
+        }
+
         self.ensure_coordination_process_lock()?;
         let worker_id = spec.worker_id.clone();
         let previous = self
@@ -6939,6 +7521,11 @@ impl SubAgentManager {
             .get(&worker_id)
             .cloned()
             .ok_or_else(|| format!("Fleet worker {worker_id} has no registered launch spec"))?;
+        if previous.prepared_previous_attempt_unsettled {
+            return Err(format!(
+                "Fleet worker {worker_id} still has an unsettled previous launch"
+            ));
+        }
         let old_generation = previous
             .spec
             .launch_manifest
@@ -6952,10 +7539,13 @@ impl SubAgentManager {
             .ok_or_else(|| {
                 format!("Fleet worker {worker_id} replacement has no launch manifest")
             })?;
-        if new_generation != old_generation.saturating_add(1) {
+        let next_generation = old_generation
+            .checked_add(1)
+            .ok_or_else(|| format!("Fleet worker {worker_id} launch generation is exhausted"))?;
+        if new_generation != next_generation {
             return Err(format!(
                 "Fleet worker {worker_id} restart generation must advance from {old_generation} to {}",
-                old_generation.saturating_add(1)
+                next_generation
             ));
         }
         let mut expected = previous.spec.clone();
@@ -6970,13 +7560,23 @@ impl SubAgentManager {
             ));
         }
 
-        let record = self
-            .worker_records
-            .get_mut(&worker_id)
-            .expect("worker record checked above");
-        record.spec = spec;
-        record.updated_at_ms = epoch_millis_now();
-        if let Err(error) = self.persist_state_synchronously() {
+        if self.agents.contains_key(&worker_id) {
+            return Err("Fleet generation preparation requires a headless worker".to_string());
+        }
+        let prepared =
+            previous.prepared_attempt(spec, &mut self.worker_event_seq, epoch_millis_now());
+        self.worker_records.insert(worker_id.clone(), prepared);
+        let publication = (|| -> Result<()> {
+            let Some((_, payload)) = self.build_persist_payload()? else {
+                return Ok(());
+            };
+            let authority = self
+                .store_authority
+                .as_ref()
+                .ok_or_else(|| anyhow!("delegated store authority is unavailable"))?;
+            authority.publish(&payload, None, Some(&worker_id))
+        })();
+        if let Err(error) = publication {
             self.worker_records.insert(worker_id, previous);
             return Err(format!(
                 "failed to persist Fleet restart launch generation: {error}"
@@ -6991,19 +7591,126 @@ impl SubAgentManager {
     /// terminal.
     pub fn project_external_worker_status(
         &mut self,
-        worker_id: &str,
+        expected: &AgentWorkerSpec,
         status: AgentWorkerStatus,
         message: Option<String>,
-    ) -> bool {
-        let Some(record) = self.worker_records.get(worker_id) else {
-            return false;
-        };
-        if record.status == status {
-            return false;
-        }
-        self.record_worker_event(worker_id, status, message, None, None);
-        self.persist_state_best_effort();
-        true
+    ) -> Result<bool> {
+        self.with_store_transaction(|manager| {
+            let worker_id = &expected.worker_id;
+            let Some(record) = manager.worker_records.get(worker_id) else {
+                return Ok(false);
+            };
+            anyhow::ensure!(
+                !record.prepared_previous_attempt_unsettled,
+                "Fleet worker {worker_id} still has an unsettled previous launch"
+            );
+            anyhow::ensure!(
+                manager.owns_store_record(worker_id),
+                "Fleet worker {worker_id} belongs to a live foreign writer"
+            );
+            if &record.spec != expected {
+                let mut prepared = record.spec.clone();
+                if let (Some(manifest), Some(expected_manifest)) = (
+                    prepared.launch_manifest.as_mut(),
+                    expected.launch_manifest.as_ref(),
+                ) {
+                    if record.prepared_generation == Some(manifest.generation)
+                        && expected_manifest.generation.checked_add(1) == Some(manifest.generation)
+                    {
+                        manifest.generation = expected_manifest.generation;
+                        if &prepared == expected {
+                            return Ok(false);
+                        }
+                    }
+                }
+                bail!(
+                    "Fleet worker {worker_id} lifecycle does not match its exact leased launch spec"
+                );
+            }
+            if !status.is_terminal()
+                && (record.prepared_generation.is_some()
+                    || record.status == AgentWorkerStatus::Starting
+                        && record.started_at_ms.is_none())
+            {
+                return Ok(false);
+            }
+            anyhow::ensure!(
+                !record.status.is_terminal() || status.is_terminal(),
+                "Fleet worker {worker_id} already has its winning terminal receipt"
+            );
+            if record.status == status && record.prepared_generation.is_none() {
+                return Ok(false);
+            }
+            manager
+                .worker_records
+                .get_mut(worker_id)
+                .expect("worker checked above")
+                .prepared_generation = None;
+            manager.record_worker_event(worker_id, status, message, None, None);
+            manager.persist_state_synchronously()?;
+            Ok(true)
+        })
+    }
+
+    pub(crate) fn activate_registered_worker_attempt(
+        &mut self,
+        expected: &AgentWorkerSpec,
+    ) -> Result<()> {
+        self.with_store_transaction(|manager| {
+            let worker_id = &expected.worker_id;
+            let record = manager.worker_records.get(worker_id).ok_or_else(|| anyhow!("Fleet worker {worker_id} has no registered launch spec"))?;
+            anyhow::ensure!(!record.prepared_previous_attempt_unsettled, "Fleet worker {worker_id} still has an unsettled previous launch");
+            anyhow::ensure!(manager.owns_store_record(worker_id), "Fleet worker {worker_id} belongs to a live foreign writer");
+            anyhow::ensure!(&record.spec == expected, "Fleet worker {worker_id} activation does not match its exact leased launch spec");
+            anyhow::ensure!(record.status == AgentWorkerStatus::Starting && record.started_at_ms.is_none(), "Fleet worker {worker_id} launch was already admitted or settled; reconcile before retrying");
+            if let Some(prepared) = record.prepared_generation {
+                anyhow::ensure!(expected.launch_manifest.as_ref().is_some_and(|manifest| manifest.generation == prepared), "Fleet worker {worker_id} prepared generation does not match its launch");
+            }
+            manager.worker_records.get_mut(worker_id).expect("worker checked above").prepared_generation = None;
+            manager.worker_records.get_mut(worker_id).expect("worker checked above").launch_admission_version = 1;
+            manager.record_worker_event(worker_id, AgentWorkerStatus::Starting, Some("Fleet executor launch admitted".to_string()), None, None);
+            manager.persist_state_synchronously()
+        })
+    }
+
+    pub(crate) fn confirm_previous_worker_attempt_settled(
+        &mut self,
+        previous: &AgentWorkerSpec,
+    ) -> Result<()> {
+        self.with_store_transaction(|manager| {
+            let worker_id = &previous.worker_id;
+            anyhow::ensure!(
+                manager.owns_store_record(worker_id),
+                "Fleet worker {worker_id} belongs to a live foreign writer"
+            );
+            let record = manager
+                .worker_records
+                .get(worker_id)
+                .ok_or_else(|| anyhow!("Fleet worker {worker_id} has no prepared launch"))?;
+            let mut expected = previous.clone();
+            let manifest = expected
+                .launch_manifest
+                .as_mut()
+                .ok_or_else(|| anyhow!("previous Fleet launch has no manifest"))?;
+            manifest.generation = manifest
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("Fleet launch generation exhausted"))?;
+            let generation = manifest.generation;
+            anyhow::ensure!(
+                record.spec == expected && record.prepared_generation == Some(generation),
+                "Fleet worker {worker_id} stop proof does not match its exact prepared launch"
+            );
+            if record.prepared_previous_attempt_unsettled {
+                manager
+                    .worker_records
+                    .get_mut(worker_id)
+                    .expect("prepared worker checked")
+                    .prepared_previous_attempt_unsettled = false;
+                manager.persist_state_synchronously()?;
+            }
+            Ok(())
+        })
     }
 
     fn record_worker_routed_usage(
@@ -7183,7 +7890,7 @@ impl SubAgentManager {
     }
 
     fn push_worker_event(
-        &mut self,
+        sequence: &mut u64,
         record: &mut AgentWorkerRecord,
         status: AgentWorkerStatus,
         message: Option<String>,
@@ -7191,9 +7898,9 @@ impl SubAgentManager {
         tool_name: Option<String>,
         now_ms: u64,
     ) {
-        self.worker_event_seq = self.worker_event_seq.saturating_add(1);
+        *sequence = sequence.saturating_add(1);
         record.events.push_back(AgentWorkerEvent {
-            seq: self.worker_event_seq,
+            seq: *sequence,
             worker_id: record.spec.worker_id.clone(),
             status,
             timestamp_ms: now_ms,
@@ -7206,19 +7913,17 @@ impl SubAgentManager {
         }
     }
 
-    fn record_worker_event(
-        &mut self,
-        worker_id: &str,
+    fn project_worker_event(
+        sequence: &mut u64,
+        record: &mut AgentWorkerRecord,
         status: AgentWorkerStatus,
         message: Option<String>,
         step: Option<u32>,
         tool_name: Option<String>,
+        now_ms: u64,
     ) {
-        let now_ms = epoch_millis_now();
-        let Some(mut record) = self.worker_records.remove(worker_id) else {
-            return;
-        };
         record.status = status;
+        record.recovery_interrupted = false;
         record.recommended_action = recommended_action_for_worker_status(status, &record.spec);
         record.updated_at_ms = now_ms;
         record.latest_message = message.clone();
@@ -7254,7 +7959,30 @@ impl SubAgentManager {
         if let Some(step) = step {
             record.steps_taken = step;
         }
-        self.push_worker_event(&mut record, status, message, step, tool_name, now_ms);
+        Self::push_worker_event(sequence, record, status, message, step, tool_name, now_ms);
+    }
+
+    fn record_worker_event(
+        &mut self,
+        worker_id: &str,
+        status: AgentWorkerStatus,
+        message: Option<String>,
+        step: Option<u32>,
+        tool_name: Option<String>,
+    ) {
+        let now_ms = epoch_millis_now();
+        let Some(mut record) = self.worker_records.remove(worker_id) else {
+            return;
+        };
+        Self::project_worker_event(
+            &mut self.worker_event_seq,
+            &mut record,
+            status,
+            message,
+            step,
+            tool_name,
+            now_ms,
+        );
         self.worker_records.insert(worker_id.to_string(), record);
         self.reconcile_worker_lifecycle(worker_id);
     }
@@ -7381,7 +8109,11 @@ impl SubAgentManager {
         })
     }
 
-    fn complete_worker_from_result(&mut self, worker_id: &str, result: &SubAgentResult) {
+    fn worker_result_projection(
+        &self,
+        worker_id: &str,
+        result: &SubAgentResult,
+    ) -> Option<(AgentWorkerRecord, u64)> {
         // Delivery verification is deferred: `ensure_worker_delivery_verified`
         // computes it off the lock before the terminal commit (natural and
         // panic paths) or heals it on the next detail read (#6210).
@@ -7400,7 +8132,8 @@ impl SubAgentManager {
             ),
             SubAgentStatus::Running => Some("running".to_string()),
         };
-        if let Some(record) = self.worker_records.get_mut(worker_id) {
+        let mut record = self.worker_records.get(worker_id)?.clone();
+        {
             record.result_summary = result.result.clone();
             record.steps_taken = result.steps_taken;
             // #5906: carry the park/ask distinction from the checkpoint onto
@@ -7415,11 +8148,41 @@ impl SubAgentManager {
                 _ => {}
             }
         }
-        self.record_worker_event(worker_id, status, message, Some(result.steps_taken), None);
+        let mut sequence = self.worker_event_seq;
+        Self::project_worker_event(
+            &mut sequence,
+            &mut record,
+            status,
+            message,
+            Some(result.steps_taken),
+            None,
+            epoch_millis_now(),
+        );
+        Some((record, sequence))
+    }
+
+    #[cfg(test)]
+    fn complete_worker_from_result(&mut self, worker_id: &str, result: &SubAgentResult) {
+        if let Some((record, sequence)) = self.worker_result_projection(worker_id, result) {
+            self.worker_event_seq = sequence;
+            self.worker_records.insert(worker_id.to_string(), record);
+        }
     }
 
     pub fn cancel_agent(&mut self, agent_ref: &str) -> Result<SubAgentResult> {
+        self.with_store_transaction(|held| held.cancel_agent_inner(agent_ref))
+    }
+
+    fn cancel_agent_inner(&mut self, agent_ref: &str) -> Result<SubAgentResult> {
         let agent_id = self.resolve_agent_ref(agent_ref)?;
+        if let Some(pending) = self
+            .agents
+            .get(&agent_id)
+            .and_then(|agent| agent.pending_terminal_result.clone())
+        {
+            self.finish_terminal_result(&agent_id, pending.result, false, true)?;
+            return self.get_result(&agent_id);
+        }
         let mut terminal = {
             let agent = self
                 .agents
@@ -7440,7 +8203,7 @@ impl SubAgentManager {
         terminal.status = SubAgentStatus::Cancelled;
         terminal.result = Some(CANCELLED_BY_PARENT_RESULT.to_string());
         terminal.needs_input = None;
-        if !self.finish_terminal_result(&agent_id, terminal, true, true) {
+        if !self.finish_terminal_result(&agent_id, terminal, true, true)? {
             return self.get_result(&agent_id);
         }
         self.get_result(&agent_id)
@@ -8207,6 +8970,17 @@ impl SubAgentManager {
         caller_agent_id: Option<&str>,
         reason: String,
     ) -> Result<(SubAgentResult, SubAgentResult)> {
+        self.with_store_transaction(|held| {
+            held.interrupt_child_inner(agent_ref, caller_agent_id, reason)
+        })
+    }
+
+    fn interrupt_child_inner(
+        &mut self,
+        agent_ref: &str,
+        caller_agent_id: Option<&str>,
+        reason: String,
+    ) -> Result<(SubAgentResult, SubAgentResult)> {
         if agent_ref.trim().eq_ignore_ascii_case("root") {
             return Err(anyhow!(
                 "Refusing to interrupt root. agents/interrupt fails closed on the root session."
@@ -8243,7 +9017,7 @@ impl SubAgentManager {
         terminal.steps_taken = checkpoint.steps_taken;
         terminal.checkpoint = Some(checkpoint);
         terminal.needs_input = None;
-        if !self.finish_terminal_result(&agent_id, terminal, true, true) {
+        if !self.finish_terminal_result(&agent_id, terminal, true, true)? {
             return Ok((prior, self.get_result(&agent_id)?));
         }
         let snapshot = self.get_result(&agent_id)?;
@@ -8764,6 +9538,27 @@ impl SubAgentManager {
         precomputed_delivery_evidence: Option<DeliveryEvidence>,
         public_child_id: Option<String>,
     ) -> Result<PreparedChild> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self.with_store_transaction(|manager| {
+                manager.prepare_background_with_assignment_options(
+                    manager_handle,
+                    runtime,
+                    agent_type,
+                    prompt,
+                    assignment,
+                    allowed_tools,
+                    options,
+                    precomputed_delivery_evidence,
+                    public_child_id,
+                )
+            });
+        }
+
         if runtime
             .execution_limits
             .as_ref()
@@ -8835,7 +9630,7 @@ impl SubAgentManager {
         // tool-only runtimes) keep `governor: None`.
         runtime.governor = Some(Arc::clone(&self.governor));
 
-        self.cleanup(COMPLETED_AGENT_RETENTION);
+        self.cleanup(COMPLETED_AGENT_RETENTION)?;
 
         self.check_admission_capacity()?;
         if let Some(limits) = runtime.execution_limits.as_ref() {
@@ -9486,6 +10281,17 @@ impl SubAgentManager {
         prepared: PreparedChild,
         mut configuration: FrozenChildConfiguration,
     ) -> Result<(SubAgentResult, Option<ChildActivationContext>)> {
+        if self.state_path.is_some()
+            && !self
+                .store_authority
+                .as_ref()
+                .is_some_and(|authority| authority.is_current_transaction())
+        {
+            return self.with_store_transaction(|manager| {
+                manager.commit_prepared_child(prepared, configuration)
+            });
+        }
+
         if prepared
             .admission
             .as_ref()
@@ -9645,7 +10451,22 @@ impl SubAgentManager {
         &mut self,
         identity: &ChildActivationIdentity,
     ) -> Result<SubAgentResult> {
+        self.with_store_transaction(|held| held.stop_child_activation_inner(identity))
+    }
+
+    fn stop_child_activation_inner(
+        &mut self,
+        identity: &ChildActivationIdentity,
+    ) -> Result<SubAgentResult> {
         for id in self.exact_activation_descendants(identity)? {
+            if let Some(pending) = self
+                .agents
+                .get(&id)
+                .and_then(|agent| agent.pending_terminal_result.clone())
+            {
+                self.finish_terminal_result(&id, pending.result, false, true)?;
+                continue;
+            }
             if let Some(agent) = self.agents.get(&id)
                 && agent.status == SubAgentStatus::Running
                 && !agent.completion_claimed
@@ -9653,7 +10474,7 @@ impl SubAgentManager {
                 let mut result = self.snapshot_for_listing(agent);
                 result.status = SubAgentStatus::Cancelled;
                 result.needs_input = None;
-                self.finish_terminal_result(&id, result, true, true);
+                self.finish_terminal_result(&id, result, true, true)?;
             }
         }
         self.get_result(&identity.child_id)
@@ -9685,6 +10506,10 @@ impl SubAgentManager {
         let expected_status = expected_agent.status.clone();
         let expected_result = expected_agent.result.clone();
         let state_root = self.state_root.clone();
+        let store_authority = self
+            .store_authority
+            .clone()
+            .ok_or_else(|| anyhow!("child activation has no store authority"))?;
         let identity = identity.clone();
         let writer_locks = self
             .coordination_process_lock
@@ -9696,8 +10521,8 @@ impl SubAgentManager {
             .collect::<Vec<_>>();
         Ok(move || {
             let _writer_locks = writer_locks;
-            write_json_atomic(&state_root, &path, &payload)?;
-            let persisted: PersistedSubAgentState = serde_json::from_slice(&fs::read(&path)?)?;
+            store_authority.publish(&payload, None, None)?;
+            let persisted = read_durable_subagent_store(&state_root, &path)?.state;
             let worker = persisted
                 .workers
                 .iter()
@@ -10141,20 +10966,29 @@ impl SubAgentManager {
     /// Clean up stale running agents and completed agents older than the
     /// given duration. Returns the number of running agents auto-cancelled
     /// during this pass.
-    pub fn cleanup(&mut self, max_age: Duration) -> usize {
-        self.cleanup_inner(None, max_age)
+    pub fn cleanup(&mut self, max_age: Duration) -> Result<usize> {
+        self.with_store_transaction(|held| held.cleanup_inner(None, max_age))
     }
 
-    pub fn cleanup_for_session(&mut self, active_session_id: &str, max_age: Duration) -> usize {
-        self.cleanup_inner(Some(active_session_id), max_age)
+    pub fn cleanup_for_session(
+        &mut self,
+        active_session_id: &str,
+        max_age: Duration,
+    ) -> Result<usize> {
+        self.with_store_transaction(|held| held.cleanup_inner(Some(active_session_id), max_age))
     }
 
-    fn cleanup_inner(&mut self, active_session_id: Option<&str>, max_age: Duration) -> usize {
+    fn cleanup_inner(
+        &mut self,
+        active_session_id: Option<&str>,
+        max_age: Duration,
+    ) -> Result<usize> {
         let before = self.agents.len();
         let before_workers = self.worker_records.len();
         let scoped_agent_owners = self
             .agents
             .iter()
+            .filter(|(id, _)| self.owns_store_record(id))
             .filter(|(_, agent)| {
                 active_session_id
                     .is_none_or(|session_id| self.agent_is_owned_by_session(agent, session_id))
@@ -10165,6 +10999,11 @@ impl SubAgentManager {
         let scoped_worker_owners = self
             .worker_records
             .iter()
+            .filter(|(id, record)| {
+                self.owns_store_record(id)
+                    && record.prepared_generation.is_none()
+                    && !record.recovery_interrupted
+            })
             .filter(|(_, record)| {
                 active_session_id.is_none_or(|session_id| {
                     !session_id.is_empty() && record.owner_session_id == session_id
@@ -10180,6 +11019,16 @@ impl SubAgentManager {
             .collect::<Vec<_>>();
         transcript_candidates.sort();
         transcript_candidates.dedup();
+        let pending_terminals = self
+            .agents
+            .values()
+            .filter(|agent| scoped_agent_ids.contains(&agent.id))
+            .filter_map(|agent| agent.pending_terminal_result.clone())
+            .collect::<Vec<_>>();
+        for pending in pending_terminals {
+            let agent_id = pending.result.agent_id.clone();
+            self.finish_terminal_result(&agent_id, pending.result, false, true)?;
+        }
         let mut auto_cancelled = 0;
         let timeout = self.running_heartbeat_timeout;
         let stale_agent_ids = self
@@ -10235,13 +11084,7 @@ impl SubAgentManager {
                 ));
             }
             terminal.needs_input = None;
-            // Cleanup batches stale transitions and persists the final fleet
-            // snapshot once below. Spawning one unordered background write
-            // per child could let an earlier partial snapshot rename last and
-            // resurrect a cancelled worker after restart.
-            // persist_after_commit=true still best-efforts; lock loss only
-            // skips disk — in-memory terminal state always commits.
-            if self.finish_terminal_result(&agent_id, terminal, true, true) {
+            if self.finish_terminal_result(&agent_id, terminal, true, true)? {
                 auto_cancelled += 1;
             }
         }
@@ -10270,19 +11113,27 @@ impl SubAgentManager {
             })
             .map(|(id, _)| id.clone())
             .collect::<HashSet<_>>();
-        self.agents.retain(|agent_id, agent| {
-            if lineage_records.contains(agent_id) || retained_activations.contains(agent_id) {
-                return true;
-            }
-            if active_session_id.is_some() && !scoped_agent_ids.contains(agent_id) {
-                return true;
-            }
-            if agent.status == SubAgentStatus::Running {
-                true
-            } else {
-                agent.started_at.elapsed() < max_age
-            }
-        });
+        let removed_agents = self
+            .agents
+            .extract_if(|agent_id, agent| {
+                if lineage_records.contains(agent_id) || retained_activations.contains(agent_id) {
+                    return false;
+                }
+                if !scoped_agent_ids.contains(agent_id)
+                    || self
+                        .worker_records
+                        .get(agent_id)
+                        .is_some_and(|record| record.recovery_interrupted)
+                {
+                    return false;
+                }
+                if agent.status == SubAgentStatus::Running {
+                    false
+                } else {
+                    agent.started_at.elapsed() >= max_age
+                }
+            })
+            .collect::<Vec<_>>();
         // #4217: age-evict terminal worker ledger entries. Agents already drop
         // after `max_age`, but worker_records previously only had an LRU cap of
         // 256 — long-lived sessions rewrote multi-MB subagents.v1.json forever.
@@ -10293,7 +11144,7 @@ impl SubAgentManager {
             if retained_activations.contains(worker_id) {
                 return true;
             }
-            if active_session_id.is_some() && !scoped_worker_ids.contains(worker_id) {
+            if !scoped_worker_ids.contains(worker_id) {
                 return true;
             }
             if !record.status.is_terminal() {
@@ -10317,8 +11168,42 @@ impl SubAgentManager {
         // Also queue handle-store eviction for the same fully-retired agents
         // (#3885): handles pinned in memory per-agent are freed on the next
         // async drain by callers that hold the SharedHandleStore lock.
+        if self.agents.len() != before
+            || auto_cancelled > 0
+            || self.worker_records.len() != before_workers
+            || self.resume_targets.len() != previous_links
+        {
+            if let Err(error) = self.persist_state_synchronously() {
+                self.agents.extend(removed_agents);
+                return Err(error);
+            }
+        }
+        let durable_ids = self
+            .store_authority
+            .as_ref()
+            .map(|authority| {
+                let state = authority.current_image()?.state;
+                Ok::<_, anyhow::Error>(
+                    state
+                        .agents
+                        .into_iter()
+                        .map(|agent| agent.id)
+                        .chain(
+                            state
+                                .workers
+                                .into_iter()
+                                .map(|record| record.spec.worker_id),
+                        )
+                        .collect::<HashSet<_>>(),
+                )
+            })
+            .transpose()?
+            .unwrap_or_default();
         for agent_id in transcript_candidates {
-            if self.agents.contains_key(&agent_id) || self.worker_records.contains_key(&agent_id) {
+            if self.agents.contains_key(&agent_id)
+                || self.worker_records.contains_key(&agent_id)
+                || durable_ids.contains(&agent_id)
+            {
                 continue;
             }
             if let Err(err) = remove_subagent_transcript_artifact(&self.state_root, &agent_id) {
@@ -10337,15 +11222,8 @@ impl SubAgentManager {
             self.pending_handle_evictions
                 .push((agent_id, owner_session_id));
         }
-        if self.agents.len() != before
-            || auto_cancelled > 0
-            || self.worker_records.len() != before_workers
-            || self.resume_targets.len() != previous_links
-        {
-            self.persist_state_best_effort();
-        }
         self.last_cleanup_at = Some(Instant::now());
-        auto_cancelled
+        Ok(auto_cancelled)
     }
 
     /// #3803: whether enough time has elapsed since the last `cleanup` that the
@@ -10376,8 +11254,8 @@ impl SubAgentManager {
     /// The claim excludes cancellation while deliberately leaving the public
     /// status `Running`. `run_subagent_task` can therefore queue completion to
     /// the parent before the running-child gate closes (#1961). The winning
-    /// finisher performs only non-awaiting channel sends while it owns the
-    /// manager guard, then commits the terminal projections.
+    /// finisher records the durable terminal candidate and queues fan-in
+    /// while it owns the manager guard, then closes the live Running gate.
     fn claim_terminal_delivery(&mut self, agent_id: &str) -> bool {
         let Some(agent) = self.agents.get_mut(agent_id) else {
             return false;
@@ -10389,91 +11267,120 @@ impl SubAgentManager {
         true
     }
 
-    /// Own, publish, and commit one terminal outcome.
+    fn terminal_result_projection(
+        &self,
+        agent_id: &str,
+        mut result: SubAgentResult,
+    ) -> (SubAgentResult, Option<(AgentWorkerRecord, u64)>) {
+        if let Some((status, message)) = self
+            .agents
+            .get(agent_id)
+            .and_then(|agent| agent.requested_stop.clone())
+            && !matches!(result.status, SubAgentStatus::Failed(_))
+        {
+            result.status = status;
+            result.result = message;
+            result.needs_input = None;
+        }
+        result.child_route = self
+            .worker_records
+            .get(agent_id)
+            .and_then(|record| record.spec.child_route.clone());
+        let worker = self.worker_result_projection(agent_id, &result);
+        (result, worker)
+    }
+
+    /// Own, durably commit, and publish one terminal outcome.
     ///
-    /// Claiming first makes natural completion, explicit Stop, coordination
-    /// interrupt, and stale cleanup race on one bit. The winning path attempts
-    /// every live fan-in send while both public projections still read
-    /// Running, then commits the matching agent and worker terminal states.
-    /// Late task output and repeated Stop calls cannot publish a second result.
+    /// Natural completion, Stop, interrupt and cleanup share one terminal
+    /// claim. The public Running gate closes after the durable receipt and
+    /// queued fan-in; failed publication retains the winning result and owner.
     fn finish_terminal_result(
         &mut self,
         agent_id: &str,
         mut result: SubAgentResult,
         abort_task: bool,
         persist_after_commit: bool,
-    ) -> bool {
+    ) -> Result<bool> {
         if result.status == SubAgentStatus::Running || result.agent_id != agent_id {
-            return false;
+            return Ok(false);
         }
-        if abort_task
-            && let Some(agent) = self.agents.get_mut(agent_id)
-            && let Some(token) = agent.stop_token.as_ref()
-        {
-            if agent.status != SubAgentStatus::Running
-                || agent.completion_claimed
-                || agent.requested_stop.is_some()
-            {
-                return false;
-            }
-            // Keep task/claims/fan-in ownership while Core persists its decision
-            // and projects the final checkpoint. The same task performs commit.
-            agent.requested_stop = Some((result.status, result.result));
-            token.cancel();
-            agent.input_tx = None;
-            return true;
-        }
-        if !self.claim_terminal_delivery(agent_id) {
-            return false;
-        }
-        if let Some((status, message)) = self
+        let pending = self
             .agents
-            .get_mut(agent_id)
-            .and_then(|agent| agent.requested_stop.take())
-        {
-            // A failed owned join is uncertain, not a durable Cancelled receipt.
-            if !matches!(result.status, SubAgentStatus::Failed(_)) {
-                result.status = status;
-                result.result = message;
-                result.needs_input = None;
-            }
-        }
-        result.child_route = self
-            .worker_records
             .get(agent_id)
-            .and_then(|record| record.spec.child_route.clone());
-
-        // Nothing a finished agent asked for is pending any more.
-        self.withdraw_child_approvals_for_agent(agent_id);
-        if abort_task
-            && let Some(handle) = self
-                .agents
-                .get_mut(agent_id)
-                .and_then(|agent| agent.task_handle.take())
-        {
-            handle.abort();
-        }
-
+            .and_then(|agent| agent.pending_terminal_result.clone());
+        let worker = if let Some(pending) = pending {
+            result = pending.result;
+            if pending.prepared {
+                pending.worker
+            } else {
+                let (projected, worker) = self.terminal_result_projection(agent_id, result);
+                result = projected;
+                worker
+            }
+        } else {
+            if abort_task
+                && let Some(agent) = self.agents.get_mut(agent_id)
+                && let Some(token) = agent.stop_token.as_ref()
+            {
+                if agent.status != SubAgentStatus::Running
+                    || agent.completion_claimed
+                    || agent.requested_stop.is_some()
+                {
+                    return Ok(false);
+                }
+                agent.requested_stop = Some((result.status, result.result));
+                token.cancel();
+                agent.input_tx = None;
+                return Ok(true);
+            }
+            if !self.claim_terminal_delivery(agent_id) {
+                return Ok(false);
+            }
+            let (projected, worker) = self.terminal_result_projection(agent_id, result);
+            result = projected;
+            worker
+        };
         let delivery = self
             .agents
             .get(agent_id)
             .and_then(|agent| agent.terminal_delivery.clone());
-        if let Some(delivery) = delivery {
-            delivery.deliver(self, &result);
+        if let Some((_, sequence)) = &worker {
+            self.worker_event_seq = self.worker_event_seq.max(*sequence);
         }
-
-        let session_closed = matches!(&result.status, SubAgentStatus::Interrupted(reason)
-            if reason == SUBAGENT_SESSION_CLOSED_REASON);
-        let committed =
-            self.update_from_result_with_persist(agent_id, result, persist_after_commit);
-        if committed && session_closed {
-            // The asynchronous close request retained these exact claims while
-            // its task drained. Retire only after the same terminal commit.
-            self.coordination
-                .write_claims
-                .retain(|record| record.claim.owner != agent_id);
-            self.coordination.prune_claim_scopes();
-            self.persist_state_best_effort();
+        let committed = self.commit_terminal_result(
+            agent_id,
+            result.clone(),
+            worker.clone(),
+            persist_after_commit,
+            abort_task,
+            delivery.clone(),
+        );
+        if let Err(error) = &committed {
+            if let Some(agent) = self.agents.get_mut(agent_id) {
+                agent.pending_terminal_result = Some(PendingTerminalResult {
+                    result,
+                    worker,
+                    prepared: true,
+                });
+                agent.result = Some(format!(
+                    "Worker execution ended, but its durable terminal receipt is uncertain: {error}"
+                ));
+            }
+            if let Some(delivery) = delivery {
+                if let Some(owner) = delivery.event_delivery.as_ref() {
+                    owner.mark_failed();
+                }
+                if let Some(tx) = delivery.event_tx.as_ref() {
+                    send_terminal_event_with_delivery(
+                        tx,
+                        Event::error(codewhale_error_taxonomy::ErrorEnvelope::transient(format!(
+                            "Worker {agent_id} terminal receipt is uncertain: {error}"
+                        ))),
+                        delivery.event_delivery.as_ref(),
+                    );
+                }
+            }
         }
         committed
     }
@@ -10587,36 +11494,116 @@ impl SubAgentManager {
 
     /// Commit a claimed natural task result.
     ///
-    /// Returns `true` only when the prior claim still owns the terminal
-    /// transition. External notification is deliberately queued between
-    /// [`Self::claim_terminal_delivery`] and this commit.
+    /// Returns true only when the claim still owns the terminal transition
+    /// and its durable receipt is acknowledged before the live projection.
     #[cfg(test)]
-    fn update_from_result(&mut self, agent_id: &str, result: SubAgentResult) -> bool {
-        self.update_from_result_with_persist(agent_id, result, true)
+    fn update_from_result(&mut self, agent_id: &str, result: SubAgentResult) -> Result<bool> {
+        self.with_store_transaction(|held| {
+            let worker = held.worker_result_projection(agent_id, &result);
+            held.commit_terminal_result(agent_id, result, worker, true, false, None)
+        })
     }
 
-    fn update_from_result_with_persist(
+    fn commit_terminal_result(
         &mut self,
         agent_id: &str,
-        result: SubAgentResult,
-        persist_after_commit: bool,
-    ) -> bool {
-        let Some(agent) = self.agents.get_mut(agent_id) else {
-            return false;
+        mut result: SubAgentResult,
+        mut worker: Option<(AgentWorkerRecord, u64)>,
+        persist: bool,
+        abort_task: bool,
+        delivery: Option<SubAgentTerminalDeliveryContext>,
+    ) -> Result<bool> {
+        let Some(agent) = self.agents.get(agent_id) else {
+            return Ok(false);
         };
         if agent.status != SubAgentStatus::Running || !agent.completion_claimed {
-            return false;
+            return Ok(false);
         }
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.pending_terminal_result = Some(PendingTerminalResult {
+                result: result.clone(),
+                worker: worker.clone(),
+                prepared: true,
+            });
+        }
+        let session_closed = matches!(&result.status, SubAgentStatus::Interrupted(reason)
+            if reason == SUBAGENT_SESSION_CLOSED_REASON);
+        if persist {
+            if let Some((_, mut payload)) = self.build_persist_payload()? {
+                let agent = payload
+                    .agents
+                    .iter_mut()
+                    .find(|agent| agent.id == agent_id)
+                    .ok_or_else(|| {
+                        anyhow!("terminal worker is absent from persistence snapshot")
+                    })?;
+                agent.status = result.status.clone();
+                agent.assignment = result.assignment.clone();
+                agent.result = result.result.clone();
+                agent.steps_taken = result.steps_taken;
+                agent.checkpoint = result.checkpoint.clone();
+                agent.needs_input = result.needs_input.clone();
+                if let Some((record, _)) = &worker {
+                    let persisted = payload
+                        .workers
+                        .iter_mut()
+                        .find(|record| record.spec.worker_id == agent_id)
+                        .ok_or_else(|| {
+                            anyhow!("terminal worker record is absent from persistence snapshot")
+                        })?;
+                    *persisted = record.clone();
+                }
+                if session_closed {
+                    payload
+                        .coordination
+                        .write_claims
+                        .retain(|record| record.claim.owner != agent_id);
+                    payload.coordination.prune_claim_scopes();
+                }
+                if let Some(record) = self.persist_terminal_candidate(agent_id, payload)? {
+                    result.usage = Some(record.usage.clone());
+                    let sequence = record.events.back().map_or(0, |event| event.seq);
+                    worker = Some((record, sequence));
+                }
+            }
+        }
+        if let Some((record, sequence)) = &worker {
+            self.worker_event_seq = self.worker_event_seq.max(*sequence);
+            self.worker_records
+                .insert(agent_id.to_string(), record.clone());
+        }
+        if let Some(agent) = self.agents.get_mut(agent_id) {
+            agent.pending_terminal_result = Some(PendingTerminalResult {
+                result: result.clone(),
+                worker: worker.clone(),
+                prepared: true,
+            });
+        }
+        self.withdraw_child_approvals_for_agent(agent_id);
+        if abort_task
+            && let Some(handle) = self
+                .agents
+                .get_mut(agent_id)
+                .and_then(|agent| agent.task_handle.take())
+        {
+            handle.abort();
+        }
+        if let Some(delivery) = delivery {
+            delivery.deliver(self, &result);
+        }
+        let agent = self
+            .agents
+            .get_mut(agent_id)
+            .expect("claimed terminal owner");
         agent.status = result.status.clone();
-        agent.assignment = result.assignment.clone();
-        agent.result = result.result.clone();
+        agent.assignment = result.assignment;
+        agent.result = result.result;
         agent.steps_taken = result.steps_taken;
-        agent.checkpoint = result.checkpoint.clone();
-        agent.needs_input = result.needs_input.clone();
-        if result.status != SubAgentStatus::Running {
-            agent.input_tx = None;
-        }
+        agent.checkpoint = result.checkpoint;
+        agent.needs_input = result.needs_input;
+        agent.input_tx = None;
         agent.completion_claimed = false;
+        agent.pending_terminal_result = None;
         agent.task_handle = None;
         agent.stop_token = None;
         agent.requested_stop = None;
@@ -10624,11 +11611,16 @@ impl SubAgentManager {
         drop(agent.unsettled_foreground.take());
         agent.terminal_delivery = None;
         release_resident_leases_for(agent_id);
-        self.complete_worker_from_result(agent_id, &result);
-        if persist_after_commit {
-            self.persist_state_best_effort();
+        if worker.is_some() {
+            self.reconcile_worker_lifecycle(agent_id);
         }
-        true
+        if session_closed {
+            self.coordination
+                .write_claims
+                .retain(|record| record.claim.owner != agent_id);
+            self.coordination.prune_claim_scopes();
+        }
+        Ok(true)
     }
 
     fn update_checkpoint(&mut self, agent_id: &str, checkpoint: SubAgentCheckpoint) -> bool {
@@ -10863,6 +11855,20 @@ pub async fn persist_child_settlement(
     manager: &SharedSubAgentManager,
     identity: &ChildActivationIdentity,
 ) -> Result<SubAgentResult> {
+    let (pending, activation) = {
+        let held = manager.read().await;
+        let agent = held.exact_activation(identity)?;
+        (
+            agent.pending_terminal_result.clone(),
+            agent.activation.clone().expect("validated activation"),
+        )
+    };
+    if let Some(pending) = pending
+        && let Err(error) = finish_terminal_result_owned(manager.clone(), pending.result).await
+    {
+        fail_child_settlement(&activation, &error);
+        return Err(error);
+    }
     let (write, state) = {
         let held = manager.read().await;
         let agent = held.exact_activation(identity)?;
@@ -10903,12 +11909,7 @@ pub async fn persist_child_settlement(
         Err(error) => Err(error),
     };
     if let Err(error) = outcome {
-        if state.admission.borrow().is_none() {
-            state.admission.send_replace(Some(Err(format!("child stopped before startup acknowledgement; durable receipt is uncertain: {error}"))));
-        }
-        state.settlement.send_replace(Some(Err(format!(
-            "child stopped but its durable receipt is unacknowledged: {error}"
-        ))));
+        fail_child_settlement(&state, &error);
         return Err(error);
     }
     let mut held = manager.write().await;
@@ -10941,43 +11942,60 @@ pub async fn persist_child_settlement(
     Ok(result)
 }
 
+fn fail_child_settlement(state: &ChildActivationState, error: &anyhow::Error) {
+    if state.admission.borrow().is_none() {
+        state.admission.send_replace(Some(Err(format!(
+            "child stopped before startup acknowledgement; durable receipt is uncertain: {error}"
+        ))));
+    }
+    state.settlement.send_replace(Some(Err(format!(
+        "child stopped but its durable receipt is unacknowledged: {error}"
+    ))));
+}
+
 pub async fn dispose_child_activation(
     manager: &SharedSubAgentManager,
     identity: &ChildActivationIdentity,
 ) -> Result<SubAgentResult> {
     let deadline = tokio::time::Instant::now() + CHILD_STOP_SETTLE_GRACE;
     loop {
-        let settled = {
-            let mut held = tokio::time::timeout_at(deadline, manager.write())
-                .await
-                .map_err(|_| anyhow!("child disposal could not reach its execution owner"))?;
-            held.stop_child_activation(identity)?;
-            let exact = held.exact_activation(identity)?;
-            if exact.status == SubAgentStatus::Running
-                && exact.activation.as_ref().is_some_and(|state| {
-                    state
-                        .execution_settled
-                        .load(std::sync::atomic::Ordering::Acquire)
-                })
-            {
-                return Err(anyhow!(
-                    "child execution teardown is unresolved; ownership remains retained"
-                ));
-            }
-            held.exact_activation_descendants(identity)?
-                .iter()
-                .all(|id| {
-                    held.agents.get(id).is_some_and(|agent| {
-                        agent.status != SubAgentStatus::Running
-                            && !agent.completion_claimed
-                            && agent.activation.as_ref().is_none_or(|state| {
-                                state
-                                    .execution_settled
-                                    .load(std::sync::atomic::Ordering::Acquire)
-                            })
+        let owner = manager.clone();
+        let owned_identity = identity.clone();
+        let settled = tokio::time::timeout_at(
+            deadline,
+            codewhale_runtime::runtime_control::owner_work(move || {
+                let mut held = owner.blocking_write();
+                held.stop_child_activation(&owned_identity)?;
+                let exact = held.exact_activation(&owned_identity)?;
+                if exact.status == SubAgentStatus::Running
+                    && exact.activation.as_ref().is_some_and(|state| {
+                        state
+                            .execution_settled
+                            .load(std::sync::atomic::Ordering::Acquire)
                     })
-                })
-        };
+                {
+                    return Err(anyhow!(
+                        "child execution teardown is unresolved; ownership remains retained"
+                    ));
+                }
+                Ok(held
+                    .exact_activation_descendants(&owned_identity)?
+                    .iter()
+                    .all(|id| {
+                        held.agents.get(id).is_some_and(|agent| {
+                            agent.status != SubAgentStatus::Running
+                                && !agent.completion_claimed
+                                && agent.activation.as_ref().is_none_or(|state| {
+                                    state
+                                        .execution_settled
+                                        .load(std::sync::atomic::Ordering::Acquire)
+                                })
+                        })
+                    }))
+            }),
+        )
+        .await
+        .map_err(|_| anyhow!("child disposal could not reach its execution owner"))??;
         if settled {
             return persist_child_settlement(manager, identity).await;
         }
@@ -11024,25 +12042,37 @@ async fn run_prepared_subagent_task(
         task.runtime.activation = launch.activation;
         run_subagent_task(task).await;
     } else {
-        let identity = {
+        let (identity, result) = {
             let mut manager = task.manager_handle.write().await;
             let identity = manager
                 .agents
                 .get(&task.agent_id)
                 .and_then(|agent| agent.activation.as_ref())
                 .map(|state| state.identity.clone());
-            if let Ok(mut result) = manager.get_result(&task.agent_id) {
-                result.status = SubAgentStatus::Cancelled;
-                result.result = None;
-                manager.finish_terminal_result(&task.agent_id, result, false, true);
+            if let Some(agent) = manager.agents.get_mut(&task.agent_id)
+                && identity.is_none()
+                && let Some(foreground) = task._foreground_child_registration.take()
+            {
+                agent.unsettled_foreground = Some(foreground);
             }
-            identity
+            (identity, manager.get_result(&task.agent_id))
         };
+        if let Ok(mut result) = result {
+            result.status = SubAgentStatus::Cancelled;
+            result.result = None;
+            if let Err(error) =
+                finish_terminal_result_owned(task.manager_handle.clone(), result).await
+            {
+                tracing::error!(target: "subagent", ?error, "prepared child terminal receipt is uncertain");
+            }
+        }
         if let Some(identity) = identity {
             {
                 let mut held = task.manager_handle.write().await;
                 if let Some(agent) = held.agents.get_mut(&task.agent_id) {
-                    agent.unsettled_foreground = task._foreground_child_registration.take();
+                    if let Some(foreground) = task._foreground_child_registration.take() {
+                        agent.unsettled_foreground = Some(foreground);
+                    }
                     if let Some(state) = agent.activation.as_ref() {
                         state
                             .execution_settled
@@ -11108,8 +12138,13 @@ pub fn load_persisted_agent_worker_records_with_state_root(
     state_root: &Path,
 ) -> Result<Vec<AgentWorkerRecord>> {
     let mut manager =
-        SubAgentManager::new_with_state_root(workspace.to_path_buf(), state_root.to_path_buf(), 1)
-            .with_state_path(default_state_path(state_root)?);
+        SubAgentManager::new_with_state_root(workspace.to_path_buf(), state_root.to_path_buf(), 1);
+    let path = default_state_path(state_root)?;
+    manager.state_path = Some(if path.exists() {
+        path
+    } else {
+        path.with_file_name(LEGACY_SUBAGENT_STATE_FILE)
+    });
     manager.load_state()?;
     Ok(manager.list_worker_records())
 }
@@ -11655,9 +12690,8 @@ pub fn write_subagent_transcript_artifact_for_test(
 
 fn default_state_path(state_root: &Path) -> Result<PathBuf> {
     let state_root = normalize_subagent_workspace(state_root);
-    // Canonical post-rebrand state path. On first run the file won't exist yet;
-    // write_json_atomic creates parent directories. Legacy .deepseek/state/ data
-    // is migrated on load (see load_state).
+    // Canonical delegated state path. Store admission creates its parents and
+    // imports legacy state before allowing durable writes.
     checked_subagent_state_path(
         &state_root,
         &Path::new(".codewhale")
@@ -12113,30 +13147,847 @@ fn instant_from_duration(duration: Duration) -> Instant {
         .unwrap_or_else(Instant::now)
 }
 
-/// `persist_state_best_effort` fires a fresh thread per call, so multiple
-/// persists of the same `state.json` can be in flight at once; the publish
-/// sequence below keeps an older snapshot from replacing a newer one.
-static STATE_PUBLISH_SEQUENCES: std::sync::OnceLock<parking_lot::Mutex<HashMap<PathBuf, u64>>> =
-    std::sync::OnceLock::new();
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DurableSubAgentStore {
+    store_schema: u32,
+    revision: u64,
+    state: PersistedSubAgentState,
+    #[serde(default)]
+    record_writers: HashMap<String, String>,
+    #[serde(default)]
+    writer_sequences: HashMap<String, u64>,
+}
 
-fn write_json_atomic(state_root: &Path, path: &Path, value: &PersistedSubAgentState) -> Result<()> {
+impl DurableSubAgentStore {
+    fn from_legacy(state: PersistedSubAgentState) -> Self {
+        Self {
+            store_schema: 3,
+            revision: 0,
+            state,
+            record_writers: HashMap::new(),
+            writer_sequences: HashMap::new(),
+        }
+    }
+
+    fn validate(&mut self) -> Result<()> {
+        anyhow::ensure!(self.store_schema == 3, "unsupported delegated store format");
+        self.state
+            .validate_worker_origins()
+            .map_err(anyhow::Error::msg)?;
+        self.state
+            .coordination
+            .validate_replay()
+            .map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            self.record_writers.len() <= MAX_AGENT_WORKER_RECORDS * 2
+                && self.writer_sequences.len() <= MAX_AGENT_WORKER_RECORDS * 2,
+            "delegated writer provenance exceeds its capacity"
+        );
+        for writer in self
+            .record_writers
+            .values()
+            .chain(self.writer_sequences.keys())
+        {
+            anyhow::ensure!(
+                valid_store_writer(writer),
+                "invalid delegated writer identity"
+            );
+        }
+        Ok(())
+    }
+}
+
+struct SubAgentStoreTransaction {
+    _file: fs::File,
+    thread: std::thread::ThreadId,
+    image: DurableSubAgentStore,
+    publishes: u64,
+}
+
+struct SubAgentStoreAuthority {
+    state_root: PathBuf,
+    path: PathBuf,
+    writer: String,
+    _lease: fs::File,
+    owned: parking_lot::Mutex<HashSet<String>>,
+    transaction: parking_lot::Mutex<Option<SubAgentStoreTransaction>>,
+    revision: std::sync::atomic::AtomicU64,
+    published_sequence: std::sync::atomic::AtomicU64,
+}
+
+struct SubAgentStoreTransactionLease {
+    authority: Arc<SubAgentStoreAuthority>,
+}
+
+impl Drop for SubAgentStoreTransactionLease {
+    fn drop(&mut self) {
+        self.authority.transaction.lock().take();
+    }
+}
+
+fn valid_store_writer(writer: &str) -> bool {
+    writer.starts_with("boot_")
+        && writer.len() <= 64
+        && writer
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+fn open_store_private_file(root: &Path, path: &Path) -> Result<fs::File> {
+    let path = checked_subagent_state_path(root, path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("delegated store lock has no parent"))?;
+    let name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or_else(|| anyhow!("delegated store lock has no UTF-8 name"))?;
+    let directory = codewhale_config::private_directory::PrivateDirectory::open(parent)?;
+    let file = directory.open_internal_file(name)?;
+    anyhow::ensure!(
+        directory.is_at_selected_path()?,
+        "delegated store directory changed"
+    );
+    Ok(file)
+}
+
+fn acquire_store_transaction(root: &Path, path: &Path) -> Result<fs::File> {
+    anyhow::ensure!(
+        cfg!(any(unix, windows)),
+        "delegated cross-process transactions are unsupported on this platform"
+    );
+    let file = open_store_private_file(root, &path.with_extension("transaction.lock"))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match codewhale_util::lock::try_lock_file_exclusive(&file) {
+            Ok(true) => return Ok(file),
+            Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Ok(false) => {
+                return Err(anyhow!(
+                    "{COORDINATION_LOCK_TIMEOUT_MARKER}; retry delegated operation"
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn decode_subagent_store(raw: &str, allow_legacy: bool) -> Result<DurableSubAgentStore> {
+    let mut value: Value = serde_json::from_str(raw)?;
+    let state = if value.get("state").is_some() {
+        value.get_mut("state").expect("state checked")
+    } else {
+        &mut value
+    };
+    if let Some(workers) = state.get_mut("workers").and_then(Value::as_array_mut) {
+        for worker in workers {
+            if !worker.get("prepared_generation").is_none_or(Value::is_null)
+                && let Some(object) = worker.as_object_mut()
+            {
+                object
+                    .entry("prepared_previous_attempt_unsettled")
+                    .or_insert(Value::Bool(true));
+            }
+        }
+    }
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("delegated store must be an object"))?;
+    let envelope = [
+        "store_schema",
+        "revision",
+        "state",
+        "record_writers",
+        "writer_sequences",
+    ]
+    .iter()
+    .any(|key| object.contains_key(*key));
+    let mut store = if envelope {
+        serde_json::from_value::<DurableSubAgentStore>(value)?
+    } else {
+        anyhow::ensure!(allow_legacy, "delegated store has no format3 discriminator");
+        DurableSubAgentStore::from_legacy(serde_json::from_value::<PersistedSubAgentState>(value)?)
+    };
+    store.validate()?;
+    Ok(store)
+}
+
+fn read_durable_subagent_store(root: &Path, path: &Path) -> Result<DurableSubAgentStore> {
+    decode_subagent_store(&read_subagent_state_file(root, path)?, false)
+}
+
+fn sync_subagent_store_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    fs::File::open(path)?.sync_all()?;
+    let _ = path;
+    Ok(())
+}
+
+fn ensure_subagent_store_cutover(root: &Path, path: &Path) -> Result<()> {
+    if path.file_name() != Some(std::ffi::OsStr::new(SUBAGENT_STATE_FILE)) {
+        if !path.exists() {
+            write_json_atomic(
+                root,
+                path,
+                &DurableSubAgentStore::from_legacy(PersistedSubAgentState::default()),
+            )?;
+        } else {
+            let raw = read_subagent_state_file(root, path)?;
+            let store = decode_subagent_store(&raw, true)?;
+            if serde_json::from_str::<Value>(&raw)?
+                .get("store_schema")
+                .is_none()
+            {
+                write_json_atomic(root, path, &store)?;
+            }
+        }
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("delegated store has no parent"))?;
+    let legacy = parent.join(LEGACY_SUBAGENT_STATE_FILE);
+    reject_root_relative_symlinks(root, &legacy)?;
+    if path.exists() {
+        read_durable_subagent_store(root, path)?;
+        anyhow::ensure!(
+            legacy.is_dir(),
+            "delegated v3 store lost its legacy-write tombstone; inspect retained data before continuing"
+        );
+        let _ = codewhale_config::private_directory::PrivateDirectory::inspect(&legacy)?;
+        return Ok(());
+    }
+    let _migration = if legacy.is_dir() {
+        None
+    } else {
+        Some(CoordinationProcessLock::acquire(root, true)?)
+    };
+    if path.exists() {
+        read_durable_subagent_store(root, path)?;
+        anyhow::ensure!(
+            legacy.is_dir(),
+            "delegated migration did not retain its legacy-write tombstone"
+        );
+        return Ok(());
+    }
+    let staging = parent.join("subagents.v1.cutover");
+    let backup_name = "legacy.json";
+    let original_name = "original.json";
+    if !legacy.is_dir() {
+        let staged = codewhale_config::private_directory::PrivateDirectory::open(&staging)?;
+        let original = staging.join(original_name);
+        let backup = staging.join(backup_name);
+        let source = if legacy.is_file() {
+            Some(legacy.clone())
+        } else if original.is_file() {
+            Some(original.clone())
+        } else if backup.is_file() {
+            Some(backup.clone())
+        } else {
+            let old = checked_subagent_state_path(
+                root,
+                &Path::new(".deepseek")
+                    .join("state")
+                    .join(LEGACY_SUBAGENT_STATE_FILE),
+            )?;
+            old.is_file().then_some(old)
+        };
+        let raw = source
+            .as_ref()
+            .map(|source| read_subagent_state_file(root, source))
+            .transpose()?
+            .unwrap_or(serde_json::to_string(&PersistedSubAgentState::default())?);
+        let state = decode_subagent_store(&raw, true)?.state;
+        anyhow::ensure!(
+            serde_json::from_str::<Value>(&raw)?
+                .get("store_schema")
+                .is_none(),
+            "legacy migration input is already a versioned envelope; retain it for inspection"
+        );
+        state
+            .validate_worker_origins()
+            .map_err(anyhow::Error::msg)?;
+        let mut ledger = state.coordination.clone();
+        ledger.validate_replay().map_err(anyhow::Error::msg)?;
+        codewhale_util::utils::write_atomic(&backup, raw.as_bytes())?;
+        if legacy.is_file() {
+            anyhow::ensure!(
+                !original.exists(),
+                "delegated migration retains a previous legacy file; inspect both before retrying"
+            );
+            fs::rename(&legacy, &original)?;
+            sync_subagent_store_directory(parent)?;
+            sync_subagent_store_directory(&staging)?;
+        }
+        anyhow::ensure!(
+            staged.is_at_selected_path()?,
+            "delegated migration directory changed"
+        );
+        drop(staged);
+        fs::rename(&staging, &legacy)?;
+        sync_subagent_store_directory(parent)?;
+    }
+    let tombstone = codewhale_config::private_directory::PrivateDirectory::inspect(&legacy)?;
+    let raw = read_subagent_state_file(root, &legacy.join(backup_name))?;
+    let state = decode_subagent_store(&raw, true)?.state;
+    anyhow::ensure!(
+        serde_json::from_str::<Value>(&raw)?
+            .get("store_schema")
+            .is_none(),
+        "legacy tombstone backup is a versioned envelope; retain it for inspection"
+    );
+    state
+        .validate_worker_origins()
+        .map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        tombstone.is_at_selected_path()?,
+        "delegated migration tombstone changed"
+    );
+    write_json_atomic(root, path, &DurableSubAgentStore::from_legacy(state))
+}
+
+fn store_writer_is_live(path: &Path, writer: &str) -> bool {
+    if !valid_store_writer(writer) {
+        return true;
+    }
+    let path = path.with_file_name(format!("subagents.v3.writer.{writer}.lock"));
+    let Some(directory) = path.parent() else {
+        return true;
+    };
+    let Ok(parent) = codewhale_config::private_directory::PrivateDirectory::inspect(directory)
+    else {
+        return true;
+    };
+    let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+        return true;
+    };
+    let file = match parent.open_owned_file_for_read(name) {
+        Ok(Some(file)) => file,
+        Ok(None) | Err(_) => return true,
+    };
+    !matches!(
+        codewhale_util::lock::try_lock_file_exclusive(&file),
+        Ok(true)
+    )
+}
+
+fn live_foreign_store_owners(
+    image: &DurableSubAgentStore,
+    path: &Path,
+    writer: &str,
+) -> HashSet<String> {
+    image
+        .record_writers
+        .iter()
+        .filter(|(id, owner)| {
+            owner.as_str() != writer
+                && store_writer_is_live(path, owner)
+                && image
+                    .state
+                    .workers
+                    .iter()
+                    .find(|record| &record.spec.worker_id == *id)
+                    .map_or_else(
+                        || {
+                            image.state.agents.iter().any(|agent| {
+                                &agent.id == *id && agent.status == SubAgentStatus::Running
+                            })
+                        },
+                        |record| {
+                            !record.status.is_terminal()
+                                && !record.parked_at_turn_end
+                                && !(record.status == AgentWorkerStatus::WaitingForUser
+                                    && !image
+                                        .state
+                                        .agents
+                                        .iter()
+                                        .any(|agent| agent.id == record.spec.worker_id))
+                        },
+                    )
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+impl SubAgentStoreAuthority {
+    fn open(root: &Path, path: &Path, writer: &str) -> Result<Arc<Self>> {
+        anyhow::ensure!(
+            valid_store_writer(writer),
+            "invalid delegated writer identity"
+        );
+        let _opening = acquire_store_transaction(root, path)?;
+        ensure_subagent_store_cutover(root, path)?;
+        let image = read_durable_subagent_store(root, path)?;
+        sync_subagent_store_directory(
+            path.parent()
+                .ok_or_else(|| anyhow!("delegated store has no parent"))?,
+        )?;
+        let lease_path = path.with_file_name(format!("subagents.v3.writer.{writer}.lock"));
+        let lease = open_store_private_file(root, &lease_path)?;
+        anyhow::ensure!(
+            codewhale_util::lock::try_lock_file_exclusive(&lease)?,
+            "delegated writer identity is already live"
+        );
+        Ok(Arc::new(Self {
+            state_root: root.to_path_buf(),
+            path: path.to_path_buf(),
+            writer: writer.into(),
+            _lease: lease,
+            owned: parking_lot::Mutex::new(HashSet::new()),
+            transaction: parking_lot::Mutex::new(None),
+            revision: std::sync::atomic::AtomicU64::new(image.revision),
+            published_sequence: std::sync::atomic::AtomicU64::new(
+                image.writer_sequences.get(writer).copied().unwrap_or(0),
+            ),
+        }))
+    }
+
+    fn writer_is_live(&self, writer: &str) -> bool {
+        writer == self.writer || store_writer_is_live(&self.path, writer)
+    }
+
+    fn is_current_transaction(&self) -> bool {
+        self.transaction
+            .lock()
+            .as_ref()
+            .is_some_and(|tx| tx.thread == std::thread::current().id())
+    }
+
+    fn begin(self: &Arc<Self>) -> Result<SubAgentStoreTransactionLease> {
+        anyhow::ensure!(
+            self.transaction.lock().is_none(),
+            "delegated store transaction already belongs to another thread"
+        );
+        let file = acquire_store_transaction(&self.state_root, &self.path)?;
+        let image = read_durable_subagent_store(&self.state_root, &self.path)?;
+        let observed = self.revision.load(std::sync::atomic::Ordering::Acquire);
+        anyhow::ensure!(
+            image.revision >= observed,
+            "delegated store revision regressed; inspect retained state"
+        );
+        if image.revision > observed {
+            sync_subagent_store_directory(
+                self.path
+                    .parent()
+                    .ok_or_else(|| anyhow!("delegated store has no parent"))?,
+            )?;
+            self.revision
+                .store(image.revision, std::sync::atomic::Ordering::Release);
+            self.published_sequence.fetch_max(
+                image
+                    .writer_sequences
+                    .get(&self.writer)
+                    .copied()
+                    .unwrap_or(0),
+                std::sync::atomic::Ordering::AcqRel,
+            );
+        }
+        *self.transaction.lock() = Some(SubAgentStoreTransaction {
+            _file: file,
+            thread: std::thread::current().id(),
+            image,
+            publishes: 0,
+        });
+        Ok(SubAgentStoreTransactionLease {
+            authority: self.clone(),
+        })
+    }
+
+    fn current_image(&self) -> Result<DurableSubAgentStore> {
+        if let Some(tx) = self.transaction.lock().as_ref()
+            && tx.thread == std::thread::current().id()
+        {
+            return Ok(tx.image.clone());
+        }
+        read_durable_subagent_store(&self.state_root, &self.path)
+    }
+
+    fn publish(
+        &self,
+        value: &PersistedSubAgentState,
+        terminal: Option<&str>,
+        generation_prepare: Option<&str>,
+    ) -> Result<()> {
+        let mut current = self.transaction.lock();
+        if let Some(tx) = current.as_mut()
+            && tx.thread == std::thread::current().id()
+        {
+            self.merge_publish(&mut tx.image, value, terminal, true, generation_prepare)?;
+            tx.publishes = tx.publishes.saturating_add(1);
+            return Ok(());
+        }
+        drop(current);
+        anyhow::ensure!(
+            generation_prepare.is_none(),
+            "generation preparation requires its owned store transaction"
+        );
+        let _file = acquire_store_transaction(&self.state_root, &self.path)?;
+        let mut image = read_durable_subagent_store(&self.state_root, &self.path)?;
+        self.merge_publish(&mut image, value, terminal, false, None)
+    }
+
+    fn merge_publish(
+        &self,
+        image: &mut DurableSubAgentStore,
+        value: &PersistedSubAgentState,
+        terminal: Option<&str>,
+        coordination: bool,
+        generation_prepare: Option<&str>,
+    ) -> Result<()> {
+        value
+            .validate_worker_origins()
+            .map_err(anyhow::Error::msg)?;
+        if let Some(id) = terminal {
+            let candidate = value
+                .workers
+                .iter()
+                .find(|worker| worker.spec.worker_id == id)
+                .ok_or_else(|| anyhow!("terminal candidate is missing its worker"))?;
+            anyhow::ensure!(
+                candidate.status.is_terminal(),
+                "terminal candidate is not terminal"
+            );
+            let stable_agent = |agent: Option<&PersistedSubAgent>| -> Result<Option<Value>> {
+                agent
+                    .map(|agent| {
+                        let mut value = serde_json::to_value(agent)?;
+                        if let Some(value) = value.as_object_mut() {
+                            value.remove("updated_at_ms");
+                            value.remove("duration_ms");
+                        }
+                        Ok(value)
+                    })
+                    .transpose()
+            };
+            let stable_worker = |worker: &AgentWorkerRecord| -> Result<Value> {
+                let mut value = serde_json::to_value(worker)?;
+                if let Some(value) = value.as_object_mut() {
+                    for key in [
+                        "usage",
+                        "usage_source_fingerprints",
+                        "missing_usage_sources",
+                        "missing_usage_overflowed",
+                        "legacy_unreported_usage",
+                        "has_unreported_usage",
+                        "updated_at_ms",
+                    ] {
+                        value.remove(key);
+                    }
+                }
+                Ok(value)
+            };
+            if let Some(existing) = image
+                .state
+                .workers
+                .iter()
+                .find(|worker| worker.spec.worker_id == id)
+                && stable_worker(existing)? == stable_worker(candidate)?
+                && stable_agent(image.state.agents.iter().find(|agent| agent.id == id))?
+                    == stable_agent(value.agents.iter().find(|agent| agent.id == id))?
+            {
+                sync_subagent_store_directory(
+                    self.path
+                        .parent()
+                        .ok_or_else(|| anyhow!("delegated store has no parent"))?,
+                )?;
+                return Ok(());
+            }
+        }
+        if image
+            .writer_sequences
+            .get(&self.writer)
+            .is_some_and(|sequence| *sequence >= value.snapshot_sequence)
+        {
+            anyhow::ensure!(
+                terminal.is_none(),
+                "terminal candidate was superseded before durable commit; retain and inspect its winning result"
+            );
+            return Ok(());
+        }
+        let owned = self.owned.lock().clone();
+        let mut selected = owned;
+        if let Some(id) = terminal {
+            selected.insert(id.to_string());
+        }
+        if let Some(id) = generation_prepare {
+            anyhow::ensure!(
+                coordination && terminal.is_none(),
+                "invalid generation preparation publication"
+            );
+            selected.insert(id.to_string());
+        }
+        for agent in &value.agents {
+            if agent.session_boot_id == self.writer
+                || !image.state.agents.iter().any(|saved| saved.id == agent.id)
+                    && !image
+                        .state
+                        .workers
+                        .iter()
+                        .any(|saved| saved.spec.worker_id == agent.id)
+            {
+                selected.insert(agent.id.clone());
+            }
+        }
+        let mut next = image.clone();
+        for id in selected {
+            let preparing = generation_prepare == Some(id.as_str());
+            let retained_writer = next
+                .record_writers
+                .get(&id)
+                .cloned()
+                .filter(|writer| preparing && self.writer_is_live(writer));
+            if let Some(writer) = next.record_writers.get(&id)
+                && writer != &self.writer
+                && self.writer_is_live(writer)
+                && !preparing
+            {
+                return Err(anyhow!(
+                    "delegated worker {id} belongs to a live foreign writer"
+                ));
+            }
+            let incoming = value
+                .workers
+                .iter()
+                .find(|worker| worker.spec.worker_id == id);
+            let existing = next
+                .state
+                .workers
+                .iter()
+                .find(|worker| worker.spec.worker_id == id);
+            let generation = |worker: &AgentWorkerRecord| {
+                worker
+                    .spec
+                    .launch_manifest
+                    .as_ref()
+                    .map_or(0, |manifest| manifest.generation)
+            };
+            if preparing {
+                let existing = existing
+                    .cloned()
+                    .map(normalize_worker_record)
+                    .ok_or_else(|| anyhow!("prepared worker {id} has no durable record"))?;
+                anyhow::ensure!(
+                    !existing.prepared_previous_attempt_unsettled,
+                    "worker {id} still has an unsettled previous launch"
+                );
+                let incoming = incoming
+                    .ok_or_else(|| anyhow!("prepared worker {id} is absent from publication"))?;
+                anyhow::ensure!(
+                    !next.state.agents.iter().any(|agent| agent.id == id)
+                        && !value.agents.iter().any(|agent| agent.id == id),
+                    "generation preparation requires a headless worker"
+                );
+                let mut expected_spec = existing.spec.clone();
+                let manifest = expected_spec
+                    .launch_manifest
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("prepared worker {id} has no launch manifest"))?;
+                manifest.generation = manifest
+                    .generation
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("worker {id} launch generation is exhausted"))?;
+                anyhow::ensure!(
+                    incoming.spec == expected_spec,
+                    "generation preparation changed the worker's exact launch authority"
+                );
+                let event = incoming
+                    .events
+                    .back()
+                    .ok_or_else(|| anyhow!("prepared worker {id} has no event receipt"))?;
+                let latest_seq = next
+                    .state
+                    .workers
+                    .iter()
+                    .flat_map(|record| &record.events)
+                    .map(|event| event.seq)
+                    .max()
+                    .unwrap_or(0);
+                anyhow::ensure!(
+                    event.seq > latest_seq,
+                    "generation preparation has a stale event sequence"
+                );
+                let mut sequence = event
+                    .seq
+                    .checked_sub(1)
+                    .ok_or_else(|| anyhow!("invalid generation event sequence"))?;
+                let expected =
+                    existing.prepared_attempt(expected_spec, &mut sequence, incoming.updated_at_ms);
+                anyhow::ensure!(
+                    serde_json::to_value(&expected)? == serde_json::to_value(incoming)?,
+                    "generation preparation changed unrelated worker receipts"
+                );
+                anyhow::ensure!(
+                    next.state
+                        .worker_origins
+                        .as_ref()
+                        .and_then(|origins| origins.get(&id))
+                        == value
+                            .worker_origins
+                            .as_ref()
+                            .and_then(|origins| origins.get(&id)),
+                    "generation preparation changed worker provenance"
+                );
+            }
+            if let (Some(existing), Some(incoming)) = (existing, incoming) {
+                let resolving_recovery = existing.recovery_interrupted
+                    && !incoming.recovery_interrupted
+                    && incoming.status.is_terminal();
+                anyhow::ensure!(
+                    generation(incoming) >= generation(existing),
+                    "delegated worker {id} has a newer durable launch generation"
+                );
+                if existing.status.is_terminal()
+                    && incoming.status.is_terminal()
+                    && generation(incoming) == generation(existing)
+                    && !resolving_recovery
+                {
+                    anyhow::ensure!(
+                        existing.status == incoming.status
+                            && existing.result_summary == incoming.result_summary
+                            && existing.error == incoming.error
+                            && existing.completed_at_ms == incoming.completed_at_ms,
+                        "delegated worker {id} already has a different winning terminal outcome"
+                    );
+                }
+                if terminal == Some(id.as_str())
+                    && existing.status.is_terminal()
+                    && generation(incoming) == generation(existing)
+                    && !resolving_recovery
+                {
+                    return Err(anyhow!(
+                        "delegated worker {id} already has its winning durable terminal receipt"
+                    ));
+                }
+            }
+            if let (Some(existing), Some(incoming)) = (existing, incoming)
+                && existing.status.is_terminal()
+                && !incoming.status.is_terminal()
+                && generation(incoming) <= generation(existing)
+            {
+                continue;
+            }
+            next.state.agents.retain(|agent| agent.id != id);
+            next.state
+                .workers
+                .retain(|worker| worker.spec.worker_id != id);
+            if let Some(agent) = value.agents.iter().find(|agent| agent.id == id) {
+                next.state.agents.push(agent.clone());
+            }
+            if let Some(worker) = incoming {
+                next.state.workers.push(worker.clone());
+                next.record_writers.insert(
+                    id.clone(),
+                    retained_writer.unwrap_or_else(|| self.writer.clone()),
+                );
+            } else if value.agents.iter().any(|agent| agent.id == id) {
+                next.record_writers.insert(id.clone(), self.writer.clone());
+            } else {
+                next.record_writers.remove(&id);
+            }
+            let origins = next.state.worker_origins.get_or_insert_with(HashMap::new);
+            if let Some(origin) = value
+                .worker_origins
+                .as_ref()
+                .and_then(|origins| origins.get(&id))
+            {
+                origins.insert(id.clone(), origin.clone());
+            } else if let Some(worker) = incoming {
+                origins.insert(
+                    id.clone(),
+                    WorkerOrigin::legacy(worker.owner_session_id.clone()),
+                );
+            } else {
+                origins.remove(&id);
+            }
+            next.state
+                .resume_targets
+                .retain(|source, target| source != &id && target != &id);
+            for (source, target) in &value.resume_targets {
+                if source == &id || target == &id {
+                    next.state
+                        .resume_targets
+                        .insert(source.clone(), target.clone());
+                }
+            }
+        }
+        if coordination {
+            next.state.coordination = value.coordination.clone();
+        }
+        let origin_schema = next.state.schema_version.max(value.schema_version);
+        next.state.schema_version = origin_schema;
+        let ids = next
+            .state
+            .workers
+            .iter()
+            .map(|worker| worker.spec.worker_id.clone())
+            .collect::<HashSet<_>>();
+        next.state
+            .worker_origins
+            .get_or_insert_with(HashMap::new)
+            .retain(|id, _| ids.contains(id));
+        for worker in &next.state.workers {
+            next.state
+                .worker_origins
+                .as_mut()
+                .unwrap()
+                .entry(worker.spec.worker_id.clone())
+                .or_insert_with(|| WorkerOrigin::legacy(worker.owner_session_id.clone()));
+        }
+        if origin_schema == 1 {
+            next.state.worker_origins = None;
+        }
+        next.state.agents.sort_by(|a, b| a.id.cmp(&b.id));
+        next.state
+            .workers
+            .sort_by(|a, b| a.spec.worker_id.cmp(&b.spec.worker_id));
+        let retained_writers = next
+            .record_writers
+            .values()
+            .cloned()
+            .collect::<HashSet<_>>();
+        next.writer_sequences
+            .retain(|writer, _| retained_writers.contains(writer) || self.writer_is_live(writer));
+        next.writer_sequences
+            .insert(self.writer.clone(), value.snapshot_sequence);
+        next.state.snapshot_sequence = next.state.snapshot_sequence.max(value.snapshot_sequence);
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("delegated store revision exhausted"))?;
+        next.validate()?;
+        write_json_atomic(&self.state_root, &self.path, &next)?;
+        self.revision
+            .store(next.revision, std::sync::atomic::Ordering::Release);
+        self.published_sequence.store(
+            value.snapshot_sequence,
+            std::sync::atomic::Ordering::Release,
+        );
+        *self.owned.lock() = next
+            .record_writers
+            .iter()
+            .filter(|(_, writer)| *writer == &self.writer)
+            .map(|(id, _)| id.clone())
+            .collect();
+        *image = next;
+        Ok(())
+    }
+}
+
+fn write_json_atomic(state_root: &Path, path: &Path, value: &DurableSubAgentStore) -> Result<()> {
     let state_root = normalize_subagent_workspace(state_root);
     reject_state_path_symlinks(&state_root, path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let payload = serde_json::to_string_pretty(value)?;
-    let publish_sequences =
-        STATE_PUBLISH_SEQUENCES.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
-    let mut published = publish_sequences.lock();
-    if published
-        .get(path)
-        .is_some_and(|sequence| *sequence > value.snapshot_sequence)
-    {
-        return Ok(());
+    let payload = serde_json::to_vec_pretty(value)?;
+    anyhow::ensure!(
+        payload.len() as u64 <= MAX_SUBAGENT_STATE_BYTES,
+        "delegated store exceeds the 16 MiB limit"
+    );
+    codewhale_util::utils::write_atomic(path, &payload)?;
+    if let Some(parent) = path.parent() {
+        sync_subagent_store_directory(parent)?;
     }
-    codewhale_util::utils::write_atomic(path, payload.as_bytes())?;
-    published.insert(path.to_path_buf(), value.snapshot_sequence);
     Ok(())
 }
 
@@ -12264,8 +14115,13 @@ pub fn new_shared_subagent_manager_with_state_root_and_timeout(
     let state_path = match default_state_path(&state_root) {
         Ok(path) => Some(path),
         Err(err) => {
-            tracing::warn!(target: "subagent", ?err, "failed to resolve sub-agent state path");
-            None
+            tracing::warn!(target: "subagent", ?err, "failed to resolve sub-agent state path; retained path requires validated admission");
+            Some(
+                state_root
+                    .join(".codewhale")
+                    .join("state")
+                    .join(SUBAGENT_STATE_FILE),
+            )
         }
     };
     let manager = if state_root == workspace {
@@ -12295,9 +14151,8 @@ pub fn new_shared_subagent_manager_with_state_root_and_timeout(
     // `persist_state`/`persist_state_synchronously` still checks this
     // manager's coordinator admission before publishing.
     if let Err(err) = manager.load_state() {
-        // Routed through tracing instead of stderr — see comment in
-        // `persist_state_best_effort` above.
-        tracing::warn!(target: "subagent", ?err, "failed to load sub-agent state");
+        manager.coordination_snapshot_read_only = true;
+        tracing::warn!(target: "subagent", ?err, "failed to load sub-agent state; durable writes remain refused");
     }
     Arc::new(RwLock::new(manager))
 }
@@ -13153,8 +15008,16 @@ async fn inspect_agent_from_input(
             &context.state_namespace,
         )
         .await;
+        let owner = manager.clone();
+        let session = context.state_namespace.clone();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            owner
+                .blocking_write()
+                .cleanup_for_session(&session, COMPLETED_AGENT_RETENTION)
+        })
+        .await
+        .map_err(|error| ToolError::execution_failed(error.to_string()))?;
         let mut manager = manager.write().await;
-        manager.cleanup_for_session(&context.state_namespace, COMPLETED_AGENT_RETENTION);
         let payload = if let Some(agent_ref) = agent_ref.as_ref() {
             let source = manager
                 .resolve_agent_ref_for_session(&context.state_namespace, agent_ref)
@@ -13229,8 +15092,16 @@ async fn inspect_agent_from_input(
                 &context.state_namespace,
             )
             .await;
+            let owner = manager.clone();
+            let session = context.state_namespace.clone();
+            codewhale_runtime::runtime_control::owner_work(move || {
+                owner
+                    .blocking_write()
+                    .cleanup_for_session(&session, COMPLETED_AGENT_RETENTION)
+            })
+            .await
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
             let mut manager = manager.write().await;
-            manager.cleanup_for_session(&context.state_namespace, COMPLETED_AGENT_RETENTION);
             let evicted_ids =
                 manager.drain_pending_handle_evictions_for_session(&context.state_namespace);
             let source = manager
@@ -13308,23 +15179,28 @@ async fn cancel_agent_from_input(
     caller_agent_id: Option<&str>,
 ) -> Result<ToolResult, ToolError> {
     let agent_ref = parse_agent_ref(input)?.ok_or_else(|| ToolError::missing_field("agent_id"))?;
-    let (snapshot, worker_record) = {
-        let mut manager = manager.write().await;
+    let owner = manager.clone();
+    let session = context.state_namespace.clone();
+    let caller_agent_id = caller_agent_id.map(str::to_string);
+    let (snapshot, worker_record) = codewhale_runtime::runtime_control::owner_work(move || {
+        let mut manager = owner.blocking_write();
         manager
             .continuation_target_for_caller(
-                &context.state_namespace,
+                &session,
                 &agent_ref,
-                caller_agent_id,
+                caller_agent_id.as_deref(),
                 "agent/cancel",
             )
-            .map_err(|err| ToolError::invalid_input(err.to_string()))?;
-        let snapshot = manager
-            .cancel_agent_for_session(&context.state_namespace, &agent_ref)
-            .map_err(|err| ToolError::invalid_input(err.to_string()))?;
-        let worker_record =
-            manager.get_worker_record_for_session(&context.state_namespace, &snapshot.agent_id);
-        (snapshot, worker_record)
-    };
+            .map_err(|error| anyhow::Error::new(ToolError::invalid_input(error.to_string())))?;
+        let snapshot = manager.cancel_agent_for_session(&session, &agent_ref)?;
+        let worker_record = manager.get_worker_record_for_session(&session, &snapshot.agent_id);
+        Ok((snapshot, worker_record))
+    })
+    .await
+    .map_err(|error| match error.downcast::<ToolError>() {
+        Ok(error) => error,
+        Err(error) => ToolError::execution_failed(error.to_string()),
+    })?;
     let snapshot = settle_requested_child(&manager, snapshot).await;
     let snapshot = preserve_cancelled_work(&manager, snapshot).await;
     let worker_record = manager
@@ -13722,7 +15598,7 @@ async fn spawn_subagent_from_input(
     let origin_workspace = runtime.context.workspace.clone();
     let origin_session = runtime.context.state_namespace.clone();
     let origin_parent = runtime.parent_agent_id.clone();
-    let captured_origin = codewhale_app_server::daemon_socket::owner_work(move || {
+    let captured_origin = codewhale_runtime::runtime_control::owner_work(move || {
         origin_guard
             .capture_direct_worker_origin_for_runtime(
                 &origin_workspace,
@@ -13733,7 +15609,7 @@ async fn spawn_subagent_from_input(
     })
     .await
     .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-    let (child_workspace, mut pending_worktree) = {
+    let (child_workspace, pending_worktree) = {
         let parent_workspace = runtime.context.workspace.clone();
         let cwd = spawn_request.cwd.clone();
         let worktree = spawn_request.worktree.clone();
@@ -13919,9 +15795,6 @@ async fn spawn_subagent_from_input(
     let resident_lease = resident_context
         .as_ref()
         .map(|resident| (resident.lease_key.clone(), resident.display_path.clone()));
-    if let Some((lease_key, display_path)) = resident_lease.as_ref() {
-        reserve_resident_lease(lease_key, display_path)?;
-    }
     // #6210: fingerprint the delivery baseline BEFORE the manager write
     // lock. The child workspace is final here (worktree creation already
     // ran); write capability resolves under the lock, so capture assuming
@@ -13937,8 +15810,6 @@ async fn spawn_subagent_from_input(
     } else {
         None
     };
-    let mut manager_guard = manager.write().await;
-
     let spawn_options = SubAgentSpawnOptions {
         origin: Some(captured_origin),
         name: spawn_request.session_name.clone(),
@@ -13969,19 +15840,15 @@ async fn spawn_subagent_from_input(
         preserve_runtime_profile: None,
         workflow_run_id: workflow_identity.map(|identity| identity.workflow_run_id.clone()),
     };
-    let result = match activation.as_ref() {
-        None => manager_guard.spawn_background_with_assignment_options(
-            Arc::clone(&manager),
-            child_runtime,
-            spawn_request.agent_type,
-            effective_prompt,
-            spawn_request.assignment,
-            spawn_request.allowed_tools,
-            spawn_options,
-            precomputed_delivery_evidence,
-        ),
-        Some(request) => manager_guard
-            .prepare_background_with_assignment_options(
+    let spawn_owner = manager.clone();
+    let result = codewhale_runtime::runtime_control::owner_work(move || {
+        let mut pending_worktree = pending_worktree;
+        if let Some((lease_key, display_path)) = resident_lease.as_ref() {
+            reserve_resident_lease(lease_key, display_path).map_err(anyhow::Error::new)?;
+        }
+        let mut manager_guard = spawn_owner.blocking_write();
+        let result = match activation.as_ref() {
+            None => manager_guard.spawn_background_with_assignment_options(
                 Arc::clone(&manager),
                 child_runtime,
                 spawn_request.agent_type,
@@ -13990,35 +15857,51 @@ async fn spawn_subagent_from_input(
                 spawn_request.allowed_tools,
                 spawn_options,
                 precomputed_delivery_evidence,
-                Some(request.public_child_id.clone()),
-            )
-            .and_then(|prepared| {
-                manager_guard.commit_prepared_child(prepared, request.configuration.clone())
-            })
-            .and_then(|(result, context)| {
-                let context =
-                    context.ok_or_else(|| anyhow!("child activation was not recorded"))?;
-                *request.launched.lock().expect("child activation lock") =
-                    Some((Arc::clone(&manager), context));
+            ),
+            Some(request) => manager_guard
+                .prepare_background_with_assignment_options(
+                    Arc::clone(&manager),
+                    child_runtime,
+                    spawn_request.agent_type,
+                    effective_prompt,
+                    spawn_request.assignment,
+                    spawn_request.allowed_tools,
+                    spawn_options,
+                    precomputed_delivery_evidence,
+                    Some(request.public_child_id.clone()),
+                )
+                .and_then(|prepared| {
+                    manager_guard.commit_prepared_child(prepared, request.configuration.clone())
+                })
+                .and_then(|(result, context)| {
+                    let context =
+                        context.ok_or_else(|| anyhow!("child activation was not recorded"))?;
+                    *request.launched.lock().expect("child activation lock") =
+                        Some((Arc::clone(&manager), context));
+                    Ok(result)
+                }),
+        };
+        match result {
+            Ok(result) => {
+                if let Some((lease_key, _)) = resident_lease.as_ref() {
+                    commit_resident_lease(lease_key, &result.agent_id);
+                }
+                pending_worktree.0 = None;
                 Ok(result)
-            }),
-    };
-    let result = match result {
-        Ok(result) => result,
-        Err(error) => {
-            if let Some((lease_key, _)) = resident_lease.as_ref() {
-                rollback_pending_resident_lease(lease_key);
             }
-            return Err(ToolError::execution_failed(format!(
-                "Failed to spawn sub-agent: {error}"
-            )));
+            Err(error) => {
+                if let Some((lease_key, _)) = resident_lease.as_ref() {
+                    rollback_pending_resident_lease(lease_key);
+                }
+                Err(error)
+            }
         }
-    };
-
-    if let Some((lease_key, _)) = resident_lease.as_ref() {
-        commit_resident_lease(lease_key, &result.agent_id);
-    }
-    pending_worktree.0 = None;
+    })
+    .await
+    .map_err(|error| match error.downcast::<ToolError>() {
+        Ok(error) => error,
+        Err(error) => ToolError::execution_failed(format!("Failed to spawn sub-agent: {error}")),
+    })?;
 
     Ok((result, spawn_metadata))
 }
@@ -14636,9 +16519,16 @@ async fn run_subagent_task(mut task: SubAgentTask) {
     let agent_id = task.agent_id.clone();
     let manager_handle = task.manager_handle.clone();
     let activation = task.runtime.activation.clone();
-    let foreground = activation
-        .as_ref()
-        .and_then(|_| task._foreground_child_registration.take());
+    let foreground = if activation.is_some() {
+        task._foreground_child_registration.take()
+    } else {
+        if let Some(foreground) = task._foreground_child_registration.take()
+            && let Some(agent) = manager_handle.write().await.agents.get_mut(&agent_id)
+        {
+            agent.unsettled_foreground = Some(foreground);
+        }
+        None
+    };
     let outcome = std::panic::AssertUnwindSafe(supervise_subagent_task_body(
         manager_handle.clone(),
         agent_id.clone(),
@@ -14662,6 +16552,52 @@ async fn run_subagent_task(mut task: SubAgentTask) {
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+}
+
+async fn finish_terminal_result_owned(
+    manager: SharedSubAgentManager,
+    result: SubAgentResult,
+) -> Result<bool> {
+    let delivery = {
+        let mut held = manager.write().await;
+        let agent_id = &result.agent_id;
+        if result.status != SubAgentStatus::Running
+            && held.claim_terminal_delivery(agent_id)
+            && let Some(agent) = held.agents.get_mut(agent_id)
+        {
+            agent.pending_terminal_result = Some(PendingTerminalResult {
+                result: result.clone(),
+                worker: None,
+                prepared: false,
+            });
+        }
+        held.agents
+            .get(agent_id)
+            .and_then(|agent| agent.terminal_delivery.as_ref())
+            .and_then(|delivery| delivery.event_delivery.clone())
+            .map(|owner| {
+                owner
+                    .pending
+                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                PendingTerminalEvent {
+                    owner,
+                    delivered: false,
+                }
+            })
+    };
+    codewhale_runtime::runtime_control::owner_work(move || {
+        let mut delivery = delivery;
+        let agent_id = result.agent_id.clone();
+        let mut manager = manager.blocking_write();
+        let committed = manager.with_store_transaction(|held| {
+            held.finish_terminal_result(&agent_id, result, false, true)
+        });
+        if let Some(delivery) = delivery.as_mut() {
+            delivery.delivered = committed.is_ok();
+        }
+        committed
+    })
+    .await
 }
 
 async fn supervise_subagent_task_body(
@@ -14692,12 +16628,11 @@ async fn supervise_subagent_task_body(
     result.needs_input = None;
     // Verification precedes the write lock like the natural epilogue (#6210).
     ensure_worker_delivery_verified(&manager_handle, &agent_id, &result).await;
-    {
-        let mut manager = manager_handle.write().await;
-        // Arbitrated exactly like the natural terminal commit: when a
-        // cancel or another terminal outcome already won, this is a
-        // no-op rather than a second result.
-        manager.finish_terminal_result(&agent_id, result, false, true);
+    // Arbitrated exactly like the natural terminal commit: when a
+    // cancel or another terminal outcome already won, this is a
+    // no-op rather than a second result.
+    if let Err(error) = finish_terminal_result_owned(manager_handle, result).await {
+        tracing::error!(target: "subagent", %agent_id, ?error, "panicked child terminal receipt is uncertain");
     }
     std::panic::resume_unwind(panic);
 }
@@ -14860,7 +16795,7 @@ async fn ensure_worker_delivery_verified(
     let held = manager.clone().read_owned().await;
     let worker = worker_id.to_string();
     let result = result.clone();
-    let snapshot = codewhale_app_server::daemon_socket::owner_work(move || {
+    let snapshot = codewhale_runtime::runtime_control::owner_work(move || {
         let Some(inputs) = held.delivery_verification_inputs(&worker, &result) else {
             return Ok(None);
         };
@@ -15097,10 +17032,17 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
         }
     }
 
-    let turn_end_parking = task
-        ._foreground_child_registration
-        .as_ref()
-        .map(ForegroundChildRegistration::parking_signal);
+    let turn_end_parking = if let Some(foreground) = task._foreground_child_registration.as_ref() {
+        Some(foreground.parking_signal())
+    } else {
+        task.manager_handle
+            .read()
+            .await
+            .agents
+            .get(&task.agent_id)
+            .and_then(|agent| agent.unsettled_foreground.as_ref())
+            .map(ForegroundChildRegistration::parking_signal)
+    };
     // Every inner stage bounds itself by the owner-selected `deadline`,
     // so the inner run can always produce its own receipt: the specific stop
     // cause and preserved usage. This outer backstop
@@ -15219,7 +17161,9 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
                 )
             });
             agent.unsettled_launch = Some(std::mem::take(&mut _launch_permits));
-            agent.unsettled_foreground = task._foreground_child_registration.take();
+            if let Some(foreground) = task._foreground_child_registration.take() {
+                agent.unsettled_foreground = Some(foreground);
+            }
         }
         if let Some(record) = manager.worker_records.get_mut(&agent_id) {
             record.error = Some(note.clone());
@@ -15312,16 +17256,28 @@ async fn run_subagent_task_inner(mut task: SubAgentTask) {
     // coordination interrupt, and stale cleanup — arbitrates and publishes
     // through `finish_terminal_result`. Cancellation that already won leaves
     // this late epilogue with no claim and therefore no duplicate fan-in.
-    let terminal_committed = {
+    {
         let mut manager = task.manager_handle.write().await;
-        manager.finish_terminal_result(&agent_id, terminal, false, true)
-    };
-    if !terminal_committed {
-        tracing::debug!(
+        if let Some(agent) = manager.agents.get_mut(&agent_id) {
+            if !_launch_permits.is_empty() {
+                agent.unsettled_launch = Some(std::mem::take(&mut _launch_permits));
+            }
+            if let Some(foreground) = task._foreground_child_registration.take() {
+                agent.unsettled_foreground = Some(foreground);
+            }
+        }
+    }
+    match finish_terminal_result_owned(task.manager_handle.clone(), terminal).await {
+        Ok(true) => {}
+        Ok(false) => tracing::debug!(
             target: "subagent",
             agent_id = %agent_id,
             "suppressing late task completion after another terminal outcome won"
-        );
+        ),
+        Err(error) => tracing::error!(
+            target: "subagent", agent_id = %agent_id, ?error,
+            "child terminal receipt is uncertain; ownership retained"
+        ),
     }
 }
 
@@ -16156,61 +18112,9 @@ fn retryable_subagent_provider_failure(
 }
 
 fn is_transient_subagent_provider_error(error: &anyhow::Error) -> bool {
-    // Durable account, model, and policy refusals outrank message text: a
-    // quota error mentioning "429" is not a transient rate limit. Retain the
-    // transport fallback for generic/parse errors and relay HTTP 400s, which
-    // can carry an upstream timeout rather than an invalid request.
-    let message = format!("{error:#}").to_ascii_lowercase();
-    if crate::llm_client::image_count_rejection(&message).is_some() {
-        return false;
-    }
-    match error.downcast_ref::<LlmError>() {
-        Some(
-            LlmError::QuotaExhausted(_)
-            | LlmError::AuthenticationError(_)
-            | LlmError::AuthorizationError(_)
-            | LlmError::ModelError(_)
-            | LlmError::ContentPolicyError(_)
-            | LlmError::ContextLengthError(_),
-        ) => return false,
-        Some(error) if error.is_retryable() => return true,
-        _ => {}
-    }
-
-    [
-        "did not receive response headers",
-        "response headers",
-        "stream request",
-        "request timed out",
-        "operation timed out",
-        "deadline has elapsed",
-        "connection reset",
-        "connection closed",
-        "connection aborted",
-        "temporarily unavailable",
-        "bad gateway",
-        "gateway timeout",
-        "service unavailable",
-        "rate limited",
-        "rate_limit",
-        "rate_limited",
-        "too many requests",
-        "429",
-        "502",
-        "503",
-        "504",
-        // Body/decode failures are transport-class: the provider accepted the
-        // request and died mid-response (a DeepSeek stream decode error killed
-        // a 141s scout with zero retries — morning-report issue #7). One
-        // same-prompt retry is cheap next to re-planning the child.
-        "error decoding response body",
-        "failed to read chat api response body",
-        "failed to parse chat api json",
-        "unexpected end of file",
-        "incomplete message",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
+    error
+        .downcast_ref::<LlmError>()
+        .is_some_and(LlmError::is_retryable)
 }
 
 fn record_agent_progress(
@@ -19871,7 +21775,9 @@ fn subagent_failure_message(err: &anyhow::Error) -> String {
         Some(LlmError::RateLimited { .. }) => Some("rate_limited"),
         Some(LlmError::QuotaExhausted(_)) => Some("quota_exhausted"),
         Some(LlmError::ServerError { .. }) => Some("server"),
-        Some(LlmError::NetworkError(_)) | Some(LlmError::Timeout(_)) => Some("network"),
+        Some(LlmError::NetworkError(_))
+        | Some(LlmError::ConnectError { .. })
+        | Some(LlmError::Timeout(_)) => Some("network"),
         Some(LlmError::AuthenticationError(_)) | Some(LlmError::AuthorizationError(_)) => {
             Some("auth")
         }

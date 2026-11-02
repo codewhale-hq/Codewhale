@@ -53,6 +53,22 @@ for await (const event of client.fleetEvents(created.run.id, { after: cursor }))
 }
 ```
 
+## Shared Runtime contracts
+
+The existing thread-event declaration consumes the Runtime envelope generated
+from `crates/app-server-protocol`. Image, capability and dynamic-tool types are
+exported from the same generated file; the SDK does not maintain another copy.
+Generate the JSON Schema and TypeScript package outputs with
+`cargo run -p codewhale-app-server-protocol --features schema --bin codewhale-app-server-schema -- --write`.
+Use `--check` to verify the committed schema and both TypeScript destinations.
+This ownership change does not add Codex RPC methods or turn/interaction helpers.
+
+Input defaults remain optional in DynamicToolSpec and DynamicToolCallResult.
+DynamicToolSpecOutput describes the serialized spec published in thread metadata;
+Runtime event/capability fields describe the server's emitted representation.
+Generated Json admits omitted undefined object members, while its root and array
+values exclude undefined. The Native host generator keeps its existing format.
+
 ## Fleet Helpers
 
 - `listFleetRuns()`

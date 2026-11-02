@@ -9,6 +9,13 @@ use unicode_width::UnicodeWidthStr;
 use codewhale_palette as palette;
 
 const LINE_NUMBER_WIDTH: usize = 4;
+const MAX_RETAINED_ROWS: usize = 512;
+const MAX_ROW_BYTES: usize = 32 * 1024;
+const INTRALINE_MAX_BYTES: usize = 8 * 1024;
+const INTRALINE_MAX_TOKENS: usize = 256;
+const INTRALINE_MAX_WORK: usize = 65_536;
+const INTRALINE_RUN_BYTES: usize = 128 * 1024;
+const INTRALINE_RUN_WORK: usize = 1_048_576;
 
 /// Below this word-level similarity a replaced line pair is rewritten, not
 /// edited, and emphasising the changed words would light up the whole row.
@@ -22,8 +29,16 @@ const INTRALINE_MAX_RUN: usize = 64;
 type Segment = (String, bool);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffFileSummary {
-    pub path: String,
+pub struct DiffFileSummary<'a> {
+    pub path: &'a str,
+    pub added: usize,
+    pub deleted: usize,
+    pub hunks: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiffTotals {
+    pub files: usize,
     pub added: usize,
     pub deleted: usize,
     pub hunks: usize,
@@ -31,161 +46,237 @@ pub struct DiffFileSummary {
 
 /// A rendered diff preview with an exact count of rows not retained.
 ///
-/// The renderer still scans the complete diff so summaries and omission
-/// counts stay truthful, but it never accumulates more than the requested
-/// number of body rows. This keeps narrow, generated diffs from first
-/// materializing an unbounded `Vec<Line>` only to be truncated by a caller.
+/// The renderer scans the complete diff so summaries and omission counts stay
+/// truthful, retaining only a finite row window and bounded text per row.
 #[derive(Debug, Clone)]
 pub struct BoundedDiffRender {
     pub lines: Vec<Line<'static>>,
     pub origins: Vec<usize>,
     pub omitted_rows: usize,
+    pub omitted_summary_rows: usize,
+    pub omitted_body_rows: usize,
+    pub clipped_rows: usize,
+    pub clipped_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiffSearchResult {
+    pub total_matches: usize,
+    pub selected_index: usize,
+    pub selected_row: Option<usize>,
+    pub selected_origin: Option<usize>,
 }
 
 pub fn render_diff(diff: &str, width: u16) -> Vec<Line<'static>> {
-    render_diff_bounded(diff, width, usize::MAX).lines
+    let mut rendered = render_diff_bounded(diff, width, MAX_RETAINED_ROWS);
+    if rendered.omitted_rows > 0 {
+        rendered.lines.pop();
+        let notice = format!("+{} …", rendered.omitted_rows.saturating_add(1));
+        let notice = if crate::ui_text::text_display_width(&notice) <= usize::from(width.max(1)) {
+            notice
+        } else {
+            "…".to_string()
+        };
+        rendered.lines.push(Line::from(Span::styled(
+            notice,
+            Style::default().fg(palette::TEXT_MUTED),
+        )));
+    }
+    rendered.lines
 }
 
-/// Render a diff summary and at most `max_body_rows` rows of diff evidence.
+/// Render a diff summary and body within one finite total row budget.
 #[must_use]
-pub fn render_diff_bounded(diff: &str, width: u16, max_body_rows: usize) -> BoundedDiffRender {
-    let summaries = summarize_diff(diff);
-    let mut rendered = render_diff_body_bounded(diff, width, max_body_rows);
-    if !summaries.is_empty() {
-        let mut lines = render_diff_summary(&summaries, width);
-        let mut origins = vec![0; lines.len()];
-        origins.extend(rendered.origins.iter().map(|origin| origin + 1));
-        lines.append(&mut rendered.lines);
-        rendered.lines = lines;
-        rendered.origins = origins;
-    }
-    rendered
+pub fn render_diff_bounded(diff: &str, width: u16, max_rows: usize) -> BoundedDiffRender {
+    render_diff_window(diff, width, 0, max_rows)
+}
+
+#[must_use]
+pub fn render_diff_window(
+    diff: &str,
+    width: u16,
+    start_row: usize,
+    max_rows: usize,
+) -> BoundedDiffRender {
+    let mut collector = BoundedLineCollector::new(start_row, max_rows);
+    render_diff_into(diff, width, true, &mut collector);
+    collector.finish()
 }
 
 /// Render only the diff body. Callers that already own a semantic summary use
 /// this form so the bounded preview budget is spent on the actual red/green
 /// evidence instead of a second, generic summary.
-/// Render at most `max_rows` body rows while counting every omitted wrapped
-/// row. Allocation is bounded by the retained preview, one source line's
-/// wrapped representation, and the current `-`/`+` run: its line slices
-/// (borrowed, pointer-sized) plus word segments for at most
-/// `INTRALINE_MAX_RUN` replaced pairs — never by the size of the complete
-/// diff.
+/// Allocation is bounded by the retained rows and the current replacement run;
+/// skipped wrapped rows and no-newline markers do not accumulate in vectors.
 #[must_use]
 pub fn render_diff_body_bounded(diff: &str, width: u16, max_rows: usize) -> BoundedDiffRender {
-    let mut collector = BoundedLineCollector::new(max_rows);
-    let mut old_line: Option<usize> = None;
-    let mut new_line: Option<usize> = None;
+    let mut collector = BoundedLineCollector::new(0, max_rows);
+    render_diff_into(diff, width, false, &mut collector);
+    collector.finish()
+}
 
-    let mut lines = diff.lines().peekable();
-    'line: while let Some(raw) = lines.next() {
-        if raw.starts_with("diff --git") || raw.starts_with("index ") {
-            collector.extend(render_header_line(raw, width));
+#[must_use]
+pub fn search_diff(diff: &str, width: u16, query: &str, match_index: usize) -> DiffSearchResult {
+    let query = query.trim();
+    if query.is_empty() {
+        return DiffSearchResult::default();
+    }
+    let mut collector = BoundedLineCollector::new(0, 0);
+    collector.search = Some((query.to_ascii_lowercase(), match_index));
+    render_diff_into(diff, width, true, &mut collector);
+    collector.search_result
+}
+
+#[must_use]
+pub fn search_diff_from_origin(
+    diff: &str,
+    width: u16,
+    query: &str,
+    origin: usize,
+) -> DiffSearchResult {
+    let query = query.trim();
+    if query.is_empty() {
+        return DiffSearchResult::default();
+    }
+    let mut collector = BoundedLineCollector::new(0, 0);
+    collector.search = Some((query.to_ascii_lowercase(), 0));
+    collector.search_origin = Some(origin);
+    render_diff_into(diff, width, true, &mut collector);
+    collector.search_result
+}
+
+#[must_use]
+pub fn diff_row_for_origin(diff: &str, width: u16, origin: usize) -> usize {
+    let mut collector = BoundedLineCollector::new(0, 0);
+    collector.anchor_origin = Some(origin);
+    render_diff_into(diff, width, true, &mut collector);
+    collector
+        .anchor_row
+        .unwrap_or_else(|| collector.total_rows.saturating_sub(1))
+}
+
+fn render_diff_into(diff: &str, width: u16, summary: bool, collector: &mut BoundedLineCollector) {
+    let totals = summary.then(|| diff_totals(diff)).unwrap_or_default();
+    let origin_offset = usize::from(totals.files > 0);
+    if totals.files > 0 {
+        render_diff_summary(diff, totals, width, collector);
+        collector.summary_rows = collector.total_rows;
+        collector.summary_retained = collector.lines.len();
+    }
+    let mut old_line = None;
+    let mut new_line = None;
+    let mut lines = diff.lines().enumerate().peekable();
+    'line: while let Some((origin, raw)) = lines.next() {
+        let origin = origin.saturating_add(origin_offset);
+        if raw.starts_with("diff --git")
+            || raw.starts_with("index ")
+            || raw.starts_with("--- ")
+            || raw.starts_with("+++ ")
+        {
+            render_header_line(raw, width, origin, collector);
             continue;
         }
-
-        if raw.starts_with("--- ") || raw.starts_with("+++ ") {
-            collector.extend(render_header_line(raw, width));
-            continue;
-        }
-
         if raw.starts_with("@@") {
             if let Some((old_start, new_start)) = parse_hunk_header(raw) {
                 old_line = Some(old_start);
                 new_line = Some(new_start);
             }
-            collector.extend(render_hunk_header(raw, width));
-            continue;
-        }
-
-        if is_no_newline_marker(raw) {
-            collector.extend(render_header_line(raw, width));
-            continue;
-        }
-
-        if is_added(raw) {
-            let content = &raw[1..];
-            collector.extend(render_diff_line(
-                content,
+            render_styled_text(
+                &[raw],
+                Style::default().fg(palette::WHALE_ACTION),
                 width,
-                old_line,
-                new_line,
-                '+',
-                added_style(),
-                None,
-            ));
-            if let Some(line) = new_line.as_mut() {
-                *line = line.saturating_add(1);
-            }
+                origin,
+                collector,
+            );
             continue;
         }
-
+        if is_no_newline_marker(raw) {
+            render_header_line(raw, width, origin, collector);
+            continue;
+        }
+        if is_added(raw) {
+            render_plain_diff_line(
+                collector,
+                &raw[1..],
+                width,
+                origin,
+                &mut old_line,
+                &mut new_line,
+                '+',
+            );
+            continue;
+        }
         if is_deleted(raw) {
             // A deleted run followed by an added run of the same length is a
             // set of replaced lines: emphasise the words that changed within
             // each pair. Any other shape renders line by line as before.
-            let mut removed = vec![&raw[1..]];
-            let mut added: Vec<&str> = Vec::new();
-            let mut removed_markers: Vec<(usize, &str)> = Vec::new();
-            let mut added_markers: Vec<(usize, &str)> = Vec::new();
+            let mut removed = vec![RunLine::new(&raw[1..], origin)];
+            let mut added: Vec<RunLine<'_>> = Vec::new();
             loop {
-                if let Some(marker) = lines.next_if(|next| is_no_newline_marker(next)) {
-                    if added.is_empty() {
-                        removed_markers.push((removed.len() - 1, marker));
+                if let Some((marker_origin, marker)) =
+                    lines.next_if(|(_, next)| is_no_newline_marker(next))
+                {
+                    let line = if added.is_empty() {
+                        removed.last_mut()
                     } else {
-                        added_markers.push((added.len() - 1, marker));
+                        added.last_mut()
+                    };
+                    if let Some(line) = line {
+                        line.marker(diff, marker, marker_origin.saturating_add(origin_offset));
                     }
                 } else if added.is_empty()
-                    && let Some(next) = lines.next_if(|next| is_deleted(next))
+                    && let Some((next_origin, next)) = lines.next_if(|(_, next)| is_deleted(next))
                 {
+                    let origin = next_origin.saturating_add(origin_offset);
                     if removed.len() < INTRALINE_MAX_RUN {
-                        removed.push(&next[1..]);
+                        removed.push(RunLine::new(&next[1..], origin));
                     } else {
                         flush_plain_run(
-                            &mut collector,
+                            collector,
                             &removed,
-                            &removed_markers,
                             '-',
                             width,
                             &mut old_line,
                             &mut new_line,
                         );
                         render_plain_diff_line(
-                            &mut collector,
+                            collector,
                             &next[1..],
                             width,
+                            origin,
                             &mut old_line,
                             &mut new_line,
                             '-',
                         );
                         continue 'line;
                     }
-                } else if let Some(next) = lines.next_if(|next| is_added(next)) {
+                } else if let Some((next_origin, next)) = lines.next_if(|(_, next)| is_added(next))
+                {
+                    let origin = next_origin.saturating_add(origin_offset);
                     if added.len() < INTRALINE_MAX_RUN {
-                        added.push(&next[1..]);
+                        added.push(RunLine::new(&next[1..], origin));
                     } else {
                         flush_plain_run(
-                            &mut collector,
+                            collector,
                             &removed,
-                            &removed_markers,
                             '-',
                             width,
                             &mut old_line,
                             &mut new_line,
                         );
                         flush_plain_run(
-                            &mut collector,
+                            collector,
                             &added,
-                            &added_markers,
                             '+',
                             width,
                             &mut old_line,
                             &mut new_line,
                         );
                         render_plain_diff_line(
-                            &mut collector,
+                            collector,
                             &next[1..],
                             width,
+                            origin,
                             &mut old_line,
                             &mut new_line,
                             '+',
@@ -196,67 +287,61 @@ pub fn render_diff_body_bounded(diff: &str, width: u16, max_rows: usize) -> Boun
                     break;
                 }
             }
-
-            let pairs: Vec<Option<(Vec<Segment>, Vec<Segment>)>> =
-                if removed.len() == added.len() && removed.len() <= INTRALINE_MAX_RUN {
-                    removed
-                        .iter()
-                        .zip(&added)
-                        .map(|(old, new)| intraline_segments(old, new))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-
-            for (idx, content) in removed.iter().enumerate() {
-                let emphasis = pairs
-                    .get(idx)
-                    .and_then(|pair| pair.as_ref().map(|(old, _)| old.as_slice()));
-                collector.extend(render_diff_line(
-                    content,
-                    width,
-                    old_line,
-                    new_line,
-                    '-',
-                    deleted_style(),
-                    emphasis,
-                ));
-                if let Some(line) = old_line.as_mut() {
-                    *line = line.saturating_add(1);
-                }
-                for &(marker_idx, marker) in &removed_markers {
-                    if marker_idx == idx {
-                        collector.extend(render_header_line(marker, width));
-                    }
-                }
-            }
-            for (idx, content) in added.iter().enumerate() {
-                let emphasis = pairs
-                    .get(idx)
-                    .and_then(|pair| pair.as_ref().map(|(_, new)| new.as_slice()));
-                collector.extend(render_diff_line(
-                    content,
-                    width,
-                    old_line,
-                    new_line,
-                    '+',
-                    added_style(),
-                    emphasis,
-                ));
-                if let Some(line) = new_line.as_mut() {
-                    *line = line.saturating_add(1);
-                }
-                for &(marker_idx, marker) in &added_markers {
-                    if marker_idx == idx {
-                        collector.extend(render_header_line(marker, width));
-                    }
+            let mut byte_budget = INTRALINE_RUN_BYTES;
+            let mut work_budget = INTRALINE_RUN_WORK;
+            let pairs: Vec<_> = if removed.len() == added.len() {
+                removed
+                    .iter()
+                    .zip(&added)
+                    .map(|(old, new)| {
+                        intraline_segments(
+                            old.content,
+                            new.content,
+                            &mut byte_budget,
+                            &mut work_budget,
+                        )
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for (sign, run) in [('-', &removed), ('+', &added)] {
+                for (index, line) in run.iter().enumerate() {
+                    let emphasis =
+                        pairs
+                            .get(index)
+                            .and_then(|pair| pair.as_ref())
+                            .map(|(old, new)| {
+                                if sign == '-' {
+                                    old.as_slice()
+                                } else {
+                                    new.as_slice()
+                                }
+                            });
+                    let style = if sign == '-' {
+                        deleted_style()
+                    } else {
+                        added_style()
+                    };
+                    render_diff_line(
+                        line.content,
+                        width,
+                        old_line,
+                        new_line,
+                        sign,
+                        style,
+                        emphasis,
+                        line.origin,
+                        collector,
+                    );
+                    increment_line(sign, &mut old_line, &mut new_line);
+                    line.render_markers(width, collector);
                 }
             }
             continue;
         }
-
         if let Some(content) = raw.strip_prefix(' ') {
-            collector.extend(render_diff_line(
+            render_diff_line(
                 content,
                 width,
                 old_line,
@@ -264,229 +349,331 @@ pub fn render_diff_body_bounded(diff: &str, width: u16, max_rows: usize) -> Boun
                 ' ',
                 Style::default().fg(palette::TEXT_PRIMARY),
                 None,
-            ));
-            if let Some(line) = old_line.as_mut() {
-                *line = line.saturating_add(1);
-            }
-            if let Some(line) = new_line.as_mut() {
-                *line = line.saturating_add(1);
-            }
+                origin,
+                collector,
+            );
+            increment_line(' ', &mut old_line, &mut new_line);
             continue;
         }
+        render_header_line(raw, width, origin, collector);
+    }
+}
 
-        collector.extend(render_header_line(raw, width));
+struct RunLine<'a> {
+    content: &'a str,
+    origin: usize,
+    markers: &'a str,
+    marker_origin: usize,
+}
+
+impl<'a> RunLine<'a> {
+    fn new(content: &'a str, origin: usize) -> Self {
+        Self {
+            content,
+            origin,
+            markers: "",
+            marker_origin: 0,
+        }
     }
 
-    collector.finish()
+    fn marker(&mut self, diff: &'a str, marker: &'a str, origin: usize) {
+        let start = if self.markers.is_empty() {
+            self.marker_origin = origin;
+            marker.as_ptr() as usize - diff.as_ptr() as usize
+        } else {
+            self.markers.as_ptr() as usize - diff.as_ptr() as usize
+        };
+        let end = marker.as_ptr() as usize - diff.as_ptr() as usize + marker.len();
+        self.markers = &diff[start..end];
+    }
+
+    fn render_markers(&self, width: u16, collector: &mut BoundedLineCollector) {
+        for (index, marker) in self.markers.lines().enumerate() {
+            render_header_line(
+                marker,
+                width,
+                self.marker_origin.saturating_add(index),
+                collector,
+            );
+        }
+    }
 }
 
 struct BoundedLineCollector {
     lines: Vec<Line<'static>>,
     origins: Vec<usize>,
+    start_row: usize,
     max_rows: usize,
     total_rows: usize,
-    source_rows: usize,
+    summary_rows: usize,
+    summary_retained: usize,
+    clipped_rows: usize,
+    clipped_bytes: usize,
+    search: Option<(String, usize)>,
+    search_origin: Option<usize>,
+    search_origin_found: bool,
+    search_result: DiffSearchResult,
+    anchor_origin: Option<usize>,
+    anchor_row: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct RowCapture {
+    start: usize,
+    end: usize,
+    search: bool,
+    bytes: usize,
+    columns: usize,
+}
+
+impl RowCapture {
+    fn keeps(self, row: usize) -> bool {
+        self.search || (self.start..self.end).contains(&row)
+    }
 }
 
 impl BoundedLineCollector {
-    fn new(max_rows: usize) -> Self {
+    fn new(start_row: usize, max_rows: usize) -> Self {
+        let max_rows = max_rows.min(MAX_RETAINED_ROWS);
         Self {
             lines: Vec::with_capacity(max_rows.min(256)),
             origins: Vec::with_capacity(max_rows.min(256)),
+            start_row,
             max_rows,
             total_rows: 0,
-            source_rows: 0,
+            summary_rows: 0,
+            summary_retained: 0,
+            clipped_rows: 0,
+            clipped_bytes: 0,
+            search: None,
+            search_origin: None,
+            search_origin_found: false,
+            search_result: DiffSearchResult::default(),
+            anchor_origin: None,
+            anchor_row: None,
         }
     }
 
-    fn extend(&mut self, rows: Vec<Line<'static>>) {
-        self.total_rows = self.total_rows.saturating_add(rows.len());
-        let remaining = self.max_rows.saturating_sub(self.lines.len());
-        let kept = rows.len().min(remaining);
-        self.lines.extend(rows.into_iter().take(remaining));
-        self.origins
-            .extend(std::iter::repeat_n(self.source_rows, kept));
-        self.source_rows += 1;
+    fn capture(&self, bytes: usize, columns: usize) -> RowCapture {
+        RowCapture {
+            start: self.start_row.saturating_sub(self.total_rows),
+            end: self
+                .start_row
+                .saturating_add(self.max_rows)
+                .saturating_sub(self.total_rows),
+            search: self.search.is_some(),
+            bytes,
+            columns,
+        }
+    }
+
+    fn push(
+        &mut self,
+        row: WrappedRow,
+        origin: usize,
+        prefix: &str,
+        make_line: impl FnOnce(String) -> Line<'static>,
+    ) {
+        if self.anchor_row.is_none() && self.anchor_origin.is_some_and(|target| origin >= target) {
+            self.anchor_row = Some(self.total_rows);
+        }
+        if let Some((query, selected)) = &self.search {
+            let mut text = String::with_capacity(prefix.len().saturating_add(row.text.len()));
+            text.push_str(prefix);
+            text.push_str(&row.text);
+            if text.to_ascii_lowercase().contains(query) {
+                let selected = match self.search_origin {
+                    Some(target) => {
+                        let first = self.search_result.total_matches == 0;
+                        let anchored = !self.search_origin_found && origin >= target;
+                        self.search_origin_found |= anchored;
+                        first || anchored
+                    }
+                    None => self.search_result.total_matches == *selected,
+                };
+                if selected {
+                    self.search_result.selected_index = self.search_result.total_matches;
+                    self.search_result.selected_row = Some(self.total_rows);
+                    self.search_result.selected_origin = Some(origin);
+                }
+                self.search_result.total_matches =
+                    self.search_result.total_matches.saturating_add(1);
+            }
+        }
+        if self.total_rows >= self.start_row && self.lines.len() < self.max_rows {
+            if row.clipped_bytes > 0 {
+                self.clipped_rows = self.clipped_rows.saturating_add(1);
+                self.clipped_bytes = self.clipped_bytes.saturating_add(row.clipped_bytes);
+            }
+            self.lines.push(make_line(row.text));
+            self.origins.push(origin);
+        }
+        self.total_rows = self.total_rows.saturating_add(1);
     }
 
     fn finish(self) -> BoundedDiffRender {
         BoundedDiffRender {
             omitted_rows: self.total_rows.saturating_sub(self.lines.len()),
+            omitted_summary_rows: self.summary_rows.saturating_sub(self.summary_retained),
+            omitted_body_rows: self
+                .total_rows
+                .saturating_sub(self.summary_rows)
+                .saturating_sub(self.lines.len().saturating_sub(self.summary_retained)),
             lines: self.lines,
             origins: self.origins,
+            clipped_rows: self.clipped_rows,
+            clipped_bytes: self.clipped_bytes,
         }
     }
 }
 
 #[must_use]
-pub fn summarize_diff(diff: &str) -> Vec<DiffFileSummary> {
-    let mut summaries = Vec::new();
-    let mut current: Option<DiffFileSummary> = None;
-
-    for raw in diff.lines() {
-        if raw.starts_with("diff --git ") {
-            if let Some(summary) = current.take()
-                && summary.has_changes()
-            {
-                summaries.push(summary);
+pub fn summarize_diff(diff: &str) -> impl Iterator<Item = DiffFileSummary<'_>> {
+    let mut lines = diff.lines();
+    let mut current: Option<DiffFileSummary<'_>> = None;
+    std::iter::from_fn(move || {
+        for raw in lines.by_ref() {
+            if raw.starts_with("diff --git ") {
+                let previous = current.take();
+                current = Some(DiffFileSummary {
+                    path: parse_diff_git_path(raw).unwrap_or("<file>"),
+                    added: 0,
+                    deleted: 0,
+                    hunks: 0,
+                });
+                if let Some(summary) = previous
+                    && summary.has_changes()
+                {
+                    return Some(summary);
+                }
+            } else if raw.starts_with("+++ ") {
+                let path = raw.trim_start_matches("+++ ").trim_start_matches("b/");
+                if path != "/dev/null" {
+                    current.get_or_insert_with(DiffFileSummary::empty).path = path;
+                }
+            } else if raw.starts_with("@@") {
+                let summary = current.get_or_insert_with(DiffFileSummary::empty);
+                summary.hunks = summary.hunks.saturating_add(1);
+            } else if is_added(raw) {
+                let summary = current.get_or_insert_with(DiffFileSummary::empty);
+                summary.added = summary.added.saturating_add(1);
+            } else if is_deleted(raw) {
+                let summary = current.get_or_insert_with(DiffFileSummary::empty);
+                summary.deleted = summary.deleted.saturating_add(1);
             }
-            current = Some(DiffFileSummary {
-                path: parse_diff_git_path(raw).unwrap_or_else(|| "<file>".to_string()),
-                added: 0,
-                deleted: 0,
-                hunks: 0,
-            });
-            continue;
         }
+        current.take().filter(DiffFileSummary::has_changes)
+    })
+}
 
-        if raw.starts_with("+++ ") {
-            let path = raw
-                .trim_start_matches("+++ ")
-                .trim_start_matches("b/")
-                .to_string();
-            if path != "/dev/null" {
-                current
-                    .get_or_insert_with(|| DiffFileSummary {
-                        path: path.clone(),
-                        added: 0,
-                        deleted: 0,
-                        hunks: 0,
-                    })
-                    .path = path.clone();
-            }
-            continue;
-        }
-
-        if raw.starts_with("@@") {
-            current
-                .get_or_insert_with(|| DiffFileSummary {
-                    path: "<file>".to_string(),
-                    added: 0,
-                    deleted: 0,
-                    hunks: 0,
-                })
-                .hunks += 1;
-            continue;
-        }
-
-        if raw.starts_with('+') && !raw.starts_with("+++") {
-            current
-                .get_or_insert_with(|| DiffFileSummary {
-                    path: "<file>".to_string(),
-                    added: 0,
-                    deleted: 0,
-                    hunks: 0,
-                })
-                .added += 1;
-        } else if raw.starts_with('-') && !raw.starts_with("---") {
-            current
-                .get_or_insert_with(|| DiffFileSummary {
-                    path: "<file>".to_string(),
-                    added: 0,
-                    deleted: 0,
-                    hunks: 0,
-                })
-                .deleted += 1;
-        }
-    }
-
-    if let Some(summary) = current
-        && summary.has_changes()
-    {
-        summaries.push(summary);
-    }
-
-    summaries
+#[must_use]
+pub fn diff_totals(diff: &str) -> DiffTotals {
+    summarize_diff(diff).fold(DiffTotals::default(), |mut totals, summary| {
+        totals.files = totals.files.saturating_add(1);
+        totals.added = totals.added.saturating_add(summary.added);
+        totals.deleted = totals.deleted.saturating_add(summary.deleted);
+        totals.hunks = totals.hunks.saturating_add(summary.hunks);
+        totals
+    })
 }
 
 #[must_use]
 pub fn diff_summary_label(diff: &str) -> Option<String> {
-    let summaries = summarize_diff(diff);
-    if summaries.is_empty() {
-        return None;
-    }
-    let files = summaries.len();
-    let added: usize = summaries.iter().map(|summary| summary.added).sum();
-    let deleted: usize = summaries.iter().map(|summary| summary.deleted).sum();
-    Some(format!(
-        "{files} file{} +{added} -{deleted}",
-        if files == 1 { "" } else { "s" }
-    ))
+    let totals = diff_totals(diff);
+    (totals.files > 0).then(|| {
+        format!(
+            "{} file{} +{} -{}",
+            totals.files,
+            if totals.files == 1 { "" } else { "s" },
+            totals.added,
+            totals.deleted,
+        )
+    })
 }
 
-impl DiffFileSummary {
+impl DiffFileSummary<'_> {
+    fn empty() -> Self {
+        Self {
+            path: "<file>",
+            added: 0,
+            deleted: 0,
+            hunks: 0,
+        }
+    }
+
     fn has_changes(&self) -> bool {
         self.added > 0 || self.deleted > 0 || self.hunks > 0
     }
 }
 
-fn parse_diff_git_path(line: &str) -> Option<String> {
-    let mut parts = line.split_whitespace();
-    let _diff = parts.next()?;
-    let _git = parts.next()?;
-    let _old = parts.next()?;
-    let new = parts.next()?;
-    Some(new.trim_start_matches("b/").to_string())
+fn parse_diff_git_path(line: &str) -> Option<&str> {
+    line.split_whitespace()
+        .nth(3)
+        .map(|path| path.trim_start_matches("b/"))
 }
 
-fn render_diff_summary(summaries: &[DiffFileSummary], width: u16) -> Vec<Line<'static>> {
-    let files = summaries.len();
-    let added: usize = summaries.iter().map(|summary| summary.added).sum();
-    let deleted: usize = summaries.iter().map(|summary| summary.deleted).sum();
-    let hunks: usize = summaries.iter().map(|summary| summary.hunks).sum();
-
-    let mut lines = Vec::new();
-    lines.extend(wrap_with_style(
-        &format!(
-            "summary: {files} file{}, +{added} -{deleted}, {hunks} hunk{}",
-            if files == 1 { "" } else { "s" },
-            if hunks == 1 { "" } else { "s" },
-        ),
+fn render_diff_summary(
+    diff: &str,
+    totals: DiffTotals,
+    width: u16,
+    collector: &mut BoundedLineCollector,
+) {
+    render_styled_text(
+        &[&format!(
+            "summary: {} file{}, +{} -{}, {} hunk{}",
+            totals.files,
+            if totals.files == 1 { "" } else { "s" },
+            totals.added,
+            totals.deleted,
+            totals.hunks,
+            if totals.hunks == 1 { "" } else { "s" },
+        )],
         Style::default()
             .fg(palette::TEXT_PRIMARY)
             .add_modifier(Modifier::BOLD),
         width,
-    ));
-    for summary in summaries {
-        let row = format!(
-            "  {}  +{} -{}  {} hunk{}",
-            summary.path,
+        0,
+        collector,
+    );
+    for summary in summarize_diff(diff) {
+        let counts = format!(
+            "  +{} -{}  {} hunk{}",
             summary.added,
             summary.deleted,
             summary.hunks,
-            if summary.hunks == 1 { "" } else { "s" },
+            if summary.hunks == 1 { "" } else { "s" }
         );
-        lines.extend(wrap_with_style(
-            &row,
+        render_styled_text(
+            &["  ", summary.path, &counts],
             Style::default().fg(palette::TEXT_MUTED),
             width,
-        ));
+            0,
+            collector,
+        );
     }
-    lines
 }
 
 fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    let old = parts[1].trim_start_matches('-');
-    let new = parts[2].trim_start_matches('+');
-    let old_start = old.split(',').next()?.parse::<usize>().ok()?;
-    let new_start = new.split(',').next()?.parse::<usize>().ok()?;
-    Some((old_start, new_start))
+    let mut parts = line.split_whitespace();
+    parts.next()?;
+    let old = parts.next()?.trim_start_matches('-');
+    let new = parts.next()?.trim_start_matches('+');
+    Some((
+        old.split(',').next()?.parse().ok()?,
+        new.split(',').next()?.parse().ok()?,
+    ))
 }
 
-fn render_header_line(line: &str, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default()
-        .fg(palette::WHALE_ACTION)
-        .add_modifier(Modifier::BOLD);
-    wrap_with_style(line, style, width)
-}
-
-fn render_hunk_header(line: &str, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().fg(palette::WHALE_ACTION);
-    wrap_with_style(line, style, width)
+fn render_header_line(line: &str, width: u16, origin: usize, collector: &mut BoundedLineCollector) {
+    render_styled_text(
+        &[line],
+        Style::default()
+            .fg(palette::WHALE_ACTION)
+            .add_modifier(Modifier::BOLD),
+        width,
+        origin,
+        collector,
+    );
 }
 
 fn is_added(raw: &str) -> bool {
@@ -516,13 +703,38 @@ fn deleted_style() -> Style {
 /// Split a replaced line pair into word runs (unicode word boundaries, so
 /// punctuation stays out of the emphasis), flagging the runs that differ.
 ///
-/// Returns `None` when the pair shares too few *words* to read as an edit —
-/// whitespace and punctuation tokens do not count, so two lines that agree
-/// only on syntax are painted whole, the way they always were.
-fn intraline_segments(old: &str, new: &str) -> Option<(Vec<Segment>, Vec<Segment>)> {
+/// Over-budget pairs and pairs sharing too few words stay plainly tinted.
+fn intraline_segments(
+    old: &str,
+    new: &str,
+    byte_budget: &mut usize,
+    work_budget: &mut usize,
+) -> Option<(Vec<Segment>, Vec<Segment>)> {
+    let bytes = old.len().checked_add(new.len())?;
+    if bytes > INTRALINE_MAX_BYTES || bytes > *byte_budget {
+        return None;
+    }
+    let old_tokens = old
+        .split_word_bounds()
+        .take(INTRALINE_MAX_TOKENS + 1)
+        .count();
+    let new_tokens = new
+        .split_word_bounds()
+        .take(INTRALINE_MAX_TOKENS + 1)
+        .count();
+    let work = old_tokens.checked_mul(new_tokens)?.max(bytes);
+    if old_tokens > INTRALINE_MAX_TOKENS
+        || new_tokens > INTRALINE_MAX_TOKENS
+        || work > INTRALINE_MAX_WORK
+        || work > *work_budget
+    {
+        return None;
+    }
+    *byte_budget -= bytes;
+    *work_budget -= work;
     let diff = TextDiff::from_unicode_words(old, new);
-    let mut old_segments: Vec<Segment> = Vec::new();
-    let mut new_segments: Vec<Segment> = Vec::new();
+    let mut old_segments = Vec::new();
+    let mut new_segments = Vec::new();
     let mut changed = false;
     let mut shared_words = 0usize;
     let mut total_words = 0usize;
@@ -564,75 +776,64 @@ fn push_segment(segments: &mut Vec<Segment>, text: &str, emphasised: bool) {
     }
 }
 
-/// Paint the wrapped chunks of a changed line, mapping every non-whitespace
-/// character back to its source flag by position. `wrap_text` only drops,
-/// collapses, or re-inserts whitespace (the indent lead comes back on every
-/// continuation chunk), so the non-whitespace sequence is the invariant.
-/// Whitespace joins an emphasised run only when both its neighbours are in
-/// it. Returns `None` if the invariant ever fails, and the caller paints the
-/// whole line plainly rather than emphasising the wrong word.
-fn emphasised_chunks(
-    chunks: &[String],
+/// Paint a retained wrapped chunk, mapping its non-whitespace characters back
+/// to source flags. A mismatch keeps the whole row plainly tinted.
+fn emphasised_chunk(
+    chunk: &str,
     style: Style,
-    segments: &[Segment],
-) -> Option<Vec<Vec<Span<'static>>>> {
-    let source: Vec<(char, bool)> = segments
-        .iter()
-        .flat_map(|(run, flag)| {
-            run.chars()
-                .filter(|ch| !ch.is_whitespace())
-                .map(move |ch| (ch, *flag))
-        })
-        .collect();
+    source: &[(char, bool)],
+    mut cursor: usize,
+) -> Option<Vec<Span<'static>>> {
     let emphasis = style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
-    let mut cursor = 0usize;
-    let mut out = Vec::with_capacity(chunks.len());
-    for chunk in chunks {
-        let mut spans = Vec::new();
-        let mut run = String::new();
-        let mut run_flag = false;
-        let mut prev_flag = false;
-        for ch in chunk.chars() {
-            let flag = if ch.is_whitespace() {
-                prev_flag && source.get(cursor).is_some_and(|(_, next)| *next)
-            } else {
-                let (expected, flag) = *source.get(cursor)?;
-                debug_assert_eq!(
-                    expected, ch,
-                    "wrapped chunk diverged from its source line at {cursor}"
-                );
-                if expected != ch {
-                    return None;
-                }
-                cursor += 1;
-                prev_flag = flag;
-                flag
-            };
-            if flag != run_flag && !run.is_empty() {
-                let painted = if run_flag { emphasis } else { style };
-                spans.push(Span::styled(std::mem::take(&mut run), painted));
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut run_flag = false;
+    let mut prev_flag = false;
+    for ch in chunk.chars() {
+        let flag = if ch.is_whitespace() {
+            prev_flag && source.get(cursor).is_some_and(|(_, next)| *next)
+        } else {
+            let (expected, flag) = *source.get(cursor)?;
+            if expected != ch {
+                return None;
             }
-            run_flag = flag;
-            run.push(ch);
+            cursor += 1;
+            prev_flag = flag;
+            flag
+        };
+        if flag != run_flag && !run.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut run),
+                if run_flag { emphasis } else { style },
+            ));
         }
-        if !run.is_empty() {
-            let painted = if run_flag { emphasis } else { style };
-            spans.push(Span::styled(run, painted));
-        }
-        out.push(spans);
+        run_flag = flag;
+        run.push(ch);
     }
-    debug_assert_eq!(
-        cursor,
-        source.len(),
-        "wrapped chunks did not consume the whole source line"
-    );
-    (cursor == source.len()).then_some(out)
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_flag { emphasis } else { style }));
+    }
+    Some(spans)
+}
+
+fn increment_line(marker: char, old_line: &mut Option<usize>, new_line: &mut Option<usize>) {
+    if marker != '+'
+        && let Some(line) = old_line.as_mut()
+    {
+        *line = line.saturating_add(1);
+    }
+    if marker != '-'
+        && let Some(line) = new_line.as_mut()
+    {
+        *line = line.saturating_add(1);
+    }
 }
 
 fn render_plain_diff_line(
     collector: &mut BoundedLineCollector,
     content: &str,
     width: u16,
+    origin: usize,
     old_line: &mut Option<usize>,
     new_line: &mut Option<usize>,
     marker: char,
@@ -642,40 +843,31 @@ fn render_plain_diff_line(
         '+' => added_style(),
         _ => Style::default().fg(palette::TEXT_PRIMARY),
     };
-    collector.extend(render_diff_line(
-        content, width, *old_line, *new_line, marker, style, None,
-    ));
-    match marker {
-        '-' => {
-            if let Some(line) = old_line.as_mut() {
-                *line = line.saturating_add(1);
-            }
-        }
-        '+' => {
-            if let Some(line) = new_line.as_mut() {
-                *line = line.saturating_add(1);
-            }
-        }
-        _ => {}
-    }
+    render_diff_line(
+        content, width, *old_line, *new_line, marker, style, None, origin, collector,
+    );
+    increment_line(marker, old_line, new_line);
 }
 
 fn flush_plain_run(
     collector: &mut BoundedLineCollector,
-    lines: &[&str],
-    markers: &[(usize, &str)],
+    lines: &[RunLine<'_>],
     sign: char,
     width: u16,
     old_line: &mut Option<usize>,
     new_line: &mut Option<usize>,
 ) {
-    for (idx, content) in lines.iter().enumerate() {
-        render_plain_diff_line(collector, content, width, old_line, new_line, sign);
-        for &(marker_idx, marker) in markers {
-            if marker_idx == idx {
-                collector.extend(render_header_line(marker, width));
-            }
-        }
+    for line in lines {
+        render_plain_diff_line(
+            collector,
+            line.content,
+            width,
+            line.origin,
+            old_line,
+            new_line,
+            sign,
+        );
+        line.render_markers(width, collector);
     }
 }
 
@@ -687,8 +879,20 @@ fn render_diff_line(
     marker: char,
     style: Style,
     emphasis: Option<&[Segment]>,
-) -> Vec<Line<'static>> {
-    let prefix = format_line_numbers(old_line, new_line, marker);
+    origin: usize,
+    collector: &mut BoundedLineCollector,
+) {
+    let width = width.max(1);
+    let full_prefix = format_line_numbers(old_line, new_line, marker);
+    let prefix = if full_prefix.width() < usize::from(width) {
+        full_prefix
+    } else if width > 2 {
+        format!("{marker} ")
+    } else if width == 2 {
+        marker.to_string()
+    } else {
+        String::new()
+    };
     let prefix_width = prefix.width();
     // The whole logical row carries the change tint — numbers included. A
     // bare gutter next to a painted body read as two unrelated strips.
@@ -696,30 +900,41 @@ fn render_diff_line(
         Some(bg) => Style::default().fg(palette::TEXT_MUTED).bg(bg),
         None => Style::default().fg(palette::TEXT_MUTED),
     };
-    let available = width.saturating_sub(prefix_width as u16).max(1) as usize;
-    let wrapped = wrap_text(content, available);
-    let mut painted = emphasis.and_then(|segments| emphasised_chunks(&wrapped, style, segments));
-
-    let mut out = Vec::new();
-    for (idx, chunk) in wrapped.into_iter().enumerate() {
-        let gutter = if idx == 0 {
-            Span::styled(prefix.clone(), gutter_style)
+    let available = usize::from(width.saturating_sub(prefix_width as u16).max(1));
+    let source = emphasis.map(|segments| {
+        segments
+            .iter()
+            .flat_map(|(run, flag)| {
+                run.chars()
+                    .filter(|ch| !ch.is_whitespace())
+                    .map(move |ch| (ch, *flag))
+            })
+            .collect::<Vec<_>>()
+    });
+    let capture = collector.capture(MAX_ROW_BYTES.saturating_sub(prefix.len()), available);
+    let continuation = " ".repeat(prefix_width);
+    wrap_parts(&[content], available, prefix_width, capture, |row| {
+        let gutter = if row.index == 0 {
+            prefix.as_str()
         } else {
-            Span::styled(" ".repeat(prefix_width), gutter_style)
+            continuation.as_str()
         };
-        let mut spans = vec![gutter];
-        match painted.as_mut() {
-            Some(rows) => spans.append(&mut rows[idx]),
-            None => spans.push(Span::styled(chunk, style)),
-        }
-        out.push(Line::from(spans));
-    }
-
-    if out.is_empty() {
-        out.push(Line::from(vec![Span::styled(prefix, gutter_style)]));
-    }
-
-    out
+        let nonspace_start = row.nonspace_start;
+        let clipped = row.clipped_bytes > 0;
+        collector.push(row, origin, gutter, |text| {
+            let mut spans = vec![Span::styled(gutter.to_string(), gutter_style)];
+            if !clipped
+                && let Some(painted) = source
+                    .as_ref()
+                    .and_then(|source| emphasised_chunk(&text, style, source, nonspace_start))
+            {
+                spans.extend(painted);
+            } else {
+                spans.push(Span::styled(text, style));
+            }
+            Line::from(spans)
+        });
+    });
 }
 
 fn format_line_numbers(old_line: Option<usize>, new_line: Option<usize>, marker: char) -> String {
@@ -734,97 +949,393 @@ fn format_line_numbers(old_line: Option<usize>, new_line: Option<usize>, marker:
     format!("{old} {new} {marker} ")
 }
 
-fn wrap_with_style(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    for part in wrap_text(text, width.max(1) as usize) {
-        out.push(Line::from(Span::styled(part, style)));
-    }
-    if out.is_empty() {
-        out.push(Line::from(Span::styled("", style)));
-    }
-    out
+fn render_styled_text(
+    parts: &[&str],
+    style: Style,
+    width: u16,
+    origin: usize,
+    collector: &mut BoundedLineCollector,
+) {
+    let capture = collector.capture(MAX_ROW_BYTES, usize::from(width.max(1)));
+    wrap_parts(parts, usize::from(width.max(1)), 0, capture, |row| {
+        collector.push(row, origin, "", |text| {
+            Line::from(Span::styled(text, style))
+        });
+    });
 }
 
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![text.to_string()];
-    }
-    let lead = text
-        .chars()
-        .take_while(|ch| ch.is_whitespace())
-        .collect::<String>();
-    let trimmed = text.trim_start();
-    if trimmed.is_empty() {
-        return vec![text.to_string()];
+struct WrappedRow {
+    text: String,
+    index: usize,
+    nonspace_start: usize,
+    clipped_bytes: usize,
+}
+
+struct RowBuffer {
+    text: String,
+    bytes: usize,
+    nonspace_start: usize,
+    nonspace_end: usize,
+    keep: bool,
+    limit: usize,
+    columns: usize,
+    stopped: bool,
+    extra_clipped_bytes: usize,
+}
+
+impl RowBuffer {
+    fn new(keep: bool, limit: usize, columns: usize, nonspace_start: usize) -> Self {
+        Self {
+            text: String::new(),
+            bytes: 0,
+            nonspace_start,
+            nonspace_end: nonspace_start,
+            keep,
+            limit,
+            columns,
+            stopped: false,
+            extra_clipped_bytes: 0,
+        }
     }
 
-    let mut lines = Vec::new();
-    let lead_width = lead.width();
-    let mut current = lead.clone();
-    let mut current_width = lead_width;
+    fn push(&mut self, text: &str) {
+        self.append(text, text.chars().filter(|ch| !ch.is_whitespace()).count());
+    }
+
+    fn whitespace(&mut self, text: &str) {
+        self.append(text, 0);
+    }
+
+    fn lead(&mut self, lead: &DisplayLead) {
+        self.whitespace(&lead.text);
+        let omitted = lead.bytes.saturating_sub(lead.text.len());
+        self.bytes = self.bytes.saturating_add(omitted);
+        self.stopped |= omitted > 0;
+    }
+
+    fn append(&mut self, text: &str, nonspace: usize) {
+        self.bytes = self.bytes.saturating_add(text.len());
+        self.nonspace_end = self.nonspace_end.saturating_add(nonspace);
+        if !self.keep || self.stopped {
+            return;
+        }
+        let remaining = self.limit.saturating_sub(self.text.len());
+        let kept = if text.len() <= remaining {
+            text.len()
+        } else {
+            self.stopped = true;
+            text.grapheme_indices(true)
+                .take_while(|(start, grapheme)| start.saturating_add(grapheme.len()) <= remaining)
+                .map(|(start, grapheme)| start + grapheme.len())
+                .last()
+                .unwrap_or(0)
+        };
+        self.reserve(kept);
+        self.text.push_str(&text[..kept]);
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        let needed = self.text.len().saturating_add(additional);
+        if needed > self.text.capacity() {
+            let capacity = needed
+                .max(self.text.capacity().saturating_mul(2))
+                .max(64)
+                .min(self.limit);
+            self.text
+                .reserve_exact(capacity.saturating_sub(self.text.len()));
+        }
+    }
+
+    fn finish(mut self, index: usize) -> WrappedRow {
+        let mut clipped_bytes = 0;
+        if self.keep && self.bytes > self.text.len() {
+            let marker = "…";
+            let byte_limit = self.limit.saturating_sub(marker.len());
+            let column_limit = self
+                .columns
+                .saturating_sub(crate::ui_text::text_display_width(marker));
+            let mut width = 0usize;
+            let mut kept = 0usize;
+            for (start, grapheme) in self.text.grapheme_indices(true) {
+                let next_width =
+                    width.saturating_add(crate::ui_text::grapheme_display_width(grapheme));
+                let end = start.saturating_add(grapheme.len());
+                if next_width > column_limit || end > byte_limit {
+                    break;
+                }
+                width = next_width;
+                kept = end;
+            }
+            self.text.truncate(kept);
+            clipped_bytes = self.bytes.saturating_sub(self.text.len());
+            self.reserve(marker.len());
+            self.text.push_str(marker);
+        }
+        WrappedRow {
+            text: self.text,
+            index,
+            nonspace_start: self.nonspace_start,
+            clipped_bytes: clipped_bytes.saturating_add(self.extra_clipped_bytes),
+        }
+    }
+}
+
+struct DisplayLead {
+    text: String,
+    bytes: usize,
+    width: usize,
+}
+
+fn needs_normalization(text: &str) -> bool {
+    if text.is_ascii() {
+        return text.bytes().any(|byte| byte < b' ' || byte == 127);
+    }
+    text.len() > crate::ui_text::MAX_DISPLAY_GRAPHEME_BYTES
+        || text.chars().any(|ch| {
+            codewhale_secrets::sanitize::is_bidi_control(ch)
+                || ch.is_control()
+                || matches!(ch, '\u{2028}' | '\u{2029}')
+        })
+}
+
+fn word_width(word: &str) -> Option<(usize, bool)> {
+    let normalize = needs_normalization(word);
+    if !normalize {
+        return Some((crate::ui_text::text_display_width(word), false));
+    }
+    let mut width = 0usize;
+    let mut any = false;
+    crate::ui_text::display_graphemes(std::iter::once((word, 0)), 0, |grapheme| {
+        any |= !grapheme.text.is_empty();
+        width = width.saturating_add(grapheme.width);
+    });
+    any.then_some((width, true))
+}
+
+fn word_graphemes(word: &str, normalize: bool, mut emit: impl FnMut(&str, usize)) {
+    if normalize {
+        crate::ui_text::display_graphemes(std::iter::once((word, 0)), 0, |grapheme| {
+            let mut clipped = grapheme.clipped_bytes;
+            for text in grapheme.text.graphemes(true) {
+                emit(text, clipped);
+                clipped = 0;
+            }
+        });
+    } else {
+        for text in word.graphemes(true) {
+            emit(text, 0);
+        }
+    }
+}
+
+fn wrap_parts(
+    parts: &[&str],
+    width: usize,
+    start_column: usize,
+    capture: RowCapture,
+    mut emit: impl FnMut(WrappedRow),
+) {
+    let width = width.max(1);
+    let mut lead_parts = Vec::with_capacity(parts.len());
+    for part in parts {
+        let length = part.len() - part.trim_start().len();
+        lead_parts.push(&part[..length]);
+        if length < part.len() {
+            break;
+        }
+    }
+    let mut lead_buffer = RowBuffer::new(true, MAX_ROW_BYTES, usize::MAX, 0);
+    let mut lead_width = 0usize;
+    if lead_parts.iter().any(|part| needs_normalization(part)) {
+        crate::ui_text::display_graphemes(
+            lead_parts.iter().map(|&part| (part, 0)),
+            start_column,
+            |grapheme| {
+                lead_buffer.whitespace(grapheme.text);
+                lead_width = lead_width.saturating_add(grapheme.width);
+            },
+        );
+    } else {
+        for part in &lead_parts {
+            lead_buffer.whitespace(part);
+            lead_width = lead_width.saturating_add(crate::ui_text::text_display_width(part));
+        }
+    }
+    let lead = DisplayLead {
+        text: lead_buffer.text,
+        bytes: lead_buffer.bytes,
+        width: lead_width,
+    };
+    let mut row_index = 0usize;
+    let mut current = RowBuffer::new(capture.keeps(row_index), capture.bytes, capture.columns, 0);
+    let repeat_lead = lead.width < width;
+    let repeat_width = if repeat_lead { lead.width } else { 0 };
+    let mut current_width = 0usize;
     let mut has_word = false;
-
-    for word in trimmed.split_whitespace() {
-        let word_width = word.width();
+    let flush = |current: RowBuffer, row_index: &mut usize, emit: &mut dyn FnMut(WrappedRow)| {
+        let next_nonspace = current.nonspace_end;
+        emit(current.finish(*row_index));
+        *row_index = row_index.saturating_add(1);
+        RowBuffer::new(
+            capture.keeps(*row_index),
+            capture.bytes,
+            capture.columns,
+            next_nonspace,
+        )
+    };
+    if repeat_lead {
+        current.lead(&lead);
+        current_width = lead.width;
+    } else {
+        let mut visit = |text: &str| {
+            let cell_width = crate::ui_text::grapheme_display_width(text);
+            if current_width.saturating_add(cell_width) > width && current_width > 0 {
+                let next =
+                    RowBuffer::new(false, capture.bytes, capture.columns, current.nonspace_end);
+                current = flush(
+                    std::mem::replace(&mut current, next),
+                    &mut row_index,
+                    &mut emit,
+                );
+                current_width = 0;
+            }
+            if cell_width > width {
+                current.push("…");
+                current.extra_clipped_bytes =
+                    current.extra_clipped_bytes.saturating_add(text.len());
+                current_width = current_width.saturating_add(1);
+            } else {
+                current.whitespace(text);
+                current_width = current_width.saturating_add(cell_width);
+            }
+        };
+        if lead_parts.iter().any(|part| needs_normalization(part)) {
+            crate::ui_text::display_graphemes(
+                lead_parts.iter().map(|&part| (part, 0)),
+                start_column,
+                |grapheme| {
+                    for text in grapheme.text.graphemes(true) {
+                        visit(text);
+                    }
+                },
+            );
+        } else {
+            for part in &lead_parts {
+                for text in part.graphemes(true) {
+                    visit(text);
+                }
+            }
+        }
+    }
+    for word in parts.iter().flat_map(|part| part.split_whitespace()) {
+        let Some((word_width, normalize)) = word_width(word) else {
+            continue;
+        };
         if word_width > width {
             if has_word {
-                lines.push(std::mem::take(&mut current));
-                current = lead.clone();
-                current_width = lead_width;
+                current = flush(current, &mut row_index, &mut emit);
+                if repeat_lead {
+                    current.lead(&lead);
+                }
+                current_width = repeat_width;
             }
-            push_word_breaking_graphemes(word, width, &mut current, &mut current_width, &mut lines);
-            has_word = current_width > lead_width;
+            word_graphemes(word, normalize, |text, clipped| {
+                let grapheme_width = crate::ui_text::grapheme_display_width(text);
+                if current_width.saturating_add(grapheme_width) > width && current_width > 0 {
+                    let next =
+                        RowBuffer::new(false, capture.bytes, capture.columns, current.nonspace_end);
+                    current = flush(
+                        std::mem::replace(&mut current, next),
+                        &mut row_index,
+                        &mut emit,
+                    );
+                    current_width = 0;
+                }
+                if grapheme_width > width {
+                    current.push("…");
+                    current.extra_clipped_bytes = current
+                        .extra_clipped_bytes
+                        .saturating_add(text.len())
+                        .saturating_add(clipped);
+                    current_width = current_width.saturating_add(1);
+                } else {
+                    current.push(text);
+                    current.extra_clipped_bytes =
+                        current.extra_clipped_bytes.saturating_add(clipped);
+                    current_width = current_width.saturating_add(grapheme_width);
+                }
+            });
+            has_word = current.nonspace_end > current.nonspace_start;
             continue;
         }
-        let additional = if has_word { word_width + 1 } else { word_width };
-        if current_width + additional > width && has_word {
-            lines.push(current);
-            current = lead.clone();
-            current_width = lead_width;
+        let additional = if has_word {
+            word_width.saturating_add(1)
+        } else {
+            word_width
+        };
+        if current_width.saturating_add(additional) > width && has_word {
+            current = flush(current, &mut row_index, &mut emit);
+            if repeat_lead {
+                current.lead(&lead);
+            }
+            current_width = repeat_width;
             has_word = false;
         }
         if has_word {
-            current.push(' ');
-            current_width += 1;
+            current.whitespace(" ");
+            current_width = current_width.saturating_add(1);
         }
-        if current_width + word_width > width && !has_word && lead_width > 0 {
-            lines.push(std::mem::take(&mut current));
+        if current_width.saturating_add(word_width) > width && !has_word && current_width > 0 {
+            current = flush(current, &mut row_index, &mut emit);
             current_width = 0;
         }
-        if current_width == 0 && lead_width > 0 && word_width + lead_width <= width {
-            current = lead.clone();
-            current_width = lead_width;
+        if current_width == 0
+            && current.bytes == 0
+            && repeat_width > 0
+            && word_width.saturating_add(repeat_width) <= width
+        {
+            current.lead(&lead);
+            current_width = repeat_width;
         }
-        current.push_str(word);
-        current_width += word_width;
+        if normalize {
+            crate::ui_text::display_graphemes(std::iter::once((word, 0)), 0, |grapheme| {
+                current.push(grapheme.text);
+                current.extra_clipped_bytes = current
+                    .extra_clipped_bytes
+                    .saturating_add(grapheme.clipped_bytes);
+            });
+        } else {
+            current.push(word);
+        }
+        current_width = current_width.saturating_add(word_width);
         has_word = true;
     }
-
-    if has_word || !current.is_empty() {
-        lines.push(current);
-    } else {
-        lines.push(String::new());
+    if has_word || current.bytes > 0 || row_index == 0 {
+        emit(current.finish(row_index));
     }
-
-    lines
 }
 
-fn push_word_breaking_graphemes(
-    word: &str,
-    width: usize,
-    current: &mut String,
-    current_width: &mut usize,
-    lines: &mut Vec<String>,
-) {
-    for grapheme in word.graphemes(true) {
-        let grapheme_width = grapheme.width();
-        if *current_width + grapheme_width > width && *current_width > 0 {
-            lines.push(std::mem::take(current));
-            *current_width = 0;
-        }
-        current.push_str(grapheme);
-        *current_width += grapheme_width;
-    }
+#[cfg(test)]
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    wrap_parts(
+        &[text],
+        width,
+        0,
+        RowCapture {
+            start: 0,
+            end: MAX_RETAINED_ROWS,
+            search: false,
+            bytes: MAX_ROW_BYTES,
+            columns: width.max(1),
+        },
+        |row| {
+            if row.index < MAX_RETAINED_ROWS {
+                lines.push(row.text);
+            }
+        },
+    );
+    lines
 }
 
 #[cfg(test)]
@@ -854,7 +1365,7 @@ mod tests {
     }
 
     fn rendered_body(diff: &str, width: u16) -> Vec<Line<'static>> {
-        render_diff_body_bounded(diff, width, usize::MAX).lines
+        render_diff_body_bounded(diff, width, MAX_RETAINED_ROWS).lines
     }
 
     /// Text between the gutter and the first emphasised span, so a test can
@@ -1076,7 +1587,7 @@ diff --git a/src/b.rs b/src/b.rs
 +two
 ";
 
-        let summaries = summarize_diff(diff);
+        let summaries = summarize_diff(diff).collect::<Vec<_>>();
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].path, "src/a.rs");
         assert_eq!(summaries[0].added, 1);
@@ -1242,7 +1753,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             .expect("append generated diff");
         }
 
-        let full_row_count = render_diff_body_bounded(&diff, 32, usize::MAX).lines.len();
+        let full_row_count = render_diff_body_bounded(&diff, 32, 0).omitted_rows;
         let rendered = render_diff_body_bounded(&diff, 32, 14);
 
         assert_eq!(rendered.lines.len(), 14);

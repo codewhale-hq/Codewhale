@@ -518,10 +518,10 @@ impl ModalView for UserInputView {
         let locale = self.locale;
         let total = self.request.questions.len();
         let header = format!(
-            " {} ({}/{}) ",
-            question.header,
-            self.question_index + 1,
-            total
+            " {} ",
+            tr(locale, MessageId::UserInputQuestionProgress)
+                .replace("{current}", &(self.question_index + 1).to_string())
+                .replace("{total}", &total.to_string())
         );
 
         let mut lines: Vec<Line> = Vec::new();
@@ -690,18 +690,15 @@ impl ModalView for UserInputView {
         let popup_area = sheet_rect(area, self.content_line_count());
         let inner_h = popup_area.height.saturating_sub(4) as usize;
         let width = modal_block(&header).inner(popup_area).width.max(1);
-        let rows = PagerRows::wrap_lines(&lines, usize::from(width));
         let (start, end) = self.focused_line_range();
-        let focus_end = rows
-            .origin
-            .partition_point(|&line| line <= end)
-            .saturating_sub(1);
+        let (first, focus_end, total_rows, escaped, continued) =
+            PagerRows::line_range(&lines, usize::from(width), start, end);
+        let inner_h = inner_h.saturating_sub(usize::from(escaped || continued));
         let focus_start = if self.mode == InputMode::OtherInput {
             focus_end
         } else {
-            rows.origin.partition_point(|&line| line < start)
+            first
         };
-        let total_rows = rows.styled.len();
         let max_scroll = total_rows.saturating_sub(inner_h);
         let scroll = if self.manual_scroll {
             self.scroll_offset.get().min(max_scroll)
@@ -710,7 +707,15 @@ impl ModalView for UserInputView {
         };
         self.scroll_offset.set(scroll);
         self.max_scroll.set(max_scroll);
-        let visible: Vec<_> = rows.styled.into_iter().skip(scroll).take(inner_h).collect();
+        let rows = PagerRows::wrap_lines_window(&lines, usize::from(width), scroll);
+        let notice = rows.display_notice(locale, true);
+        let mut visible: Vec<_> = rows.styled.into_iter().take(inner_h).collect();
+        if let Some(notice) = notice {
+            visible.push(Line::from(Span::styled(
+                codewhale_tui_kit::ui_text::truncate_line_to_width(&notice, usize::from(width)),
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        }
         let paragraph = Paragraph::new(visible)
             .alignment(Alignment::Left)
             .block(modal_block(&header));

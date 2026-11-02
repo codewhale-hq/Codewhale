@@ -14,6 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
+use codewhale_app_server_protocol::schema::{
+    Def, Field, SchemaMode, Ty, innermost, parse_def, quote, ref_name, typescript_defs,
+};
 use schemars::generate::SchemaSettings;
 use schemars::{Schema, SchemaGenerator};
 
@@ -59,199 +62,11 @@ fn params_schema(method: &str, generator: &mut SchemaGenerator) -> Schema {
     }
 }
 
-/// A field's wire type, normalized.
-enum Ty {
-    String,
-    Boolean,
-    Uint,
-    Integer,
-    /// A JSON object with any keys (`Map<String, Value>`).
-    Object,
-    /// Any JSON value.
-    Json,
-    Ref(String),
-    /// A string tag inside a union member.
-    Const(String),
-    Array(Box<Ty>),
-}
-
-struct Field {
-    name: String,
-    ty: Ty,
-    required: bool,
-}
-
-enum Def {
-    Object { strict: bool, fields: Vec<Field> },
-    Enum(Vec<String>),
-    Union(Vec<Vec<Field>>),
-}
-
-fn ref_name(schema: &Value) -> Option<String> {
-    let reference = schema.get("$ref")?.as_str()?;
-    Some(
-        reference
-            .strip_prefix("#/$defs/")
-            .unwrap_or_else(|| panic!("unexpected $ref `{reference}`"))
-            .to_string(),
-    )
-}
-
-fn parse_ty(at: &str, schema: &Value) -> Ty {
-    let Some(object) = schema.as_object() else {
-        assert_eq!(schema, &Value::Bool(true), "{at}: unsupported schema");
-        return Ty::Json;
-    };
-    if let Some(name) = ref_name(schema) {
-        return Ty::Ref(name);
-    }
-    // Optional object fields use anyOf(ref, null), while scalar options use a
-    // nullable type array below. Normalize both to the present field's type:
-    // Rust omits None and the host requires a valid value when a field exists.
-    if let Some(variants) = object.get("anyOf").and_then(Value::as_array)
-        && variants.len() == 2
-        && variants
-            .iter()
-            .filter(|variant| variant.get("type").and_then(Value::as_str) == Some("null"))
-            .count()
-            == 1
-    {
-        return parse_ty(
-            at,
-            variants
-                .iter()
-                .find(|variant| variant.get("type").and_then(Value::as_str) != Some("null"))
-                .expect("one non-null variant"),
-        );
-    }
-    if let Some(value) = object.get("const").and_then(Value::as_str) {
-        return Ty::Const(value.to_string());
-    }
-    let types: Vec<&str> = match object.get("type") {
-        Some(Value::String(ty)) => vec![ty.as_str()],
-        Some(Value::Array(types)) => types
-            .iter()
-            .filter_map(Value::as_str)
-            .filter(|ty| *ty != "null")
-            .collect(),
-        // Only annotations (`default`, `description`): any value.
-        None if !["enum", "anyOf", "oneOf", "allOf", "properties", "items"]
-            .iter()
-            .any(|key| object.contains_key(*key)) =>
-        {
-            return Ty::Json;
-        }
-        _ => panic!("{at}: unsupported wire schema {schema}"),
-    };
-    match types.as_slice() {
-        ["string"] => Ty::String,
-        ["boolean"] => Ty::Boolean,
-        ["integer"] if object.get("minimum").and_then(Value::as_u64) == Some(0) => Ty::Uint,
-        ["integer"] => Ty::Integer,
-        ["object"]
-            if object.get("additionalProperties") == Some(&Value::Bool(true))
-                && !object.contains_key("properties") =>
-        {
-            Ty::Object
-        }
-        ["array"] => Ty::Array(Box::new(parse_ty(
-            &format!("{at}[]"),
-            object
-                .get("items")
-                .unwrap_or_else(|| panic!("{at}: array without items")),
-        ))),
-        _ => panic!("{at}: unsupported wire schema {schema}"),
-    }
-}
-
-fn object_fields(at: &str, schema: &Value) -> Vec<Field> {
-    assert_eq!(
-        schema.get("type").and_then(Value::as_str),
-        Some("object"),
-        "{at}: expected an object schema, got {schema}"
-    );
-    let required: Vec<&str> = schema
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|names| names.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .map(|properties| {
-            properties
-                .iter()
-                .map(|(name, schema)| Field {
-                    name: name.clone(),
-                    ty: parse_ty(&format!("{at}.{name}"), schema),
-                    required: required.contains(&name.as_str()),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn parse_def(name: &str, schema: &Value) -> Def {
-    let members = schema
-        .get("oneOf")
-        .or_else(|| schema.get("anyOf"))
-        .and_then(Value::as_array);
-    if let Some(members) = members {
-        // Unit variants, with or without doc comments: a string enum.
-        let consts: Option<Vec<String>> = members
-            .iter()
-            .map(|member| {
-                member
-                    .get("const")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .collect();
-        return match consts {
-            Some(values) => Def::Enum(values),
-            None if members.len() == 1 => Def::Object {
-                strict: members[0].get("additionalProperties") == Some(&Value::Bool(false)),
-                fields: object_fields(name, &members[0]),
-            },
-            None => Def::Union(
-                members
-                    .iter()
-                    .map(|member| object_fields(name, member))
-                    .collect(),
-            ),
-        };
-    }
-    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
-        return Def::Enum(
-            values
-                .iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .unwrap_or_else(|| panic!("{name}: non-string enum value"))
-                        .to_string()
-                })
-                .collect(),
-        );
-    }
-    Def::Object {
-        strict: schema.get("additionalProperties") == Some(&Value::Bool(false)),
-        fields: object_fields(name, schema),
-    }
-}
-
-fn quote(value: &str) -> String {
-    assert!(
-        !value.contains(['\'', '\\']),
-        "`{value}` needs escaping in TypeScript"
-    );
-    format!("'{value}'")
-}
-
 /// The validator's kind for `ty`: a string enum is inlined, an object is a
 /// reference into `SHAPES`.
 fn kind(ty: &Ty, defs: &BTreeMap<String, Def>) -> String {
     match ty {
+        Ty::Nullable(_) => panic!("host validator does not accept nullable fields"),
         Ty::String => "'string'".into(),
         Ty::Boolean => "'boolean'".into(),
         Ty::Uint => "'uint'".into(),
@@ -287,32 +102,6 @@ fn kinds(fields: &[Field], required: bool, defs: &BTreeMap<String, Def>) -> Stri
     } else {
         format!("{{ {} }}", rendered.join(", "))
     }
-}
-
-fn ts(ty: &Ty) -> String {
-    match ty {
-        Ty::String => "string".into(),
-        Ty::Boolean => "boolean".into(),
-        Ty::Uint | Ty::Integer => "number".into(),
-        Ty::Object => "{ [key: string]: Json }".into(),
-        Ty::Json => "Json".into(),
-        Ty::Ref(name) => name.clone(),
-        Ty::Const(value) => quote(value),
-        Ty::Array(item) => format!("{}[]", ts(item)),
-    }
-}
-
-/// An array's item type, however deeply nested.
-fn innermost(ty: &Ty) -> &Ty {
-    match ty {
-        Ty::Array(item) => innermost(item),
-        ty => ty,
-    }
-}
-
-fn member(field: &Field) -> String {
-    let optional = if field.required { "" } else { "?" };
-    format!("{}{optional}: {}", field.name, ts(&field.ty))
 }
 
 const HEADER: &str = "\
@@ -369,7 +158,7 @@ fn render() -> String {
     let defs: BTreeMap<String, Def> = generator
         .definitions()
         .iter()
-        .map(|(name, schema)| (name.clone(), parse_def(name, schema)))
+        .map(|(name, schema)| (name.clone(), parse_def(name, schema, SchemaMode::Host)))
         .collect();
 
     // What the validator checks: every params type and the error object,
@@ -423,7 +212,7 @@ fn render() -> String {
     out.push_str(VALIDATOR_TYPES);
     out.push_str("\n/** Every method's params, and an error response's `error`. */\nexport const SHAPES: { readonly [name: string]: Shape } = {\n");
     for name in &validated {
-        let Def::Object { strict, fields } = &defs[name] else {
+        let Def::Object { strict, fields, .. } = &defs[name] else {
             unreachable!("only objects are validated");
         };
         let _ = writeln!(out, "  {name}: {{");
@@ -432,42 +221,8 @@ fn render() -> String {
         let _ = writeln!(out, "    optional: {},", kinds(fields, false, &defs));
         out.push_str("  },\n");
     }
-    out.push_str(
-        "}\n\nexport type Json = null | boolean | number | string | Json[] | { [key: string]: Json }\n",
-    );
-    for (name, def) in &defs {
-        out.push('\n');
-        match def {
-            Def::Object { fields, .. } if fields.is_empty() => {
-                let _ = writeln!(out, "export interface {name} {{}}");
-            }
-            Def::Object { fields, .. } => {
-                let _ = writeln!(out, "export interface {name} {{");
-                for field in fields {
-                    let _ = writeln!(out, "  {}", member(field));
-                }
-                out.push_str("}\n");
-            }
-            Def::Enum(values) => {
-                let values: Vec<String> = values.iter().map(|v| quote(v)).collect();
-                let _ = writeln!(out, "export type {name} = {}", values.join(" | "));
-            }
-            Def::Union(members) => {
-                let members: Vec<String> = members
-                    .iter()
-                    .map(|fields| {
-                        // Tags first, then the variant's fields in order.
-                        let (tags, rest): (Vec<&Field>, Vec<&Field>) = fields
-                            .iter()
-                            .partition(|field| matches!(field.ty, Ty::Const(_)));
-                        let parts: Vec<String> = tags.into_iter().chain(rest).map(member).collect();
-                        format!("{{ {} }}", parts.join("; "))
-                    })
-                    .collect();
-                let _ = writeln!(out, "export type {name} = {}", members.join(" | "));
-            }
-        }
-    }
+    out.push_str("}\n");
+    out.push_str(&typescript_defs(&defs, SchemaMode::Host));
     out
 }
 

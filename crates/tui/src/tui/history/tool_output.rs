@@ -13,9 +13,8 @@ use super::constants::{
     TOOL_OUTPUT_HEAD_LINES, TOOL_OUTPUT_TAIL_LINES, TOOL_TEXT_LIMIT, TRANSCRIPT_RAIL,
 };
 use super::{
-    RenderMode, details_affordance_line, looks_like_file_path, render_card_detail_line,
-    render_card_detail_line_single, render_card_detail_line_single_styled,
-    render_card_detail_line_styled, tool_value_style, truncate_text,
+    RenderMode, details_affordance_line, looks_like_file_path, render_card_detail_line_single,
+    render_card_detail_line_single_styled, tool_value_style, truncate_text,
 };
 
 /// Columns the first output row gives up to its label: `result: ` or
@@ -62,9 +61,55 @@ pub struct OutputRow {
     pub styled: Option<Vec<StyledSegment>>,
 }
 
+const OUTPUT_DISPLAY_ROWS: usize = 512;
+const MAX_SELECTED_ROWS: usize = (OUTPUT_DISPLAY_ROWS - 1) / 2;
+const MAX_ROW_BYTES: usize = 4 * 1024;
+const MAX_STYLE_RUNS: usize = 64;
+const MAX_STYLED_LINE_BYTES: usize = 32 * 1024;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutputProjection {
+    pub rows: Vec<OutputRow>,
+    pub omitted_before: Vec<usize>,
+    pub omitted_after: usize,
+    pub total_rows: usize,
+    pub total_nonblank: usize,
+    pub shortened: bool,
+}
+
+impl OutputProjection {
+    pub fn allocated_bytes(&self) -> usize {
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(
+                self.rows
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<OutputRow>()),
+            )
+            .saturating_add(
+                self.omitted_before
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<usize>()),
+            );
+        for row in &self.rows {
+            bytes = bytes.saturating_add(row.text.capacity());
+            if let Some(segments) = &row.styled {
+                bytes = bytes.saturating_add(
+                    segments
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<StyledSegment>()),
+                );
+                for (text, _) in segments {
+                    bytes = bytes.saturating_add(text.capacity());
+                }
+            }
+        }
+        bytes
+    }
+}
+
 /// One run of `OutputRow::text` with the style the tool's own SGR codes
-/// asked for. Only what is painted keeps the colour: the model, the session
-/// store, the pager, clipboard and exports still see stripped text.
+/// asked for. Only the painted preview uses these segments; source copying
+/// retains the stored tool output independently.
 pub type StyledSegment = (String, Style);
 
 /// Heuristic: does the output look like a unified diff? Returns true when
@@ -386,10 +431,17 @@ fn render_preserved_output_mode(
         debug_assert_eq!(label.len() + 2, FIRST_ROW_LABEL_COLUMNS);
     }
     let mut lines = Vec::new();
+    if mode == RenderMode::Source {
+        lines.push(render_card_detail_line_single(
+            first_label,
+            output,
+            tool_value_style(),
+        ));
+        return lines;
+    }
     if output.trim().is_empty() {
         // #3031: In compact/Live mode, suppress "(no output)" — the tool
-        // header already carries the success/failure status. Transcript
-        // mode still records it for exports/clipboard/pager.
+        // header already carries the success/failure status.
         if mode == RenderMode::Transcript {
             lines.push(Line::from(Span::styled(
                 "  (no output)",
@@ -399,122 +451,468 @@ fn render_preserved_output_mode(
         return lines;
     }
 
-    // Hash once; reuse for both the rows cache and the indices cache below.
-    let content_hash = crate::tui::output_rows_cache::hash_str(output);
-    let all_lines =
-        crate::tui::output_rows_cache::get_or_compute_rows_with_hash(content_hash, width, || {
-            output_rows(output, width)
-        });
-
-    if matches!(mode, RenderMode::Transcript) {
-        // Full-content path: emit every wrapped line with no head/tail split,
-        // no "+N more" affordance.
-        for (idx, row) in all_lines.iter().enumerate() {
-            render_output_row(
-                &mut lines,
-                if idx == 0 { first_label } else { None },
-                row,
-                width,
-            );
-        }
-        return lines;
-    }
-
-    let selected = crate::tui::output_rows_cache::get_or_compute_indices(
+    let transcript = mode == RenderMode::Transcript;
+    let limit = if transcript || line_limit == 0 {
+        MAX_SELECTED_ROWS
+    } else {
+        line_limit.min(MAX_SELECTED_ROWS).max(1)
+    };
+    let content_hash = crate::tui::output_rows_cache::hash_output(output);
+    let projection = crate::tui::output_rows_cache::get_or_compute_rows_with_hash(
         content_hash,
         width,
-        line_limit,
-        || selected_output_indices(&all_lines, line_limit),
+        limit,
+        transcript,
+        || output_projection(output, width, limit),
     );
-    // Blank rows are dropped without a marker, so the count is of rows that
-    // carry text. Rows hidden after the last one shown are announced too: the
-    // tail can stop short of the end when it keeps a result row instead. A gap
-    // of exactly one row shows that row: a marker would take the same space.
-    let emit_gap = |lines: &mut Vec<Line<'static>>, hidden: &[OutputRow]| {
-        let mut text_rows = hidden.iter().filter(|row| !is_blank_row(row));
-        let (Some(only), None) = (text_rows.next(), text_rows.next()) else {
-            let omitted = hidden.iter().filter(|row| !is_blank_row(row)).count();
-            if omitted > 0 {
-                lines.push(details_affordance_line(
-                    &format!(
-                        "{} \u{00B7} {}",
-                        tr(locale, MessageId::ApprovalMoreLines)
-                            .replace("{count}", &omitted.to_string())
-                            .trim_start(),
-                        crate::tui::key_shortcuts::tool_details_shortcut_action_hint("output")
-                    ),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ));
-            }
-            return;
-        };
-        render_output_row(lines, None, only, width);
+    let emit_gap = |lines: &mut Vec<Line<'static>>, omitted: usize| {
+        if omitted > 0 {
+            lines.push(details_affordance_line(
+                &format!(
+                    "{} · {}",
+                    tr(locale, MessageId::ApprovalMoreLines)
+                        .replace("{count}", &omitted.to_string())
+                        .trim_start(),
+                    crate::tui::key_shortcuts::tool_details_shortcut_action_hint(&tr(
+                        locale,
+                        MessageId::FooterHintOutput
+                    ),)
+                ),
+                Style::default().fg(palette::TEXT_MUTED),
+            ));
+        }
     };
-    let mut next = 0usize;
-    for (rendered_idx, idx) in selected.iter().copied().enumerate() {
-        emit_gap(&mut lines, &all_lines[next..idx]);
-
-        let row = &all_lines[idx];
+    for (index, row) in projection.rows.iter().enumerate() {
+        emit_gap(&mut lines, projection.omitted_before[index]);
         render_output_row(
             &mut lines,
-            if rendered_idx == 0 { first_label } else { None },
+            if index == 0 { first_label } else { None },
             row,
             width,
         );
-        next = idx + 1;
     }
-    emit_gap(&mut lines, &all_lines[next..]);
-
+    emit_gap(&mut lines, projection.omitted_after);
+    if projection.shortened {
+        lines.push(super::render_spillover_annotation(width, locale));
+    }
     lines
 }
 
-fn output_rows(output: &str, width: u16) -> Vec<OutputRow> {
-    let wrap_width = width.saturating_sub(4).max(1) as usize;
-    // The first row is painted after its label, so it has less room than the
-    // rows under it. Wrapped at the full width it was wrapped a second time
-    // when painted, which left the last word or two stranded on a row of
-    // their own.
-    let first_width = usize::from(width)
-        .saturating_sub(UnicodeWidthStr::width(TRANSCRIPT_RAIL) + FIRST_ROW_LABEL_COLUMNS)
-        .clamp(1, wrap_width);
-    let mut rows = Vec::new();
-    let mut sanitized = String::with_capacity(output.len());
-    for line in output.lines() {
-        sanitized.clear();
-        codewhale_tui_kit::osc8::strip_ansi_into(line, &mut sanitized);
-        let styled = styled_segments(line, &sanitized);
-        let intact = is_path_or_url_like(&sanitized);
-        if intact {
-            rows.push(OutputRow {
-                text: sanitized.clone(),
-                intact: true,
-                styled,
-            });
-        } else {
-            let parts = if rows.is_empty() {
-                wrap_first_row(&sanitized, first_width, wrap_width)
+fn output_projection(output: &str, width: u16, limit: usize) -> OutputProjection {
+    use std::collections::{BTreeSet, BinaryHeap, VecDeque};
+    let mut total = 0usize;
+    let mut nonblank = 0usize;
+    let mut first = Vec::with_capacity(limit);
+    let mut fill = Vec::with_capacity(limit);
+    let mut tail = VecDeque::with_capacity(TOOL_OUTPUT_TAIL_LINES);
+    let mut important = BinaryHeap::with_capacity(limit + TOOL_OUTPUT_TAIL_LINES);
+    let head = TOOL_OUTPUT_HEAD_LINES.min(limit / 2).max(1);
+    let mut shortened = false;
+    for_each_output_row(output, width, |row, clipped| {
+        let index = total;
+        total = total.saturating_add(1);
+        shortened |= clipped;
+        if first.len() < limit {
+            first.push(index);
+        }
+        if is_blank_row(&row) {
+            return;
+        }
+        nonblank = nonblank.saturating_add(1);
+        if fill.len() < limit {
+            fill.push(index);
+        }
+        if nonblank <= head {
+            return;
+        }
+        if tail.len() == TOOL_OUTPUT_TAIL_LINES {
+            tail.pop_front();
+        }
+        tail.push_back((index, states_outcome(&row.text)));
+        if let Some(rank) = output_importance_rank(&row.text) {
+            important.push((rank, index));
+            if important.len() > limit + TOOL_OUTPUT_TAIL_LINES {
+                important.pop();
+            }
+        }
+    });
+    let selected: BTreeSet<usize> = if total <= limit {
+        first.into_iter().collect()
+    } else if nonblank <= limit {
+        fill.into_iter().collect()
+    } else {
+        let tail_budget = TOOL_OUTPUT_TAIL_LINES.min(limit.saturating_sub(head));
+        let mut selected: BTreeSet<usize> = fill.iter().take(head).copied().collect();
+        let mut picked = Vec::with_capacity(tail_budget);
+        for &(index, outcome) in tail.iter().rev() {
+            if outcome && picked.len() < tail_budget {
+                picked.push(index);
+            }
+        }
+        for &(index, _) in tail.iter().rev() {
+            if picked.len() >= tail_budget {
+                break;
+            }
+            if !picked.contains(&index) {
+                picked.push(index);
+            }
+        }
+        selected.extend(picked);
+        let mut ranked = important.into_vec();
+        ranked.sort_unstable();
+        for (_, index) in ranked {
+            if selected.len() >= limit {
+                break;
+            }
+            selected.insert(index);
+        }
+        for index in fill {
+            if selected.len() >= limit {
+                break;
+            }
+            selected.insert(index);
+        }
+        selected
+    };
+    let mut projection = OutputProjection {
+        rows: Vec::with_capacity(limit.saturating_mul(2).saturating_add(1)),
+        omitted_before: Vec::with_capacity(limit.saturating_mul(2).saturating_add(1)),
+        total_rows: total,
+        total_nonblank: nonblank,
+        shortened,
+        ..Default::default()
+    };
+    let mut index = 0usize;
+    let mut hidden = 0usize;
+    let mut only = None;
+    for_each_output_row(output, width, |row, _| {
+        if selected.contains(&index) {
+            if hidden == 1 {
+                projection
+                    .rows
+                    .push(only.take().expect("one hidden row was retained"));
+                projection.omitted_before.push(0);
+                hidden = 0;
+            }
+            only = None;
+            projection.rows.push(row);
+            projection.omitted_before.push(hidden);
+            hidden = 0;
+        } else if !is_blank_row(&row) {
+            hidden = hidden.saturating_add(1);
+            if hidden == 1 {
+                only = Some(row);
             } else {
-                wrap_text(&sanitized, wrap_width)
+                only = None;
+            }
+        }
+        index = index.saturating_add(1);
+    });
+    if hidden == 1 {
+        projection
+            .rows
+            .push(only.expect("one hidden row was retained"));
+        projection.omitted_before.push(0);
+    } else {
+        projection.omitted_after = hidden;
+    }
+    projection
+}
+
+struct OutputRowStream {
+    text: String,
+    styled: Vec<StyledSegment>,
+    source_styled: bool,
+    width: usize,
+    first_width: usize,
+    current_width: usize,
+    intact: bool,
+    clipped: bool,
+    style_clipped: bool,
+    emitted: bool,
+    label_pending: bool,
+}
+
+impl OutputRowStream {
+    fn new(first_width: usize, width: usize, intact: bool, source_styled: bool) -> Self {
+        Self {
+            text: String::new(),
+            styled: Vec::new(),
+            source_styled,
+            width,
+            first_width,
+            current_width: 0,
+            intact,
+            clipped: false,
+            style_clipped: false,
+            emitted: false,
+            label_pending: true,
+        }
+    }
+
+    fn emit(&mut self, emit: &mut impl FnMut(OutputRow, bool)) {
+        if !self.text.trim().is_empty() {
+            self.label_pending = false;
+        }
+        let styled = std::mem::take(&mut self.styled);
+        let has_style = self.source_styled && !styled.is_empty();
+        emit(
+            OutputRow {
+                text: std::mem::take(&mut self.text),
+                intact: self.intact && !self.clipped,
+                styled: (has_style && !self.style_clipped).then_some(styled),
+            },
+            self.clipped || self.style_clipped,
+        );
+        self.current_width = 0;
+        self.emitted = true;
+        self.clipped = false;
+        self.style_clipped = false;
+    }
+
+    fn push(
+        &mut self,
+        grapheme: codewhale_tui_kit::ui_text::DisplayGrapheme<'_>,
+        styles: &[Style],
+        emit: &mut impl FnMut(OutputRow, bool),
+    ) {
+        if self.intact && self.clipped {
+            return;
+        }
+        if self.intact && grapheme.clipped_bytes > 0 {
+            self.text.clear();
+            self.text.push('…');
+            self.styled.clear();
+            self.clipped = true;
+            return;
+        }
+        if self.intact && self.text.len().saturating_add(grapheme.text.len()) > MAX_ROW_BYTES {
+            self.text.clear();
+            self.text.push('…');
+            self.styled.clear();
+            self.clipped = true;
+            return;
+        }
+        if grapheme.text.len() > MAX_ROW_BYTES {
+            if !self.text.is_empty() {
+                self.emit(emit);
+            }
+            self.text.push('…');
+            self.clipped = true;
+            self.emit(emit);
+            return;
+        }
+        let limit = if self.label_pending {
+            self.first_width
+        } else {
+            self.width
+        };
+        let byte_limit = self.text.len().saturating_add(grapheme.text.len()) > MAX_ROW_BYTES;
+        if !self.intact
+            && !self.text.is_empty()
+            && (byte_limit || self.current_width.saturating_add(grapheme.width) > limit)
+        {
+            let start = (!byte_limit)
+                .then(|| last_word_start(&self.text, grapheme.text, limit))
+                .flatten();
+            let carry = start.map(|at| self.text.split_off(at)).unwrap_or_default();
+            let carry_style = if !self.style_clipped && !self.styled.is_empty() {
+                let parts = [self.text.clone(), carry.clone()];
+                let mut split = split_segments(&self.styled, &parts);
+                self.styled = std::mem::take(&mut split[0]);
+                std::mem::take(&mut split[1])
+            } else {
+                Vec::new()
             };
-            let mut styled_parts = styled.map(|segments| split_segments(&segments, &parts));
-            for (idx, wrapped) in parts.into_iter().enumerate() {
-                rows.push(OutputRow {
-                    text: wrapped,
-                    intact: false,
-                    styled: styled_parts
-                        .as_mut()
-                        .map(|split| std::mem::take(&mut split[idx])),
-                });
+            let carry_clipped = self.style_clipped && !carry.is_empty();
+            self.emit(emit);
+            self.current_width = UnicodeWidthStr::width(carry.as_str());
+            self.text = carry;
+            self.styled = carry_style;
+            self.style_clipped = carry_clipped;
+        }
+        self.text.push_str(grapheme.text);
+        self.current_width = self.current_width.saturating_add(grapheme.width);
+        self.clipped |= grapheme.clipped_bytes > 0;
+        if !self.style_clipped {
+            for &(ch, tag) in grapheme.cells {
+                let style = styles.get(tag).copied().unwrap_or_default();
+                if let Some((text, previous)) = self.styled.last_mut()
+                    && *previous == style
+                {
+                    text.push(ch);
+                } else if self.styled.len() < MAX_STYLE_RUNS {
+                    self.styled.push((ch.to_string(), style));
+                } else {
+                    self.styled.clear();
+                    self.style_clipped = true;
+                    break;
+                }
             }
         }
     }
-    if rows.is_empty() {
-        rows.push(OutputRow {
-            text: String::new(),
-            intact: false,
-            styled: None,
-        });
+
+    fn finish(mut self, emit: &mut impl FnMut(OutputRow, bool)) {
+        if !self.text.is_empty() || !self.emitted {
+            self.emit(emit);
+        }
     }
+}
+
+#[derive(Default)]
+struct PathLike {
+    prefix: [char; 5],
+    prefix_chars: usize,
+    previous: [char; 2],
+    url: bool,
+    separator: bool,
+    extension: bool,
+    suffix: Option<usize>,
+    bytes: usize,
+}
+
+impl PathLike {
+    fn push(&mut self, text: &str) {
+        self.bytes = self.bytes.saturating_add(text.len());
+        for ch in text.chars() {
+            if self.prefix_chars < 5 && (self.prefix_chars > 0 || !ch.is_whitespace()) {
+                self.prefix[self.prefix_chars] = ch;
+                self.prefix_chars += 1;
+            }
+            self.url |= self.previous == [':', '/'] && ch == '/';
+            self.previous = [self.previous[1], ch];
+            self.separator |= matches!(ch, '/' | '\\');
+            if ch.is_whitespace() {
+                self.extension |= self.suffix.is_some_and(|bytes| bytes <= 8);
+                self.suffix = None;
+            } else if ch == '.' {
+                self.suffix = Some(0);
+            } else if let Some(bytes) = self.suffix.as_mut() {
+                *bytes = bytes.saturating_add(ch.len_utf8());
+            }
+        }
+    }
+
+    fn finish(self) -> bool {
+        self.url
+            || self.prefix == ['f', 'i', 'l', 'e', ':']
+            || self.separator
+                && (self.bytes > MAX_ROW_BYTES
+                    || self.extension
+                    || self.suffix.is_some_and(|bytes| bytes <= 8))
+    }
+}
+
+fn for_each_output_row(output: &str, width: u16, mut emit: impl FnMut(OutputRow, bool)) {
+    use codewhale_tui_kit::ui_text::DisplayNormalizer;
+    let wrap_width = width.saturating_sub(4).max(1) as usize;
+    let first_width = usize::from(width)
+        .saturating_sub(UnicodeWidthStr::width(TRANSCRIPT_RAIL) + FIRST_ROW_LABEL_COLUMNS)
+        .clamp(1, wrap_width);
+    let mut first = true;
+    let mut emitted = false;
+    for line in output.lines() {
+        let requires_strip = line
+            .bytes()
+            .any(|byte| byte == 0x1b || byte < 0x20 && !matches!(byte, b'\r' | b'\t'));
+        let mut path = PathLike::default();
+        let plain = if requires_strip {
+            let mut plain = String::with_capacity(line.len().min(MAX_STYLED_LINE_BYTES));
+            let mut bounded = true;
+            codewhale_sanitize::sanitize::visit_ansi_text(line, |part| {
+                path.push(part);
+                if bounded && plain.len().saturating_add(part.len()) <= MAX_STYLED_LINE_BYTES {
+                    plain.push_str(part);
+                } else {
+                    bounded = false;
+                    plain.clear();
+                }
+            });
+            bounded.then_some(std::borrow::Cow::Owned(plain))
+        } else {
+            path.push(line);
+            (line.len() <= MAX_STYLED_LINE_BYTES).then_some(std::borrow::Cow::Borrowed(line))
+        };
+        let styled = plain
+            .as_deref()
+            .filter(|_| line.len() <= MAX_STYLED_LINE_BYTES)
+            .and_then(|plain| styled_segments(line, plain));
+        let styles: Vec<Style> = styled
+            .as_ref()
+            .map(|segments| segments.iter().map(|(_, style)| *style).collect())
+            .unwrap_or_default();
+        let mut stream = OutputRowStream::new(
+            if first { first_width } else { wrap_width },
+            wrap_width,
+            path.finish(),
+            !styles.is_empty(),
+        );
+        stream.style_clipped =
+            styled.is_none() && line.len() > MAX_STYLED_LINE_BYTES && line.contains('\x1b');
+        let mut normalizer = DisplayNormalizer::new(0);
+        let mut emit_row = |row: OutputRow, clipped| {
+            if !row.text.trim().is_empty() {
+                first = false;
+            }
+            emitted = true;
+            emit(row, clipped);
+        };
+        {
+            let mut emit_grapheme = |grapheme: codewhale_tui_kit::ui_text::DisplayGrapheme<'_>| {
+                if grapheme.clipped_bytes == 0 {
+                    stream.push(grapheme, &styles, &mut emit_row);
+                } else {
+                    let mut offset = 0usize;
+                    for part in grapheme.text.graphemes(true) {
+                        let count = part.chars().count();
+                        stream.push(
+                            codewhale_tui_kit::ui_text::DisplayGrapheme {
+                                text: part,
+                                cells: &grapheme.cells[offset..offset + count],
+                                width: UnicodeWidthStr::width(part),
+                                clipped_bytes: grapheme.clipped_bytes,
+                                escaped: grapheme.escaped,
+                            },
+                            &styles,
+                            &mut emit_row,
+                        );
+                        offset += count;
+                    }
+                }
+            };
+            if let Some(segments) = &styled {
+                for (tag, (text, _)) in segments.iter().enumerate() {
+                    normalizer.push(text, tag, &mut emit_grapheme);
+                }
+            } else if let Some(plain) = &plain {
+                normalizer.push(plain, 0, &mut emit_grapheme);
+            } else if requires_strip {
+                codewhale_sanitize::sanitize::visit_ansi_text(line, |part| {
+                    normalizer.push(part, 0, &mut emit_grapheme)
+                });
+            } else {
+                normalizer.push(line, 0, &mut emit_grapheme);
+            }
+            normalizer.finish(&mut emit_grapheme);
+        }
+        stream.finish(&mut emit_row);
+    }
+    if !emitted {
+        emit(
+            OutputRow {
+                text: String::new(),
+                intact: false,
+                styled: None,
+            },
+            false,
+        );
+    }
+}
+
+#[cfg(test)]
+fn output_rows(output: &str, width: u16) -> Vec<OutputRow> {
+    let mut rows = Vec::new();
+    for_each_output_row(output, width, |row, _| rows.push(row));
     rows
 }
 
@@ -604,89 +1002,6 @@ fn is_blank_row(row: &OutputRow) -> bool {
     row.text.trim().is_empty()
 }
 
-fn selected_output_indices(rows: &[OutputRow], line_limit: usize) -> Vec<usize> {
-    if rows.len() <= line_limit || line_limit == 0 {
-        return (0..rows.len()).collect();
-    }
-
-    // Once rows have to go, blank ones go first. Commands open and close
-    // with blank lines (`npm test` starts with one, `cargo test` ends with
-    // one), and a three-row preview that spends a row on one shows nothing.
-    let visible: Vec<usize> = (0..rows.len())
-        .filter(|&idx| !is_blank_row(&rows[idx]))
-        .collect();
-    if visible.len() <= line_limit {
-        return visible;
-    }
-
-    // A tight preview gives the larger share to the tail: one opening row
-    // says what ran, the end says how it went. The usual 20-row budget still
-    // keeps 10 + 6.
-    let head = TOOL_OUTPUT_HEAD_LINES.min(line_limit / 2).max(1);
-    let tail = TOOL_OUTPUT_TAIL_LINES.min(line_limit.saturating_sub(head));
-    let mut selected = std::collections::BTreeSet::new();
-    selected.extend(visible[..head].iter().copied());
-    selected.extend(tail_output_indices(rows, &visible[head..], tail));
-
-    let budget = line_limit.saturating_sub(selected.len());
-    if budget > 0 {
-        let mut important: Vec<(usize, usize)> = visible[head..]
-            .iter()
-            .copied()
-            .filter(|idx| !selected.contains(idx))
-            .filter_map(|idx| output_importance_rank(&rows[idx].text).map(|rank| (idx, rank)))
-            .collect();
-        important.sort_by_key(|(idx, rank)| (*rank, *idx));
-        for (idx, _) in important.into_iter().take(budget) {
-            selected.insert(idx);
-        }
-    }
-
-    // The importance pass only fires on lines that look like errors, warnings
-    // or paths. Plain output — a list of names, a table, a build log with
-    // nothing alarming in it — matches none of them, so the card used to show
-    // `head + tail` rows and silently forfeit the rest of its budget. A
-    // 20-line command then rendered 16 rows and claimed the other four were
-    // "omitted". Spend whatever is left by growing the head downward, which
-    // keeps the shown region contiguous and readable top-down.
-    for &idx in &visible[head..] {
-        if selected.len() >= line_limit {
-            break;
-        }
-        selected.insert(idx);
-    }
-
-    selected.into_iter().collect()
-}
-
-/// Choose `tail` rows from the closing `TOOL_OUTPUT_TAIL_LINES` of
-/// `candidates` (non-blank row indices, in order).
-///
-/// With the full tail budget that is simply the closing rows. A tight preview
-/// has fewer slots than the closing block has rows, and a run's totals are
-/// often not its very last lines (a timing line follows them), so rows that
-/// state an outcome take the slots first and the last rows fill the rest.
-fn tail_output_indices(rows: &[OutputRow], candidates: &[usize], tail: usize) -> Vec<usize> {
-    let window_len = TOOL_OUTPUT_TAIL_LINES.max(tail).min(candidates.len());
-    let window = &candidates[candidates.len() - window_len..];
-    let mut picked: Vec<usize> = window
-        .iter()
-        .rev()
-        .copied()
-        .filter(|&idx| states_outcome(&rows[idx].text))
-        .take(tail)
-        .collect();
-    for &idx in window.iter().rev() {
-        if picked.len() >= tail {
-            break;
-        }
-        if !picked.contains(&idx) {
-            picked.push(idx);
-        }
-    }
-    picked
-}
-
 /// Does the row say that something passed or failed? Plain words only, the
 /// same way `output_importance_rank` spots errors — no tool's format is parsed.
 fn states_outcome(line: &str) -> bool {
@@ -703,7 +1018,11 @@ fn states_outcome(line: &str) -> bool {
 }
 
 fn output_importance_rank(line: &str) -> Option<usize> {
-    let lower = line.to_ascii_lowercase();
+    let contains = |needle: &str| {
+        line.as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+    };
     if [
         "error",
         "failed",
@@ -719,29 +1038,20 @@ fn output_importance_rank(line: &str) -> Option<usize> {
         "can't",
     ]
     .iter()
-    .any(|needle| lower.contains(needle))
+    .any(|needle| contains(needle))
     {
         return Some(0);
     }
-    if lower.contains("warning") || lower.contains("warn") {
+    if contains("warning") || contains("warn") {
         return Some(1);
     }
-    if is_path_or_url_like(line) {
-        return Some(2);
-    }
-    None
+    is_path_or_url_like(line).then_some(2)
 }
 
 fn is_path_or_url_like(line: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.contains("://") || trimmed.starts_with("file:") {
-        return true;
-    }
-    let has_separator = trimmed.contains('/') || trimmed.contains('\\');
-    let has_extension = trimmed
-        .split_whitespace()
-        .any(|part| part.rsplit_once('.').is_some_and(|(_, ext)| ext.len() <= 8));
-    has_separator && has_extension
+    let mut path = PathLike::default();
+    path.push(line);
+    path.finish()
 }
 
 /// Detect whether a line contains a `path:line` pattern that could be
@@ -790,7 +1100,7 @@ fn render_output_row(
     lines: &mut Vec<Line<'static>>,
     label: Option<&str>,
     row: &OutputRow,
-    width: u16,
+    _width: u16,
 ) {
     // #374: apply file:line highlighting when the row text contains
     // a `path:line` pattern. Diff style takes precedence (colored
@@ -800,33 +1110,16 @@ fn render_output_row(
     let file_style = file_line_style(&row.text);
     let value_style = diff_style.or(file_style).unwrap_or_else(tool_value_style);
     if let Some(segments) = &row.styled {
-        if row.intact {
-            lines.push(render_card_detail_line_single_styled(
-                label,
-                segments,
-                value_style,
-            ));
-        } else {
-            lines.extend(render_card_detail_line_styled(
-                label,
-                &row.text,
-                segments,
-                value_style,
-                width,
-            ));
-        }
-    } else if row.intact {
+        lines.push(render_card_detail_line_single_styled(
+            label,
+            segments,
+            value_style,
+        ));
+    } else {
         lines.push(render_card_detail_line_single(
             label,
             &row.text,
             value_style,
-        ));
-    } else {
-        lines.extend(render_card_detail_line(
-            label,
-            &row.text,
-            value_style,
-            width,
         ));
     }
 }
@@ -839,18 +1132,6 @@ pub(super) fn wrap_plain_line(line: &str, style: Style, width: u16) -> Vec<Line<
     lines
 }
 
-/// [`wrap_text`] with a narrower first row. The parts still concatenate to
-/// `text`, so the byte length of the first one is where the rest begins.
-fn wrap_first_row(text: &str, first_width: usize, width: usize) -> Vec<String> {
-    let mut parts = wrap_text(text, first_width);
-    if parts.len() > 1 {
-        let rest = wrap_text(&text[parts[0].len()..], width);
-        parts.truncate(1);
-        parts.extend(rest);
-    }
-    parts
-}
-
 /// Wrap `text` to `width` columns, ending each row between words when it
 /// can. A word longer than a row is still split between graphemes.
 ///
@@ -859,42 +1140,27 @@ fn wrap_first_row(text: &str, first_width: usize, width: usize) -> Vec<String> {
 /// output keeps its column alignment, and `split_segments` can lay the
 /// colours back over the rows by counting characters.
 pub(super) fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![text.to_string()];
-    }
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-
     let mut lines = Vec::new();
-    let mut current = String::new();
+    for_each_wrapped_text(text, width, |part| lines.push(part.to_string()));
+    lines
+}
 
-    for grapheme in text.graphemes(true) {
-        let tentative = if current.is_empty() {
-            grapheme.to_string()
-        } else {
-            let mut t = current.clone();
-            t.push_str(grapheme);
-            t
-        };
-
-        if UnicodeWidthStr::width(tentative.as_str()) > width && !current.is_empty() {
-            let carried = last_word_start(&current, grapheme, width)
-                .map(|start| current.split_off(start))
-                .unwrap_or_default();
-            lines.push(std::mem::replace(&mut current, carried));
+pub(super) fn for_each_wrapped_text(text: &str, width: usize, mut emit: impl FnMut(&str)) {
+    if width == 0 || text.is_empty() {
+        emit(text);
+        return;
+    }
+    let mut start = 0usize;
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let end = index + grapheme.len();
+        if start < index && UnicodeWidthStr::width(&text[start..end]) > width {
+            let split = last_word_start(&text[start..index], grapheme, width)
+                .map_or(index, |at| start + at);
+            emit(&text[start..split]);
+            start = split;
         }
-
-        current.push_str(grapheme);
     }
-
-    lines.push(current);
-
-    if lines.is_empty() {
-        vec![String::new()]
-    } else {
-        lines
-    }
+    emit(&text[start..]);
 }
 
 /// Where the last word of a full `row` starts, when that word should move

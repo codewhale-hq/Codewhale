@@ -496,7 +496,7 @@ mod memory_quick_add_tests {
     }
 }
 
-fn spawn_tui_engine(
+async fn spawn_tui_engine(
     app: &mut App,
     api_config: &Config,
     mcp_handoff: Option<codewhale_engine::mcp::McpHandoff>,
@@ -505,7 +505,8 @@ fn spawn_tui_engine(
         build_engine_config(app, api_config),
         api_config,
         mcp_handoff,
-    );
+    )
+    .await;
     app.mcp_snapshot_generation = 0;
     app.mcp_snapshot_generation_invalidated = false;
     // Prime durable agent + coordination state through the same engine event
@@ -551,7 +552,7 @@ async fn retire_tui_engine(
 
 async fn replace_tui_engine(app: &mut App, api_config: &Config, engine_handle: &mut EngineHandle) {
     let mcp_handoff = retire_tui_engine(app, engine_handle).await;
-    *engine_handle = spawn_tui_engine(app, api_config, mcp_handoff);
+    *engine_handle = spawn_tui_engine(app, api_config, mcp_handoff).await;
 }
 
 /// Startup and consent-triggered replacement restore the same conversation
@@ -562,11 +563,12 @@ async fn spawn_tui_engine_with_session(
     config: &Config,
     mcp_handoff: Option<codewhale_engine::mcp::McpHandoff>,
 ) -> Result<EngineHandle> {
-    let handle = spawn_tui_engine(app, config, mcp_handoff);
+    let handle = spawn_tui_engine(app, config, mcp_handoff).await;
     let restored = async {
-        if !app.api_messages.is_empty() {
+        {
             handle
                 .send(Op::SyncSession {
+                    control: app.session_sync_control(),
                     session_id: app.current_session_id.clone(),
                     messages: app.api_messages.as_ref().clone(),
                     system_prompt: app.system_prompt.clone(),

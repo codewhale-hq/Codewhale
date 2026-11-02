@@ -94,6 +94,7 @@ async fn queued_manual_compaction_cancellation_is_idempotent_and_skips_route_act
     .expect("structurally resolve route without credential");
     let (mut engine, handle) = Engine::new(EngineConfig::default(), &route_config);
     let id = "compact-cancel-before-start";
+    let before = engine.session_snapshot();
 
     handle.cancel_compaction(id).expect("first cancel accepted");
     handle
@@ -103,16 +104,17 @@ async fn queued_manual_compaction_cancellation_is_idempotent_and_skips_route_act
         .handle_manual_compaction_op(id.to_string(), route, CompactionConfig::default())
         .await;
 
+    assert_eq!(engine.session_snapshot(), before);
+
     let mut events = handle.rx_event.write().await;
     let drained = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
     assert!(matches!(
         drained.as_slice(),
         [
-            Event::CompactionStarted { id: started, auto: false, .. },
             Event::CompactionCancelled { id: cancelled, auto: false, .. },
             Event::TurnComplete { turn_id: None, submission_id: None,
                 compaction_id: Some(terminal), status: TurnOutcomeStatus::Interrupted, .. }
-        ] if started == id && cancelled == id && terminal == id
+        ] if cancelled == id && terminal == id
     ));
     assert!(
         !drained

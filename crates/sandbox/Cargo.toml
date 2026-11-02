@@ -17,7 +17,6 @@ test-support = ["codewhale-runtime/test-support"]
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-codewhale-app-server = { path = "../app-server", version = "0.10.2" }
 codewhale-paths = { path = "../paths", version = "0.10.2" }
 codewhale-release = { path = "../release", version = "0.10.2" }
 codewhale-runtime = { path = "../runtime", version = "0.10.2" }
