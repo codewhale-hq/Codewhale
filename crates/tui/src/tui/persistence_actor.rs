@@ -334,11 +334,11 @@ impl PersistActorHandle {
                     Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         let mut guard = self
-                        .tx
-                        .shared
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    guard.notified = false;
+                            .tx
+                            .shared
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        guard.notified = false;
                         if let Some(receipt) = receipt {
                             receipt.refuse("persistence actor is closed");
                         }
@@ -502,8 +502,7 @@ pub(crate) fn session_save_health() -> Option<SaveHealthReading> {
 }
 
 pub fn try_persist(request: PersistRequest) -> bool {
-    match ACTOR_TX
-        .get() {
+    match ACTOR_TX.get() {
         Some(handle) => handle.try_send(request),
         None => {
             if let Some(receipt) = request.receipt() {
@@ -548,12 +547,13 @@ pub fn spawn_persistence_actor(
                     .filter(|(_, slot)| {
                         slot.barrier
                             .iter()
-                    .chain(slot.latest.iter())
+                            .chain(slot.latest.iter())
                             .any(|publication| publication.kind != PublicationKind::Checkpoint)
                     })
                     .map(|(id, _)| id.clone())
                     .collect();
-                let receipts: Vec<_> = pending.publications
+                let receipts: Vec<_> = pending
+                    .publications
                     .values()
                     .flat_map(|slot| slot.barrier.iter().chain(slot.latest.iter()))
                     .filter_map(|publication| publication.session.write_receipt.clone())
@@ -659,8 +659,7 @@ enum Control {
 
 impl PendingState {
     fn is_empty(&self) -> bool {
-        self.publications.is_empty()
-            && self.offline_queue.is_empty()
+        self.publications.is_empty() && self.offline_queue.is_empty()
     }
 
     fn absorb_publication(&mut self, publication: PendingPublication) -> Control {
@@ -902,8 +901,8 @@ fn flush_inner(
                 }
                 PublicationKind::Snapshot => {
                     let result = manager.publish_session_bounded(session);
-        health.record(&session_id, &result);
-        record(format!("session:{session_id}"), result.map(|_| ()));
+                    health.record(&session_id, &result);
+                    record(format!("session:{session_id}"), result.map(|_| ()));
                 }
                 PublicationKind::Completion => {
                     let result = manager.publish_completed_session(session);
@@ -1336,7 +1335,7 @@ mod tests {
             let report = flush_inner(&manager, &mut pending, &SessionSaveHealth::default());
             assert!(report.failures.is_empty(), "{report:?}");
 
-        assert!(receiver.await.expect("real publication reply").is_ok());
+            assert!(receiver.await.expect("real publication reply").is_ok());
         }
         let mut snapshot = session.clone();
         snapshot
@@ -1513,8 +1512,7 @@ mod tests {
             None,
             Some("agent"),
         );
-        session.write_receipt = Some(manager
-            .expect_absent_session(session_id).unwrap());
+        session.write_receipt = Some(manager.expect_absent_session(session_id).unwrap());
         session
             .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
             .unwrap();

@@ -155,15 +155,15 @@ fn drain_retained_requests(receiver: &mut PersistRequestReceiver) -> (usize, usi
     for slot in pending.publications.values() {
         for publication in slot.barrier.iter().chain(slot.latest.iter()) {
             assert_eq!(publication.kind, PublicationKind::Snapshot);
-        retained_queued_requests += 1;
-        estimated_retained_payload_bytes += retained_session_payload_bytes(&publication.session);
+            retained_queued_requests += 1;
+            estimated_retained_payload_bytes +=
+                retained_session_payload_bytes(&publication.session);
+        }
     }
-    }
-    let applied_version =
-        pending
-            .publications
+    let applied_version = pending
+        .publications
         .get(BACKLOG_SESSION_ID)
-            .and_then(|slot| slot.latest.as_ref().or(slot.barrier.as_ref()))
+        .and_then(|slot| slot.latest.as_ref().or(slot.barrier.as_ref()))
         .and_then(|publication| saved_session_version(&publication.session));
     (
         retained_queued_requests,
@@ -297,9 +297,7 @@ fn applied_version_follows_production_drain_order_instead_of_numeric_maximum() {
     let (tx, mut receiver) = persistence_request_channel();
     let handle = PersistActorHandle { tx };
     let manager = SessionManager::new(tmp.path().join("sessions")).unwrap();
-    let mut first = backlog_session(
-            tmp.path(),
-            BACKLOG_EXPECTED_APPLIED_VERSION);
+    let mut first = backlog_session(tmp.path(), BACKLOG_EXPECTED_APPLIED_VERSION);
     first.write_receipt = Some(manager.expect_absent_session(BACKLOG_SESSION_ID).unwrap());
     first
         .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
@@ -309,8 +307,7 @@ fn applied_version_follows_production_drain_order_instead_of_numeric_maximum() {
     last.capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
         .unwrap();
     assert!(handle.try_send(PersistRequest::SessionSnapshot(first)));
-    assert!(handle.try_send(PersistRequest::SessionSnapshot(last))
-    );
+    assert!(handle.try_send(PersistRequest::SessionSnapshot(last)));
 
     let (_, _, applied_version) = drain_retained_requests(&mut receiver);
     assert_eq!(
