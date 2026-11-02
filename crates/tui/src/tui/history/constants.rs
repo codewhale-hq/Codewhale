@@ -29,7 +29,7 @@
 pub(super) const TOOL_COMMAND_LINE_LIMIT: usize = 6;
 
 /// Failed generic and MCP results keep a six-row head/tail excerpt.
-/// Full output remains available in the transcript and details pager.
+/// Stored output remains available through explicit source copying and details.
 pub(super) const TOOL_FAILURE_PREVIEW_LINES: usize = 6;
 
 /// Wrapped rows of tool *output* shown in a live card before the details
@@ -46,7 +46,7 @@ pub(super) const TOOL_OUTPUT_LINE_LIMIT: usize = 20;
 /// affordance takes over. One opening row and two closing rows retain a quick
 /// read on what the command did and how it ended (a test run's pass and fail
 /// counts) while keeping routine successes quiet; failures keep their larger
-/// preview budget. The full result remains in the details transcript.
+/// preview budget. Explicit source copying and details retain the stored result.
 pub(super) const TOOL_SUCCESS_OUTPUT_PREVIEW_LINES: usize = 3;
 
 pub(super) const TOOL_TEXT_LIMIT: usize = 300;

@@ -346,7 +346,10 @@ fn no_width_or_render_mode_leaks_a_spillover_storage_path() {
         // The standalone affordance carries no path either, and it fits the
         // width it was given — an affordance that overflows is a wrap artifact
         // in the transcript.
-        let annotation = line_to_plain(&render_spillover_annotation(width));
+        let annotation = line_to_plain(&render_spillover_annotation(
+            width,
+            codewhale_localization::Locale::En,
+        ));
         assert!(
             text_display_width(&annotation) <= usize::from(width),
             "affordance exceeds width {width}: {annotation:?}"

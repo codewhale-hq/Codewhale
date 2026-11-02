@@ -5307,9 +5307,17 @@ impl App {
         self.needs_redraw = true;
     }
 
+    pub(crate) fn set_current_session_id(&mut self, session_id: Option<String>) {
+        if self.current_session_id != session_id {
+            self.view_stack.remove_owned_evidence_pagers();
+        }
+        self.current_session_id = session_id;
+    }
+
     /// Clear the history and its session-scoped side indexes. Used by /clear,
     /// session reset, and other "wipe and reload" flows.
     pub fn clear_history(&mut self) {
+        self.view_stack.remove_owned_evidence_pagers();
         self.history.clear();
         self.history_revisions.clear();
         self.completed_assistant_outputs.clear();

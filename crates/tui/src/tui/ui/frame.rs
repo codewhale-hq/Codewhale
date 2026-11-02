@@ -1598,6 +1598,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // allocation. `Off` leaves the render byte-identical to before.
     app.view_stack
         .set_focus_texture(app.focus_texture, app.ui_theme);
+    app.view_stack.set_locale(app.ui_locale);
     app.sidebar_hover = crate::tui::app::SidebarHoverState::default();
     app.viewport.last_prompt_area = None;
     app.viewport.interaction_targets.clear();

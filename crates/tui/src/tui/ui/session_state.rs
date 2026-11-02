@@ -64,7 +64,7 @@ pub(crate) fn install_offline_queue_transition(
     }
     app.queued_messages.clear();
     app.held_restored_queue = 0;
-    app.current_session_id = Some(transition.lease.session_id().to_string());
+    app.set_current_session_id(Some(transition.lease.session_id().to_string()));
     app.offline_queue_lease = Some(transition.lease);
     transition
         .restored
@@ -139,7 +139,7 @@ pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<boo
     let session = build_session_snapshot(app, &manager)?;
     let projection = saved_work_projection(app, &session);
     if app.current_session_id.is_none() {
-        app.current_session_id = Some(session.metadata.id.clone());
+        app.set_current_session_id(Some(session.metadata.id.clone()));
     }
     if !persistence_actor::try_persist(PersistRequest::SaveCheckpoint { session }) {
         return Err("persistence actor is unavailable".to_string());
@@ -483,7 +483,7 @@ pub(crate) fn persist_recovery_snapshot(app: &mut App) {
         }
         let projection = saved_work_projection(app, &session);
         if app.current_session_id.is_none() {
-            app.current_session_id = Some(session.metadata.id.clone());
+            app.set_current_session_id(Some(session.metadata.id.clone()));
         }
         if let Err(err) = persist_with_pending_work_boundary(
             app,
@@ -522,7 +522,7 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
         }
     };
     let projection = saved_work_projection(app, &session);
-    app.current_session_id = Some(session.metadata.id.clone());
+    app.set_current_session_id(Some(session.metadata.id.clone()));
     if let Err(err) = persist_with_pending_work_boundary(
         app,
         PersistRequest::CompletedCommit { session },
@@ -983,7 +983,7 @@ pub(crate) fn begin_launch_session(
     if let Some(workspace) = workspace {
         app.workspace = workspace;
     }
-    app.current_session_id = Some(session_id.clone());
+    app.set_current_session_id(Some(session_id.clone()));
     app.current_session_metadata = None;
     app.window_title = None;
     app.composer_color = None;

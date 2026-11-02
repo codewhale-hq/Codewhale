@@ -546,7 +546,7 @@ pub(crate) fn ensure_runtime_session_id(app: &mut App) -> String {
         return existing.to_string();
     }
     let session_id = uuid::Uuid::new_v4().to_string();
-    app.current_session_id = Some(session_id.clone());
+    app.set_current_session_id(Some(session_id.clone()));
     session_id
 }
 
@@ -3818,7 +3818,7 @@ pub(crate) async fn run_event_loop(
                             && let Ok(session) = build_session_snapshot(app, &manager)
                         {
                             let projection = saved_work_projection(app, &session);
-                            app.current_session_id = Some(session.metadata.id.clone());
+                            app.set_current_session_id(Some(session.metadata.id.clone()));
                             // Compound completion commit: the actor writes the
                             // completed snapshot and clears this session's
                             // crash checkpoint only after that write succeeds.
@@ -5384,7 +5384,7 @@ pub(crate) async fn run_event_loop(
                 && let Ok(manager) = SessionManager::default_location()
                 && let Ok(session) = build_session_snapshot(app, &manager)
             {
-                app.current_session_id = Some(session.metadata.id.clone());
+                app.set_current_session_id(Some(session.metadata.id.clone()));
                 persistence_actor::persist(PersistRequest::SessionSnapshot(session));
             }
         }

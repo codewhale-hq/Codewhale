@@ -462,7 +462,7 @@ fn persist_accepted_goal_state(
         if !persistence_actor::try_persist(PersistRequest::SaveCheckpoint { session }) {
             return Err("the persistence worker is unavailable".to_string());
         }
-        app.current_session_id = Some(session_id);
+        app.set_current_session_id(Some(session_id));
     }
     let session_id = app
         .current_session_id
@@ -1502,7 +1502,7 @@ pub(super) async fn apply_conversation_undo(
         }
     }
     app.set_api_messages(Arc::new(installed.messages));
-    app.current_session_id = Some(id);
+    app.set_current_session_id(Some(id));
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();
     app.exploring_entries.clear();
@@ -3098,7 +3098,7 @@ async fn apply_command_result_inner(
                     .current_session_id
                     .clone()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                app.current_session_id = Some(owner_session_id.clone());
+                app.set_current_session_id(Some(owner_session_id.clone()));
                 let request = NewTaskRequest {
                     destination_thread_id: None,
                     prompt: prompt.clone(),
@@ -4960,7 +4960,7 @@ pub(crate) fn apply_loaded_session_with_goal(
     // persists across session restarts (#2038).
     app.cumulative_turn_duration =
         std::time::Duration::from_secs(session.metadata.cumulative_turn_secs);
-    app.current_session_id = Some(session.metadata.id.clone());
+    app.set_current_session_id(Some(session.metadata.id.clone()));
     app.session_title = Some(session.metadata.title.clone());
     app.current_session_metadata = Some(session.metadata);
     reset_approval_scope_for_new_conversation(app);

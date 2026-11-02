@@ -35,6 +35,7 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, action_footer_lines,
     render_modal_footer, render_panel_scroll_rail, render_underwater_surface,
 };
+use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_tui_kit::ui_text::grapheme_display_width;
 
@@ -45,6 +46,189 @@ struct PagerDestructiveAction {
     confirm_label: String,
     event: ViewEvent,
     armed: bool,
+}
+
+const EVIDENCE_WINDOW_BYTES: usize = 128 * 1024;
+const PAGER_RETAINED_ROWS: usize = 512;
+const PAGER_ROW_BYTES: usize = 32 * 1024;
+
+struct OwnedEvidence {
+    workspace: std::path::PathBuf,
+    session: String,
+    reference: String,
+    label: String,
+    page: usize,
+    body_start: usize,
+    binary: bool,
+    digest: Option<String>,
+    total: u64,
+    offset: u64,
+    end: u64,
+    previous: Vec<u64>,
+    encoding: &'static str,
+    ready: bool,
+    pending: Option<(
+        tokio_util::sync::CancellationToken,
+        tokio::sync::oneshot::Receiver<Result<EvidenceWindow, ()>>,
+    )>,
+}
+
+struct EvidenceWindow {
+    binary: bool,
+    text: String,
+    copy: String,
+    digest: String,
+    total: u64,
+    offset: u64,
+    end: u64,
+    encoding: &'static str,
+}
+
+impl Drop for OwnedEvidence {
+    fn drop(&mut self) {
+        if let Some((cancel, _)) = self.pending.take() {
+            cancel.cancel();
+        }
+    }
+}
+
+impl OwnedEvidence {
+    fn request(&mut self, offset: u64) {
+        if let Some((cancel, _)) = self.pending.take() {
+            cancel.cancel();
+        }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let context = codewhale_engine::tools::ToolContext::new(self.workspace.clone())
+            .with_state_namespace(self.session.clone())
+            .with_cancel_token(cancel.clone());
+        let mut input = serde_json::json!({
+            "ref": self.reference,
+            "mode": "bytes",
+            "offset": offset,
+            "length": EVIDENCE_WINDOW_BYTES,
+            "max_bytes": EVIDENCE_WINDOW_BYTES,
+        });
+        if let Some(digest) = self.digest.as_ref() {
+            input["expected_sha256"] = serde_json::json!(digest);
+        }
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.ready = false;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                use codewhale_engine::tools::spec::ToolSpec as _;
+                let result = codewhale_engine::tools::tool_result_retrieval::RetrieveToolResultTool
+                    .execute(input, &context)
+                    .await
+                    .map_err(|_| ())
+                    .and_then(|result| evidence_window(&result.content, offset));
+                let _ = send.send(result);
+            });
+        }
+        self.pending = Some((cancel, receive));
+    }
+}
+
+fn evidence_window(content: &str, requested: u64) -> Result<EvidenceWindow, ()> {
+    use base64::Engine as _;
+    if content.len()
+        > EVIDENCE_WINDOW_BYTES * 2
+            + codewhale_engine::tools::tool_result_retrieval::MAX_REFERENCE_BYTES * 6
+    {
+        return Err(());
+    }
+    let value: serde_json::Value = serde_json::from_str(content).map_err(|_| ())?;
+    let total = value
+        .get("total_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(())?;
+    let offset = value
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(())?;
+    let digest = value
+        .get("sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(())?;
+    let data = value
+        .get("data")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(())?;
+    if value.get("mode").and_then(serde_json::Value::as_str) != Some("bytes")
+        || value.get("encoding").and_then(serde_json::Value::as_str) != Some("base64")
+        || offset != requested
+        || total > 512 * 1024 * 1024
+        || offset > total
+        || digest.len() != 64
+        || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|_| ())?;
+    if bytes.len() > EVIDENCE_WINDOW_BYTES
+        || bytes.len() as u64 > total - offset
+        || value
+            .get("returned_bytes")
+            .and_then(serde_json::Value::as_u64)
+            != Some(bytes.len() as u64)
+    {
+        return Err(());
+    }
+    if bytes.is_empty() && offset < total {
+        return Err(());
+    }
+    let text_prefix = match std::str::from_utf8(&bytes) {
+        Ok(text) => Some(text),
+        Err(error)
+            if error.error_len().is_none()
+                && error.valid_up_to() > 0
+                && offset + (bytes.len() as u64) < total =>
+        {
+            std::str::from_utf8(&bytes[..error.valid_up_to()]).ok()
+        }
+        Err(_) => None,
+    };
+    let (text, copy, end, encoding, actual_offset, binary) = if let Some(text) = text_prefix {
+        let mut sanitized = String::with_capacity(text.len());
+        codewhale_tui_kit::osc8::strip_ansi_into(text, &mut sanitized);
+        let (copy, encoding) = if sanitized == text {
+            (text.to_string(), "UTF8")
+        } else {
+            (
+                base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
+                "base64",
+            )
+        };
+        (
+            sanitized,
+            copy,
+            offset + text.len() as u64,
+            encoding,
+            offset,
+            false,
+        )
+    } else {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        (
+            encoded.clone(),
+            encoded,
+            offset + bytes.len() as u64,
+            "base64",
+            offset,
+            true,
+        )
+    };
+    Ok(EvidenceWindow {
+        binary,
+        text,
+        copy,
+        digest: digest.to_ascii_lowercase(),
+        total,
+        offset: actual_offset,
+        end,
+        encoding,
+    })
 }
 
 /// One independently copyable document in a pager. Most pagers contain a
@@ -75,70 +259,170 @@ enum PagerSource {
     Diff(String),
 }
 
-/// The display rows of one page and the column width they were wrapped to.
 #[derive(Debug, Clone, Default)]
 pub(super) struct PagerRows {
-    /// `None` until the page is first laid out.
     width: Option<usize>,
+    pub(super) start: usize,
+    pub(super) total: usize,
+    pub(super) escaped: bool,
+    pub(super) continued: bool,
+    clipped_rows: usize,
+    clipped_bytes: usize,
     plain: Vec<String>,
-    /// Styled rows of a styled-line page; text pages paint `plain`.
     pub(super) styled: Vec<Line<'static>>,
-    /// The source line each row was wrapped from, so a re-wrap can keep the
-    /// same line at the top of the view.
     pub(super) origin: Vec<usize>,
 }
 
 impl PagerRows {
-    fn wrap_text(source: &str, width: usize) -> Self {
+    fn push(
+        &mut self,
+        cells: &[(char, usize)],
+        range: Range<usize>,
+        origin: usize,
+        style: Option<&Line<'static>>,
+    ) {
+        let index = self.total;
+        self.total = self.total.saturating_add(1);
+        if index < self.start || self.plain.len() >= PAGER_RETAINED_ROWS {
+            return;
+        }
+        let text: String = cells[range.clone()].iter().map(|&(ch, _)| ch).collect();
+        if let Some(line) = style {
+            let mut spans = Vec::new();
+            let mut run = String::new();
+            let mut run_span: Option<usize> = None;
+            for &(ch, span) in &cells[range] {
+                if run_span.is_some_and(|current| current != span) {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut run),
+                        line.spans[run_span.unwrap()].style,
+                    ));
+                }
+                run_span = Some(span);
+                run.push(ch);
+            }
+            if let Some(span) = run_span {
+                spans.push(Span::styled(run, line.spans[span].style));
+            }
+            let mut row = Line::from(spans).style(line.style);
+            row.alignment = line.alignment;
+            self.styled.push(row);
+        }
+        self.plain.push(text);
+        self.origin.push(origin);
+    }
+
+    fn wrap_text(source: &str, width: usize, start: usize) -> Self {
         let mut rows = Self {
             width: Some(width),
+            start,
             ..Self::default()
         };
-        for (line_index, raw) in source.lines().enumerate() {
-            for row in wrap_text(raw, width) {
-                rows.plain.push(row);
-                rows.origin.push(line_index);
-            }
+        for (origin, raw) in source.lines().enumerate() {
+            let (escaped, continued) =
+                for_each_wrapped_range(std::iter::once((raw, 0)), width, |cells, range| {
+                    rows.push(cells, range, origin, None);
+                });
+            rows.escaped |= escaped;
+            rows.continued |= continued;
         }
         rows
     }
 
+    #[cfg(test)]
     pub(super) fn wrap_lines(lines: &[Line<'static>], width: usize) -> Self {
+        Self::wrap_lines_window(lines, width, 0)
+    }
+
+    pub(super) fn wrap_lines_window(lines: &[Line<'static>], width: usize, start: usize) -> Self {
         let mut rows = Self {
             width: Some(width),
+            start,
             ..Self::default()
         };
-        for (line_index, line) in lines.iter().enumerate() {
-            let cells = display_cells(
+        for (origin, line) in lines.iter().enumerate() {
+            let (escaped, continued) = for_each_wrapped_range(
                 line.spans
                     .iter()
                     .enumerate()
-                    .map(|(span, piece)| (piece.content.as_ref(), span)),
+                    .map(|(i, span)| (span.content.as_ref(), i)),
+                width,
+                |cells, range| {
+                    rows.push(cells, range, origin, Some(line));
+                },
             );
-            for range in wrap_ranges(&cells, width) {
-                let mut spans: Vec<Span<'static>> = Vec::new();
-                let mut run = String::new();
-                let mut run_span = None;
-                for &(ch, span) in &cells[range] {
-                    if run_span.is_some_and(|current| current != span) {
-                        let style = line.spans[run_span.unwrap_or(span)].style;
-                        spans.push(Span::styled(std::mem::take(&mut run), style));
-                    }
-                    run_span = Some(span);
-                    run.push(ch);
-                }
-                if let Some(span) = run_span {
-                    spans.push(Span::styled(run, line.spans[span].style));
-                }
-                let mut row = Line::from(spans).style(line.style);
-                row.alignment = line.alignment;
-                rows.plain.push(line_to_string(&row));
-                rows.styled.push(row);
-                rows.origin.push(line_index);
-            }
+            rows.escaped |= escaped;
+            rows.continued |= continued;
         }
         rows
     }
+
+    pub(super) fn line_range(
+        lines: &[Line<'static>],
+        width: usize,
+        from: usize,
+        to: usize,
+    ) -> (usize, usize, usize, bool, bool) {
+        let mut escaped = false;
+        let mut continued = false;
+        let mut total = 0usize;
+        let mut first = None;
+        let mut last = None;
+        for (origin, line) in lines.iter().enumerate() {
+            let flags = for_each_wrapped_range(
+                line.spans
+                    .iter()
+                    .enumerate()
+                    .map(|(i, span)| (span.content.as_ref(), i)),
+                width,
+                |_, _| {
+                    if origin >= from && first.is_none() {
+                        first = Some(total);
+                    }
+                    if origin <= to {
+                        last = Some(total);
+                    }
+                    total = total.saturating_add(1);
+                },
+            );
+            escaped |= flags.0;
+            continued |= flags.1;
+        }
+        (
+            first.unwrap_or(total),
+            last.unwrap_or(0),
+            total,
+            escaped,
+            continued,
+        )
+    }
+    pub(super) fn display_notice(&self, locale: Locale, questions: bool) -> Option<String> {
+        let mut notice = String::new();
+        if self.escaped {
+            notice.push_str(&tr(
+                locale,
+                if questions {
+                    MessageId::UserInputUnicodeEscapes
+                } else {
+                    MessageId::PagerUnicodeEscapes
+                },
+            ));
+        }
+        if self.continued {
+            if !notice.is_empty() {
+                notice.push_str(" · ");
+            }
+            notice.push_str(&tr(locale, MessageId::PagerDisplayContinuation));
+        }
+        (!notice.is_empty()).then_some(notice)
+    }
+}
+
+struct PageSearch {
+    total: usize,
+    index: usize,
+    row: Option<usize>,
+    origin: Option<usize>,
 }
 
 impl PagerPage {
@@ -166,43 +450,164 @@ impl PagerPage {
         }
     }
 
-    /// Wrap the page to `width` columns (`0`: unwrapped) unless it already
-    /// is; the paragraph then never wraps a row again, so one row is one
-    /// scroll step. Returns whether the rows changed.
-    fn layout(&self, width: usize) -> bool {
-        if self.rows.borrow().width == Some(width) {
-            return false;
+    fn layout(&self, width: usize, start: usize, needed: usize) -> bool {
+        {
+            let rows = self.rows.borrow();
+            if rows.width == Some(width)
+                && start >= rows.start
+                && start.saturating_add(needed).min(rows.total)
+                    <= rows.start.saturating_add(rows.plain.len())
+            {
+                return false;
+            }
         }
-        *self.rows.borrow_mut() = match &self.source {
-            PagerSource::Text(source) => PagerRows::wrap_text(source, width),
-            PagerSource::Lines(lines) => PagerRows::wrap_lines(lines, width),
+        let scan = |start| match &self.source {
+            PagerSource::Text(source) => PagerRows::wrap_text(source, width, start),
+            PagerSource::Lines(lines) => PagerRows::wrap_lines_window(lines, width, start),
             PagerSource::Diff(diff) => {
-                let rendered = codewhale_tui_kit::diff_render::render_diff_bounded(
+                let rendered = codewhale_tui_kit::diff_render::render_diff_window(
                     diff,
                     u16::try_from(width).unwrap_or(u16::MAX),
-                    usize::MAX,
+                    start,
+                    PAGER_RETAINED_ROWS,
                 );
-                let mut rows = PagerRows::wrap_lines(&rendered.lines, width);
-                for origin in &mut rows.origin {
-                    *origin = rendered.origins[*origin];
+                let total = rendered.lines.len().saturating_add(rendered.omitted_rows);
+                let plain = rendered.lines.iter().map(line_to_string).collect();
+                PagerRows {
+                    width: Some(width),
+                    start,
+                    total,
+                    clipped_rows: rendered.clipped_rows,
+                    clipped_bytes: rendered.clipped_bytes,
+                    escaped: false,
+                    continued: false,
+                    plain,
+                    styled: rendered.lines,
+                    origin: rendered.origins,
                 }
-                rows
             }
         };
+        let mut rows = scan(start);
+        if start >= rows.total && rows.total > 0 {
+            rows = scan(rows.total.saturating_sub(needed.max(1)));
+        }
+        *self.rows.borrow_mut() = rows;
         true
     }
 
-    /// The display rows, laid out at the caller's width if no render has
-    /// fixed the real one yet.
+    fn row_for_origin(&self, width: usize, origin: usize) -> usize {
+        match &self.source {
+            PagerSource::Text(source) => {
+                let mut rows = 0usize;
+                for raw in source.lines().take(origin) {
+                    for_each_wrapped_range(std::iter::once((raw, 0)), width, |_, _| {
+                        rows = rows.saturating_add(1);
+                    });
+                }
+                rows
+            }
+            PagerSource::Lines(lines) => PagerRows::line_range(lines, width, origin, origin).0,
+            PagerSource::Diff(diff) => codewhale_tui_kit::diff_render::diff_row_for_origin(
+                diff,
+                u16::try_from(width).unwrap_or(u16::MAX),
+                origin,
+            ),
+        }
+    }
+
+    fn search(
+        &self,
+        width: usize,
+        query: &str,
+        selected: usize,
+        anchor: Option<usize>,
+    ) -> PageSearch {
+        let query = query.trim().to_ascii_lowercase();
+        let mut result = PageSearch {
+            total: 0,
+            index: 0,
+            row: None,
+            origin: None,
+        };
+        if query.is_empty() {
+            return result;
+        }
+        if let PagerSource::Diff(diff) = &self.source {
+            let found = if let Some(origin) = anchor {
+                codewhale_tui_kit::diff_render::search_diff_from_origin(
+                    diff,
+                    u16::try_from(width).unwrap_or(u16::MAX),
+                    &query,
+                    origin,
+                )
+            } else {
+                codewhale_tui_kit::diff_render::search_diff(
+                    diff,
+                    u16::try_from(width).unwrap_or(u16::MAX),
+                    &query,
+                    selected,
+                )
+            };
+            result.total = found.total_matches;
+            result.row = found.selected_row;
+            result.origin = found.selected_origin;
+            result.index = found.selected_index;
+            return result;
+        }
+        let mut row_index = 0usize;
+        let mut visit = |origin: usize, text: String| {
+            if text.to_ascii_lowercase().contains(&query) {
+                let choose = anchor.map_or(result.total == selected, |line| {
+                    result.row.is_none() && origin >= line
+                });
+                if choose {
+                    result.row = Some(row_index);
+                    result.origin = Some(origin);
+                    result.index = result.total;
+                }
+                result.total = result.total.saturating_add(1);
+            }
+            row_index = row_index.saturating_add(1);
+        };
+        match &self.source {
+            PagerSource::Text(source) => {
+                for (origin, raw) in source.lines().enumerate() {
+                    for_each_wrapped_range(std::iter::once((raw, 0)), width, |cells, range| {
+                        visit(origin, cells[range].iter().map(|&(ch, _)| ch).collect());
+                    });
+                }
+            }
+            PagerSource::Lines(lines) => {
+                for (origin, line) in lines.iter().enumerate() {
+                    for_each_wrapped_range(
+                        line.spans
+                            .iter()
+                            .enumerate()
+                            .map(|(i, span)| (span.content.as_ref(), i)),
+                        width,
+                        |cells, range| {
+                            visit(origin, cells[range].iter().map(|&(ch, _)| ch).collect());
+                        },
+                    );
+                }
+            }
+            PagerSource::Diff(_) => unreachable!(),
+        }
+        if result.row.is_none() && result.total > 0 {
+            return self.search(width, &query, 0, None);
+        }
+        result
+    }
+
     fn rows(&self) -> std::cell::Ref<'_, PagerRows> {
         if self.rows.borrow().width.is_none() {
-            self.layout(self.first_width);
+            self.layout(self.first_width, 0, 1);
         }
         self.rows.borrow()
     }
 
     fn row_count(&self) -> usize {
-        self.rows().plain.len()
+        self.rows().total
     }
 
     /// What `c` / `y` copy without an explicit payload: the source, never the
@@ -239,16 +644,17 @@ impl PagerPage {
 }
 
 pub struct PagerView {
+    locale: Locale,
     pages: Vec<PagerPage>,
     page_index: usize,
     /// First visible row. A cell because a resize re-wraps the rows during
     /// render, which remaps it to keep the same source line on top.
     scroll: Cell<usize>,
     search_input: String,
-    /// Rows matching the search, ascending; recomputed when a re-wrap moves
-    /// the rows under them.
-    search_matches: RefCell<Vec<usize>>,
     search_index: Cell<usize>,
+    search_total: Cell<usize>,
+    search_row: Cell<Option<usize>>,
+    search_origin: Cell<Option<usize>>,
     search_mode: bool,
     pending_g: bool,
     /// Cached visible content height from the last render. Used by paging
@@ -261,6 +667,7 @@ pub struct PagerView {
     action_area: Cell<Option<Rect>>,
     live_shell_job: Option<String>,
     follow: bool,
+    evidence: Option<OwnedEvidence>,
 }
 
 impl PagerView {
@@ -275,11 +682,14 @@ impl PagerView {
         let page_index = initial_page.min(pages.len().saturating_sub(1));
         Self {
             pages,
+            locale: Locale::En,
             page_index,
             scroll: Cell::new(0),
             search_input: String::new(),
-            search_matches: RefCell::default(),
             search_index: Cell::new(0),
+            search_total: Cell::new(0),
+            search_row: Cell::new(None),
+            search_origin: Cell::new(None),
             search_mode: false,
             pending_g: false,
             last_visible_height: Cell::new(0),
@@ -287,7 +697,105 @@ impl PagerView {
             action_area: Cell::new(None),
             live_shell_job: None,
             follow: false,
+            evidence: None,
         }
+    }
+
+    pub(crate) fn has_owned_evidence(&self) -> bool {
+        self.evidence.is_some()
+    }
+
+    pub(crate) fn with_owned_evidence(
+        mut self,
+        workspace: std::path::PathBuf,
+        session: String,
+        reference: String,
+    ) -> Self {
+        let page = self.pages.len();
+        let label = self.current_page().title.clone();
+        self.pages.push(PagerPage::from_text("", "", 80));
+        self.evidence = Some(OwnedEvidence {
+            workspace,
+            session,
+            reference,
+            label,
+            page,
+            body_start: 0,
+            binary: false,
+            digest: None,
+            total: 0,
+            offset: 0,
+            end: 0,
+            previous: Vec::new(),
+            encoding: "UTF8",
+            ready: false,
+            pending: None,
+        });
+        self.evidence.as_mut().unwrap().request(0);
+        self.localize_evidence_page();
+        self.switch_page(page);
+        self
+    }
+
+    fn evidence_request(&mut self, offset: u64) {
+        if let Some(evidence) = self.evidence.as_mut() {
+            evidence.request(offset);
+            let page = &mut self.pages[evidence.page];
+            page.copy_text = None;
+            *page.rows.get_mut() = PagerRows::default();
+            self.scroll.set(0);
+            self.search_input.clear();
+            self.search_index.set(0);
+            self.search_total.set(0);
+            self.search_row.set(None);
+            self.search_origin.set(None);
+            self.search_mode = false;
+        }
+        self.localize_evidence_page();
+    }
+
+    fn localize_evidence_page(&mut self) {
+        let Some(evidence) = self.evidence.as_mut() else {
+            return;
+        };
+        let page = &mut self.pages[evidence.page];
+        if evidence.pending.is_some() {
+            page.title = tr(self.locale, MessageId::PagerEvidenceLoadingTitle)
+                .replace("{label}", &evidence.label);
+            page.source =
+                PagerSource::Text(tr(self.locale, MessageId::PagerEvidenceVerifying).into_owned());
+        } else if evidence.ready {
+            if let PagerSource::Text(source) = &mut page.source {
+                let body = source.split_off(evidence.body_start);
+                page.title = tr(self.locale, MessageId::PagerEvidenceRangeTitle)
+                    .replace("{start}", &evidence.offset.to_string())
+                    .replace("{end}", &evidence.end.to_string())
+                    .replace("{total}", &evidence.total.to_string())
+                    .replace("{encoding}", evidence.encoding)
+                    .replace("{label}", &evidence.label);
+                let mut header = tr(self.locale, MessageId::PagerEvidenceVerifiedRange)
+                    .replace("{digest}", evidence.digest.as_deref().unwrap_or_default())
+                    .replace("{start}", &evidence.offset.to_string())
+                    .replace("{end}", &evidence.end.to_string())
+                    .replace("{total}", &evidence.total.to_string())
+                    .replace("{encoding}", evidence.encoding);
+                header.push_str("\n\n");
+                if evidence.binary {
+                    header.push_str(&tr(self.locale, MessageId::PagerEvidenceBinary));
+                    header.push_str("\n\n");
+                }
+                evidence.body_start = header.len();
+                header.push_str(&body);
+                *source = header;
+            }
+        } else {
+            page.title = tr(self.locale, MessageId::PagerEvidenceUnavailableTitle)
+                .replace("{label}", &evidence.label);
+            page.source = PagerSource::Text(
+                tr(self.locale, MessageId::PagerEvidenceUnavailable).into_owned(),
+            );
+        }
+        *page.rows.get_mut() = PagerRows::default();
     }
 
     pub(crate) fn with_live_shell_job(mut self, job_id: impl Into<String>) -> Self {
@@ -391,7 +899,7 @@ impl PagerView {
             codewhale_localization::MessageId::PagerActionConfirm,
         )
         .into_owned();
-        Self::from_text(title, text, width)
+        let mut view = Self::from_text(title, text, width)
             .with_copy_text(command.clone())
             .with_destructive_action(
                 'y',
@@ -400,7 +908,9 @@ impl PagerView {
                 ViewEvent::CommandPaletteSelected {
                     action: crate::tui::views::CommandPaletteAction::ExecuteCommand { command },
                 },
-            )
+            );
+        view.locale = locale;
+        view
     }
 
     fn activate_destructive_action(&mut self) -> ViewAction {
@@ -432,8 +942,10 @@ impl PagerView {
         self.page_index = page_index;
         self.scroll.set(0);
         self.search_input.clear();
-        self.search_matches.get_mut().clear();
         self.search_index.set(0);
+        self.search_total.set(0);
+        self.search_row.set(None);
+        self.search_origin.set(None);
         self.search_mode = false;
         self.pending_g = false;
         self.follow = false;
@@ -508,80 +1020,152 @@ impl PagerView {
     fn start_search(&mut self) {
         self.search_mode = true;
         self.search_input.clear();
-        self.search_matches.get_mut().clear();
         self.search_index.set(0);
+        self.search_total.set(0);
+        self.search_row.set(None);
+        self.search_origin.set(None);
+    }
+
+    fn install_search(&self, selected: usize, anchor: Option<usize>) {
+        let page = self.current_page();
+        let width = page.rows().width.unwrap_or(page.first_width);
+        let found = page.search(width, &self.search_input, selected, anchor);
+        self.search_total.set(found.total);
+        self.search_index.set(found.index);
+        self.search_row.set(found.row);
+        self.search_origin.set(found.origin);
     }
 
     fn update_search_matches(&mut self) {
-        let matches = find_matches(&self.current_page().rows().plain, &self.search_input);
-        *self.search_matches.get_mut() = matches;
-        self.search_index.set(0);
+        self.install_search(0, None);
     }
 
-    /// Wrap the current page to `width`. When that re-wraps it (a resize),
-    /// keep the same source line at the top of the view and the same match
-    /// selected, since the old row indices no longer name the same rows.
-    fn layout(&self, width: usize) {
+    fn layout(&self, width: usize, needed: usize) {
         let page = self.current_page();
-        let (top, current_match) = {
+        let (old_width, top) = {
             let rows = page.rows.borrow();
-            let origin = |row: usize| rows.origin.get(row).copied();
-            let current = self
-                .search_matches
-                .borrow()
-                .get(self.search_index.get())
-                .copied();
-            (origin(self.scroll.get()), current.and_then(origin))
+            (
+                rows.width,
+                self.scroll
+                    .get()
+                    .checked_sub(rows.start)
+                    .and_then(|i| rows.origin.get(i))
+                    .copied(),
+            )
         };
-        if !page.layout(width) {
-            return;
-        }
-        let rows = page.rows.borrow();
-        if let Some(top) = top {
-            self.scroll
-                .set(rows.origin.partition_point(|&line| line < top));
-        }
-        if !self.search_input.trim().is_empty() {
-            let matches = find_matches(&rows.plain, &self.search_input);
-            let index = current_match
-                .and_then(|line| matches.iter().position(|&row| rows.origin[row] >= line))
-                .unwrap_or(0);
-            *self.search_matches.borrow_mut() = matches;
-            self.search_index.set(index);
+        if old_width != Some(width) {
+            if let Some(top) = top {
+                self.scroll.set(page.row_for_origin(width, top));
+            }
+            page.layout(width, self.scroll.get(), needed);
+            if !self.search_input.trim().is_empty() {
+                let found = page.search(
+                    width,
+                    &self.search_input,
+                    self.search_index.get(),
+                    self.search_origin.get(),
+                );
+                self.search_total.set(found.total);
+                self.search_index.set(found.index);
+                self.search_row.set(found.row);
+                self.search_origin.set(found.origin);
+            }
+        } else {
+            page.layout(width, self.scroll.get(), needed);
         }
     }
 
     fn jump_to_match(&mut self) {
-        if let Some(&row) = self.search_matches.get_mut().get(self.search_index.get()) {
+        if let Some(row) = self.search_row.get() {
             self.scroll.set(row);
             self.follow = false;
         }
     }
 
     fn next_match(&mut self) {
-        let total = self.search_matches.get_mut().len();
+        let total = self.search_total.get();
         if total == 0 {
             return;
         }
-        self.search_index.set((self.search_index.get() + 1) % total);
+        self.install_search((self.search_index.get() + 1) % total, None);
         self.jump_to_match();
     }
 
     fn prev_match(&mut self) {
-        let total = self.search_matches.get_mut().len();
+        let total = self.search_total.get();
         if total == 0 {
             return;
         }
-        let index = self.search_index.get();
-        self.search_index
-            .set(if index == 0 { total - 1 } else { index - 1 });
+        self.install_search(
+            if self.search_index.get() == 0 {
+                total - 1
+            } else {
+                self.search_index.get() - 1
+            },
+            None,
+        );
         self.jump_to_match();
     }
 }
 
 impl ModalView for PagerView {
+    fn set_locale(&mut self, locale: Locale) {
+        if self.locale == locale {
+            return;
+        }
+        self.locale = locale;
+        self.localize_evidence_page();
+        if !self.search_input.trim().is_empty() {
+            self.update_search_matches();
+        }
+    }
+
     fn kind(&self) -> ModalKind {
         ModalKind::Pager
+    }
+
+    fn tick(&mut self) -> ViewAction {
+        let completed = self.evidence.as_mut().and_then(|evidence| {
+            evidence
+                .pending
+                .as_mut()
+                .and_then(|(_, receive)| match receive.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(())),
+                })
+        });
+        let Some(result) = completed else {
+            return ViewAction::None;
+        };
+        let evidence = self.evidence.as_mut().unwrap();
+        evidence.pending.take();
+        let page = &mut self.pages[evidence.page];
+        match result {
+            Ok(window)
+                if evidence
+                    .digest
+                    .as_ref()
+                    .is_none_or(|digest| digest == &window.digest) =>
+            {
+                page.source = PagerSource::Text(window.text);
+                evidence.body_start = 0;
+                evidence.binary = window.binary;
+                page.copy_text = Some(window.copy);
+                evidence.digest = Some(window.digest);
+                evidence.total = window.total;
+                evidence.offset = window.offset;
+                evidence.end = window.end;
+                evidence.encoding = window.encoding;
+                evidence.ready = true;
+            }
+            _ => {
+                page.copy_text = None;
+                evidence.ready = false;
+            }
+        }
+        self.localize_evidence_page();
+        ViewAction::Redraw
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -604,8 +1188,10 @@ impl ModalView for PagerView {
                     // off they re-enter `/` and re-type.
                     self.search_mode = false;
                     self.search_input.clear();
-                    self.search_matches.get_mut().clear();
                     self.search_index.set(0);
+                    self.search_total.set(0);
+                    self.search_row.set(None);
+                    self.search_origin.set(None);
                     return ViewAction::None;
                 }
                 KeyCode::Backspace => {
@@ -627,6 +1213,55 @@ impl ModalView for PagerView {
                 // All other keys (Up/Down, PageUp/PageDown, etc.) are captured
                 // in search mode so they don't fall through to the pager body.
                 _ => return ViewAction::None,
+            }
+        }
+
+        if self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.page == self.page_index)
+        {
+            let control = key.modifiers.contains(KeyModifiers::CONTROL);
+            let target = match key.code {
+                KeyCode::Home if control => Some(0),
+                KeyCode::End if control => self
+                    .evidence
+                    .as_ref()
+                    .filter(|evidence| evidence.ready)
+                    .map(|evidence| evidence.total.saturating_sub(EVIDENCE_WINDOW_BYTES as u64)),
+                KeyCode::Right | KeyCode::Char(']') => {
+                    self.evidence.as_mut().and_then(|evidence| {
+                        if !evidence.ready || evidence.end >= evidence.total {
+                            return None;
+                        }
+                        if evidence.previous.len() < 8192 {
+                            evidence.previous.push(evidence.offset);
+                        }
+                        Some(evidence.end)
+                    })
+                }
+                KeyCode::Left | KeyCode::Char('[') => self.evidence.as_mut().and_then(|evidence| {
+                    if !evidence.ready {
+                        return None;
+                    }
+                    if evidence.offset == 0 {
+                        return None;
+                    }
+                    Some(evidence.previous.pop().unwrap_or_else(|| {
+                        evidence.offset.saturating_sub(EVIDENCE_WINDOW_BYTES as u64)
+                    }))
+                }),
+                _ => None,
+            };
+            if let Some(offset) = target {
+                self.evidence_request(offset);
+                return ViewAction::Redraw;
+            }
+            if matches!(
+                key.code,
+                KeyCode::Right | KeyCode::Char(']') | KeyCode::Char('[')
+            ) {
+                return ViewAction::None;
             }
         }
 
@@ -773,10 +1408,29 @@ impl ModalView for PagerView {
             // landing from either OS-clipboard or vim convention find a
             // working key.
             KeyCode::Char('c') | KeyCode::Char('y') => {
+                if self
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.page == self.page_index && !evidence.ready)
+                {
+                    return ViewAction::None;
+                }
                 self.pending_g = false;
                 ViewAction::Emit(ViewEvent::CopyToClipboard {
                     text: self.clipboard_text(),
-                    label: "Pager content".to_string(),
+                    label: self
+                        .evidence
+                        .as_ref()
+                        .filter(|evidence| evidence.page == self.page_index)
+                        .map_or_else(
+                            || tr(self.locale, MessageId::PagerCopyContentLabel).into_owned(),
+                            |evidence| {
+                                tr(self.locale, MessageId::PagerEvidenceCopyLabel)
+                                    .replace("{start}", &evidence.offset.to_string())
+                                    .replace("{end}", &evidence.end.to_string())
+                                    .replace("{encoding}", evidence.encoding)
+                            },
+                        ),
                 })
             }
             // `e` exports the compact turn handoff (#4108) when this pager
@@ -793,7 +1447,7 @@ impl ModalView for PagerView {
                     .unwrap_or_default();
                 ViewAction::Emit(ViewEvent::CopyToClipboard {
                     text,
-                    label: "Turn handoff".to_string(),
+                    label: tr(self.locale, MessageId::PagerCopyHandoffLabel).into_owned(),
                 })
             }
             // `a` copies ONLY the final assistant answer — the clean
@@ -807,7 +1461,7 @@ impl ModalView for PagerView {
                 let text = self.current_page().answer_text.clone().unwrap_or_default();
                 ViewAction::Emit(ViewEvent::CopyToClipboard {
                     text,
-                    label: "Answer".to_string(),
+                    label: tr(self.locale, MessageId::PagerCopyAnswerLabel).into_owned(),
                 })
             }
             _ => ViewAction::None,
@@ -856,19 +1510,44 @@ impl ModalView for PagerView {
         // The wrapping action footer is anchored to the bottom of the inner
         // area; the body fills the rows above it.
         let mut hints = vec![
-            ActionHint::new("q/Esc", "close"),
-            ActionHint::new("j/k", "scroll"),
-            ActionHint::new("Space", "page"),
-            ActionHint::new("Ctrl+D/U", "half"),
-            ActionHint::new("g/G", "top/bottom"),
-            ActionHint::new("/", "search"),
-            ActionHint::new("c", "copy"),
+            ActionHint::new("q/Esc", tr(self.locale, MessageId::SessionsActionClose)),
+            ActionHint::new("j/k", tr(self.locale, MessageId::PagerActionScroll)),
+            ActionHint::new("Space", tr(self.locale, MessageId::PagerActionPage)),
+            ActionHint::new("Ctrl+D/U", tr(self.locale, MessageId::PagerActionHalfPage)),
+            ActionHint::new("g/G", tr(self.locale, MessageId::PagerActionTopBottom)),
+            ActionHint::new("/", tr(self.locale, MessageId::SessionsActionSearch)),
+            ActionHint::new("c", tr(self.locale, MessageId::PagerActionCopy)),
         ];
+        if self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.page == self.page_index)
+        {
+            hints[5] = ActionHint::new(
+                "/",
+                tr(self.locale, MessageId::PagerActionSearchLoadedRange),
+            );
+            hints[6] = ActionHint::new("c", tr(self.locale, MessageId::PagerActionCopyLoadedRange));
+            hints.push(ActionHint::new(
+                "←/→",
+                tr(self.locale, MessageId::PagerActionByteWindows),
+            ));
+            hints.push(ActionHint::new(
+                "Ctrl+Home/End",
+                tr(self.locale, MessageId::PagerActionFirstLastBytes),
+            ));
+        }
         if page.export_markdown.is_some() {
-            hints.push(ActionHint::new("e", "copy handoff"));
+            hints.push(ActionHint::new(
+                "e",
+                tr(self.locale, MessageId::PagerActionCopyHandoff),
+            ));
         }
         if page.answer_text.is_some() {
-            hints.push(ActionHint::new("a", "copy answer"));
+            hints.push(ActionHint::new(
+                "a",
+                tr(self.locale, MessageId::PagerActionCopyAnswer),
+            ));
         }
         self.action_area.set(None);
         if let Some(action) = self.destructive_action.as_ref() {
@@ -911,14 +1590,22 @@ impl ModalView for PagerView {
         } else {
             content.width
         };
-        self.layout(usize::from(body_width));
+        self.layout(
+            usize::from(body_width),
+            usize::from(content.height).min(PAGER_RETAINED_ROWS),
+        );
 
         // `content` already excludes the border, padding, and footer rows.
-        let mut visible_height = content.height as usize;
+        let mut visible_height = usize::from(content.height).min(PAGER_RETAINED_ROWS);
+        let diff_status = matches!(&page.source, PagerSource::Diff(_));
+        let display_notice = page.rows.borrow().display_notice(self.locale, false);
+        if diff_status || display_notice.is_some() {
+            visible_height = visible_height.saturating_sub(1);
+        }
         if self.search_mode {
             // Reserve a row for the search prompt that gets pushed below.
             visible_height = visible_height.saturating_sub(1);
-        } else if !self.search_matches.borrow().is_empty() {
+        } else if self.search_total.get() > 0 {
             // Reserve a row for the "match X/Y (n/N)" status; without this
             // the status line gets clipped on small popup heights and the
             // user can't see how many matches there are.
@@ -927,8 +1614,7 @@ impl ModalView for PagerView {
         // Cache for paging keys; the value is treated as advisory and
         // clamped at use-time.
         self.last_visible_height.set(visible_height);
-        let rows = page.rows.borrow();
-        let row_count = rows.plain.len();
+        let row_count = page.row_count();
         let max_scroll = row_count.saturating_sub(visible_height);
         let scroll = if self.follow {
             self.scroll.set(max_scroll);
@@ -936,16 +1622,20 @@ impl ModalView for PagerView {
         } else {
             self.scroll.get().min(max_scroll)
         };
-        let end = (scroll + visible_height).min(row_count);
+        self.scroll.set(scroll);
+        page.layout(usize::from(body_width), scroll, visible_height);
+        let rows = page.rows.borrow();
+        let start = scroll.saturating_sub(rows.start).min(rows.plain.len());
+        let end = start.saturating_add(visible_height).min(rows.plain.len());
         let mut visible_lines: Vec<Line<'static>> = if row_count == 0 {
             vec![Line::from("")]
         } else if rows.styled.is_empty() {
-            rows.plain[scroll..end]
+            rows.plain[start..end]
                 .iter()
                 .map(|row| Line::from(row.clone()))
                 .collect()
         } else {
-            rows.styled[scroll..end].to_vec()
+            rows.styled[start..end].to_vec()
         };
 
         // Highlight matched lines while the search prompt is closed and the
@@ -954,16 +1644,18 @@ impl ModalView for PagerView {
         // highlighting is deferred to a follow-up — preserving the pre-styled
         // spans (assistant / system colors) through a substring re-style is
         // a separate concern.
-        let search_matches = self.search_matches.borrow();
-        if !self.search_mode && !search_matches.is_empty() {
-            let current_match_line = search_matches.get(self.search_index.get()).copied();
+        if !self.search_mode && self.search_total.get() > 0 {
+            let current_match_line = self.search_row.get();
+            let query = self.search_input.trim().to_ascii_lowercase();
             for (visible_idx, line) in visible_lines.iter_mut().enumerate() {
                 let absolute_idx = scroll + visible_idx;
                 if absolute_idx >= row_count {
                     break;
                 }
-                // `search_matches` is built in ascending line order.
-                if search_matches.binary_search(&absolute_idx).is_err() {
+                if !rows.plain[start + visible_idx]
+                    .to_ascii_lowercase()
+                    .contains(&query)
+                {
                     continue;
                 }
                 let is_current = current_match_line == Some(absolute_idx);
@@ -992,14 +1684,40 @@ impl ModalView for PagerView {
                     .fg(palette::WHALE_ACTION)
                     .add_modifier(Modifier::BOLD),
             )));
-        } else if !search_matches.is_empty() {
-            let status = format!(
-                "match {}/{} (n/N)",
-                self.search_index.get() + 1,
-                search_matches.len()
-            );
+        } else if self.search_total.get() > 0 {
+            let status = tr(self.locale, MessageId::PagerSearchMatch)
+                .replace("{current}", &(self.search_index.get() + 1).to_string())
+                .replace("{total}", &self.search_total.get().to_string());
             visible_lines.push(Line::from(Span::styled(
                 status,
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        }
+
+        if diff_status {
+            let status = if rows.clipped_rows > 0 || rows.clipped_bytes > 0 {
+                tr(self.locale, MessageId::PagerDiffRowsShortened)
+                    .replace("{rows}", &rows.clipped_rows.to_string())
+                    .replace("{bytes}", &rows.clipped_bytes.to_string())
+                    .replace("{key}", "c")
+            } else {
+                tr(self.locale, MessageId::PagerDiffCopySource).replace("{key}", "c")
+            };
+            visible_lines.push(Line::from(Span::styled(
+                codewhale_tui_kit::ui_text::truncate_line_to_width(
+                    &status,
+                    usize::from(body_width),
+                ),
+                Style::default().fg(palette::TEXT_MUTED),
+            )));
+        }
+
+        if !diff_status && let Some(notice) = display_notice {
+            visible_lines.push(Line::from(Span::styled(
+                codewhale_tui_kit::ui_text::truncate_line_to_width(
+                    &notice,
+                    usize::from(body_width),
+                ),
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         }
@@ -1024,76 +1742,75 @@ fn line_to_string(line: &Line<'static>) -> String {
         .collect::<String>()
 }
 
-/// Rows containing `query` (trimmed, ASCII case-insensitive), ascending.
-fn find_matches(rows: &[String], query: &str) -> Vec<usize> {
-    let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        return Vec::new();
-    }
-    rows.iter()
-        .enumerate()
-        .filter_map(|(index, row)| row.to_ascii_lowercase().contains(&query).then_some(index))
-        .collect()
-}
-
-/// Columns between tab stops, the width the rest of the TUI gives a tab
-/// (`ui_text::char_display_width`).
-const TAB_STOP: usize = 4;
-
-/// The characters one source line paints, each tagged with the piece (span)
-/// it came from. Tabs advance to the next tab stop, so tab-aligned columns
-/// stay aligned; a carriage return, form feed or other control character or
-/// line/paragraph separator reads as the space it separates; bidirectional
-/// format characters, which would reorder the painted row, are dropped. The
-/// source itself is kept for copying.
-fn display_cells<'a>(pieces: impl Iterator<Item = (&'a str, usize)>) -> Vec<(char, usize)> {
-    let mut cells = Vec::new();
-    let mut column = 0;
-    for (text, tag) in pieces {
-        let display: String = text
-            .chars()
-            .filter(|&ch| !codewhale_sanitize::sanitize::is_bidi_control(ch))
-            .map(|ch| {
-                if ch != '\t' && (ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')) {
-                    ' '
-                } else {
-                    ch
-                }
-            })
-            .collect();
-        for grapheme in display.graphemes(true) {
-            if grapheme == "\t" {
-                let advance = TAB_STOP - column % TAB_STOP;
-                cells.extend(std::iter::repeat_n((' ', tag), advance));
-                column += advance;
-            } else {
-                cells.extend(grapheme.chars().map(|ch| (ch, tag)));
-                column += grapheme_display_width(grapheme);
+fn for_each_wrapped_range<'a>(
+    pieces: impl Iterator<Item = (&'a str, usize)>,
+    width: usize,
+    mut emit: impl FnMut(&[(char, usize)], Range<usize>),
+) -> (bool, bool) {
+    let mut escaped = false;
+    let mut continued = false;
+    let mut cells: Vec<(char, usize)> = Vec::new();
+    let mut bytes = 0usize;
+    let mut skip_space = false;
+    codewhale_tui_kit::ui_text::display_graphemes_exact(pieces, 0, |grapheme| {
+        escaped |= grapheme.escaped;
+        if skip_space {
+            if grapheme.text.chars().all(char::is_whitespace) {
+                return;
             }
+            skip_space = false;
         }
-    }
-    cells
+        if bytes.saturating_add(grapheme.text.len()) > PAGER_ROW_BYTES && !cells.is_empty() {
+            let mut last = None;
+            wrap_ranges_into(&cells, width, &mut |source, range| {
+                if let Some(previous) = last.replace(range) {
+                    emit(source, previous);
+                }
+            });
+            let last = last.unwrap_or(0..0);
+            skip_space = last.is_empty() && cells.last().is_some_and(|&(ch, _)| ch.is_whitespace());
+            cells = cells[last].to_vec();
+            bytes = cells.iter().map(|&(ch, _)| ch.len_utf8()).sum();
+        }
+        if skip_space {
+            if grapheme.text.chars().all(char::is_whitespace) {
+                return;
+            }
+            skip_space = false;
+        }
+        if bytes.saturating_add(grapheme.text.len()) > PAGER_ROW_BYTES && !cells.is_empty() {
+            wrap_ranges_into(&cells, width, &mut emit);
+            cells.clear();
+            continued = true;
+            let notice: Vec<_> = "[…]".chars().map(|ch| (ch, 0)).collect();
+            wrap_ranges_into(&notice, width, &mut emit);
+            bytes = 0;
+        }
+        bytes = bytes.saturating_add(grapheme.text.len());
+        cells.extend_from_slice(grapheme.cells);
+    });
+    wrap_ranges_into(&cells, width, &mut emit);
+    (escaped, continued)
 }
 
-/// Wrap one source line to `width` columns (`0`: unwrapped) without
-/// collapsing whitespace: indentation, aligned columns and repeated spaces
-/// survive, and only the whitespace at a soft break is consumed.
+#[cfg(test)]
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let cells = display_cells(std::iter::once((text, 0)));
-    wrap_ranges(&cells, width)
-        .into_iter()
-        .map(|range| cells[range].iter().map(|&(ch, _)| ch).collect())
-        .collect()
+    let mut rows = Vec::new();
+    for_each_wrapped_range(std::iter::once((text, 0)), width, |cells, range| {
+        rows.push(cells[range].iter().map(|&(ch, _)| ch).collect());
+    });
+    rows
 }
 
-/// The cell ranges of each wrapped row; see [`wrap_text`].
-fn wrap_ranges(cells: &[(char, usize)], width: usize) -> Vec<Range<usize>> {
+fn wrap_ranges_into(
+    cells: &[(char, usize)],
+    width: usize,
+    emit: &mut impl FnMut(&[(char, usize)], Range<usize>),
+) {
     if width == 0 {
-        return std::iter::once(0..cells.len()).collect();
+        emit(cells, 0..cells.len());
+        return;
     }
-    // Keep character ranges for style reconstruction, but measure and break
-    // only at grapheme boundaries. Summing scalar widths splits joined emoji
-    // even when their painted width fits on one row.
     let text: String = cells.iter().map(|&(ch, _)| ch).collect();
     let mut character = 0;
     let graphemes: Vec<_> = text
@@ -1108,14 +1825,10 @@ fn wrap_ranges(cells: &[(char, usize)], width: usize) -> Vec<Range<usize>> {
             )
         })
         .collect();
-    let cell_width = |index: usize| graphemes[index].1;
-    let mut rows = Vec::new();
+    let boundary = |index: usize| graphemes.get(index).map_or(cells.len(), |cell| cell.0);
     let mut current = 0..0;
     let mut current_width = 0usize;
-    // Whether `current` holds more than indentation. A soft break is only
-    // taken after real content; an over-wide indent or word is split instead.
     let mut has_content = false;
-
     let mut run_start = 0;
     while run_start < graphemes.len() {
         let is_space = graphemes[run_start].2;
@@ -1125,7 +1838,7 @@ fn wrap_ranges(cells: &[(char, usize)], width: usize) -> Vec<Range<usize>> {
             .map_or(graphemes.len(), |offset| run_start + offset);
         let run = run_start..run_end;
         run_start = run_end;
-        let run_width: usize = run.clone().map(cell_width).sum();
+        let run_width: usize = run.clone().map(|i| graphemes[i].1).sum();
         if current_width + run_width <= width {
             current.end = run.end;
             current_width += run_width;
@@ -1137,7 +1850,7 @@ fn wrap_ranges(cells: &[(char, usize)], width: usize) -> Vec<Range<usize>> {
             while kept > current.start && graphemes[kept - 1].2 {
                 kept -= 1;
             }
-            rows.push(current.start..kept);
+            emit(cells, boundary(current.start)..boundary(kept));
             current_width = 0;
             has_content = false;
             current = run.end..run.end;
@@ -1152,11 +1865,10 @@ fn wrap_ranges(cells: &[(char, usize)], width: usize) -> Vec<Range<usize>> {
             }
             current.end = run.start;
         }
-        // Split an over-wide word (or indent) between whole graphemes.
         for index in run {
-            let char_width = cell_width(index);
+            let char_width = graphemes[index].1;
             if current_width + char_width > width && current_width > 0 {
-                rows.push(current.clone());
+                emit(cells, boundary(current.start)..boundary(current.end));
                 current = index..index;
                 current_width = 0;
             }
@@ -1165,12 +1877,7 @@ fn wrap_ranges(cells: &[(char, usize)], width: usize) -> Vec<Range<usize>> {
         }
         has_content |= !is_space;
     }
-
-    rows.push(current);
-    let boundary = |index: usize| graphemes.get(index).map_or(cells.len(), |cell| cell.0);
-    rows.into_iter()
-        .map(|range| boundary(range.start)..boundary(range.end))
-        .collect()
+    emit(cells, boundary(current.start)..boundary(current.end));
 }
 
 #[cfg(test)]
@@ -1541,7 +2248,9 @@ mod tests {
         let mut pager = PagerView::from_pages(vec![first, latest], 1);
         pager.scroll.set(4);
         pager.search_input = "latest".to_string();
-        *pager.search_matches.get_mut() = vec![0];
+        pager.search_total.set(1);
+        pager.search_row.set(Some(0));
+        pager.search_origin.set(Some(0));
 
         assert!(matches!(
             pager.handle_key(key(KeyCode::Left)),
@@ -1550,7 +2259,7 @@ mod tests {
         assert_eq!(pager.body_text(), "first displayed");
         assert_eq!(pager.scroll.get(), 0);
         assert!(pager.search_input.is_empty());
-        assert!(pager.search_matches.borrow().is_empty());
+        assert_eq!(pager.search_total.get(), 0);
         assert!(matches!(
             pager.handle_key(key(KeyCode::Char('c'))),
             ViewAction::Emit(ViewEvent::CopyToClipboard { text, .. }) if text == "FIRST-SOURCE"
@@ -1886,12 +2595,12 @@ mod tests {
         let _ = p.handle_key(key(KeyCode::Char('/')));
         let _ = p.handle_key(key(KeyCode::Char('5')));
         let _ = p.handle_key(key(KeyCode::Enter));
-        assert!(!p.search_matches.borrow().is_empty());
+        assert!(p.search_total.get() > 0);
 
         // Re-enter search mode and Esc out — matches must clear.
         let _ = p.handle_key(key(KeyCode::Char('/')));
         let _ = p.handle_key(key(KeyCode::Esc));
-        assert!(p.search_matches.borrow().is_empty());
+        assert_eq!(p.search_total.get(), 0);
         assert_eq!(p.search_input, "");
         assert!(!p.search_mode);
     }
@@ -1907,7 +2616,7 @@ mod tests {
         let _ = p.handle_key(key(KeyCode::Char('/')));
         let _ = p.handle_key(key(KeyCode::Char('1')));
         let _ = p.handle_key(key(KeyCode::Enter));
-        let total = p.search_matches.borrow().len();
+        let total = p.search_total.get();
         assert!(total > 1, "test needs multiple matches, got {total}");
 
         let start = p.search_index.get();
@@ -1936,7 +2645,7 @@ mod tests {
         let _ = p.handle_key(key(KeyCode::Char('/')));
         let _ = p.handle_key(key(KeyCode::Char('5')));
         let _ = p.handle_key(key(KeyCode::Enter));
-        assert!(!p.search_matches.borrow().is_empty());
+        assert!(p.search_total.get() > 0);
 
         let area = Rect::new(0, 0, 40, 16);
         let mut buf = Buffer::empty(area);
@@ -2162,12 +2871,13 @@ mod tests {
         );
         // Wrapping keeps each piece's style and copies the unwrapped source.
         let rows = pager.current_page().rows();
-        assert_eq!(rows.styled[0].spans[0].style.fg, Some(Color::Cyan));
         assert!(
-            rows.plain.len() > 40,
-            "rows must be wrapped: {}",
-            rows.plain.len()
+            rows.styled
+                .iter()
+                .flat_map(|row| &row.spans)
+                .any(|span| span.style.fg == Some(Color::Cyan))
         );
+        assert!(rows.total > 40, "rows must be wrapped: {}", rows.total);
         drop(rows);
         match pager.handle_key(key(KeyCode::Char('c'))) {
             ViewAction::Emit(ViewEvent::CopyToClipboard { text, .. }) => {
@@ -2216,18 +2926,18 @@ mod tests {
             let _ = pager.handle_key(key(KeyCode::Char(ch)));
         }
         let _ = pager.handle_key(key(KeyCode::Enter));
-        assert!(pager.search_matches.borrow().is_empty());
+        assert_eq!(pager.search_total.get(), 0);
 
         let wide = render_screen(&pager, 100, 24);
         render_screen(&no_search, 100, 24);
         assert!(wide.contains("match 1/1"), "{wide}");
-        assert_eq!(pager.search_matches.borrow().len(), 1);
+        assert_eq!(pager.search_total.get(), 1);
         assert_eq!(pager.page_height() + 1, no_search.page_height());
 
         let narrow = render_screen(&pager, 40, 24);
         render_screen(&no_search, 40, 24);
         assert!(!narrow.contains("match 1/1"), "{narrow}");
-        assert!(pager.search_matches.borrow().is_empty());
+        assert_eq!(pager.search_total.get(), 0);
         assert_eq!(pager.page_height(), no_search.page_height());
     }
 
@@ -2260,9 +2970,11 @@ mod tests {
         );
         assert!(screen.contains("match 1/1"), "{screen}");
         let rows = pager.current_page().rows();
-        let matches = pager.search_matches.borrow();
-        assert_eq!(matches.len(), 1);
-        assert!(rows.plain[matches[pager.search_index.get()]].contains("needle"));
+        assert_eq!(pager.search_total.get(), 1);
+        assert!(
+            rows.plain[pager.search_row.get().expect("selected match") - rows.start]
+                .contains("needle")
+        );
     }
 
     #[test]

@@ -274,111 +274,37 @@ pub(super) fn open_tool_details_pager(app: &mut App) -> bool {
     open_details_pager_for_cell(app, cell_index)
 }
 
-/// Build the trailing "Spillover" section for the tool-details pager
-/// (#500). Session artifact records are authoritative for every tool family
-/// (including specialized Bash and MCP cells); the historical generic-cell
-/// path is only a UI compatibility fallback. The pager deliberately keeps the
-/// backing path and operating-system error private: a detail surface may be
-/// captured or shared, and neither is useful evidence for the user.
-pub(super) fn spillover_pager_section(app: &App, cell_index: usize) -> Option<String> {
+pub(super) fn spillover_pager_reference(app: &App, cell_index: usize) -> Option<(String, String)> {
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell};
 
-    let cell = app.cell_at_virtual_index(cell_index)?;
-    let current_session = app.current_session_id.as_deref();
-    let session_artifact = app
+    let session_id = app
+        .current_session_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())?;
+    let artifact = app
         .tool_detail_record_for_cell(cell_index)
         .and_then(|detail| {
             app.session_artifacts.iter().find(|artifact| {
                 artifact.kind == codewhale_runtime::artifacts::ArtifactKind::ToolOutput
                     && artifact.tool_call_id == detail.tool_id
-                    && current_session == Some(artifact.session_id.as_str())
+                    && artifact.session_id == session_id
             })
         });
-    let legacy_path = match cell {
-        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-            spillover_path: Some(path),
-            ..
-        })) => Some(path.clone()),
-        _ => None,
+    let reference = if let Some(artifact) = artifact {
+        artifact.storage_path.to_str()?
+    } else if let Some(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        spillover_path: Some(path),
+        ..
+    }))) = app.cell_at_virtual_index(cell_index)
+    {
+        path.to_str()?
+    } else {
+        return None;
     };
-    if session_artifact.is_none() && legacy_path.is_none() {
+    if reference.len() > codewhale_engine::tools::tool_result_retrieval::MAX_REFERENCE_BYTES {
         return None;
     }
-    let body = session_artifact
-        .and_then(read_owned_session_artifact)
-        .or_else(|| {
-            legacy_path.as_deref().and_then(|path| {
-                current_session.and_then(|session_id| read_owned_legacy_spillover(path, session_id))
-            })
-        })
-        .unwrap_or_else(|| "(retained output is unavailable)".to_string());
-    Some(format!("── Full output ──\n\n{body}"))
-}
-
-// Pager reads are bounded; larger artifacts remain on disk and the existing
-// unavailable-output state is shown. This is not a persistence size limit.
-const MAX_SESSION_ARTIFACT_DISPLAY_BYTES: u64 = 64 * 1024 * 1024;
-
-fn read_owned_session_artifact(
-    artifact: &codewhale_runtime::artifacts::ArtifactRecord,
-) -> Option<String> {
-    use std::io::Read;
-
-    if !artifact
-        .storage_path
-        .starts_with(codewhale_runtime::artifacts::ARTIFACTS_DIR_NAME)
-    {
-        return None;
-    }
-    let file = codewhale_runtime::artifacts::open_session_relative(
-        &artifact.session_id,
-        &artifact.storage_path,
-        false,
-    )
-    .ok()?
-    .open_file()
-    .ok()?;
-    let mut bytes = Vec::new();
-    file.take(MAX_SESSION_ARTIFACT_DISPLAY_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_SESSION_ARTIFACT_DISPLAY_BYTES {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
-}
-
-fn read_owned_legacy_spillover(path: &std::path::Path, session_id: &str) -> Option<String> {
-    let root = codewhale_engine::tools::truncate::spillover_root()?;
-    let path = canonical_owned_file(path, &root)?;
-    let ownership =
-        codewhale_engine::tools::truncate::read_legacy_spillover_ownership(&path).ok()?;
-    if ownership.origin_session != session_id {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
-    if ownership.size_bytes != u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-        || ownership.digest != codewhale_runtime::hashing::sha256_hex(&bytes)
-    {
-        return None;
-    }
-    String::from_utf8(bytes).ok()
-}
-
-fn canonical_owned_file(
-    candidate: &std::path::Path,
-    root: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    if std::fs::symlink_metadata(candidate)
-        .ok()?
-        .file_type()
-        .is_symlink()
-    {
-        return None;
-    }
-    let root = root.canonicalize().ok()?;
-    let candidate = candidate.canonicalize().ok()?;
-    (candidate.is_file() && candidate.starts_with(root)).then_some(candidate)
+    Some((session_id.to_string(), reference.to_string()))
 }
 
 pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> bool {
@@ -394,12 +320,7 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
             std::string::ToString::to_string,
         );
 
-        // #500: when the tool result was spilled to disk, fold the full
-        // file content into the pager body so the user can see what was
-        // elided (the model only ever saw the head). The truncated head
-        // stays above as `Output:` so the user can compare what the
-        // model received against the full payload.
-        let spillover_section = spillover_pager_section(app, cell_index);
+        let retained = spillover_pager_reference(app, cell_index);
         let mutation_section = match app.cell_at_virtual_index(cell_index) {
             Some(HistoryCell::Tool(ToolCell::PatchSummary(cell))) => {
                 cell.receipt.as_ref().map(|receipt| {
@@ -416,11 +337,9 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
             _ => None,
         };
 
-        // Frame the body as leaf-level raw detail for the selected item. The
-        // Tool ID / Input / Output / spillover content below is unchanged — only
-        // the leading intro line is new, so existing raw-output visibility is
-        // preserved (#4105).
-        let trailing_sections = [mutation_section, spillover_section]
+        // Frame the recorded detail at leaf scope; retained bytes use the
+        // owned evidence page rather than being joined into this body.
+        let trailing_sections = [mutation_section]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -442,11 +361,15 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
             .last_transcript_area
             .map(|area| area.width)
             .unwrap_or(80);
-        app.view_stack.push(PagerView::from_text(
+        let mut pager = PagerView::from_text(
             format!("Raw detail — {}", detail.tool_name),
             &content,
             width.saturating_sub(2),
-        ));
+        );
+        if let Some((session, reference)) = retained {
+            pager = pager.with_owned_evidence(app.workspace.clone(), session, reference);
+        }
+        app.view_stack.push(pager);
         return true;
     }
 
@@ -470,13 +393,20 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
-    let content = history_cell_to_text(cell, width);
+    let content = if matches!(cell, HistoryCell::Tool(_)) {
+        history_cell_to_clipboard_text(cell, width)
+    } else {
+        history_cell_to_text(cell, width)
+    };
     let mut pager = PagerView::from_text(title, &content, width.saturating_sub(2));
     // A completed assistant cell gets a clean `a` (copy answer) action so
     // this raw-detail pager can hand over the answer text without the
     // glyph/label scaffolding that `c`/`y` (rendered body) would include.
     if let Some(answer) = completed_assistant_answer_text(cell, width) {
         pager = pager.with_copy_answer(answer);
+    }
+    if let Some((session, reference)) = spillover_pager_reference(app, cell_index) {
+        pager = pager.with_owned_evidence(app.workspace.clone(), session, reference);
     }
     app.view_stack.push(pager);
     true
@@ -506,7 +436,11 @@ pub(crate) fn open_focused_cell_pager(app: &mut App) -> bool {
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
-    let content = history_cell_to_text(cell, width);
+    let content = if matches!(cell, HistoryCell::Tool(_)) {
+        history_cell_to_clipboard_text(cell, width)
+    } else {
+        history_cell_to_text(cell, width)
+    };
     let mut pager = PagerView::from_text(title, &content, width.saturating_sub(2));
     if let Some(answer) = completed_assistant_answer_text(cell, width) {
         pager = pager.with_copy_answer(answer);
@@ -2184,25 +2118,57 @@ mod tests {
             );
         }
     }
-    struct PrivateArtifactRoot(Option<PathBuf>);
+    struct PrivateArtifactRoot {
+        sessions: Option<PathBuf>,
+        spillover: Option<PathBuf>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
     impl PrivateArtifactRoot {
         fn set(path: PathBuf) -> Self {
-            Self(codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(path)))
+            let guard = codewhale_engine::tools::truncate::TEST_SPILLOVER_GUARD
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let spillover = codewhale_engine::tools::truncate::set_test_spillover_root(Some(
+                path.join("legacy"),
+            ));
+            Self {
+                sessions: codewhale_runtime::artifacts::set_test_artifact_sessions_root(Some(path)),
+                spillover,
+                _guard: guard,
+            }
         }
     }
     impl Drop for PrivateArtifactRoot {
         fn drop(&mut self) {
-            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.0.take());
+            codewhale_runtime::artifacts::set_test_artifact_sessions_root(self.sessions.take());
+            codewhale_engine::tools::truncate::set_test_spillover_root(self.spillover.take());
         }
     }
-    fn owned_artifact_fixture() -> codewhale_runtime::artifacts::ArtifactRecord {
-        codewhale_runtime::artifacts::record_tool_output_artifact(
-            "session-a",
-            "call-fixture",
-            "bash",
-            PathBuf::from("artifacts/mutable.txt"),
-            "fixture",
-        )
+    fn owned_artifact_fixture(reference: &str) -> Option<String> {
+        use crate::tui::views::{ModalView, ViewAction, ViewEvent};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut pager = PagerView::from_text("fixture", "", 80).with_owned_evidence(
+                    PathBuf::from("."),
+                    "session-a".to_string(),
+                    reference.to_string(),
+                );
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while !matches!(pager.tick(), ViewAction::Redraw) {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                })
+                .await
+                .expect("owned evidence pager did not finish");
+                match pager.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)) {
+                    ViewAction::Emit(ViewEvent::CopyToClipboard { text, .. }) => Some(text),
+                    _ => None,
+                }
+            })
     }
 
     #[test]
@@ -2219,12 +2185,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            read_owned_session_artifact(&owned_artifact_fixture()).as_deref(),
+            owned_artifact_fixture("artifacts/mutable.txt").as_deref(),
             Some("exact pager output")
         );
-        let mut malformed = owned_artifact_fixture();
-        malformed.storage_path = PathBuf::from("other/mutable.txt");
-        assert!(read_owned_session_artifact(&malformed).is_none());
+        assert!(owned_artifact_fixture("other/mutable.txt").is_none());
     }
 
     #[cfg(unix)]
@@ -2246,7 +2210,7 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(&outside, sessions.join("session-a")).unwrap();
         assert!(
-            read_owned_session_artifact(&owned_artifact_fixture()).is_none(),
+            owned_artifact_fixture("artifacts/mutable.txt").is_none(),
             "pager accepted output from a linked outside session"
         );
     }
@@ -2265,7 +2229,7 @@ mod tests {
         std::fs::write(&outside, b"outside-hardlink-synthetic").unwrap();
         std::fs::hard_link(&outside, sessions.join("session-a/artifacts/mutable.txt")).unwrap();
         assert!(
-            read_owned_session_artifact(&owned_artifact_fixture()).is_none(),
+            owned_artifact_fixture("artifacts/mutable.txt").is_none(),
             "pager exposed outside hardlinked bytes"
         );
     }
@@ -2282,15 +2246,14 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("mutable.txt");
         let file = std::fs::File::create(&path).unwrap();
-        file.set_len(MAX_SESSION_ARTIFACT_DISPLAY_BYTES + 1)
-            .unwrap();
+        file.set_len(512 * 1024 * 1024 + 1).unwrap();
         assert!(
-            read_owned_session_artifact(&owned_artifact_fixture()).is_none(),
+            owned_artifact_fixture("artifacts/mutable.txt").is_none(),
             "pager allocated oversized session output"
         );
         assert_eq!(
             std::fs::metadata(path).unwrap().len(),
-            MAX_SESSION_ARTIFACT_DISPLAY_BYTES + 1
+            512 * 1024 * 1024 + 1
         );
     }
 }

@@ -226,7 +226,7 @@
     "std_fs": 1
   },
   "crates/engine/src/tools/truncate.rs": {
-    "std_fs": 2
+    "std_fs": 1
   },
   "crates/engine/src/tools/verify.rs": {
     "std_fs": 1
@@ -502,10 +502,6 @@
   },
   "crates/tui/src/tui/tool_routing.rs": {
     "std_fs": 1
-  },
-  "crates/tui/src/tui/ui/activity_detail.rs": {
-    "path_canonicalize": 2,
-    "std_fs": 2
   },
   "crates/tui/src/tui/ui/fatal_signal_guard.rs": {
     "std_fs": 1

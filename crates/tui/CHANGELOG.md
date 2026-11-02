@@ -160,6 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Long tool output and diffs use bounded display windows and a byte-limited row cache. Retained details load verified byte ranges and label what search and copy include; explicit source copy keeps stored text with control-sequence cleanup. Oversized Unicode is shown safely without changing question answers; long answers retain their exact bytes in the existing owned output artifact before bounded model-context projection. New pager notices are translated across all 15 complete language packs.
+
 - Managed Fleet validates overlapping write roots with a component-sorted scan and deduplicates roots once. Large valid request bodies no longer spend quadratic CPU before admission; existing write-scope refusals and execution limits remain in force (#6554).
 - MCP transports, connection pools and child Engines retain the owning host credential context for placeholders, headers, bearer tokens and OAuth setup. Missing injected values never fall back to process secrets. Reviewed plugins keep their captured environment authority, whose Debug output now masks values. Durable OAuth token custody and full subprocess isolation remain separate work (#5637).
 - Python REPL drains stderr while code runs, retains at most 64 KiB of diagnostics and reports omitted bytes, so noisy code cannot block request completion (#6554).

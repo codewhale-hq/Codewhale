@@ -548,7 +548,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                             &mut app,
                             queue_transition,
                         );
-                        app.current_session_id = Some(session.metadata.id.clone());
+                        app.set_current_session_id(Some(session.metadata.id.clone()));
                         app.current_session_metadata = Some(session.metadata.clone());
                         app.session_title = Some(session.metadata.title.clone());
                         if let Err(err) = app.publish_saved_work_state(
@@ -624,7 +624,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         }
 
         crate::tui::ui::install_offline_queue_transition(&mut app, queue_transition);
-        app.current_session_id = Some(forked.metadata.id.clone());
+        app.set_current_session_id(Some(forked.metadata.id.clone()));
         app.current_session_metadata = Some(forked.metadata.clone());
         app.restore_api_messages(forked.messages.clone(), &forked);
         app.session_title = Some(forked.metadata.title.clone());
@@ -772,7 +772,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         app.session_artifacts.clear();
         app.session_context_references.clear();
         app.tool_evidence.clear();
-        app.current_session_id = Some(new_id.clone());
+        app.set_current_session_id(Some(new_id.clone()));
         app.current_session_metadata = None;
         app.session_title =
             Some(codewhale_engine::session_manager::DEFAULT_SESSION_TITLE.to_string());
@@ -1593,7 +1593,7 @@ fn import_session_container(
         return Err(format!("imported session could not be saved: {e}"));
     }
     crate::tui::ui::install_offline_queue_transition(app, queue_transition);
-    app.current_session_id = Some(new_id.clone());
+    app.set_current_session_id(Some(new_id.clone()));
     app.current_session_metadata = Some(imported.metadata.clone());
     app.window_title.clone_from(&imported.window_title);
     app.composer_color.clone_from(&imported.composer_color);

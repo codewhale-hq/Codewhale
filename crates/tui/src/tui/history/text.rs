@@ -25,14 +25,27 @@ pub(crate) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
 /// serializes the live cache, where Markdown has already been transformed and
 /// user-message soft wraps do not carry join metadata.
 ///
-/// Complex cells intentionally retain the full-transcript representation.
-/// Tool and thinking transcript renderers include semantic headers and complete
-/// output that can differ from the capped or folded live cache.
+/// Tool source rendering retains ANSI-stripped stored text independently of bounded display rows.
+/// Thinking cells retain their full-transcript representation.
 pub(crate) fn history_cell_to_clipboard_text(cell: &HistoryCell, width: u16) -> String {
     match cell {
         HistoryCell::User { content }
         | HistoryCell::Assistant { content, .. }
         | HistoryCell::System { content } => content.clone(),
+        HistoryCell::Tool(tool) => {
+            let mut output = String::new();
+            for (index, line) in tool.source_lines(width).into_iter().enumerate() {
+                if index > 0 {
+                    output.push('\n');
+                }
+                for span in line.spans {
+                    output.push_str(&span.content);
+                }
+            }
+            let mut normalized = String::with_capacity(output.len());
+            codewhale_sanitize::sanitize::strip_ansi_into(&output, &mut normalized);
+            normalized
+        }
         _ => history_cell_to_text(cell, width),
     }
 }

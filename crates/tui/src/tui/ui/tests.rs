@@ -22496,6 +22496,32 @@ fn tool_details_empty_state_points_to_turn_inspector() {
     );
 }
 
+fn spillover_pager_section(app: &mut App, cell_index: usize) -> Option<String> {
+    use crate::tui::views::ViewAction;
+    spillover_pager_reference(app, cell_index)?;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            assert!(open_details_pager_for_cell(app, cell_index));
+            let mut view = app.view_stack.pop().expect("owned evidence pager");
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !matches!(view.tick(), ViewAction::Redraw) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("owned evidence pager did not finish");
+            Some(
+                view.as_any_mut()
+                    .downcast_mut::<PagerView>()
+                    .expect("retained evidence uses existing pager")
+                    .body_text(),
+            )
+        })
+}
+
 #[test]
 fn spillover_pager_section_returns_none_when_no_spillover() {
     let mut app = create_test_app();
@@ -22510,7 +22536,7 @@ fn spillover_pager_section_returns_none_when_no_spillover() {
         is_diff: false,
     }))];
     app.resync_history_revisions();
-    assert!(spillover_pager_section(&app, 0).is_none());
+    assert!(spillover_pager_section(&mut app, 0).is_none());
 }
 
 #[test]
@@ -22553,8 +22579,8 @@ fn spillover_pager_section_loads_file_when_present() {
     }))];
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("section present");
-    assert!(section.contains("── Full output ──"));
+    let section = spillover_pager_section(&mut app, 0).expect("section present");
+    assert!(section.contains("Loaded byte range"));
     assert!(
         section.contains("FULL_OUTPUT_BYTES_HERE"),
         "section missing file body: {section}"
@@ -22568,6 +22594,7 @@ fn spillover_pager_section_loads_file_when_present() {
 #[test]
 fn spillover_pager_section_returns_notice_when_file_missing() {
     let mut app = create_test_app();
+    app.current_session_id = Some("session-pager-missing".to_string());
     let bogus = std::path::PathBuf::from("/private/sensitive/session/does-not-exist.txt");
     app.history = vec![HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: "exec_shell".to_string(),
@@ -22581,7 +22608,7 @@ fn spillover_pager_section_returns_notice_when_file_missing() {
     }))];
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("still emits a notice section");
+    let section = spillover_pager_section(&mut app, 0).expect("still emits a notice section");
     assert!(section.contains("retained output is unavailable"));
     assert!(!section.contains("/private/sensitive"));
     assert!(!section.contains("No such file"));
@@ -22653,14 +22680,14 @@ fn spillover_pager_uses_session_artifact_for_specialized_bash_cell() {
     app.session_artifacts.push(artifact.clone());
     app.resync_history_revisions();
 
-    let section = spillover_pager_section(&app, 0).expect("session artifact section");
+    let section = spillover_pager_section(&mut app, 0).expect("session artifact section");
     assert!(section.contains("BASH_EXACT_DEEP_SENTINEL"));
     assert!(!section.contains(&path.display().to_string()));
 
     app.session_artifacts[0].storage_path = path.clone();
-    let absolute = spillover_pager_section(&app, 0).expect("unavailable absolute-path section");
-    assert!(absolute.contains("retained output is unavailable"));
-    assert!(!absolute.contains("BASH_EXACT_DEEP_SENTINEL"));
+    let absolute = spillover_pager_section(&mut app, 0).expect("owned absolute-path section");
+    assert!(absolute.contains("BASH_EXACT_DEEP_SENTINEL"));
+    assert!(!absolute.contains(&path.display().to_string()));
 
     app.session_artifacts[0] = codewhale_runtime::artifacts::ArtifactRecord {
         session_id: "foreign-session".to_string(),
@@ -22668,7 +22695,7 @@ fn spillover_pager_uses_session_artifact_for_specialized_bash_cell() {
         ..artifact
     };
     assert!(
-        spillover_pager_section(&app, 0).is_none(),
+        spillover_pager_section(&mut app, 0).is_none(),
         "a foreign artifact record must not become an Option+V detail source"
     );
 }

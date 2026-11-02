@@ -3260,6 +3260,21 @@ impl Engine {
                             Err(err) => Err(err),
                         };
 
+                        let result = preserve_tool_output_before_fanout(
+                            result.map(RichToolResult::plain),
+                            self.api_provider,
+                            &self.session.model,
+                            (
+                                self.active_route_limits,
+                                self.active_context_window.map(|window| window.tokens),
+                            ),
+                            &self.session.id,
+                            (&tool_id, &tool_name),
+                            self.child_tool_result_token_cap(),
+                        )
+                        .await
+                        .map(RichToolResult::into_result);
+
                         let _ = self
                             .send_event(Event::ToolCallComplete {
                                 model_call: plan.model_call.clone(),

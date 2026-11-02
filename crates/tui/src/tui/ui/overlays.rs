@@ -700,7 +700,11 @@ pub(crate) fn open_pager_for_last_message(app: &mut App) -> bool {
         .last_transcript_area
         .map(|area| area.width)
         .unwrap_or(80);
-    let text = history_cell_to_text(cell, width);
+    let text = if matches!(cell, HistoryCell::Tool(_)) {
+        crate::tui::history::text::history_cell_to_clipboard_text(cell, width)
+    } else {
+        history_cell_to_text(cell, width)
+    };
     let mut pager = PagerView::from_text("Message", &text, width.saturating_sub(2));
     // When the last message is a completed assistant answer, expose the
     // clean answer-only payload via `a` (copy answer) — the rendered body

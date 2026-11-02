@@ -61,7 +61,10 @@ use message::{
 #[cfg(test)]
 pub(super) use thinking::render_thinking_with_analysis;
 use thinking::{render_hidden_thinking_activity, render_thinking};
-use tool_output::{render_exec_output_mode, render_tool_output_mode, wrap_plain_line, wrap_text};
+use tool_output::{
+    for_each_wrapped_text, render_exec_output_mode, render_tool_output_mode, wrap_plain_line,
+    wrap_text,
+};
 
 #[cfg(test)]
 use agent_activity::extract_agent_id;
@@ -77,22 +80,22 @@ pub use tool_run::{ToolRun, detect_tool_runs_from_slices, tool_run_summary};
 
 #[cfg(test)]
 use thinking::{REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL};
+#[cfg(test)]
+pub use tool_output::OutputRow;
 pub(crate) use tool_output::output_looks_like_diff;
 pub use tool_output::{
-    OutputRow, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
+    OutputProjection, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
 };
 
-/// Render mode controlling whether tool/thinking cells render their compact
-/// "live" form (with caps and collapsed reasoning) or their full transcript
-/// form (uncapped, suitable for the pager / clipboard / message export).
+/// Render mode controlling compact live, bounded transcript, or explicit source output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     /// Live in-stream view: thinking is collapsed to a summary, tool output is
     /// truncated with a visible details-pager affordance.
     Live,
-    /// Full transcript view: every line of reasoning and tool output is
-    /// emitted, no caps, no affordance.
+    /// Expanded transcript view with bounded tool-output display.
     Transcript,
+    Source,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,8 +393,8 @@ impl HistoryCell {
     /// `TranscriptRenderOptions`. Tool output is capped, but thinking is shown
     /// in full because callers using bare `lines()` historically expected the
     /// uncollapsed body. For the in-stream transcript view prefer
-    /// `lines_with_options`; for the pager / clipboard prefer
-    /// `transcript_lines`.
+    /// `lines_with_options`; expanded display uses `transcript_lines` and
+    /// explicit copying uses the source projection.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_user_message(content, width, false),
@@ -690,14 +693,7 @@ impl HistoryCell {
         (lines, None)
     }
 
-    /// Render the cell in transcript mode: full content, no caps, no
-    /// visible details-pager affordances.
-    ///
-    /// Use this for full-detail pagers, clipboard exports, and any
-    /// surface that wants the complete body rather than the live summary.
-    /// For most variants (User / Assistant / System) this matches `lines()`;
-    /// `Thinking` and `Tool` are where the live and transcript surfaces
-    /// diverge.
+    /// Render the expanded transcript, including bounded tool-output previews.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_plain_message(
@@ -992,9 +988,7 @@ impl ToolCell {
         self.render_with_locale(width, low_motion, RenderMode::Live, locale)
     }
 
-    /// Full-content rendering for the pager / clipboard. Tool output that
-    /// would be capped + suffixed with a details-pager hint in the live view
-    /// is emitted in full here.
+    /// Expanded rendering with bounded tool-output previews.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         self.transcript_lines_with_locale(width, Locale::En)
     }
@@ -1006,6 +1000,10 @@ impl ToolCell {
             RenderMode::Transcript,
             locale,
         )
+    }
+
+    pub(crate) fn source_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.render_with_locale(width, false, RenderMode::Source, Locale::En)
     }
 
     fn render_with_locale(
@@ -1146,32 +1144,38 @@ impl ExecCell {
 
         lines.extend(self.description_lines(width, locale));
 
-        if self.interaction.is_none()
+        if mode != RenderMode::Source
+            && self.interaction.is_none()
             && self.command.trim_end().lines().nth(1).is_some()
             && (self.is_foreground_shell_wait()
                 || (mode == RenderMode::Live && self.status == ToolStatus::Success))
         {
-            lines.extend(render_command_mode(&self.command, width, mode, false));
+            lines.extend(render_command_mode(
+                &self.command,
+                width,
+                mode,
+                false,
+                locale,
+            ));
         }
 
         // A foreground shell wait stays a compact card — command, optional note,
         // spinner and running badge. Live output and artifact paths belong in the
         // Activity sidebar and `/jobs` detail surfaces.
-        if self.is_foreground_shell_wait() {
+        if self.is_foreground_shell_wait() && mode != RenderMode::Source {
             return wrap_card_rail(lines, self.status);
         }
 
         // Routine successes get a three-row glimpse (the opening row plus
-        // two closing rows) so they take less space in the live transcript. Failures
-        // keep their larger preview, and Transcript mode retains the full
-        // result for the pager and clipboard.
+        // two closing rows) so they take less space in the live transcript.
+        // Failures and expanded display keep a larger bounded preview.
         if mode == RenderMode::Live
             && self
                 .output
                 .as_deref()
                 .is_some_and(is_truncated_output_preview)
         {
-            lines.push(render_spillover_annotation(width));
+            lines.push(render_spillover_annotation(width, locale));
             return wrap_card_rail(lines, self.status);
         }
         if mode == RenderMode::Live && self.status == ToolStatus::Success {
@@ -1222,17 +1226,32 @@ impl ExecCell {
             ));
         }
 
+        if mode == RenderMode::Source {
+            lines.extend(render_command_mode(
+                &self.command,
+                width,
+                mode,
+                false,
+                locale,
+            ));
+        }
         if let Some(interaction) = self.interaction.as_ref() {
             lines.extend(wrap_plain_line(
                 &format!("  {interaction}"),
                 Style::default().fg(palette::TEXT_MUTED),
                 width,
             ));
-        } else {
-            lines.extend(render_command_mode(&self.command, width, mode, false));
+        } else if mode != RenderMode::Source {
+            lines.extend(render_command_mode(
+                &self.command,
+                width,
+                mode,
+                false,
+                locale,
+            ));
         }
 
-        if self.interaction.is_none() {
+        if self.interaction.is_none() || mode == RenderMode::Source {
             if let Some(output) = self.output.as_ref().or(self.live_output.as_ref()) {
                 lines.extend(render_exec_output_mode(
                     output,
@@ -1242,10 +1261,9 @@ impl ExecCell {
                     locale,
                     true,
                 ));
-            } else if self.status != ToolStatus::Running && mode == RenderMode::Transcript {
+            } else if self.status != ToolStatus::Running && mode != RenderMode::Live {
                 // #3031: Suppress "(no output)" in compact/Live mode;
-                // the success header is enough signal. Transcript still
-                // records it for exports/clipboard/pager.
+                // the success header is enough signal.
                 lines.push(Line::from(Span::styled(
                     "  (no output)",
                     Style::default().fg(palette::TEXT_MUTED).italic(),
@@ -1256,7 +1274,7 @@ impl ExecCell {
         if let Some(duration_ms) = self.duration_ms {
             // #3031: Suppress sub-second timing in compact mode.
             // Transcript mode always shows timing.
-            if mode == RenderMode::Transcript || duration_ms >= 1000 {
+            if mode != RenderMode::Live || duration_ms >= 1000 {
                 lines.extend(render_compact_kv(
                     "time",
                     &codewhale_command_contract::elapsed::format_elapsed_ms(duration_ms),
@@ -1294,6 +1312,7 @@ impl ExecCell {
                     width,
                     RenderMode::Live,
                     true,
+                    locale,
                 ));
             } else if description.is_some() {
                 let more = if multi_line_command { " \u{2026}" } else { "" };
@@ -1316,7 +1335,7 @@ impl ExecCell {
             .as_deref()
             .is_some_and(is_truncated_output_preview)
         {
-            lines.push(render_spillover_annotation(width));
+            lines.push(render_spillover_annotation(width, locale));
             return lines;
         }
         let output = self
@@ -1786,7 +1805,11 @@ impl PatchSummaryCell {
         if self.status == ToolStatus::Success
             && let Some(receipt) = self.receipt.as_ref()
         {
-            lines.extend(receipt.render_inline(width, inline_diff_mode, locale));
+            if mode == RenderMode::Source {
+                lines.push(Line::from(receipt.inspect_text(locale)));
+            } else {
+                lines.extend(receipt.render_inline(width, inline_diff_mode, locale));
+            }
         } else {
             lines.extend(render_compact_kv(
                 "file",
@@ -1993,7 +2016,7 @@ impl McpToolCell {
 
         if let Some(content) = self.content.as_ref() {
             if mode == RenderMode::Live && is_truncated_output_preview(content) {
-                lines.push(render_spillover_annotation(width));
+                lines.push(render_spillover_annotation(width, locale));
                 return lines;
             }
             lines.extend(render_tool_output_mode(
@@ -2155,7 +2178,7 @@ fn should_show_raw_tool_name(
     family: crate::tui::widgets::tool_card::ToolFamily,
     mode: RenderMode,
 ) -> bool {
-    matches!(mode, RenderMode::Transcript)
+    !matches!(mode, RenderMode::Live)
         || matches!(family, crate::tui::widgets::tool_card::ToolFamily::Generic)
         || name.starts_with("mcp_")
 }
@@ -2165,7 +2188,7 @@ impl GenericToolCell {
     ///
     /// `mode` controls multi-line output handling: `Live` caps at
     /// `TOOL_OUTPUT_LINE_LIMIT` rows with a "+N more" affordance;
-    /// `Transcript` emits the full output.
+    /// `Transcript` uses a larger bounded display projection.
     #[cfg(test)]
     pub fn lines_with_mode(
         &self,
@@ -2183,20 +2206,24 @@ impl GenericToolCell {
         mode: RenderMode,
         locale: Locale,
     ) -> Vec<Line<'static>> {
-        if self.name == "activity_group" {
+        if mode != RenderMode::Source && self.name == "activity_group" {
             return agent_activity::render_activity_group(self, width, locale);
         }
 
         // Issue #241: when the underlying tool is a checklist/todo update and
         // the output is parseable, render a purpose-built progress card
         // instead of dumping the JSON into the generic tool block.
-        if let Some(lines) = self.try_render_as_checklist(width, low_motion, mode, locale) {
+        if mode != RenderMode::Source
+            && let Some(lines) = self.try_render_as_checklist(width, low_motion, mode, locale)
+        {
             return lines;
         }
 
         // #4038 / #4122: purpose-built workflow run card (compact in live,
         // expanded in transcript) shared with the WorkflowPanel state machine.
-        if let Some(lines) = self.try_render_as_workflow(width, low_motion, mode, locale) {
+        if mode != RenderMode::Source
+            && let Some(lines) = self.try_render_as_workflow(width, low_motion, mode, locale)
+        {
             return lines;
         }
 
@@ -2205,7 +2232,7 @@ impl GenericToolCell {
         // Spawns therefore render nothing here in either mode — one visible
         // artifact per delegated unit. Inspection/join calls (peek/status/
         // wait) stay as a single compact line (#4112 dogfood A5).
-        if self.name == "agent" {
+        if mode != RenderMode::Source && self.name == "agent" {
             if agent_activity::is_agent_inspection(self) {
                 return agent_activity::render_agent_compact(self, low_motion, locale);
             }
@@ -2217,7 +2244,8 @@ impl GenericToolCell {
         // fact: the catalog error. The full name:/args:/result: block turns
         // each model slip into a four-line card (dogfood A5) — collapse it
         // to a single header line in both render modes.
-        if self.status == ToolStatus::Failed
+        if mode != RenderMode::Source
+            && self.status == ToolStatus::Failed
             && let Some(output) = self.output.as_deref()
             && output.contains("is not available in the current tool catalog")
         {
@@ -2267,7 +2295,7 @@ impl GenericToolCell {
                     locale,
                 )];
                 if self.spillover_path.is_some() {
-                    collapsed.push(render_spillover_annotation(width));
+                    collapsed.push(render_spillover_annotation(width, locale));
                 }
                 return wrap_card_rail(collapsed, self.status);
             }
@@ -2351,8 +2379,12 @@ impl GenericToolCell {
                     low_motion,
                     locale,
                 ));
-                if matches!(mode, RenderMode::Live) {
-                    let limit = if self.status == ToolStatus::Failed {
+                if mode == RenderMode::Source {
+                    lines.push(Line::from(output.clone()));
+                } else {
+                    let limit = if mode == RenderMode::Transcript {
+                        512
+                    } else if self.status == ToolStatus::Failed {
                         TOOL_FAILURE_PREVIEW_LINES
                     } else {
                         TOOL_OUTPUT_LINE_LIMIT
@@ -2362,15 +2394,25 @@ impl GenericToolCell {
                     if rendered.omitted_rows > 0 {
                         let detail_hint =
                             crate::tui::key_shortcuts::tool_details_shortcut_action_hint("diff");
+                        let body = tr(locale, MessageId::FileMutationMoreDiff)
+                            .replace("{count}", &rendered.omitted_body_rows.to_string())
+                            .replace("{hint}", &detail_hint);
+                        let omitted = if rendered.omitted_summary_rows > 0 {
+                            format!(
+                                "{} {} · {body}",
+                                tr(locale, MessageId::ConfigChoiceDiffSummary),
+                                tr(locale, MessageId::ApprovalMoreLines)
+                                    .replace("{count}", &rendered.omitted_summary_rows.to_string())
+                                    .trim_start()
+                            )
+                        } else {
+                            body
+                        };
                         lines.push(details_affordance_line(
-                            &format!("+{} diff lines · {detail_hint}", rendered.omitted_rows),
+                            &omitted,
                             Style::default().fg(palette::TEXT_MUTED).italic(),
                         ));
                     }
-                } else {
-                    // Transcript/detail mode remains the exact-evidence path;
-                    // only the live frame is budgeted.
-                    lines.extend(diff_render::render_diff(output, width));
                 }
             } else {
                 let limit = if self.status == ToolStatus::Failed {
@@ -2382,7 +2424,7 @@ impl GenericToolCell {
             }
 
             if matches!(mode, RenderMode::Live) && self.spillover_path.is_some() {
-                lines.push(render_spillover_annotation(width));
+                lines.push(render_spillover_annotation(width, locale));
             }
         }
         wrap_card_rail(lines, self.status)
@@ -2482,7 +2524,7 @@ impl GenericToolCell {
                 tool_value_style(),
                 width,
             ));
-            if matches!(mode, RenderMode::Transcript) {
+            if !matches!(mode, RenderMode::Live) {
                 lines.extend(render_tool_output_mode(
                     output,
                     width,
@@ -2624,7 +2666,7 @@ impl GenericToolCell {
                 width,
             ));
         }
-        let expanded = matches!(mode, RenderMode::Transcript);
+        let expanded = !matches!(mode, RenderMode::Live);
         if expanded {
             let extras = WorkflowHistoryExtras {
                 result_summary: panel.result_summary.clone(),
@@ -2679,12 +2721,12 @@ fn workflow_call_error_reason(output: &str) -> Option<String> {
 /// retained internally and replaced by a bounded preview. The annotation
 /// stays calm and path-free: it only says the output was shortened and that
 /// the details shortcut opens the full retained output.
-fn render_spillover_annotation(width: u16) -> Line<'static> {
+fn render_spillover_annotation(width: u16, locale: Locale) -> Line<'static> {
     // Matches the model-facing preview footer (truncate.rs) and the existing
     // "Alt+V opens …" hint style (#3256): one quiet line, no handles or paths.
-    let affordance = format!(
-        "Output shortened \u{00B7} {}",
-        crate::tui::key_shortcuts::tool_details_shortcut_action_hint("output")
+    let affordance = tr(locale, MessageId::ToolOutputShortened).replace(
+        "{key}",
+        &crate::tui::key_shortcuts::tool_details_shortcut_label(),
     );
     let room = usize::from(width)
         .saturating_sub(UnicodeWidthStr::width(TRANSCRIPT_RAIL))
@@ -2710,11 +2752,20 @@ fn render_command_mode(
     width: u16,
     mode: RenderMode,
     calm: bool,
+    locale: Locale,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    if mode == RenderMode::Source {
+        lines.push(render_card_detail_line_single(
+            Some("command"),
+            command,
+            tool_value_style(),
+        ));
+        return lines;
+    }
     let cap = match mode {
         RenderMode::Live => TOOL_COMMAND_LINE_LIMIT,
-        RenderMode::Transcript => usize::MAX,
+        RenderMode::Transcript | RenderMode::Source => 512,
     };
     let command = if calm {
         command.trim_start_matches("$ ")
@@ -2722,34 +2773,40 @@ fn render_command_mode(
         command
     };
     let wrap_width = width.saturating_sub(4).max(1) as usize;
-    for (count, chunk) in command
-        .lines()
-        .flat_map(|line| wrap_text(line, wrap_width))
-        .enumerate()
-    {
-        if count >= cap {
-            lines.push(details_affordance_line(
-                &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("command"),
-                Style::default().fg(palette::TEXT_MUTED),
-            ));
-            break;
-        }
-        if calm {
-            let prompt = if count == 0 { "$ " } else { "  " };
-            lines.extend(render_card_detail_line(
-                None,
-                &format!("{prompt}{chunk}"),
-                tool_value_style(),
-                width,
-            ));
-        } else {
-            lines.extend(render_card_detail_line(
-                if count == 0 { Some("command") } else { None },
-                chunk.as_str(),
-                tool_value_style(),
-                width,
-            ));
-        }
+    let mut count = 0usize;
+    for line in command.lines() {
+        for_each_wrapped_text(line, wrap_width, |chunk| {
+            if count < cap && chunk.len() > 4 * 1024 {
+                lines.push(render_spillover_annotation(width, locale));
+            } else if count < cap {
+                if calm {
+                    let prompt = if count == 0 { "$ " } else { "  " };
+                    lines.extend(render_card_detail_line(
+                        None,
+                        &format!("{prompt}{chunk}"),
+                        tool_value_style(),
+                        width,
+                    ));
+                } else {
+                    lines.extend(render_card_detail_line(
+                        if count == 0 { Some("command") } else { None },
+                        chunk,
+                        tool_value_style(),
+                        width,
+                    ));
+                }
+            }
+            count = count.saturating_add(1);
+        });
+    }
+    if count > cap {
+        lines.push(details_affordance_line(
+            &crate::tui::key_shortcuts::tool_details_shortcut_action_hint(&tr(
+                locale,
+                MessageId::ApprovalLabelCommand,
+            )),
+            Style::default().fg(palette::TEXT_MUTED),
+        ));
     }
     lines
 }
@@ -3279,55 +3336,6 @@ fn render_card_detail_line(
             ));
         }
         spans.push(Span::styled(part, value_style));
-        lines.push(Line::from(spans));
-    }
-    lines
-}
-
-/// `render_card_detail_line` for a row whose text carries its own SGR
-/// colours: every segment's style is patched over `value_style`, so the
-/// tool's colour wins where it set one and the cell's own ink (dim, state,
-/// file:line emphasis) shows through where it did not. `text` is the row's
-/// plain text (what the segments concatenate to); wrapping follows the same
-/// boundaries as the plain path.
-fn render_card_detail_line_styled(
-    label: Option<&str>,
-    text: &str,
-    segments: &[tool_output::StyledSegment],
-    value_style: Style,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let label_text = label.map(|text| format!("{text}:"));
-    let prefix_width = UnicodeWidthStr::width(TRANSCRIPT_RAIL)
-        + label_text.as_deref().map_or(0, UnicodeWidthStr::width)
-        + usize::from(label.is_some());
-    let content_width = usize::from(width).saturating_sub(prefix_width).max(1);
-
-    let parts = wrap_text(text, content_width);
-    let split = tool_output::split_segments(segments, &parts);
-
-    let mut lines = Vec::new();
-    for (idx, part) in split.into_iter().enumerate() {
-        let mut spans = vec![Span::styled(
-            TRANSCRIPT_RAIL.to_string(),
-            Style::default().fg(palette::TEXT_DIM),
-        )];
-        if idx == 0 {
-            if let Some(label_text) = label_text.as_deref() {
-                spans.push(Span::styled(
-                    label_text.to_string(),
-                    tool_detail_label_style(),
-                ));
-                spans.push(Span::raw(" "));
-            }
-        } else if let Some(label_text) = label_text.as_deref() {
-            spans.push(Span::raw(
-                " ".repeat(UnicodeWidthStr::width(label_text) + 1),
-            ));
-        }
-        for (text, style) in part {
-            spans.push(Span::styled(text, value_style.patch(style)));
-        }
         lines.push(Line::from(spans));
     }
     lines
