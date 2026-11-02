@@ -327,6 +327,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Saved tool-result reads refuse links in the selected session, including a linked session directory, while preserving deliberately relocated application storage. Owned files and digest-checked legacy results keep their existing access paths.
 - **Pinned marketplace archives:** a Codewhale or Claude marketplace entry whose tarball source carries a `sha256` now installs only when the downloaded bytes match it; a mismatch, a malformed pin or a pin on a non-archive source refuses the install with nothing written. The pin also applies to direct installs as `https://…/x.tar.gz#sha256=<hex>`.
 - **Sandboxed commands cannot plant git hooks or edit git config:** in workspace-write mode, `.git/hooks` and `.git/config` (and a linked worktree's shared `hooks` and `config`) are read-only to sandboxed commands, so a command cannot leave a hook or `core.hooksPath` that later runs outside the sandbox. The workspace's `.codewhale/` is protected even before it exists (on Linux it is created first, because bubblewrap can only protect existing paths). `git commit` and ordinary file writes are unaffected; `git config` writes and hook edits need an approved unsandboxed command.
 - **Tool image validation:** an image returned by a tool must decode before it is sent, so truncated or corrupt files are omitted with a receipt even when they are already within the delivery budget.

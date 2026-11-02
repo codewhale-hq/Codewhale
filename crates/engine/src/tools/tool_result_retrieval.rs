@@ -167,12 +167,26 @@ impl ToolSpec for RetrieveToolResultTool {
                 let relative = resolved.path.strip_prefix(&resolved.root).map_err(|_| {
                     ToolError::permission_denied("evidence path is not owned by the active session")
                 })?;
-                let file =
-                    codewhale_util::files::WorkspaceFile::open_delivery(&resolved.root, relative)
-                        .and_then(|file| file.open_file())
-                        .map_err(|_| {
-                            ToolError::execution_failed("evidence is missing or no longer retained")
-                        })?;
+                let file = match resolved.kind {
+                    ResolvedReferenceKind::ActiveSession => {
+                        codewhale_runtime::artifacts::open_session_relative(
+                            &session_id,
+                            &std::path::Path::new(codewhale_runtime::artifacts::ARTIFACTS_DIR_NAME)
+                                .join(relative),
+                            false,
+                        )
+                    }
+                    ResolvedReferenceKind::LegacyGlobal => {
+                        codewhale_util::files::WorkspaceFile::open_delivery(
+                            &resolved.root,
+                            relative,
+                        )
+                    }
+                }
+                .and_then(|file| file.open_file())
+                .map_err(|_| {
+                    ToolError::execution_failed("evidence is missing or no longer retained")
+                })?;
                 check_evidence_cancelled(cancel)?;
                 let initial_size = file
                     .metadata()
