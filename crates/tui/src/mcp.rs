@@ -112,7 +112,7 @@ fn reject_linked_workspace_state_path(path: &Path) -> Result<()> {
     else {
         return Ok(());
     };
-    if codewhale_paths::user_home().is_some_and(|home| home == root) {
+    if codewhale_util::files::workspace_is_user_home(root) {
         return Ok(());
     }
     codewhale_util::files::reject_linked_path(root, path)

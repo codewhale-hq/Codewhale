@@ -44,15 +44,24 @@ fn same_directory(left: &Path, right: &Path) -> bool {
 #[must_use]
 pub fn workspace_state_dir(workspace: &Path) -> std::path::PathBuf {
     let state = workspace.join(codewhale_paths::CODEWHALE_APP_DIR);
-    if workspace_is_user_home(workspace) {
-        state.canonicalize().unwrap_or(state)
-    } else {
-        state
+    resolved_home_state(workspace).unwrap_or(state)
+}
+
+/// `workspace`'s state directory as its real path, for a home workspace whose
+/// `~/.codewhale` resolves. `None` is every other case: another workspace, a
+/// missing directory (first run), or a link that cannot be reached right now.
+fn resolved_home_state(workspace: &Path) -> Option<std::path::PathBuf> {
+    if !workspace_is_user_home(workspace) {
+        return None;
     }
+    workspace
+        .join(codewhale_paths::CODEWHALE_APP_DIR)
+        .canonicalize()
+        .ok()
 }
 
 /// Confinement root and state path for `relative` beneath the workspace's
-/// Codewhale state directory.
+/// Codewhale state directory. The tuple is `(root, path)`.
 ///
 /// The root is the boundary a link walk starts from, and
 /// [`reject_linked_path`] never examines the root itself — only what is below
@@ -64,18 +73,23 @@ pub fn workspace_state_dir(workspace: &Path) -> std::path::PathBuf {
 /// - Every other workspace keeps itself as the root with `.codewhale` still
 ///   inside the path, so a repository-supplied link is refused exactly as it
 ///   was before this helper existed.
+///
+/// `relative` is joined as given and must be a relative path of literal
+/// components. Every caller passes components it wrote itself; anything else
+/// could step outside the state directory this root exists to bound, so the
+/// contract is enforced in release builds too rather than only in debug ones.
 #[must_use]
 pub fn workspace_state_path(
     workspace: &Path,
     relative: &Path,
 ) -> (std::path::PathBuf, std::path::PathBuf) {
-    let state = workspace.join(codewhale_paths::CODEWHALE_APP_DIR);
-    let within_workspace = || (workspace.to_path_buf(), state.join(relative));
-    if !workspace_is_user_home(workspace) {
-        return within_workspace();
-    }
-    match state.canonicalize() {
-        Ok(resolved) => {
+    assert!(
+        path_is_confined(relative),
+        "workspace state path must be a relative path of literal components: {}",
+        relative.display()
+    );
+    match resolved_home_state(workspace) {
+        Some(resolved) => {
             let path = resolved.join(relative);
             (resolved, path)
         }
@@ -83,7 +97,12 @@ pub fn workspace_state_path(
         // workspace itself. A directory that exists but cannot be resolved fails
         // closed against the strict root rather than writing a second state
         // tree beside the one that cannot be reached.
-        Err(_) => within_workspace(),
+        None => (
+            workspace.to_path_buf(),
+            workspace
+                .join(codewhale_paths::CODEWHALE_APP_DIR)
+                .join(relative),
+        ),
     }
 }
 
@@ -417,7 +436,16 @@ impl WorkspaceFile {
             }
             if let Some(mode) = mode {
                 use std::os::unix::fs::PermissionsExt;
-                file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+                // The file was just created with the caller's access bits, so
+                // this only matters on a mount that applied its own. There it
+                // answers EPERM for every `chmod`, and the delivery still has
+                // to land: the handle, the single link and the publication
+                // below are what this writer guarantees.
+                if let Err(error) = file.set_permissions(std::fs::Permissions::from_mode(mode))
+                    && !mount_cannot_extend_guard(&self.directory)
+                {
+                    return Err(error);
+                }
             }
             file.write_all(bytes)?;
             file.sync_all()?;
@@ -491,11 +519,16 @@ impl WorkspaceFile {
         let owner = codewhale_config::private_directory::PrivateDirectory::current_user_id();
         let parent = self.directory.metadata()?;
         let entry = file.metadata()?;
-        if parent.uid() != owner
+        let public = parent.uid() != owner
             || parent.mode() & 0o022 != 0
             || entry.uid() != owner
-            || entry.mode() & 0o022 != 0
-        {
+            || entry.mode() & 0o022 != 0;
+        // A mount that reports an owner and mode of its own (HarmonyOS hmdfs
+        // reports the logged-in user's uid and a group-writable mode for every
+        // object) cannot satisfy any of those fields. Only a disagreement asks
+        // the mount, so a filesystem that stores them never pays for the probe
+        // and a delivery that already looks private is never delayed.
+        if public && !mount_cannot_extend_guard(&self.directory) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "delivery file and retained parent must be owned by the current user and not writable by group or others",
@@ -530,10 +563,9 @@ impl WorkspaceFile {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::MetadataExt;
         let parent = self.directory.metadata()?;
-        if parent.mode() & 0o077 != 0
-            || parent.uid() != unsafe { libc::geteuid() }
-            || !same_file(file, &self.identity_probe()?)?
-        {
+        let public = parent.mode() & 0o077 != 0 || parent.uid() != unsafe { libc::geteuid() };
+        let unverified = public && !mount_cannot_extend_guard(&self.directory);
+        if unverified || !same_file(file, &self.identity_probe()?)? {
             return Err(invalid_path());
         }
         if unsafe { libc::unlinkat(self.directory.as_raw_fd(), self.filename.as_ptr(), 0) } != 0 {
@@ -1020,6 +1052,23 @@ pub fn rename_windows_opened(
         std::thread::sleep(backoff);
         attempt += 1;
     }
+}
+
+/// Whether `directory`'s filesystem reports an owner and mode of its own for
+/// objects created in it, so neither can serve as evidence about this file.
+///
+/// The question is the one [`codewhale_config::private_directory::private_footing`]
+/// answers, asked through the directory handle the caller already holds: no
+/// path is involved, so nothing outside this directory can be reached, and the
+/// answer is cached per directory so a write path pays for it at most once.
+/// Only a directory this process cannot write to answers `false`, which keeps
+/// the strict error above — that is a real problem, and not this one.
+#[cfg(unix)]
+fn mount_cannot_extend_guard(directory: &std::fs::File) -> bool {
+    matches!(
+        codewhale_config::private_directory::mount_footing_of(directory),
+        codewhale_config::private_directory::PrivateFooting::Synthesised { .. }
+    )
 }
 
 #[cfg(all(test, unix))]

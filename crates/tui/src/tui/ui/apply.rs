@@ -3030,10 +3030,22 @@ fn apply_validated_profile_config(
 /// time, and reloads the hook set on return so the screen reflects the edit
 /// immediately.
 fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config: &Config) {
-    let path = app.workspace.join(".codewhale").join("hooks.toml");
+    // A home workspace may keep `.codewhale` on another volume behind a junction
+    // the user made; the walk starts at the real directory there, so the user's
+    // own relocation is not refused, while a link below it still is. Every other
+    // workspace keeps itself as the root with `.codewhale` in the walked path.
+    let (state_root, path) = codewhale_util::files::workspace_state_path(
+        &app.workspace,
+        std::path::Path::new("hooks.toml"),
+    );
+    // The editor takes the spelling the user would type. A resolved root is a
+    // verbatim path on Windows, which several terminal editors will not open,
+    // and the file is the same one either way.
+    let editor_path = app.workspace.join(".codewhale").join("hooks.toml");
     // A link in `.codewhale` or at hooks.toml is never created through, and the
-    // editor is not pointed at one: the file must really live in the workspace.
-    if let Err(error) = codewhale_util::files::reject_linked_path(&app.workspace, &path) {
+    // editor is not pointed at one: the file must really live in the state
+    // directory.
+    if let Err(error) = codewhale_util::files::reject_linked_path(&state_root, &path) {
         app.push_status_toast(
             format!("Could not use {}: {error}", path.display()),
             StatusToastLevel::Warning,
@@ -3043,7 +3055,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
     }
     if !path.exists()
         && let Err(error) = codewhale_util::fs_confined::write(
-            &app.workspace,
+            &state_root,
             &path,
             crate::hooks::PROJECT_HOOKS_TEMPLATE.as_bytes(),
         )
@@ -3061,7 +3073,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
         app.use_alt_screen(),
         app.use_mouse_capture,
         app.use_bracketed_paste,
-        &path,
+        &editor_path,
         // Open the file, not a position in it: this edits hooks.toml whole.
         None,
     );
@@ -3081,7 +3093,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
             let reloaded = app.hooks.config();
             let mut content = format!(
                 "Reloaded hooks from {} — {} configured.",
-                path.display(),
+                editor_path.display(),
                 reloaded.hooks.len()
             );
             // Project hooks are executable repository configuration; an

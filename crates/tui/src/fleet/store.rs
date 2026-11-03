@@ -607,31 +607,43 @@ fn workspace_fleets_dir(workspace: &Path) -> PathBuf {
 }
 
 /// The fleet directory for a scope, creating it if needed.
-fn ensure_fleets_dir(scope: FleetScope, workspace: &Path) -> Result<PathBuf, FleetStoreError> {
-    let dir = match scope {
-        FleetScope::Personal => personal_fleets_dir()?,
-        FleetScope::Workspace => workspace_fleets_dir(workspace),
+///
+/// Returns the confinement root and the directory. They are one decision: a
+/// home workspace keeps its state behind a junction the user made, so the
+/// writer must open through the resolved root, or it would refuse the very
+/// directory this check just accepted.
+fn ensure_fleets_dir(
+    scope: FleetScope,
+    workspace: &Path,
+) -> Result<(PathBuf, PathBuf), FleetStoreError> {
+    let (root, dir) = match scope {
+        FleetScope::Personal => {
+            let dir = personal_fleets_dir()?;
+            (dir.clone(), dir)
+        }
+        FleetScope::Workspace => {
+            codewhale_util::files::workspace_state_path(workspace, Path::new(FLEET_DIR))
+        }
     };
-    reject_linked_workspace_dir(scope, workspace, &dir)?;
+    reject_linked_workspace_dir(scope, workspace)?;
     fs::create_dir_all(&dir).map_err(|e| FleetStoreError::Io {
         path: dir.display().to_string(),
         message: e.to_string(),
     })?;
-    Ok(dir)
+    Ok((root, dir))
 }
 
 /// A workspace's `.codewhale/fleets` is repository content: refuse it when it,
 /// or `.codewhale`, is a link, so saving, selecting or deleting a Fleet cannot
-/// reach outside the workspace. The personal directory is the user's own.
-fn reject_linked_workspace_dir(
-    scope: FleetScope,
-    workspace: &Path,
-    dir: &Path,
-) -> Result<(), FleetStoreError> {
+/// reach outside the workspace. The personal directory is the user's own, and
+/// so is a home workspace's relocated state directory: the root walk starts at
+/// the real directory there, so the user's own junction is not refused.
+fn reject_linked_workspace_dir(scope: FleetScope, workspace: &Path) -> Result<(), FleetStoreError> {
     if scope != FleetScope::Workspace {
         return Ok(());
     }
-    codewhale_util::files::reject_linked_path(workspace, dir).map_err(|e| FleetStoreError::Io {
+    let (root, dir) = codewhale_util::files::workspace_state_path(workspace, Path::new(FLEET_DIR));
+    codewhale_util::files::reject_linked_path(&root, &dir).map_err(|e| FleetStoreError::Io {
         path: dir.display().to_string(),
         message: e.to_string(),
     })
@@ -840,7 +852,7 @@ pub fn save_fleet(
     workspace: &Path,
 ) -> Result<PathBuf, FleetStoreError> {
     fleet.validate()?;
-    let dir = ensure_fleets_dir(scope, workspace)?;
+    let (root, dir) = ensure_fleets_dir(scope, workspace)?;
     let path = dir.join(format!("{}.toml", fleet.file_slug()));
     if path.is_file() {
         // Only a readable v2 Fleet of this same name may be replaced. Any
@@ -879,7 +891,7 @@ pub fn save_fleet(
         }
     }
     let rendered = fleet.render_toml()?;
-    write_scoped(scope, workspace, &path, rendered.as_bytes())?;
+    write_scoped(scope, &root, &path, rendered.as_bytes())?;
     Ok(path)
 }
 
@@ -893,7 +905,7 @@ pub fn delete_fleet(
         FleetScope::Personal => personal_fleets_dir()?,
         FleetScope::Workspace => workspace_fleets_dir(workspace),
     };
-    reject_linked_workspace_dir(scope, workspace, &dir)?;
+    reject_linked_workspace_dir(scope, workspace)?;
     let path = dir.join(format!("{}.toml", slugify(name)));
     if !path.is_file() {
         return Err(FleetStoreError::NotFound(name.to_string()));
@@ -1005,7 +1017,7 @@ pub fn set_selected(
     scope: FleetScope,
     workspace: &Path,
 ) -> Result<PathBuf, FleetStoreError> {
-    let dir = ensure_fleets_dir(scope, workspace)?;
+    let (root, dir) = ensure_fleets_dir(scope, workspace)?;
     let name = name.trim();
     let exists_in_scope = |target: FleetScope| {
         let target_dir = match target {
@@ -1025,7 +1037,7 @@ pub fn set_selected(
         )));
     }
     let selected = dir.join(SELECTED_FILE);
-    write_scoped(scope, workspace, &selected, name.as_bytes())?;
+    write_scoped(scope, &root, &selected, name.as_bytes())?;
     Ok(selected)
 }
 
@@ -1035,7 +1047,7 @@ fn clear_selection_if_matching(scope: FleetScope, workspace: &Path, name: &str) 
         FleetScope::Workspace => Some(workspace_fleets_dir(workspace)),
     };
     let Some(dir) = dir else { return };
-    if reject_linked_workspace_dir(scope, workspace, &dir).is_err() {
+    if reject_linked_workspace_dir(scope, workspace).is_err() {
         return;
     }
     let selected = dir.join(SELECTED_FILE);
@@ -1048,9 +1060,13 @@ fn clear_selection_if_matching(scope: FleetScope, workspace: &Path, name: &str) 
 /// the pinned no-follow writer (parents created without following a link, the
 /// final name replaced, never written through); the personal scope is the
 /// user's own directory and keeps the plain atomic write.
+///
+/// `root` is the confinement root [`ensure_fleets_dir`] decided, not the raw
+/// workspace: for a home workspace it is the resolved state directory, so the
+/// writer opens the same path the link walk approved.
 fn write_scoped(
     scope: FleetScope,
-    workspace: &Path,
+    root: &Path,
     path: &Path,
     bytes: &[u8],
 ) -> Result<(), FleetStoreError> {
@@ -1061,13 +1077,11 @@ fn write_scoped(
         path: path.display().to_string(),
         message: e.to_string(),
     };
-    let relative = path
-        .strip_prefix(workspace)
-        .map_err(|_| FleetStoreError::Io {
-            path: path.display().to_string(),
-            message: "a workspace Fleet file must stay within the workspace".to_string(),
-        })?;
-    codewhale_util::files::WorkspaceFile::open_shared(workspace, relative, true)
+    let relative = path.strip_prefix(root).map_err(|_| FleetStoreError::Io {
+        path: path.display().to_string(),
+        message: "a workspace Fleet file must stay within the workspace".to_string(),
+    })?;
+    codewhale_util::files::WorkspaceFile::open_shared(root, relative, true)
         .and_then(|file| file.replace(bytes))
         .map_err(io_error)
 }
