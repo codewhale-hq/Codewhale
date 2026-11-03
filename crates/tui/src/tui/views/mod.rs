@@ -1077,8 +1077,10 @@ pub enum ViewEvent {
     /// renders TOML deterministically from the validated draft and persists it
     /// atomically in the explicitly selected project or personal scope.
     FleetProfileDraftCommitRequested {
+        editor_id: uuid::Uuid,
         draft: Box<codewhale_engine::fleet::profile::FleetProfileDraft>,
         scope: codewhale_engine::fleet::profile::FleetProfileScope,
+        expected: Option<String>,
     },
     /// Emitted by the Fleet setup Model step when the user selects a route that
     /// has structurally valid external-consent credentials but is not the

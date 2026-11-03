@@ -2641,89 +2641,63 @@ pub(crate) async fn handle_view_events(
                 }
                 app.needs_redraw = true;
             }
-            ViewEvent::FleetProfileDraftCommitRequested { draft, scope } => {
-                // A project-scope save is refused (never silently redirected)
-                // when project profiles are disabled for this launch: the file
-                // would be written where nothing loads it.
-                if scope == codewhale_engine::fleet::profile::FleetProfileScope::Project
-                    && !codewhale_engine::fleet::roster::project_agent_profiles_enabled()
-                {
-                    app.set_sticky_status(
-                        tr(app.ui_locale, MessageId::FleetDestProjectDisabledSave).into_owned(),
-                        StatusToastLevel::Error,
-                        None,
-                    );
-                    app.needs_redraw = true;
+            ViewEvent::FleetProfileDraftCommitRequested {
+                editor_id,
+                draft,
+                scope,
+                expected,
+            } => {
+                if app.view_stack.top_kind() != Some(ModalKind::FleetSetup) {
                     continue;
                 }
-                // The TOML is rendered deterministically from the validated
-                // draft and written atomically; the target path is derived
-                // from the sanitized id, never model-chosen.
-                let profile_dir =
-                    match codewhale_engine::fleet::profile::agent_profile_dir_for_scope(
-                        scope,
-                        &app.workspace,
-                    ) {
-                        Ok(dir) => dir,
-                        Err(err) => {
-                            app.set_sticky_status(
-                                format!("Team {} scope is unavailable: {err:#}", scope.label()),
-                                StatusToastLevel::Error,
-                                None,
-                            );
-                            app.needs_redraw = true;
-                            continue;
-                        }
-                    };
-                let target = profile_dir.join(draft.file_name());
-                // A ratified profile must not silently clobber a differently
-                // named existing profile that shares this id (which would also
-                // make the whole agents dir fail to load on the duplicate).
-                // Overwriting the SAME file is fine — that is an intentional
-                // re-draft of this profile.
-                // The collision gate only needs file identities. Accept
-                // otherwise legacy profile fields here so an old, unrelated
-                // profile cannot block saving a current one. Malformed TOML,
-                // unreadable files, and invalid ids still fail closed because
-                // then we cannot prove there is no collision.
-                let existing_profiles =
-                    if scope == codewhale_engine::fleet::profile::FleetProfileScope::Project {
-                        codewhale_engine::fleet::profile::load_workspace_agent_profile_identities(
+                let Some(mut boxed) = app.view_stack.pop() else {
+                    continue;
+                };
+                let matches = boxed
+                    .as_any_mut()
+                    .downcast_mut::<crate::tui::views::fleet_setup::FleetSetupView>()
+                    .is_some_and(|view| view.profile_commit_matches(editor_id));
+                if !matches {
+                    app.view_stack.push_boxed(boxed);
+                    continue;
+                }
+                let result = (|| -> Result<(), String> {
+                    // A project-scope save is refused (never silently redirected)
+                    // when project profiles are disabled for this launch: the file
+                    // would be written where nothing loads it.
+                    if scope == codewhale_engine::fleet::profile::FleetProfileScope::Project
+                        && !codewhale_engine::fleet::roster::project_agent_profiles_enabled()
+                    {
+                        return Err(
+                            tr(app.ui_locale, MessageId::FleetDestProjectDisabledSave).into_owned()
+                        );
+                    }
+                    // The TOML is rendered deterministically from the validated
+                    // draft and written atomically; the target path is derived
+                    // from the sanitized id, never model-chosen.
+                    let profile_dir =
+                        match codewhale_engine::fleet::profile::agent_profile_dir_for_scope(
+                            scope,
                             &app.workspace,
-                        )
-                    } else {
-                        codewhale_engine::fleet::profile::load_agent_profile_identities_from_dir(
-                            &profile_dir,
-                        )
-                    };
-                if let Err(err) = &existing_profiles {
-                    let message = tr(app.ui_locale, MessageId::FleetProfileIdentityVerifyFailed)
-                        .replace("{error}", &format!("{err:#}"));
-                    app.set_sticky_status(message, StatusToastLevel::Error, None);
-                    app.needs_redraw = true;
-                    continue;
-                }
-                let id_conflict = existing_profiles
-                    .into_iter()
-                    .flatten()
-                    .find(|p| p.id.eq_ignore_ascii_case(&draft.id) && p.source != target);
-                if let Some(existing) = id_conflict {
-                    let message = tr(app.ui_locale, MessageId::FleetProfileIdConflict)
-                        .replace("{id}", &draft.id)
-                        .replace("{path}", &existing.source.display().to_string());
-                    app.set_sticky_status(message, StatusToastLevel::Error, None);
-                    app.needs_redraw = true;
-                    continue;
-                }
-                // #4093 AC #5: a profile may only pin a provider the operator
-                // has actually configured/credentialed. The picker already
-                // offers models only from configured providers, but a
-                // model-drafted or hand-edited route (or credentials removed
-                // after the pick) could still name an unconfigured one — which
-                // would fail loudly at launch. Catch it at save time with a
-                // clear message, reusing the SAME predicate the picker uses.
-                if let Some(provider_id) = draft.provider.as_deref() {
-                    let checked =
+                        ) {
+                            Ok(dir) => dir,
+                            Err(err) => {
+                                return Err(format!(
+                                    "Team {} scope is unavailable: {err:#}",
+                                    scope.label()
+                                ));
+                            }
+                        };
+                    let target = profile_dir.join(draft.file_name());
+                    // #4093 AC #5: a profile may only pin a provider the operator
+                    // has actually configured/credentialed. The picker already
+                    // offers models only from configured providers, but a
+                    // model-drafted or hand-edited route (or credentials removed
+                    // after the pick) could still name an unconfigured one — which
+                    // would fail loudly at launch. Catch it at save time with a
+                    // clear message, reusing the SAME predicate the picker uses.
+                    if let Some(provider_id) = draft.provider.as_deref() {
+                        let checked =
                         config
                             .resolve_provider_pin_identity(provider_id)
                             .and_then(|identity| {
@@ -2744,62 +2718,73 @@ pub(crate) async fn handle_view_events(
                                     ))
                                 }
                             });
-                    if let Err(message) = checked {
-                        app.set_sticky_status(message, StatusToastLevel::Error, None);
-                        app.needs_redraw = true;
-                        continue;
+                        if let Err(message) = checked {
+                            return Err(message);
+                        }
                     }
-                }
-                let mut txn = codewhale_config::persistence::SetupTransaction::new();
-                txn.stage(target.clone(), draft.render_toml().into_bytes());
-                match txn.commit() {
-                    Ok(()) => {
-                        let roster = std::sync::Arc::new(
-                            codewhale_engine::fleet::identity::load_effective_roster(
-                                &config.fleet_config(),
-                                &app.workspace,
-                                Some(app.extension_plugin_view().as_ref()),
-                            ),
-                        );
-                        let roster_refresh_failed = engine_handle
-                            .try_send(Op::SetFleetRoster { roster })
-                            .is_err();
-                        let zh = app.ui_locale == codewhale_localization::Locale::ZhHans;
-                        app.add_message(HistoryCell::System {
-                            content: if zh {
-                                format!("已保存团队配置：{}", target.display())
-                            } else {
-                                format!(
-                                    "Team {} profile saved: {}",
-                                    scope.label(),
-                                    target.display()
-                                )
-                            },
-                        });
-                        app.status_message = Some(if zh {
-                            format!("已保存团队配置：{}", draft.file_name())
-                        } else if roster_refresh_failed {
-                            format!(
-                                "Team {} profile saved, but the live roster could not refresh; restart before dispatching {}",
-                                scope.label(),
-                                draft.id
-                            )
+                    codewhale_engine::fleet::profile::save_agent_profile_document(
+                        scope,
+                        &app.workspace,
+                        &target,
+                        expected.as_deref(),
+                        &draft.id,
+                        &draft.render_toml(),
+                    )
+                    .map_err(|err| {
+                        if let Some(conflict) = err.downcast_ref::<codewhale_engine::fleet::profile::AgentProfileIdentityConflict>() {
+                            tr(app.ui_locale, MessageId::FleetProfileIdConflict)
+                                .replace("{id}", &conflict.id)
+                                .replace("{path}", &conflict.path.display().to_string())
+                        } else if app.ui_locale == codewhale_localization::Locale::ZhHans {
+                            format!("无法保存团队配置：{err:#}")
                         } else {
-                            format!(
-                                "Team {} profile saved: {}",
-                                scope.label(),
-                                draft.file_name()
-                            )
-                        });
+                            format!("Team profile could not be saved: {err:#}")
+                        }
+                    })?;
+                    let roster = std::sync::Arc::new(
+                        codewhale_engine::fleet::identity::load_effective_roster(
+                            &config.fleet_config(),
+                            &app.workspace,
+                            Some(app.extension_plugin_view().as_ref()),
+                        ),
+                    );
+                    let roster_refresh_failed = engine_handle
+                        .try_send(Op::SetFleetRoster { roster })
+                        .is_err();
+                    let zh = app.ui_locale == codewhale_localization::Locale::ZhHans;
+                    app.add_message(HistoryCell::System {
+                        content: if zh {
+                            format!("已保存团队配置：{}", target.display())
+                        } else {
+                            format!("Team {} profile saved: {}", scope.label(), target.display())
+                        },
+                    });
+                    app.status_message = Some(if zh {
+                        format!("已保存团队配置：{}", draft.file_name())
+                    } else if roster_refresh_failed {
+                        format!(
+                            "Team {} profile saved, but the live roster could not refresh; restart before dispatching {}",
+                            scope.label(),
+                            draft.id
+                        )
+                    } else {
+                        format!(
+                            "Team {} profile saved: {}",
+                            scope.label(),
+                            draft.file_name()
+                        )
+                    });
+                    Ok(())
+                })();
+                if let Err(reason) = result {
+                    if let Some(view) = boxed
+                        .as_any_mut()
+                        .downcast_mut::<crate::tui::views::fleet_setup::FleetSetupView>(
+                    ) {
+                        view.profile_save_failed(reason.clone());
                     }
-                    Err(err) => {
-                        app.status_message =
-                            Some(if app.ui_locale == codewhale_localization::Locale::ZhHans {
-                                format!("无法保存团队配置：{err:#}")
-                            } else {
-                                format!("Team profile could not be saved: {err:#}")
-                            });
-                    }
+                    app.view_stack.push_boxed(boxed);
+                    app.set_sticky_status(reason, StatusToastLevel::Error, None);
                 }
                 app.needs_redraw = true;
             }
