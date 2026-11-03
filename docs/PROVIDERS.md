@@ -238,6 +238,14 @@ inference; choose another provider explicitly if you want another billing path.
 This experimental implementation retains one active registration. A picker
 for multiple saved ChatGPT accounts is not implemented yet.
 
+If the browser succeeds but token verification fails, the error identifies the
+failed check: signature, issuer, audience, expiry, not-before time, or a
+missing required claim. For an expired or not-yet-valid token, synchronize
+your device date and time and start a new sign-in. Other verification failures
+are not evidence of a plan limitation. Report the error text and Codewhale
+version; never share tokens, callback codes, credential files or decoded claims.
+A failed verification does not activate the new registration.
+
 Model discovery uses your granted bearer token at
 `GET https://api.openai.com/v1/models`; inference uses the public
 `POST https://api.openai.com/v1/responses` endpoint. The model picker keeps
