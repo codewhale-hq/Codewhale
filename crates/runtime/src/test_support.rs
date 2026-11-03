@@ -30,8 +30,7 @@ pub fn trust_workspace(workspace: &Path) {
 /// values; every other test is confined here — enforced by
 /// [`guarded_environment_provides_state_paths`], not assumed.
 pub fn isolated_test_state_root() -> &'static Path {
-    static ROOT: OnceLock<PathBuf> = OnceLock::new();
-    ROOT.get_or_init(|| {
+    ISOLATED_TEST_STATE_ROOT.get_or_init(|| {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -46,10 +45,48 @@ pub fn isolated_test_state_root() -> &'static Path {
                 root.display()
             )
         });
+        remove_isolated_test_state_root_at_exit();
         // Match resolvers that canonicalize their root (macOS aliases /var to
         // /private/var). Every fence must name the same physical test store.
         root.canonicalize().expect("canonical test state root")
     })
+}
+
+static ISOLATED_TEST_STATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+fn remove_isolated_test_state_root_at_exit() {
+    unsafe extern "C" {
+        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+    }
+    extern "C" fn remove_root() {
+        let Some(root) = ISOLATED_TEST_STATE_ROOT.get() else {
+            return;
+        };
+        if std::fs::remove_dir_all(root).is_err() {
+            #[cfg(unix)]
+            make_directories_writable(root);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+    unsafe { atexit(remove_root) };
+}
+
+#[cfg(unix)]
+fn make_directories_writable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if !metadata.is_dir() {
+        return;
+    }
+    let mode = metadata.permissions().mode() | 0o700;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            make_directories_writable(&entry.path());
+        }
+    }
 }
 
 /// Where the calling test's state should live when it has not sealed the
