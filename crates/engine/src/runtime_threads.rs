@@ -93,7 +93,7 @@ const RUNTIME_STORE_WORK_DIRS: [&str; 7] = [
     "agent-mail",
     "turn-operations",
 ];
-const TURN_OPERATION_BINDING_SCHEMA_VERSION: u32 = 1;
+const TURN_OPERATION_BINDING_SCHEMA_VERSION: u32 = 2;
 pub const MAX_ROUTED_USAGE_RECORDS_PER_TURN: usize = 64;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -203,7 +203,8 @@ const IMAGE_RUNTIME_SCHEMA_VERSION: u32 = 3;
 // Explicit allowances need a newer reader so old binaries cannot retry uncapped.
 const OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION: u32 = 4;
 const PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION: u32 = 5;
-const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION;
+const SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION: u32 = 6;
+const MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION: u32 = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
 
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
@@ -963,6 +964,13 @@ pub struct TurnRecord {
     /// inline RLM/guardian calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routed_usage: Vec<EffectiveRouteUsage>,
+    #[serde(default)]
+    pub source_accounting: bool,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub source_usage_records:
+        std::collections::BTreeMap<String, crate::cost_status::RuntimeUsageRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_usage_origin_turn_id: Option<String>,
     /// Decision evidence shares this durable origin-turn ledger, including
     /// responses arriving after the parent terminal event.
     #[serde(
@@ -1067,11 +1075,39 @@ impl TurnRecord {
                 || self.schema_version >= PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION,
             "Runtime prefix checkpoint requires its recovery schema"
         );
-        if self.schema_version > PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION {
+        anyhow::ensure!(
+            (!self.source_accounting
+                && self.source_usage_records.is_empty()
+                && self.source_usage_origin_turn_id.is_none())
+                || self.schema_version >= SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION,
+            "native source accounting requires its recovery schema"
+        );
+        anyhow::ensure!(
+            self.source_usage_records.is_empty() || self.source_accounting,
+            "source records require native accounting reconciliation"
+        );
+        anyhow::ensure!(
+            self.source_usage_records.is_empty() || self.source_usage_origin_turn_id.is_some(),
+            "native source receipts have no original owning turn"
+        );
+        if let Some(origin) = self.source_usage_origin_turn_id.as_deref() {
+            validated_record_id(origin, "native usage origin turn id")?;
+        }
+        anyhow::ensure!(
+            self.source_usage_records.len() <= MAX_ROUTED_USAGE_RECORDS_PER_TURN
+                && self.source_usage_records.iter().all(|(key, record)| record
+                    .settlement
+                    .is_some()
+                    && record.validate().is_ok()
+                    && *key == crate::cost_status::usage_source_fingerprint(&record.source_id)
+                    && self.routed_usage_source_ids.contains(key)),
+            "native source receipts exceed their bound or identity contract"
+        );
+        if self.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {
             bail!(
                 "Turn schema v{} is newer than supported v{}",
                 self.schema_version,
-                PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION
+                MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION
             );
         }
         if (self.max_output_tokens.is_some()
@@ -1845,11 +1881,6 @@ impl RuntimeThreadStore {
         }
     }
 
-    /// Remove a binding left before its turn record by a process crash.
-    ///
-    /// Bindings are committed before turns, while engine submission happens
-    /// only after both are durable. A binding with no turn therefore never
-    /// reached the engine and is safe to discard during startup recovery.
     fn recover_incomplete_turn_operations(&self) -> Result<()> {
         let operations_dir = checked_existing_runtime_store_dir(&self.turn_operations_dir)?;
         for entry in fs::read_dir(&operations_dir)
@@ -1896,24 +1927,13 @@ impl RuntimeThreadStore {
             self.with_turn_operation_claim(Some(&observed.operation_key_fingerprint), || {
                 // A live writer may have replaced the file between the
                 // directory scan and this claim. Re-read under the same
-                // cross-process lock used by `start_turn` before deciding
-                // that the binding is torn.
-                let Some(binding) =
+                // cross-process lock used by `start_turn`. Ambiguous
+                // reservations remain available for exact receipt lookup.
+                let Some(_binding) =
                     self.load_turn_operation_binding(&observed.operation_key_fingerprint)?
                 else {
                     return Ok(());
                 };
-                if !self.turn_path(&binding.turn_id)?.exists() {
-                    // Persistence is binding -> item -> turn. A process can
-                    // stop after the item write but before the turn commit;
-                    // that item was never submitted to an engine and has no
-                    // authoritative parent. Remove it under the same operation
-                    // claim before making the key retryable.
-                    for item in self.list_items_for_turn(&binding.turn_id)? {
-                        self.remove_item(&item.id)?;
-                    }
-                    remove_file_if_exists(&path)?;
-                }
                 Ok(())
             })?;
         }
@@ -1954,10 +1974,6 @@ impl RuntimeThreadStore {
             })?;
         binding.validate()?;
         Ok(Some(binding))
-    }
-
-    fn remove_turn_operation_binding(&self, operation_key_fingerprint: &str) -> Result<()> {
-        remove_file_if_exists(&self.turn_operation_path(operation_key_fingerprint)?)
     }
 
     fn recover_claimed_agent_mail(&self) -> Result<()> {
@@ -4432,6 +4448,15 @@ struct RuntimeTurnOperationBinding {
     operation_key_fingerprint: String,
     request_fingerprint: String,
     created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preparation: Option<RuntimeTurnPreparation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RuntimeTurnPreparation {
+    id: String,
+    source_fingerprint: String,
+    admitted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4476,6 +4501,17 @@ impl RuntimeTurnOperationBinding {
         validated_record_id(&self.turn_id, "operation turn id")?;
         validate_sha256_fingerprint(&self.operation_key_fingerprint, "operation key fingerprint")?;
         validate_sha256_fingerprint(&self.request_fingerprint, "operation request fingerprint")?;
+        if let Some(preparation) = &self.preparation {
+            anyhow::ensure!(
+                self.schema_version >= 2,
+                "turn preparation requires its admission schema"
+            );
+            validated_record_id(&preparation.id, "turn preparation id")?;
+            validate_sha256_fingerprint(
+                &preparation.source_fingerprint,
+                "classifier source fingerprint",
+            )?;
+        }
         Ok(())
     }
 }
@@ -5632,8 +5668,21 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     }
     reject_symlinked_store_file(path)?;
     let payload = serde_json::to_string_pretty(value)?;
-    codewhale_util::utils::write_atomic(path, payload.as_bytes())
-        .with_context(|| format!("Failed to write {}", path.display()))
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("Runtime record has no parent"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("Runtime record has no basename"))?;
+    codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)?
+        .replace(payload.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    #[cfg(unix)]
+    if let (Some(ancestor), Some(name)) = (parent.parent(), parent.file_name()) {
+        codewhale_util::files::WorkspaceFile::open_resolved_root(ancestor, Path::new(name), false)?
+            .sync_parent()?;
+    }
+    Ok(())
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<()> {

@@ -1074,13 +1074,13 @@ mod tests {
             reasoning_replay_tokens: Some(7),
             ..Default::default()
         };
-        let record = crate::cost_status::RuntimeUsageRecord {
-            source_id: "rlm:test:request:0".to_string(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        let record = crate::cost_status::RuntimeUsageRecord::legacy(
+            "rlm:test:request:0".to_string(),
+            crate::cost_status::EffectiveRouteUsage {
                 route: route.clone(),
                 usage: usage.clone(),
             },
-        };
+        );
         let drop_record = crate::cost_status::RuntimeUsageDropRecord {
             reason: crate::cost_status::RuntimeUsageMissingReason::default(),
             source_id: "rlm:test:request:1".to_string(),

@@ -9,7 +9,7 @@ use codewhale_models::{ContentBlock, Message, MessageRequest, SystemPrompt, Tool
 
 use super::review::{ReviewEvidence, ReviewIssue, ReviewOutput};
 use super::review_hunks::DiffHunks;
-use super::review_triage::{ReviewStop, SpendRates};
+use super::review_triage::ReviewStop;
 use super::spec::{ToolContext, ToolSpec};
 use crate::core::model_client::ModelClient;
 
@@ -457,6 +457,7 @@ fn leaks_tool_call_markup(text: &str) -> bool {
 
 #[derive(Debug, Clone)]
 pub struct ReviewCoreResult {
+    pub source_records: Vec<crate::cost_status::RuntimeUsageRecord>,
     pub output: ReviewOutput,
     pub raw: String,
     pub stop_reason: Option<String>,
@@ -521,6 +522,8 @@ fn clip(value: &str, max_chars: usize) -> String {
 pub const MAX_INTENT_CHARS: usize = 8_000;
 
 pub struct ReviewCoreRequest<'a> {
+    pub accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
+    pub accounting_owner: crate::cost_status::UsageSpendOwner,
     pub diff: &'a str,
     pub prompt: String,
     pub intent: Option<ReviewIntent>,
@@ -530,7 +533,6 @@ pub struct ReviewCoreRequest<'a> {
     pub reasoning_effort: Option<String>,
     pub max_claims: usize,
     pub max_nits: usize,
-    pub spend_rates: Option<SpendRates>,
     pub money_cap_usd: Option<f64>,
     /// Run an independent refutation pass before returning claims. Only worth
     /// its cost when the budget already bought repository tools, so callers
@@ -542,6 +544,8 @@ impl<'a> ReviewCoreRequest<'a> {
     #[must_use]
     pub fn new(diff: &'a str, prompt: impl Into<String>) -> Self {
         Self {
+            accounting_origin: None,
+            accounting_owner: crate::cost_status::UsageSpendOwner::Auxiliary,
             diff,
             prompt: prompt.into(),
             intent: None,
@@ -551,7 +555,6 @@ impl<'a> ReviewCoreRequest<'a> {
             reasoning_effort: None,
             max_claims: 40,
             max_nits: 3,
-            spend_rates: None,
             money_cap_usd: None,
             refute: false,
         }
@@ -709,6 +712,69 @@ fn apply_refutations(output: &mut ReviewOutput, refutations: &[Refutation]) -> u
     refuted
 }
 
+fn source_spend_usd(records: &[crate::cost_status::RuntimeUsageRecord]) -> Option<f64> {
+    records
+        .iter()
+        .try_fold(crate::pricing::CostEstimate::default(), |total, record| {
+            let contribution = crate::cost_status::UsageSourceContribution::for_record(record);
+            (contribution.unpriced == 0).then(|| {
+                total.saturating_add(crate::pricing::CostEstimate {
+                    usd: contribution.usd,
+                    cny: contribution.cny,
+                })
+            })
+        })
+        .map(|total| total.usd)
+}
+
+pub(crate) async fn accounted_model_call(
+    client: &dyn ModelClient,
+    body: MessageRequest,
+    origin: Option<crate::cost_status::NativeUsageOrigin>,
+    owner: crate::cost_status::UsageSpendOwner,
+    require_usd_price: bool,
+) -> Result<(
+    codewhale_models::MessageResponse,
+    crate::cost_status::RuntimeUsageRecord,
+)> {
+    let route = client.effective_route_envelope(&body.model, chrono::Utc::now());
+    if require_usd_price {
+        let audit = route.audit_frozen(&Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            ..Default::default()
+        });
+        anyhow::ensure!(
+            audit.usd_priced
+                || audit
+                    .unpriced_reason
+                    .is_some_and(|reason| !reason.counts_toward_money_coverage()),
+            "review money cap requires a verified frozen USD quote before dispatch"
+        );
+    }
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        format!("auxiliary-request:{}", uuid::Uuid::new_v4()),
+        owner,
+        origin,
+    );
+    let observation = source.observe_route(&route)?;
+    source.admit_dispatch(&route).await?;
+    let wire = observation.wire_observations.clone();
+    let response =
+        crate::llm_client::observe_request_retries(Some(observation), client.create_message(body))
+            .await;
+    let record = source.response_record(&route, &response, &wire.drain())?;
+    if record.has_captured_origin() {
+        crate::cost_status::settle_runtime_usage_record(
+            crate::cost_status::scope_token(),
+            None,
+            &record,
+        )
+        .await?;
+    }
+    Ok((response?, record))
+}
+
 pub async fn run_review_core(
     client: &dyn ModelClient,
     model: &str,
@@ -729,6 +795,7 @@ pub async fn run_review_core(
         }],
     }];
     let mut usage = Usage::default();
+    let mut source_records = Vec::new();
     let mut steps = 0;
     let mut tool_calls = 0;
     let mut used: Vec<String> = Vec::new();
@@ -742,17 +809,21 @@ pub async fn run_review_core(
         .unwrap_or_else(|| client.effective_max_output_tokens(model));
 
     while steps < request.budget.max_steps {
-        if let (Some(cap), Some(rates)) = (request.money_cap_usd, request.spend_rates) {
-            let spent = rates.cost_usd(&usage);
-            spend_usd = Some(spent);
-            if steps > 0 && spent >= cap {
+        if let Some(cap) = request.money_cap_usd {
+            spend_usd = source_spend_usd(&source_records);
+            anyhow::ensure!(
+                spend_usd.is_some(),
+                "review money cap cannot be verified from its dispatched source receipts"
+            );
+            if steps > 0 && spend_usd.is_some_and(|spent| spent >= cap) {
                 stop = Some(ReviewStop::MoneyCap);
                 break;
             }
         }
         steps += 1;
-        let response = client
-            .create_message(MessageRequest {
+        let (response, record) = accounted_model_call(
+            client,
+            MessageRequest {
                 model: model.to_string(),
                 messages: messages.clone(),
                 max_tokens,
@@ -765,8 +836,13 @@ pub async fn run_review_core(
                 stream: Some(false),
                 temperature: None,
                 top_p: None,
-            })
-            .await?;
+            },
+            request.accounting_origin.clone(),
+            request.accounting_owner,
+            request.money_cap_usd.is_some(),
+        )
+        .await?;
+        source_records.push(record);
         super::review::add_review_usage(&mut usage, &response.usage);
         stop_reason = response.stop_reason.clone();
         let calls: Vec<(String, String, Value)> = response
@@ -856,8 +932,12 @@ pub async fn run_review_core(
         });
     }
 
-    if let (Some(cap), Some(rates)) = (request.money_cap_usd, request.spend_rates) {
-        spend_usd = Some(rates.cost_usd(&usage));
+    if let Some(cap) = request.money_cap_usd {
+        spend_usd = source_spend_usd(&source_records);
+        anyhow::ensure!(
+            spend_usd.is_some(),
+            "review money cap cannot be verified from its dispatched source receipts"
+        );
         if spend_usd.is_some_and(|spent| spent >= cap) && stop.is_none() {
             stop = Some(ReviewStop::MoneyCap);
         }
@@ -896,8 +976,17 @@ pub async fn run_review_core(
         && !output.issues.is_empty()
         && context.is_some()
         && stop.is_none()
-        && let Some(refutations) =
-            refute_claims(client, model, &request, &output, &tools, &steps).await
+        && let Some(refutations) = refute_claims(
+            client,
+            model,
+            &request,
+            &output,
+            &tools,
+            &steps,
+            &mut source_records,
+            &mut usage,
+        )
+        .await?
     {
         anchors.refuted = apply_refutations(&mut output, &refutations);
     }
@@ -915,6 +1004,13 @@ pub async fn run_review_core(
             output.summary.push_str(&entry);
         }
     }
+    if request.money_cap_usd.is_some() {
+        spend_usd = source_spend_usd(&source_records);
+        anyhow::ensure!(
+            spend_usd.is_some(),
+            "review money cap cannot be verified after refutation"
+        );
+    }
     // A negative-result list that grows without bound is its own kind of noise.
     output.ruled_out.truncate(MAX_RULED_OUT);
     let changed_lines = request
@@ -923,6 +1019,7 @@ pub async fn run_review_core(
         .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
         .count();
     Ok(ReviewCoreResult {
+        source_records,
         output,
         raw: final_text,
         stop_reason,
@@ -953,8 +1050,12 @@ async fn refute_claims(
     output: &ReviewOutput,
     tools: &[Arc<dyn ToolSpec>],
     steps_used: &u32,
-) -> Option<Vec<Refutation>> {
-    let context = request.workspace.as_ref().map(ToolContext::new)?;
+    source_records: &mut Vec<crate::cost_status::RuntimeUsageRecord>,
+    usage: &mut Usage,
+) -> Result<Option<Vec<Refutation>>> {
+    let Some(context) = request.workspace.as_ref().map(ToolContext::new) else {
+        return Ok(None);
+    };
     let claims: Vec<serde_json::Value> = output
         .issues
         .iter()
@@ -993,9 +1094,15 @@ async fn refute_claims(
     let mut steps = *steps_used;
     let mut final_text = String::new();
     while steps < request.budget.max_steps.saturating_add(2) {
+        if let Some(cap) = request.money_cap_usd {
+            if source_spend_usd(source_records).is_none_or(|spent| spent >= cap) {
+                break;
+            }
+        }
         steps += 1;
-        let response = client
-            .create_message(MessageRequest {
+        let (response, record) = accounted_model_call(
+            client,
+            MessageRequest {
                 model: model.to_string(),
                 messages: messages.clone(),
                 max_tokens: request
@@ -1010,9 +1117,14 @@ async fn refute_claims(
                 stream: Some(false),
                 temperature: None,
                 top_p: None,
-            })
-            .await
-            .ok()?;
+            },
+            request.accounting_origin.clone(),
+            request.accounting_owner,
+            request.money_cap_usd.is_some(),
+        )
+        .await?;
+        source_records.push(record);
+        super::review::add_review_usage(usage, &response.usage);
         final_text.clear();
         let calls: Vec<(String, String, Value)> = response
             .content
@@ -1064,7 +1176,7 @@ async fn refute_claims(
         });
     }
     let refutations = parse_refutations(&final_text, output.issues.len());
-    (!refutations.is_empty()).then_some(refutations)
+    Ok((!refutations.is_empty()).then_some(refutations))
 }
 
 /// The lines this change actually added, as `path:line` on the post-image.

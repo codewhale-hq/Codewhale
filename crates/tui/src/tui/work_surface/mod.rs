@@ -1408,6 +1408,7 @@ mod tests {
             chrono::Utc::now(),
         );
         let usage = |source_id: &str, input_tokens, output_tokens| MailboxMessage::TokenUsage {
+            record: None,
             agent_id: "agent_stream".to_string(),
             source_id: source_id.to_string(),
             route: Box::new(route.clone()),

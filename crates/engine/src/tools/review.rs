@@ -1566,6 +1566,12 @@ impl ToolSpec for ReviewTool {
             }]
         };
 
+        #[cfg(not(any(test, feature = "test-support")))]
+        if context.accounting_origin.is_none() {
+            return Err(ToolError::not_available(
+                "review has no native accounting origin",
+            ));
+        }
         let route = client.effective_route_envelope(&self.model, chrono::Utc::now());
         let review_diff = match &source {
             ReviewSource::PullRequest { diff, .. } => diff.clone(),
@@ -1606,6 +1612,7 @@ impl ToolSpec for ReviewTool {
                 .to_string()
             });
         let mut usage = Usage::default();
+        let mut source_records = Vec::new();
         let mut accumulator = plan.as_ref().map(PrReviewAccumulator::new);
         let mut single_output = None;
         let mut anchors = super::review_core::ReviewAnchorReport::default();
@@ -1618,6 +1625,7 @@ impl ToolSpec for ReviewTool {
         let mut spend_usd = None;
         for (index, prompt) in prompts.into_iter().enumerate() {
             let mut request = super::review_core::ReviewCoreRequest::new(&review_diff, prompt);
+            request.accounting_origin = context.accounting_origin.clone();
             request.workspace = tool_workspace.clone();
             request.budget = budget.tool_budget();
             request.max_output_tokens = Some(allowance);
@@ -1629,6 +1637,7 @@ impl ToolSpec for ReviewTool {
                         return Ok(review_error_with_usage(
                             &route,
                             &usage,
+                            &source_records,
                             format!(
                                 "{}; no partial review was accepted.",
                                 request_failure_message(
@@ -1640,6 +1649,7 @@ impl ToolSpec for ReviewTool {
                         ));
                     }
                 };
+            source_records.extend(result.source_records.iter().cloned());
             add_review_usage(&mut usage, &result.usage);
             for tool in &result.tools_used {
                 if !tools_used.iter().any(|seen| seen == tool) {
@@ -1659,6 +1669,7 @@ impl ToolSpec for ReviewTool {
                 return Ok(review_error_with_usage(
                     &route,
                     &usage,
+                    &source_records,
                     format!(
                         "Review pass {}/{} response incomplete: provider stop reason `{}`; the pass {}. The partial review was not accepted.",
                         index + 1,
@@ -1672,6 +1683,7 @@ impl ToolSpec for ReviewTool {
                 return Ok(review_error_with_usage(
                     &route,
                     &usage,
+                    &source_records,
                     leaked_tool_call_message(
                         index + 1,
                         plan.as_ref().map_or(1, |plan| plan.passes.len()),
@@ -1680,19 +1692,34 @@ impl ToolSpec for ReviewTool {
             }
             if let (Some(plan), Some(accumulator)) = (&plan, accumulator.as_mut()) {
                 if let Err(error) = accumulator.accept(&plan.passes[index], result.raw) {
-                    return Ok(review_error_with_usage(&route, &usage, error.to_string()));
+                    return Ok(review_error_with_usage(
+                        &route,
+                        &usage,
+                        &source_records,
+                        error.to_string(),
+                    ));
                 }
             } else {
                 match accept_single_review(&result.raw) {
                     Ok(_) => single_output = Some(result.output),
                     Err(error) => {
-                        return Ok(review_error_with_usage(&route, &usage, error));
+                        return Ok(review_error_with_usage(
+                            &route,
+                            &usage,
+                            &source_records,
+                            error,
+                        ));
                     }
                 }
             }
         }
         if let Err(error) = ensure_pr_source_current(&source, &context.workspace).await {
-            return Ok(review_error_with_usage(&route, &usage, error.to_string()));
+            return Ok(review_error_with_usage(
+                &route,
+                &usage,
+                &source_records,
+                error.to_string(),
+            ));
         }
         let mut coverage = None;
         let output = if let (Some(accumulator), ReviewSource::PullRequest { diff, .. }) =
@@ -1701,7 +1728,12 @@ impl ToolSpec for ReviewTool {
             let (output, _, completed) = match accumulator.finish(diff) {
                 Ok(completed) => completed,
                 Err(error) => {
-                    return Ok(review_error_with_usage(&route, &usage, error.to_string()));
+                    return Ok(review_error_with_usage(
+                        &route,
+                        &usage,
+                        &source_records,
+                        error.to_string(),
+                    ));
                 }
             };
             coverage = Some(completed);
@@ -1719,7 +1751,7 @@ impl ToolSpec for ReviewTool {
             }
             output.summary.push_str(&note);
         }
-        let mut metadata = review_usage_metadata(&route, &usage);
+        let mut metadata = review_usage_metadata(&route, &usage, &source_records);
         metadata["review_anchors"] = json!(anchors);
         metadata["review_tools_used"] = json!(tools_used);
         metadata["review_repository_reads"] = json!(tool_workspace.is_some());
@@ -1743,14 +1775,24 @@ impl ToolSpec for ReviewTool {
             metadata["review_coverage"] = match serde_json::to_value(coverage) {
                 Ok(coverage) => coverage,
                 Err(error) => {
-                    return Ok(review_error_with_usage(&route, &usage, error.to_string()));
+                    return Ok(review_error_with_usage(
+                        &route,
+                        &usage,
+                        &source_records,
+                        error.to_string(),
+                    ));
                 }
             };
         }
         let result = match ToolResult::json(&output) {
             Ok(result) => result,
             Err(error) => {
-                return Ok(review_error_with_usage(&route, &usage, error.to_string()));
+                return Ok(review_error_with_usage(
+                    &route,
+                    &usage,
+                    &source_records,
+                    error.to_string(),
+                ));
             }
         };
         Ok(result.with_metadata(metadata))
@@ -1801,14 +1843,16 @@ fn accept_single_review(response_text: &str) -> Result<ReviewOutput, String> {
 fn review_error_with_usage(
     route: &crate::cost_status::EffectiveRouteEnvelope,
     usage: &Usage,
+    records: &[crate::cost_status::RuntimeUsageRecord],
     message: impl Into<String>,
 ) -> ToolResult {
-    ToolResult::error(message.into()).with_metadata(review_usage_metadata(route, usage))
+    ToolResult::error(message.into()).with_metadata(review_usage_metadata(route, usage, records))
 }
 
 fn review_usage_metadata(
     route: &crate::cost_status::EffectiveRouteEnvelope,
     usage: &Usage,
+    records: &[crate::cost_status::RuntimeUsageRecord],
 ) -> Value {
     let mut metadata = json!({
         "tool": "review",
@@ -1818,6 +1862,13 @@ fn review_usage_metadata(
     // Every billable class, from the one shared producer, so a child turn can be
     // priced with the same completeness as a parent turn (#4318).
     crate::cost_status::attach_child_usage_metadata(&mut metadata, route, usage);
+    crate::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &crate::cost_status::RuntimeUsageBatch {
+            records: records.to_vec(),
+            ..Default::default()
+        },
+    );
     metadata
 }
 
@@ -2929,7 +2980,7 @@ mod tests {
             .accept(&plan.passes[0], clean_pass("first"))
             .unwrap();
         let error = malformed.accept(&plan.passes[1], "{}".into()).unwrap_err();
-        let result = review_error_with_usage(&route, &usage, error.to_string());
+        let result = review_error_with_usage(&route, &usage, &[], error.to_string());
         assert!(!result.success);
         let metadata = result.metadata.unwrap();
         assert_eq!(metadata["input_tokens"], 24);
@@ -2945,7 +2996,7 @@ mod tests {
         drift.accept(&plan.passes[0], clean_pass("first")).unwrap();
         drift.accept(&plan.passes[1], clean_pass("second")).unwrap();
         let error = drift.finish(&(diff + "drift")).unwrap_err();
-        let result = review_error_with_usage(&route, &usage, error.to_string());
+        let result = review_error_with_usage(&route, &usage, &[], error.to_string());
         assert!(!result.success);
         assert_eq!(result.metadata.unwrap()["input_tokens"], 24);
     }
@@ -3163,6 +3214,7 @@ mod tests {
                 reasoning_tokens: Some(7),
                 ..Default::default()
             },
+            &[],
         );
 
         assert_eq!(metadata["tool"], "review");

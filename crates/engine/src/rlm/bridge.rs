@@ -105,13 +105,13 @@ impl RlmUsageAccumulator {
         let index = state.records.len();
         let source_id = format!("rlm:{}:request:{index}", state.ledger_id);
         state.records.push(Some(RlmUsageSlot {
-            record: crate::cost_status::RuntimeUsageRecord {
+            record: crate::cost_status::RuntimeUsageRecord::legacy(
                 source_id,
-                usage: crate::cost_status::EffectiveRouteUsage {
+                crate::cost_status::EffectiveRouteUsage {
                     route: route.sanitized_for_persistence(),
                     usage: Usage::default(),
                 },
-            },
+            ),
             completed: false,
         }));
         Ok(RlmUsageReservation { index })
@@ -128,6 +128,51 @@ impl RlmUsageAccumulator {
     }
 
     /// Attach a provider's reported usage to its already-reserved exact route.
+    pub async fn complete_record(
+        &self,
+        reservation: RlmUsageReservation,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) {
+        self.complete_record_sync(reservation, record);
+    }
+
+    pub fn complete_record_sync(
+        &self,
+        reservation: RlmUsageReservation,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(Some(slot)) = state.records.get_mut(reservation.index) else {
+            return;
+        };
+        if crate::cost_status::usage_source_fingerprint(&slot.record.source_id)
+            != crate::cost_status::usage_source_fingerprint(&record.source_id)
+            || slot.record.usage.route != record.usage.route
+        {
+            return;
+        }
+        match record.permits_replacement(slot.completed.then_some(&slot.record)) {
+            Ok(true) => {
+                slot.record = record.clone();
+                slot.completed = true;
+            }
+            Ok(false) => return,
+            Err(error) => {
+                tracing::warn!(%error, "RLM source projection refused its predecessor");
+                return;
+            }
+        }
+        let mut usage = Usage::default();
+        for slot in state.records.iter().flatten().filter(|slot| slot.completed) {
+            crate::core::turn::add_usage_to(&mut usage, &slot.record.usage.usage);
+        }
+        state.usage = usage;
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn complete(&self, reservation: RlmUsageReservation, usage: &Usage) {
         let mut state = self
             .state

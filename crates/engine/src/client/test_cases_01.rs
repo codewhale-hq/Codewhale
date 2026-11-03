@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::client::chat::{
     build_chat_messages, build_chat_messages_for_request,
@@ -1301,7 +1300,10 @@ async fn cache_free_message_call_neither_reads_nor_writes_global_cache() {
     );
 
     let response = client
-        .create_message_without_response_cache(request)
+        .create_message_without_response_cache(
+            request,
+            crate::llm_client::RequestRetryObservation::isolated(),
+        )
         .await
         .expect("cache-free provider call succeeds");
     assert_eq!(response.id, "chatcmpl-cache-free-provider");
@@ -1375,7 +1377,10 @@ async fn cache_free_classifier_429_does_not_publish_global_retry_or_rate_limit_s
         top_p: None,
     };
     let error = client
-        .create_message_without_response_cache(request)
+        .create_message_without_response_cache(
+            request,
+            crate::llm_client::RequestRetryObservation::isolated(),
+        )
         .await
         .expect_err("429 must fail when isolated retries are disabled");
     assert!(

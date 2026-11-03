@@ -7794,6 +7794,8 @@ mod tests {
 
     fn turn_complete_event() -> EngineEvent {
         EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -8364,6 +8366,8 @@ mod tests {
             ..codewhale_models::Usage::default()
         };
         controller.observe_engine_event(&EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,

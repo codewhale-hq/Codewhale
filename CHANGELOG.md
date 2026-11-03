@@ -160,6 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Child, review and Auto usage keeps its captured session and route through late completion and persistence retries. Unreported usage stays unknown, cache writes and reasoning remain distinct, and cost calculations use the quote captured for the request.
+- Interrupted children persist their continuation checkpoint and complete their workflow task instead of leaving it waiting on a worker whose execution already ended. Live approval waits retain their existing behavior.
 - Session publication compares the document and crash checkpoint captured before work was queued. A delayed save refuses changed records without replacing newer history or clearing its checkpoint. Ordered completion retains real checkpoint acknowledgments, and native turn/control identity follows restores, undo and terminal saves. Legacy checkpoints require explicit recovery; canonical history recovery retains its original source and exact prepared generation.
 - Damaged usage sidecars keep valid recovery data readable with incomplete coverage and no publication receipt. Known retirement, changed raw records and unsafe writes still refuse.
 - Local control and ACP output serialize within the existing 8 MiB frame limit and stop a damaged or stalled output stream. Compatibility replies, events and relay stdout now share the 30-second write deadline; owner forwarding keeps its tighter 5 seconds. Standalone and attached ACP recover after complete invalid UTF-8 or oversized input frames, discard oversized tails through the real newline, and preserve cancellation, permissions and actual Core receipts.

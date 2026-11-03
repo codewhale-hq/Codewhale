@@ -502,8 +502,16 @@ fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, Too
     };
     if let Some(batch) = codewhale_engine::cost_status::child_usage_records_from_metadata(metadata)
     {
+        let pending = codewhale_engine::cost_status::drain();
+        app.absorb_pending_background_cost(&pending);
         for record in &batch.records {
-            accrue_child_route_usage(app, &record.usage);
+            if record.settlement.is_some() {
+                if let Err(error) = app.absorb_usage_source(record) {
+                    tracing::warn!(%error, "tool usage revision was not admitted");
+                }
+            } else {
+                app.mark_usage_uncertain("legacy_usage_unverified");
+            }
         }
         for record in &batch.drop_records {
             let pending = codewhale_engine::cost_status::background_cost_for_runtime_drop(record);
@@ -527,42 +535,10 @@ fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, Too
         }
         return;
     }
-    let Some(route) = codewhale_engine::cost_status::child_route_envelope_from_metadata(metadata)
-    else {
-        return;
-    };
-    // Use the same parser as the runtime host. It deliberately returns a
-    // zero-valued usage record when the producer emitted the canonical child
-    // fields: a model-backed call is still an auditable/priced-zero call, and
-    // replay/server-tool telemetry must not disappear in the TUI projection.
-    let Some(usage) = codewhale_engine::cost_status::child_usage_from_metadata(metadata) else {
-        return;
-    };
-    accrue_child_route_usage(
-        app,
-        &codewhale_engine::cost_status::EffectiveRouteUsage { route, usage },
-    );
-}
-
-fn accrue_child_route_usage(
-    app: &mut App,
-    routed: &codewhale_engine::cost_status::EffectiveRouteUsage,
-) {
-    // `route` is the child's own dispatch receipt, rehydrated from the
-    // complete `child_*` metadata `attach_child_usage_metadata` emits at the
-    // child's wire boundary (review/verify/rlm are the three producers). An
-    // incomplete or legacy payload rehydrates as `RouteBillingMode::Unknown`,
-    // so a child never inherits the live `app.billing_presentation` chip and a
-    // `/provider` switch between dispatch and arrival cannot retro-bill it.
-    //
-    // Sub-agent spend lands in the same displayed total as parent turns, so it
-    // has to feed the same completeness counters — otherwise `/cost` would call
-    // a total complete while an unpriced child turn is missing from it.
-    let audit = routed.route.audit(&routed.usage);
-    app.record_turn_cost_audit(&audit);
-    app.record_turn_cost_route_receipt(routed.route.receipt(&audit));
-    if let Some(cost) = audit.estimate {
-        app.accrue_subagent_cost_estimate(cost);
+    if codewhale_engine::cost_status::child_route_envelope_from_metadata(metadata).is_some()
+        && codewhale_engine::cost_status::child_usage_from_metadata(metadata).is_some()
+    {
+        app.mark_usage_uncertain("legacy_usage_unverified");
     }
 }
 

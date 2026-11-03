@@ -76,9 +76,9 @@ fn failed_engine_channel_settles_classifier_batch_once() {
     );
     let batch = codewhale_engine::cost_status::RuntimeUsageBatch {
         decisions: Vec::new(),
-        records: vec![codewhale_engine::cost_status::RuntimeUsageRecord {
-            source_id: "auto-router:dispatch-usage".to_string(),
-            usage: codewhale_engine::cost_status::EffectiveRouteUsage {
+        records: vec![codewhale_engine::cost_status::RuntimeUsageRecord::legacy(
+            "auto-router:dispatch-usage".to_string(),
+            codewhale_engine::cost_status::EffectiveRouteUsage {
                 route: route.clone(),
                 usage: codewhale_models::Usage {
                     input_tokens: 6,
@@ -86,7 +86,7 @@ fn failed_engine_channel_settles_classifier_batch_once() {
                     ..Default::default()
                 },
             },
-        }],
+        )],
         drop_records: vec![codewhale_engine::cost_status::RuntimeUsageDropRecord {
             reason: codewhale_engine::cost_status::RuntimeUsageMissingReason::default(),
             source_id: "auto-router:dispatch-drop".to_string(),
@@ -816,6 +816,44 @@ fn test_mailbox_route(
         Some(provider.provider().default_base_url()),
         chrono::Utc::now(),
     )
+}
+
+fn settled_child_fixture_record(
+    app: &mut App,
+    manager: &codewhale_engine::session_manager::SessionManager,
+    source_id: &str,
+    route: &codewhale_engine::cost_status::EffectiveRouteEnvelope,
+    usage: &codewhale_models::Usage,
+) -> codewhale_engine::cost_status::RuntimeUsageRecord {
+    if app.session_write_receipt.is_none() {
+        let snapshot = build_session_snapshot(app, manager).expect("native fixture snapshot");
+        app.current_session_id = Some(snapshot.metadata.id.clone());
+        app.session_write_receipt = snapshot.write_receipt;
+        app.current_session_metadata = Some(snapshot.metadata);
+    }
+    let scope = codewhale_engine::cost_status::scope_token();
+    let origin = app
+        .session_write_receipt
+        .as_ref()
+        .expect("native fixture source")
+        .usage_origin(scope)
+        .expect("native fixture origin");
+    let source = codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
+        source_id,
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+        Some(origin),
+    );
+    let record = source
+        .prepare(
+            route,
+            usage,
+            codewhale_engine::llm_client::ProviderUsageCoverage::Reported,
+            codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+        )
+        .expect("native fixture record");
+    codewhale_engine::cost_status::report_runtime_usage_record(scope, None, &record)
+        .expect("durable fixture publication");
+    record
 }
 
 fn served_endpoint_fingerprint() -> Option<String> {
@@ -9934,6 +9972,10 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
 fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
     let _cost_scope = codewhale_engine::cost_status::test_scope();
     let mut app = create_test_app();
+    app.session.displayed_cost_high_water = 900.0;
+    app.session.displayed_cost_high_water_cny = 6000.0;
+    app.last_billed_input_tokens = Some(700);
+
     // Live state from the session being replaced.
     app.session.cost_priced_turns = 9;
     app.session.cost_unpriced_turns = 4;
@@ -9974,6 +10016,9 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
 
     apply_loaded_session(&mut app, &mut Config::default(), &session).expect("restore session");
 
+    assert_eq!(app.session.displayed_cost_high_water, 3.75);
+    assert_eq!(app.session.displayed_cost_high_water_cny, 0.0);
+    assert_eq!(app.last_billed_input_tokens, None);
     assert_eq!(app.session.cost_priced_turns, 2);
     assert_eq!(app.session.subagent_cost, 1.25);
     assert_eq!(app.session.cost_unpriced_turns, 1);
@@ -16751,6 +16796,8 @@ fn user_input_completion_preserves_newer_question_and_dispatch() {
     observe_human_request_settlement(
         &mut app,
         &EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -16798,6 +16845,8 @@ fn user_input_turn_end_cancel_and_disconnect_retire_question_views() {
             _ => observe_human_request_settlement(
                 &mut app,
                 &EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -18002,12 +18051,13 @@ fn reconcile_subagent_activity_state_caps_terminal_card_bursts() {
 }
 
 #[test]
-fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
+fn legacy_subagent_token_usage_marks_uncertainty_without_card_change() {
     let mut app = create_test_app();
     handle_subagent_mailbox(
         &mut app,
         1,
         &codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
+            record: None,
             agent_id: "agent-a".to_string(),
             source_id: "response-a".to_string(),
             route: Box::new(test_mailbox_route(
@@ -18022,7 +18072,12 @@ fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
         },
     );
 
-    assert!(app.session.subagent_cost > 0.0);
+    assert_eq!(app.session.subagent_cost, 0.0);
+    assert!(
+        app.session
+            .cost_unpriced_reasons
+            .contains("legacy_usage_unverified")
+    );
     assert!(
         app.history.is_empty(),
         "usage-only mailbox messages should not allocate a sub-agent card"
@@ -18038,6 +18093,7 @@ fn subagent_token_usage_prices_the_child_route_not_the_parent_route() {
         &mut app,
         2,
         &codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
+            record: None,
             agent_id: "agent-codex".to_string(),
             source_id: "response-codex".to_string(),
             route: Box::new(test_mailbox_route(ProviderKind::OpenaiCodex, "gpt-5.5")),
@@ -18058,31 +18114,37 @@ fn subagent_token_usage_prices_the_child_route_not_the_parent_route() {
 #[test]
 fn subagent_token_usage_is_deduped_by_response_source() {
     let mut app = create_test_app();
-    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
-        agent_id: "agent-a".to_string(),
-        source_id: "response-a".to_string(),
-        route: Box::new(test_mailbox_route(
-            ProviderKind::Deepseek,
-            "deepseek-v4-flash",
-        )),
-        usage: codewhale_models::Usage {
-            input_tokens: 10_000,
-            output_tokens: 1_000,
-            ..Default::default()
-        },
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
+    let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
+    let source_usage = codewhale_models::Usage {
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+        ..Default::default()
     };
+    let record = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "response-a",
+        &route,
+        &source_usage,
+    );
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-a", record);
 
     handle_subagent_mailbox(&mut app, 7, &usage);
     let first = app.session.subagent_cost;
     handle_subagent_mailbox(&mut app, 8, &usage);
     assert_eq!(app.session.subagent_cost, first);
-    let mut distinct = usage.clone();
-    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
-        &mut distinct
-    else {
-        unreachable!()
-    };
-    *source_id = "response-b".to_string();
+    let next = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "independent-response",
+        &route,
+        &source_usage,
+    );
+    let distinct = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-a", next);
     handle_subagent_mailbox(&mut app, 9, &distinct);
     assert!(app.session.subagent_cost > first);
 }
@@ -18107,6 +18169,10 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     manager.save_session(&session).expect("save origin");
     app.current_session_id = Some(session.metadata.id.clone());
     app.current_session_metadata = Some(session.metadata.clone());
+    app.session_write_receipt = manager
+        .load_session(&session.metadata.id)
+        .expect("native origin read")
+        .write_receipt;
     let origin_scope = codewhale_engine::cost_status::scope_token();
     let owner = "interactive:active-deleted-origin:origin-turn";
     codewhale_engine::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
@@ -18129,11 +18195,21 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
             .is_some_and(|cost| cost.usd > 0.0)
     );
     let source_id = "subagent:deleted-origin:response";
-    let mailbox = codewhale_engine::tools::subagent::MailboxMessage::token_usage(
-        "agent-deleted-origin",
+    let source = codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
         source_id,
-        route.clone(),
-        usage.clone(),
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+        Some(
+            app.session_write_receipt
+                .as_ref()
+                .expect("native source")
+                .usage_origin(origin_scope)
+                .expect("native origin"),
+        ),
+    );
+    let record = source.reported(&route, &usage).expect("native receipt");
+    let mailbox = codewhale_engine::tools::subagent::MailboxMessage::usage_record(
+        "agent-deleted-origin",
+        record.clone(),
     );
     manager
         .delete_session(&session.metadata.id)
@@ -18142,13 +18218,8 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     // an active-origin callback, not the already-covered stale-scope path.
     assert_eq!(codewhale_engine::cost_status::scope_token(), origin_scope);
     for seq in 1..=2 {
-        codewhale_engine::cost_status::report_effective_route_for_runtime(
-            origin_scope,
-            Some(owner),
-            source_id,
-            &route,
-            &usage,
-        );
+        codewhale_engine::cost_status::report_runtime_usage_record(origin_scope, None, &record)
+            .expect("handled retired receipt");
         handle_subagent_mailbox_for_turn(&mut app, "origin-turn", seq, &mailbox);
     }
     assert!(codewhale_engine::cost_status::drain().is_empty());
@@ -18183,31 +18254,37 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
 #[test]
 fn subagent_token_usage_source_is_stable_across_engine_turns() {
     let mut app = create_test_app();
-    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
-        agent_id: "agent-a".to_string(),
-        source_id: "response-a".to_string(),
-        route: Box::new(test_mailbox_route(
-            ProviderKind::Deepseek,
-            "deepseek-v4-flash",
-        )),
-        usage: codewhale_models::Usage {
-            input_tokens: 10_000,
-            output_tokens: 1_000,
-            ..Default::default()
-        },
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
+    let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
+    let source_usage = codewhale_models::Usage {
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+        ..Default::default()
     };
+    let record = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "response-a",
+        &route,
+        &source_usage,
+    );
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-a", record);
 
     handle_subagent_mailbox_for_turn(&mut app, "engine-turn-a", 1, &usage);
     let first = app.session.subagent_cost;
     handle_subagent_mailbox_for_turn(&mut app, "engine-turn-b", 1, &usage);
     assert_eq!(app.session.subagent_cost, first, "same response dedupes");
-    let mut distinct = usage.clone();
-    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
-        &mut distinct
-    else {
-        unreachable!()
-    };
-    *source_id = "response-b".to_string();
+    let next = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "independent-response",
+        &route,
+        &source_usage,
+    );
+    let distinct = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-a", next);
     handle_subagent_mailbox_for_turn(&mut app, "engine-turn-b", 2, &distinct);
     assert!(
         app.session.subagent_cost > first,
@@ -19441,6 +19518,8 @@ fn local_cancel_marks_late_stream_events_for_suppression() {
     ));
     assert!(!suppress_engine_event_after_local_cancel(
         &EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -19472,6 +19551,8 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
     app.runtime_turn_id = Some("turn-model".to_string());
 
     let model_terminal = EngineEvent::TurnComplete {
+        source_accounting: false,
+
         turn_id: Some("turn-model".to_string()),
         submission_id: None,
         compaction_id: None,
@@ -19493,6 +19574,8 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
     assert_eq!(model.turn_id.as_deref(), Some("turn-model"));
 
     let rejected_terminal = EngineEvent::TurnComplete {
+        source_accounting: false,
+
         turn_id: None,
         submission_id: Some("submission-rejected".to_string()),
         compaction_id: None,
@@ -19514,6 +19597,8 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
     assert!(rejected.turn_id.is_none());
 
     let compaction_terminal = EngineEvent::TurnComplete {
+        source_accounting: false,
+
         turn_id: None,
         submission_id: None,
         compaction_id: Some("compact-manual".to_string()),
@@ -23690,10 +23775,6 @@ fn shell_wait_without_command_uses_task_id_until_command_metadata_arrives() {
 #[test]
 fn legacy_child_usage_metadata_fails_closed_without_parent_route_fallback() {
     let mut app = create_test_app();
-    // An in-process review child publishes no route of its own, so it runs on
-    // the parent turn's client and is billed from the parent's frozen receipt.
-    // Without a receipt there is nothing sound to bill from, so the turn has to
-    // be active for the child to accrue anything.
     app.active_turn = Some(crate::tui::app::ActiveTurnMetadata {
         turn_id: "turn-child-usage".to_string(),
         created_at: chrono::Utc::now(),
@@ -23743,7 +23824,7 @@ fn legacy_child_usage_metadata_fails_closed_without_parent_route_fallback() {
     assert!(
         app.session
             .cost_unpriced_reasons
-            .contains("unknown_billing_basis")
+            .contains("legacy_usage_unverified")
     );
 }
 
@@ -23774,24 +23855,20 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     };
 
     // The shared producer emits every class.
-    let priced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope {
-        openrouter_vendor: None,
-        provider: codewhale_config::ProviderKind::Anthropic,
-        provider_identity: "anthropic-api".to_string(),
-        model: "claude-haiku-4-5".to_string(),
-        billing_surface: Some(
-            codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
-        ),
-        // Must be a real fingerprint: persistence and receipt boundaries drop
-        // anything that is not one, and a dropped field would have made the
-        // round-trip assertion below vacuously pass on both sides.
-        endpoint_fingerprint: codewhale_engine::cost_status::endpoint_fingerprint(
-            "https://api.anthropic.com/v1",
-        ),
-        provider_live_pricing: None,
-        billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
-        dispatched_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).expect("epoch"),
-    };
+    let api_config = codewhale_runtime::config::Config::default();
+    let priced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        Some(&api_config),
+        ProviderKind::Anthropic,
+        ProviderKind::Anthropic.as_str(),
+        "claude-haiku-4-5",
+        Some(ProviderKind::Anthropic.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    assert_eq!(
+        priced_route.billing_mode,
+        codewhale_engine::cost_status::RouteBillingMode::Metered,
+    );
+    assert!(priced_route.provider_live_pricing.is_some());
     let fields =
         codewhale_engine::cost_status::child_usage_metadata_fields(&priced_route, &child_usage);
     assert_eq!(fields["child_prompt_cache_write_tokens"], 100_000);
@@ -23809,6 +23886,10 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     // The parent deliberately stays DeepSeek: only the frozen child envelope
     // may control this price.
     let mut priced_app = create_test_app();
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
     priced_app.api_provider = codewhale_config::ProviderKind::Deepseek;
     priced_app.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Metered;
     let mut metadata = serde_json::json!({});
@@ -23816,6 +23897,20 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
         &mut metadata,
         &priced_route,
         &child_usage,
+    );
+    let record = settled_child_fixture_record(
+        &mut priced_app,
+        &fixture_manager,
+        "cache-class-response",
+        &priced_route,
+        &child_usage,
+    );
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &codewhale_engine::cost_status::RuntimeUsageBatch {
+            records: vec![record],
+            ..Default::default()
+        },
     );
     assert_eq!(
         codewhale_engine::cost_status::child_route_envelope_from_metadata(&metadata),
@@ -23843,24 +23938,44 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     unpriced_app.api_provider = codewhale_config::ProviderKind::Deepseek;
     unpriced_app.billing_presentation =
         codewhale_engine::route_billing::BillingPresentation::Metered;
-    let unpriced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope {
-        openrouter_vendor: None,
-        provider: codewhale_config::ProviderKind::Moonshot,
-        provider_identity: "moonshot-api".to_string(),
-        model: "kimi-k2.7-code".to_string(),
-        billing_surface: Some(
-            codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
-        ),
-        endpoint_fingerprint: Some("test-moonshot-endpoint".to_string()),
-        provider_live_pricing: None,
-        billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
-        dispatched_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).expect("epoch"),
-    };
+    let mut unpriced_config = codewhale_runtime::config::Config::default();
+    unpriced_config.custom_models = Some(
+        serde_json::from_value(serde_json::json!([{
+            "provider": "moonshot",
+            "base_url": ProviderKind::Moonshot.provider().default_base_url(),
+            "id": "kimi-k2.7-code",
+            "cost": { "input": 1.0, "output": 2.0, "cache_read": 0.1 }
+        }]))
+        .expect("fixture rates without a cache-write price"),
+    );
+    let unpriced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        Some(&unpriced_config),
+        ProviderKind::Moonshot,
+        ProviderKind::Moonshot.as_str(),
+        "kimi-k2.7-code",
+        Some(ProviderKind::Moonshot.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    assert!(unpriced_route.provider_live_pricing.is_some());
     let mut metadata = serde_json::json!({});
     codewhale_engine::cost_status::attach_child_usage_metadata(
         &mut metadata,
         &unpriced_route,
         &child_usage,
+    );
+    let record = settled_child_fixture_record(
+        &mut unpriced_app,
+        &fixture_manager,
+        "unpriced-cache-class-response",
+        &unpriced_route,
+        &child_usage,
+    );
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &codewhale_engine::cost_status::RuntimeUsageBatch {
+            records: vec![record],
+            ..Default::default()
+        },
     );
     let unpriced =
         Ok(codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(metadata));
@@ -23884,14 +23999,41 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     pathological.api_provider = codewhale_config::ProviderKind::Deepseek;
     pathological.billing_presentation =
         codewhale_engine::route_billing::BillingPresentation::Metered;
+    let pathological_route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        Some(&api_config),
+        ProviderKind::Deepseek,
+        ProviderKind::Deepseek.as_str(),
+        "deepseek-v4-flash",
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    assert!(pathological_route.provider_live_pricing.is_some());
     let mut metadata = serde_json::json!({});
     codewhale_engine::cost_status::attach_child_usage_metadata(
         &mut metadata,
-        &test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash"),
+        &pathological_route,
         &codewhale_models::Usage {
             input_tokens: 1_000,
             output_tokens: 100,
             reasoning_tokens: Some(9_000),
+            ..Default::default()
+        },
+    );
+    let usage = codewhale_engine::cost_status::child_usage_from_metadata(&metadata)
+        .expect("typed pathological usage");
+    let route = codewhale_engine::cost_status::child_route_envelope_from_metadata(&metadata)
+        .expect("typed pathological route");
+    let record = settled_child_fixture_record(
+        &mut pathological,
+        &fixture_manager,
+        "reasoning-subset-response",
+        &route,
+        &usage,
+    );
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &codewhale_engine::cost_status::RuntimeUsageBatch {
+            records: vec![record],
             ..Default::default()
         },
     );
@@ -23919,12 +24061,30 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
 #[test]
 fn zero_usage_model_child_still_records_priced_receipt() {
     let mut app = create_test_app();
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
     let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
     let mut metadata = serde_json::json!({});
     codewhale_engine::cost_status::attach_child_usage_metadata(
         &mut metadata,
         &route,
         &codewhale_models::Usage::default(),
+    );
+    let record = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "explicit-zero-response",
+        &route,
+        &codewhale_models::Usage::default(),
+    );
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &codewhale_engine::cost_status::RuntimeUsageBatch {
+            records: vec![record],
+            ..Default::default()
+        },
     );
     let result = Ok(
         codewhale_engine::tools::spec::ToolResult::error("kernel closed").with_metadata(metadata),
@@ -29985,19 +30145,24 @@ fn displayed_session_cost_is_monotonic_under_negative_reconciliation() {
 #[test]
 fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
     let mut app = create_test_app();
-    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
-        agent_id: "agent-x".to_string(),
-        source_id: "response-x".to_string(),
-        route: Box::new(test_mailbox_route(
-            ProviderKind::Deepseek,
-            "deepseek-v4-flash",
-        )),
-        usage: codewhale_models::Usage {
-            input_tokens: 10_000,
-            output_tokens: 1_000,
-            ..Default::default()
-        },
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
+    let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
+    let source_usage = codewhale_models::Usage {
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+        ..Default::default()
     };
+    let record = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "response-x",
+        &route,
+        &source_usage,
+    );
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-x", record);
     handle_subagent_mailbox(&mut app, 11, &usage);
     let baseline = app.displayed_session_cost();
     assert!(baseline > 0.0);
@@ -30011,13 +30176,14 @@ fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
     );
 
     // A distinct provider response must extend the displayed cost upward.
-    let mut distinct = usage.clone();
-    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
-        &mut distinct
-    else {
-        unreachable!()
-    };
-    *source_id = "response-y".to_string();
+    let next = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "independent-response",
+        &route,
+        &source_usage,
+    );
+    let distinct = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-x", next);
     handle_subagent_mailbox(&mut app, 13, &distinct);
     assert!(app.displayed_session_cost() > baseline);
 }

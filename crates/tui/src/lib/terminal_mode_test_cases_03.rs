@@ -765,7 +765,8 @@
             exec_stream_final_answer_excerpt("  short reply \n"),
             "short reply"
         );
-        let long = "x".repeat(codewhale_engine::fleet::executor::EXEC_STREAM_FINAL_ANSWER_EXCERPT_CHARS + 5);
+        let long = "x"
+            .repeat(codewhale_engine::fleet::executor::EXEC_STREAM_FINAL_ANSWER_EXCERPT_CHARS + 5);
         let excerpt = exec_stream_final_answer_excerpt(&long);
         assert_eq!(
             excerpt.chars().count(),
@@ -1366,8 +1367,10 @@
                 "--probe-search",
             ] {
                 assert!(
-                    crate::Cli::try_parse_from(["codewhale-tui", "doctor", output_flag, live_flag,])
-                        .is_err(),
+                    crate::Cli::try_parse_from(
+                        ["codewhale-tui", "doctor", output_flag, live_flag,]
+                    )
+                    .is_err(),
                     "{output_flag} unexpectedly accepted live flag {live_flag}"
                 );
             }
@@ -1376,9 +1379,9 @@
 
     #[test]
     fn default_max_turns_does_not_add_a_hidden_worker_cap() {
+        use codewhale_config::FleetExecConfig;
         use codewhale_engine::fleet::executor::build_worker_exec_command_with_launch_spec;
         use codewhale_engine::fleet::worker_runtime::fleet_task_to_worker_spec_with_profiles;
-        use codewhale_config::FleetExecConfig;
         use codewhale_protocol::fleet::{FleetHostSpec, FleetTaskSpec, FleetWorkerSpec};
 
         let exec = FleetExecConfig::default();
@@ -1438,7 +1441,8 @@
             assert_eq!(args.max_tool_calls, None);
             // Follow omission beyond argv through the real CLI resolver. This
             // previously installed 200 despite correct unbounded launch args.
-            let turn = codewhale_engine::core::turn::TurnContext::new(exec_max_steps(args.max_turns));
+            let turn =
+                codewhale_engine::core::turn::TurnContext::new(exec_max_steps(args.max_turns));
             assert_eq!(turn.step_limit(), expected);
             assert_eq!(turn.stop_diagnostics.effective_max_steps, expected);
         }

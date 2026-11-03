@@ -426,8 +426,7 @@ async fn idle_subagent_delivery_releases_claim_when_route_fails_before_recording
     use crate::tools::subagent::SubAgentCompletion;
 
     let workspace = tempdir().expect("tempdir");
-    let api_config = Config::default()
-    .with_legacy_root(
+    let api_config = Config::default().with_legacy_root(
         Some("test-key".to_string()),
         Some("http://127.0.0.1:1/v1".to_string()),
     );
@@ -508,6 +507,7 @@ fn subagent_mailbox_keeps_lifecycle_events_reliable() {
     ));
     assert!(!subagent_mailbox_message_is_best_effort(
         &MailboxMessage::TokenUsage {
+            record: None,
             agent_id: "agent_a".to_string(),
             source_id: "response-a".to_string(),
             route: Box::new(crate::cost_status::EffectiveRouteEnvelope::capture(
@@ -603,6 +603,7 @@ fn subagent_mailbox_never_samples_lifecycle_or_usage_events() {
     assert!(subagent_mailbox_best_effort_send_permitted(
         &mut last_sent_at,
         &MailboxMessage::TokenUsage {
+            record: None,
             agent_id: "agent_a".to_string(),
             source_id: "response-a".to_string(),
             route: Box::new(crate::cost_status::EffectiveRouteEnvelope::capture(

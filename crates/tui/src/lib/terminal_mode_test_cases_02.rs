@@ -40,6 +40,8 @@ fn review_failure_after_publication_preserves_all_usage_and_post_state() {
         assert_eq!(payload["success"], false);
         assert_eq!(payload["complete"], false);
         assert_eq!(payload["publication"], publication.as_str());
+        assert_eq!(payload["usage_scope"], "completed_review_passes");
+        assert_eq!(payload["usage_coverage"], "incomplete");
         assert_eq!(payload["usage"]["input_tokens"], 55);
         assert_eq!(payload["usage"]["output_tokens"], 13);
         assert_eq!(payload["usage"]["reasoning_tokens"], 5);
@@ -88,6 +90,7 @@ async fn review_provider_flag_pins_route_for_multi_route_model() {
         &resolve_review_model(&inferred_config, inferred.model.as_deref()),
         "review diff",
         inferred_force,
+        None,
     )
     .await
     .expect_err("a model offered by two configured routes must hard-error");
@@ -120,6 +123,7 @@ async fn review_provider_flag_pins_route_for_multi_route_model() {
         &resolve_review_model(&pinned_config, pinned.model.as_deref()),
         "review diff",
         pinned_force,
+        None,
     )
     .await
     .expect("pinned review route");
@@ -155,6 +159,7 @@ async fn review_provider_flag_pins_route_for_multi_route_model() {
         &resolve_review_model(&custom_config, pinned_custom.model.as_deref()),
         "review diff",
         custom_force,
+        None,
     )
     .await
     .expect("pinned custom review route");
@@ -820,7 +825,8 @@ fn pr_review_unreviewed_note_names_budget_stops_and_plan_skips() {
     assert!(note.contains("a/b.txt b/b.txt"), "{note}");
     assert!(note.contains("a/c.txt b/c.txt"), "{note}");
     // A complete plan with every pass done names nothing.
-    let complete = codewhale_engine::tools::review::plan_pr_review(&diff, &view, max_chars, 3).unwrap();
+    let complete =
+        codewhale_engine::tools::review::plan_pr_review(&diff, &view, max_chars, 3).unwrap();
     assert_eq!(
         pr_review_unreviewed_note(Some(&complete), 3),
         "no planned file was left unread"
@@ -831,7 +837,8 @@ fn pr_review_unreviewed_note_names_budget_stops_and_plan_skips() {
 async fn actual_cli_review_report_host_matches_legacy_and_core_keeps_inline_authority() {
     let _home = crate::test_support::SealedHome::new();
     let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(false);
-    let Some(node) = codewhale_engine::extension_host::test_support::node_for_tests("cli_review_report_parity")
+    let Some(node) =
+        codewhale_engine::extension_host::test_support::node_for_tests("cli_review_report_parity")
     else {
         return;
     };
@@ -844,8 +851,9 @@ async fn actual_cli_review_report_host_matches_legacy_and_core_keeps_inline_auth
             ..Default::default()
         },
     ));
-    let _manager =
-        codewhale_engine::extension_host::TestManagerGuard::install(std::sync::Arc::clone(&manager));
+    let _manager = codewhale_engine::extension_host::TestManagerGuard::install(
+        std::sync::Arc::clone(&manager),
+    );
     let mut flags = codewhale_runtime::features::Features::with_defaults();
     flags.enable(codewhale_runtime::features::Feature::ReviewHost);
     let context = codewhale_engine::tools::spec::ToolContext::new(root.path()).with_features(flags);
@@ -897,9 +905,10 @@ async fn actual_cli_review_report_host_matches_legacy_and_core_keeps_inline_auth
             .unwrap(),
         "plain prose"
     );
-    let prompt = codewhale_engine::tools::review_host::interactive(7, &view, &review_test_diff(), &context)
-        .await
-        .unwrap();
+    let prompt =
+        codewhale_engine::tools::review_host::interactive(7, &view, &review_test_diff(), &context)
+            .await
+            .unwrap();
     assert_eq!(prompt, format_pr_prompt(7, &view, &review_test_diff()));
     manager.shutdown().await;
 }
@@ -1035,6 +1044,7 @@ async fn configured_workflow_default_keeps_named_custom_route() {
         &model,
         "Run a checked-in Workflow through the host runtime",
         true,
+        None,
     )
     .await
     .expect("configured workflow route");
@@ -1052,7 +1062,8 @@ async fn configured_workflow_default_keeps_named_custom_route() {
         execution.active_route_base_url(),
         "http://127.0.0.1:18181/v1"
     );
-    let client = codewhale_engine::client::CodewhaleClient::new(&execution).expect("workflow client");
+    let client =
+        codewhale_engine::client::CodewhaleClient::new(&execution).expect("workflow client");
     assert_eq!(client.base_url(), "http://127.0.0.1:18181/v1");
 }
 

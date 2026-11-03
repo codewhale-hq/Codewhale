@@ -305,7 +305,16 @@ async fn test_preset(app: &mut App, config: &Config, preset: RouterPreset) {
             let mut lines = vec![router_summary(router, locale)];
             // Captured before the call, like any background provider request.
             let cost_scope = codewhale_engine::cost_status::scope_token();
-            match codewhale_engine::model_routing::test_auto_router(&candidate).await {
+            let origin = app
+                .session_write_receipt
+                .as_ref()
+                .and_then(|source| source.usage_origin(cost_scope).ok());
+            if origin.is_none() {
+                app.status_message =
+                    Some("Router test has no admitted session accounting origin".to_string());
+                return;
+            }
+            match codewhale_engine::model_routing::test_auto_router(&candidate, origin).await {
                 Ok((selection, latency_ms)) => {
                     // The test call is real spend: settle it into session
                     // cost exactly as a turn's routing call is settled.

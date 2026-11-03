@@ -70,7 +70,7 @@ const SESSION_GOALS_DIR: &str = ".goals";
 const CURRENT_SESSION_GOAL_SCHEMA_VERSION: u32 = 2;
 const MAX_SESSION_GOAL_OBJECTIVE_CHARS: usize = 8_192;
 const MAX_SESSION_GOAL_FILE_BYTES: u64 = 64 * 1_024;
-pub const CURRENT_SESSION_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SESSION_SCHEMA_VERSION: u32 = 2;
 pub(crate) const SESSION_METADATA_READ_LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +200,84 @@ enum SessionWriteState {
 }
 
 impl SessionWriteReceipt {
+    fn session_scope(&self, require_open: bool) -> io::Result<(PathBuf, String)> {
+        let predecessor = match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            SessionWriteState::Observed(base) => {
+                return Ok((
+                    base.observation.sessions_dir.clone(),
+                    base.observation.session_id.clone(),
+                ));
+            }
+            SessionWriteState::Pending { closed: true, .. } if require_open => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "session producer was refused",
+                ));
+            }
+            SessionWriteState::Pending {
+                result: Some(Err(_)),
+                acknowledgement_required: true,
+                ..
+            } if require_open => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "session checkpoint acknowledgement failed",
+                ));
+            }
+            SessionWriteState::Pending {
+                result: Some(Ok(publication)),
+                ..
+            } => {
+                return Ok((
+                    publication.observation.sessions_dir.clone(),
+                    publication.observation.session_id.clone(),
+                ));
+            }
+            SessionWriteState::Pending { predecessor, .. } => predecessor.clone(),
+        };
+        predecessor.session_scope(require_open)
+    }
+
+    pub fn usage_origin(
+        &self,
+        scope: crate::cost_status::CostScopeToken,
+    ) -> io::Result<crate::cost_status::NativeUsageOrigin> {
+        let (store, session) = self.session_scope(true)?;
+        Ok(crate::cost_status::NativeUsageOrigin::session(
+            scope, store, session,
+        ))
+    }
+
+    pub fn project_usage_record(
+        &self,
+        scope: crate::cost_status::CostScopeToken,
+        record: &crate::cost_status::RuntimeUsageRecord,
+        cost: &mut SessionCostSnapshot,
+    ) -> io::Result<Option<(u64, u64)>> {
+        if !record.has_captured_origin() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "usage projection has no captured native origin",
+            ));
+        }
+        if record.is_acknowledged() && !record.has_live_projection() {
+            return Ok(None);
+        }
+        let (store, session) = self.session_scope(false)?;
+        if !record.matches_session_projection(&store, &session)? {
+            return Ok(None);
+        }
+        let mut candidate = cost.clone();
+        let delta = candidate.project_usage_record(record)?;
+        crate::cost_status::acknowledge_usage_projection(scope, record)?;
+        *cost = candidate;
+        Ok(Some(delta))
+    }
+
     fn from_base(base: SessionPublicationBase) -> Self {
         Self(Arc::new(Mutex::new(SessionWriteState::Observed(base))))
     }
@@ -599,7 +677,7 @@ pub(crate) fn read_session_reference_bytes(path: &Path) -> io::Result<Vec<u8>> {
 
 const CURRENT_QUEUE_SCHEMA_VERSION: u32 = 1;
 const LATE_USAGE_DIR: &str = ".late-usage";
-const CURRENT_LATE_USAGE_SCHEMA_VERSION: u32 = 1;
+const CURRENT_LATE_USAGE_SCHEMA_VERSION: u32 = 2;
 const MAX_LATE_USAGE_UNRESOLVED_RECORDS_PER_SESSION: usize = 64;
 const MAX_LATE_USAGE_LEDGER_BYTES: u64 = 1024 * 1024;
 const LATE_USAGE_DELETED: &[u8] = b"codewhale-session-deleted-v1\n";
@@ -629,9 +707,45 @@ struct LateUsageRecord {
     reason: crate::cost_status::RuntimeUsageMissingReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     decision: Option<crate::cost_status::RuntimeDecisionReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    settlement: Option<crate::cost_status::UsageSourceRevision>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    diagnostic_only: bool,
 }
 
 impl LateUsageRecord {
+    fn runtime_record(&self) -> crate::cost_status::RuntimeUsageRecord {
+        let mut record = crate::cost_status::RuntimeUsageRecord::legacy(
+            self.source_fingerprint.clone(),
+            crate::cost_status::EffectiveRouteUsage {
+                route: self.route.clone(),
+                usage: self.usage.clone().unwrap_or_default(),
+            },
+        );
+        record.settlement = self.settlement.clone();
+        record
+    }
+
+    fn unresolved(&self) -> bool {
+        if self.diagnostic_only {
+            return false;
+        }
+        self.settlement.as_ref().map_or_else(
+            || {
+                self.usage
+                    .as_ref()
+                    .is_none_or(|usage| *usage == codewhale_models::Usage::default())
+            },
+            |revision| {
+                matches!(
+                    revision.coverage,
+                    crate::llm_client::ProviderUsageCoverage::Missing
+                        | crate::llm_client::ProviderUsageCoverage::Incomplete
+                )
+            },
+        )
+    }
+
     fn captured(
         turn_id: &str,
         source_id: &str,
@@ -649,6 +763,8 @@ impl LateUsageRecord {
                 .cloned(),
             reason,
             decision: decision.map(crate::cost_status::RuntimeDecisionReceipt::sanitized),
+            settlement: None,
+            diagnostic_only: false,
         }
     }
 }
@@ -680,7 +796,7 @@ fn is_sha256_fingerprint(value: &str) -> bool {
 }
 
 const fn default_session_schema_version() -> u32 {
-    CURRENT_SESSION_SCHEMA_VERSION
+    1
 }
 
 const fn default_queue_schema_version() -> u32 {
@@ -1244,6 +1360,8 @@ pub struct SessionCostSnapshot {
     /// changing these receipts or reading the full transcript.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub usage_source_fingerprints: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accounted_usage_sources: BTreeMap<String, crate::cost_status::UsageSourceContribution>,
     #[serde(
         default,
         skip_serializing_if = "BTreeMap::is_empty",
@@ -1260,6 +1378,184 @@ pub struct SessionCostSnapshot {
 }
 
 impl SessionCostSnapshot {
+    pub fn project_usage_record(
+        &mut self,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> io::Result<(u64, u64)> {
+        self.project_usage_record_inner(record, false)
+    }
+
+    pub(crate) fn project_usage_record_inner(
+        &mut self,
+        record: &crate::cost_status::RuntimeUsageRecord,
+        protected_ledger: bool,
+    ) -> io::Result<(u64, u64)> {
+        let key = crate::cost_status::usage_source_fingerprint(&record.source_id);
+        let previous = self.accounted_usage_sources.get(&key);
+        if let Some(previous) = previous {
+            previous.validate()?;
+        }
+        if previous.is_some_and(|previous| previous.record == *record) {
+            return Ok((0, 0));
+        }
+        if self.usage_source_fingerprints.contains(&key) && previous.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "legacy accounted usage has no provable prior contribution; correction retained",
+            ));
+        }
+        if !protected_ledger {
+            if !record.has_live_projection() {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "usage source has no admitted live publication",
+                ));
+            }
+            record.permits_replacement(previous.map(|previous| &previous.record))?;
+        } else {
+            record.validate()?;
+            if let Some(previous) = previous {
+                if !record.follows_protected(&previous.record)? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "protected usage projection changed route or spend owner",
+                    ));
+                }
+            }
+        }
+        let next = crate::cost_status::UsageSourceContribution::for_record(record);
+        let old_tokens =
+            previous.map_or(0, crate::cost_status::UsageSourceContribution::total_tokens);
+        let new_tokens = next.total_tokens();
+        let old_usd = previous.map_or(0.0, |previous| previous.usd);
+        let old_cny = previous.map_or(0.0, |previous| previous.cny);
+        let (usd, cny) = if next.owner() == crate::cost_status::UsageSpendOwner::Primary {
+            (&mut self.session_cost_usd, &mut self.session_cost_cny)
+        } else {
+            (&mut self.subagent_cost_usd, &mut self.subagent_cost_cny)
+        };
+        if *usd + f64::EPSILON < old_usd || *cny + f64::EPSILON < old_cny {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "usage projection is missing its prior monetary contribution",
+            ));
+        }
+        if previous.is_some_and(|old| {
+            self.priced_turns < old.priced
+                || self.unpriced_turns < old.unpriced
+                || self.cny_priced_turns < old.cny_priced
+                || self.cny_unpriced_turns < old.cny_unpriced
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "usage projection is missing its prior coverage contribution",
+            ));
+        }
+        let updated = crate::pricing::CostEstimate {
+            usd: (*usd - old_usd).max(0.0),
+            cny: (*cny - old_cny).max(0.0),
+        }
+        .saturating_add(crate::pricing::CostEstimate {
+            usd: next.usd,
+            cny: next.cny,
+        });
+        *usd = updated.usd;
+        *cny = updated.cny;
+        let replace = |total: &mut u32, old: u32, new: u32| {
+            *total = total.saturating_sub(old).saturating_add(new);
+        };
+        replace(
+            &mut self.priced_turns,
+            previous.map_or(0, |old| old.priced),
+            next.priced,
+        );
+        replace(
+            &mut self.unpriced_turns,
+            previous.map_or(0, |old| old.unpriced),
+            next.unpriced,
+        );
+        replace(
+            &mut self.cny_priced_turns,
+            previous.map_or(0, |old| old.cny_priced),
+            next.cny_priced,
+        );
+        replace(
+            &mut self.cny_unpriced_turns,
+            previous.map_or(0, |old| old.cny_unpriced),
+            next.cny_unpriced,
+        );
+        let audit = record.usage.route.audit_frozen(&record.usage.usage);
+        if let Some(provenance) = audit.provenance.as_ref() {
+            self.pricing_provenances
+                .insert(provenance.label().to_string());
+        }
+        if let Some(defect) = audit.live_pricing_defect.as_ref() {
+            let defects = if audit.estimate.is_some() {
+                &mut self.live_pricing_defects
+            } else {
+                &mut self.live_pricing_unusable_defects
+            };
+            defects.insert(defect.label().to_string());
+        }
+        if audit.counts_toward_money_coverage() {
+            self.unpriced_classes.extend(
+                audit
+                    .unpriced_classes
+                    .iter()
+                    .map(|class| class.label().to_string()),
+            );
+        }
+        self.route_receipts
+            .insert(record.usage.route.receipt(&audit));
+        if let Some(reason) = audit.unpriced_reason {
+            self.unpriced_reasons.insert(reason.label().to_string());
+            self.cny_unpriced_reasons.insert(reason.label().to_string());
+        }
+        if let Some(revision) = record.settlement.as_ref() {
+            if matches!(
+                revision.coverage,
+                crate::llm_client::ProviderUsageCoverage::Missing
+                    | crate::llm_client::ProviderUsageCoverage::Incomplete
+            ) {
+                self.unpriced_reasons
+                    .insert(revision.reason.label().to_string());
+                self.cny_unpriced_reasons
+                    .insert(revision.reason.label().to_string());
+                if self.missing_usage_sources.len() < crate::cost_status::MAX_MISSING_USAGE_SOURCES
+                    || self.missing_usage_sources.contains_key(&key)
+                {
+                    self.missing_usage_sources.insert(
+                        key.clone(),
+                        crate::cost_status::MissingUsageCoverage::for_route(
+                            &record.usage.route,
+                            revision.reason,
+                        ),
+                    );
+                } else {
+                    self.missing_usage_overflowed = true;
+                }
+            } else {
+                self.missing_usage_sources.remove(&key);
+            }
+        }
+        if self.unpriced_turns == 0 {
+            self.unpriced_reasons.remove("request_outcome_unknown");
+            self.unpriced_reasons
+                .remove("provider_success_missing_usage");
+        }
+        if self.cny_unpriced_turns == 0 {
+            self.cny_unpriced_reasons.remove("request_outcome_unknown");
+            self.cny_unpriced_reasons
+                .remove("provider_success_missing_usage");
+        }
+        self.usage_source_fingerprints.insert(key.clone());
+        self.accounted_usage_sources.insert(key, next);
+        let total = self.total_estimate();
+        self.displayed_cost_high_water_usd = self.displayed_cost_high_water_usd.max(total.usd);
+        self.displayed_cost_high_water_cny = self.displayed_cost_high_water_cny.max(total.cny);
+        Ok((old_tokens, new_tokens))
+    }
+
     fn absorb_late_background_cost(&mut self, pool: &crate::cost_status::PendingBackgroundCost) {
         let pool = crate::cost_status::project_missing_usage_ledger(
             &mut self.missing_usage_sources,
@@ -1300,7 +1596,6 @@ impl SessionCostSnapshot {
             .extend(pool.route_receipts.iter().cloned());
         self.usage_source_fingerprints
             .extend(pool.usage_source_fingerprints.iter().cloned());
-        self.coverage_recorded = true;
         let total = self.total_estimate();
         self.displayed_cost_high_water_usd = self.displayed_cost_high_water_usd.max(total.usd);
         self.displayed_cost_high_water_cny = self.displayed_cost_high_water_cny.max(total.cny);
@@ -1764,6 +2059,9 @@ impl SavedSession {
                 )
             })?
             .capture(owner)?;
+        if !self.metadata.cost.accounted_usage_sources.is_empty() {
+            self.schema_version = self.schema_version.max(CURRENT_SESSION_SCHEMA_VERSION);
+        }
         self.metadata.publication_id = receipt.publication_id();
         self.write_receipt = Some(receipt.clone());
         Ok(receipt)
@@ -2657,7 +2955,43 @@ impl SessionManager {
                 "late usage ledger exceeds its size bound",
             ));
         }
-        write_atomic(path, &bytes)
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no parent")
+        })?;
+        let name = path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no basename")
+        })?;
+        codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)?
+            .replace(&bytes)?;
+        Self::sync_late_usage_ledger(path)
+    }
+
+    fn sync_late_usage_ledger(path: &Path) -> io::Result<()> {
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no parent")
+        })?;
+        let name = path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "usage ledger has no basename")
+        })?;
+        let ledger = codewhale_util::files::WorkspaceFile::open_resolved_root(
+            parent,
+            Path::new(name),
+            false,
+        )?;
+        ledger.open_update(false, false)?.sync_all()?;
+        ledger.sync_parent()?;
+        #[cfg(unix)]
+        for directory in [parent, parent.parent().unwrap_or(parent)] {
+            if let (Some(ancestor), Some(name)) = (directory.parent(), directory.file_name()) {
+                codewhale_util::files::WorkspaceFile::open_resolved_root(
+                    ancestor,
+                    Path::new(name),
+                    false,
+                )?
+                .sync_parent()?;
+            }
+        }
+        Ok(())
     }
 
     fn load_late_usage_unlocked(path: &Path) -> io::Result<LateUsageLedger> {
@@ -2695,20 +3029,21 @@ impl SessionManager {
         }
         let ledger: LateUsageLedger = serde_json::from_slice(&raw)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if ledger.schema_version != CURRENT_LATE_USAGE_SCHEMA_VERSION
+        if !(1..=CURRENT_LATE_USAGE_SCHEMA_VERSION).contains(&ledger.schema_version)
+            || (ledger.schema_version < 2
+                && ledger
+                    .records
+                    .iter()
+                    .any(|record| record.settlement.is_some()))
             || ledger
                 .records
                 .iter()
-                .filter(|record| {
-                    record
-                        .usage
-                        .as_ref()
-                        .is_none_or(|usage| *usage == codewhale_models::Usage::default())
-                })
+                .filter(|record| record.unresolved())
                 .count()
                 > MAX_LATE_USAGE_UNRESOLVED_RECORDS_PER_SESSION
             || ledger.records.iter().any(|record| {
-                !is_sha256_fingerprint(&record.source_fingerprint)
+                record.runtime_record().validate().is_err()
+                    || !is_sha256_fingerprint(&record.source_fingerprint)
                     || !is_sha256_fingerprint(&record.turn_fingerprint)
                     || record.decision.as_ref().is_some_and(|r| !r.is_bounded())
             })
@@ -2731,6 +3066,8 @@ impl SessionManager {
         let mut lock = fd_lock::RwLock::new(lock_file);
         let _guard = lock.write()?;
         if Self::late_usage_is_deleted(&path)? {
+            Self::sync_late_usage_ledger(&path.with_extension("deleted"))?;
+            crate::cost_status::retire_session_usage_records(&self.sessions_dir, session_id)?;
             return Ok(None);
         }
         write().map(Some)
@@ -2786,9 +3123,18 @@ impl SessionManager {
         let _guard = lock.write()?;
         if Self::late_usage_is_deleted(&path)? {
             // Handled, rather than a failed sink that should queue a retry.
+            Self::sync_late_usage_ledger(&path.with_extension("deleted"))?;
             return Ok(true);
         }
-        let mut ledger = Self::load_late_usage_unlocked(&path)?;
+        self.persist_late_usage_record_admitted(&path, incoming)
+    }
+
+    fn persist_late_usage_record_admitted(
+        &self,
+        path: &Path,
+        incoming: LateUsageRecord,
+    ) -> io::Result<bool> {
+        let mut ledger = Self::load_late_usage_unlocked(path)?;
         let original = ledger.clone();
         let source_fingerprint = incoming.source_fingerprint.clone();
         if let Some(record) = ledger
@@ -2804,14 +3150,27 @@ impl SessionManager {
                     "late usage source changed its captured origin or route",
                 ));
             }
+            if record.settlement.is_some()
+                && record.usage != incoming.usage
+                && incoming.decision.is_none()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "serialized usage cannot replace a native source revision",
+                ));
+            }
             let mut changed = false;
-            if record
-                .usage
-                .as_ref()
-                .is_none_or(|usage| *usage == codewhale_models::Usage::default())
+            if record.settlement.is_none()
+                && record
+                    .usage
+                    .as_ref()
+                    .is_none_or(|usage| *usage == codewhale_models::Usage::default())
                 && let Some(usage) = incoming.usage.as_ref()
             {
                 record.usage = Some(usage.clone());
+                if !incoming.diagnostic_only {
+                    record.diagnostic_only = false;
+                }
                 changed = true;
             }
             if let Some(decision) = incoming.decision.as_ref() {
@@ -2834,12 +3193,7 @@ impl SessionManager {
             && ledger
                 .records
                 .iter()
-                .filter(|record| {
-                    record
-                        .usage
-                        .as_ref()
-                        .is_none_or(|usage| *usage == codewhale_models::Usage::default())
-                })
+                .filter(|record| record.unresolved())
                 .count()
                 == MAX_LATE_USAGE_UNRESOLVED_RECORDS_PER_SESSION
         {
@@ -2889,17 +3243,16 @@ impl SessionManager {
                 "decision receipt exceeds its bound",
             ));
         }
-        self.persist_late_usage_record(
-            session_id,
-            LateUsageRecord::captured(
-                turn_id,
-                &receipt.source_id,
-                &receipt.route,
-                receipt.usage.as_ref().filter(|_| receipt.usage_complete),
-                Some(receipt),
-                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-            ),
-        )
+        let mut incoming = LateUsageRecord::captured(
+            turn_id,
+            &receipt.source_id,
+            &receipt.route,
+            None,
+            Some(receipt),
+            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+        );
+        incoming.diagnostic_only = true;
+        self.persist_late_usage_record(session_id, incoming)
     }
 
     /// Read the bounded provider decision evidence from the existing origin ledger.
@@ -2916,6 +3269,202 @@ impl SessionManager {
             .collect())
     }
 
+    pub fn flush_pending_usage(&self, session_id: &str) -> io::Result<()> {
+        self.with_session_write_admission(session_id, || {
+            self.flush_pending_usage_admitted(session_id)
+        })
+        .map(|_| ())
+    }
+
+    fn flush_pending_usage_admitted(&self, session_id: &str) -> io::Result<()> {
+        for record in
+            crate::cost_status::retained_session_usage_records(&self.sessions_dir, session_id)
+        {
+            let Some((store, session, operation, scope)) = record.captured_session_origin()? else {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "retained usage lacks its native Session origin",
+                ));
+            };
+            if store != self.sessions_dir || session != session_id {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "retained usage belongs to another Session origin",
+                ));
+            }
+            if !record.is_acknowledged() {
+                self.persist_runtime_usage_record_admitted(session_id, &operation, &record)?;
+                record.acknowledge_persisted()?;
+                record.acknowledge_live_projection()?;
+                crate::cost_status::record_interactive_runtime_usage(scope, record.clone());
+            }
+            crate::cost_status::retire_session_usage_record(
+                &self.sessions_dir,
+                session_id,
+                &record,
+            );
+        }
+        Ok(())
+    }
+
+    pub fn persist_runtime_usage_record(
+        &self,
+        session_id: &str,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> io::Result<bool> {
+        if !record.has_native_producer() {
+            return self
+                .with_session_write_admission(session_id, || {
+                    let (path, _) = self.late_usage_paths(session_id)?;
+                    let ledger = Self::load_late_usage_unlocked(&path)?;
+                    if ledger
+                        .records
+                        .iter()
+                        .any(|old| !old.diagnostic_only && old.runtime_record() == *record)
+                    {
+                        Self::sync_late_usage_ledger(&path)?;
+                        return Ok(true);
+                    }
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "serialized usage cannot admit a new source or correction",
+                    ))
+                })
+                .map(|handled| handled.unwrap_or(true));
+        }
+        let (store, origin_session, operation) = record.session_destination()?;
+        if store != self.sessions_dir || origin_session != session_id {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "usage source belongs to another captured session origin",
+            ));
+        }
+        let handled = self.with_session_write_admission(session_id, || {
+            let handled =
+                self.persist_runtime_usage_record_admitted(session_id, &operation, record)?;
+            record.acknowledge_persisted()?;
+            record.acknowledge_live_projection()?;
+            Ok(handled)
+        })?;
+        if handled.is_none() {
+            record.acknowledge_persisted()?;
+        }
+        Ok(handled.unwrap_or(true))
+    }
+
+    pub(crate) fn persist_runtime_usage_record_admitted(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> io::Result<bool> {
+        let (path, _) = self.late_usage_paths(session_id)?;
+        let mut ledger = Self::load_late_usage_unlocked(&path)?;
+        let original = ledger.clone();
+        let key = crate::cost_status::usage_source_fingerprint(&record.source_id);
+        let index = ledger
+            .records
+            .iter()
+            .position(|old| old.source_fingerprint == key);
+        let previous = index.map(|index| &ledger.records[index]);
+        if previous.is_some_and(|old| {
+            old.turn_fingerprint != crate::cost_status::usage_source_fingerprint(turn_id)
+                || old.route != record.usage.route.sanitized_for_persistence()
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "usage source changed its captured origin or route",
+            ));
+        }
+        let previous_record = previous.filter(|old| !old.diagnostic_only).map(|old| {
+            let mut record = crate::cost_status::RuntimeUsageRecord::legacy(
+                old.source_fingerprint.clone(),
+                crate::cost_status::EffectiveRouteUsage {
+                    route: old.route.clone(),
+                    usage: old.usage.clone().unwrap_or_default(),
+                },
+            );
+            record.settlement = old.settlement.clone();
+            record
+        });
+        if !record.permits_replacement(previous_record.as_ref())? {
+            Self::sync_late_usage_ledger(&path)?;
+            return Ok(true);
+        }
+        let unresolved = record.settlement.as_ref().is_some_and(|revision| {
+            matches!(
+                revision.coverage,
+                crate::llm_client::ProviderUsageCoverage::Missing
+                    | crate::llm_client::ProviderUsageCoverage::Incomplete
+            )
+        });
+        if index.is_none()
+            && unresolved
+            && ledger.records.iter().filter(|old| old.unresolved()).count()
+                >= MAX_LATE_USAGE_UNRESOLVED_RECORDS_PER_SESSION
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "late usage unresolved-source capacity reached; exact receipt retained",
+            ));
+        }
+        let mut incoming = LateUsageRecord::captured(
+            turn_id,
+            &record.source_id,
+            &record.usage.route,
+            Some(&record.usage.usage),
+            None,
+            record.settlement.as_ref().map_or(
+                crate::cost_status::RuntimeUsageMissingReason::default(),
+                |revision| revision.reason,
+            ),
+        );
+        incoming.usage = Some(record.usage.usage.clone());
+        incoming.settlement = record.settlement.clone();
+        ledger.schema_version = CURRENT_LATE_USAGE_SCHEMA_VERSION;
+        if let Some(index) = index {
+            incoming.decision = ledger.records[index].decision.clone();
+            ledger.records[index] = incoming;
+        } else {
+            ledger.records.push(incoming);
+        }
+        Self::write_late_usage_candidate(&path, &original, &ledger)?;
+        Ok(true)
+    }
+
+    pub fn has_native_usage_records(&self, session_id: &str) -> io::Result<bool> {
+        self.with_session_write_admission(session_id, || {
+            let (path, _) = self.late_usage_paths(session_id)?;
+            Ok(Self::load_late_usage_unlocked(&path)?
+                .records
+                .iter()
+                .any(|record| record.settlement.is_some() && !record.diagnostic_only))
+        })?
+        .ok_or_else(Self::retired_session_write_error)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn persist_legacy_usage_admitted(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> io::Result<bool> {
+        let (path, _) = self.late_usage_paths(session_id)?;
+        self.persist_late_usage_record_admitted(
+            &path,
+            LateUsageRecord::captured(
+                turn_id,
+                &record.source_id,
+                &record.usage.route,
+                Some(&record.usage.usage),
+                None,
+                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+            ),
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn persist_late_runtime_usage(
         &self,
         session_id: &str,
@@ -3019,11 +3568,54 @@ impl SessionManager {
                     .cost
                     .cny_unpriced_reasons
                     .insert(LATE_USAGE_UNAVAILABLE_REASON.to_string());
-                metadata.cost.coverage_recorded = true;
                 return;
             }
         };
         for mut record in ledger.records {
+            if record.diagnostic_only {
+                if let Some(receipt) = record
+                    .decision
+                    .as_ref()
+                    .filter(|receipt| receipt.is_bounded())
+                {
+                    metadata
+                        .cost
+                        .route_receipts
+                        .insert(receipt.diagnostic_receipt());
+                }
+                continue;
+            }
+            if record.settlement.is_some() {
+                let mut source = crate::cost_status::RuntimeUsageRecord::legacy(
+                    record.source_fingerprint.clone(),
+                    crate::cost_status::EffectiveRouteUsage {
+                        route: record.route.clone(),
+                        usage: record.usage.clone().unwrap_or_default(),
+                    },
+                );
+                source.settlement = record.settlement.clone();
+                match metadata.cost.project_usage_record_inner(&source, true) {
+                    Ok((old, new)) => {
+                        metadata.total_tokens = metadata
+                            .total_tokens
+                            .saturating_sub(old)
+                            .saturating_add(new)
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "saved usage projection refused an unprovable correction");
+                        metadata
+                            .cost
+                            .unpriced_reasons
+                            .insert("usage_correction_unverified".into());
+                        metadata
+                            .cost
+                            .cny_unpriced_reasons
+                            .insert("usage_correction_unverified".into());
+                        metadata.cost.missing_usage_overflowed = true;
+                    }
+                }
+                continue;
+            }
             if record.usage.as_ref() == Some(&codewhale_models::Usage::default()) {
                 record.usage = None;
             }
@@ -3041,13 +3633,13 @@ impl SessionManager {
             let source_id = format!("late:{}", record.source_fingerprint);
             let mut pending = if let Some(usage) = record.usage.as_ref() {
                 crate::cost_status::background_cost_for_runtime_usage(
-                    &crate::cost_status::RuntimeUsageRecord {
+                    &crate::cost_status::RuntimeUsageRecord::legacy(
                         source_id,
-                        usage: crate::cost_status::EffectiveRouteUsage {
+                        crate::cost_status::EffectiveRouteUsage {
                             route: record.route,
                             usage: usage.clone(),
                         },
-                    },
+                    ),
                 )
             } else {
                 crate::cost_status::background_cost_for_runtime_drop(
@@ -3114,7 +3706,6 @@ impl SessionManager {
                     .cost
                     .cny_unpriced_reasons
                     .insert("late_usage_ledger_overflow".to_string());
-                metadata.cost.coverage_recorded = true;
             }
         }
     }
@@ -3223,6 +3814,9 @@ impl SessionManager {
         persisted: &SessionWriteMetadata,
         preserve_lifecycle: bool,
     ) -> io::Result<()> {
+        if !session.metadata.cost.accounted_usage_sources.is_empty() {
+            session.schema_version = session.schema_version.max(CURRENT_SESSION_SCHEMA_VERSION);
+        }
         for metadata in persisted.saved.iter().chain(persisted.checkpoint.iter()) {
             Self::resolve_runtime_binding(session, Some(metadata))?;
         }
@@ -3423,6 +4017,7 @@ impl SessionManager {
         let result = self
             .with_session_write_admission(&id, || {
                 let base = self.validate_publication_admitted(&session, &receipt)?;
+                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 session.make_storage_compatible();
                 let checkpoint_receipt = Self::publication_receipt(&session)?;
@@ -3465,6 +4060,7 @@ impl SessionManager {
             .with_session_write_admission(&id, || {
                 let base = self.validate_publication_admitted(&session, &receipt)?;
                 Self::validate_checkpoint_authority(&base)?;
+                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 Self::prepare_session_write(&mut session, &persisted, true)?;
                 let session_path = self.validated_session_path(&id)?;
@@ -3546,6 +4142,7 @@ impl SessionManager {
                         ));
                     }
                 }
+                self.flush_pending_usage_admitted(&id)?;
                 let persisted = self.load_session_write_metadata(&id)?;
                 session.make_storage_compatible();
                 let checkpoint_receipt = Self::publication_receipt(&session)?;

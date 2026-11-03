@@ -296,6 +296,25 @@ pub(crate) async fn run_exec_agent(
         || fleet_capture.is_some()
         || output_format == ExecOutputFormat::StreamJson;
     let mut exec_session_manager = fleet_capture.map(|(_, manager)| Arc::new(manager));
+    let _exec_operation_lease = if exec_is_fresh {
+        let (manager, source, lease) = admit_cli_saved_operation(
+            exec_session_manager.clone(),
+            exec_session_id.clone(),
+            exec_session_workspace.clone(),
+            model.to_string(),
+            config
+                .active_provider_identity()
+                .map_err(anyhow::Error::msg)?,
+            prompt.to_string(),
+        )
+        .await
+        .context("could not admit exec's saved accounting operation")?;
+        exec_session_manager = Some(manager);
+        exec_write_receipt = Some(source);
+        Some(lease)
+    } else {
+        None
+    };
     let mut open_exec_session_manager = || -> Result<Arc<SessionManager>> {
         if exec_session_manager.is_none() {
             exec_session_manager = Some(Arc::new(
@@ -309,13 +328,21 @@ pub(crate) async fn run_exec_agent(
         ))
     };
     if should_persist_session {
-        let manager = open_exec_session_manager()?;
-        if exec_is_fresh {
-            exec_write_receipt = Some(manager.expect_absent_session(&exec_session_id)?);
-        }
+        open_exec_session_manager()?;
     }
 
-    let route = resolve_cli_exec_route(config, model, prompt, force_configured_route).await?;
+    let accounting_origin = exec_write_receipt
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("exec has no admitted original session source"))?
+        .usage_origin(codewhale_engine::cost_status::scope_token())?;
+    let route = resolve_cli_exec_route(
+        config,
+        model,
+        prompt,
+        force_configured_route,
+        Some(accounting_origin.clone()),
+    )
+    .await?;
     let execution_config = config_for_cli_route(config, &route)?;
     codewhale_engine::provider_lake::refresh_account_catalog_before_first_request(
         &execution_config,
@@ -497,6 +524,7 @@ pub(crate) async fn run_exec_agent(
         codewhale_engine::tools::shell::new_shared_shell_manager(workspace.clone());
     let exec_automations = exec_automation_services(fleet_authority_active || one_shot)?;
     let runtime_services = codewhale_engine::tools::spec::RuntimeToolServices {
+        accounting_origin: Some(accounting_origin),
         shell_manager: Some(exec_shell_manager.clone()),
         persist_services_enabled,
         automations: exec_automations,
@@ -1774,6 +1802,8 @@ mod tests {
             ..Usage::default()
         };
         Event::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,

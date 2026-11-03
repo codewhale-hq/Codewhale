@@ -353,10 +353,7 @@ pub(super) fn persist_settled_session_on_shutdown(
 
 #[derive(Debug)]
 struct TranslationAccountingContext {
-    cost_scope: codewhale_engine::cost_status::CostScopeToken,
-    origin_session_id: Option<String>,
-    origin_turn_id: Option<String>,
-    source_id: String,
+    source: codewhale_engine::cost_status::NativeUsageSource,
 }
 
 struct SettledTranslation {
@@ -366,18 +363,16 @@ struct SettledTranslation {
 
 impl TranslationAccountingContext {
     fn capture(app: &App, kind: &str, sequence: u64) -> Self {
-        let raw_source = format!(
-            "translation:{}:{}:{kind}:{sequence}",
-            app.current_session_id.as_deref().unwrap_or("no-session"),
-            app.runtime_turn_id.as_deref().unwrap_or("no-turn")
-        );
+        let origin = app.session_write_receipt.as_ref().and_then(|receipt| {
+            receipt
+                .usage_origin(codewhale_engine::cost_status::scope_token())
+                .ok()
+        });
         Self {
-            cost_scope: codewhale_engine::cost_status::scope_token(),
-            origin_session_id: app.current_session_id.clone(),
-            origin_turn_id: app.runtime_turn_id.clone(),
-            source_id: format!(
-                "translation:{}",
-                codewhale_engine::cost_status::usage_source_fingerprint(&raw_source)
+            source: codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
+                format!("translation:{kind}:{sequence}:{}", uuid::Uuid::new_v4()),
+                codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+                origin,
             ),
         }
     }
@@ -386,61 +381,19 @@ impl TranslationAccountingContext {
         self,
         response: anyhow::Result<codewhale_engine::client::TranslationProviderResponse>,
     ) -> SettledTranslation {
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                return SettledTranslation {
-                    translated: Err(error),
-                    usage: None,
-                };
-            }
-        };
-        if let Some(usage) = response.usage.as_ref() {
-            if let (Some(session_id), Some(turn_id)) = (
-                self.origin_session_id.as_deref(),
-                self.origin_turn_id.as_deref(),
-            ) {
-                codewhale_engine::usage_persistence::report_effective_route_for_interactive_origin(
-                    self.cost_scope,
-                    session_id,
-                    turn_id,
-                    &self.source_id,
-                    &response.route,
-                    usage,
-                );
-            } else {
-                codewhale_engine::cost_status::report_effective_route_for_runtime(
-                    self.cost_scope,
-                    None,
-                    &self.source_id,
-                    &response.route,
-                    usage,
-                );
-            }
-        } else {
-            if let (Some(session_id), Some(turn_id)) = (
-                self.origin_session_id.as_deref(),
-                self.origin_turn_id.as_deref(),
-            ) {
-                codewhale_engine::usage_persistence::report_unreceipted_for_interactive_origin(
-                    self.cost_scope,
-                    session_id,
-                    turn_id,
-                    &self.source_id,
-                    &response.route,
-                );
-            } else {
-                codewhale_engine::cost_status::report_unreceipted_provider_success(
-                    self.cost_scope,
-                    None,
-                    &self.source_id,
-                    &response.route,
-                );
-            }
-        }
-        SettledTranslation {
-            translated: response.translated,
-            usage: response.usage,
+        match response {
+            Ok(response) => SettledTranslation {
+                translated: response.translated,
+                usage: if response.accounting.is_some() {
+                    None
+                } else {
+                    response.usage
+                },
+            },
+            Err(error) => SettledTranslation {
+                translated: Err(error),
+                usage: None,
+            },
         }
     }
 }
@@ -1348,6 +1301,8 @@ pub async fn run_tui(
         app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
     }
     app.runtime_services = RuntimeToolServices {
+        accounting_origin: None,
+
         shell_manager: Some(shell_manager),
         persist_services_enabled: false,
         task_manager: Some(task_manager.clone()),
@@ -2960,15 +2915,21 @@ pub(crate) async fn run_event_loop(
                             let target_language =
                                 app.ui_locale.translation_target_name().to_string();
                             tokio::spawn(async move {
-                                let settled = accounting.settle(
+                                let response = if !accounting.source.has_captured_origin() {
+                                    Err(anyhow::anyhow!(
+                                        "Translation has no admitted session accounting origin"
+                                    ))
+                                } else {
                                     client
                                         .translate_with_usage(
                                             &original_text,
                                             &translation_model,
                                             &target_language,
+                                            &accounting.source,
                                         )
-                                        .await,
-                                );
+                                        .await
+                                };
+                                let settled = accounting.settle(response);
                                 let _ = tx.send(TranslationEvent::AssistantMessage {
                                     origin_session_fingerprint,
                                     origin_turn_fingerprint,
@@ -3076,15 +3037,21 @@ pub(crate) async fn run_event_loop(
                                 let target_language =
                                     app.ui_locale.translation_target_name().to_string();
                                 tokio::spawn(async move {
-                                    let settled = accounting.settle(
+                                    let response = if !accounting.source.has_captured_origin() {
+                                        Err(anyhow::anyhow!(
+                                            "Translation has no admitted session accounting origin"
+                                        ))
+                                    } else {
                                         client
                                             .translate_with_usage(
                                                 &original_thinking,
                                                 &translation_model,
                                                 &target_language,
+                                                &accounting.source,
                                             )
-                                            .await,
-                                    );
+                                            .await
+                                    };
+                                    let settled = accounting.settle(response);
                                     let _ = tx.send(TranslationEvent::Thinking {
                                         origin_session_fingerprint,
                                         origin_turn_fingerprint,
@@ -3389,6 +3356,7 @@ pub(crate) async fn run_event_loop(
                         compaction_id,
                         usage,
                         parent_route_usage,
+                        source_accounting,
                         routed_usage_dropped_records,
                         status,
                         error,
@@ -3540,47 +3508,54 @@ pub(crate) async fn run_event_loop(
                             codewhale_runtime::retry_status::clear();
                             crate::tui::notifications::stop_title_animation_quietly();
                         }
-                        let turn_tokens = usage.input_tokens.saturating_add(usage.output_tokens);
-                        app.session.total_tokens =
-                            app.session.total_tokens.saturating_add(turn_tokens);
-                        app.session.total_conversation_tokens = app
-                            .session
-                            .total_conversation_tokens
-                            .saturating_add(turn_tokens);
-                        app.session.total_input_tokens = app
-                            .session
-                            .total_input_tokens
-                            .saturating_add(usage.input_tokens);
-                        app.session.total_output_tokens = app
-                            .session
-                            .total_output_tokens
-                            .saturating_add(usage.output_tokens);
-                        // Only accumulate cache telemetry when the provider
-                        // reported at least one cache class. Use pricing's
-                        // canonical mutually-exclusive hit/miss/write split so
-                        // cache writes are never counted again as misses.
-                        if usage.prompt_cache_hit_tokens.is_some()
-                            || usage.prompt_cache_miss_tokens.is_some()
-                            || usage.prompt_cache_write_tokens.is_some()
-                        {
-                            let classes =
-                                codewhale_engine::pricing::token_usage_for_pricing(&usage);
-                            let hit_tokens = u32::try_from(classes.cache_read).unwrap_or(u32::MAX);
-                            let miss_tokens = u32::try_from(classes.input).unwrap_or(u32::MAX);
-                            let write_tokens =
-                                u32::try_from(classes.cache_write).unwrap_or(u32::MAX);
-                            app.session.total_cache_hit_tokens = app
+                        if source_accounting {
+                            let pending = codewhale_engine::cost_status::drain();
+                            app.absorb_pending_background_cost(&pending);
+                        } else {
+                            let turn_tokens =
+                                usage.input_tokens.saturating_add(usage.output_tokens);
+                            app.session.total_tokens =
+                                app.session.total_tokens.saturating_add(turn_tokens);
+                            app.session.total_conversation_tokens = app
                                 .session
-                                .total_cache_hit_tokens
-                                .saturating_add(hit_tokens);
-                            app.session.total_cache_miss_tokens = app
+                                .total_conversation_tokens
+                                .saturating_add(turn_tokens);
+                            app.session.total_input_tokens = app
                                 .session
-                                .total_cache_miss_tokens
-                                .saturating_add(miss_tokens);
-                            app.session.total_cache_write_tokens = app
+                                .total_input_tokens
+                                .saturating_add(usage.input_tokens);
+                            app.session.total_output_tokens = app
                                 .session
-                                .total_cache_write_tokens
-                                .saturating_add(write_tokens);
+                                .total_output_tokens
+                                .saturating_add(usage.output_tokens);
+                            // Only accumulate cache telemetry when the provider
+                            // reported at least one cache class. Use pricing's
+                            // canonical mutually-exclusive hit/miss/write split so
+                            // cache writes are never counted again as misses.
+                            if usage.prompt_cache_hit_tokens.is_some()
+                                || usage.prompt_cache_miss_tokens.is_some()
+                                || usage.prompt_cache_write_tokens.is_some()
+                            {
+                                let classes =
+                                    codewhale_engine::pricing::token_usage_for_pricing(&usage);
+                                let hit_tokens =
+                                    u32::try_from(classes.cache_read).unwrap_or(u32::MAX);
+                                let miss_tokens = u32::try_from(classes.input).unwrap_or(u32::MAX);
+                                let write_tokens =
+                                    u32::try_from(classes.cache_write).unwrap_or(u32::MAX);
+                                app.session.total_cache_hit_tokens = app
+                                    .session
+                                    .total_cache_hit_tokens
+                                    .saturating_add(hit_tokens);
+                                app.session.total_cache_miss_tokens = app
+                                    .session
+                                    .total_cache_miss_tokens
+                                    .saturating_add(miss_tokens);
+                                app.session.total_cache_write_tokens = app
+                                    .session
+                                    .total_cache_write_tokens
+                                    .saturating_add(write_tokens);
+                            }
                         }
                         app.session.last_prompt_tokens = Some(usage.input_tokens);
                         app.session.last_completion_tokens = Some(usage.output_tokens);
@@ -3653,7 +3628,10 @@ pub(crate) async fn run_event_loop(
                             .as_ref()
                             .and_then(|turn| turn.route.as_ref())
                             .and_then(codewhale_engine::core::events::TurnRoute::cost_envelope)
-                            .filter(|_| parent_route_usage != codewhale_models::Usage::default())
+                            .filter(|_| {
+                                !source_accounting
+                                    && parent_route_usage != codewhale_models::Usage::default()
+                            })
                             .map(|route| route.audit(&parent_route_usage));
                         app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
                             provider,
@@ -4873,7 +4851,9 @@ pub(crate) async fn run_event_loop(
                                 >(value)
                                 .ok()
                             });
-                            if let Some(source) = receipt["source_id"].as_str() {
+                            if receipt["source_accounting"].as_bool() != Some(true)
+                                && let Some(source) = receipt["source_id"].as_str()
+                            {
                                 if receipt["usage_reported"].as_bool() == Some(true) {
                                     app.session.subagent_usage_sources.insert(
                                         codewhale_engine::cost_status::usage_source_fingerprint(
@@ -4898,6 +4878,18 @@ pub(crate) async fn run_event_loop(
                                     });
                                     app.absorb_pending_background_cost(&pool);
                                 }
+                            }
+                            if let Some(error) = receipt["accounting_error"].as_str() {
+                                app.session
+                                    .cost_unpriced_reasons
+                                    .insert("usage_settlement_unacknowledged".into());
+                                app.session
+                                    .cost_cny_unpriced_reasons
+                                    .insert("usage_settlement_unacknowledged".into());
+                                app.session.missing_usage_overflowed = true;
+                                app.status_message = Some(format!(
+                                    "Provider usage settlement is uncertain: {error}"
+                                ));
                             }
                             let leaf = app.session_journal.leaf_id.clone();
                             app.session_journal.append(
@@ -4961,12 +4953,14 @@ pub(crate) async fn run_event_loop(
                         }
                     }
                     EngineEvent::TurnUsage {
+                        accounting,
                         max_output_tokens: _,
                         usage,
                         duration_ms,
                         first_token_ms,
                         request_ms,
                         finish_reason: _,
+                        ..
                     } => {
                         // Per-step usage receipt. The session metrics strip
                         // folds each model call's timing (stream time, TTFT,
@@ -4999,16 +4993,21 @@ pub(crate) async fn run_event_loop(
                         // this and lands the authoritative cumulative price
                         // through the same audit path, so nothing counts
                         // twice and the two can never disagree on route.
-                        let step_cost = app
-                            .active_turn
-                            .as_ref()
-                            .and_then(|turn| turn.route.as_ref())
-                            .and_then(codewhale_engine::core::events::TurnRoute::cost_envelope)
-                            .and_then(|route| route.audit(&usage).estimate);
-                        if let Some(cost) = step_cost {
-                            app.accrue_pending_turn_cost_estimate(cost);
+                        if accounting.is_none() {
+                            let step_cost = app
+                                .active_turn
+                                .as_ref()
+                                .and_then(|turn| turn.route.as_ref())
+                                .and_then(codewhale_engine::core::events::TurnRoute::cost_envelope)
+                                .and_then(|route| route.audit(&usage).estimate);
+                            if let Some(cost) = step_cost {
+                                app.accrue_pending_turn_cost_estimate(cost);
+                            }
+                            app.session.accrue_pending_turn_usage(&usage);
+                        } else {
+                            let pending = codewhale_engine::cost_status::drain();
+                            app.absorb_pending_background_cost(&pending);
                         }
-                        app.session.accrue_pending_turn_usage(&usage);
                     }
                     EngineEvent::RoutedTurnUsage {
                         usage,
@@ -8669,91 +8668,131 @@ mod session_boot_event_tests {
     #[test]
     fn assistant_and_thinking_translation_usage_each_accrue_once() {
         let _scope = codewhale_engine::cost_status::test_scope();
+        let directory = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(directory.path().to_path_buf()).unwrap();
         let mut app = test_app();
         app.current_session_id = Some("session-translation".to_string());
         app.runtime_turn_id = Some("turn-translation".to_string());
+        app.session_write_receipt = Some(
+            manager
+                .expect_absent_session("session-translation")
+                .unwrap(),
+        );
         let usage_a = codewhale_models::Usage {
             input_tokens: 5,
             output_tokens: 2,
-            ..codewhale_models::Usage::default()
+            ..Default::default()
         };
         let usage_b = codewhale_models::Usage {
             input_tokens: 3,
             output_tokens: 1,
-            ..codewhale_models::Usage::default()
+            ..Default::default()
         };
-
-        let assistant = TranslationAccountingContext::capture(&app, "assistant", 1).settle(Ok(
-            codewhale_engine::client::TranslationProviderResponse {
+        let assistant = TranslationAccountingContext::capture(&app, "assistant", 1);
+        let record_a = assistant
+            .source
+            .reported(&translation_test_route(), &usage_a)
+            .unwrap();
+        manager
+            .persist_runtime_usage_record("session-translation", &record_a)
+            .unwrap();
+        let assistant =
+            assistant.settle(Ok(codewhale_engine::client::TranslationProviderResponse {
+                accounting: Some(record_a.clone()),
                 translated: Ok("助理".to_string()),
-                route: translation_test_route(),
+                route: record_a.usage.route.clone(),
                 usage: Some(usage_a.clone()),
-            },
-        ));
-        let thinking = TranslationAccountingContext::capture(&app, "thinking", 2).settle(Ok(
-            codewhale_engine::client::TranslationProviderResponse {
-                translated: Err(anyhow::anyhow!("incomplete: max_tokens")),
-                route: translation_test_route(),
-                usage: Some(usage_b.clone()),
-            },
-        ));
-
-        assert_eq!(assistant.usage.as_ref(), Some(&usage_a));
-        assert_eq!(thinking.usage.as_ref(), Some(&usage_b));
+            }));
+        let thinking = TranslationAccountingContext::capture(&app, "thinking", 2);
+        let record_b = thinking
+            .source
+            .reported(&translation_test_route(), &usage_b)
+            .unwrap();
+        manager
+            .persist_runtime_usage_record("session-translation", &record_b)
+            .unwrap();
+        let thinking = thinking.settle(Ok(codewhale_engine::client::TranslationProviderResponse {
+            accounting: Some(record_b.clone()),
+            translated: Err(anyhow::anyhow!("incomplete: max_tokens")),
+            route: record_b.usage.route.clone(),
+            usage: Some(usage_b.clone()),
+        }));
+        assert_eq!(assistant.usage, None);
+        assert_eq!(thinking.usage, None);
         assert!(
             thinking.translated.is_err(),
             "semantic rejection is preserved"
         );
-        accrue_translation_usage(&mut app, assistant.usage.as_ref().expect("assistant usage"));
-        accrue_translation_usage(&mut app, thinking.usage.as_ref().expect("thinking usage"));
+        for record in [&record_a, &record_b, &record_a, &record_b] {
+            let _ = app.absorb_usage_source(record).unwrap();
+        }
         assert_eq!(app.session.total_input_tokens, 8);
         assert_eq!(app.session.total_output_tokens, 3);
         assert_eq!(app.session.total_tokens, 11);
-
-        let pending = codewhale_engine::cost_status::drain();
         assert_eq!(
-            pending.priced_turns.saturating_add(pending.unpriced_turns),
-            2,
-            "each decoded provider response is audited exactly once"
+            app.session
+                .cost_priced_turns
+                .saturating_add(app.session.cost_unpriced_turns),
+            2
+        );
+        assert!(
+            codewhale_engine::cost_status::drain()
+                .source_records
+                .is_empty()
         );
     }
 
     #[test]
     fn translation_unreceipted_success_is_marked_once_but_transport_failure_is_not() {
         let _scope = codewhale_engine::cost_status::test_scope();
+        let directory = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(directory.path().to_path_buf()).unwrap();
         let mut app = test_app();
         app.current_session_id = Some("session-translation-missing-usage".to_string());
         app.runtime_turn_id = Some("turn-translation-missing-usage".to_string());
-
+        app.session_write_receipt = Some(
+            manager
+                .expect_absent_session("session-translation-missing-usage")
+                .unwrap(),
+        );
+        let context = TranslationAccountingContext::capture(&app, "assistant", 7);
+        let record = context
+            .source
+            .reported(
+                &translation_test_route(),
+                &codewhale_models::Usage::default(),
+            )
+            .unwrap();
+        manager
+            .persist_runtime_usage_record("session-translation-missing-usage", &record)
+            .unwrap();
         for _ in 0..2 {
-            let settled = TranslationAccountingContext::capture(&app, "assistant", 7).settle(Ok(
-                codewhale_engine::client::TranslationProviderResponse {
-                    translated: Ok("translation remains usable".to_string()),
-                    route: translation_test_route(),
-                    usage: None,
-                },
-            ));
+            let settled = TranslationAccountingContext {
+                source: context.source.clone(),
+            }
+            .settle(Ok(codewhale_engine::client::TranslationProviderResponse {
+                accounting: Some(record.clone()),
+                translated: Ok("translation remains usable".to_string()),
+                route: record.usage.route.clone(),
+                usage: None,
+            }));
             assert_eq!(
                 settled.translated.expect("semantic output remains usable"),
                 "translation remains usable"
             );
             assert_eq!(settled.usage, None);
+            let _ = app.absorb_usage_source(&record).unwrap();
         }
         let transport = TranslationAccountingContext::capture(&app, "assistant", 8)
             .settle(Err(anyhow::anyhow!("HTTP 429")));
         assert!(transport.translated.is_err());
         assert_eq!(transport.usage, None);
-
-        let pending = codewhale_engine::cost_status::drain();
-        assert_eq!(pending.priced_turns, 0);
-        assert_eq!(
-            pending.unpriced_turns, 1,
-            "stable response id dedupes replay"
-        );
-        assert_eq!(pending.cny_unpriced_turns, 1);
+        assert_eq!(app.session.cost_priced_turns, 0);
+        assert_eq!(app.session.cost_unpriced_turns, 1);
+        assert_eq!(app.session.cost_cny_unpriced_turns, 1);
         assert!(
-            pending
-                .unpriced_reasons
+            app.session
+                .cost_unpriced_reasons
                 .contains("provider_success_missing_usage")
         );
     }

@@ -889,6 +889,8 @@ mod tests {
         observe(
             &mut app,
             &Event::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -1092,6 +1094,8 @@ mod tests {
 
         let done = metadata(
             &Event::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -1190,6 +1194,8 @@ mod tests {
 
         let turn = metadata(
             &Event::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,

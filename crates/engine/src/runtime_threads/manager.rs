@@ -796,6 +796,51 @@ pub(super) fn checkpoint_tool_declarations(
 /// once, route labels are sanitized at the boundary, and retained records are
 /// bounded regardless of whether they arrived synchronously, by mailbox, or
 /// from the fallback journal.
+pub(super) fn append_usage_source_record(
+    turn: &mut TurnRecord,
+    record: &RuntimeUsageRecord,
+) -> Result<bool> {
+    if record.settlement.is_none() {
+        return Ok(append_routed_usage_record(
+            turn,
+            &record.source_id,
+            record.usage.clone(),
+        ));
+    }
+    if turn
+        .source_usage_origin_turn_id
+        .as_deref()
+        .is_some_and(|origin| origin != turn.id)
+    {
+        anyhow::bail!("inherited native usage cannot admit an original-owner update");
+    }
+    let key = routed_usage_source_fingerprint(&record.source_id);
+    if turn.routed_usage_source_ids.contains(&key) && !turn.source_usage_records.contains_key(&key)
+    {
+        bail!(
+            "legacy turn membership has no provable prior contribution; usage correction refused"
+        );
+    }
+    if !record.permits_replacement(turn.source_usage_records.get(&key))? {
+        return Ok(false);
+    }
+    if !turn.source_usage_records.contains_key(&key)
+        && turn.routed_usage_source_ids.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN
+    {
+        bail!("Runtime source receipt capacity reached; update retained without acknowledgement");
+    }
+    if !turn.routed_usage_source_ids.contains(&key) {
+        turn.routed_usage_source_ids.push(key.clone());
+    }
+    turn.source_usage_origin_turn_id = Some(turn.id.clone());
+    turn.source_usage_records.insert(key, record.persisted());
+    turn.source_accounting = true;
+    turn.schema_version = turn
+        .schema_version
+        .max(SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION);
+    Ok(true)
+}
+
 pub(super) fn append_routed_usage_record(
     turn: &mut TurnRecord,
     source_id: &str,
@@ -922,7 +967,9 @@ pub(super) fn append_initial_routed_usage_to_turn(
         append_decision_receipt(turn, receipt);
     }
     for record in &batch.records {
-        append_routed_usage_record(turn, &record.source_id, record.usage.clone());
+        if let Err(error) = append_usage_source_record(turn, record) {
+            tracing::warn!(%error, "initial source receipt was not admitted");
+        }
     }
     for record in &batch.drop_records {
         append_routed_usage_drop_record(turn, record.clone());
@@ -1000,71 +1047,189 @@ pub(super) fn settle_unaccepted_routed_usage(
     batch: &crate::cost_status::RuntimeUsageBatch,
 ) -> Result<String> {
     let turn_id = unaccepted_routed_usage_turn_id(thread_id, batch);
+    settle_preparent_usage_at(store, thread_id, &turn_id, batch)?;
+    Ok(turn_id)
+}
+
+fn settle_preparent_usage_at(
+    store: &RuntimeThreadStore,
+    thread_id: &str,
+    turn_id: &str,
+    batch: &crate::cost_status::RuntimeUsageBatch,
+) -> Result<()> {
+    let _thread_mutation = store.thread_mutation.lock();
+    store.load_thread(thread_id)?;
     let _turn_mutation = store.turn_mutation.lock();
-    let mut turn = if store.turn_path(&turn_id)?.exists() {
-        let existing = store.load_turn(&turn_id)?;
-        if existing.thread_id != thread_id {
-            bail!("settlement turn {turn_id} already belongs to another thread");
-        }
+    let mut turn = if store.turn_path(turn_id)?.exists() {
+        let existing = store.load_turn(turn_id)?;
+        anyhow::ensure!(
+            existing.thread_id == thread_id,
+            "pre-parent usage belongs to another thread"
+        );
         existing
     } else {
-        let now = Utc::now();
-        TurnRecord {
-            prefix_checkpoint: None,
-            decision_receipts: Vec::new(),
-            max_output_tokens: None,
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-            id: turn_id.clone(),
-            thread_id: thread_id.to_string(),
-            status: RuntimeTurnStatus::Failed,
-            input_summary: UNACCEPTED_TURN_SUMMARY.to_string(),
-            created_at: now,
-            started_at: Some(now),
-            ended_at: Some(now),
-            duration_ms: Some(0),
-            usage: None,
-            routing_settlement: true,
-            effective_route_usage: None,
-            permission_posture: None,
-            // No turn ran: this settles a turn that was never accepted.
-            mode: None,
-            effective_provider: None,
-            effective_provider_id: None,
-            effective_openrouter_vendor: None,
-            effective_billing_surface: None,
-            effective_endpoint_fingerprint: None,
-            effective_provider_live_pricing: None,
-            effective_billing_mode: None,
-            effective_dispatched_at: None,
-            effective_model: None,
-            routed_usage: Vec::new(),
-            routed_usage_drop_records: Vec::new(),
-            routed_usage_source_ids: Vec::new(),
-            routed_usage_dropped_records: 0,
-            model_request_diagnostics: None,
-            operation_activity: None,
-            error: Some(UNACCEPTED_TURN_REASON.to_string()),
-            item_ids: Vec::new(),
-            steer_count: 0,
-            agent_mail_message_id: None,
-            artifacts: Vec::new(),
-            workspace: None,
-            workspace_snapshots: Vec::new(),
-        }
+        unaccepted_usage_turn(thread_id, turn_id)
     };
-    append_initial_routed_usage_to_turn(&mut turn, batch);
+    for record in &batch.records {
+        append_usage_source_record(&mut turn, record)?;
+    }
+    for record in &batch.drop_records {
+        append_routed_usage_drop_record(&mut turn, record.clone());
+    }
+    for receipt in &batch.decisions {
+        append_decision_receipt(&mut turn, receipt);
+    }
     let reported = batch.records.len().saturating_add(batch.drop_records.len());
     let retained = turn
         .routed_usage
         .len()
-        .saturating_add(turn.routed_usage_drop_records.len());
+        .saturating_add(turn.routed_usage_drop_records.len())
+        .saturating_add(turn.source_usage_records.len());
     let unretained = u64::try_from(reported.saturating_sub(retained)).unwrap_or(u64::MAX);
     let residual = batch
         .dropped_records
         .saturating_sub(u64::try_from(batch.drop_records.len()).unwrap_or(u64::MAX));
-    turn.routed_usage_dropped_records = residual.saturating_add(unretained);
-    store.save_turn(&turn)?;
-    Ok(turn_id)
+    turn.routed_usage_dropped_records = turn
+        .routed_usage_dropped_records
+        .max(residual.saturating_add(unretained));
+    store.save_turn(&turn)
+}
+
+fn unaccepted_usage_turn(thread_id: &str, turn_id: &str) -> TurnRecord {
+    let now = Utc::now();
+    TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
+        prefix_checkpoint: None,
+        decision_receipts: Vec::new(),
+        max_output_tokens: None,
+        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
+        id: turn_id.to_string(),
+        thread_id: thread_id.to_string(),
+        status: RuntimeTurnStatus::Failed,
+        input_summary: UNACCEPTED_TURN_SUMMARY.to_string(),
+        created_at: now,
+        started_at: Some(now),
+        ended_at: Some(now),
+        duration_ms: Some(0),
+        usage: None,
+        routing_settlement: true,
+        effective_route_usage: None,
+        permission_posture: None,
+        // No turn ran: this settles a turn that was never accepted.
+        mode: None,
+        effective_provider: None,
+        effective_provider_id: None,
+        effective_openrouter_vendor: None,
+        effective_billing_surface: None,
+        effective_endpoint_fingerprint: None,
+        effective_provider_live_pricing: None,
+        effective_billing_mode: None,
+        effective_dispatched_at: None,
+        effective_model: None,
+        routed_usage: Vec::new(),
+        routed_usage_drop_records: Vec::new(),
+        routed_usage_source_ids: Vec::new(),
+        routed_usage_dropped_records: 0,
+        model_request_diagnostics: None,
+        operation_activity: None,
+        error: Some(UNACCEPTED_TURN_REASON.to_string()),
+        item_ids: Vec::new(),
+        steer_count: 0,
+        agent_mail_message_id: None,
+        artifacts: Vec::new(),
+        workspace: None,
+        workspace_snapshots: Vec::new(),
+    }
+}
+
+fn thread_usage_split(thread: &ThreadRecord, turns: &[TurnRecord]) -> ThreadUsageSplit {
+    let mut split = ThreadUsageSplit::default();
+    // Buckets are a discarded byproduct: the shared accumulator writes
+    // both totals and buckets, and this surface reports totals only.
+    let mut buckets: std::collections::BTreeMap<String, UsageBucket> =
+        std::collections::BTreeMap::new();
+    for turn in turns {
+        let parent_route = turn.effective_route_envelope();
+        if !turn.source_accounting
+            && (turn.effective_route_usage.is_some()
+                || turn.usage.is_some()
+                || turn
+                    .model_request_diagnostics
+                    .is_some_and(|facts| facts.primary_coverage_recorded))
+        {
+            let absent = Usage::default();
+            let usage = turn
+                .effective_route_usage
+                .as_ref()
+                .or(turn.usage.as_ref())
+                .unwrap_or(&absent);
+            accumulate_primary_runtime_usage_record(
+                &mut split.parent,
+                &mut buckets,
+                UsageGroupBy::Thread,
+                parent_route.as_ref(),
+                usage,
+                turn,
+                thread,
+            );
+        }
+        for record in turn.source_usage_records.values() {
+            let totals = if record.settlement.as_ref().is_some_and(|revision| {
+                revision.owner == crate::cost_status::UsageSpendOwner::Primary
+            }) {
+                &mut split.parent
+            } else {
+                &mut split.routed_children
+            };
+            accumulate_source_usage_record(
+                totals,
+                &mut buckets,
+                UsageGroupBy::Thread,
+                record,
+                turn,
+                &thread,
+            );
+        }
+        for child in &turn.routed_usage {
+            accumulate_runtime_child_usage_record(
+                &mut split.routed_children,
+                &mut buckets,
+                UsageGroupBy::Thread,
+                child,
+                turn,
+                thread,
+            );
+        }
+        for drop_record in &turn.routed_usage_drop_records {
+            accumulate_exact_runtime_usage_drop(
+                &mut split.routed_children,
+                &mut buckets,
+                UsageGroupBy::Thread,
+                &drop_record.route,
+                drop_record.reason,
+                turn,
+                thread,
+                1,
+            );
+        }
+        // Dropped fallback receipts are routed-child records, so the
+        // incompleteness marker lands on the child side.
+        accumulate_truncated_runtime_usage(
+            &mut split.routed_children,
+            &mut buckets,
+            UsageGroupBy::Thread,
+            turn.routed_usage_dropped_records,
+            turn,
+            thread,
+        );
+    }
+    finalize_usage_totals(&mut split.parent);
+    finalize_usage_totals(&mut split.routed_children);
+    split
 }
 
 pub(super) struct InitialRoutedUsageSettlementGuard {
@@ -1464,7 +1629,11 @@ pub struct RuntimeThreadCreateConflict;
 pub(super) struct PreparedRuntimeTurnOperation {
     pub(super) binding: RuntimeTurnOperationBinding,
     pub(super) requested_turn_id: Option<String>,
+    preparation: Option<NativeTurnPreparation>,
 }
+
+#[derive(Debug, Clone)]
+struct NativeTurnPreparation(RuntimeTurnPreparation);
 
 /// Lookup errors deliberately omit operation keys and persisted file paths.
 #[derive(Debug, thiserror::Error)]
@@ -2134,7 +2303,7 @@ pub(super) fn runtime_usage_bucket_key(
 }
 
 fn priced_step_usage(route: Option<&EffectiveRouteEnvelope>, usage: &Usage) -> Option<Value> {
-    let audit = route?.audit(usage);
+    let audit = route?.audit_frozen(usage);
     let estimate = audit.estimate?.sanitized();
     Some(json!({
         "usd": if audit.usd_priced { estimate.usd } else { 0.0 },
@@ -2149,6 +2318,107 @@ pub(super) fn billed_prompt_tokens(usage: &Usage) -> u32 {
         .request_usages
         .last()
         .map_or(usage.input_tokens, |last| last.input_tokens)
+}
+
+fn accumulate_source_usage_record(
+    totals: &mut UsageTotals,
+    buckets: &mut std::collections::BTreeMap<String, UsageBucket>,
+    group_by: UsageGroupBy,
+    record: &RuntimeUsageRecord,
+    turn: &TurnRecord,
+    thread: &ThreadRecord,
+) {
+    let Some(revision) = record.settlement.as_ref() else {
+        return;
+    };
+    if matches!(
+        revision.coverage,
+        crate::llm_client::ProviderUsageCoverage::NotDispatched
+            | crate::llm_client::ProviderUsageCoverage::Rejected
+    ) {
+        return;
+    }
+    if revision.coverage == crate::llm_client::ProviderUsageCoverage::Missing
+        && record.usage.usage == Usage::default()
+    {
+        accumulate_exact_runtime_usage_drop(
+            totals,
+            buckets,
+            group_by,
+            &record.usage.route,
+            revision.reason,
+            turn,
+            thread,
+            1,
+        );
+        return;
+    }
+    let contribution = crate::cost_status::UsageSourceContribution::for_record(record);
+    let before = [
+        totals.priced_turns,
+        totals.unpriced_turns,
+        totals.cny_priced_turns,
+        totals.cny_unpriced_turns,
+    ];
+    let key = runtime_usage_bucket_key(group_by, Some(&record.usage.route), turn, thread);
+    let before_bucket = buckets.get(&key).map_or([0; 4], |bucket| {
+        [
+            bucket.priced_turns,
+            bucket.unpriced_turns,
+            bucket.cny_priced_turns,
+            bucket.cny_unpriced_turns,
+        ]
+    });
+    accumulate_runtime_usage_record(
+        totals,
+        buckets,
+        group_by,
+        Some(&record.usage.route),
+        &record.usage.usage,
+        turn,
+        thread,
+    );
+    let values = [
+        contribution.priced,
+        contribution.unpriced,
+        contribution.cny_priced,
+        contribution.cny_unpriced,
+    ];
+    totals.priced_turns = before[0].saturating_add(u64::from(values[0]));
+    totals.unpriced_turns = before[1].saturating_add(u64::from(values[1]));
+    totals.cny_priced_turns = before[2].saturating_add(u64::from(values[2]));
+    totals.cny_unpriced_turns = before[3].saturating_add(u64::from(values[3]));
+    let bucket = buckets
+        .get_mut(&key)
+        .expect("source accumulator installs its bucket");
+    bucket.priced_turns = before_bucket[0].saturating_add(u64::from(values[0]));
+    bucket.unpriced_turns = before_bucket[1].saturating_add(u64::from(values[1]));
+    bucket.cny_priced_turns = before_bucket[2].saturating_add(u64::from(values[2]));
+    bucket.cny_unpriced_turns = before_bucket[3].saturating_add(u64::from(values[3]));
+    if matches!(
+        revision.coverage,
+        crate::llm_client::ProviderUsageCoverage::Missing
+            | crate::llm_client::ProviderUsageCoverage::Incomplete
+    ) {
+        totals.dropped_usage_records = totals.dropped_usage_records.saturating_add(1);
+        bucket.dropped_usage_records = bucket.dropped_usage_records.saturating_add(1);
+        if contribution.unpriced > 0 {
+            totals
+                .unpriced_reasons
+                .insert(revision.reason.label().to_string());
+            bucket
+                .unpriced_reasons
+                .insert(revision.reason.label().to_string());
+        }
+        if contribution.cny_unpriced > 0 {
+            totals
+                .cny_unpriced_reasons
+                .insert(revision.reason.label().to_string());
+            bucket
+                .cny_unpriced_reasons
+                .insert(revision.reason.label().to_string());
+        }
+    }
 }
 
 fn accumulate_primary_runtime_usage_record(
@@ -2216,7 +2486,7 @@ pub(super) fn accumulate_runtime_usage_record(
     let classes = crate::pricing::token_usage_for_pricing(usage);
     let reasoning = u64::from(usage.reasoning_tokens.unwrap_or(0));
     let reasoning_replay = u64::from(usage.reasoning_replay_tokens.unwrap_or(0));
-    let audit = route.map(|route| route.audit(usage));
+    let audit = route.map(|route| route.audit_frozen(usage));
     let cost = audit
         .as_ref()
         .filter(|audit| audit.usd_priced)
@@ -2421,7 +2691,7 @@ pub(super) fn accumulate_exact_runtime_usage_drop(
             .cny_unpriced_reasons
             .insert(reason.label().to_string());
     }
-    let audit = route.audit(&Usage::default());
+    let audit = route.audit_frozen(&Usage::default());
     totals.route_receipts.insert(format!(
         "{} usage=missing reason={}",
         route.receipt(&audit),
@@ -7149,14 +7419,45 @@ impl RuntimeThreadManager {
         let mut buckets: std::collections::BTreeMap<String, UsageBucket> =
             std::collections::BTreeMap::new();
         let mut totals = UsageTotals::default();
+        let original_turns = threads
+            .iter()
+            .flat_map(|thread| turns_by_thread.get(&thread.id).into_iter().flatten())
+            .map(|turn| (turn.id.as_str(), turn))
+            .collect::<HashMap<_, _>>();
+        let mut counted_native_sources = HashMap::<String, String>::new();
         for thread in &threads {
             validated_record_id(&thread.id, "thread id")?;
             for turn in turns_by_thread.get(&thread.id).into_iter().flatten() {
+                if let Some(origin) = turn
+                    .source_usage_origin_turn_id
+                    .as_deref()
+                    .filter(|origin| *origin != turn.id)
+                {
+                    let original = original_turns.get(origin).ok_or_else(|| {
+                        anyhow!("usage original owner is unavailable; inherited receipts retained")
+                    })?;
+                    anyhow::ensure!(
+                        original
+                            .source_usage_origin_turn_id
+                            .as_deref()
+                            .is_none_or(|owner| owner == origin),
+                        "usage original owner is itself an inherited projection"
+                    );
+                    for (key, inherited) in &turn.source_usage_records {
+                        let current = original.source_usage_records.get(key).ok_or_else(|| anyhow!("native usage original receipt is unavailable; inherited receipts retained"))?;
+                        anyhow::ensure!(
+                            current == inherited || current.follows_protected(inherited)?,
+                            "native usage original receipt conflicts with its inherited projection"
+                        );
+                    }
+                    continue;
+                }
                 let parent_route = turn.effective_route_envelope();
                 let parent_dispatched_at = parent_route
                     .as_ref()
                     .map_or(turn.created_at, |route| route.dispatched_at);
-                if usage_timestamp_in_range(parent_dispatched_at, since, until)
+                if !turn.source_accounting
+                    && usage_timestamp_in_range(parent_dispatched_at, since, until)
                     && (turn.effective_route_usage.is_some()
                         || turn.usage.is_some()
                         || turn
@@ -7194,6 +7495,36 @@ impl RuntimeThreadManager {
                                 .route_receipts
                                 .insert("decision:diagnostic_receipt_bound_reached".to_string());
                         }
+                    }
+                }
+                for record in turn.source_usage_records.values() {
+                    if usage_timestamp_in_range(record.usage.route.dispatched_at, since, until) {
+                        let origin = turn
+                            .source_usage_origin_turn_id
+                            .as_deref()
+                            .ok_or_else(|| anyhow!("native usage has no original owning turn"))?;
+                        let key = routed_usage_source_fingerprint(&record.source_id);
+                        anyhow::ensure!(
+                            origin == turn.id,
+                            "native usage is not owned by its recorded original turn"
+                        );
+                        if let Some(previous_owner) =
+                            counted_native_sources.insert(key, origin.to_string())
+                        {
+                            anyhow::ensure!(
+                                previous_owner == origin,
+                                "native usage source has conflicting original owners"
+                            );
+                            continue;
+                        }
+                        accumulate_source_usage_record(
+                            &mut totals,
+                            &mut buckets,
+                            group_by,
+                            record,
+                            turn,
+                            thread,
+                        );
                     }
                 }
                 for child in &turn.routed_usage {
@@ -7285,71 +7616,165 @@ impl RuntimeThreadManager {
         .await
         .context("Runtime thread usage aggregation task failed")??;
 
-        let mut split = ThreadUsageSplit::default();
-        // Buckets are a discarded byproduct: the shared accumulator writes
-        // both totals and buckets, and this surface reports totals only.
-        let mut buckets: std::collections::BTreeMap<String, UsageBucket> =
-            std::collections::BTreeMap::new();
-        for turn in &turns {
-            let parent_route = turn.effective_route_envelope();
-            if turn.effective_route_usage.is_some()
-                || turn.usage.is_some()
-                || turn
-                    .model_request_diagnostics
-                    .is_some_and(|facts| facts.primary_coverage_recorded)
-            {
-                let absent = Usage::default();
-                let usage = turn
-                    .effective_route_usage
-                    .as_ref()
-                    .or(turn.usage.as_ref())
-                    .unwrap_or(&absent);
-                accumulate_primary_runtime_usage_record(
-                    &mut split.parent,
-                    &mut buckets,
-                    UsageGroupBy::Thread,
-                    parent_route.as_ref(),
-                    usage,
-                    turn,
-                    &thread,
-                );
+        Ok(thread_usage_split(&thread, &turns))
+    }
+
+    pub async fn project_session_cost_for_thread(
+        &self,
+        id: &str,
+        original: &crate::session_manager::SessionCostSnapshot,
+    ) -> Result<crate::session_manager::SessionCostSnapshot> {
+        let store = self.store.clone();
+        let thread_id = id.to_string();
+        let mut cost = original.clone();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            let _thread_mutation = store.thread_mutation.lock();
+            let _mutation = store.turn_mutation.lock();
+            let thread = store.load_thread(&thread_id)?;
+            let turns = store.list_turns_for_thread(&thread_id)?;
+            let all = thread_usage_split(&thread, &turns);
+            let mut old_primary = crate::pricing::CostEstimate::default();
+            let mut old_aux = crate::pricing::CostEstimate::default();
+            let mut old_counts = [0u64; 4];
+            for contribution in cost.accounted_usage_sources.values() {
+                contribution.validate()?;
+                let estimate = crate::pricing::CostEstimate {
+                    usd: contribution.usd,
+                    cny: contribution.cny,
+                };
+                if contribution.owner() == crate::cost_status::UsageSpendOwner::Primary {
+                    old_primary = old_primary.saturating_add(estimate);
+                } else {
+                    old_aux = old_aux.saturating_add(estimate);
+                }
+                for (count, value) in old_counts.iter_mut().zip([
+                    contribution.priced,
+                    contribution.unpriced,
+                    contribution.cny_priced,
+                    contribution.cny_unpriced,
+                ]) {
+                    *count = count.saturating_add(u64::from(value));
+                }
             }
-            for child in &turn.routed_usage {
-                accumulate_runtime_child_usage_record(
-                    &mut split.routed_children,
-                    &mut buckets,
-                    UsageGroupBy::Thread,
-                    child,
-                    turn,
-                    &thread,
-                );
+            let records: Vec<_> = turns
+                .iter()
+                .flat_map(|turn| turn.source_usage_records.values())
+                .collect();
+            let mut primary = crate::pricing::CostEstimate::default();
+            let mut auxiliary = crate::pricing::CostEstimate::default();
+            let mut counts = [0u64; 4];
+            for record in &records {
+                let contribution = crate::cost_status::UsageSourceContribution::for_record(record);
+                let estimate = crate::pricing::CostEstimate {
+                    usd: contribution.usd,
+                    cny: contribution.cny,
+                };
+                if contribution.owner() == crate::cost_status::UsageSpendOwner::Primary {
+                    primary = primary.saturating_add(estimate);
+                } else {
+                    auxiliary = auxiliary.saturating_add(estimate);
+                }
+                for (count, value) in counts.iter_mut().zip([
+                    contribution.priced,
+                    contribution.unpriced,
+                    contribution.cny_priced,
+                    contribution.cny_unpriced,
+                ]) {
+                    *count = count.saturating_add(u64::from(value));
+                }
             }
-            for drop_record in &turn.routed_usage_drop_records {
-                accumulate_exact_runtime_usage_drop(
-                    &mut split.routed_children,
-                    &mut buckets,
-                    UsageGroupBy::Thread,
-                    &drop_record.route,
-                    drop_record.reason,
-                    turn,
-                    &thread,
-                    1,
+            let merge_legacy = |total: &mut f64, old: f64, all: f64, current: f64| -> Result<()> {
+                anyhow::ensure!(
+                    total.is_finite()
+                        && *total + f64::EPSILON >= old
+                        && all + f64::EPSILON >= current,
+                    "session cost has no exact legacy/source decomposition"
                 );
+                *total = (*total - old).max((all - current).max(0.0)) + old;
+                Ok(())
+            };
+            merge_legacy(
+                &mut cost.session_cost_usd,
+                old_primary.usd,
+                all.parent.cost_usd,
+                primary.usd,
+            )?;
+            merge_legacy(
+                &mut cost.session_cost_cny,
+                old_primary.cny,
+                all.parent.cost_cny,
+                primary.cny,
+            )?;
+            merge_legacy(
+                &mut cost.subagent_cost_usd,
+                old_aux.usd,
+                all.routed_children.cost_usd,
+                auxiliary.usd,
+            )?;
+            merge_legacy(
+                &mut cost.subagent_cost_cny,
+                old_aux.cny,
+                all.routed_children.cost_cny,
+                auxiliary.cny,
+            )?;
+            let combined = all.combined();
+            for (total, old, all, current) in [
+                (
+                    &mut cost.priced_turns,
+                    old_counts[0],
+                    combined.priced_turns,
+                    counts[0],
+                ),
+                (
+                    &mut cost.unpriced_turns,
+                    old_counts[1],
+                    combined.unpriced_turns,
+                    counts[1],
+                ),
+                (
+                    &mut cost.cny_priced_turns,
+                    old_counts[2],
+                    combined.cny_priced_turns,
+                    counts[2],
+                ),
+                (
+                    &mut cost.cny_unpriced_turns,
+                    old_counts[3],
+                    combined.cny_unpriced_turns,
+                    counts[3],
+                ),
+            ] {
+                anyhow::ensure!(
+                    u64::from(*total) >= old && all >= current,
+                    "session coverage has no exact source decomposition"
+                );
+                *total = u32::try_from(
+                    (u64::from(*total) - old)
+                        .max(all - current)
+                        .saturating_add(old),
+                )
+                .unwrap_or(u32::MAX);
             }
-            // Dropped fallback receipts are routed-child records, so the
-            // incompleteness marker lands on the child side.
-            accumulate_truncated_runtime_usage(
-                &mut split.routed_children,
-                &mut buckets,
-                UsageGroupBy::Thread,
-                turn.routed_usage_dropped_records,
-                turn,
-                &thread,
-            );
-        }
-        finalize_usage_totals(&mut split.parent);
-        finalize_usage_totals(&mut split.routed_children);
-        Ok(split)
+            for record in records {
+                cost.project_usage_record_inner(record, true)?;
+            }
+            cost.unpriced_reasons.extend(combined.unpriced_reasons);
+            cost.cny_unpriced_reasons
+                .extend(combined.cny_unpriced_reasons);
+            cost.unpriced_classes.extend(combined.unpriced_classes);
+            cost.pricing_provenances
+                .extend(combined.pricing_provenances);
+            cost.live_pricing_defects
+                .extend(combined.live_pricing_defects);
+            cost.live_pricing_unusable_defects
+                .extend(combined.live_pricing_unusable_defects);
+            cost.route_receipts.extend(combined.route_receipts);
+            let total = cost.total_estimate();
+            cost.displayed_cost_high_water_usd = cost.displayed_cost_high_water_usd.max(total.usd);
+            cost.displayed_cost_high_water_cny = cost.displayed_cost_high_water_cny.max(total.cny);
+            Ok(cost)
+        })
+        .await
     }
 
     /// One turn's artifact references, read from the store: the turn's own
@@ -9137,6 +9562,15 @@ impl RuntimeThreadManager {
             let mut cloned_turn = source_turn.clone();
             cloned_turn.id = runtime_record_id("turn");
             cloned_turn.thread_id = forked.id.clone();
+            cloned_turn.source_usage_origin_turn_id = Some(
+                source_turn
+                    .source_usage_origin_turn_id
+                    .clone()
+                    .unwrap_or_else(|| source_turn.id.clone()),
+            );
+            cloned_turn.schema_version = cloned_turn
+                .schema_version
+                .max(SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION);
             cloned_turn.prefix_checkpoint = None;
             if let Some(checkpoint) = forked.saved_session_checkpoint.as_mut()
                 && checkpoint.covered_turn_id.as_deref() == Some(source_turn.id.as_str())
@@ -9742,6 +10176,15 @@ impl RuntimeThreadManager {
             let mut cloned_turn = source_turn.clone();
             cloned_turn.id = runtime_record_id("turn");
             cloned_turn.thread_id = forked.id.clone();
+            cloned_turn.source_usage_origin_turn_id = Some(
+                source_turn
+                    .source_usage_origin_turn_id
+                    .clone()
+                    .unwrap_or_else(|| source_turn.id.clone()),
+            );
+            cloned_turn.schema_version = cloned_turn
+                .schema_version
+                .max(SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION);
             cloned_turn.prefix_checkpoint = None;
             if let Some(checkpoint) = forked.saved_session_checkpoint.as_mut()
                 && checkpoint.covered_turn_id.as_deref() == Some(source_turn.id.as_str())
@@ -10346,6 +10789,11 @@ impl RuntimeThreadManager {
             // Only create a turn if there's content.
             if !item_ids.is_empty() {
                 seed_turns.push(TurnRecord {
+                    source_usage_origin_turn_id: None,
+
+                    source_accounting: false,
+                    source_usage_records: Default::default(),
+
                     prefix_checkpoint: None,
                     decision_receipts: Vec::new(),
                     max_output_tokens: None,
@@ -10494,8 +10942,10 @@ impl RuntimeThreadManager {
                 operation_key_fingerprint,
                 request_fingerprint,
                 created_at: Utc::now(),
+                preparation: None,
             },
             requested_turn_id,
+            preparation: None,
         }))
     }
 
@@ -10520,15 +10970,97 @@ impl RuntimeThreadManager {
         {
             bail!("operation_key is already bound to a different turn request");
         }
+        if persisted
+            .preparation
+            .as_ref()
+            .is_some_and(|preparation| !preparation.admitted)
+        {
+            return Err(RuntimeTurnOperationLookupError::Incomplete.into());
+        }
         let turn_path = self.store.turn_path(&persisted.turn_id)?;
         if !turn_path.exists() {
-            bail!("operation_key binding is incomplete; retry after Runtime recovery");
+            return Err(RuntimeTurnOperationLookupError::Incomplete.into());
         }
         let turn = self.store.load_turn(&persisted.turn_id)?;
         if turn.id != persisted.turn_id || turn.thread_id != persisted.thread_id {
             bail!("operation_key binding does not match its persisted Runtime turn");
         }
+        if turn.routing_settlement {
+            return Err(RuntimeTurnOperationLookupError::Incomplete.into());
+        }
         Ok(Some(turn))
+    }
+
+    fn reserve_auto_turn_operation(
+        &self,
+        mut operation: Option<PreparedRuntimeTurnOperation>,
+        thread: &ThreadRecord,
+        turn_id: &str,
+        source_fingerprint: &str,
+    ) -> Result<(Option<PreparedRuntimeTurnOperation>, Option<TurnRecord>)> {
+        let fingerprint = operation
+            .as_ref()
+            .map(|operation| operation.binding.operation_key_fingerprint.clone());
+        let preparation = RuntimeTurnPreparation {
+            id: runtime_record_id("preparation"),
+            source_fingerprint: source_fingerprint.to_string(),
+            admitted: false,
+        };
+        let replay = self
+            .store
+            .with_turn_operation_claim(fingerprint.as_deref(), || {
+                if let Some(operation) = &operation
+                    && let Some(turn) = self.replay_turn_for_operation(operation)?
+                {
+                    return Ok(Some(turn));
+                }
+                let _thread_mutation = self.store.thread_mutation.lock();
+                let current = self.store.load_thread(&thread.id)?;
+                anyhow::ensure!(
+                    !current.archived && thread_execution_state_matches(thread, &current),
+                    "thread changed before classifier admission"
+                );
+                let _turn_mutation = self.store.turn_mutation.lock();
+                anyhow::ensure!(
+                    !self.store.turn_path(turn_id)?.exists()
+                        && self.store.list_items_for_turn(turn_id)?.is_empty(),
+                    "classifier target already contains unrelated work"
+                );
+                if let Some(operation) = operation.as_mut() {
+                    operation.binding.preparation = Some(preparation.clone());
+                    self.store.save_turn_operation_binding(&operation.binding)?;
+                }
+                let mut reserved = unaccepted_usage_turn(&thread.id, turn_id);
+                reserved.schema_version = SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION;
+                self.store.save_turn(&reserved)?;
+                Ok(None)
+            })?;
+        if replay.is_none()
+            && let Some(operation) = operation.as_mut()
+        {
+            operation.preparation = Some(NativeTurnPreparation(preparation));
+        }
+        Ok((operation, replay))
+    }
+
+    fn verify_turn_preparation(&self, operation: &PreparedRuntimeTurnOperation) -> Result<()> {
+        let ticket = operation
+            .preparation
+            .as_ref()
+            .ok_or_else(|| anyhow!("native turn preparation is absent"))?;
+        anyhow::ensure!(
+            operation.binding.preparation.as_ref() == Some(&ticket.0) && !ticket.0.admitted,
+            "native turn preparation does not match its captured binding"
+        );
+        let current = self
+            .store
+            .load_turn_operation_binding(&operation.binding.operation_key_fingerprint)?
+            .ok_or_else(|| anyhow!("turn preparation reservation is absent"))?;
+        anyhow::ensure!(
+            current == operation.binding,
+            "turn preparation reservation changed before parent admission"
+        );
+        Ok(())
     }
 
     /// Read the exact durable binding without replaying, recovering, loading an
@@ -10595,6 +11127,13 @@ impl RuntimeThreadManager {
         if binding.thread_id != thread_id || binding.operation_key_fingerprint != fingerprint {
             return Ok(None);
         }
+        if binding
+            .preparation
+            .as_ref()
+            .is_some_and(|preparation| !preparation.admitted)
+        {
+            return Err(Incomplete);
+        }
         let thread = match self.store.load_thread(thread_id) {
             Ok(thread) => thread,
             Err(error)
@@ -10621,6 +11160,9 @@ impl RuntimeThreadManager {
         })?;
         if turn.id != binding.turn_id || turn.thread_id != thread_id {
             return Ok(None);
+        }
+        if turn.routing_settlement {
+            return Err(Incomplete);
         }
         Ok(Some(turn))
     }
@@ -10667,15 +11209,48 @@ impl RuntimeThreadManager {
         {
             errors.push(format!("remove item: {err}"));
         }
-        if let Err(err) = self.store.remove_turn(turn_id) {
-            errors.push(format!("remove turn: {err}"));
+        let retained_usage = (|| -> Result<bool> {
+            let _mutation = self.store.turn_mutation.lock();
+            if !self.store.turn_path(turn_id)?.exists() {
+                return Ok(false);
+            }
+            let current = self.store.load_turn(turn_id)?;
+            if current.source_usage_records.is_empty() {
+                return Ok(false);
+            }
+            let mut retained = unaccepted_usage_turn(&current.thread_id, turn_id);
+            retained.source_accounting = current.source_accounting;
+            retained.schema_version = retained.schema_version.max(current.schema_version);
+            retained.source_usage_origin_turn_id = current.source_usage_origin_turn_id;
+            retained.source_usage_records = current.source_usage_records;
+            retained.routed_usage_source_ids = current.routed_usage_source_ids;
+            retained.routed_usage_dropped_records = current.routed_usage_dropped_records;
+            retained.decision_receipts = current.decision_receipts;
+            self.store.save_turn(&retained)?;
+            Ok(true)
+        })();
+        match retained_usage {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(err) = self.store.remove_turn(turn_id) {
+                    errors.push(format!("remove turn: {err}"));
+                }
+            }
+            Err(err) => errors.push(format!("retain paid pre-parent usage: {err}")),
         }
-        if let Some(operation_key_fingerprint) = operation_key_fingerprint
-            && let Err(err) = self
-                .store
-                .remove_turn_operation_binding(operation_key_fingerprint)
-        {
-            errors.push(format!("remove turn operation binding: {err}"));
+        if let Some(fingerprint) = operation_key_fingerprint {
+            match self.store.load_turn_operation_binding(fingerprint) {
+                Ok(Some(mut binding)) => {
+                    if let Some(preparation) = binding.preparation.as_mut() {
+                        preparation.admitted = false;
+                    }
+                    if let Err(error) = self.store.save_turn_operation_binding(&binding) {
+                        errors.push(format!("retain turn operation reservation: {error}"));
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => errors.push(format!("read turn operation reservation: {error}")),
+            }
         }
         if errors.is_empty() {
             Ok(())
@@ -10804,72 +11379,6 @@ impl RuntimeThreadManager {
                 .await;
             }
         }
-        let (terminal_turn, load_failure) = {
-            let _turn_mutation = self.store.turn_mutation.lock();
-            match self.store.load_turn(turn_id) {
-                Ok(mut turn) => {
-                    for receipt in &background_usage.decisions {
-                        append_decision_receipt(&mut turn, receipt);
-                    }
-                    for record in background_usage.records.iter().cloned() {
-                        append_routed_usage_record(&mut turn, &record.source_id, record.usage);
-                    }
-                    for record in background_usage.drop_records.iter().cloned() {
-                        append_routed_usage_drop_record(&mut turn, record);
-                    }
-                    let background_residual = background_usage.dropped_records.saturating_sub(
-                        u64::try_from(background_usage.drop_records.len()).unwrap_or(u64::MAX),
-                    );
-                    turn.routed_usage_dropped_records = turn
-                        .routed_usage_dropped_records
-                        .saturating_add(background_residual);
-                    if turn.status == RuntimeTurnStatus::InProgress {
-                        turn.status = RuntimeTurnStatus::Failed;
-                        if let Some(activity) = &mut turn.operation_activity {
-                            activity.active.clear();
-                        }
-                        turn.ended_at = Some(now);
-                        turn.duration_ms = turn.started_at.map(|start| duration_ms(start, now));
-                        turn.error = Some(reason.to_string());
-                    }
-                    if turn.workspace.is_none() {
-                        // The monitor died before the engine reported a
-                        // snapshot pair; keep what the tool receipts say.
-                        self.set_turn_artifacts(
-                            &mut turn,
-                            None,
-                            TurnWorkspaceArtifacts::unavailable(TurnWorkspaceReason::NotCaptured),
-                        );
-                    }
-                    (
-                        matches!(
-                            turn.status,
-                            RuntimeTurnStatus::Completed
-                                | RuntimeTurnStatus::Failed
-                                | RuntimeTurnStatus::Interrupted
-                                | RuntimeTurnStatus::Canceled
-                        )
-                        .then_some(turn),
-                        None,
-                    )
-                }
-                Err(err) => (None, Some(err)),
-            }
-        };
-        if let Some(err) = load_failure {
-            // Without its record the turn can never be terminalized: name
-            // the file now and tell anyone waiting on `turn.completed` to
-            // stop waiting (#5931).
-            self.report_store_failure(
-                thread_id,
-                Some(turn_id),
-                &format!("Failed to load turn after monitor failure: {err}"),
-                &err,
-                true,
-            )
-            .await;
-        }
-
         for item in terminal_items {
             if let Err(err) = self
                 .emit_event(
@@ -10922,17 +11431,95 @@ impl RuntimeThreadManager {
         // a blocking worker while this projection guard remains held.
         let projection_lock = self.projection_lock(thread_id);
         let _projection = projection_lock.lock().await;
-        let mut persist_failure = None;
-        let terminal_turn = terminal_turn.and_then(|turn| {
+        let (terminal_turn, load_failure, persist_failure) = {
             let _turn_mutation = self.store.turn_mutation.lock();
-            match self.store.save_turn(&turn) {
-                Ok(()) => Some(turn),
-                Err(err) => {
-                    persist_failure = Some(err);
-                    None
+            match self.store.load_turn(turn_id) {
+                Ok(mut turn) => {
+                    let mut drained_native_usage = Vec::new();
+                    for receipt in &background_usage.decisions {
+                        append_decision_receipt(&mut turn, receipt);
+                    }
+                    for record in background_usage.records.iter().cloned() {
+                        match append_usage_source_record(&mut turn, &record) {
+                            Ok(_) => {
+                                if record.has_native_producer() {
+                                    drained_native_usage.push(record);
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "source receipt was retained without replacing turn accounting");
+                                turn.routed_usage_dropped_records =
+                                    turn.routed_usage_dropped_records.saturating_add(1);
+                            }
+                        }
+                    }
+                    for record in background_usage.drop_records.iter().cloned() {
+                        append_routed_usage_drop_record(&mut turn, record);
+                    }
+                    let background_residual = background_usage.dropped_records.saturating_sub(
+                        u64::try_from(background_usage.drop_records.len()).unwrap_or(u64::MAX),
+                    );
+                    turn.routed_usage_dropped_records = turn
+                        .routed_usage_dropped_records
+                        .saturating_add(background_residual);
+                    if turn.status == RuntimeTurnStatus::InProgress {
+                        turn.status = RuntimeTurnStatus::Failed;
+                        if let Some(activity) = &mut turn.operation_activity {
+                            activity.active.clear();
+                        }
+                        turn.ended_at = Some(now);
+                        turn.duration_ms = turn.started_at.map(|start| duration_ms(start, now));
+                        turn.error = Some(reason.to_string());
+                    }
+                    if turn.workspace.is_none() {
+                        // The monitor died before the engine reported a
+                        // snapshot pair; keep what the tool receipts say.
+                        self.set_turn_artifacts(
+                            &mut turn,
+                            None,
+                            TurnWorkspaceArtifacts::unavailable(TurnWorkspaceReason::NotCaptured),
+                        );
+                    }
+                    if matches!(
+                        turn.status,
+                        RuntimeTurnStatus::Completed
+                            | RuntimeTurnStatus::Failed
+                            | RuntimeTurnStatus::Interrupted
+                            | RuntimeTurnStatus::Canceled
+                    ) {
+                        let publication = self.store.save_turn(&turn).and_then(|()| {
+                            for record in &drained_native_usage {
+                                record.acknowledge_persisted().context(
+                                    "Failed to acknowledge drained Runtime usage after terminal publication",
+                                )?;
+                            }
+                            Ok(())
+                        });
+                        match publication {
+                            Ok(()) => (Some(turn), None, None),
+                            Err(error) => (None, None, Some(error)),
+                        }
+                    } else {
+                        (None, None, None)
+                    }
                 }
+                Err(err) => (None, Some(err), None),
             }
-        });
+        };
+        if let Some(err) = load_failure {
+            // Without its record the turn can never be terminalized: name
+            // the file now and tell anyone waiting on `turn.completed` to
+            // stop waiting (#5931).
+            self.report_store_failure(
+                thread_id,
+                Some(turn_id),
+                &format!("Failed to load turn after monitor failure: {err}"),
+                &err,
+                true,
+            )
+            .await;
+        }
+
         if let Some(err) = persist_failure {
             // The projection guard is held and the record guard is not; the
             // publish takes `event_emit` after the projection lock, which is
@@ -10940,7 +11527,7 @@ impl RuntimeThreadManager {
             self.report_store_failure(
                 thread_id,
                 Some(turn_id),
-                &format!("Failed to persist terminal monitor failure: {err}"),
+                &format!("Failed to settle terminal monitor failure: {err}"),
                 &err,
                 true,
             )
@@ -12067,7 +12654,7 @@ impl RuntimeThreadManager {
             anyhow::ensure!(req.account_model_owner.as_ref().is_none_or(|owner| &snapshot.account_id == owner),
                 "The profile constitution and agent model must belong to the same account");
         }
-        let operation = if let Some(operation_key) = req.operation_key.as_deref() {
+        let mut operation = if let Some(operation_key) = req.operation_key.as_deref() {
             validate_runtime_turn_operation_key(operation_key)?;
             let request_fingerprint = runtime_turn_request_fingerprint(
                 &route_thread,
@@ -12169,6 +12756,7 @@ impl RuntimeThreadManager {
         let mut thread_config = cfg_snapshot.clone();
         thread_config.scope_to_provider_identity(&identity).map_err(anyhow::Error::msg)?;
         let verbosity = thread_config.verbosity.clone();
+        let turn_id = operation.as_ref().map(|operation| operation.binding.turn_id.clone()).unwrap_or_else(|| runtime_record_id("turn"));
         let (
             route,
             reasoning_effort,
@@ -12176,13 +12764,46 @@ impl RuntimeThreadManager {
             initial_routed_usage,
             mut initial_routed_usage_settlement,
         ) = if auto_model {
+            let classifier_source_id = format!("auto-router:{}", crate::cost_status::usage_source_fingerprint(&uuid::Uuid::new_v4().to_string()));
+            let classifier_source_fingerprint = crate::cost_status::usage_source_fingerprint(&classifier_source_id);
+            let reservation_manager = self.clone();
+            let reservation_thread = thread.clone();
+            let reservation_turn = turn_id.clone();
+            let reservation_source = classifier_source_fingerprint.clone();
+            let reservation_operation = operation.take();
+            let (reserved_operation, replay) = codewhale_runtime::runtime_control::owner_work(move || reservation_manager.reserve_auto_turn_operation(reservation_operation, &reservation_thread, &reservation_turn, &reservation_source)).await.map_err(|error| anyhow!("classifier admission worker failed: {error}"))?;
+            operation = reserved_operation;
+            if let Some(replay) = replay { return Ok((replay, true)); }
             let classifier_cost_scope = crate::cost_status::scope_token();
-            let mut selection = crate::model_routing::resolve_auto_route_with_inventory(
+            let classifier_store = self.store.clone();
+            let classifier_owner = self._process_owner_lock.clone();
+            let classifier_owner_path = self.session_store_binding().data_dir.join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
+            let classifier_thread = thread_id.to_string();
+            let classifier_turn = turn_id.clone();
+            let classifier_binding = operation.as_ref().map(|operation| operation.binding.clone());
+            let classifier_sink = Arc::new(move |record: RuntimeUsageRecord| {
+                if !owner_lock_is_at_path(&classifier_owner._file, &classifier_owner_path).unwrap_or(false) || crate::cost_status::usage_source_fingerprint(&record.source_id) != classifier_source_fingerprint { return false }
+                let fingerprint = classifier_binding.as_ref().map(|binding| binding.operation_key_fingerprint.as_str());
+                classifier_store.with_turn_operation_claim(fingerprint, || {
+                    if let Some(expected) = &classifier_binding {
+                        let mut current = classifier_store.load_turn_operation_binding(&expected.operation_key_fingerprint)?.ok_or_else(|| anyhow!("classifier reservation is absent"))?;
+                        if let Some(preparation) = current.preparation.as_mut() { preparation.admitted = false; }
+                        anyhow::ensure!(&current == expected, "classifier reservation changed before settlement");
+                    }
+                    settle_preparent_usage_at(&classifier_store, &classifier_thread, &classifier_turn, &crate::cost_status::RuntimeUsageBatch { records: vec![record], ..Default::default() })
+                }).is_ok()
+            });
+            let classifier_origin = crate::cost_status::NativeUsageOrigin::captured_runtime(classifier_cost_scope, turn_id.clone(), classifier_sink);
+            let classifier_source = crate::cost_status::NativeUsageSource::capture_with_origin(classifier_source_id, crate::cost_status::UsageSpendOwner::Auxiliary, Some(classifier_origin));
+            let mut selection = crate::model_routing::resolve_auto_route_with_inventory_for_session_and_cache_policy(
                 &thread_config,
                 &prompt,
                 "",
+                "agent",
                 "auto",
                 "auto",
+                true,
+                Some(classifier_source),
             )
             .await?;
             // The classifier call has already completed. Move its immutable
@@ -12201,12 +12822,9 @@ impl RuntimeThreadManager {
             // engine, every early return must settle this completed
             // classifier call against its captured origin. The bounded clone
             // is intentionally kept out of the original/replayed turn.
-            let settlement = InitialRoutedUsageSettlementGuard::new(
-                self.store.clone(),
-                thread_id,
-                classifier_cost_scope,
-                &initial_routed_usage,
-            );
+            let settlement = if initial_routed_usage.records.iter().all(|record| record.has_captured_origin() && record.is_acknowledged()) && initial_routed_usage.drop_records.is_empty() && initial_routed_usage.dropped_records == 0 {
+                None
+            } else { Some(InitialRoutedUsageSettlementGuard::new(self.store.clone(), thread_id, classifier_cost_scope, &initial_routed_usage)) };
             let route = resolve_runtime_thread_route(
                 &thread_config,
                 &selection.provider,
@@ -12233,7 +12851,7 @@ impl RuntimeThreadManager {
                 reasoning_effort,
                 auto_controls_reasoning,
                 initial_routed_usage,
-                Some(settlement),
+                settlement,
             )
         } else {
             let route = resolve_runtime_thread_route_for_identity(
@@ -12304,16 +12922,17 @@ impl RuntimeThreadManager {
             settings.auto_compact_threshold_percent,
         );
         let now = Utc::now();
-        let turn_id = operation
-            .as_ref()
-            .map(|operation| operation.binding.turn_id.clone())
-            .unwrap_or_else(|| runtime_record_id("turn"));
         compaction.runtime_cost_owner = Some(turn_id.clone());
         let input_summary = req
             .input_summary
             .clone()
             .unwrap_or_else(|| summarize_text(&prompt, SUMMARY_LIMIT));
         let mut turn = TurnRecord {
+source_usage_origin_turn_id: None,
+
+source_accounting: false,
+source_usage_records: Default::default(),
+
             prefix_checkpoint: None,
             decision_receipts: Vec::new(),
             max_output_tokens,
@@ -12355,7 +12974,8 @@ impl RuntimeThreadManager {
             artifacts: Vec::new(),
             workspace: None,
             workspace_snapshots: Vec::new(),
-        };
+
+};
         append_initial_routed_usage_to_turn(&mut turn, &initial_routed_usage);
         // The engine's TurnComplete owns synchronous dropped coverage,
         // including this classifier batch. Pre-persisting the count here and
@@ -12463,9 +13083,9 @@ impl RuntimeThreadManager {
             _ => Op::SendMessage(spec),
         };
 
-        // Reserve mailbox capacity before claiming or persisting anything.
-        // If the caller is cancelled while capacity is unavailable, no
-        // durable or in-memory turn state has changed.
+        // Reserve mailbox capacity before claiming the parent. Cancellation
+        // retains any classifier reservation and its original usage without
+        // handing a parent turn to the Engine.
         let permit = engine
             .tx_op
             .clone()
@@ -12513,10 +13133,9 @@ impl RuntimeThreadManager {
             // before the original request committed its binding. Recheck
             // under the same claim lock before inspecting active-turn state or
             // persisting/sending anything.
-            if let Some(operation) = operation.as_ref()
-                && let Some(original_turn) = self.replay_turn_for_operation(operation)?
-            {
-                return Ok((original_turn, true));
+            if let Some(operation) = operation.as_ref() {
+                if operation.preparation.is_some() { self.verify_turn_preparation(operation)?; }
+                else if let Some(original_turn) = self.replay_turn_for_operation(operation)? { return Ok((original_turn, true)); }
             }
             let Some(state) = active.engines.get_mut(thread_id) else {
                 bail!("Thread engine not loaded");
@@ -12550,16 +13169,47 @@ impl RuntimeThreadManager {
             state.route_model.clone_from(&model);
 
             let persistence_result = (|| -> Result<()> {
-                if let Some(operation) = operation.as_ref() {
-                    self.store
-                        .save_turn_operation_binding(&operation.binding)?;
+                if let Some(operation) = operation.as_ref()
+                    && operation.preparation.is_none()
+                {
+                    self.store.save_turn_operation_binding(&operation.binding)?;
                 }
                 self.store.save_item(&user_item)?;
-                self.store.save_turn(&turn)?;
+                {
+                    let _turn_mutation = self.store.turn_mutation.lock();
+                    if self.store.turn_path(&turn_id)?.exists() {
+                        let reserved = self.store.load_turn(&turn_id)?;
+                        anyhow::ensure!(reserved.thread_id == thread_id && reserved.routing_settlement, "pre-parent accounting reservation changed before parent admission");
+                        if let Some(ticket) = operation.as_ref().and_then(|operation| operation.preparation.as_ref()) {
+                            anyhow::ensure!(reserved.usage.is_none() && reserved.prefix_checkpoint.is_none() && reserved.routed_usage.is_empty() && reserved.routed_usage_drop_records.is_empty() && reserved.source_usage_records.keys().all(|key| key == &ticket.0.source_fingerprint), "classifier reservation contains unrelated history or sources");
+                        }
+                        for record in reserved.source_usage_records.values() {
+                            let key = routed_usage_source_fingerprint(&record.source_id);
+                            if let Some(current) = turn.source_usage_records.get(&key) { anyhow::ensure!(current == record, "pre-parent source changed before parent admission"); }
+                            turn.source_usage_records.insert(key, record.clone());
+                        }
+                        anyhow::ensure!(reserved.source_usage_records.is_empty() || reserved.source_usage_origin_turn_id.as_deref() == Some(reserved.id.as_str()), "classifier reservation is an inherited usage projection");
+                        turn.source_usage_origin_turn_id = reserved.source_usage_origin_turn_id.clone();
+                        turn.source_accounting |= reserved.source_accounting;
+                        turn.schema_version = turn.schema_version.max(reserved.schema_version);
+                        for key in reserved.routed_usage_source_ids { if !turn.routed_usage_source_ids.contains(&key) { turn.routed_usage_source_ids.push(key); } }
+                        turn.routed_usage_dropped_records = turn.routed_usage_dropped_records.max(reserved.routed_usage_dropped_records);
+                    }
+                    self.store.save_turn(&turn)?;
+                }
                 current_thread.schema_version = current_thread.schema_version.max(turn.schema_version);
                 current_thread.latest_turn_id = Some(turn_id.clone());
                 current_thread.updated_at = now;
-                self.store.save_thread(&current_thread)
+                self.store.save_thread(&current_thread)?;
+                if let Some(operation) = operation.as_ref()
+                    && operation.preparation.is_some()
+                {
+                    self.verify_turn_preparation(operation)?;
+                    let mut accepted = operation.binding.clone();
+                    accepted.preparation.as_mut().ok_or_else(|| anyhow!("turn preparation is absent"))?.admitted = true;
+                    self.store.save_turn_operation_binding(&accepted)?;
+                }
+                Ok(())
             })();
             if let Err(persistence_error) = persistence_result {
                 let cleanup_error = self
@@ -12852,6 +13502,11 @@ impl RuntimeThreadManager {
             thread.auto_approve,
         );
         let turn = TurnRecord {
+            source_usage_origin_turn_id: None,
+
+            source_accounting: false,
+            source_usage_records: Default::default(),
+
             prefix_checkpoint: None,
             decision_receipts: Vec::new(),
             max_output_tokens: None,
@@ -13291,6 +13946,44 @@ impl RuntimeThreadManager {
                 record_restore_points: true,
                 lsp_config,
                 runtime_services: crate::tools::spec::RuntimeToolServices {
+                    accounting_origin: Some({
+                        let store = self.store.clone();
+                        let process_owner = self._process_owner_lock.clone();
+                        let owner_path = self
+                            .session_store_binding()
+                            .data_dir
+                            .join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
+                        let thread_id = thread.id.clone();
+                        let owner = format!("thread_aux:{}", thread.id);
+                        let origin_id = runtime_record_id("thread_aux_origin");
+                        let sink = Arc::new(move |record: RuntimeUsageRecord| {
+                            if !owner_lock_is_at_path(&process_owner._file, &owner_path)
+                                .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                            let identity = routed_usage_source_fingerprint(&format!(
+                                "{origin_id}:{}",
+                                routed_usage_source_fingerprint(&record.source_id)
+                            ));
+                            let turn_id = format!("turn_aux_{}", &identity[..32]);
+                            settle_preparent_usage_at(
+                                &store,
+                                &thread_id,
+                                &turn_id,
+                                &crate::cost_status::RuntimeUsageBatch {
+                                    records: vec![record],
+                                    ..Default::default()
+                                },
+                            )
+                            .is_ok()
+                        });
+                        crate::cost_status::NativeUsageOrigin::captured_runtime(
+                            crate::cost_status::scope_token(),
+                            owner,
+                            sink,
+                        )
+                    }),
                     task_manager: self.task_manager.lock().upgrade(),
                     automations: self.automations.lock().clone(),
                     task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
@@ -14134,42 +14827,138 @@ impl RuntimeThreadManager {
         self.store.history_from_records(turns, items_by_turn)
     }
 
-    pub(super) fn append_routed_usage_to_turn(
+    fn append_usage_source_to_turn(
+        &self,
+        turn_id: &str,
+        record: &RuntimeUsageRecord,
+    ) -> Result<()> {
+        if record.settlement.is_none() {
+            return self.append_unverified_routed_usage_to_turn(
+                turn_id,
+                &record.source_id,
+                record.usage.route.clone(),
+            );
+        }
+        let _turn_mutation = self.store.turn_mutation.lock();
+        let mut turn = self.store.load_turn(turn_id)?;
+        match append_usage_source_record(&mut turn, record) {
+            Ok(changed) => {
+                if changed {
+                    self.store.save_turn(&turn)?;
+                }
+                if record.has_native_producer() {
+                    record.acknowledge_persisted()?;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "wire usage revision has no protected admission");
+                let mut route = record.usage.route.clone();
+                route.billing_mode = RouteBillingMode::Unknown;
+                route.provider_live_pricing = None;
+                if append_routed_usage_drop_record(
+                    &mut turn,
+                    RuntimeUsageDropRecord {
+                        source_id: format!(
+                            "unverified-wire:{}",
+                            routed_usage_source_fingerprint(&record.source_id)
+                        ),
+                        route,
+                        reason:
+                            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                    },
+                ) {
+                    self.store.save_turn(&turn)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn append_unverified_routed_usage_to_turn(
         &self,
         turn_id: &str,
         source_id: &str,
-        usage: EffectiveRouteUsage,
+        mut route: EffectiveRouteEnvelope,
     ) -> Result<()> {
+        route.billing_mode = RouteBillingMode::Unknown;
+        route.provider_live_pricing = None;
         let _turn_mutation = self.store.turn_mutation.lock();
         let mut turn = self.store.load_turn(turn_id)?;
-        if append_routed_usage_record(&mut turn, source_id, usage) {
+        if append_routed_usage_drop_record(
+            &mut turn,
+            RuntimeUsageDropRecord {
+                source_id: format!(
+                    "unverified-wire:{}",
+                    routed_usage_source_fingerprint(source_id)
+                ),
+                route,
+                reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            },
+        ) {
             self.store.save_turn(&turn)?;
         }
         Ok(())
     }
 
     pub(super) fn register_runtime_usage_sink(&self, turn_id: &str) {
+        let Ok(original_turn) = self.store.load_turn(turn_id) else {
+            tracing::warn!("Runtime accounting owner has no admitted turn");
+            return;
+        };
+        let expected_thread = original_turn.thread_id;
         let store = self.store.clone();
+        let process_owner = self._process_owner_lock.clone();
+        let owner_path = self
+            .session_store_binding()
+            .data_dir
+            .join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
+        let source_thread = expected_thread.clone();
+        let drop_thread = expected_thread.clone();
+        let drop_owner = process_owner.clone();
+        let drop_owner_path = owner_path.clone();
         let sink_turn_id = turn_id.to_string();
         let drop_store = self.store.clone();
         let drop_turn_id = turn_id.to_string();
         crate::cost_status::register_runtime_usage_sink_with_drop(
             turn_id,
             Arc::new(move |record: RuntimeUsageRecord| {
+                if !owner_lock_is_at_path(&process_owner._file, &owner_path).unwrap_or(false) {
+                    return false;
+                }
+                let _thread_mutation = store.thread_mutation.lock();
+                if store.load_thread(&source_thread).is_err() {
+                    return false;
+                }
                 let _turn_mutation = store.turn_mutation.lock();
                 let Ok(mut turn) = store.load_turn(&sink_turn_id) else {
                     return false;
                 };
-                if !append_routed_usage_record(&mut turn, &record.source_id, record.usage) {
-                    return true;
+                if turn.thread_id != source_thread {
+                    return false;
                 }
-                store.save_turn(&turn).is_ok()
+                match append_usage_source_record(&mut turn, &record) {
+                    Ok(_) => store.save_turn(&turn).is_ok(),
+                    Err(error) => {
+                        tracing::warn!(%error, "durable Runtime usage correction refused");
+                        false
+                    }
+                }
             }),
             Some(Arc::new(move |record: RuntimeUsageDropRecord| {
+                if !owner_lock_is_at_path(&drop_owner._file, &drop_owner_path).unwrap_or(false) {
+                    return false;
+                }
+                let _thread_mutation = drop_store.thread_mutation.lock();
+                if drop_store.load_thread(&drop_thread).is_err() {
+                    return false;
+                }
                 let _turn_mutation = drop_store.turn_mutation.lock();
                 let Ok(mut turn) = drop_store.load_turn(&drop_turn_id) else {
                     return false;
                 };
+                if turn.thread_id != drop_thread {
+                    return false;
+                }
                 if !append_routed_usage_drop_record(&mut turn, record) {
                     return true;
                 }
@@ -14177,14 +14966,31 @@ impl RuntimeThreadManager {
             })),
         );
         let decision_store = self.store.clone();
+        let decision_owner = self._process_owner_lock.clone();
+        let decision_owner_path = self
+            .session_store_binding()
+            .data_dir
+            .join(RUNTIME_PROCESS_OWNER_LOCK_FILE);
         let decision_turn_id = turn_id.to_string();
         crate::cost_status::register_runtime_decision_sink(
             turn_id,
             Arc::new(move |receipt| {
+                if !owner_lock_is_at_path(&decision_owner._file, &decision_owner_path)
+                    .unwrap_or(false)
+                {
+                    return false;
+                }
+                let _thread_mutation = decision_store.thread_mutation.lock();
+                if decision_store.load_thread(&expected_thread).is_err() {
+                    return false;
+                }
                 let _turn_mutation = decision_store.turn_mutation.lock();
                 let Ok(mut turn) = decision_store.load_turn(&decision_turn_id) else {
                     return false;
                 };
+                if turn.thread_id != expected_thread {
+                    return false;
+                }
                 if !append_decision_receipt(&mut turn, &receipt) {
                     return true;
                 }
@@ -14474,6 +15280,7 @@ impl RuntimeThreadManager {
         let mut turn_usage: Option<Usage> = None;
         let mut turn_effective_route_usage: Option<Usage> = None;
         let mut turn_routed_usage_dropped_records = 0_u64;
+        let mut source_accounting_received = false;
         // The engine emits an initial request snapshot before connection setup
         // and one terminal snapshot after it knows the outcome. Keep only the
         // latter; a prepared request is not evidence of delivery or a model
@@ -15134,11 +15941,7 @@ impl RuntimeThreadManager {
                                 self.store.save_turn(&turn)?;
                             }
                             for record in batch.records {
-                                self.append_routed_usage_to_turn(
-                                    &turn_id,
-                                    &record.source_id,
-                                    record.usage,
-                                )?;
+                                self.append_usage_source_to_turn(&turn_id, &record)?;
                             }
                             if !batch.drop_records.is_empty() {
                                 let _turn_mutation = self.store.turn_mutation.lock();
@@ -15157,11 +15960,8 @@ impl RuntimeThreadManager {
                                 crate::cost_status::child_usage_from_metadata(metadata)
                         {
                             let source = format!("tool:{id}");
-                            self.append_routed_usage_to_turn(
-                                &turn_id,
-                                &source,
-                                EffectiveRouteUsage { route, usage },
-                            )?;
+                            let _ = usage;
+                            self.append_unverified_routed_usage_to_turn(&turn_id, &source, route)?;
                         }
                     }
                     if let Some(item_id) = tool_items.remove(&id) {
@@ -15302,6 +16102,7 @@ impl RuntimeThreadManager {
                     turn_id: mailbox_turn_id,
                     message:
                         crate::tools::subagent::MailboxMessage::TokenUsage {
+                            record,
                             source_id,
                             route,
                             usage,
@@ -15313,14 +16114,14 @@ impl RuntimeThreadManager {
                         .as_deref()
                         .is_some_and(|started| started == mailbox_turn_id);
                     if belongs_to_turn {
-                        self.append_routed_usage_to_turn(
-                            &turn_id,
-                            &source_id,
-                            EffectiveRouteUsage {
-                                route: *route,
-                                usage,
-                            },
-                        )?;
+                        if let Some(record) =
+                            record.as_ref().filter(|record| record.settlement.is_some())
+                        {
+                            self.append_usage_source_to_turn(&turn_id, record)?;
+                            continue;
+                        }
+                        let _ = usage;
+                        self.append_unverified_routed_usage_to_turn(&turn_id, &source_id, *route)?;
                     }
                 }
                 EngineEvent::CompactionStarted {
@@ -16195,6 +16996,10 @@ impl RuntimeThreadManager {
                             )
                             .ok()
                         });
+                        if let Some(error) = receipt["accounting_error"].as_str() {
+                            turn_status = Some(RuntimeTurnStatus::Failed);
+                            turn_error = Some(format!("Provider usage settlement failed: {error}"));
+                        }
                         let reported = receipt["usage_reported"].as_bool() == Some(true);
                         if reported {
                             primary_usage_reported = primary_usage_reported.saturating_add(1);
@@ -16226,7 +17031,10 @@ impl RuntimeThreadManager {
                         facts.primary_usage_unknown = primary_usage_unknown;
                         facts.primary_usage_missing = primary_usage_missing;
                         turn.model_request_diagnostics = Some(facts);
-                        if reported && let Some(source) = receipt["source_id"].as_str() {
+                        if !turn.source_accounting
+                            && reported
+                            && let Some(source) = receipt["source_id"].as_str()
+                        {
                             let fingerprint = routed_usage_source_fingerprint(source);
                             if !turn.routed_usage_source_ids.contains(&fingerprint)
                                 && turn.routed_usage_source_ids.len()
@@ -16271,14 +17079,22 @@ impl RuntimeThreadManager {
                     .await?;
                 }
                 EngineEvent::TurnUsage {
+                    accounting,
                     max_output_tokens,
                     usage,
                     duration_ms,
                     first_token_ms,
                     request_ms,
                     finish_reason: _,
+                    ..
                 } => {
-                    let cost = priced_step_usage(dispatched_route.as_ref(), &usage);
+                    let cost = if let Some(record) = accounting.as_ref() {
+                        (record.usage.usage == usage)
+                            .then(|| priced_step_usage(Some(&record.usage.route), &usage))
+                            .flatten()
+                    } else {
+                        priced_step_usage(dispatched_route.as_ref(), &usage)
+                    };
                     let billed_prompt = billed_prompt_tokens(&usage);
                     self.emit_event(
                         &thread_id,
@@ -16370,12 +17186,14 @@ impl RuntimeThreadManager {
                 EngineEvent::TurnComplete {
                     usage,
                     parent_route_usage,
+                    source_accounting,
                     routed_usage_dropped_records,
                     status,
                     error,
                     tool_catalog,
                     ..
                 } => {
+                    source_accounting_received = source_accounting;
                     turn_usage = Some(usage);
                     turn_effective_route_usage = Some(parent_route_usage);
                     turn_routed_usage_dropped_records = routed_usage_dropped_records;
@@ -16560,13 +17378,31 @@ impl RuntimeThreadManager {
             }
             turn.ended_at = Some(ended_at);
             turn.duration_ms = turn.started_at.map(|start| duration_ms(start, ended_at));
+            turn.source_accounting |= source_accounting_received;
+            if turn.source_accounting {
+                turn.schema_version = turn
+                    .schema_version
+                    .max(SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION);
+            }
             turn.usage = turn_usage;
             turn.effective_route_usage = turn_effective_route_usage;
             for receipt in &background_usage.decisions {
                 append_decision_receipt(&mut turn, receipt);
             }
+            let mut drained_native_usage = Vec::new();
             for record in background_usage.records {
-                append_routed_usage_record(&mut turn, &record.source_id, record.usage);
+                match append_usage_source_record(&mut turn, &record) {
+                    Ok(_) => {
+                        if record.has_native_producer() {
+                            drained_native_usage.push(record);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "source receipt was retained without replacing turn accounting");
+                        turn.routed_usage_dropped_records =
+                            turn.routed_usage_dropped_records.saturating_add(1);
+                    }
+                }
             }
             let background_exact_drop_count = background_usage.drop_records.len();
             for record in background_usage.drop_records {
@@ -16600,6 +17436,20 @@ impl RuntimeThreadManager {
             // busy and refuses every later session save.
             let swept_items = self.settle_turn_items(&turn, turn_status, ended_at)?;
             self.store.save_turn(&turn)?;
+            for record in &drained_native_usage {
+                if let Err(error) = record.acknowledge_persisted() {
+                    turn.status = RuntimeTurnStatus::Failed;
+                    turn.error = Some(format!(
+                        "Failed to acknowledge drained Runtime usage after terminal publication: {error}"
+                    ));
+                    self.store.save_turn(&turn).context(
+                        "Failed to record drained Runtime usage acknowledgement failure",
+                    )?;
+                    return Err(error).context(
+                        "Failed to acknowledge drained Runtime usage after terminal publication",
+                    );
+                }
+            }
             (turn, swept_items)
         };
         // Published after the record guard is released: `emit_event` awaits,

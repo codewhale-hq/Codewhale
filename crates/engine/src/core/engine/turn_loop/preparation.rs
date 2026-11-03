@@ -668,6 +668,7 @@ impl Engine {
                 &self.api_config,
                 &stream_request.messages,
                 self.config.compaction.runtime_cost_owner.as_deref(),
+                self.config.runtime_services.accounting_origin.clone(),
                 &self.cancel_token,
             ));
         }

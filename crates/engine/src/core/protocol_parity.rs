@@ -630,6 +630,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             error,
             tool_catalog,
             base_url,
+            ..
         } => wire::EventMsg::TurnComplete {
             thread_id,
             session_id,
@@ -658,6 +659,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             first_token_ms,
             request_ms,
             finish_reason: _,
+            ..
         } => wire::EventMsg::TurnUsage {
             max_output_tokens: *max_output_tokens,
             thread_id,
@@ -1445,6 +1447,8 @@ mod tests {
         };
         let complete = event_to_protocol(
             &Event::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -1489,6 +1493,7 @@ mod tests {
         for (event, tag) in [
             (
                 Event::TurnUsage {
+                    accounting: None,
                     max_output_tokens: None,
                     usage: parent,
                     duration_ms: 12,
@@ -1521,6 +1526,8 @@ mod tests {
     #[test]
     fn manual_compaction_terminal_keeps_its_operation_id_in_projection() {
         let event = Event::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: Some("compact-1".into()),
@@ -1588,6 +1595,8 @@ mod tests {
                 submission_id: Some("sub-host-1".into()),
             },
             Event::TurnComplete {
+                source_accounting: false,
+
                 turn_id: Some("turn-1".into()),
                 submission_id: Some("sub-host-1".into()),
                 compaction_id: None,
@@ -1617,6 +1626,7 @@ mod tests {
                 request_ms: None,
             },
             Event::TurnUsage {
+                accounting: None,
                 max_output_tokens: None,
                 usage,
                 duration_ms: 12,

@@ -2880,6 +2880,8 @@ impl Engine {
         let pending_post_turn = self.reserve_post_turn_snapshot();
         let status = terminal_turn_status_at_settlement(status, self.cancel_token.is_cancelled());
         terminal_permit.send(Event::TurnComplete {
+            source_accounting: true,
+
             // The composer shell turn started above; it never carries a host
             // submission envelope or compaction id.
             turn_id: Some(turn_id.clone()),
@@ -4150,7 +4152,7 @@ impl Engine {
                             }
                         }
                         Op::StartFleetMember { start, tx } => {
-                            let result = match self.off_turn_subagent_runtime() {
+                            let result = match self.off_turn_subagent_runtime().await {
                                 Some(runtime) => {
                                     crate::tools::subagent::start_fleet_member(
                                         Arc::clone(&self.subagent_manager),
@@ -4183,7 +4185,7 @@ impl Engine {
                         }
                         Op::FollowUpSubAgent { agent_id, text } => {
                             let active_session_id = self.session.id.clone();
-                            let runtime = self.off_turn_subagent_runtime();
+                            let runtime = self.off_turn_subagent_runtime().await;
                             let manager_handle = Arc::clone(&self.subagent_manager);
                             let manager = Arc::clone(&manager_handle);
                             let session = active_session_id.clone();
@@ -5574,6 +5576,8 @@ impl Engine {
         let _ = self.send_event(Event::error(envelope)).await;
         let _ = self
             .send_event(Event::TurnComplete {
+                source_accounting: true,
+
                 turn_id: None,
                 submission_id,
                 compaction_id: None,
@@ -6035,6 +6039,13 @@ impl Engine {
 
         let mut tool_context = self.build_tool_context_for_turn(input_policy, &route);
         if wiring.is_live() {
+            if let Some(owner) = self.config.compaction.runtime_cost_owner.as_deref() {
+                tool_context.accounting_origin = crate::cost_status::NativeUsageOrigin::runtime(
+                    crate::cost_status::scope_token(),
+                    owner,
+                )
+                .ok();
+            }
             tool_context.rlm_caller = rlm_host::CapturedRlmCaller::capture(
                 self,
                 input_policy,
@@ -6602,6 +6613,39 @@ impl Engine {
         let compaction = *compaction;
         let initial_routed_usage = *initial_routed_usage;
         let initial_usage_owner = compaction.runtime_cost_owner.clone();
+        for record in initial_routed_usage
+            .records
+            .iter()
+            .filter(|record| record.settlement.is_some())
+        {
+            let settled = if record.has_captured_origin() {
+                crate::cost_status::settle_runtime_usage_record(
+                    crate::cost_status::scope_token(),
+                    initial_usage_owner.as_deref(),
+                    record,
+                )
+                .await
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "initial usage has no captured native origin",
+                ))
+            };
+            if let Err(error) = settled {
+                let message = format!(
+                    "Cannot start the turn while classifier usage remains unsettled: {error}"
+                );
+                let _ = self
+                    .send_event(Event::error(ErrorEnvelope::classify(
+                        message.clone(),
+                        false,
+                    )))
+                    .await;
+                return SendMessageOutcome::NotStarted {
+                    error: Some(message),
+                };
+            }
+        }
         if autonomous && self.cancel_token.is_cancelled() {
             crate::cost_status::report_runtime_usage_batch(
                 crate::cost_status::scope_token(),
@@ -6789,6 +6833,8 @@ impl Engine {
                 .send_event(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
             terminal_permit.send(Event::TurnComplete {
+                source_accounting: true,
+
                 turn_id: None,
                 submission_id,
                 compaction_id: None,
@@ -7038,17 +7084,11 @@ impl Engine {
             initial_usage_owner.as_deref(),
             &crate::cost_status::RuntimeUsageBatch {
                 decisions: initial_routed_usage.decisions.clone(),
+                records: initial_routed_usage.records.clone(),
                 ..Default::default()
             },
         );
         for record in &initial_routed_usage.records {
-            crate::cost_status::report_effective_route_for_runtime(
-                initial_cost_scope,
-                initial_usage_owner.as_deref(),
-                &record.source_id,
-                &record.usage.route,
-                &record.usage.usage,
-            );
             let _ = self
                 .send_event(Event::RoutedTurnUsage {
                     usage: record.usage.usage.clone(),
@@ -7115,6 +7155,8 @@ impl Engine {
             );
             let error = (status == TurnOutcomeStatus::Failed).then_some(message.clone());
             terminal_permit.send(Event::TurnComplete {
+                source_accounting: true,
+
                 // `TurnStarted` already named this turn; the failed terminal
                 // echoes it and the submission that started it.
                 turn_id: Some(turn.id.clone()),
@@ -7144,13 +7186,12 @@ impl Engine {
             return outcome;
         }
 
-        // Headless/runtime hosts supply their durable turn owner. Interactive
-        // turns historically supplied none, leaving a detached child with
-        // only the soon-to-be-sealed mailbox. Install this turn-local sink
-        // only after every pre-dispatch failure return, and retire/clear it at
-        // settlement so the next turn always receives a fresh owner.
-        let interactive_runtime_cost_owner = if self.config.terminal_chrome_enabled
-            && self.config.compaction.runtime_cost_owner.is_none()
+        // Headless/runtime hosts supply their durable turn owner; an embedded
+        // host may supply its captured Session origin. Only an otherwise
+        // unowned interactive turn installs this turn-local fallback, after
+        // pre-dispatch failures, and retires it at settlement.
+        let interactive_runtime_cost_owner = if self.config.compaction.runtime_cost_owner.is_none()
+            && self.config.runtime_services.accounting_origin.is_none()
         {
             let owner = format!("interactive:{}:{}", self.session.id, turn.id);
             crate::usage_persistence::register_persistent_interactive_runtime_usage_sink(
@@ -7164,6 +7205,22 @@ impl Engine {
         } else {
             None
         };
+
+        let turn_accounting_origin = self
+            .config
+            .compaction
+            .runtime_cost_owner
+            .as_deref()
+            .map(|owner| {
+                crate::cost_status::NativeUsageOrigin::runtime(
+                    crate::cost_status::scope_token(),
+                    owner,
+                )
+            })
+            .transpose()
+            .map(|origin| {
+                origin.or_else(|| self.config.runtime_services.accounting_origin.clone())
+            });
 
         let previous_goal_objective = self.config.goal_objective.clone();
         let previous_goal_token_budget = self.config.goal_token_budget;
@@ -7441,7 +7498,7 @@ impl Engine {
         // so the stall watchdog never reports a turn that already ended.
         self.turn_heartbeat.idle();
         let _post_timing = codewhale_runtime::logging::PhaseTimer::start("turn_postprocessing");
-        let (mut status, error) = match turn_result {
+        let (mut status, mut error) = match turn_result {
             Ok(outcome) => outcome,
             Err(panic) => {
                 let detail = codewhale_util::utils::panic_message(&*panic);
@@ -7456,6 +7513,20 @@ impl Engine {
                 )
             }
         };
+
+        let accounting_settlement = match turn_accounting_origin {
+            Ok(Some(origin)) => origin.flush_retained_usage().await,
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        if let Err(accounting_error) = accounting_settlement {
+            if status == TurnOutcomeStatus::Completed {
+                status = TurnOutcomeStatus::Failed;
+            }
+            error.get_or_insert_with(|| {
+                format!("Turn usage remains unacknowledged: {accounting_error}")
+            });
+        }
 
         // Update session usage
         self.session.total_usage.add(&turn.usage);
@@ -7518,6 +7589,7 @@ impl Engine {
         .then(|| {
             crate::tools::subagent::advisor::AdvisorUsageContext::capture(
                 self.config.compaction.runtime_cost_owner.as_deref(),
+                self.config.runtime_services.accounting_origin.clone(),
             )
         });
         if let Some(owner) = interactive_runtime_cost_owner.as_deref() {
@@ -7555,6 +7627,8 @@ impl Engine {
         // name was read as user-visible delivery on Interrupted turns that
         // rendered nothing.)
         let completion_sender = terminal_permit.send(Event::TurnComplete {
+            source_accounting: true,
+
             // The authoritative terminal names the turn that actually ran and
             // the host submission that started it (`None` for self-starts).
             turn_id: Some(turn.id.clone()),
@@ -7704,6 +7778,8 @@ impl Engine {
                 .await;
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     // Purge carries none of the turn, submission or compaction
                     // identities: it never starts a model turn.
                     turn_id: None,
@@ -7728,17 +7804,38 @@ impl Engine {
         .await;
         let messages_before = self.session.messages.len();
 
-        let (status, error) = match run_purge(
-            &client,
-            self.api_provider,
-            &self.session.id,
-            &self.session.messages,
-            &self.session.model,
-            self.session.reasoning_effort.clone(),
-            client.effective_max_output_tokens(&self.session.model),
-        )
-        .await
-        {
+        let purge = async {
+            let origin =
+                if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
+                    origin
+                } else {
+                    let scope = crate::cost_status::scope_token();
+                    let session_id = self.session.id.clone();
+                    codewhale_runtime::runtime_control::owner_work(move || {
+                        let manager = crate::session_manager::SessionManager::default_location()?;
+                        Ok(crate::cost_status::NativeUsageOrigin::session(
+                            scope,
+                            manager.sessions_dir().to_path_buf(),
+                            session_id,
+                        ))
+                    })
+                    .await
+                    .map_err(|error| format!("Purge accounting admission failed: {error}"))?
+                };
+            run_purge(
+                &client,
+                self.api_provider,
+                &self.session.id,
+                &self.session.messages,
+                &self.session.model,
+                self.session.reasoning_effort.clone(),
+                client.effective_max_output_tokens(&self.session.model),
+                origin,
+            )
+            .await
+        }
+        .await;
+        let (status, error) = match purge {
             Ok(result) => {
                 let messages_after = result.messages.len();
                 self.session.replace_messages(result.messages);
@@ -7768,6 +7865,8 @@ impl Engine {
 
         let _ = self
             .send_event(Event::TurnComplete {
+                source_accounting: true,
+
                 // Purge carries none of the turn, submission or compaction
                 // identities: it never starts a model turn.
                 turn_id: None,
@@ -7876,7 +7975,11 @@ impl Engine {
             reasoning_effort: self.session.reasoning_effort.clone(),
             reasoning_effort_auto: self.session.reasoning_effort_auto,
         };
-        self.build_tool_context_for_turn(&authority, &route)
+        let mut context = self.build_tool_context_for_turn(&authority, &route);
+        if context.accounting_origin.is_none() {
+            context.accounting_origin = self.config.runtime_services.accounting_origin.clone();
+        }
+        context
     }
 
     /// Build a child runtime from the installed session route, outside any
@@ -7884,12 +7987,32 @@ impl Engine {
     /// (`Op::FollowUpSubAgent`). Mirrors the per-turn runtime the `agent` tool
     /// receives, minus the turn-scoped fork context and mailbox barrier: a
     /// continued fork is a background child of the session, not of a turn.
-    fn off_turn_subagent_runtime(&self) -> Option<SubAgentRuntime> {
+    async fn off_turn_subagent_runtime(&self) -> Option<SubAgentRuntime> {
         let client = self.codewhale_client.clone()?;
         let mode = self.current_mode;
         let allow_shell = self.session.allow_shell && !matches!(mode, AppMode::Plan);
         let shell_policy = shell_policy_for_mode(mode, allow_shell);
-        let tool_context = self.build_tool_context(mode, self.session.auto_approve);
+        let mut tool_context = self.build_tool_context(mode, self.session.auto_approve);
+        if tool_context.accounting_origin.is_none() {
+            let scope = crate::cost_status::scope_token();
+            let session_id = self.session.id.clone();
+            match codewhale_runtime::runtime_control::owner_work(move || {
+                let manager = crate::session_manager::SessionManager::default_location()?;
+                Ok(crate::cost_status::NativeUsageOrigin::session(
+                    scope,
+                    manager.sessions_dir().to_path_buf(),
+                    session_id,
+                ))
+            })
+            .await
+            {
+                Ok(origin) => tool_context.accounting_origin = Some(origin),
+                Err(error) => {
+                    tracing::warn!(%error, "off-turn child accounting admission failed");
+                    return None;
+                }
+            }
+        }
         let mut rt = SubAgentRuntime::new(
             client,
             self.session.model.clone(),

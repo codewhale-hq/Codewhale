@@ -4,8 +4,8 @@ fn parse_cli(args: &[&str]) -> Cli {
 
 #[test]
 fn worker_command_policy_prompt_that_looks_like_a_flag_parses() {
-    use codewhale_engine::fleet::executor::build_worker_exec_command;
     use codewhale_config::FleetExecConfig;
+    use codewhale_engine::fleet::executor::build_worker_exec_command;
     use codewhale_protocol::fleet::FleetTaskSpec;
 
     let task: FleetTaskSpec = serde_json::from_value(serde_json::json!({
@@ -509,8 +509,25 @@ async fn direct_workflow_tool_runs_without_an_operator_model_turn() {
     };
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
     let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(workspace.path()));
+    let manager = Arc::new(
+        session_manager::SessionManager::new(workspace.path().join("sessions"))
+            .expect("isolated Workflow session store"),
+    );
+    let (_, source, _lease) = admit_cli_saved_operation(
+        Some(manager),
+        uuid::Uuid::new_v4().to_string(),
+        workspace.path().to_path_buf(),
+        route.model.clone(),
+        route.provider.clone(),
+        "Run a model-free Workflow".to_string(),
+    )
+    .await
+    .expect("admitted Workflow invocation");
+    let origin = source
+        .usage_origin(codewhale_engine::cost_status::scope_token())
+        .expect("captured Workflow usage origin");
     let (tool, context) =
-        build_direct_workflow_tool(&config, &route, workspace.path(), event_tx, plugins)
+        build_direct_workflow_tool(&config, &route, workspace.path(), event_tx, plugins, origin)
             .await
             .expect("build direct workflow runtime");
 
@@ -803,6 +820,7 @@ async fn explicit_exec_model_routes_to_unique_authenticated_provider_candidate()
         &config,
         codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
         "pong",
+        None,
     )
     .await
     .expect("explicit GLM should route to the configured Z.ai provider");
@@ -835,6 +853,7 @@ async fn explicit_exec_model_reports_ambiguous_authenticated_provider_candidates
         &config,
         codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
         "pong",
+        None,
     )
     .await
     .expect_err("ambiguous GLM route should ask for an explicit provider");
@@ -869,7 +888,7 @@ async fn cli_auto_model_honors_a_fixed_reasoning_preference() {
         __cw_config_init_13_value
     };
 
-    let route = resolve_cli_auto_route(&config, "auto", "debug a failing test")
+    let route = resolve_cli_auto_route(&config, "auto", "debug a failing test", None)
         .await
         .expect("Auto model route");
 
@@ -963,7 +982,8 @@ fn cli_route_execution_config_preserves_the_legacy_literal_custom_route() {
             .expect("legacy identity remains repeatedly resolvable");
         assert_eq!(identity.key.as_str(), "custom");
     }
-    let client = codewhale_engine::client::CodewhaleClient::new(&execution).expect("legacy execution client");
+    let client = codewhale_engine::client::CodewhaleClient::new(&execution)
+        .expect("legacy execution client");
     assert_eq!(client.base_url(), "http://127.0.0.1:18183/v1");
 }
 
@@ -1529,6 +1549,7 @@ async fn forced_exec_route_keeps_custom_provider_when_model_matches_builtin_cata
         codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
         "audit",
         true,
+        None,
     )
     .await
     .expect("forced route");
@@ -1577,7 +1598,7 @@ async fn no_flag_exec_keeps_configured_named_custom_route_for_matching_builtin_m
         Some("override-model")
     ));
 
-    let route = resolve_cli_exec_route(&config, &model, "audit", force)
+    let route = resolve_cli_exec_route(&config, &model, "audit", force, None)
         .await
         .expect("no-flag configured route");
     let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
@@ -1611,7 +1632,7 @@ async fn configured_review_default_keeps_named_custom_route_and_exact_receipt() 
         "explicit-review-model"
     );
 
-    let route = resolve_cli_exec_route(&config, &model, "review diff", true)
+    let route = resolve_cli_exec_route(&config, &model, "review diff", true, None)
         .await
         .expect("configured review route");
     let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
@@ -1709,6 +1730,8 @@ fn review_failure_payload_preserves_usage_without_complete_claim() {
     assert_eq!(payload["completed_review_passes"], 1);
     assert_eq!(payload["planned_review_passes"], 2);
     assert_eq!(payload["publication"], "not_attempted");
+    assert_eq!(payload["usage_scope"], "completed_review_passes");
+    assert_eq!(payload["usage_coverage"], "incomplete");
     assert_eq!(payload["usage"]["input_tokens"], 24);
     assert_eq!(payload["usage"]["reasoning_tokens"], 3);
     assert!(payload.get("review").is_none());

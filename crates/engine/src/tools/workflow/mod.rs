@@ -1411,8 +1411,9 @@ async fn start_workflow(
     let fleet = if let Some(name) = workflow_fleet_name(&input)? {
         let workspace = context.workspace.clone();
         let api_config = runtime.api_config.clone();
+        let accounting_origin = context.accounting_origin.clone();
         tokio::task::spawn_blocking(move || {
-            workflow_fleet_binding(&name, &workspace, api_config.as_deref())
+            workflow_fleet_binding(&name, &workspace, api_config.as_deref(), accounting_origin)
         })
         .await
         .map_err(|error| ToolError::execution_failed(format!("Fleet loading failed: {error}")))??
@@ -1800,6 +1801,7 @@ fn workflow_fleet_binding(
     name: &str,
     workspace: &std::path::Path,
     api_config: Option<&codewhale_runtime::config::Config>,
+    accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
 ) -> Result<WorkflowFleetBinding, ToolError> {
     let roots = crate::fleet::exact::fleet_search_roots(workspace);
     let (document, id) = crate::fleet::exact::load_fleet_document(name, workspace, api_config)
@@ -1839,6 +1841,7 @@ fn workflow_fleet_binding(
         chrono::Utc::now().to_rfc3339(),
         api_config,
         &roots,
+        accounting_origin,
     )
     .map_err(ToolError::invalid_input)?;
     Ok(WorkflowFleetBinding::Exact(Arc::new(operation)))

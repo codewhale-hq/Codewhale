@@ -920,6 +920,7 @@ pub(crate) async fn build_preview_request_inputs(
         Err(error) => return posture(None, PreviewUnresolved::PlanFailed(error)),
     };
     let planned = plan_turn_route(TurnRoutePlanRequest {
+        accounting_origin: None,
         route_config: &route_config,
         app_route_identity: &app_route_identity,
         api_provider: app.api_provider,

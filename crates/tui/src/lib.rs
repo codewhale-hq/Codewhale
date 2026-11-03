@@ -10563,6 +10563,53 @@ fn pick_session_id() -> Result<String> {
     Ok(session.id.clone())
 }
 
+async fn admit_cli_saved_operation(
+    manager: Option<std::sync::Arc<session_manager::SessionManager>>,
+    id: String,
+    workspace: PathBuf,
+    model: String,
+    provider: codewhale_runtime::config::ProviderIdentity,
+    prompt: String,
+) -> Result<(
+    std::sync::Arc<session_manager::SessionManager>,
+    session_manager::SessionWriteReceipt,
+    session_manager::SessionLease,
+)> {
+    codewhale_runtime::runtime_control::owner_work(move || {
+        let manager = match manager {
+            Some(manager) => manager,
+            None => std::sync::Arc::new(session_manager::SessionManager::default_location()?),
+        };
+        let lease = manager.reserve_session_for_external_write(&id)?;
+        let source = manager.expect_absent_session(&id)?;
+        let messages = vec![codewhale_models::Message {
+            role: codewhale_models::Role::User,
+            content: vec![codewhale_models::ContentBlock::Text {
+                text: prompt,
+                cache_control: None,
+            }],
+        }];
+        let mut saved = session_manager::create_saved_session_with_id_and_mode(
+            id,
+            &messages,
+            &model,
+            &workspace,
+            0,
+            None,
+            Some("exec"),
+        );
+        let (kind, provider_id) = exec_stream_provider_route(&provider);
+        saved.metadata.model_provider = kind;
+        saved.metadata.model_provider_id = provider_id;
+        saved.metadata.cost.coverage_recorded = true;
+        saved.write_receipt = Some(source);
+        saved.capture_publication(session_manager::SessionWriteOwner::control())?;
+        let publication = manager.publish_session(&saved)?;
+        Ok((manager, publication.write_receipt(), lease))
+    })
+    .await
+}
+
 async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     initialize_cloud_facts(config);
     use codewhale_engine::client::CodewhaleClient;
@@ -10622,9 +10669,35 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         })
         .transpose()?;
     let review_workspace = std::env::current_dir()?;
-    // A stateless CLI review has no Engine session or Native caller to invent.
-    let review_context = codewhale_engine::tools::spec::ToolContext::new(&review_workspace)
+    let model = resolve_review_model(config, args.model.as_deref());
+    anyhow::ensure!(
+        args.money_cap_usd.is_none() || !model.trim().eq_ignore_ascii_case("auto"),
+        "--money-cap-usd requires a fixed review model; Auto may dispatch a separately priced classifier"
+    );
+    let review_rates = match (args.input_usd_per_mtok, args.output_usd_per_mtok) {
+        (Some(input), Some(output)) => Some(codewhale_engine::tools::review_triage::SpendRates {
+            input_usd_per_million: input,
+            output_usd_per_million: output,
+        }),
+        _ => None,
+    };
+    let (_, review_source, _review_lease) = admit_cli_saved_operation(
+        None,
+        uuid::Uuid::new_v4().to_string(),
+        review_workspace.clone(),
+        model.clone(),
+        config
+            .active_provider_identity()
+            .map_err(anyhow::Error::msg)?,
+        format!("Review the following diff:\n\n{diff}"),
+    )
+    .await
+    .context("could not admit the review's saved accounting operation")?;
+    let review_accounting_origin =
+        review_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
+    let mut review_context = codewhale_engine::tools::spec::ToolContext::new(&review_workspace)
         .with_features(config.features());
+    review_context.accounting_origin = Some(review_accounting_origin.clone());
     // #6510: one review prompt authority. Plain diffs and PRs both ask for
     // the structured review contract; a plain diff renders it locally.
     //
@@ -10657,13 +10730,19 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
             format!("Review the following diff and provide feedback:\n\n{diff}\n\nEnd of diff.")
         }]
     };
-    let model = resolve_review_model(config, args.model.as_deref());
     let route_input = prompts
         .iter()
         .max_by_key(|prompt| prompt.chars().count())
         .expect("review has at least one prompt");
-    let route = resolve_cli_exec_route(config, &model, route_input, force_configured_route).await?;
-    let execution_config = config_for_cli_route(config, &route)?;
+    let route = resolve_cli_exec_route(
+        config,
+        &model,
+        route_input,
+        force_configured_route,
+        Some(review_accounting_origin.clone()),
+    )
+    .await?;
+    let execution_config = review_config_with_spend_rates(config, &route, review_rates)?;
     codewhale_engine::provider_lake::refresh_account_catalog_before_first_request(
         &execution_config,
     )
@@ -10700,13 +10779,6 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         .as_ref()
         .map(codewhale_engine::tools::review::PrReviewAccumulator::new);
     let review_triage = codewhale_engine::tools::review_triage::triage_review(&diff);
-    let review_rates = match (args.input_usd_per_mtok, args.output_usd_per_mtok) {
-        (Some(input), Some(output)) => Some(codewhale_engine::tools::review_triage::SpendRates {
-            input_usd_per_million: input,
-            output_usd_per_million: output,
-        }),
-        _ => None,
-    };
     // Visible-text reserve for this exact route/model (#6285). A reasoning route
     // shares one `max_tokens` allowance between hidden reasoning and visible
     // text, so the review request has to keep room for the review itself.
@@ -10739,7 +10811,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let mut review_anchors = codewhale_engine::tools::review_core::ReviewAnchorReport::default();
     let mut review_tools_used: Vec<String> = Vec::new();
     let mut review_stop: Option<codewhale_engine::tools::review_triage::ReviewStop> = None;
-    let mut review_spend_usd = None;
+    let mut review_spend_usd = review_budget.money_limit_supported.then_some(0.0);
     for (index, user_prompt) in prompts.into_iter().enumerate() {
         let reasoning_effort = route.reasoning_effort.and_then(|effort| {
             review_reasoning_effort_value_for_prompt(
@@ -10756,10 +10828,22 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         request.budget = review_budget.tool_budget();
         request.max_output_tokens = Some(review_allowance);
         request.reasoning_effort = reasoning_effort;
-        request.spend_rates = review_rates;
-        request.money_cap_usd = review_budget
+        request.accounting_origin = Some(review_accounting_origin.clone());
+        if let Some(cap) = review_budget
             .money_cap_usd
-            .filter(|_| review_budget.money_limit_supported);
+            .filter(|_| review_budget.money_limit_supported)
+        {
+            let remaining = cap - review_spend_usd.unwrap_or(0.0);
+            if remaining <= 0.0 {
+                return report_failure(
+                    &usage,
+                    index,
+                    publication,
+                    "the per-review money cap was reached; no additional pass was dispatched and no partial review was accepted or posted".to_string(),
+                );
+            }
+            request.money_cap_usd = Some(remaining);
+        }
         request.intent = Some(intent.clone());
         request.refute = matches!(
             review_triage.risk,
@@ -10797,7 +10881,26 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         review_anchors.anchored += result.anchors.anchored;
         review_anchors.unanchored += result.anchors.unanchored;
         review_stop = result.stop.clone().or(review_stop);
-        review_spend_usd = result.spend_usd.or(review_spend_usd);
+        if review_budget.money_limit_supported {
+            let Some(spend) = result.spend_usd else {
+                return report_failure(
+                    &usage,
+                    index,
+                    publication,
+                    "the review's frozen USD source receipts could not verify its money cap; no partial review was accepted or posted".to_string(),
+                );
+            };
+            let total = review_spend_usd.unwrap_or(0.0) + spend;
+            if !total.is_finite() {
+                return report_failure(
+                    &usage,
+                    index,
+                    publication,
+                    "the review's accumulated source spend is not finite; no partial review was accepted or posted".to_string(),
+                );
+            }
+            review_spend_usd = Some(total);
+        }
         if codewhale_models::is_incomplete_stop_reason(review_stop_reason.as_deref()) {
             // #6285: budget exhaustion is an infrastructure outcome, not a
             // review verdict. The PR was never judged, so the message must not
@@ -11142,6 +11245,8 @@ fn review_failure_payload(
         "publication": publication.as_str(),
         "error": message,
         "usage": usage,
+        "usage_scope": "completed_review_passes",
+        "usage_coverage": "incomplete",
         "completed_review_passes": completed_passes,
         "planned_review_passes": planned_passes,
     })
@@ -11175,7 +11280,7 @@ fn report_review_failure(
     let usage = serde_json::to_string(usage)?;
     let publication = publication.as_str();
     bail!(
-        "{message}; publication: {publication}; completed review passes: {completed_passes}/{planned_passes}; accumulated usage: {usage}"
+        "{message}; publication: {publication}; completed review passes: {completed_passes}/{planned_passes}; known usage from completed passes (incomplete total coverage): {usage}"
     )
 }
 
@@ -11198,6 +11303,62 @@ fn review_execution_route(config: &Config, args: &ReviewArgs) -> Result<(Config,
     Ok((resolved, force_configured_route))
 }
 
+fn review_config_with_spend_rates(
+    config: &Config,
+    route: &CliAutoRoute,
+    rates: Option<codewhale_engine::tools::review_triage::SpendRates>,
+) -> Result<Config> {
+    let mut scoped = config_for_cli_route(config, route)?;
+    let Some(rates) = rates else {
+        return Ok(scoped);
+    };
+    let client = codewhale_engine::client::CodewhaleClient::new(&scoped)?;
+    let envelope = client.effective_route_envelope(&route.model, chrono::Utc::now());
+    let provider = client.admitted_provider_identity().key.to_string();
+    let endpoint = client.base_url().to_string();
+    let models = scoped.custom_models.get_or_insert_with(Vec::new);
+    let index = models
+        .iter()
+        .position(|row| row.id == envelope.model && row.matches_route(&provider, &endpoint));
+    let row = if let Some(index) = index {
+        &mut models[index]
+    } else {
+        models.push(codewhale_config::catalog::configured::ConfiguredModel {
+            provider,
+            base_url: endpoint,
+            id: envelope.model,
+            display_name: None,
+            limit: None,
+            cost: None,
+            modalities: None,
+            attachment: None,
+            reasoning: None,
+            tool_call: None,
+            structured_output: None,
+            extras: Default::default(),
+        });
+        models
+            .last_mut()
+            .expect("inserted review route declaration")
+    };
+    row.cost = Some(codewhale_config::models_dev::ModelsDevCost {
+        input: Some(rates.input_usd_per_million),
+        output: Some(rates.output_usd_per_million),
+        ..Default::default()
+    });
+    codewhale_config::catalog::configured::validate_configured_models(models)?;
+    let priced = codewhale_engine::client::CodewhaleClient::new(&scoped)?
+        .effective_route_envelope(&route.model, chrono::Utc::now());
+    anyhow::ensure!(
+        priced.provider_live_pricing.as_ref().is_some_and(|quote| {
+            quote.provenance == codewhale_config::pricing::PricingProvenance::UserOverride
+                && quote.currency == codewhale_config::pricing::Currency::Usd
+        }),
+        "the explicit review rates could not be frozen for this exact route"
+    );
+    Ok(scoped)
+}
+
 fn non_empty_flag(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -11211,6 +11372,26 @@ fn resolve_review_model(config: &Config, explicit_model: Option<&str>) -> String
 }
 
 fn validate_review_receipt_args(args: &ReviewArgs) -> Result<()> {
+    anyhow::ensure!(
+        args.money_cap_usd
+            .is_none_or(|cap| cap.is_finite() && cap > 0.0),
+        "--money-cap-usd must be finite and greater than zero"
+    );
+    anyhow::ensure!(
+        args.input_usd_per_mtok.is_some() == args.output_usd_per_mtok.is_some(),
+        "--input-usd-per-mtok and --output-usd-per-mtok must be supplied together"
+    );
+    anyhow::ensure!(
+        [args.input_usd_per_mtok, args.output_usd_per_mtok]
+            .into_iter()
+            .flatten()
+            .all(|rate| rate.is_finite() && rate >= 0.0),
+        "review token rates must be finite and nonnegative"
+    );
+    anyhow::ensure!(
+        args.input_usd_per_mtok.is_none() || args.money_cap_usd.is_some(),
+        "review token rates require --money-cap-usd"
+    );
     if args.receipt_path.is_some() && !args.write_receipt && !args.check_receipt {
         bail!("--receipt-path requires --write-receipt or --check-receipt");
     }
@@ -14105,14 +14286,30 @@ async fn resolve_cli_auto_route(
     config: &Config,
     model: &str,
     prompt: &str,
+    accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
 ) -> Result<CliAutoRoute> {
     let active = config
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
     if model.trim().eq_ignore_ascii_case("auto") {
         let selection =
-            model_routing::resolve_auto_route_with_inventory(config, prompt, "", "auto", "auto")
-                .await?;
+            model_routing::resolve_auto_route_with_inventory_for_session_and_cache_policy(
+                config,
+                prompt,
+                "",
+                "agent",
+                "auto",
+                "auto",
+                true,
+                accounting_origin.map(|origin| {
+                    codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
+                        format!("cli-auto-router:{}", uuid::Uuid::new_v4()),
+                        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+                        Some(origin),
+                    )
+                }),
+            )
+            .await?;
         let preference = config
             .reasoning_effort()
             .filter(|_| config.reasoning_effort_is_explicit())
@@ -14183,6 +14380,7 @@ async fn resolve_cli_exec_route(
     model: &str,
     prompt: &str,
     force_configured_route: bool,
+    accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
 ) -> Result<CliAutoRoute> {
     let mut local_default = None;
     if let Ok(identity) = config.active_provider_identity()
@@ -14219,7 +14417,7 @@ async fn resolve_cli_exec_route(
             auto_model: false,
         });
     }
-    resolve_cli_auto_route(config, model, prompt).await
+    resolve_cli_auto_route(config, model, prompt, accounting_origin).await
 }
 
 fn should_force_configured_exec_route(
@@ -14631,11 +14829,27 @@ async fn run_workflow_tool_command_inner(
 
     initialize_cloud_facts(&config);
     let model = resolve_exec_model(&config, None);
+    let workflow_session_id = uuid::Uuid::new_v4().to_string();
+    let (_, workflow_source, _workflow_lease) = admit_cli_saved_operation(
+        None,
+        workflow_session_id.clone(),
+        workspace.clone(),
+        model.clone(),
+        config
+            .active_provider_identity()
+            .map_err(anyhow::Error::msg)?,
+        format!("Run this Workflow:\n{}", serde_json::to_string(&input)?),
+    )
+    .await
+    .context("could not admit the Workflow's saved accounting operation")?;
+    let workflow_accounting_origin =
+        workflow_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
     let route = resolve_cli_exec_route(
         &config,
         &model,
         "Run a checked-in Workflow through the host runtime",
         true,
+        Some(workflow_accounting_origin.clone()),
     )
     .await?;
     let execution_config = config_for_cli_route(&config, &route)?;
@@ -14672,6 +14886,7 @@ async fn run_workflow_tool_command_inner(
         &workspace,
         event_tx,
         plugin_registry,
+        workflow_accounting_origin,
     )
     .await
     {
@@ -14754,10 +14969,10 @@ async fn run_workflow_tool_command_inner(
             input_analysis: ExecStreamInputAnalysis::default(),
             visible_final_answer_chars: result.content.chars().count(),
             visible_final_answer_excerpt: exec_stream_final_answer_excerpt(&result.content),
-            session_id: String::new(),
-            resume_command: String::new(),
+            session_id: workflow_session_id.clone(),
+            resume_command: format!("codewhale --resume {workflow_session_id}"),
             workspace: workspace.display().to_string(),
-            message_count: 0,
+            message_count: 1,
             status: Some(workflow_status.clone()),
             termination_reason: Some(if completed { "resolved" } else { "tool_error" }.to_string()),
             error_category: (!completed).then(|| "tool".to_string()),
@@ -14841,6 +15056,7 @@ async fn build_direct_workflow_tool(
     workspace: &Path,
     event_tx: tokio::sync::mpsc::Sender<codewhale_engine::core::events::Event>,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
+    accounting_origin: codewhale_engine::cost_status::NativeUsageOrigin,
 ) -> Result<(
     codewhale_engine::tools::workflow::WorkflowTool,
     codewhale_engine::tools::ToolContext,
@@ -14903,6 +15119,7 @@ async fn build_direct_workflow_tool(
             config.sandbox_network_access,
         ),
     ));
+    context.accounting_origin = Some(accounting_origin);
     let network_policy = config.network.clone().map(|network| {
         codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
             codewhale_net::network_policy::NetworkPolicy::from(network),
@@ -15265,21 +15482,30 @@ fn persist_exec_session(
     if checkpoint.is_some() {
         captured.require_checkpoint_acknowledgement();
     }
+    let native_accounting = session_id
+        .map(|id| manager.has_native_usage_records(id))
+        .transpose()?
+        .unwrap_or(false)
+        || provider_request_receipts
+            .iter()
+            .any(|receipt| receipt["source_accounting"].as_bool() == Some(true));
     let mut saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
         match manager.load_session_snapshot(id) {
-            Ok(existing) => session_manager::update_session(
-                existing,
-                messages,
-                total_tokens,
-                system_prompt.as_ref(),
-            ),
+            Ok(existing) => {
+                let tokens = if native_accounting {
+                    existing.metadata.total_tokens
+                } else {
+                    total_tokens
+                };
+                session_manager::update_session(existing, messages, tokens, system_prompt.as_ref())
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 session_manager::create_saved_session_with_id_and_mode(
                     id.to_string(),
                     messages,
                     model,
                     workspace,
-                    total_tokens,
+                    if native_accounting { 0 } else { total_tokens },
                     system_prompt.as_ref(),
                     Some("exec"),
                 )
@@ -15334,10 +15560,10 @@ fn persist_exec_session(
             }
         }
     }
-    for receipt in provider_request_receipts
-        .iter()
-        .filter(|receipt| receipt["primary"].as_bool() == Some(true))
-    {
+    for receipt in provider_request_receipts.iter().filter(|receipt| {
+        receipt["primary"].as_bool() == Some(true)
+            && receipt["source_accounting"].as_bool() != Some(true)
+    }) {
         let Some(source) = receipt["source_id"].as_str() else {
             continue;
         };

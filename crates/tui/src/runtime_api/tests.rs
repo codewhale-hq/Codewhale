@@ -486,6 +486,11 @@ fn messages_from_thread_detail_batches_tool_results() {
         last_read: None,
     };
     let turn = TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -3102,6 +3107,7 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
             note: "not reported".to_string(),
         },
         usage_source_fingerprints: Default::default(),
+        source_usage_records: Default::default(),
         missing_usage_sources: Default::default(),
         missing_usage_overflowed: false,
         legacy_unreported_usage: false,
@@ -3542,6 +3548,8 @@ async fn compatibility_stream_closes_losslessly_across_replay_live_handoff() -> 
             .await;
         let _ = tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -3819,6 +3827,8 @@ async fn compatibility_stream_exposes_and_resolves_user_input_without_answer_ech
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -4225,6 +4235,8 @@ async fn thread_endpoints_expose_lifecycle_contract() -> Result<()> {
                         .await;
                     let _ = tx_event
                         .send(EngineEvent::TurnComplete {
+                            source_accounting: false,
+
                             turn_id: None,
                             submission_id: None,
                             compaction_id: None,
@@ -4249,6 +4261,8 @@ async fn thread_endpoints_expose_lifecycle_contract() -> Result<()> {
                 Op::CompactContext { .. } => {
                     let _ = tx_event
                         .send(EngineEvent::TurnComplete {
+                            source_accounting: false,
+
                             turn_id: None,
                             submission_id: None,
                             compaction_id: None,
@@ -4392,6 +4406,8 @@ async fn turn_endpoint_operation_key_returns_original_and_conflicts_on_mismatch(
             sleep(Duration::from_millis(20)).await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -4619,6 +4635,8 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
     engine
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -4752,6 +4770,8 @@ async fn events_endpoint_respects_since_seq_cursor() -> Result<()> {
             .await;
         let _ = tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -5695,6 +5715,8 @@ async fn steer_and_interrupt_endpoints_work_on_active_turn() -> Result<()> {
         sleep(Duration::from_millis(60)).await;
         let _ = tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -6250,6 +6272,8 @@ async fn stream_endpoint_remains_backward_compatible() -> Result<()> {
             .await;
         let _ = tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -8828,6 +8852,8 @@ async fn session_create_from_thread_rejects_active_turn() -> Result<()> {
             .await;
         let _ = tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -10049,6 +10075,11 @@ async fn session_save_merges_thread_cost_split_and_records_coverage() -> Result<
     let store = runtime_threads.test_store();
     let now = Utc::now();
     let mut turn = TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -10253,6 +10284,11 @@ async fn session_save_persists_parent_cny_unpriced_reasons_without_double_count(
     let store = runtime_threads.test_store();
     let now = Utc::now();
     let mut turn = TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -11614,6 +11650,11 @@ fn seed_summary_search_transcript(
             item_ids.push(item_id);
         }
         store.save_turn(&TurnRecord {
+            source_usage_origin_turn_id: None,
+
+            source_accounting: false,
+            source_usage_records: Default::default(),
+
             prefix_checkpoint: None,
             decision_receipts: Vec::new(),
             max_output_tokens: None,
@@ -20099,6 +20140,8 @@ async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,

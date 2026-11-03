@@ -382,8 +382,15 @@ impl Engine {
         let transport_retries = observation.retries.clone();
         let mut pending = Some(super::turn_loop::PendingProviderRequestReceipt {
             request_id: observation.request_id.clone(),
+            accounting_source: crate::cost_status::NativeUsageSource::capture(
+                observation.request_id.clone(),
+                crate::cost_status::UsageSpendOwner::Primary,
+            ),
+            accounting_scope: crate::cost_status::scope_token(),
+            accounting_owner: self.config.compaction.runtime_cost_owner.clone(),
             route: client.effective_route_envelope(&self.session.model, chrono::Utc::now()),
             primary: true,
+            accounting_owned_elsewhere: true,
             invoked: true,
             turn_id: turn.id.clone(),
             request_index: turn.stop_diagnostics.model_requests_started,
@@ -398,6 +405,30 @@ impl Engine {
             transport_retries: transport_retries.clone(),
             started_at,
         });
+        core.accounting_owner = crate::cost_status::UsageSpendOwner::Primary;
+        core.accounting_origin =
+            if let Some(owner) = self.config.compaction.runtime_cost_owner.as_deref() {
+                Some(crate::cost_status::NativeUsageOrigin::runtime(
+                    crate::cost_status::scope_token(),
+                    owner,
+                )?)
+            } else if let Some(origin) = self.config.runtime_services.accounting_origin.clone() {
+                Some(origin)
+            } else {
+                let scope = crate::cost_status::scope_token();
+                let session_id = self.session.id.clone();
+                Some(
+                    codewhale_runtime::runtime_control::owner_work(move || {
+                        let manager = crate::session_manager::SessionManager::default_location()?;
+                        Ok(crate::cost_status::NativeUsageOrigin::session(
+                            scope,
+                            manager.sessions_dir().to_path_buf(),
+                            session_id,
+                        ))
+                    })
+                    .await?,
+                )
+            };
         let result = tokio::select! {
             biased;
             result = crate::llm_client::observe_request_retries(Some(observation),
@@ -408,23 +439,27 @@ impl Engine {
             .stop_diagnostics
             .transport_retries
             .saturating_add(transport_retries.load(std::sync::atomic::Ordering::Relaxed));
-        self.settle_provider_request_receipt(
-            &mut pending,
-            result.as_ref().ok().map(|value| &value.usage),
-            if result.is_ok() {
-                "review_response"
-            } else if self.cancel_token.is_cancelled() {
-                "review_cancelled"
-            } else {
-                "review_failed"
-            },
-        )
-        .await;
+        let accounting = self
+            .settle_provider_request_receipt(
+                &mut pending,
+                result.as_ref().ok().map(|value| &value.usage),
+                if result.is_ok() {
+                    "review_response"
+                } else if self.cancel_token.is_cancelled() {
+                    "review_cancelled"
+                } else {
+                    "review_failed"
+                },
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
         let mut result = result?;
+        let accounting = result.source_records.last().cloned().or(accounting);
         turn.add_parent_usage(&result.usage);
         let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         let _ = self
             .send_event(Event::TurnUsage {
+                accounting,
                 max_output_tokens: Some(cap),
                 usage: result.usage.clone(),
                 duration_ms: elapsed_ms,

@@ -728,72 +728,19 @@ pub(super) fn messages_from_thread_detail(
     runtime.history_from_records(&detail.turns, &items_by_turn)
 }
 
-/// Merge the thread's authoritative cost into a session about to be saved.
-///
-/// The engine snapshot carries messages/tokens but no cost — cost lives in
-/// the turn records' route-audited usage — so derive it from the same
-/// accumulation that powers `/v1/usage` (recorded-time pricing, both
-/// published currencies). The parent/child split mirrors the TUI writer's
-/// field semantics (`sync_cost_to_metadata`): `session_cost_*` carries
-/// parent-turn spend and `subagent_cost_*` routed-child spend, so a session
-/// previously saved by the TUI never gets child spend counted twice in
-/// `total_estimate()`. Merging each side with max keeps a session resumed
-/// across threads from losing previously persisted spend, and extends the
-/// monotonic display guarantee (#244) to the persisted shape. Coverage
-/// travels with the money it qualifies (#4318): the counters are
-/// parent-turn coverage (the TUI's own session-level accounting), CNY
-/// included, and `coverage_recorded` marks that this writer computed them
-/// from audited turn records rather than deserializing a legacy default.
 async fn persist_thread_cost(
     runtime: &std::sync::Arc<RuntimeThreadManager>,
     thread_id: &str,
     session: &mut codewhale_engine::session_manager::SavedSession,
 ) -> Result<(), ApiError> {
-    let usage = runtime
-        .aggregate_usage_for_thread(thread_id)
+    session.metadata.cost = runtime
+        .project_session_cost_for_thread(thread_id, &session.metadata.cost)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to aggregate thread usage: {e}")))?;
-    let combined = usage.combined();
-    let cost = &mut session.metadata.cost;
-    cost.session_cost_usd = cost.session_cost_usd.max(usage.parent.cost_usd);
-    cost.session_cost_cny = cost.session_cost_cny.max(usage.parent.cost_cny);
-    cost.subagent_cost_usd = cost.subagent_cost_usd.max(usage.routed_children.cost_usd);
-    cost.subagent_cost_cny = cost.subagent_cost_cny.max(usage.routed_children.cost_cny);
-    // The display total is session + subagent, so the high-water mark rides
-    // the combined figure in both currencies.
-    cost.displayed_cost_high_water_usd = cost.displayed_cost_high_water_usd.max(combined.cost_usd);
-    cost.displayed_cost_high_water_cny = cost.displayed_cost_high_water_cny.max(combined.cost_cny);
-    cost.priced_turns = cost
-        .priced_turns
-        .max(u32::try_from(usage.parent.priced_turns).unwrap_or(u32::MAX));
-    cost.unpriced_turns = cost
-        .unpriced_turns
-        .max(u32::try_from(usage.parent.unpriced_turns).unwrap_or(u32::MAX));
-    cost.cny_priced_turns = cost
-        .cny_priced_turns
-        .max(u32::try_from(usage.parent.cny_priced_turns).unwrap_or(u32::MAX));
-    cost.cny_unpriced_turns = cost
-        .cny_unpriced_turns
-        .max(u32::try_from(usage.parent.cny_unpriced_turns).unwrap_or(u32::MAX));
-    // Coverage travels with the money (#4318): reasons and classes are the
-    // qualifiers a reload needs to treat these totals as known, not a
-    // legacy-unknown complete zero. Parent-turn coverage only — the same
-    // field the TUI writer uses; routed-child spend lives in subagent_cost_*.
-    cost.unpriced_reasons
-        .extend(usage.parent.unpriced_reasons.iter().cloned());
-    cost.cny_unpriced_reasons
-        .extend(usage.parent.cny_unpriced_reasons.iter().cloned());
-    cost.unpriced_classes
-        .extend(usage.parent.unpriced_classes.iter().cloned());
-    cost.pricing_provenances
-        .extend(usage.parent.pricing_provenances.iter().cloned());
-    cost.live_pricing_defects
-        .extend(usage.parent.live_pricing_defects.iter().cloned());
-    cost.live_pricing_unusable_defects
-        .extend(usage.parent.live_pricing_unusable_defects.iter().cloned());
-    cost.route_receipts
-        .extend(usage.parent.route_receipts.iter().cloned());
-    cost.coverage_recorded = true;
+        .map_err(|error| {
+            ApiError::internal(format!(
+                "Failed to reconcile thread source accounting: {error}"
+            ))
+        })?;
     Ok(())
 }
 

@@ -1,36 +1,9 @@
-//! Process-wide cost-accrual side-channel (#526).
+//! Usage projections and retained native-owner receipts.
 //!
-//! Background LLM calls outside the main turn-complete path
-//! (compaction summaries) used
-//! to drop their token usage on the floor — the dashboard's
-//! session-cost only saw the parent turn's tokens, so a long
-//! session that triggered compaction under-reported
-//! cost by however many tokens those background calls consumed.
-//!
-//! Mirrors the [`codewhale_runtime::retry_status`] pattern: background callers
-//! call [`crate::cost_status::report_effective_route`] after each
-//! `client.create_message`, the TUI
-//! render loop calls [`drain`] every frame, and any drained amount
-//! gets folded into `App::accrue_subagent_cost_estimate`.
-//!
-//! Why a side-channel and not a plumbed callback: the leaky callers
-//! (`compaction.rs`) are
-//! engine-internal machinery without a direct handle to `App` or
-//! the engine's event channel. A side-channel keeps the change
-//! surface tiny — one new `report` line per call site — and any
-//! future background caller (summarizers, retrieval helpers) gets
-//! accrued for free without further plumbing.
-//!
-//! ## One pool, not a pile of counters (#4318)
-//!
-//! Money and the *completeness* of that money are one fact, so they live in one
-//! mutex-guarded [`PendingBackgroundCost`] that [`drain`] takes atomically.
-//! Splitting them across free-standing atomics made two things go wrong at once:
-//! a drain could observe a total without the counters that explain it, and every
-//! new global was another piece of state a parallel test had to remember to
-//! reset. There is exactly one *drainable cost pool*. The runtime-owner journal
-//! below is a separate route/usage copy (never another money counter), and the
-//! shared test reset clears both stores.
+//! Native request owners publish to their captured durable Session or Runtime
+//! origin before live cost projection. The pending pool carries acknowledged
+//! source records; the existing owner journal retains failed publications and
+//! never acts as another money counter.
 
 use codewhale_runtime::safe_label::{safe_receipt_field, sanitize_persisted_route_label};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -97,6 +70,7 @@ pub struct PendingBackgroundCost {
     pub cache_hit_tokens: Option<u64>,
     pub cache_miss_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
+    pub source_records: Vec<RuntimeUsageRecord>,
 }
 
 /// Immutable, non-secret route evidence captured before a provider request.
@@ -371,6 +345,18 @@ impl EffectiveRouteEnvelope {
     }
 
     #[must_use]
+    pub fn audit_frozen(&self, usage: &Usage) -> TurnCostAudit {
+        let audit = self.audit(usage);
+        if self.provider_live_pricing.is_none()
+            && audit
+                .unpriced_reason
+                .is_none_or(|reason| reason.counts_toward_money_coverage())
+        {
+            return TurnCostAudit::unpriced(crate::pricing::UnpricedReason::UnverifiedLivePricing);
+        }
+        audit
+    }
+
     pub fn audit(&self, usage: &Usage) -> TurnCostAudit {
         let reviewed_custom_metered = crate::pricing::reviewed_custom_route_is_metered(
             self.provider,
@@ -674,6 +660,7 @@ pub fn attach_child_usage_batch_metadata(
                 ),
                 "route": record.usage.route.sanitized_for_persistence(),
                 "usage": record.usage.usage,
+                "settlement": record.settlement,
             })
         })
         .collect::<Vec<_>>();
@@ -770,13 +757,18 @@ pub fn child_usage_records_from_metadata(
                     .ok()?
                     .sanitized_for_persistence();
             let usage = serde_json::from_value::<Usage>(value.get("usage")?.clone()).ok()?;
-            Some(RuntimeUsageRecord {
-                // Treat metadata as an untrusted persistence boundary. A
-                // stable hash preserves idempotence without retaining the
-                // producer's raw identifier.
-                source_id: usage_source_fingerprint(source_id),
-                usage: EffectiveRouteUsage { route, usage },
-            })
+            let mut record = RuntimeUsageRecord::legacy(
+                usage_source_fingerprint(source_id),
+                EffectiveRouteUsage { route, usage },
+            );
+            record.settlement = value
+                .get("settlement")
+                .filter(|value| !value.is_null())
+                .map(|value| serde_json::from_value::<UsageSourceRevision>(value.clone()))
+                .transpose()
+                .ok()?;
+            record.validate().ok()?;
+            Some(record)
         })();
         if let Some(record) = parsed {
             batch.records.push(record);
@@ -1012,12 +1004,224 @@ struct ScopedPendingBackgroundCost {
     /// All provider responses accepted in this session generation, including
     /// batches already drained into the live session projection.
     seen_usage_source_fingerprints: HashSet<String>,
+    source_records: BTreeMap<String, RuntimeUsageRecord>,
     missing_usage_sources: BTreeMap<String, MissingUsageCoverage>,
     missing_usage_overflowed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CostScopeToken(u64);
+
+#[derive(Clone)]
+pub struct NativeUsageOrigin {
+    scope: CostScopeToken,
+    #[cfg(any(test, feature = "test-support"))]
+    test_origin: std::thread::ThreadId,
+    destination: NativeUsageDestination,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionUsageProjection {
+    sessions_dir: std::path::PathBuf,
+    session_id: String,
+}
+
+#[derive(Clone)]
+enum NativeUsageDestination {
+    Session {
+        sessions_dir: std::path::PathBuf,
+        session_id: String,
+        operation_id: String,
+    },
+    Runtime {
+        owner: String,
+        sink: RuntimeUsageSink,
+        projection: Option<SessionUsageProjection>,
+    },
+}
+
+impl std::fmt::Debug for NativeUsageOrigin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeUsageOrigin")
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NativeUsageOrigin {
+    fn journal_owner(&self) -> String {
+        match &self.destination {
+            NativeUsageDestination::Session {
+                sessions_dir,
+                session_id,
+                ..
+            } => session_usage_journal_owner(sessions_dir, session_id),
+            NativeUsageDestination::Runtime { owner, .. } => owner.clone(),
+        }
+    }
+
+    fn same_owner(&self, other: &Self) -> bool {
+        match (&self.destination, &other.destination) {
+            (
+                NativeUsageDestination::Session {
+                    sessions_dir: a_store,
+                    session_id: a_session,
+                    operation_id: a_operation,
+                },
+                NativeUsageDestination::Session {
+                    sessions_dir: b_store,
+                    session_id: b_session,
+                    operation_id: b_operation,
+                },
+            ) => a_store == b_store && a_session == b_session && a_operation == b_operation,
+            (
+                NativeUsageDestination::Runtime {
+                    owner: a_owner,
+                    sink: a_sink,
+                    ..
+                },
+                NativeUsageDestination::Runtime {
+                    owner: b_owner,
+                    sink: b_sink,
+                    ..
+                },
+            ) => a_owner == b_owner && Arc::ptr_eq(a_sink, b_sink),
+            _ => false,
+        }
+    }
+
+    pub(crate) async fn flush_retained_usage(&self) -> std::io::Result<()> {
+        let expected = self.clone();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            #[cfg(any(test, feature = "test-support"))]
+            let _scope = bind_test_cost_scope(expected.test_origin);
+            let owner = expected.journal_owner();
+            let records = with_runtime_usage_journal_mut(|journal| {
+                journal
+                    .get(&owner)
+                    .map(|entry| entry.records.iter().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+            });
+            for record in records {
+                let Some(proof) = record.native.as_ref() else {
+                    continue;
+                };
+                let origin = proof
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .origin
+                    .clone();
+                let Some(origin) = origin.filter(|origin| expected.same_owner(origin)) else {
+                    continue;
+                };
+                if record.is_acknowledged() {
+                    retire_runtime_usage_record(&owner, &record);
+                } else {
+                    origin.publish(&record)?;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(std::io::Error::other)
+    }
+
+    pub(crate) fn scope(&self) -> CostScopeToken {
+        self.scope
+    }
+
+    pub(crate) fn session(
+        scope: CostScopeToken,
+        sessions_dir: std::path::PathBuf,
+        session_id: String,
+    ) -> Self {
+        Self {
+            scope,
+            #[cfg(any(test, feature = "test-support"))]
+            test_origin: test_cost_scope_id(),
+            destination: NativeUsageDestination::Session {
+                sessions_dir,
+                session_id,
+                operation_id: uuid::Uuid::new_v4().to_string(),
+            },
+        }
+    }
+
+    pub(crate) fn runtime(scope: CostScopeToken, owner: &str) -> std::io::Result<Self> {
+        let (sink, projection) = with_runtime_usage_sinks(|sinks| {
+            sinks
+                .get(owner)
+                .map(|entry| (entry.sink.clone(), entry.session_projection.clone()))
+        })
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "native usage owner has no admitted sink",
+            )
+        })?;
+        let mut origin = Self::captured_runtime(scope, owner.to_string(), sink);
+        if let NativeUsageDestination::Runtime {
+            projection: target, ..
+        } = &mut origin.destination
+        {
+            *target = projection;
+        }
+        Ok(origin)
+    }
+
+    pub(crate) fn captured_runtime(
+        scope: CostScopeToken,
+        owner: String,
+        sink: RuntimeUsageSink,
+    ) -> Self {
+        Self {
+            scope,
+            #[cfg(any(test, feature = "test-support"))]
+            test_origin: test_cost_scope_id(),
+            destination: NativeUsageDestination::Runtime {
+                owner,
+                sink,
+                projection: None,
+            },
+        }
+    }
+
+    fn publish(&self, record: &RuntimeUsageRecord) -> std::io::Result<()> {
+        #[cfg(any(test, feature = "test-support"))]
+        let _origin = bind_test_cost_scope(self.test_origin);
+        match &self.destination {
+            NativeUsageDestination::Session {
+                sessions_dir,
+                session_id,
+                operation_id,
+            } => {
+                let owner = session_usage_journal_owner(sessions_dir, session_id);
+                let result = crate::session_manager::SessionManager::new(sessions_dir.clone()).and_then(|manager| {
+                    crate::usage_persistence::report_runtime_usage_record_for_origin_with_manager(self.scope, session_id, operation_id, record, &manager)
+                });
+                if result.is_ok() {
+                    retire_runtime_usage_record(&owner, record);
+                } else {
+                    retain_runtime_usage_record(&owner, record)?;
+                }
+                result
+            }
+            NativeUsageDestination::Runtime { owner, sink, .. } => {
+                if !sink(record.clone()) {
+                    retain_runtime_usage_record(owner, record)?;
+                    return Err(std::io::Error::other(
+                        "captured usage sink did not acknowledge its source; exact receipt retained",
+                    ));
+                }
+                record.acknowledge_persisted()?;
+                retire_runtime_usage_record(owner, record);
+                Ok(())
+            }
+        }
+    }
+}
 
 #[cfg(not(any(test, feature = "test-support")))]
 static PENDING: OnceLock<Mutex<ScopedPendingBackgroundCost>> = OnceLock::new();
@@ -1059,6 +1263,7 @@ const MAX_RUNTIME_USAGE_RECORDS_PER_OWNER: usize = 64;
 #[derive(Default)]
 struct OwnerRuntimeUsageJournal {
     records: VecDeque<RuntimeUsageRecord>,
+    native_slots: HashMap<String, std::sync::Weak<NativeUsageJournalSlot>>,
     decisions: VecDeque<RuntimeDecisionReceipt>,
     drop_records: VecDeque<RuntimeUsageDropRecord>,
     dropped_records: u64,
@@ -1085,10 +1290,1119 @@ pub struct RuntimeUsageBatch {
 
 /// One owner-scoped usage report with the stable provider-call identity used
 /// to make durable replay idempotent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeUsageRecord {
     pub source_id: String,
     pub usage: EffectiveRouteUsage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<UsageSourceRevision>,
+    #[serde(skip)]
+    native: Option<NativeUsageProof>,
+}
+
+impl PartialEq for RuntimeUsageRecord {
+    fn eq(&self, other: &Self) -> bool {
+        usage_source_fingerprint(&self.source_id) == usage_source_fingerprint(&other.source_id)
+            && self.usage == other.usage
+            && self.settlement == other.settlement
+    }
+}
+impl Eq for RuntimeUsageRecord {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSpendOwner {
+    Primary,
+    Auxiliary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UsageSourceRevision {
+    lineage: String,
+    revision: u64,
+    previous_sha256: Option<String>,
+    pub owner: UsageSpendOwner,
+    pub coverage: crate::llm_client::ProviderUsageCoverage,
+    pub reason: RuntimeUsageMissingReason,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub physical_requests: Vec<crate::llm_client::OutboundTransmissionObservation>,
+    #[serde(default)]
+    pub physical_requests_dropped: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reservation: bool,
+}
+
+#[derive(Debug, Clone)]
+struct NativeUsageProof {
+    state: Arc<Mutex<NativeUsageState>>,
+    slot: Arc<NativeUsageJournalSlot>,
+    prepared_sha256: String,
+    acknowledged: Arc<std::sync::atomic::AtomicBool>,
+    live_projection: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug)]
+struct NativeUsageState {
+    origin: Option<NativeUsageOrigin>,
+    producer_closed: bool,
+    admission_started: bool,
+    route: Option<EffectiveRouteEnvelope>,
+    wire: Option<crate::llm_client::OutboundWireObservations>,
+    source_id: String,
+    lineage: String,
+    owner: UsageSpendOwner,
+    accepted: Option<RuntimeUsageRecord>,
+    prepared: Option<RuntimeUsageRecord>,
+    acknowledgement: Arc<std::sync::atomic::AtomicBool>,
+    live_projection: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug)]
+struct NativeUsageJournalSlot {
+    owner: Option<String>,
+    source_fingerprint: String,
+    lineage: String,
+    active: std::sync::atomic::AtomicBool,
+    #[cfg(any(test, feature = "test-support"))]
+    test_origin: std::thread::ThreadId,
+}
+
+#[derive(Debug)]
+struct NativeUsageProducer {
+    state: std::sync::Weak<Mutex<NativeUsageState>>,
+    slot: Arc<NativeUsageJournalSlot>,
+}
+
+impl Drop for NativeUsageProducer {
+    fn drop(&mut self) {
+        let release = self.state.upgrade().is_none_or(|state| {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.producer_closed = true;
+            state.prepared.is_none()
+        });
+        if release {
+            self.slot
+                .active
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeUsageSource {
+    state: Arc<Mutex<NativeUsageState>>,
+    producer: Arc<NativeUsageProducer>,
+}
+
+impl NativeUsageSource {
+    pub fn capture(source_id: impl Into<String>, owner: UsageSpendOwner) -> Self {
+        Self::capture_with_origin(source_id, owner, None)
+    }
+
+    pub fn capture_with_origin(
+        source_id: impl Into<String>,
+        owner: UsageSpendOwner,
+        origin: Option<NativeUsageOrigin>,
+    ) -> Self {
+        Self::from_state(NativeUsageState {
+            origin,
+            producer_closed: false,
+            admission_started: false,
+            route: None,
+            wire: None,
+            source_id: source_id.into(),
+            lineage: uuid::Uuid::new_v4().to_string(),
+            owner,
+            accepted: None,
+            prepared: None,
+            acknowledgement: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            live_projection: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+
+    fn from_state(state: NativeUsageState) -> Self {
+        let slot = Arc::new(NativeUsageJournalSlot {
+            owner: state.origin.as_ref().map(NativeUsageOrigin::journal_owner),
+            source_fingerprint: usage_source_fingerprint(&state.source_id),
+            lineage: state.lineage.clone(),
+            active: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            test_origin: state
+                .origin
+                .as_ref()
+                .map_or_else(test_cost_scope_id, |origin| origin.test_origin),
+        });
+        let state = Arc::new(Mutex::new(state));
+        let producer = Arc::new(NativeUsageProducer {
+            state: Arc::downgrade(&state),
+            slot,
+        });
+        Self { state, producer }
+    }
+
+    fn reserve_retention_slot(&self) -> std::io::Result<()> {
+        let slot = &self.producer.slot;
+        let Some(owner) = slot.owner.as_deref() else {
+            return Ok(());
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        let _scope = bind_test_cost_scope(slot.test_origin);
+        with_runtime_usage_journal_mut(|journal| {
+            let entry = journal.entry(owner.to_string()).or_default();
+            let occupied = occupied_runtime_usage_sources(entry);
+            if let Some(current) = entry
+                .native_slots
+                .get(&slot.source_fingerprint)
+                .and_then(std::sync::Weak::upgrade)
+            {
+                if Arc::ptr_eq(&current, slot) {
+                    return Ok(());
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "usage source already owns another native journal slot",
+                ));
+            }
+            if entry.records.iter().any(|record| {
+                usage_source_fingerprint(&record.source_id) == slot.source_fingerprint
+                    && record
+                        .native
+                        .as_ref()
+                        .is_none_or(|proof| !Arc::ptr_eq(&proof.slot, slot))
+            }) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "usage source already has another retained owner",
+                ));
+            }
+            if !occupied.contains(&slot.source_fingerprint)
+                && occupied.len() >= MAX_RUNTIME_USAGE_RECORDS_PER_OWNER
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "native usage journal capacity reached before dispatch",
+                ));
+            }
+            slot.active
+                .store(true, std::sync::atomic::Ordering::Release);
+            entry
+                .native_slots
+                .insert(slot.source_fingerprint.clone(), Arc::downgrade(slot));
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resume_admitted(
+        record: &RuntimeUsageRecord,
+        origin: Option<NativeUsageOrigin>,
+    ) -> std::io::Result<Self> {
+        let revision = record.settlement.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "legacy usage source has no native predecessor",
+            )
+        })?;
+        record.validate()?;
+        Ok(Self::from_state(NativeUsageState {
+            origin,
+            producer_closed: false,
+            admission_started: true,
+            route: Some(record.usage.route.clone()),
+            wire: None,
+            source_id: record.source_id.clone(),
+            lineage: revision.lineage.clone(),
+            owner: revision.owner,
+            accepted: Some(record.persisted()),
+            prepared: None,
+            acknowledgement: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            live_projection: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }))
+    }
+
+    pub fn has_captured_origin(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .origin
+            .is_some()
+    }
+
+    pub fn bind_dispatch(
+        &self,
+        route: &EffectiveRouteEnvelope,
+        observation: &crate::llm_client::RequestRetryObservation,
+    ) -> std::io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .route
+            .as_ref()
+            .is_some_and(|prior| prior != &route.sanitized_for_persistence())
+            || state.prepared.is_some()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ResourceBusy,
+                "usage source is already bound or awaits acknowledgement",
+            ));
+        }
+        state.route = Some(route.sanitized_for_persistence());
+        state.wire = Some(observation.wire_observations.clone());
+        Ok(())
+    }
+
+    pub fn observe_route(
+        &self,
+        route: &EffectiveRouteEnvelope,
+    ) -> std::io::Result<crate::llm_client::RequestRetryObservation> {
+        let observation = self.observation();
+        self.bind_dispatch(route, &observation)?;
+        Ok(observation)
+    }
+
+    pub(crate) fn observed_wire(&self) -> crate::llm_client::OutboundWireObservationBatch {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .wire
+            .as_ref()
+            .map(crate::llm_client::OutboundWireObservations::snapshot)
+            .unwrap_or_default()
+    }
+
+    pub fn response_record(
+        &self,
+        route: &EffectiveRouteEnvelope,
+        response: &anyhow::Result<codewhale_models::MessageResponse>,
+        wire: &crate::llm_client::OutboundWireObservationBatch,
+    ) -> std::io::Result<RuntimeUsageRecord> {
+        let empty = Usage::default();
+        let usage = response
+            .as_ref()
+            .map(|response| &response.usage)
+            .unwrap_or(&empty);
+        let reported = usage != &empty;
+        let coverage = if wire.last_transmission.is_some() {
+            wire.usage_coverage(reported, response.is_ok())
+        } else {
+            match response {
+                Ok(_) if reported => crate::llm_client::ProviderUsageCoverage::Reported,
+                Ok(_) => crate::llm_client::ProviderUsageCoverage::Missing,
+                Err(error) => match error
+                    .downcast_ref::<crate::llm_client::LlmError>()
+                    .map(crate::llm_client::LlmError::transmission)
+                {
+                    Some(crate::llm_client::RequestTransmission::NotDispatched) => {
+                        crate::llm_client::ProviderUsageCoverage::NotDispatched
+                    }
+                    Some(crate::llm_client::RequestTransmission::Rejected) => {
+                        crate::llm_client::ProviderUsageCoverage::Rejected
+                    }
+                    _ => crate::llm_client::ProviderUsageCoverage::Missing,
+                },
+            }
+        };
+        self.prepare_observed(
+            route,
+            usage,
+            coverage,
+            if response.is_ok() {
+                RuntimeUsageMissingReason::SuccessWithoutUsage
+            } else {
+                RuntimeUsageMissingReason::RequestOutcomeUnknown
+            },
+            wire,
+        )
+    }
+
+    pub fn observation(&self) -> crate::llm_client::RequestRetryObservation {
+        crate::llm_client::RequestRetryObservation::for_auxiliary_request(self.source_id())
+    }
+
+    pub fn source_id(&self) -> String {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .source_id
+            .clone()
+    }
+
+    pub fn prepare(
+        &self,
+        route: &EffectiveRouteEnvelope,
+        usage: &Usage,
+        coverage: crate::llm_client::ProviderUsageCoverage,
+        reason: RuntimeUsageMissingReason,
+    ) -> std::io::Result<RuntimeUsageRecord> {
+        self.prepare_observed(
+            route,
+            usage,
+            coverage,
+            reason,
+            &crate::llm_client::OutboundWireObservationBatch::default(),
+        )
+    }
+
+    pub fn prepare_observed(
+        &self,
+        route: &EffectiveRouteEnvelope,
+        usage: &Usage,
+        coverage: crate::llm_client::ProviderUsageCoverage,
+        reason: RuntimeUsageMissingReason,
+        wire: &crate::llm_client::OutboundWireObservationBatch,
+    ) -> std::io::Result<RuntimeUsageRecord> {
+        self.prepare_observed_kind(route, usage, coverage, reason, wire, false)
+    }
+
+    fn prepare_observed_kind(
+        &self,
+        route: &EffectiveRouteEnvelope,
+        usage: &Usage,
+        coverage: crate::llm_client::ProviderUsageCoverage,
+        reason: RuntimeUsageMissingReason,
+        wire: &crate::llm_client::OutboundWireObservationBatch,
+        reservation: bool,
+    ) -> std::io::Result<RuntimeUsageRecord> {
+        let final_accepted = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.prepared.is_none()
+                && state
+                    .accepted
+                    .as_ref()
+                    .and_then(|record| record.settlement.as_ref())
+                    .is_some_and(|revision| {
+                        matches!(
+                            revision.coverage,
+                            crate::llm_client::ProviderUsageCoverage::Reported
+                                | crate::llm_client::ProviderUsageCoverage::NotDispatched
+                                | crate::llm_client::ProviderUsageCoverage::Rejected
+                        )
+                    })
+        };
+        if !final_accepted {
+            self.reserve_retention_slot()?;
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let effective = EffectiveRouteUsage {
+            route: route.sanitized_for_persistence(),
+            usage: usage.clone(),
+        };
+        if state
+            .route
+            .as_ref()
+            .is_some_and(|prior| prior != &effective.route)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "usage route changed after native dispatch admission",
+            ));
+        }
+        state.route = Some(effective.route.clone());
+        if let Some(prepared) = state.prepared.as_ref() {
+            if prepared.usage != effective
+                || prepared.settlement.as_ref().is_none_or(|revision| {
+                    revision.reservation != reservation
+                        || revision.coverage != coverage
+                        || revision.reason != reason
+                        || revision.physical_requests
+                            != wire
+                                .transmissions
+                                .iter()
+                                .cloned()
+                                .map(|mut attempt| {
+                                    attempt.source_id =
+                                        usage_source_fingerprint(&attempt.source_id);
+                                    attempt
+                                })
+                                .collect::<Vec<_>>()
+                        || revision.physical_requests_dropped != wire.transmissions_dropped
+                })
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "previous usage publication has not been acknowledged",
+                ));
+            }
+            let mut record = prepared.clone();
+            record.native = Some(NativeUsageProof {
+                state: self.state.clone(),
+                slot: self.producer.slot.clone(),
+                prepared_sha256: record.digest()?,
+                acknowledged: state.acknowledgement.clone(),
+                live_projection: state.live_projection.clone(),
+            });
+            drop(state);
+            if let Some(owner) = self.producer.slot.owner.as_deref() {
+                retain_runtime_usage_record(owner, &record)?;
+            }
+            return Ok(record);
+        }
+        if let Some(accepted) = state.accepted.as_ref() {
+            if accepted.usage.route != effective.route {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "usage source changed its captured route",
+                ));
+            }
+            if accepted.usage == effective
+                && accepted.settlement.as_ref().is_some_and(|revision| {
+                    revision.reservation == reservation
+                        && revision.coverage == coverage
+                        && revision.reason == reason
+                        && revision.physical_requests
+                            == wire
+                                .transmissions
+                                .iter()
+                                .cloned()
+                                .map(|mut attempt| {
+                                    attempt.source_id =
+                                        usage_source_fingerprint(&attempt.source_id);
+                                    attempt
+                                })
+                                .collect::<Vec<_>>()
+                        && revision.physical_requests_dropped == wire.transmissions_dropped
+                })
+            {
+                let mut record = accepted.clone();
+                record.native = Some(NativeUsageProof {
+                    state: self.state.clone(),
+                    slot: self.producer.slot.clone(),
+                    prepared_sha256: record.digest()?,
+                    acknowledged: state.acknowledgement.clone(),
+                    live_projection: state.live_projection.clone(),
+                });
+                drop(state);
+                if let Some(owner) = self.producer.slot.owner.as_deref() {
+                    retain_runtime_usage_record(owner, &record)?;
+                }
+                return Ok(record);
+            }
+        }
+        let previous_sha256 = state
+            .accepted
+            .as_ref()
+            .map(RuntimeUsageRecord::digest)
+            .transpose()?;
+        let revision = state
+            .accepted
+            .as_ref()
+            .and_then(|record| record.settlement.as_ref())
+            .map_or(Ok(1), |revision| {
+                revision
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| std::io::Error::other("usage source revision exhausted"))
+            })?;
+        let mut record = RuntimeUsageRecord {
+            source_id: state.source_id.clone(),
+            usage: effective,
+            settlement: Some(UsageSourceRevision {
+                lineage: state.lineage.clone(),
+                revision,
+                previous_sha256,
+                owner: state.owner,
+                coverage,
+                reason,
+                physical_requests: wire
+                    .transmissions
+                    .iter()
+                    .cloned()
+                    .map(|mut attempt| {
+                        attempt.source_id = usage_source_fingerprint(&attempt.source_id);
+                        attempt
+                    })
+                    .collect(),
+                physical_requests_dropped: wire.transmissions_dropped,
+                reservation,
+            }),
+            native: None,
+        };
+        record.validate()?;
+        if let Some(accepted) = state.accepted.as_ref() {
+            record.validate_transition(accepted)?;
+        }
+        let digest = record.digest()?;
+        state.prepared = Some(record.clone());
+        state.acknowledgement = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state.live_projection = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        record.native = Some(NativeUsageProof {
+            state: self.state.clone(),
+            slot: self.producer.slot.clone(),
+            prepared_sha256: digest,
+            acknowledged: state.acknowledgement.clone(),
+            live_projection: state.live_projection.clone(),
+        });
+        drop(state);
+        if let Some(owner) = self.producer.slot.owner.as_deref() {
+            retain_runtime_usage_record(owner, &record)?;
+        }
+        Ok(record)
+    }
+
+    pub async fn admit_dispatch(
+        &self,
+        route: &EffectiveRouteEnvelope,
+    ) -> std::io::Result<Option<RuntimeUsageRecord>> {
+        let scope = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.admission_started || state.accepted.is_some() || state.prepared.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "usage source was already admitted",
+                ));
+            }
+            state.admission_started = true;
+            state.origin.as_ref().map(|origin| origin.scope)
+        };
+        let Some(scope) = scope else {
+            #[cfg(any(test, feature = "test-support"))]
+            return Ok(None);
+            #[cfg(not(any(test, feature = "test-support")))]
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "provider dispatch has no captured accounting origin",
+            ));
+        };
+        if self.observed_wire().last_transmission.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "provider work began before source admission",
+            ));
+        }
+        let record = self.prepare_observed_kind(
+            route,
+            &Usage::default(),
+            crate::llm_client::ProviderUsageCoverage::Missing,
+            RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            &crate::llm_client::OutboundWireObservationBatch::default(),
+            true,
+        )?;
+        settle_runtime_usage_record(scope, None, &record).await?;
+        Ok(Some(record))
+    }
+
+    pub fn reported(
+        &self,
+        route: &EffectiveRouteEnvelope,
+        usage: &Usage,
+    ) -> std::io::Result<RuntimeUsageRecord> {
+        self.prepare(
+            route,
+            usage,
+            if usage == &Usage::default() {
+                crate::llm_client::ProviderUsageCoverage::Missing
+            } else {
+                crate::llm_client::ProviderUsageCoverage::Reported
+            },
+            RuntimeUsageMissingReason::SuccessWithoutUsage,
+        )
+    }
+}
+
+impl RuntimeUsageRecord {
+    pub(crate) fn matches_session_projection(
+        &self,
+        sessions_dir: &std::path::Path,
+        session_id: &str,
+    ) -> std::io::Result<bool> {
+        if !self.native_authorizes()? {
+            return Ok(false);
+        }
+        let proof = self.native.as_ref().expect("native producer checked");
+        let state = proof
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(
+            match state.origin.as_ref().map(|origin| &origin.destination) {
+                Some(NativeUsageDestination::Session {
+                    sessions_dir: original,
+                    session_id: original_id,
+                    ..
+                }) => original == sessions_dir && original_id == session_id,
+                Some(NativeUsageDestination::Runtime {
+                    projection: Some(original),
+                    ..
+                }) => {
+                    original.sessions_dir.as_path() == sessions_dir
+                        && original.session_id == session_id
+                }
+                _ => false,
+            },
+        )
+    }
+
+    pub(crate) fn session_destination(
+        &self,
+    ) -> std::io::Result<(std::path::PathBuf, String, String)> {
+        if !self.native_authorizes()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "usage publication has no captured native producer",
+            ));
+        }
+        let proof = self.native.as_ref().expect("native proof checked");
+        let state = proof
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match state.origin.as_ref().map(|origin| &origin.destination) {
+            Some(NativeUsageDestination::Session {
+                sessions_dir,
+                session_id,
+                operation_id,
+            }) => Ok((
+                sessions_dir.clone(),
+                session_id.clone(),
+                operation_id.clone(),
+            )),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "usage publication has no captured session destination",
+            )),
+        }
+    }
+
+    pub(crate) fn captured_session_origin(
+        &self,
+    ) -> std::io::Result<Option<(std::path::PathBuf, String, String, CostScopeToken)>> {
+        if !self.native_authorizes()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "retained usage lacks its native producer",
+            ));
+        }
+        let proof = self.native.as_ref().expect("native producer checked");
+        let state = proof
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(state
+            .origin
+            .as_ref()
+            .and_then(|origin| match &origin.destination {
+                NativeUsageDestination::Session {
+                    sessions_dir,
+                    session_id,
+                    operation_id,
+                } => Some((
+                    sessions_dir.clone(),
+                    session_id.clone(),
+                    operation_id.clone(),
+                    origin.scope,
+                )),
+                NativeUsageDestination::Runtime { .. } => None,
+            }))
+    }
+
+    pub fn has_captured_origin(&self) -> bool {
+        self.native.as_ref().is_some_and(|proof| {
+            proof
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .origin
+                .is_some()
+        })
+    }
+
+    pub fn legacy(source_id: impl Into<String>, usage: EffectiveRouteUsage) -> Self {
+        Self {
+            source_id: source_id.into(),
+            usage,
+            settlement: None,
+            native: None,
+        }
+    }
+
+    pub fn persisted(&self) -> Self {
+        let mut record = self.clone();
+        record.source_id = usage_source_fingerprint(&record.source_id);
+        record.usage.route = record.usage.route.sanitized_for_persistence();
+        record.native = None;
+        record
+    }
+
+    pub fn digest(&self) -> std::io::Result<String> {
+        use sha2::Digest as _;
+        let bytes = serde_json::to_vec(&self.persisted()).map_err(std::io::Error::other)?;
+        Ok(codewhale_runtime::hashing::hex_bytes(sha2::Sha256::digest(
+            bytes,
+        )))
+    }
+
+    pub fn validate(&self) -> std::io::Result<()> {
+        if self.source_id.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "usage source identity is empty",
+            ));
+        }
+        if let Some(revision) = self.settlement.as_ref() {
+            if matches!(
+                revision.coverage,
+                crate::llm_client::ProviderUsageCoverage::NotDispatched
+                    | crate::llm_client::ProviderUsageCoverage::Rejected
+            ) && self.usage.usage != Usage::default()
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "a refused request cannot claim a token receipt",
+                ));
+            }
+            if revision.reservation
+                && (revision.revision != 1
+                    || revision.coverage != crate::llm_client::ProviderUsageCoverage::Missing
+                    || revision.reason != RuntimeUsageMissingReason::RequestOutcomeUnknown
+                    || self.usage.usage != Usage::default()
+                    || !revision.physical_requests.is_empty()
+                    || revision.physical_requests_dropped != 0)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid pre-dispatch source reservation",
+                ));
+            }
+            if revision.physical_requests.len() > 32
+                || uuid::Uuid::parse_str(&revision.lineage).is_err()
+                || revision.revision == 0
+                || (revision.revision == 1) != revision.previous_sha256.is_none()
+                || revision.previous_sha256.as_ref().is_some_and(|hash| {
+                    hash.len() != 64
+                        || !hash
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                })
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid usage source revision",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn native_authorizes(&self) -> std::io::Result<bool> {
+        let Some(proof) = self.native.as_ref() else {
+            return Ok(false);
+        };
+        if proof.prepared_sha256 != self.digest()? {
+            return Ok(false);
+        }
+        let state = proof
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(state.route.as_ref() == Some(&self.usage.route)
+            && proof.slot.source_fingerprint == usage_source_fingerprint(&self.source_id)
+            && self.settlement.as_ref().is_some_and(|revision| {
+                revision.lineage == state.lineage
+                    && revision.lineage == proof.slot.lineage
+                    && revision.owner == state.owner
+            })
+            && usage_source_fingerprint(&self.source_id)
+                == usage_source_fingerprint(&state.source_id))
+    }
+
+    pub(crate) fn acknowledge_persisted(&self) -> std::io::Result<()> {
+        if !self.native_authorizes()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "usage publication has no native producer",
+            ));
+        }
+        let proof = self.native.as_ref().expect("native proof checked");
+        let mut state = proof
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.prepared.as_ref().is_some_and(|record| record == self) {
+            state.accepted = Some(self.persisted());
+            state.prepared = None;
+        } else if !state.accepted.as_ref().is_some_and(|record| record == self) {
+            if !proof
+                .acknowledged
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ResourceBusy,
+                    "usage acknowledgement does not match its prepared revision",
+                ));
+            }
+        }
+        proof
+            .acknowledged
+            .store(true, std::sync::atomic::Ordering::Release);
+        let release = state.prepared.is_none()
+            && (state.producer_closed
+                || state
+                    .accepted
+                    .as_ref()
+                    .and_then(|record| record.settlement.as_ref())
+                    .is_some_and(|revision| {
+                        matches!(
+                            revision.coverage,
+                            crate::llm_client::ProviderUsageCoverage::Reported
+                                | crate::llm_client::ProviderUsageCoverage::NotDispatched
+                                | crate::llm_client::ProviderUsageCoverage::Rejected
+                        )
+                    }));
+        drop(state);
+        if release {
+            proof
+                .slot
+                .active
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+        if let Some(owner) = proof.slot.owner.as_deref() {
+            #[cfg(any(test, feature = "test-support"))]
+            let _scope = bind_test_cost_scope(proof.slot.test_origin);
+            retire_runtime_usage_record(owner, self);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn acknowledge_live_projection(&self) -> std::io::Result<()> {
+        if !self.is_acknowledged() || !self.native_authorizes()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "live usage projection lacks its admitted native publication",
+            ));
+        }
+        self.native
+            .as_ref()
+            .expect("native publication checked")
+            .live_projection
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn has_live_projection(&self) -> bool {
+        self.is_acknowledged()
+            && self.native.as_ref().is_some_and(|proof| {
+                proof
+                    .live_projection
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+    }
+
+    pub fn is_acknowledged(&self) -> bool {
+        self.native.as_ref().is_some_and(|proof| {
+            proof
+                .acknowledged
+                .load(std::sync::atomic::Ordering::Acquire)
+        })
+    }
+
+    pub(crate) fn follows_protected(&self, old: &Self) -> std::io::Result<bool> {
+        self.validate()?;
+        let (Some(prior), Some(next)) = (old.settlement.as_ref(), self.settlement.as_ref()) else {
+            return Ok(false);
+        };
+        Ok(
+            usage_source_fingerprint(&old.source_id) == usage_source_fingerprint(&self.source_id)
+                && old.usage.route == self.usage.route
+                && prior.lineage == next.lineage
+                && prior.owner == next.owner
+                && next.revision > prior.revision
+                && (prior.revision.checked_add(1) != Some(next.revision)
+                    || next.previous_sha256.as_deref() == Some(old.digest()?.as_str())),
+        )
+    }
+
+    pub(crate) fn has_native_producer(&self) -> bool {
+        self.native.is_some()
+    }
+
+    fn validate_transition(&self, old: &Self) -> std::io::Result<()> {
+        let (Some(prior), Some(next)) = (old.settlement.as_ref(), self.settlement.as_ref()) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "usage source has no native transition",
+            ));
+        };
+        let refusal_of_reservation = prior.reservation
+            && !next.reservation
+            && old.usage.usage == Usage::default()
+            && prior.physical_requests.is_empty()
+            && prior.physical_requests_dropped == 0
+            && self.usage.usage == Usage::default()
+            && matches!(
+                next.coverage,
+                crate::llm_client::ProviderUsageCoverage::NotDispatched
+                    | crate::llm_client::ProviderUsageCoverage::Rejected
+            );
+        if matches!(
+            prior.coverage,
+            crate::llm_client::ProviderUsageCoverage::Reported
+                | crate::llm_client::ProviderUsageCoverage::Rejected
+                | crate::llm_client::ProviderUsageCoverage::NotDispatched
+        ) || (matches!(
+            next.coverage,
+            crate::llm_client::ProviderUsageCoverage::Rejected
+                | crate::llm_client::ProviderUsageCoverage::NotDispatched
+        ) && !refusal_of_reservation)
+            || (old.usage.usage != Usage::default() && self.usage.usage == Usage::default())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "a final or known usage source cannot be replaced by a conflicting or absent receipt",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn permits_replacement(&self, previous: Option<&Self>) -> std::io::Result<bool> {
+        self.validate()?;
+        if previous.is_some_and(|old| old == self) {
+            return Ok(false);
+        }
+        if !self.native_authorizes()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "usage correction requires its captured native producer",
+            ));
+        }
+        let revision = self.settlement.as_ref().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "usage correction has no revision",
+            )
+        })?;
+        match previous {
+            None if revision.revision == 1 && revision.previous_sha256.is_none() => Ok(true),
+            Some(old) => {
+                let prior = old.settlement.as_ref().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "legacy usage source has no provable prior contribution",
+                    )
+                })?;
+                if old.usage.route != self.usage.route
+                    || prior.lineage != revision.lineage
+                    || prior.owner != revision.owner
+                    || prior.revision.checked_add(1) != Some(revision.revision)
+                    || revision.previous_sha256.as_deref() != Some(old.digest()?.as_str())
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "usage source predecessor, route or owner changed",
+                    ));
+                }
+                self.validate_transition(old)?;
+                Ok(true)
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "usage source predecessor is unavailable",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UsageSourceContribution {
+    pub record: RuntimeUsageRecord,
+    pub usd: f64,
+    pub cny: f64,
+    pub priced: u32,
+    pub unpriced: u32,
+    pub cny_priced: u32,
+    pub cny_unpriced: u32,
+}
+
+impl UsageSourceContribution {
+    pub fn for_record(record: &RuntimeUsageRecord) -> Self {
+        let audit = record.usage.route.audit_frozen(&record.usage.usage);
+        let non_billable = record.settlement.as_ref().is_some_and(|revision| {
+            matches!(
+                revision.coverage,
+                crate::llm_client::ProviderUsageCoverage::NotDispatched
+                    | crate::llm_client::ProviderUsageCoverage::Rejected
+            )
+        });
+        let reported = record.settlement.as_ref().map_or_else(
+            || record.usage.usage != Usage::default(),
+            |revision| {
+                matches!(
+                    revision.coverage,
+                    crate::llm_client::ProviderUsageCoverage::Reported
+                        | crate::llm_client::ProviderUsageCoverage::Incomplete
+                )
+            },
+        );
+        let metered = audit
+            .unpriced_reason
+            .is_none_or(|reason| reason.counts_toward_money_coverage());
+        let incomplete = !non_billable
+            && record.settlement.as_ref().is_some_and(|revision| {
+                matches!(
+                    revision.coverage,
+                    crate::llm_client::ProviderUsageCoverage::Missing
+                        | crate::llm_client::ProviderUsageCoverage::Incomplete
+                )
+            });
+        let estimate = audit
+            .estimate
+            .filter(|_| reported && !non_billable)
+            .unwrap_or_default()
+            .sanitized();
+        Self {
+            record: record.persisted(),
+            usd: estimate.usd,
+            cny: estimate.cny,
+            priced: u32::from(reported && !non_billable && audit.usd_priced),
+            unpriced: u32::from(
+                !non_billable && metered && (!reported || !audit.usd_priced || incomplete),
+            ),
+            cny_priced: u32::from(reported && !non_billable && audit.cny_priced),
+            cny_unpriced: u32::from(
+                !non_billable && metered && (!reported || !audit.cny_priced || incomplete),
+            ),
+        }
+    }
+
+    pub fn validate(&self) -> std::io::Result<()> {
+        self.record.validate()?;
+        if !self.usd.is_finite()
+            || !self.cny.is_finite()
+            || self.usd < 0.0
+            || self.cny < 0.0
+            || *self != Self::for_record(&self.record)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "persisted usage contribution does not match its frozen receipt",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn owner(&self) -> UsageSpendOwner {
+        self.record
+            .settlement
+            .as_ref()
+            .map_or(UsageSpendOwner::Auxiliary, |revision| revision.owner)
+    }
+
+    pub fn total_tokens(&self) -> u64 {
+        u64::from(self.record.usage.usage.input_tokens)
+            .saturating_add(u64::from(self.record.usage.usage.output_tokens))
+    }
 }
 
 /// One provider-success response that omitted usage metadata.
@@ -1272,6 +2586,7 @@ pub type RuntimeUsageDropSink = Arc<dyn Fn(RuntimeUsageDropRecord) -> bool + Sen
 
 struct RuntimeUsageSinkEntry {
     sink: RuntimeUsageSink,
+    session_projection: Option<SessionUsageProjection>,
     dropped_sink: Option<RuntimeUsageDropSink>,
     decision_sink: Option<RuntimeDecisionSink>,
     leases: usize,
@@ -1410,6 +2725,7 @@ fn with_runtime_usage_journal_mut<R>(f: impl FnOnce(&mut RuntimeUsageJournal) ->
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn record_runtime_usage(
     owner: &str,
     source_id: &str,
@@ -1424,13 +2740,13 @@ fn record_runtime_usage(
     if owner.is_empty() {
         return;
     }
-    let record = RuntimeUsageRecord {
-        source_id: source_id.to_string(),
-        usage: EffectiveRouteUsage {
+    let record = RuntimeUsageRecord::legacy(
+        source_id.to_string(),
+        EffectiveRouteUsage {
             route: route.sanitized_for_persistence(),
             usage: usage.clone(),
         },
-    };
+    );
     let sink =
         with_runtime_usage_sinks(|sinks| sinks.get(owner).map(|entry| Arc::clone(&entry.sink)));
     if sink.is_some_and(|sink| sink(record.clone())) {
@@ -1458,9 +2774,11 @@ fn record_runtime_usage(
                 .dropped_source_fingerprints
                 .remove(&fingerprint);
         }
-        if owner_journal.records.len() == MAX_RUNTIME_USAGE_RECORDS_PER_OWNER {
-            owner_journal.records.pop_front();
+        let occupied = occupied_runtime_usage_sources(owner_journal);
+        if occupied.contains(&fingerprint) || occupied.len() >= MAX_RUNTIME_USAGE_RECORDS_PER_OWNER
+        {
             owner_journal.dropped_records = owner_journal.dropped_records.saturating_add(1);
+            return;
         }
         owner_journal.records.push_back(record);
     });
@@ -1568,6 +2886,33 @@ pub fn register_runtime_usage_sink_with_drop(
     sink: RuntimeUsageSink,
     dropped_sink: Option<RuntimeUsageDropSink>,
 ) {
+    register_runtime_usage_sink_inner(owner, sink, dropped_sink, None);
+}
+
+pub(crate) fn register_interactive_runtime_usage_sink_with_projection(
+    owner: &str,
+    sink: RuntimeUsageSink,
+    dropped_sink: Option<RuntimeUsageDropSink>,
+    sessions_dir: std::path::PathBuf,
+    session_id: String,
+) {
+    register_runtime_usage_sink_inner(
+        owner,
+        sink,
+        dropped_sink,
+        Some(SessionUsageProjection {
+            sessions_dir,
+            session_id,
+        }),
+    );
+}
+
+fn register_runtime_usage_sink_inner(
+    owner: &str,
+    sink: RuntimeUsageSink,
+    dropped_sink: Option<RuntimeUsageDropSink>,
+    session_projection: Option<SessionUsageProjection>,
+) {
     let owner = owner.trim();
     if owner.is_empty() {
         return;
@@ -1577,6 +2922,7 @@ pub fn register_runtime_usage_sink_with_drop(
             owner.to_string(),
             RuntimeUsageSinkEntry {
                 sink,
+                session_projection,
                 dropped_sink,
                 decision_sink: None,
                 leases: 0,
@@ -1765,14 +3111,32 @@ pub fn finish_runtime_usage_owner(owner: &str) {
 #[must_use]
 pub fn take_runtime_usage(owner: &str) -> RuntimeUsageBatch {
     with_runtime_usage_journal_mut(|journal| {
-        journal
-            .remove(owner)
-            .map_or_else(RuntimeUsageBatch::default, |entry| RuntimeUsageBatch {
-                decisions: entry.decisions.into_iter().collect(),
-                records: entry.records.into_iter().collect(),
-                drop_records: entry.drop_records.into_iter().collect(),
-                dropped_records: entry.dropped_records,
-            })
+        let Some(entry) = journal.get_mut(owner) else {
+            return RuntimeUsageBatch::default();
+        };
+        let records = std::mem::take(&mut entry.records)
+            .into_iter()
+            .collect::<Vec<_>>();
+        entry.records.extend(
+            records
+                .iter()
+                .filter(|record| record.has_native_producer() && !record.is_acknowledged())
+                .cloned(),
+        );
+        let batch = RuntimeUsageBatch {
+            decisions: std::mem::take(&mut entry.decisions).into_iter().collect(),
+            records,
+            drop_records: std::mem::take(&mut entry.drop_records)
+                .into_iter()
+                .collect(),
+            dropped_records: std::mem::take(&mut entry.dropped_records),
+        };
+        entry.dropped_source_fingerprints.clear();
+        entry.dropped_fingerprint_overflowed = false;
+        if occupied_runtime_usage_sources(entry).is_empty() {
+            journal.remove(owner);
+        }
+        batch
     })
 }
 
@@ -1819,6 +3183,7 @@ pub fn close_current_scope() -> PendingBackgroundCost {
         let pending = std::mem::take(&mut state.pending);
         state.generation = state.generation.wrapping_add(1);
         state.seen_usage_source_fingerprints.clear();
+        state.source_records.clear();
         state.missing_usage_sources.clear();
         state.missing_usage_overflowed = false;
         pending
@@ -1833,6 +3198,15 @@ pub fn restore_usage_source_fingerprints(fingerprints: impl IntoIterator<Item = 
     with_pending_state_mut(|state| {
         state.seen_usage_source_fingerprints = fingerprints.into_iter().collect();
     })
+}
+
+pub fn restore_accounted_usage_sources(sources: &BTreeMap<String, UsageSourceContribution>) {
+    with_pending_state_mut(|state| {
+        state.source_records = sources
+            .iter()
+            .map(|(key, value)| (key.clone(), value.record.persisted()))
+            .collect();
+    });
 }
 
 pub fn restore_usage_source_ledger(
@@ -2057,6 +3431,188 @@ pub fn report(scope: CostScopeToken, route: &BackgroundRoute<'_>, usage: &Usage)
 /// Runtime-owned calls go only to the durable runtime sink. Calls without a
 /// runtime owner belong to the interactive TUI pool. Mixing both paths would
 /// count one provider response twice in hosts that expose both projections.
+fn retire_runtime_usage_record(owner: &str, record: &RuntimeUsageRecord) {
+    with_runtime_usage_journal_mut(|journal| {
+        if let Some(owner) = journal.get_mut(owner) {
+            owner.records.retain(|prior| {
+                usage_source_fingerprint(&prior.source_id)
+                    != usage_source_fingerprint(&record.source_id)
+                    || !(prior == record
+                        || record.permits_replacement(Some(prior)).unwrap_or(false))
+            });
+        }
+    });
+}
+
+fn occupied_runtime_usage_sources(entry: &mut OwnerRuntimeUsageJournal) -> HashSet<String> {
+    entry.native_slots.retain(|_, slot| {
+        slot.upgrade()
+            .is_some_and(|slot| slot.active.load(std::sync::atomic::Ordering::Acquire))
+    });
+    entry
+        .records
+        .iter()
+        .map(|record| usage_source_fingerprint(&record.source_id))
+        .chain(entry.native_slots.keys().cloned())
+        .collect()
+}
+
+fn retain_runtime_usage_record(owner: &str, record: &RuntimeUsageRecord) -> std::io::Result<()> {
+    if record.is_acknowledged() {
+        return Ok(());
+    }
+    if !record.native_authorizes()? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "retained usage lacks its native producer",
+        ));
+    }
+    let proof = record.native.as_ref().expect("native producer checked");
+    #[cfg(any(test, feature = "test-support"))]
+    let _scope = bind_test_cost_scope(proof.slot.test_origin);
+    with_runtime_usage_journal_mut(|journal| {
+        if record.is_acknowledged() {
+            return Ok(());
+        }
+        let entry = journal.entry(owner.to_string()).or_default();
+        let key = usage_source_fingerprint(&record.source_id);
+        if proof.slot.owner.as_deref() != Some(owner)
+            || !proof.slot.active.load(std::sync::atomic::Ordering::Acquire)
+            || !entry
+                .native_slots
+                .get(&key)
+                .and_then(std::sync::Weak::upgrade)
+                .is_some_and(|slot| Arc::ptr_eq(&slot, &proof.slot))
+        {
+            return if record.is_acknowledged() {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "usage publication has no reserved native journal slot",
+                ))
+            };
+        }
+        if let Some(index) = entry
+            .records
+            .iter()
+            .position(|old| usage_source_fingerprint(&old.source_id) == key)
+        {
+            if record.permits_replacement(entry.records.get(index))? {
+                entry.records[index] = record.clone();
+            }
+        } else {
+            entry.records.push_back(record.clone());
+        }
+        Ok(())
+    })
+}
+
+fn session_usage_journal_owner(sessions_dir: &std::path::Path, session_id: &str) -> String {
+    format!(
+        "session:{}:{}",
+        usage_source_fingerprint(&sessions_dir.to_string_lossy()),
+        usage_source_fingerprint(session_id)
+    )
+}
+
+pub(crate) fn retained_session_usage_records(
+    sessions_dir: &std::path::Path,
+    session_id: &str,
+) -> Vec<RuntimeUsageRecord> {
+    let owner = session_usage_journal_owner(sessions_dir, session_id);
+    with_runtime_usage_journal_mut(|journal| {
+        journal
+            .get(&owner)
+            .map(|entry| entry.records.iter().cloned().collect())
+            .unwrap_or_default()
+    })
+}
+
+pub(crate) fn retire_session_usage_record(
+    sessions_dir: &std::path::Path,
+    session_id: &str,
+    record: &RuntimeUsageRecord,
+) {
+    retire_runtime_usage_record(
+        &session_usage_journal_owner(sessions_dir, session_id),
+        record,
+    );
+}
+
+pub(crate) fn retire_session_usage_records(
+    sessions_dir: &std::path::Path,
+    session_id: &str,
+) -> std::io::Result<()> {
+    for record in retained_session_usage_records(sessions_dir, session_id) {
+        let Some((store, session, _, scope)) = record.captured_session_origin()? else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "retained source has no Session origin",
+            ));
+        };
+        if store != sessions_dir || session != session_id {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "retained source belongs to another Session origin",
+            ));
+        }
+        record.acknowledge_persisted()?;
+        acknowledge_retired_usage_source(scope, &record.source_id);
+        retire_session_usage_record(sessions_dir, session_id, &record);
+    }
+    Ok(())
+}
+
+pub async fn settle_runtime_usage_record(
+    scope: CostScopeToken,
+    runtime_owner: Option<&str>,
+    record: &RuntimeUsageRecord,
+) -> std::io::Result<()> {
+    let record = record.clone();
+    let owner = runtime_owner.map(str::to_string);
+    #[cfg(any(test, feature = "test-support"))]
+    let test_origin = test_cost_scope_id();
+    codewhale_runtime::runtime_control::owner_work(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _origin = bind_test_cost_scope(test_origin);
+        report_runtime_usage_record(scope, owner.as_deref(), &record).map_err(anyhow::Error::from)
+    })
+    .await
+    .map_err(std::io::Error::other)
+}
+
+pub fn report_runtime_usage_record(
+    scope: CostScopeToken,
+    runtime_owner: Option<&str>,
+    record: &RuntimeUsageRecord,
+) -> std::io::Result<()> {
+    record.validate()?;
+    if record.settlement.is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "native accounting requires a captured source revision",
+        ));
+    }
+    let origin = record.native.as_ref().and_then(|proof| {
+        proof
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .origin
+            .clone()
+    });
+    if let Some(origin) = origin {
+        return origin.publish(record);
+    }
+    let _ = (scope, runtime_owner);
+    Err(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "usage origin was not captured before dispatch; exact receipt remains with its native caller",
+    ))
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub fn report_effective_route_for_runtime(
     scope: CostScopeToken,
     runtime_owner: Option<&str>,
@@ -2069,13 +3625,13 @@ pub fn report_effective_route_for_runtime(
     } else {
         record_interactive_runtime_usage(
             scope,
-            RuntimeUsageRecord {
-                source_id: source_id.to_string(),
-                usage: EffectiveRouteUsage {
+            RuntimeUsageRecord::legacy(
+                source_id.to_string(),
+                EffectiveRouteUsage {
                     route: route.sanitized_for_persistence(),
                     usage: usage.clone(),
                 },
-            },
+            ),
         );
     }
 }
@@ -2131,21 +3687,37 @@ pub fn report_runtime_usage_batch(
     runtime_owner: Option<&str>,
     batch: &RuntimeUsageBatch,
 ) {
-    for receipt in &batch.decisions {
-        if let Some(owner) = runtime_owner {
-            record_runtime_decision(owner, receipt);
-        } else {
-            report_interactive_decision(scope, receipt);
-        }
-    }
     for record in &batch.records {
-        report_effective_route_for_runtime(
-            scope,
-            runtime_owner,
-            &record.source_id,
-            &record.usage.route,
-            &record.usage.usage,
-        );
+        if record.settlement.is_some() {
+            if let Err(error) = report_runtime_usage_record(scope, runtime_owner, record) {
+                tracing::warn!(%error, "native usage batch remains unacknowledged");
+            }
+        } else {
+            #[cfg(any(test, feature = "test-support"))]
+            report_effective_route_for_runtime(
+                scope,
+                runtime_owner,
+                &record.source_id,
+                &record.usage.route,
+                &record.usage.usage,
+            );
+            #[cfg(not(any(test, feature = "test-support")))]
+            {
+                let mut route = record.usage.route.clone();
+                route.billing_mode = RouteBillingMode::Unknown;
+                route.provider_live_pricing = None;
+                report_missing_runtime_usage(
+                    scope,
+                    runtime_owner,
+                    &format!(
+                        "unverified-wire:{}",
+                        usage_source_fingerprint(&record.source_id)
+                    ),
+                    &route,
+                    RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                );
+            }
+        }
     }
     for record in &batch.drop_records {
         report_missing_runtime_usage(
@@ -2157,6 +3729,13 @@ pub fn report_runtime_usage_batch(
         );
     }
 
+    for receipt in &batch.decisions {
+        if let Some(owner) = runtime_owner {
+            record_runtime_decision(owner, receipt);
+        } else {
+            report_interactive_decision(scope, receipt);
+        }
+    }
     let residual = batch
         .dropped_records
         .saturating_sub(u64::try_from(batch.drop_records.len()).unwrap_or(u64::MAX));
@@ -2195,6 +3774,11 @@ pub fn report_runtime_usage_batch(
 
 #[must_use]
 pub fn background_cost_for_runtime_usage(record: &RuntimeUsageRecord) -> PendingBackgroundCost {
+    if record.settlement.is_some() {
+        let mut pending = PendingBackgroundCost::default();
+        pending.source_records.push(record.clone());
+        return pending;
+    }
     if record.usage.usage == Usage::default() {
         return background_cost_for_runtime_drop(&RuntimeUsageDropRecord {
             reason: crate::cost_status::RuntimeUsageMissingReason::default(),
@@ -2204,7 +3788,7 @@ pub fn background_cost_for_runtime_usage(record: &RuntimeUsageRecord) -> Pending
     }
     let mut pending = PendingBackgroundCost::default();
     let fingerprint = usage_source_fingerprint(&record.source_id);
-    let audit = record.usage.route.audit(&record.usage.usage);
+    let audit = record.usage.route.audit_frozen(&record.usage.usage);
     let receipt = record.usage.route.receipt(&audit);
     pending
         .usage_source_fingerprints
@@ -2306,60 +3890,160 @@ fn record(scope: CostScopeToken, route_receipt: String, audit: &TurnCostAudit, u
     });
 }
 
-pub fn record_interactive_runtime_usage(scope: CostScopeToken, record: RuntimeUsageRecord) -> bool {
-    if record.usage.usage == Usage::default() {
-        return record_interactive_runtime_usage_drop(
-            scope,
-            RuntimeUsageDropRecord {
-                reason: RuntimeUsageMissingReason::SuccessWithoutUsage,
-                source_id: record.source_id,
-                route: record.usage.route,
-            },
-        );
+pub(crate) fn acknowledge_usage_projection(
+    scope: CostScopeToken,
+    record: &RuntimeUsageRecord,
+) -> std::io::Result<()> {
+    if !record.is_acknowledged() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "usage projection has no durable acknowledgement",
+        ));
     }
     with_pending_state_mut(|state| {
         if state.generation != scope.0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ResourceBusy,
+                "cost projection scope changed",
+            ));
+        }
+        let key = usage_source_fingerprint(&record.source_id);
+        if let Some(current) = state.source_records.get(&key) {
+            if current == record || current.follows_protected(record)? {
+                return Ok(());
+            }
+        } else if state.seen_usage_source_fingerprints.contains(&key) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "legacy usage membership has no prior source contribution",
+            ));
+        }
+        if record.permits_replacement(state.source_records.get(&key))? {
+            state.source_records.insert(key.clone(), record.persisted());
+            state.seen_usage_source_fingerprints.insert(key);
+        }
+        Ok(())
+    })
+}
+
+pub fn record_interactive_runtime_usage(scope: CostScopeToken, record: RuntimeUsageRecord) -> bool {
+    if record.settlement.is_some() {
+        let scope = record
+            .native
+            .as_ref()
+            .and_then(|proof| {
+                proof
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .origin
+                    .as_ref()
+                    .map(|origin| origin.scope)
+            })
+            .unwrap_or(scope);
+        if !record.has_live_projection() {
             return false;
         }
-        let fingerprint = usage_source_fingerprint(&record.source_id);
-        if state
-            .missing_usage_sources
-            .get(&fingerprint)
-            .is_some_and(|coverage| !coverage.matches_route(&record.usage.route))
-        {
-            return true;
-        }
-        if !state
-            .seen_usage_source_fingerprints
-            .insert(fingerprint.clone())
-        {
-            return true;
-        }
-        if let Some(coverage) = state.missing_usage_sources.remove(&fingerprint) {
-            if state
-                .pending
-                .missing_usage_sources
-                .remove(&fingerprint)
-                .is_some()
-            {
-                if coverage.money_metered {
-                    state.pending.unpriced_turns = state.pending.unpriced_turns.saturating_sub(1);
-                    state.pending.cny_unpriced_turns =
-                        state.pending.cny_unpriced_turns.saturating_sub(1);
+        return with_pending_state_mut(|state| {
+            if state.generation != scope.0 {
+                if record.native_authorizes().unwrap_or(false) {
+                    if !state
+                        .pending
+                        .source_records
+                        .iter()
+                        .any(|prior| prior == &record)
+                    {
+                        state.pending.source_records.push(record);
+                    }
+                    return true;
                 }
-            } else {
-                state
-                    .pending
-                    .resolved_missing_usage_sources
-                    .insert(fingerprint.clone());
+                return false;
             }
+            let key = usage_source_fingerprint(&record.source_id);
+            if state.seen_usage_source_fingerprints.contains(&key)
+                && !state.source_records.contains_key(&key)
+            {
+                tracing::warn!(
+                    "legacy usage membership has no provable prior contribution; correction refused"
+                );
+                return false;
+            }
+            match record.permits_replacement(state.source_records.get(&key)) {
+                Ok(false) => true,
+                Ok(true) => {
+                    state.source_records.insert(key.clone(), record.persisted());
+                    state.pending.source_records.push(record);
+                    state.seen_usage_source_fingerprints.insert(key);
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "interactive usage correction refused");
+                    false
+                }
+            }
+        });
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if record.usage.usage == Usage::default() {
+            return record_interactive_runtime_usage_drop(
+                scope,
+                RuntimeUsageDropRecord {
+                    reason: RuntimeUsageMissingReason::SuccessWithoutUsage,
+                    source_id: record.source_id,
+                    route: record.usage.route,
+                },
+            );
         }
-        let audit = record.usage.route.audit(&record.usage.usage);
-        let receipt = record.usage.route.receipt(&audit);
-        state.pending.usage_source_fingerprints.insert(fingerprint);
-        fold_audit_into_pending(&mut state.pending, receipt, &audit, &record.usage.usage);
-        true
-    })
+        with_pending_state_mut(|state| {
+            if state.generation != scope.0 {
+                return false;
+            }
+            let fingerprint = usage_source_fingerprint(&record.source_id);
+            if state
+                .missing_usage_sources
+                .get(&fingerprint)
+                .is_some_and(|coverage| !coverage.matches_route(&record.usage.route))
+            {
+                return true;
+            }
+            if !state
+                .seen_usage_source_fingerprints
+                .insert(fingerprint.clone())
+            {
+                return true;
+            }
+            if let Some(coverage) = state.missing_usage_sources.remove(&fingerprint) {
+                if state
+                    .pending
+                    .missing_usage_sources
+                    .remove(&fingerprint)
+                    .is_some()
+                {
+                    if coverage.money_metered {
+                        state.pending.unpriced_turns =
+                            state.pending.unpriced_turns.saturating_sub(1);
+                        state.pending.cny_unpriced_turns =
+                            state.pending.cny_unpriced_turns.saturating_sub(1);
+                    }
+                } else {
+                    state
+                        .pending
+                        .resolved_missing_usage_sources
+                        .insert(fingerprint.clone());
+                }
+            }
+            let audit = record.usage.route.audit_frozen(&record.usage.usage);
+            let receipt = record.usage.route.receipt(&audit);
+            state.pending.usage_source_fingerprints.insert(fingerprint);
+            fold_audit_into_pending(&mut state.pending, receipt, &audit, &record.usage.usage);
+            true
+        })
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        false
+    }
 }
 pub fn record_interactive_runtime_usage_drop(
     scope: CostScopeToken,
@@ -2534,6 +4218,7 @@ pub fn reset_for_tests() {
     with_pending_state_mut(|state| {
         state.pending = PendingBackgroundCost::default();
         state.seen_usage_source_fingerprints.clear();
+        state.source_records.clear();
         state.missing_usage_sources.clear();
         state.missing_usage_overflowed = false;
     });
@@ -3578,26 +5263,26 @@ mod tests {
     fn routed_child_batch_is_preferred_bounded_and_sanitized() {
         let route = deepseek_envelope();
         let records = vec![
-            RuntimeUsageRecord {
-                source_id: "raw-provider-response-id-one".to_string(),
-                usage: EffectiveRouteUsage {
+            RuntimeUsageRecord::legacy(
+                "raw-provider-response-id-one".to_string(),
+                EffectiveRouteUsage {
                     route: route.clone(),
                     usage: Usage {
                         input_tokens: 11,
                         ..Usage::default()
                     },
                 },
-            },
-            RuntimeUsageRecord {
-                source_id: "raw-provider-response-id-two".to_string(),
-                usage: EffectiveRouteUsage {
+            ),
+            RuntimeUsageRecord::legacy(
+                "raw-provider-response-id-two".to_string(),
+                EffectiveRouteUsage {
                     route: route.clone(),
                     usage: Usage {
                         output_tokens: 7,
                         ..Usage::default()
                     },
                 },
-            },
+            ),
         ];
         let mut metadata = serde_json::json!({});
         attach_child_usage_metadata(&mut metadata, &route, &Usage::default());
@@ -3695,9 +5380,9 @@ mod tests {
     #[test]
     fn child_cache_classes_reach_the_background_pool_only_when_reported() {
         // #6565: sub-agent cache was missing from session totals.
-        let reported = background_cost_for_runtime_usage(&RuntimeUsageRecord {
-            source_id: "child-cache-reported".into(),
-            usage: EffectiveRouteUsage {
+        let reported = background_cost_for_runtime_usage(&RuntimeUsageRecord::legacy(
+            "child-cache-reported",
+            EffectiveRouteUsage {
                 route: deepseek_envelope(),
                 usage: Usage {
                     input_tokens: 1_000,
@@ -3707,14 +5392,14 @@ mod tests {
                     ..Usage::default()
                 },
             },
-        });
+        ));
         assert_eq!(reported.cache_hit_tokens, Some(700));
         assert_eq!(reported.cache_miss_tokens, Some(300));
         assert_eq!(reported.cache_write_tokens, Some(0));
 
-        let silent = background_cost_for_runtime_usage(&RuntimeUsageRecord {
-            source_id: "child-cache-silent".into(),
-            usage: EffectiveRouteUsage {
+        let silent = background_cost_for_runtime_usage(&RuntimeUsageRecord::legacy(
+            "child-cache-silent",
+            EffectiveRouteUsage {
                 route: deepseek_envelope(),
                 usage: Usage {
                     input_tokens: 1_000,
@@ -3722,7 +5407,7 @@ mod tests {
                     ..Usage::default()
                 },
             },
-        });
+        ));
         assert_eq!(silent.cache_hit_tokens, None, "no report is not 0%");
         assert_eq!(silent.cache_miss_tokens, None);
     }
@@ -3730,9 +5415,9 @@ mod tests {
     #[test]
     fn background_cache_write_only_telemetry_is_recorded() {
         for written in [0, 400] {
-            let pending = background_cost_for_runtime_usage(&RuntimeUsageRecord {
-                source_id: "child-cache-write-only".into(),
-                usage: EffectiveRouteUsage {
+            let pending = background_cost_for_runtime_usage(&RuntimeUsageRecord::legacy(
+                "child-cache-write-only",
+                EffectiveRouteUsage {
                     route: deepseek_envelope(),
                     usage: Usage {
                         input_tokens: 1_000,
@@ -3740,7 +5425,7 @@ mod tests {
                         ..Usage::default()
                     },
                 },
-            });
+            ));
             assert_eq!(pending.cache_hit_tokens, Some(0));
             assert_eq!(pending.cache_miss_tokens, Some(u64::from(1_000 - written)));
             assert_eq!(pending.cache_write_tokens, Some(u64::from(written)));
@@ -3804,13 +5489,13 @@ mod tests {
         assert_eq!(batch.drop_records.len(), 1);
         assert_eq!(batch.dropped_records, 1);
         assert!(drain().is_empty());
-        let replay = background_cost_for_runtime_usage(&RuntimeUsageRecord {
-            source_id: encoded,
-            usage: EffectiveRouteUsage {
+        let replay = background_cost_for_runtime_usage(&RuntimeUsageRecord::legacy(
+            encoded,
+            EffectiveRouteUsage {
                 route: route.clone(),
                 usage: Usage::default(),
             },
-        });
+        ));
         assert_eq!(replay.unpriced_turns, missing.unpriced_turns);
         assert_eq!(replay.cny_unpriced_turns, missing.cny_unpriced_turns);
         assert_eq!(
@@ -3821,13 +5506,13 @@ mod tests {
         for billing_mode in [RouteBillingMode::Subscription, RouteBillingMode::Local] {
             let mut nonmetered = route.clone();
             nonmetered.billing_mode = billing_mode;
-            let cost = background_cost_for_runtime_usage(&RuntimeUsageRecord {
-                source_id: raw.into(),
-                usage: EffectiveRouteUsage {
+            let cost = background_cost_for_runtime_usage(&RuntimeUsageRecord::legacy(
+                raw,
+                EffectiveRouteUsage {
                     route: nonmetered,
                     usage: Usage::default(),
                 },
-            });
+            ));
             assert_eq!(cost.unpriced_turns, 0);
             assert_eq!(cost.cny_unpriced_turns, 0);
             assert_eq!(cost.usage_source_fingerprints.len(), 1);

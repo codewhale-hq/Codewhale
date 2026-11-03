@@ -624,6 +624,7 @@ pub trait FleetRouterCaller: Send + Sync + std::fmt::Debug {
 /// A Reasoning Router bound to its own exact preflighted route.
 #[derive(Clone)]
 pub struct LiveFleetRouter {
+    accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     client: crate::client::CodewhaleClient,
     captured: CapturedReasoningRouter,
     route: PreflightedRoute,
@@ -660,6 +661,7 @@ impl LiveFleetRouter {
     pub fn bind(
         captured: &CapturedReasoningRouter,
         config: &Config,
+        accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     ) -> Result<Self, RouterBindError> {
         let route = preflight_route(
             &captured.id,
@@ -698,6 +700,7 @@ impl LiveFleetRouter {
         let call = router_call_plan(captured.requested_call_reasoning, &route.capability);
 
         Ok(Self {
+            accounting_origin,
             client,
             captured: captured.clone(),
             route,
@@ -768,11 +771,44 @@ impl FleetRouterCaller for LiveFleetRouter {
             top_p: None,
         };
 
-        let response = self
+        #[cfg(not(any(test, feature = "test-support")))]
+        if self.accounting_origin.is_none() {
+            return Err("reasoning router has no admitted accounting origin".to_string());
+        }
+        let route = self
             .client
-            .create_message(request)
+            .effective_route_envelope(&self.route.wire_model, chrono::Utc::now());
+        let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            format!("fleet-router:{}", uuid::Uuid::new_v4()),
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+            self.accounting_origin.clone(),
+        );
+        let observation = source
+            .observe_route(&route)
+            .map_err(|error| error.to_string())?;
+        source
+            .admit_dispatch(&route)
             .await
             .map_err(|error| error.to_string())?;
+        let wire = observation.wire_observations.clone();
+        let response = crate::llm_client::observe_request_retries(
+            Some(observation),
+            self.client.create_message(request),
+        )
+        .await;
+        let record = source
+            .response_record(&route, &response, &wire.drain())
+            .map_err(|error| error.to_string())?;
+        if record.has_captured_origin() {
+            crate::cost_status::settle_runtime_usage_record(
+                crate::cost_status::scope_token(),
+                None,
+                &record,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+        let response = response.map_err(|error| error.to_string())?;
         if codewhale_models::is_incomplete_stop_reason(response.stop_reason.as_deref()) {
             return Err(format!(
                 "reasoning router response incomplete: provider stop reason `{}`",
@@ -1070,6 +1106,7 @@ impl ExactFleetWorkflow {
         captured_at: impl Into<String>,
         config: Option<&Config>,
         search_roots: &[FleetSearchRoot],
+        accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     ) -> Result<Self, String> {
         let exact = document
             .exact()
@@ -1106,7 +1143,8 @@ impl ExactFleetWorkflow {
             .map_err(|error| error.to_string())?;
 
         // Preflight every worker route before anything else can happen.
-        let (preflight, router) = Self::preflight_and_bind(&snapshot, captured_router, config)?;
+        let (preflight, router) =
+            Self::preflight_and_bind(&snapshot, captured_router, config, accounting_origin)?;
 
         let router_unavailable = match (snapshot.router(), &router) {
             (Some(_), None) => {
@@ -1130,6 +1168,7 @@ impl ExactFleetWorkflow {
         snapshot: &FleetSnapshot,
         captured_router: Option<CapturedReasoningRouter>,
         config: Option<&Config>,
+        accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     ) -> Result<(RoutePreflight, Option<Arc<dyn FleetRouterCaller>>), String> {
         let Some(config) = config else {
             return Err(format!(
@@ -1180,7 +1219,7 @@ impl ExactFleetWorkflow {
         let mut router: Option<Arc<dyn FleetRouterCaller>> = None;
         let mut router_route = None;
         if let Some(captured) = &captured_router {
-            match LiveFleetRouter::bind(captured, config) {
+            match LiveFleetRouter::bind(captured, config, accounting_origin.clone()) {
                 Ok(live) => {
                     router_route = Some(live.route().clone());
                     router = Some(Arc::new(live));
@@ -3036,6 +3075,7 @@ permissions = "read_only"
             "2026-08-14T00:00:00Z",
             Some(&config),
             &[],
+            None,
         )
         .expect("legacy Cloud Fleet starts");
         let route = workflow
@@ -3068,7 +3108,7 @@ call_reasoning = "low"
         .expect("legacy Cloud router profile parses");
         let captured =
             CapturedReasoningRouter::from_profile(&router_profile, "workspace".to_string());
-        let live = LiveFleetRouter::bind(&captured, &config)
+        let live = LiveFleetRouter::bind(&captured, &config, None)
             .expect("legacy Cloud Router binds its source table and secret");
         assert_eq!(live.route.provider_id, "ollama-cloud");
         assert_eq!(live.route.provider_config_id.as_deref(), Some("ollama"));
@@ -3649,6 +3689,7 @@ mod saved_fleet_tests {
             "2026-09-22T00:00:00Z",
             Some(&config),
             &roots,
+            None,
         )
         .expect("capture");
 

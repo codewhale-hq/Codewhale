@@ -460,6 +460,9 @@ async fn import_into_owner(
             serde_json::to_writer(&mut bound, &observed)?;
             session = observed;
         }
+        session.schema_version = session
+            .schema_version
+            .max(codewhale_engine::session_manager::CURRENT_SESSION_SCHEMA_VERSION);
         let document_digest = saved_document_digest(&session)?;
         let prepare_runtime = Arc::clone(&runtime);
         let prepared_operation = operation.clone();
@@ -1702,6 +1705,9 @@ async fn mutate_in_owner(
             .ok_or_else(|| anyhow!("canonical thread has no provider identity"))?,
         thread.model_provider_id.as_deref(),
     );
+    session.schema_version = session
+        .schema_version
+        .max(codewhale_engine::session_manager::CURRENT_SESSION_SCHEMA_VERSION);
     let document_digest = saved_document_digest(&session)?;
     let prepare_runtime = Arc::clone(&runtime);
     let operation = history_owner_work(move || {

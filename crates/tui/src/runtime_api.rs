@@ -13882,6 +13882,13 @@ fn map_automation_err(err: anyhow::Error) -> ApiError {
 }
 
 fn map_thread_err(err: anyhow::Error) -> ApiError {
+    if let Some(error) = err.downcast_ref::<codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError>() {
+        return match error {
+            codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError::InvalidRequest => ApiError::bad_request(error.to_string()),
+            codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError::Incomplete => ApiError::conflict(error.to_string()),
+            codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError::Unavailable => ApiError::internal(error.to_string()),
+        };
+    }
     let message = err.to_string();
     let lower = message.to_ascii_lowercase();
     if (lower.starts_with("thread '") && lower.ends_with("' not found"))

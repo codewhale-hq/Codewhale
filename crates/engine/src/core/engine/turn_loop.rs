@@ -72,8 +72,12 @@ struct PreparedModelStep {
 
 pub(super) struct PendingProviderRequestReceipt {
     pub(super) request_id: String,
+    pub(super) accounting_source: crate::cost_status::NativeUsageSource,
+    pub(super) accounting_scope: crate::cost_status::CostScopeToken,
+    pub(super) accounting_owner: Option<String>,
     pub(super) route: crate::cost_status::EffectiveRouteEnvelope,
     pub(super) primary: bool,
+    pub(super) accounting_owned_elsewhere: bool,
     pub(super) invoked: bool,
     pub(super) turn_id: String,
     pub(super) request_index: u32,
@@ -159,6 +163,7 @@ struct StreamOutcome {
     tool_uses: Vec<ToolUseState>,
     usage: Usage,
     usage_reported: bool,
+    accounting: Option<crate::cost_status::RuntimeUsageRecord>,
     stop_reason: Option<String>,
     pending_message_complete: bool,
     last_text_index: Option<usize>,
@@ -1378,25 +1383,85 @@ impl Engine {
                 child.accounting_origin().0
             });
         let review_route = client.effective_route_envelope(client.model(), chrono::Utc::now());
-        let started = Instant::now();
-        let review =
-            super::reviewer::consult_reviewer(client, &context_text, &self.cancel_token).await;
-        if let Some(usage) = &review.usage {
-            turn.add_usage(usage);
-            let source = format!("auto-review:{}:{tool_id}", turn.id);
+        let origin = if let Some(child) = child_accounting.as_ref() {
+            child.runtime.context.accounting_origin.clone()
+        } else {
+            self.config
+                .compaction
+                .runtime_cost_owner
+                .as_deref()
+                .map(|owner| crate::cost_status::NativeUsageOrigin::runtime(cost_scope, owner))
+                .transpose()
+                .map_err(|error| {
+                    ToolError::execution_failed(format!(
+                        "review accounting admission failed: {error}"
+                    ))
+                })?
+                .or_else(|| self.config.runtime_services.accounting_origin.clone())
+        };
+        let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            format!("auto-review:{}:{tool_id}", turn.id),
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+            origin,
+        );
+        let observation = source
+            .observe_route(&review_route)
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+        if let Some(record) = source
+            .admit_dispatch(&review_route)
+            .await
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?
+        {
             if let Some(child) = child_accounting.as_ref() {
                 child
-                    .settle_response(&source, review_route.clone(), usage)
-                    .await;
-            } else {
-                crate::cost_status::report_effective_route_for_runtime(
-                    cost_scope,
-                    self.config.compaction.runtime_cost_owner.as_deref(),
-                    &format!("auto-review:{}:{tool_id}", turn.id),
-                    &review_route,
-                    usage,
-                );
+                    .project_settled_response(&record)
+                    .await
+                    .map_err(|error| ToolError::execution_failed(error.to_string()))?;
             }
+        }
+        let wire = observation.wire_observations.clone();
+        let started = Instant::now();
+        let review = crate::llm_client::observe_request_retries(
+            Some(observation),
+            super::reviewer::consult_reviewer(client, &context_text, &self.cancel_token),
+        )
+        .await;
+        let wire = wire.drain();
+        let empty = Usage::default();
+        let usage = review.usage.as_ref().unwrap_or(&empty);
+        let has_response = review.usage.is_some();
+        let coverage = wire.usage_coverage(usage_has_reported_data(usage), has_response);
+        let record = source
+            .prepare_observed(
+                &review_route,
+                usage,
+                coverage,
+                if has_response {
+                    crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+                } else {
+                    crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                },
+                &wire,
+            )
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+        if let Some(child) = child_accounting.as_ref() {
+            child
+                .settle_response(&record)
+                .await
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+        } else {
+            crate::cost_status::settle_runtime_usage_record(
+                cost_scope,
+                self.config.compaction.runtime_cost_owner.as_deref(),
+                &record,
+            )
+            .await
+            .map_err(|error| {
+                ToolError::execution_failed(format!("review usage remains unacknowledged: {error}"))
+            })?;
+        }
+        if let Some(usage) = &review.usage {
+            turn.add_usage(usage);
             if usage_has_reported_data(usage) {
                 let request_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let _ = self
@@ -1408,12 +1473,6 @@ impl Engine {
                     })
                     .await;
             }
-        } else if matches!(
-            &review.outcome,
-            super::reviewer::ReviewerOutcome::Unavailable { reason }
-                if reason == "the reviewer timed out" || reason == "the reviewer request failed"
-        ) {
-            turn.add_routed_usage_dropped_records(1);
         }
         match &review.outcome {
             super::reviewer::ReviewerOutcome::Allow { .. } => {
@@ -4669,12 +4728,12 @@ impl Engine {
         pending: &mut Option<PendingProviderRequestReceipt>,
         usage: Option<&Usage>,
         outcome: &str,
-    ) {
+    ) -> Result<Option<crate::cost_status::RuntimeUsageRecord>, String> {
         let Some(pending) = pending.take() else {
-            return;
+            return Ok(None);
         };
         let usage = usage.filter(|usage| usage_has_reported_data(usage));
-        let wire = pending.wire.drain();
+        let wire = pending.wire.snapshot();
         let source_id = wire
             .last_transmission
             .as_ref()
@@ -4689,25 +4748,76 @@ impl Engine {
             },
             |attempt| attempt.transmission,
         );
-        let coverage = match transmission {
-            crate::llm_client::RequestTransmission::NotDispatched => {
-                crate::llm_client::ProviderUsageCoverage::NotDispatched
-            }
-            crate::llm_client::RequestTransmission::Rejected => {
-                crate::llm_client::ProviderUsageCoverage::Rejected
-            }
-            crate::llm_client::RequestTransmission::OutcomeUnknown => {
-                if usage.is_some() && matches!(outcome, "completed" | "review_response") {
-                    crate::llm_client::ProviderUsageCoverage::Reported
-                } else if usage.is_some() {
-                    crate::llm_client::ProviderUsageCoverage::Incomplete
-                } else {
-                    crate::llm_client::ProviderUsageCoverage::Missing
+        let coverage = if wire.last_transmission.is_some() {
+            wire.usage_coverage(
+                usage.is_some(),
+                matches!(outcome, "completed" | "review_response"),
+            )
+        } else {
+            match transmission {
+                crate::llm_client::RequestTransmission::NotDispatched => {
+                    crate::llm_client::ProviderUsageCoverage::NotDispatched
                 }
+                crate::llm_client::RequestTransmission::Rejected => {
+                    crate::llm_client::ProviderUsageCoverage::Rejected
+                }
+                crate::llm_client::RequestTransmission::OutcomeUnknown
+                    if usage.is_some() && matches!(outcome, "completed" | "review_response") =>
+                {
+                    crate::llm_client::ProviderUsageCoverage::Reported
+                }
+                crate::llm_client::RequestTransmission::OutcomeUnknown if usage.is_some() => {
+                    crate::llm_client::ProviderUsageCoverage::Incomplete
+                }
+                _ => crate::llm_client::ProviderUsageCoverage::Missing,
             }
         };
+        let mut accounting_record = None;
+        let accounting_error = if pending.primary && !pending.accounting_owned_elsewhere {
+            let reason = if matches!(outcome, "completed" | "review_response") {
+                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+            } else {
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+            };
+            let prepared = pending.accounting_source.prepare_observed(
+                &pending.route,
+                usage.unwrap_or(&Usage::default()),
+                coverage,
+                reason,
+                &wire,
+            );
+            match prepared {
+                Ok(record) => {
+                    accounting_record = Some(record.clone());
+                    match crate::cost_status::settle_runtime_usage_record(
+                        pending.accounting_scope,
+                        pending.accounting_owner.as_deref(),
+                        &record,
+                    )
+                    .await
+                    {
+                        Ok(()) => None,
+                        Err(error) => Some(error.to_string()),
+                    }
+                }
+                Err(error) => Some(error.to_string()),
+            }
+        } else {
+            None
+        };
+        if let Some(error) = accounting_error.as_ref() {
+            tracing::error!(%error, "provider usage has no durable acknowledgement");
+            let _ = self
+                .send_event(Event::status(format!(
+                    "Provider usage settlement is uncertain: {error}"
+                )))
+                .await;
+        }
+        let failed = accounting_error.clone();
         let _ = self.send_event(Event::ProviderRequestReceipt {
             receipt: json!({
+                "source_accounting": pending.primary,
+                "accounting_error": accounting_error,
                 "session_id": self.session.id,
                 "turn_id": pending.turn_id,
                 "request_index": pending.request_index,
@@ -4731,6 +4841,10 @@ impl Engine {
                 "cache_attribution": "Local prefix changes and wire schema measurements are context for reported usage, not proof that eviction caused a miss or that unreported retries were free.",
             }),
         }).await;
+        match failed {
+            Some(error) => Err(error),
+            None => Ok(accounting_record),
+        }
     }
 
     async fn process_stream(
@@ -5315,12 +5429,20 @@ impl Engine {
         } else {
             "completion_unknown"
         };
-        self.settle_provider_request_receipt(
-            &mut request_receipt,
-            attempt_usage_reported.then_some(&usage),
-            receipt_outcome,
-        )
-        .await;
+        let accounting = match self
+            .settle_provider_request_receipt(
+                &mut request_receipt,
+                attempt_usage_reported.then_some(&usage),
+                receipt_outcome,
+            )
+            .await
+        {
+            Ok(record) => record,
+            Err(error) => {
+                stream_error.get_or_insert(format!("Provider usage settlement failed: {error}"));
+                None
+            }
+        };
         StreamOutcome {
             current_text_raw,
             current_text_visible,
@@ -5331,6 +5453,7 @@ impl Engine {
             tool_uses,
             usage,
             usage_reported,
+            accounting,
             stop_reason,
             pending_message_complete,
             last_text_index,

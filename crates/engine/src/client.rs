@@ -205,6 +205,7 @@ pub struct TranslationProviderResponse {
     pub translated: Result<String>,
     pub route: crate::cost_status::EffectiveRouteEnvelope,
     pub usage: Option<Usage>,
+    pub accounting: Option<crate::cost_status::RuntimeUsageRecord>,
 }
 
 /// Universal client for the resolved provider route.
@@ -3620,10 +3621,79 @@ impl CodewhaleClient {
         text: &str,
         model: &str,
         target_language: &str,
+        source: &crate::cost_status::NativeUsageSource,
+    ) -> Result<TranslationProviderResponse> {
+        let route = self.effective_route_envelope(model, chrono::Utc::now());
+        let observation = source.observe_route(&route)?;
+        source.admit_dispatch(&route).await?;
+        let wire = observation.wire_observations.clone();
+        let response = crate::llm_client::observe_request_retries(
+            Some(observation),
+            self.translate_prepared_with_usage(text, model, target_language, route.clone()),
+        )
+        .await;
+        let wire = wire.drain();
+        let usage = response
+            .as_ref()
+            .ok()
+            .and_then(|response| response.usage.clone())
+            .unwrap_or_default();
+        let coverage = if wire.last_transmission.is_some() {
+            wire.usage_coverage(usage != Usage::default(), response.is_ok())
+        } else {
+            match &response {
+                Ok(_) if usage != Usage::default() => {
+                    crate::llm_client::ProviderUsageCoverage::Reported
+                }
+                Ok(_) => crate::llm_client::ProviderUsageCoverage::Missing,
+                Err(error) => match error
+                    .downcast_ref::<crate::llm_client::LlmError>()
+                    .map(crate::llm_client::LlmError::transmission)
+                {
+                    Some(crate::llm_client::RequestTransmission::NotDispatched) => {
+                        crate::llm_client::ProviderUsageCoverage::NotDispatched
+                    }
+                    Some(crate::llm_client::RequestTransmission::Rejected) => {
+                        crate::llm_client::ProviderUsageCoverage::Rejected
+                    }
+                    _ => crate::llm_client::ProviderUsageCoverage::Missing,
+                },
+            }
+        };
+        let record = source.prepare_observed(
+            &route,
+            &usage,
+            coverage,
+            if response.is_ok() {
+                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+            } else {
+                crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+            },
+            &wire,
+        )?;
+        if record.has_captured_origin() {
+            crate::cost_status::settle_runtime_usage_record(
+                crate::cost_status::scope_token(),
+                None,
+                &record,
+            )
+            .await?;
+        }
+        response.map(|mut response| {
+            response.accounting = Some(record);
+            response
+        })
+    }
+
+    async fn translate_prepared_with_usage(
+        &self,
+        text: &str,
+        model: &str,
+        target_language: &str,
+        route: crate::cost_status::EffectiveRouteEnvelope,
     ) -> Result<TranslationProviderResponse> {
         // Freeze pricing before either the remote-control gate or the provider
         // permit. A later live-catalog refresh must not reprice this request.
-        let route = self.effective_route_envelope(model, chrono::Utc::now());
         let _inference = self.acquire_remote_control_inference_permit().await;
         let _permit = self.acquire_provider_request_permit().await;
         let model = self.wire_model_for_route(model);
@@ -3666,6 +3736,8 @@ impl CodewhaleClient {
                     translation_text_from_response(&response)
                 };
             return Ok(TranslationProviderResponse {
+                accounting: None,
+
                 translated,
                 route,
                 usage,
@@ -3759,6 +3831,8 @@ impl CodewhaleClient {
         };
 
         Ok(TranslationProviderResponse {
+            accounting: None,
+
             translated,
             route,
             usage,
@@ -3768,9 +3842,17 @@ impl CodewhaleClient {
     /// Test adapter for asserting the translated text; production retains receipts.
     #[cfg(test)]
     async fn translate(&self, text: &str, model: &str, target_language: &str) -> Result<String> {
-        self.translate_with_usage(text, model, target_language)
-            .await?
-            .translated
+        self.translate_with_usage(
+            text,
+            model,
+            target_language,
+            &crate::cost_status::NativeUsageSource::capture(
+                format!("translation-test:{}", uuid::Uuid::new_v4()),
+                crate::cost_status::UsageSpendOwner::Auxiliary,
+            ),
+        )
+        .await?
+        .translated
     }
 
     /// List every available model under the endpoint's verified pagination contract.
@@ -4716,44 +4798,40 @@ impl CodewhaleClient {
     {
         let mut retry_cfg: LlmRetryConfig = self.retry.clone().into();
         retry_cfg.operation = operation;
-        let request_result = crate::llm_client::observe_request_retries(
-            None,
-            with_retry(
-                &retry_cfg,
-                || {
-                    let response = attempt();
-                    async move {
-                        self.wait_for_rate_limit().await;
-                        let response = response.await?;
-                        let status = response.status();
-                        if status.is_success() {
-                            return Ok(response);
-                        }
-                        let header_retry_after = extract_retry_after(response.headers());
-                        let raw = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
-                        let body_retry_after = retry_delay_from_error_body(&raw);
-                        let body =
-                            self.disclosed_http_error_body(disclosure, status.as_u16(), &raw);
-                        let error = self.http_error_with_route_context(
-                            status.as_u16(),
-                            &body,
-                            header_retry_after,
-                            body_retry_after,
-                        );
-                        crate::llm_client::settle_outbound_http_error(&error);
-                        Err(error)
+        let request_result = with_retry(
+            &retry_cfg,
+            || {
+                let response = attempt();
+                async move {
+                    self.wait_for_rate_limit().await;
+                    let response = response.await?;
+                    let status = response.status();
+                    if status.is_success() {
+                        return Ok(response);
                     }
-                },
-                Some(Box::new(|err, attempt, delay| {
-                    let (reason_label, _) = retry_reason_label_and_human(err);
-                    logging::warn(format!(
-                        "Isolated HTTP retry reason={} attempt={} delay={:.2}s",
-                        reason_label,
-                        attempt + 1,
-                        delay.as_secs_f64(),
-                    ));
-                })),
-            ),
+                    let header_retry_after = extract_retry_after(response.headers());
+                    let raw = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
+                    let body_retry_after = retry_delay_from_error_body(&raw);
+                    let body = self.disclosed_http_error_body(disclosure, status.as_u16(), &raw);
+                    let error = self.http_error_with_route_context(
+                        status.as_u16(),
+                        &body,
+                        header_retry_after,
+                        body_retry_after,
+                    );
+                    crate::llm_client::settle_outbound_http_error(&error);
+                    Err(error)
+                }
+            },
+            Some(Box::new(|err, attempt, delay| {
+                let (reason_label, _) = retry_reason_label_and_human(err);
+                logging::warn(format!(
+                    "Isolated HTTP retry reason={} attempt={} delay={:.2}s",
+                    reason_label,
+                    attempt + 1,
+                    delay.as_secs_f64(),
+                ));
+            })),
         )
         .await;
 
@@ -4842,6 +4920,7 @@ impl CodewhaleClient {
     pub async fn create_message_without_response_cache(
         &self,
         request: MessageRequest,
+        observation: crate::llm_client::RequestRetryObservation,
     ) -> Result<MessageResponse> {
         let mut isolated = self.clone();
         isolated.isolated_request_state = true;
@@ -4850,9 +4929,11 @@ impl CodewhaleClient {
         // auxiliary classifier call, however: it must neither consume nor
         // inherit that mutable foreground state.
         isolated.rate_limiter = Arc::new(AsyncMutex::new(TokenBucket::from_env()));
-        isolated
-            .create_message_with_cache_policy(request, false)
-            .await
+        crate::llm_client::observe_request_retries(
+            Some(observation),
+            isolated.create_message_with_cache_policy(request, false),
+        )
+        .await
     }
 
     async fn create_message_with_cache_policy(
@@ -6601,22 +6682,28 @@ pub fn main_turn_pricing_quote_at(
     endpoint_fingerprint: &str,
     dispatched_at: u64,
 ) -> Option<crate::provider_catalog_live::ProviderLivePricingQuote> {
-    let declared = client
-        .filter(|client| {
-            crate::cost_status::endpoint_fingerprint(client.base_url()).as_deref()
-                == Some(endpoint_fingerprint)
-        })
-        .and_then(|client| {
-            client.configured_pricing_quote_at(provider, provider_identity, model, dispatched_at)
-        });
-    crate::provider_catalog_live::declared_or_catalog_quote(declared, || {
-        crate::provider_catalog_live::fresh_provider_live_pricing_quote_at(
+    let client = client.filter(|client| {
+        crate::cost_status::endpoint_fingerprint(client.base_url()).as_deref()
+            == Some(endpoint_fingerprint)
+    });
+    let declared = client.and_then(|client| {
+        client.configured_pricing_quote_at(provider, provider_identity, model, dispatched_at)
+    });
+    crate::provider_catalog_live::declared_or_catalog_quote(declared, || match client {
+        Some(client) => crate::provider_catalog_live::fresh_dispatch_pricing_quote_at(
+            provider,
+            provider_identity,
+            model,
+            client.base_url(),
+            dispatched_at,
+        ),
+        None => crate::provider_catalog_live::fresh_provider_live_pricing_quote_at(
             provider,
             provider_identity,
             model,
             endpoint_fingerprint,
             dispatched_at,
-        )
+        ),
     })
 }
 
