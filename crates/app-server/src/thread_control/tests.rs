@@ -975,6 +975,30 @@ async fn declared_oversize_response_refuses_complete_document_without_truncation
 #[tokio::test]
 async fn http_and_stdio_dispatch_share_the_same_full_history_owner() {
     let (state, _temp, fake, server) = fixture(false).await;
+    for (method, params) in [
+        ("thread/list", json!({"cwd":"/another-workspace"})),
+        ("thread/list", json!({"cursor":"unsupported"})),
+        ("thread/list", json!({"archived":true})),
+        (
+            "thread/read",
+            json!({"thread_id":"canonical-1","includeTurns":false}),
+        ),
+        (
+            "thread/request",
+            json!({"kind":"list","cwd":"/another-workspace"}),
+        ),
+        (
+            "thread/request",
+            json!({"kind":"read","thread_id":"canonical-1","includeTurns":false}),
+        ),
+    ] {
+        let error = dispatch_stdio_request(&state, method, params)
+            .await
+            .unwrap_err();
+        assert_eq!(error.wire.code, -32602);
+        assert!(error.wire.message.contains("unknown field"));
+        assert!(fake.calls.lock().await.is_empty());
+    }
     let request = ThreadRequest::Read(codewhale_protocol::ThreadReadParams {
         thread_id: "canonical-1".into(),
     });
