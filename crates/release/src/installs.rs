@@ -491,18 +491,20 @@ pub fn is_codewhale_binary(path: &Path) -> bool {
 }
 
 pub fn file_sha256(path: &Path) -> Result<String> {
-    let mut file =
+    let file =
         fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    reader_sha256(file).with_context(|| format!("failed to read {}", path.display()))
+}
+
+pub fn reader_sha256(mut reader: impl Read) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
     loop {
-        let read = match file.read(&mut buffer) {
+        let read = match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => read,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed to read {}", path.display()));
-            }
+            Err(error) => return Err(error),
         };
         hasher.update(&buffer[..read]);
     }

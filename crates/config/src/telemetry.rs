@@ -47,6 +47,9 @@ pub const TELEMETRY_FLOOR_ENV: &str = "CODEWHALE_TELEMETRY_FLOOR";
 /// is read instead, where an explicit "off" or an unreadable value is a floor.
 #[must_use]
 pub fn telemetry_floor_in_force() -> bool {
+    if do_not_track() {
+        return true;
+    }
     if let Ok(raw) = std::env::var(TELEMETRY_FLOOR_ENV)
         && let Ok(declared) = parse_bool(&raw)
     {
@@ -58,6 +61,10 @@ pub fn telemetry_floor_in_force() -> bool {
         return false;
     };
     !matches!(parse_bool(&raw), Ok(true))
+}
+
+fn do_not_track() -> bool {
+    std::env::var("DO_NOT_TRACK").is_ok_and(|raw| matches!(parse_bool(&raw), Ok(true)))
 }
 
 /// Where resolved telemetry consent came from (#5441).
@@ -95,6 +102,9 @@ impl TelemetrySource {
 /// simply `(None, false)`. Shared by the runtime resolver and the
 /// provenance surfaces so they cannot drift.
 pub(crate) fn read_telemetry_env() -> (Option<bool>, bool) {
+    if do_not_track() {
+        return (Some(false), false);
+    }
     let Some(raw) = std::env::var("CODEWHALE_TELEMETRY")
         .or_else(|_| std::env::var("DEEPSEEK_TELEMETRY"))
         .ok()
@@ -117,7 +127,7 @@ pub(crate) fn read_telemetry_env() -> (Option<bool>, bool) {
 /// config-file value but not the full CLI/env resolution chain — the doctor
 /// runtime-posture row and the `config get telemetry` display (#5441).
 ///
-/// This is the same resolution [`ConfigToml::resolve_runtime_options`]
+/// This is the same resolution `ConfigToml::resolve_runtime_options`
 /// applies without its CLI term: environment first (an explicit value, an
 /// unreadable one, or a dispatcher floor), then the file, then the shipped
 /// default of `on`; a persisted `telemetry = false` is a floor no later

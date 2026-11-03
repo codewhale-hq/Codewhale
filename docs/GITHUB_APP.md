@@ -21,9 +21,11 @@ Related docs:
 
 Use [the reusable GitHub Action setup](GITHUB_ACTION.md) for the workflow,
 account machine key, exact model, release pin, limits, outcomes and retries.
-The repository workflow is now a thin caller of that action. It uses the
-Codewhale account relay and a checksummed release; it does not compile a PR's
-candidate source. BYOK is an explicit option in a user's own workflow.
+The repository workflow is a thin caller of the same analysis and publication
+actions. Select your own provider and model; the checksummed CLI release does
+not compile or execute a PR's candidate source. An App controls the publishing
+identity independently of the model provider. The workflow generator can use
+an existing App with `--app-login 'YOUR-APP[bot]'`.
 
 ## Review evidence and precision
 
@@ -82,7 +84,7 @@ same-repository pull requests can post reviews as the App.
    | Secret   | `CODEWHALE_APP_PRIVATE_KEY` | the full `.pem` file contents       |
    | Secret   | `CODEWHALE_API_KEY`         | a Codewhale machine key for this repository workflow |
    | Variable | `CODEWHALE_REVIEW_MODEL`    | exact account catalog `provider/model` id (required) |
-   | Variable | `CODEWHALE_REVIEW_VERSION` | exact released CLI tag; default v0.10.0 |
+   | Variable | `CODEWHALE_REVIEW_VERSION` | exact released CLI tag; generator default v0.10.2 |
 
    App settings control identity. Model access separately requires a review
    key and, for account mode, the catalog model. Optional budget variables are
@@ -92,18 +94,21 @@ same-repository pull requests can post reviews as the App.
 ## How the pieces connect
 
 [The review workflow](../.github/workflows/codewhale-review.yml) uses
-`pull_request` and a manual `workflow_dispatch` recovery trigger. The action
-reads the PR's exact Git objects in a fresh repository without checking them
-out. Fork events receive no model key. Before any inference, the action
-rejects fork, draft and closed PRs and verifies their revisions, including
-on manual runs.
+`pull_request` and a manual `workflow_dispatch` recovery trigger. The analysis action reads the PR's exact Git objects in a fresh repository
+without checking them out. Automatic fork events receive no model key. Draft
+and closed PRs are rejected. With `allow-forks: true`, an authorized
+maintainer can review a fork diff through a PR issue comment or manual run
+from the default branch. Both analysis and publication recheck permissions,
+triggering comments and revisions.
 
-When both `CODEWHALE_APP_ID` and `CODEWHALE_APP_PRIVATE_KEY` are present, the
-workflow mints a short-lived installation token restricted to contents:read
-and pull_requests:write. Otherwise it uses `github.token`. The action emits
-one COMMENT review, never approval or a request for changes. CODEOWNERS stays
-the human authority. Setup or provider failures fail the optional review job
-and save a sanitized receipt; they do not post additional status comments.
+When generated with an App login, the publisher mints a short-lived
+installation token restricted to contents:read and pull_requests:write.
+App credentials and model credentials are kept in separate jobs. The publisher
+verifies the returned author against that exact login. Without App setup,
+generated workflows use `github.token` and `github-actions[bot]`. The action
+emits one COMMENT review, never approval or a request for changes. CODEOWNERS
+stays the human authority. Setup or provider failures fail the optional review
+job and save a sanitized receipt; they do not post additional status comments.
 
 The Actions-only App setup above does not describe the managed hosted App.
 Do not disable the webhook on an existing App that also serves hosted mentions.
@@ -136,9 +141,9 @@ token (posts as the App). The `--post` flag is always opt-in.
 
 ## Troubleshooting
 
-- **Review posts as you, not the bot.** The variable or the private-key secret
-  is missing/empty; the job silently falls back to `github.token`. Check both
-  names character-for-character.
+- **Review posts as you, not the bot.** Generate the workflow with the exact App
+  login, and set both App ID and private-key settings. App-enabled generated
+  workflows fail on missing credentials instead of changing the author.
 - **No model review completed.** Read the outcome receipt and the
   [repair guide](GITHUB_ACTION.md#outcomes-and-recovery).
 - **Account model or provider error.** Set the provider to `codewhale` (or

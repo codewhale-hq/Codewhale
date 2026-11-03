@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -210,7 +210,7 @@ erişimini gözden geçirip etkinleştirene kadar kapalı kalır
 | `codewhale` | Etkileşimli terminal uygulaması |
 | `codewhale exec "…"` | Arayüz olmadan tek bir görev. Tek başına araç kullanmadan yanıt verir; `--auto` varsayılan olarak araçları Full Access ile etkinleştirir, `--sandbox workspace-write` bunları kısıtlar, `--output-format stream-json` olayları JSON olarak akış halinde verir |
 | `codewhale web` | `127.0.0.1` üzerinde yerel bir web arayüzü ([kılavuz](../WEB.md)) |
-| `codewhale review --pr N` | Bir GitHub pull request'inin tavsiye niteliğinde incelemesi. `--post` eklemediğiniz sürece hiçbir şey yayınlamaz; [GitHub Action](../GITHUB_ACTION.md) aynı incelemeyi CI'da çalıştırır |
+| `codewhale review --pr N` | Bir GitHub pull request'inin tavsiye niteliğinde incelemesi. [GitHub bot kurulumu](../GITHUB_ACTION.md#set-up-your-own-bot), otomatik incelemeler ve `@codewhale review` için sürümü sabitlenmiş bir workflow üretir; kendi model anahtarınızı ve isteğe bağlı App kimliğini kullanır |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md); iş parçacıkları, olaylar, onaylar ve her turun dosya değişiklikleri için yerel bir HTTP API |
 | `codewhale serve --acp` | Zed gibi editörler için stdio üzerinden Agent Client Protocol |
 

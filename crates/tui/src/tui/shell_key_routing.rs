@@ -441,13 +441,13 @@ pub const SHELL_BINDINGS: &[ShellBinding] = &[
     },
     ShellBinding {
         id: ShellBindingId::ProviderOffer,
-        catalog_chord: crate::keybinding_table::PROVIDER_OFFER_CHORD,
-        footer_chord: crate::keybinding_table::PROVIDER_OFFER_CHORD,
+        catalog_chord: codewhale_engine::keybinding_table::PROVIDER_OFFER_CHORD,
+        footer_chord: codewhale_engine::keybinding_table::PROVIDER_OFFER_CHORD,
         focus: FocusScope::RoutePicker,
     },
     ShellBinding {
         id: ShellBindingId::ExternalEditor,
-        catalog_chord: crate::keybinding_table::EXTERNAL_EDITOR_CHORD,
+        catalog_chord: codewhale_engine::keybinding_table::EXTERNAL_EDITOR_CHORD,
         footer_chord: "F4",
         focus: FocusScope::AnyShell,
     },
@@ -1173,7 +1173,7 @@ mod tests {
         ] {
             let chord = binding(id).catalog_chord;
             assert!(
-                crate::keybinding_table::KEYBINDINGS
+                codewhale_engine::keybinding_table::KEYBINDINGS
                     .iter()
                     .any(|entry| entry.chord == chord || entry.chord.contains(chord)),
                 "shell binding {id:?} chord missing from help catalog: {chord}"

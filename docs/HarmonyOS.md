@@ -2,94 +2,60 @@
 
 > 阅读简体中文版：[zh_hans/HarmonyOS.md](zh_hans/HarmonyOS.md)。
 
-This page covers Codewhale on HarmonyOS PC and OpenHarmony cross-build setups.
+Codewhale runs on HarmonyOS PC two ways: the Linux ARM64 build inside the Linux
+subsystem (融合开发引擎), or a native ARM64 build for OpenHarmony's own userspace.
+Native HarmonyOS remains a Tier 2 cross-build target. The SDK check does not
+establish device-level TUI, editor or model-turn qualification.
 
-## Support Tier
+## Which One To Use
 
-| Target | Codewhale tier | Validation | Distribution |
-| --- | --- | --- | --- |
-| HarmonyOS PC, inside the Linux subsystem (融合开发引擎, openEuler) | Tier 1 Linux ARM64 runtime | Covered by the Linux ARM64 release build; no check runs inside the Linux subsystem | GitHub release binaries; npm secondary |
-| Native HarmonyOS and OpenHarmony (`aarch64-unknown-linux-ohos`) | Tier 2 cross-build target | Manually dispatched SDK check for `codewhale-tui` and `codewhale-cli` | Build from source; no prebuilt release asset |
+| Target | How to run it | Distribution |
+| --- | --- | --- |
+| HarmonyOS PC, Linux subsystem (openEuler) | The ordinary Linux ARM64 build — it is a Linux virtual machine | GitHub release binaries; `install.sh`; npm secondary |
+| Native HarmonyOS and OpenHarmony | `aarch64-unknown-linux-ohos`, signed before it will execute | `codewhale-ohos-arm64.tar.gz` when a release lists it; otherwise build and sign from source |
 
-The Linux subsystem is a virtual machine running openEuler Linux, so it uses the
-Linux ARM64 release. Native HarmonyOS and OpenHarmony are not Linux
-distributions: their userspace uses OpenHarmony's musl-based C library and
-system APIs, and Codewhale's native build for it uses the
-`aarch64-unknown-linux-ohos` target. The Linux release binaries are not built or
-tested for native HarmonyOS.
+Native HarmonyOS is not a Linux distribution: its userspace uses OpenHarmony's
+musl-based C library and system APIs, so the Linux build does not run there.
+Pick the subsystem if you want the shortest path; pick the native build when you
+want no virtual machine between Codewhale and the device.
 
-Tier 2 provides a source-build path and a manually dispatched SDK check; it does
-not promise a check on every commit, a release binary, or full device-level
-runtime testing. The OpenHarmony workflow uses the published OpenHarmony 6.1
-native SDK; it deliberately fails if the SDK,
-Clang, or sysroot is unavailable rather than substituting host headers or a stub
-that could report false success.
+## Inside The Linux Subsystem
 
-## Running On HarmonyOS PC
-
-On HarmonyOS PC, run Codewhale inside the Linux subsystem (融合开发引擎). Huawei
-describes it as a lightweight virtualized Linux development environment; the
-current version supports openEuler only. For a new installation, open a terminal
-in the Linux subsystem and use the official GitHub installer:
+Open a terminal in the subsystem and use the official installer:
 
 ```bash
 curl -fsSL https://codewhale.net/install.sh | sh
 "$HOME/.local/bin/codewhale" --version
 ```
 
-The [published v0.9.11 release](https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.9.11)
-includes `codewhale-linux-arm64` and `codew-linux-arm64`. See
-[Linux ARM64 portability](INSTALL.md#linux-arm64-portability) for release-specific
-requirements and the Cargo fallback. For an existing direct install, use
-`codewhale update`. For an occupied directory or a package-managed install, use
-[the fresh-directory migration](INSTALL.md#migrating-from-npm-cargo-or-another-installation).
-npm remains a secondary packaging route; inside the Linux subsystem it installs
-the same Linux ARM64 binaries. In a native HarmonyOS terminal, Node reports the
-platform as `openharmony`. There npm still installs the static Linux build as a
-best effort, untested on native HarmonyOS. If the binary cannot start,
-`codewhale` points you to the Linux subsystem or a source build. The install
-script also prints a warning, which npm 7 and later show only with
-`--foreground-scripts`. The `codewhale-tui-linux-arm64` filename is retained
-only for legacy updater compatibility and is not a third command.
+`codewhale update` upgrades it. For an occupied directory or a package-managed
+install, see [the fresh-directory migration](INSTALL.md#migrating-from-npm-cargo-or-another-installation).
 
-Huawei's [Linux subsystem support page](https://consumer.huawei.com/cn/support/content/zh-cn16091898/)
+Huawei's [support page](https://consumer.huawei.com/cn/support/content/zh-cn16091898/)
 (Chinese; HarmonyOS 6.0, 6.1 and 7.0 desktops and laptops; checked 2026-10-21)
-documents these limits:
+lists what the subsystem does not do:
 
-- openEuler is the only supported distribution.
-- `systemctl` and other service managers are not supported; start services
-  such as `sshd` by hand (`sudo /usr/sbin/sshd`).
-- The kernel cannot be modified, so `modinfo`, `modprobe`, `rmmod` and `insmod`
-  fail.
-- Disk images cannot be mounted with `mount`. Exchange files through a shared
-  folder, which appears at `/mnt/linux_share`. Files created there are owned by
-  root, so `git clone` into it can fail for the default user; Huawei's
-  workaround is `sudo git clone`.
-- External USB devices, IPv6, and changing the login shell with `chsh` are not
-  supported.
-- At most five snapshots can be saved.
-- Only the primary user (the account created at first boot) can install it.
-  Huawei commercial HarmonyOS PCs also allow the personal space from HarmonyOS
-  6.0.0.130.
-- Docker requires HarmonyOS 7.0 or later.
+- openEuler is the only supported distribution, and it cannot be replaced.
+- No service managers: start `sshd` and friends by hand.
+- The kernel is fixed, so `modinfo`, `modprobe`, `rmmod` and `insmod` fail.
+- Disk images cannot be mounted. Share files through `/mnt/linux_share`, where
+  new files are owned by root — `sudo git clone` into it if `git clone` refuses.
+- No external USB devices or IPv6; `chsh` does not change the login shell.
+- At most five snapshots; only the primary user can install the subsystem.
+- Docker needs HarmonyOS 7.0 or later.
 
-## Cross-Compiling To OpenHarmony
+## Native Build
 
-The repository does not check in machine-specific SDK paths. Set
-`OHOS_NATIVE_SDK` to the OpenHarmony native SDK directory, the directory that
-contains `llvm/bin`, `sysroot`, and `build/cmake/ohos.toolchain.cmake`.
+Set `OHOS_NATIVE_SDK` to the OpenHarmony native SDK — the directory holding
+`llvm/bin`, `sysroot` and `build/cmake/ohos.toolchain.cmake`.
 
-On Windows PowerShell:
+| Requirement | Notes |
+| --- | --- |
+| OpenHarmony native SDK (6.1 / API 26 used here) | DevEco Studio ships one at `<DevEco>/Contents/sdk/default/openharmony/native`; the public SDK download works too |
+| Rust with the OHOS target | `rustup target add aarch64-unknown-linux-ohos` |
+| A C toolchain and `cmake` | Both come from the SDK; `scripts/ohos-env.sh` puts them on `PATH` |
 
-```powershell
-$env:OHOS_NATIVE_SDK="<path-to-openharmony-native-sdk>"
-. .\scripts\ohos-env.ps1
-rustup target add aarch64-unknown-linux-ohos
-$env:CODEWHALE_BUILD_SHA = (git rev-parse HEAD).Trim()
-cargo build --locked --release --target aarch64-unknown-linux-ohos -p codewhale-cli
-```
-
-On Linux or macOS:
+Linux or macOS:
 
 ```bash
 export OHOS_NATIVE_SDK=/path/to/openharmony/native
@@ -99,119 +65,189 @@ export CODEWHALE_BUILD_SHA="$(git rev-parse HEAD)"
 cargo build --locked --release --target aarch64-unknown-linux-ohos -p codewhale-cli
 ```
 
-The executable is `target/aarch64-unknown-linux-ohos/release/codewhale` (no
-`.exe`, including when built on Windows), unless `CARGO_TARGET_DIR` overrides
-the output directory. Copy it to the device and run `./codewhale --version`.
-Build from a clean checkout when using the commit stamp above.
-
-The setup scripts export Cargo's target-specific `linker`, `AR`, `CC`, `CXX`,
-`CFLAGS`, `CXXFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `CC_SHELL_ESCAPED_FLAGS`, and
-CMake toolchain variables for `aarch64-unknown-linux-ohos`. They also point
-`bindgen` at the SDK's `libclang` and sysroot so `rquickjs-sys` can generate
-the OpenHarmony bindings that it does not ship pre-generated.
-
-On Windows, `ohos-env.ps1` points Cargo at the repository's
-`ohos-clang.cmd` launcher. The launcher delegates to `ohos-clang.ps1`, so the
-final Rust link—not only C/C++ compilation and bindgen—always carries
-`-target aarch64-linux-ohos`, the SDK sysroot, and `-D__MUSL__` while preserving
-Cargo's linker arguments and exit status. The launcher re-quotes every
-argument before forwarding, so an SDK path containing spaces (for example the
-default `D:\DevEco Studio\...` install) keeps its `--sysroot` intact through
-the final link.
-
-## Identifying A Development Build
-
-Current development is on `main`. A version such as `0.10.2 (dev)` means the
-build did not supply a source stamp; it does not identify a development channel
-or prove that the binary includes the latest fixes. The commands above embed
-the first 12 characters of the source commit in `--version`. Record the full
-`git rev-parse HEAD` alongside the binary. A local rebuild does not update an
-older installed binary automatically; check the exact executable you copied.
-
-Native OpenHarmony has no prebuilt release asset. On HarmonyOS PC, Linux ARM64
-release binaries belong in the Linux subsystem; they are not native OHOS
-binaries. GitHub build-only release-candidate artifacts, when available,
-identify their source commit but do not establish native OHOS support or a
-published release.
-
-## Sign-In Filesystem Errors
-
-`ChatGPT sign-in failed: opening filesystem root` occurs while preparing local
-credential storage, before browser sign-in or callback setup. It does not by
-itself identify a read-only `/tmp`. Current source uses traversal-only handles
-for Linux/OpenHarmony ancestors and keeps a normal, protected handle for the
-private credential directory. Root-open failures include the OS error.
-
-For a report, include the exact `--version`, full build commit, device/OS and
-terminal version, and complete error text. Keep tokens, authorization URLs and
-credential files out of the report. Do not make system directories writable or
-disable credential checks. A successful build or Linux permission reproduction
-still needs a sign-in check on the affected device.
-
-## Compiler Wrappers
-
-For ad-hoc compiler calls, use the wrappers in `scripts/ohos/`. They read the same
-`OHOS_NATIVE_SDK` variable and do not contain local paths.
-
 Windows PowerShell:
 
 ```powershell
-.\scripts\ohos\ohos-clang.ps1 --version
-.\scripts\ohos\ohos-clangxx.ps1 --version
+$env:OHOS_NATIVE_SDK="<path-to-openharmony-native-sdk>"
+. .\scripts\ohos-env.ps1
+rustup target add aarch64-unknown-linux-ohos
+$env:CODEWHALE_BUILD_SHA = (git rev-parse HEAD).Trim()
+cargo build --locked --release --target aarch64-unknown-linux-ohos -p codewhale-cli
 ```
 
-Linux or macOS:
+`ohos-env.sh` / `ohos-env.ps1` export the target's linker, `CC`/`CXX`/`AR`,
+CMake toolchain and bindgen settings, and put the SDK's own `cmake` on `PATH`, so
+nothing machine-specific is checked in. On Windows the final link goes through
+`scripts/ohos/ohos-clang.cmd`, which keeps `-target aarch64-linux-ohos`, the
+sysroot and `-D__MUSL__` even when the SDK path contains spaces.
+
+The executable is `target/aarch64-unknown-linux-ohos/release/codewhale` (no
+`.exe`, including when built on Windows); `--profile dist`, which the release
+workflow uses, writes to `target/aarch64-unknown-linux-ohos/dist/` instead. A cold
+release build takes about eight minutes on an Apple silicon laptop. Build from a
+clean checkout when you care about the commit stamp — an incremental rebuild will
+not re-stamp a binary that did not need rebuilding. Check the output:
 
 ```bash
-sh ./scripts/ohos/ohos-clang.sh --version
-sh ./scripts/ohos/ohos-clangxx.sh --version
+file target/aarch64-unknown-linux-ohos/release/codewhale
+# ELF 64-bit LSB pie executable, ARM aarch64, … dynamically linked, stripped
+
+"$OHOS_NATIVE_SDK/llvm/bin/llvm-readelf" -d \
+  target/aarch64-unknown-linux-ohos/release/codewhale | grep NEEDED
+# libtime_service_ndk.so and libc.so — the system libraries the device provides
 ```
 
-If you want to run the POSIX wrappers directly as `./scripts/ohos/ohos-clang.sh`, make them
-executable first:
+## Signing And Installing
+
+A native HarmonyOS device executes only signed code: an unsigned ELF is refused
+at `execve` with `Permission denied`, whatever its mode bits say, and `chmod +x`
+does not change that. Signing is part of the build, not optional hardening. An
+emulator is more permissive than a retail device, so test on the hardware you
+target.
+
+One command builds, strips a copy, self-signs and verifies:
 
 ```bash
-chmod +x ./scripts/ohos/ohos-clang.sh ./scripts/ohos/ohos-clangxx.sh
+scripts/ohos-sign-binary.sh
 ```
 
-## Linker And Toolchain Paths
-
-The repository does not check in a Cargo linker path or CMake toolchain path.
-Cargo cannot expand environment variables inside `linker` or CMake toolchain
-path values, so those values are exported by `scripts/ohos-env.ps1` and
-`scripts/ohos-env.sh` instead.
-
-## Dependency Guard
-
-Release prep runs a no-SDK dependency check:
+It leaves `target/aarch64-unknown-linux-ohos/release/codewhale-signed` (`--out
+PATH` to move it) and fails rather than hand back a file that did not sign. By
+hand:
 
 ```bash
-./scripts/release/check-ohos-deps.sh
+tools="$(dirname "$OHOS_NATIVE_SDK")/toolchains/lib"
+java -jar "$tools/binary-sign-tool.jar" sign -selfSign 1 \
+  -inFile target/aarch64-unknown-linux-ohos/release/codewhale \
+  -outFile target/aarch64-unknown-linux-ohos/release/codewhale
+java -jar "$tools/binary-sign-tool.jar" display-sign \
+  -inFile target/aarch64-unknown-linux-ohos/release/codewhale   # … self-sign
 ```
 
-The guard asserts the Windows final-link wrapper contract, proves that OHOS
-activates the `rquickjs-sys` bindgen feature, resolves the `codewhale-tui`
-dependency graph for `aarch64-unknown-linux-ohos`, and fails if unsupported
-host/UI crates re-enter that graph: `nix` 0.28/0.29, `portable-pty`, `starlark`,
-`arboard`, or `keyring`. This no-SDK check does not replace a real SDK/sysroot
-build, but it catches the known linker, bindgen, `starlark -> rustyline -> nix`,
-and PTY/keyring regressions before release.
+The C++ build of the same tool (`<sdk>/toolchains/lib/binary-sign-tool`, no Java
+needed) takes identical arguments, and the DevBox app from AppGallery carries it
+on the device. To sign while linking instead, add
+`rustflags = ["-Clink-arg=-Wl,--code-sign"]` under
+`[target.aarch64-unknown-linux-ohos]` in `.cargo/config.toml`; the SDK's `lld`
+implements `--code-sign` and leaves it off by default.
 
-Because `portable-pty` is intentionally absent from the OpenHarmony graph, the
-persistent `terminal/*` PTY tools are not registered on that target. The
-ordinary `exec_shell` tools remain available through their non-PTY process
-implementation.
+A self-signature is enough locally: it is not bound to a device and runs on any
+HarmonyOS PC, but it grants no permissions. Do not sign with the certificate
+DevEco Studio generates for app signing — those binaries are refused at run time
+with `Operation not permitted` (errno 129). AppGallery Connect issues debugging
+certificates if you need permissions; Codewhale needs none, and no JIT.
 
-Linux-only sandbox implementations (bubblewrap and `prctl` process
-hardening) are compiled only for
-`all(target_os = "linux", not(target_env = "ohos"))`. OpenHarmony therefore
-reports no local OS sandbox instead of probing Linux kernel paths or syscalls it
-does not support. External OpenSandbox execution remains separately available
-when configured.
+Copy the signed file to the device and give it its exec bits before running it.
+`hdc file send` lands files at `0660` and the user directory ignores `chmod`, so
+the binary gains its mode another way: copy it on the device from a file that
+already has the exec bits, or write it over an executable file already in place,
+then confirm with `ls -l`.
 
-Native desktop clipboard libraries and Wayland helpers are also excluded from
-the OpenHarmony graph. Text copy degrades to the terminal-client path (OSC 52,
-or tmux `load-buffer -w` when inside tmux); paste is supplied by the terminal as
-normal/bracketed input. Image clipboard reads are unavailable on this target.
-If the terminal cannot accept OSC 52, copy returns a clear "Clipboard
-unavailable" error rather than panicking or claiming success.
+Run it from an application's terminal — the system terminal app (HiShell, bundle
+`com.huawei.hmos.hishell`) or the integrated terminal in CodeArts — not from
+`hdc shell`, which is a debugging channel that cannot execute files written under
+`/data/local/tmp`. The first launch asks for permission once.
+
+```bash
+"$HOME/codewhale" --version
+# codewhale 0.10.2 (859dc2ac7ac0)
+```
+
+## The VS Code Extension In CodeArts
+
+The [CodeWhale VS Code extension](https://github.com/HengQuWorld/CodeWhale-VSCode)
+uses an HTTP webview to talk to the engine. The steps below describe the
+CodeArts Agent integration route; an exact-build device run is still required
+to qualify the editor workflow.
+
+1. Put the signed engine on the `PATH` CodeArts gives its integrated terminal, or
+   point `brotherwhale.enginePath` at the file.
+2. In the extension panel, open the Open VSX page and install "CodeWhale"
+   (publisher `hengquworld`). That is the registry CodeArts reads, so no VSIX has
+   to be side-loaded.
+3. Open a workspace folder and start a conversation. The extension starts the
+   engine on demand and reports Ready in the status bar.
+
+## What Works On The Device
+
+The existing observations are from one HarmonyOS 7.0.0.110 / API 26 2in1
+device with a self-signed build. They do not qualify later builds or the
+workflows marked unverified below.
+
+| Surface | State |
+| --- | --- |
+| `--version`, `--help`, `doctor` | Observed working |
+| `auth set` / `auth status` | Local commands start; use the store smoke below to verify a complete write/read on the chosen state directory |
+| The VS Code extension in CodeArts Agent | Integration route above; exact-build device workflow unverified |
+| `exec_shell` | The device provides `/bin/sh`; child spawning was observed by a probe, not a model turn |
+| Interactive TUI | Device validation pending; use HiShell or the CodeArts integrated terminal because `hdc shell` allocates no tty |
+| Local sandbox | Absent: commands run best-effort, and the engine says so |
+| Persistent PTY tools (`terminal/*`) | Not registered on this target |
+| Clipboard | OSC 52 (tmux `load-buffer -w`); text only, no image paste |
+| `codewhale update` | Compiled out; move a new signed binary into place instead |
+| Anything needing `git` | Only if you provide `git`; snapshots and `/undo` report why |
+
+A native HarmonyOS terminal is not a Linux shell: no `/bin/bash`, no package
+manager. Codewhale reports a missing capability rather than substituting one.
+
+## The User Directory
+
+`/storage/Users/currentUser` is hmdfs, a distributed filesystem that reports the
+logged-in user as the owner of every object and applies its own modes (`0660` for
+files, `2771` for directories) instead of the requested ones. Codewhale keeps its
+state and keys there like anywhere else, and the store logs one warning naming the
+mode it saw: the mount's own access control is what protects those files.
+
+Where you have a choice:
+
+- **Strict permission checks** need a filesystem that stores owner and mode.
+  Point `CODEWHALE_HOME` at the app sandbox to get them, keeping the path short:
+  the daemon socket is `<CODEWHALE_HOME>/run/daemon.sock` and the kernel rejects
+  paths longer than 107 bytes.
+
+  ```sh
+  CODEWHALE_HOME=/data/storage/el2/base/files/cw codewhale serve --http
+  ```
+
+  `CODEWHALE_HOME` moves the whole state root, config and sessions included.
+- **Keys** can also come from the provider's environment variable, which is
+  plaintext in the shell profile:
+
+  ```bash
+  export DEEPSEEK_API_KEY=sk-…
+  codewhale
+  ```
+
+- **One driver per workspace.** An engine holds a lease per working tree, so a
+  second one is refused with the holder's pid, client and age. That includes the
+  terminal and the editor on the same folder: close one before opening the other.
+  If the filesystem refuses advisory locks, the engine reports that exclusivity
+  is unavailable; two drivers are not excluded on that mount.
+
+`scripts/ohos-secrets-store-smoke.sh <directory>` checks the store end to end
+against a real directory — it writes a key, reads it back through
+`auth status`, and confirms `config.toml` holds no plaintext copy.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `Required build dependency is missing. Halting build.` from `aws-lc-sys` | No `cmake` on `PATH` | Re-source `scripts/ohos-env.sh` (it adds the SDK's `cmake`), or install `cmake` |
+| `Permission denied` when running the binary | Unsigned build, or no exec bits, or launched from `hdc shell` | Sign it, copy it in with its mode, run it from HiShell or CodeArts |
+| `Operation not permitted` (errno 129) after signing | Signed with DevEco Studio's automatic app-signing certificate | Sign with the SDK's self-signature, or a debugging certificate from AppGallery Connect |
+
+## Toolchain Notes
+
+- **Compiler wrappers.** `scripts/ohos/ohos-clang.{sh,ps1}` and
+  `ohos-clangxx.{sh,ps1}` read `OHOS_NATIVE_SDK` and contain no local paths;
+  `chmod +x` the POSIX ones before running them directly.
+- **No checked-in linker paths.** Cargo cannot expand environment variables
+  inside `linker` or CMake toolchain values, so those come from `ohos-env`.
+- **Dependency guard.** `./scripts/release/check-ohos-deps.sh` runs without an
+  SDK and fails if a crate the target cannot carry — `portable-pty`, `nix`,
+  `starlark`, `arboard`, `keyring` — re-enters the graph. The SDK check in
+  `.github/workflows/ohos.yml` is the real build.
+- **Identifying a build.** The commands above supply `CODEWHALE_BUILD_SHA`,
+  which embeds the first 12 characters in `--version`. An unstamped local build
+  reports `(dev)`; checking out `main` alone does not stamp it. A local rebuild
+  does not replace an installed binary.

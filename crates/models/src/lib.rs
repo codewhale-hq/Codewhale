@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod auto_route_evidence;
+pub mod hand_pricing;
 pub mod image_window;
 pub mod reasoning_effort_tier;
 pub mod schema_canonicalize;
@@ -215,27 +216,31 @@ pub struct Usage {
 /// Unrecognized DeepSeek family names remain unknown.
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
-    codewhale_config::catalog::reviewed::intrinsic_model(model)
-        .and_then(|row| row.context_window)
-        .or_else(|| {
-            reviewed_snapshot_model(model).and_then(|id| {
-                codewhale_config::catalog::reviewed::intrinsic_model(id)
-                    .and_then(|row| row.context_window)
-            })
-        })
+    reviewed_model_limit(model, |row| row.context_window)
         .or_else(|| explicit_context_window_hint(&model.to_ascii_lowercase()))
+}
+
+fn reviewed_model_limit(
+    model: &str,
+    limit: impl Fn(codewhale_config::catalog::reviewed::IntrinsicModel) -> Option<u32>,
+) -> Option<u32> {
+    codewhale_config::catalog::reviewed::intrinsic_model(model)
+        .and_then(&limit)
+        .or_else(|| {
+            reviewed_snapshot_model(model)
+                .and_then(codewhale_config::catalog::reviewed::intrinsic_model)
+                .and_then(limit)
+        })
+}
+
+#[must_use]
+pub fn generation_default_for_model(model: &str) -> Option<u32> {
+    reviewed_model_limit(model, |row| row.generation_default)
 }
 
 #[must_use]
 pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
-    codewhale_config::catalog::reviewed::intrinsic_model(model)
-        .and_then(|row| row.generation_default.or(row.max_output))
-        .or_else(|| {
-            reviewed_snapshot_model(model).and_then(|id| {
-                codewhale_config::catalog::reviewed::intrinsic_model(id)
-                    .and_then(|row| row.generation_default.or(row.max_output))
-            })
-        })
+    reviewed_model_limit(model, |row| row.generation_default.or(row.max_output))
 }
 
 /// Catalog-first reasoning capability. `None` means no catalog row and no
@@ -939,9 +944,16 @@ mod tests {
 
     #[test]
     fn deepseek_v4_output_caps_require_exact_catalog_metadata() {
+        // `deepseek-v4.1-flash` used to sit in this list: it had no model-only
+        // row, so its output ceiling came only from a provider offering, and a
+        // custom endpoint that names the model without a vendor prefix fell
+        // through to the 128K window. It now carries an exact row of its own
+        // (see `bundled_catalog_resolves_the_bare_deepseek_v41_flash_spelling`
+        // in `codewhale-config`), so it moved to the resolved list below. The
+        // near-miss spellings stay unresolved — an exact row documents one
+        // identifier, never a family.
         for model in [
             "deepseek-v4.1-flash-expires-on-0910",
-            "deepseek-v4.1-flash",
             "deepseek-v4.1-pro",
             "vendor/deepseek-v4.1-flash",
             "deepseek-v4-flash-vendor",
@@ -957,6 +969,7 @@ mod tests {
             "deepseek-v4-flash",
             "deepseek-v4-pro",
             "deepseek-v4-flash-vision-exp",
+            "deepseek-v4.1-flash",
             "DEEPSEEK-V4-FLASH",
         ] {
             assert_eq!(max_output_tokens_for_model(model), Some(384_000), "{model}");

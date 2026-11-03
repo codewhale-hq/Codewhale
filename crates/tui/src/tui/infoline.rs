@@ -41,9 +41,9 @@
 //! ([`InfoLine::compact`]).
 //!
 //! Interaction: segment geometry is recorded for parity tests, but only the
-//! model/route segment and the context reading advertise an action in the
-//! live shell. Status-only facts do not brighten on hover or pretend to be
-//! controls.
+//! model/route segment, context reading and available-update notice advertise
+//! actions in the live shell. Status-only facts do not brighten on hover or
+//! pretend to be controls.
 //!
 //! Color: semantic ink only ([`ChromeInk`]); no hex, per the status-bar color
 //! grammar. ASCII-safe mode substitutes every glyph through
@@ -91,8 +91,8 @@ pub struct InfoLine<'a> {
     /// Segments in display order.
     pub segments: &'a [InfoSegment],
     /// Actionable segment under the mouse. [`InfoSegmentId::Model`] and
-    /// [`InfoSegmentId::Context`] advertise hover feedback in the live
-    /// shell; both own a click action (picker / inspector).
+    /// [`InfoSegmentId::Context`] and [`InfoSegmentId::Update`] advertise
+    /// hover feedback in the live shell; each owns a click action.
     pub hovered: Option<InfoSegmentId>,
     /// ASCII-safe / NO_COLOR mode: every glyph goes through
     /// the kit's native punctuation projection; language text stays intact.

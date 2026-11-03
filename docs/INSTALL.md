@@ -64,7 +64,7 @@ still need an available release asset source.
 curl -fsSL https://codewhale.net/install.sh | sh
 
 # 2. Make sure ~/.local/bin is on your PATH, now and in future terminals.
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc    # zsh: use ~/.zshrc
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc    # zsh: use ~/.zshrc
 export PATH="$HOME/.local/bin:$PATH"
 codewhale --version          # -> codewhale 0.10.0 (1be1a703b975)
 
@@ -119,6 +119,7 @@ box) to quit. It prints the command to resume the session later.
 | You need | Why |
 |---|---|
 | Linux x86_64 or arm64, or macOS | Prebuilt binaries exist for these. The Linux binaries are **static** (musl), so they have no glibc or libdbus dependency and run on any distro. |
+| HarmonyOS PC | Run the Linux ARM64 build inside the Linux subsystem (融合开发引擎), or build natively for `aarch64-unknown-linux-ohos` and sign it; see [HarmonyOS and OpenHarmony](HarmonyOS.md). |
 | `curl` (or `wget`) and `sha256sum` (or `shasum`) | The installer uses them to download and verify. |
 | A model provider key, e.g. [DeepSeek](https://platform.deepseek.com/api_keys) | Codewhale does nothing useful without a model. |
 | `git` (recommended) | Codewhale works best inside a git repository. |
@@ -173,9 +174,11 @@ What it does (verified):
   a temporary copy otherwise.
 * It **never uses sudo and never edits your shell profile.** It refuses to
   install into system or package-manager directories (`/usr/bin`,
-  `~/.cargo/bin`, Homebrew, `node_modules`, `/nix/store`…) and refuses to
-  overwrite a *different* existing `codewhale` unless you ask for it with
-  `CODEWHALE_FORCE_REINSTALL=1` (see [re-running the
+  `~/.cargo/bin`, Homebrew and MacPorts bin directories, `node_modules`,
+  `/nix/store`…), into your home directory or `/`, or into a directory that
+  other users or groups can write (`chmod go-w <dir>` fixes one you own). It
+  also refuses to overwrite a *different* existing `codewhale` unless you ask
+  for it with `CODEWHALE_FORCE_REINSTALL=1` (see [re-running the
   installer](#re-running-the-installer)).
 
 Expected output:
@@ -192,7 +195,8 @@ Installed checksummed release commands:
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
 …
 Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+  printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
+The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
 Then run: . ~/.bashrc   (or open a new terminal)
 …
 ```
@@ -232,12 +236,15 @@ prints only the current-shell `export` line. On Ubuntu and Debian, `~/.profile` 
 Fix it once:
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
-# echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # zsh
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
+# printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc  # zsh
 # fish_add_path ~/.local/bin                               # fish (untested on this VM)
 export PATH="$HOME/.local/bin:$PATH"; hash -r
 command -v codewhale codew
 ```
+
+The three-line block is marked so `codewhale uninstall` can remove exactly it later. A bare
+`export PATH=…` line is yours: uninstall never touches it, because other tools share `~/.local/bin`.
 
 ### Options
 
@@ -342,8 +349,9 @@ tar -xzf codewhale-linux-x64.tar.gz
 cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/some/dir ./install.sh -> /some/dir/bin
 ```
 
-The archive's `install.sh` behaves like the website installer: no sudo, it
-leaves differing existing files alone, and it prints the same PATH hint.
+The archive's `install.sh` never uses sudo, leaves differing existing files
+alone, never edits a shell profile, and asks nothing; it prints only the
+current-shell `export` line.
 
 **Upgrade:** `codewhale update` works for both 3a and 3b, because they're
 "direct binary" installs. **Uninstall:** delete the two files (see §12).
@@ -693,8 +701,10 @@ go back further than one version, replace the files:
 
 ```bash
 dir="$(dirname "$(command -v codewhale)")"     # the install PATH actually selects
-rm "$dir/codewhale" "$dir/codew"
-curl -fsSL https://codewhale.net/install.sh | CODEWHALE_VERSION=v0.9.13 CODEWHALE_INSTALL_DIR="$dir" sh
+mkdir -p "$dir/.keep" && mv "$dir/codewhale" "$dir/codew" "$dir/.keep/"
+curl -fsSL https://codewhale.net/install.sh | CODEWHALE_VERSION=v0.9.13 CODEWHALE_INSTALL_DIR="$dir" sh \
+  && rm -r "$dir/.keep" \
+  || mv "$dir/.keep/codewhale" "$dir/.keep/codew" "$dir/"   # restore on failure
 hash -r; codewhale --version      # codewhale 0.9.13 (a0b81f619b66)
 ```
 
@@ -721,6 +731,9 @@ this VM: only 0.10.0 was built)**.
 ### Clean up old copies
 
 `codewhale doctor` has an **Installations** section, and
+keeps routine path and secret-backend details brief. Use `codewhale doctor --all`
+to show every resolved path and structural secret-backend detail.
+
 `codewhale doctor --installs` prints only that (`--json` for machines,
 `--brief` for nothing on a tidy machine). It lists every `codewhale`, `codew`,
 `codewhale-tui`, `deepseek` and `deepseek-tui` in your `PATH`, `~/.local/bin`,
@@ -1020,48 +1033,50 @@ codewhale auth clear --provider deepseek
 | Windows setup (NSIS) | Settings > Apps > CodeWhale > Uninstall, or `%LOCALAPPDATA%\Programs\CodeWhale\Uninstall.exe`. `codewhale uninstall` prints this path. |
 | WinGet | `winget uninstall --id HunterBown.CodeWhale` |
 | Scoop | `scoop uninstall codewhale` |
-| older `curl \| sh` install without a receipt | `~/.local/bin/codewhale uninstall --yes`: in an install.sh default directory (`~/.local/bin`, `~/.local/codewhale/bin`, `~/.local/codewhale-release.*`, or `%USERPROFILE%\bin` on Windows) it records a receipt for the commands that are byte-identical to the running program, then removes only those. |
+| older `curl \| sh` install without a receipt | `~/.local/bin/codewhale uninstall --yes`: in a known older curl-installer directory (`~/.local/bin`, `~/.local/codewhale/bin`, `~/.local/codewhale-release.*`, or `%USERPROFILE%\bin` on Windows) it records a receipt for the commands whose bytes match the running program, then removes only those. A symlink, a hard link, or a file you do not own among them stops it before any receipt is written. |
 | manual copy elsewhere (§3) | Inspect the exact command paths and provenance before removing them manually; automatic uninstall preserves them. |
 | npm | `npm uninstall -g codewhale` (`codewhale uninstall` prints the `--prefix` for this copy) |
 | Cargo | `cargo uninstall codewhale-cli` (`codewhale uninstall` prints the owning `--root`) |
-| Homebrew | `brew uninstall codewhale && brew untap Hmbown/deepseek-tui` (also removes its node dependency; `codewhale uninstall` prints the owning formula) |
+| Homebrew | `brew uninstall codewhale` (`codewhale uninstall` prints the owning formula; untap only when you no longer use the tap) |
 
 Not sure which one you have? Run `codewhale doctor --installs`: it lists every copy, who owns it and the exact command that removes it, without running or changing anything. `codewhale uninstall` (no `--yes`) shows the same classified list after its own plan.
 
 The Unix installers and the Windows archive installer write `.codewhale-install.sha256` beside the commands. Uninstall accepts only existing regular, single-link files whose bytes match that receipt. On Unix, receipts, selected files and their retained parent directory must belong to the current user and must not be writable by group or others. Optional compiled-host files use their existing release receipt. All selected files pass preflight before any removal; the executing command is removed last. Modified files, symlinks, ambiguous receipts, shared writable directories, legacy unreceipted installs and unrelated files are preserved. No recursive directory removal is performed. A failed removal reports which entries were unlinked, any remaining recovery paths, and any durability failure. If the command receipt was unlinked while the executable remains, recovery republishes it only to a vacant receipt name.
 
-The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces, shell profiles, completions and services. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
+The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces and services. For a receipted release copy it also removes this install's exact three-line `# >>> codewhale PATH >>>` block from your shell profiles, and the Codewhale-generated completion files at the documented paths (`~/.local/share/bash-completion/completions/codewhale`, `~/.zfunc/_codewhale`, `~/.config/fish/completions/codewhale.fish`, honouring `XDG_DATA_HOME` and `XDG_CONFIG_HOME`). Nothing else in a profile is touched, a symlinked or unreadable profile is left for you to edit by hand, and the completion files are kept while another Codewhale copy remains on PATH. If any of that cleanup fails, the command says so and exits non-zero even though the program is already gone. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
 
 Successful self-update renews an existing command receipt, and writes one for a pre-receipt directory whose commands it just installed; it never claims unknown siblings. This command does not remove a remote-setup service or a desktop application.
 
-On Windows, `codewhale uninstall --yes` removes `codewhale.exe`, `codew.exe`, `codewhale.bat`, any receipted compiled-host files and the receipt itself. Windows cannot delete a running program, so the running `codewhale.exe` is renamed in place to a `.codewhale-host-recovery-…` name and deleted by a helper once the command exits; the output names that file in case it remains. `codewhale.old-…` files left by an earlier self-update are listed, not deleted. Archive installs made before this receipt existed are treated as unreceipted (reinstall with the current `install.ps1`, then uninstall). Windows removal has been compile-checked but not yet exercised on a Windows host.
+On Windows, `codewhale uninstall --yes` removes `codewhale.exe`, `codew.exe`, `codewhale.bat`, any receipted compiled-host files and the receipt itself. Windows cannot delete a running program, so the running `codewhale.exe` is renamed in place to a `.codewhale-host-recovery-…` name and deleted by a helper once the command exits; the output names that file in case it remains. `codewhale.old-…` files left by an earlier self-update are listed, not deleted. A known legacy directory can adopt matching command bytes into a receipt. Other unreceipted archive copies are preserved; reinstall with the current `install.ps1` to obtain a receipt before automatic removal. Windows removal has been compile-checked but not yet exercised on a Windows host.
 
 Repeating `uninstall` after removal is safe: the removed copy is gone, and any other copy only removes what its own receipt owns. Reinstalling into the same directory afterwards writes a fresh receipt.
 
-### Step 3: remove data. Program removal never does this.
+### Step 3: remove data. Program removal keeps it by default.
 
-`codewhale uninstall --purge-data` previews deleting `~/.codewhale` (or `$CODEWHALE_HOME`) and `~/.deepseek/snapshots`. Add `--yes` to delete exactly those directories. It refuses a path that is a symlink, your home directory or one of its parents, or (on Unix) a directory owned by another user. It also refuses an explicit `CODEWHALE_HOME` not named `.codewhale`; delete that one by hand after you review it. It does not search for per-workspace `.codewhale` directories, keyring entries, shell profile lines or completion files. Run `codewhale auth clear --provider <id>` first to remove keyring entries. To remove data by hand instead:
+`codewhale uninstall --purge-data` previews the data removal. Without an explicit
+`CODEWHALE_HOME`, the targets are `~/.codewhale` and the legacy
+`~/.deepseek/snapshots`. With an explicit `CODEWHALE_HOME`, only that directory
+is considered; the legacy snapshots are preserved. A custom target must be named
+`.codewhale` to qualify for automatic purge.
 
-| Path | What it is | Size seen |
-|---|---|---|
-| `~/.codewhale/` | config.toml, **secrets/secrets.json (plaintext keys)**, sessions/, logs/, catalog/ (model list, ~5 MB), skills/, builtin-plugins/, tasks/, automations/, crashes/, audit.log, composer history | 6–7 MB |
-| `~/.deepseek/snapshots/` | v0.10.0 stores its per-turn **copies of your workspaces** here (a legacy path). Contains the contents of every repo you ran it in. | 0.2–0.6 MB here; grows with repo size |
-| `<every repo you used>/.codewhale/` | per-workspace state/lock dir | tiny |
-| completion files | `~/.local/share/bash-completion/completions/codewhale`, `~/.zfunc/_codewhale`, `~/.config/fish/completions/codewhale.fish` | – |
-| PATH lines you added | `~/.bashrc`, `~/.zshrc`, `~/.profile` | – |
+The purge requires a successful receipted program removal in the same `--yes`
+run. A package-managed copy, preview or failed removal keeps the data. All targets
+are checked before program removal: symlinks, another user's directory, your home
+or its ancestors, and any target containing the installation are refused.
+Sessions, workspace snapshots and recovery copies in those targets are deleted
+by the purge; review the preview and preserve anything needed before confirming.
 
-```bash
-rm -rf ~/.codewhale ~/.deepseek/snapshots
-rmdir ~/.deepseek 2>/dev/null   # removes the parent only if it is now empty
-# per-repo dirs, e.g.:
-find ~ -type d -name .codewhale -prune -print     # review, then delete the ones you want
-```
+| Retained item | How to review it |
+|---|---|
+| OS keyring entries | Run `codewhale auth clear --provider <id>` before removing the program. |
+| Per-workspace `.codewhale` directories | Inspect the known workspace individually; uninstall does not search or remove them. |
+| A bare `export PATH=…` line you added yourself, and completion files outside the documented paths | Yours to review: uninstall only removes the marked block and the documented Codewhale-generated completion files. |
+| Other installed command copies | Use `codewhale doctor --installs`; each copy follows its own owner and receipt. |
+| Legacy snapshots with explicit `CODEWHALE_HOME` | Review them separately; explicit-home purge does not include them. |
 
-Codewhale wrote nothing outside `$HOME` and the repos it was used in: no
-system files, services or cron jobs. (I checked every file owned by the test
-users outside their home directories.) The commands above delete only
-`~/.deepseek/snapshots`. If you still use the older DeepSeek-TUI, the rest of
-`~/.deepseek` (its config and sessions) is left alone.
+A reinstall restores the program, not purged sessions or snapshots. Installation,
+remote services and desktop applications have separate ownership; this command
+only removes what its selected command installation owns.
 
 ---
 
@@ -1136,9 +1151,6 @@ mirrors), apart from the macOS paths noted in [macOS notes](#macos-notes).
 Known contradictions with the published v0.10.0 assets, found by inspecting
 them ([details](https://github.com/codewhale-hq/Codewhale/blob/37ecdfcc49bc68a9b0d058b97c3946e62c34bd31/docs/install-report/v0.10.0-2026-09-23/DOC_DEFECTS.md), D15 and D16):
 
-* The winget manifest kept in `packaging/winget/` is stale (0.9.6) and not the
-  published package; winget serves `HunterBown.CodeWhale`, see
-  [Windows winget](#windows-winget).
 * v0.10.0 publishes both `codewhale-windows-x64.zip` (with an `install.bat`
   that copies to `%USERPROFILE%\bin`) and `codewhale-windows-x64-portable.zip`;
   the sections below mention only the first.
@@ -1148,7 +1160,9 @@ them ([details](https://github.com/codewhale-hq/Codewhale/blob/37ecdfcc49bc68a9b
 
 The [latest stable release](https://github.com/codewhale-hq/CodeWhale/releases/latest)
 publishes Linux x64/arm64, macOS x64/arm64, Windows x64/arm64, and Android arm64
-assets. Artifact presence is distinct from platform qualification.
+assets. A release that includes the OpenHarmony leg also publishes a native
+HarmonyOS/OpenHarmony arm64 tarball. Artifact presence is distinct from platform
+qualification.
 The table below describes the current source tree's platform and secondary
 packaging support; `latest` installation still selects the published release.
 Android/Termux is preview pending real-device QA. Linux ARM64 is available from
@@ -1160,6 +1174,7 @@ v0.8.8 onward. Linux RISC-V prebuilts are temporarily paused because the locked
 | Linux | x64 (x86_64) | `codewhale-linux-x64`, `codew-linux-x64` | ✅ | ✅ |
 | Linux | arm64 | `codewhale-linux-arm64`, `codew-linux-arm64` | ✅ | ✅ |
 | Android / Termux | arm64 (aarch64) | `codewhale-android-arm64.tar.gz` (published in v0.9.12; device support is preview) | ⚠️⁴ preview | ⚠️⁴ preview |
+| HarmonyOS / OpenHarmony (native) | arm64 (aarch64) | `codewhale-ohos-arm64.tar.gz` (self-signed inside; only in releases that list it), otherwise build and sign — see [HarmonyOS](HarmonyOS.md) | ❌ | ❌ |
 | Linux | riscv64 | temporarily unsupported until upstream bindings land | ❌¹ | ❌³ |
 | macOS | x64 | `codewhale-macos-x64`, `codew-macos-x64` | ✅ | ✅ |
 | macOS | arm64 (M-series) | `codewhale-macos-arm64`, `codew-macos-arm64` | ✅ | ✅ |
@@ -1185,6 +1200,9 @@ Android / Termux is not the same target as Linux arm64. Do not install the
 Linux `codewhale-linux-arm64` archive in Termux; use the Termux-specific
 Android archive when a release or release candidate publishes one, or build
 from source inside Termux.
+
+The HarmonyOS row is the native target only. Inside the Linux subsystem
+(融合开发引擎, an openEuler virtual machine) the ordinary Linux ARM64 asset works.
 
 The current Linux **x64 and arm64** assets are **static musl builds**.
 The x64 release path has used musl since v0.8.65; v0.9.6 extends the same build
@@ -1442,18 +1460,17 @@ when you need the newest version immediately.
 
 #### Windows winget
 
-The published winget package is **`HunterBown.CodeWhale`** (verified in
-[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs/tree/master/manifests/h/HunterBown/CodeWhale)
-on 2026-10-04; latest published version 0.10.0). It is a portable x64 package:
-winget downloads `codewhale-tui-windows-x64.exe`, installs it as the `codewhale`
-command, and pulls in the Microsoft Visual C++ 2015+ x64 runtime.
+WinGet installs **`HunterBown.CodeWhale`** as the portable x64 command
+`codewhale`. It downloads `codewhale-tui-windows-x64.exe` and declares a
+dependency on the Microsoft Visual C++ 2015+ x64 runtime.
+[Published 0.10.2 manifest](https://github.com/microsoft/winget-pkgs/tree/master/manifests/h/HunterBown/CodeWhale/0.10.2)
 
 ```powershell
 winget install HunterBown.CodeWhale
 codewhale --version
 ```
 
-Update with `winget upgrade HunterBown.CodeWhale` or `codewhale update`. Each
+Update with `winget upgrade --id HunterBown.CodeWhale`. Each
 version goes through winget-pkgs review after the GitHub Release, so winget can
 lag GitHub/npm/Cargo; use npm or the GitHub Release asset when you need the
 newest version immediately.
@@ -1465,8 +1482,7 @@ Known limits of the winget route:
   `codewhale-windows-arm64.zip` from GitHub Releases.
 * **`codewhale` only.** The short `codew` alias is not installed by winget; use
   `codewhale`.
-* The manifest in this repository (`packaging/winget/`) is not the one winget
-  serves; see [`packaging/winget/README.md`](../packaging/winget/README.md).
+* The release generator prepares a matching local manifest. [WinGet packaging](../packaging/winget/README.md).
 
 #### Windows NSIS Installer
 

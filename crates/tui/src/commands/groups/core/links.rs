@@ -3,7 +3,9 @@
 use codewhale_command_contract::facets::CommandPresentationContext;
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
-use codewhale_command_contract::navigation::{NavigationLinks, NavigationProviderKind};
+use codewhale_command_contract::navigation::{
+    NavigationLinks, NavigationProviderKind, public_site_locale_segment,
+};
 use codewhale_command_contract::outcome::CoreNavigationCommandResult as CommandResult;
 use std::fmt::Write;
 
@@ -39,20 +41,6 @@ fn links(contexts: CommandContexts<'_>, _: Option<&str>) -> CommandResult {
     render_links(presentation, navigation.links())
         .map(CommandResult::message)
         .unwrap_or_else(CommandResult::error)
-}
-
-pub(crate) fn public_site_locale_segment(tag: &str) -> &'static str {
-    match tag {
-        "zh-Hans" | "zh-Hant" => "zh",
-        "ja" => "ja",
-        "vi" => "vi",
-        "ko" => "ko",
-        "es-419" => "es",
-        "pt-BR" => "pt-BR",
-        "ru" => "ru",
-        "uk" => "uk",
-        _ => "en",
-    }
 }
 
 fn render_links(

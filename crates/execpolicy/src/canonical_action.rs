@@ -40,6 +40,7 @@ pub const CANONICAL_ACTION_ALIASES: &[(&str, &str, &str)] = &[
     ("Git", "commit_plan", "git_commit_plan"),
     ("Git", "fetch", "git_fetch"),
     ("Git", "merge_tree", "git_merge_tree"),
+    ("Git", "review_scope", "git_review_scope"),
     ("Run", "tests", "run_tests"),
     ("Run", "verifiers", "run_verifiers"),
     ("Web", "search", "web_search"),

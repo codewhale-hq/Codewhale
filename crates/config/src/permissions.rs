@@ -13,8 +13,6 @@ use sha2::{Digest as _, Sha256};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Sibling `permissions.toml` schema.
@@ -442,10 +440,12 @@ pub(crate) fn write_permissions_atomic(path: &Path, body: &[u8]) -> Result<()> {
             parent.display()
         )
     })?;
+    // A filesystem that assigns modes itself (HarmonyOS hmdfs) refuses the
+    // call; `tighten_mode` tolerates only that case and reports every other
+    // failure, so a permissions file that really is world-readable still
+    // fails here.
     #[cfg(unix)]
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))
+    crate::private_directory::tighten_mode_of(temporary.as_file(), temporary.path(), 0o600)
         .with_context(|| {
             format!(
                 "failed to secure temporary permissions file for {}",

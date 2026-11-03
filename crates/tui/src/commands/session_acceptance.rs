@@ -7,11 +7,13 @@ use cucumber::{World as _, given, then, when, writer::Stats as _};
 use tempfile::TempDir;
 
 use crate::commands::{self, CommandResult};
-use crate::session_manager::{SavedSession, SessionManager, create_saved_session_with_id_and_mode};
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tui::app::{App, AppAction, TuiOptions};
 use crate::tui::history::HistoryCell;
 use crate::tui::views::ModalKind;
+use codewhale_engine::session_manager::{
+    SavedSession, SessionManager, create_saved_session_with_id_and_mode,
+};
 use codewhale_models::{ContentBlock, Message, Role};
 use codewhale_runtime::config::Config;
 
@@ -99,8 +101,14 @@ fn persisted_workspace_with_one_user_message(world: &mut SessionCommandWorld) {
     let original_id = "original-session".to_string();
     let app = world.app.as_deref_mut().expect("app should exist");
     app.current_session_id = Some(original_id.clone());
+    app.capture_session_fixture_source();
     world.original_session_id = Some(original_id);
     persist_active_session(world);
+    world
+        .app
+        .as_deref_mut()
+        .expect("fixture app")
+        .capture_session_fixture_source();
 }
 
 #[given("a CodeWhale session workspace with stale and fresh saved sessions")]

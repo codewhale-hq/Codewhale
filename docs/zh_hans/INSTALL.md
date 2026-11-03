@@ -46,7 +46,7 @@ target/release/codewhale --version
 curl -fsSL https://codewhale.net/install.sh | sh
 
 # 2. Make sure ~/.local/bin is on your PATH, now and in future terminals.
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc    # zsh: use ~/.zshrc
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc    # zsh: use ~/.zshrc
 export PATH="$HOME/.local/bin:$PATH"
 codewhale --version          # -> codewhale 0.10.0 (1be1a703b975)
 
@@ -95,6 +95,7 @@ Codewhale 会写出文件、给你看 diff，然后询问 **APPROVAL: bash pytho
 | 你需要 | 原因 |
 |---|---|
 | Linux x86_64 或 arm64，或 macOS | 这些平台有预编译二进制。Linux 二进制是**静态**链接的（musl），没有 glibc 或 libdbus 依赖，可在任何发行版上运行。 |
+| 鸿蒙 PC | 在 Linux 子系统（融合开发引擎）里用 Linux ARM64 版，或为 `aarch64-unknown-linux-ohos` 原生构建并签名；见 [HarmonyOS 与 OpenHarmony](HarmonyOS.md)。 |
 | `curl`（或 `wget`）和 `sha256sum`（或 `shasum`） | 安装器用它们下载并校验。 |
 | 一个模型提供商的密钥，例如 [DeepSeek](https://platform.deepseek.com/api_keys) | 没有模型，Codewhale 什么用都没有。 |
 | `git`（推荐） | Codewhale 在 git 仓库里效果最好。 |
@@ -134,7 +135,7 @@ curl -fsSL https://codewhale.net/install.sh | sh
 * 使用校验过的发布内容分别安装 `~/.local/bin/codewhale` 和
   `~/.local/bin/codew`。当两个清单摘要相同时，下载暂存阶段尽量使用硬链接，
   失败时使用临时副本。
-* **从不使用 sudo，也从不修改你的 shell 配置文件。** 它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew、`node_modules`、`/nix/store` 等），也拒绝覆盖一个*不同的*已有 `codewhale`。
+* **从不使用 sudo，也从不修改你的 shell 配置文件。** 它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew 与 MacPorts 的 bin 目录、`node_modules`、`/nix/store` 等）、你的主目录或 `/`，以及其他用户或用户组可写的目录（你自己的目录可用 `chmod go-w <目录>` 修复）；也拒绝覆盖一个*不同的*已有 `codewhale`。
 
 预期输出：
 
@@ -150,7 +151,8 @@ Installed checksummed release commands:
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
 …
 Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+  printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
+The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
 Then run: . ~/.bashrc   (or open a new terminal)
 …
 ```
@@ -173,12 +175,15 @@ Then run: . ~/.bashrc   (or open a new terminal)
 一次性修复：
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
-# echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # zsh
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
+# printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc  # zsh
 # fish_add_path ~/.local/bin                               # fish (untested on this VM)
 export PATH="$HOME/.local/bin:$PATH"; hash -r
 command -v codewhale codew
 ```
+
+这个三行块带有标记，`codewhale uninstall` 之后可以精确地移除它。你自己加的裸 `export PATH=…`
+行归你自己管理：卸载从不改动它，因为 `~/.local/bin` 也被其他工具共用。
 
 ### 选项
 
@@ -210,8 +215,9 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
 
 ### 升级 / 卸载
 
-* 升级：`codewhale update`（见 §7）。
-* 卸载：`rm ~/.local/bin/codewhale ~/.local/bin/codew`，数据的清理见 §12。
+* 升级：此安装会自动更新（见 §7），也可以立即运行 `codewhale update`。
+* 卸载：`~/.local/bin/codewhale uninstall` 预览该安装收据所拥有的文件；加上
+  `--yes` 才会删除。数据的清理见 §12。
 
 ---
 
@@ -262,7 +268,7 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 
 （注意：校验清单是 *bundles*，不是 *artifacts*。）
 
-压缩包里的 `install.sh` 与网站上的安装器行为一致：不用 sudo，不动内容不同的已有文件，并打印同样的 PATH 提示。
+压缩包里的 `install.sh` 不用 sudo，不动内容不同的已有文件，从不修改 shell 配置文件，也不提问；它只打印针对当前 shell 的 `export` 行。
 
 **升级：** `codewhale update` 对 3a 和 3b 都适用，因为它们都属于"直接二进制"安装。**卸载：** 删除那两个文件（见 §12）。
 
@@ -664,41 +670,57 @@ tmux 会吃掉 **F1**，所以在 tmux 里请用 `/help`。有些组合键（Ctr
 
 ## 12. 卸载
 
-### 第 1 步：忘掉已保存的密钥（如果你用过 `auth set` 或 F3）
+### 第 1 步：清除需要移除的已保存密钥
+
+程序卸载不会自动清除系统钥匙串。先针对实际使用的提供商运行：
 
 ```bash
-codewhale auth clear --provider deepseek
+codewhale auth clear --provider <id>
 ```
 
-### 第 2 步：删除程序
+### 第 2 步：预览并删除所选安装
+
+先运行 `codewhale doctor --installs` 查看每个副本的路径、所有者和删除方式。
+使用要移除的程序的完整路径运行 `uninstall` 查看计划，确认后再加 `--yes`。
+普通卸载保留会话、配置和文件快照。
 
 | 安装方式 | 删除方法 |
 |---|---|
-| 安装器（§2）或手动下载（§3） | `rm ~/.local/bin/codewhale ~/.local/bin/codew`（或你的 `CODEWHALE_INSTALL_DIR`） |
-| npm | `npm uninstall -g codewhale` |
-| Cargo | `cargo uninstall codewhale-cli` |
-| Homebrew | `brew uninstall codewhale && brew untap Hmbown/deepseek-tui`（同时会移除它的 node 依赖） |
+| 当前 Unix 安装器 | 用完整路径运行 `codewhale uninstall`，确认计划后再运行 `uninstall --yes`。 |
+| Windows 发布归档（`install.ps1`） | 用完整路径运行 `codewhale.exe uninstall`，再加 `--yes`；已知旧安装可核对命令字节后建立收据，其他无收据副本会保留。 |
+| Windows 安装程序（NSIS） | 在“设置 > 应用”中卸载，或运行该安装目录的 `Uninstall.exe`。 |
+| WinGet / Scoop | `winget uninstall --id HunterBown.CodeWhale` / `scoop uninstall codewhale`。 |
+| npm | `npm uninstall -g codewhale`；`codewhale uninstall` 会显示该副本所属的 `--prefix`。 |
+| Cargo | `cargo uninstall codewhale-cli`；`codewhale uninstall` 会显示所属的 `--root`。 |
+| Homebrew | `brew uninstall codewhale`；不再使用该 tap 时才执行 untap。 |
+| 旧 curl 安装或其他手动副本 | 已知旧安装目录内、与当前程序字节完全一致且确属当前用户的文件可建立收据后移除；其他来源不明的文件会保留，需先核实具体路径和来源。 |
 
-### 第 3 步：删除数据。没有任何卸载器会替你做这件事。
+卸载移除所选安装收据拥有的命令、宿主文件和收据；对带收据的发布版安装，还会移除
+该安装在 shell 配置文件中的精确三行 `# >>> codewhale PATH >>>` 块，以及文档中
+约定路径上由 Codewhale 生成的补全文件（`~/.local/share/bash-completion/completions/codewhale`、
+`~/.zfunc/_codewhale`、`~/.config/fish/completions/codewhale.fish`，并遵循
+`XDG_DATA_HOME` 和 `XDG_CONFIG_HOME`）。配置文件中的其他内容一概不动；符号链接或
+无法读取的配置文件留给你手动修改；只要 PATH 上还有其他 Codewhale 副本，补全文件
+就会保留。这部分清理若有失败，命令会如实报告并以非零状态退出，即使程序本身已经删除。
+Windows 正在运行的程序会先改名，退出后由辅助进程删除。Windows 分支已通过编译检查，仍需在真实 Windows 主机上验证。
+重复卸载不会取得其他副本的所有权；重新安装会创建新的收据。
 
-| 路径 | 内容 | 所见大小 |
-|---|---|---|
-| `~/.codewhale/` | config.toml、**secrets/secrets.json（明文密钥）**、sessions/、logs/、catalog/（模型列表，约 5 MB）、skills/、builtin-plugins/、tasks/、automations/、crashes/、audit.log、输入框历史 | 6–7 MB |
-| `~/.deepseek/snapshots/` | v0.10.0 把每个回合的**工作区副本**存在这里（一个旧路径）。里面包含你运行过它的每个仓库的内容。 | 这里为 0.2–0.6 MB；随仓库大小增长 |
-| `<你用过的每个仓库>/.codewhale/` | 每个工作区的状态/锁目录 | 很小 |
-| 补全文件 | `~/.local/share/bash-completion/completions/codewhale`、`~/.zfunc/_codewhale`、`~/.config/fish/completions/codewhale.fish` | – |
-| 你添加的 PATH 行 | `~/.bashrc`、`~/.zshrc`、`~/.profile` | – |
+### 第 3 步：可选的数据清理
 
-```bash
-rm -rf ~/.codewhale ~/.deepseek/snapshots
-rmdir ~/.deepseek 2>/dev/null   # removes the parent only if it is now empty
-# per-repo dirs, e.g.:
-find ~ -type d -name .codewhale -prune -print     # review, then delete the ones you want
-```
+`codewhale uninstall --purge-data` 先预览清理范围。未显式设置
+`CODEWHALE_HOME` 时，范围是 `~/.codewhale` 和旧的
+`~/.deepseek/snapshots`；显式设置后只考虑该目录，保留旧快照。
+自定义目录必须名为 `.codewhale` 才可自动清理。
 
-（注释含义：仅当父目录已为空时才会删除它；逐个仓库的目录，先查看再删除想删的。）
+数据清理必须与成功移除带收据安装的 `--yes` 操作在同一次运行中完成。
+包管理器安装、仅预览或移除失败时均保留数据。程序删除前会检查所有目标，拒绝
+符号链接、其他用户拥有的目录、主目录及其父目录，以及包含安装目录的目标。
+清理会删除这些目标内的会话、工作区快照和恢复副本；确认前应先核对预览并保留
+仍需使用的内容。重新安装程序不能恢复已清理的数据。
 
-Codewhale 没有在 `$HOME` 和它被使用过的仓库之外写入任何东西：没有系统文件、服务或 cron 任务。（我检查了测试用户在其主目录之外拥有的每一个文件。）上面的命令只删除 `~/.deepseek/snapshots`。如果你仍在使用较早的 DeepSeek-TUI，`~/.deepseek` 里的其余部分（它的配置和会话）不会被动。
+每个工作区的 `.codewhale` 和系统钥匙串不在自动清理范围内；你自己加的裸 `export PATH=…`
+行，以及约定路径之外的补全文件，也由你自己检查。请逐项检查已知路径；卸载不会扫描整个主目录。远程服务和桌面应用也有
+各自的安装所有权，不由所选 CLI 安装的收据代管。
 
 ---
 
@@ -750,19 +772,19 @@ v0.10.0 的已知 bug。bash 和 fish 没问题。
 
 下面各节原样沿用自本页的上一版。它们**没有**在上文的 v0.10.0 安装测试中重新运行（不在范围内：Windows、macOS、Android/Termux、FreeBSD、中国大陆镜像），仅 [macOS 说明](#macos-说明)中提到的 macOS 路径除外。通过检查已发布的 v0.10.0 资源，发现下列内容与之矛盾（[详情](https://github.com/codewhale-hq/Codewhale/blob/37ecdfcc49bc68a9b0d058b97c3946e62c34bd31/docs/install-report/v0.10.0-2026-09-23/DOC_DEFECTS.md)，D15 和 D16）：
 
-* `packaging/winget/` 里的 winget 清单仍停留在 0.9.6。
 * v0.10.0 同时发布了 `codewhale-windows-x64.zip`（附带一个把文件复制到 `%USERPROFILE%\bin` 的 `install.bat`）和 `codewhale-windows-x64-portable.zip`；下面各节只提到了前者。
 * 独立的 `codewhale.bat` 启动器只能在 x64 exe 旁边工作。
 
 ### 支持平台与发布资源
 
-[最新稳定版](https://github.com/codewhale-hq/CodeWhale/releases/latest)发布了 Linux x64/arm64、macOS x64/arm64、Windows x64/arm64 和 Android arm64 的资源。资源存在不等于平台已通过验收。下表描述的是当前源码树的平台与次要打包支持；`latest` 安装仍然选择已发布的版本。Android/Termux 为预览状态，等待真机 QA。Linux ARM64 自 v0.8.8 起可用。Linux RISC-V 预编译暂时暂停，因为锁定的 `rquickjs-sys` 依赖没有提供 `riscv64gc-unknown-linux-gnu` 绑定。
+[最新稳定版](https://github.com/codewhale-hq/CodeWhale/releases/latest)发布了 Linux x64/arm64、macOS x64/arm64、Windows x64/arm64 和 Android arm64 的资源；带 OpenHarmony 构建任务的版本还会发布原生 HarmonyOS/OpenHarmony arm64 压缩包。资源存在不等于平台已通过验收。下表描述的是当前源码树的平台与次要打包支持；`latest` 安装仍然选择已发布的版本。Android/Termux 为预览状态，等待真机 QA。Linux ARM64 自 v0.8.8 起可用。Linux RISC-V 预编译暂时暂停，因为锁定的 `rquickjs-sys` 依赖没有提供 `riscv64gc-unknown-linux-gnu` 绑定。
 
 | 平台 | 架构 | GitHub 发布资源 | npm install | `cargo install` |
 | ------------ | ------------ | ----------------------------------------------------- | :---------: | :-------------: |
 | Linux | x64 (x86_64) | `codewhale-linux-x64`, `codew-linux-x64` | ✅ | ✅ |
 | Linux | arm64 | `codewhale-linux-arm64`, `codew-linux-arm64` | ✅ | ✅ |
 | Android / Termux | arm64 (aarch64) | `codewhale-android-arm64.tar.gz`（v0.9.12 已发布；真机支持仍为预览） | ⚠️⁴ 预览版 | ⚠️⁴ 预览版 |
+| HarmonyOS / OpenHarmony（原生） | arm64 (aarch64) | `codewhale-ohos-arm64.tar.gz`（包内已自签名；仅在此项资源存在的版本中提供），否则从源码构建并签名 —— 见 [HarmonyOS](HarmonyOS.md) | ❌ | ❌ |
 | Linux | riscv64 | 暂时不支持，待上游绑定落地 | ❌¹ | ❌³ |
 | macOS | x64 | `codewhale-macos-x64`, `codew-macos-x64` | ✅ | ✅ |
 | macOS | arm64 (M 系列) | `codewhale-macos-arm64`, `codew-macos-arm64` | ✅ | ✅ |
@@ -778,6 +800,8 @@ v0.10.0 的已知 bug。bash 和 fish 没问题。
 ⁴ 当前的 npm 包装器能识别 Android arm64，并解析匹配的 `codewhale` 和 `codew` Android 资源。npm 安装仅对 GitHub Release 已发布了这些匹配资源的包版本有效。在 #4236 和 #4242 跟踪的真机编译、启动、审批、文件工具与更新检查完成之前，Android/Termux 路径仍为预览。
 
 Android / Termux 与 Linux arm64 不是同一个目标。不要在 Termux 里安装 Linux 的 `codewhale-linux-arm64` 压缩包；当某个发布版或候选版发布了 Termux 专用的 Android 压缩包时请使用它，或在 Termux 内从源码构建。
+
+表中的这一行只指原生鸿蒙。在 Linux 子系统（融合开发引擎，一台 openEuler 虚拟机）里，用上面的 Linux ARM64 资源即可。
 
 当前 Linux 的 **x64 和 arm64** 资源都是**静态 musl 构建**。x64 发布路径自 v0.8.65 起使用 musl；v0.9.6 把同样的构建与静态启动检查扩展到了 arm64。这些二进制没有 glibc 依赖，可在匹配的架构上跨 Ubuntu、Debian、RHEL/CentOS 和 Alpine/musl 运行。SQLite 通过 `rusqlite` 内置，因此无需单独的 `libsqlite3` 运行时包。
 
@@ -966,23 +990,22 @@ Scoop 清单维护在本仓库的发布工作流之外，可能落后于 GitHub/
 
 #### Windows winget
 
-已发布的 winget 包是 **`HunterBown.CodeWhale`**（2026-10-04 在
-[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs/tree/master/manifests/h/HunterBown/CodeWhale)
-核实；最新发布版本为 0.10.0）。它是便携式 x64 包：winget 下载
-`codewhale-tui-windows-x64.exe`，将其安装为 `codewhale` 命令，并安装 Microsoft Visual C++ 2015+ x64 运行库。
+WinGet 将 **`HunterBown.CodeWhale`** 安装为便携式 x64 命令 `codewhale`。
+它下载 `codewhale-tui-windows-x64.exe`，并声明依赖 Microsoft Visual C++ 2015+ x64 运行库。
+[已发布的 0.10.2 清单](https://github.com/microsoft/winget-pkgs/tree/master/manifests/h/HunterBown/CodeWhale/0.10.2)
 
 ```powershell
 winget install HunterBown.CodeWhale
 codewhale --version
 ```
 
-使用 `winget upgrade HunterBown.CodeWhale` 或 `codewhale update` 更新。每个版本在 GitHub Release 之后都要经过 winget-pkgs 审核，因此 winget 可能落后于 GitHub/npm/Cargo；需要立即获得最新版本时，请使用 npm 或 GitHub Release 资源。
+使用 `winget upgrade --id HunterBown.CodeWhale` 更新。每个版本在 GitHub Release 之后都要经过 winget-pkgs 审核，因此 winget 可能落后于 GitHub/npm/Cargo；需要立即获得最新版本时，请使用 npm 或 GitHub Release 资源。
 
 winget 方式的已知限制：
 
 * **仅 x64。** 已发布的清单没有 ARM64 安装包。在 Windows ARM64 上，请在原生 ARM64 Node.js 下运行 `npm install -g codewhale`，或从 GitHub Releases 下载 `codewhale-windows-arm64.zip`。
 * **仅安装 `codewhale`。** winget 不安装简短别名 `codew`；请使用 `codewhale`。
-* 本仓库中的清单（`packaging/winget/`）不是 winget 实际提供的清单；见 [`packaging/winget/README.md`](../../packaging/winget/README.md)。
+* 发布脚本生成与上述安装方式一致的本地清单。[WinGet 打包说明](../../packaging/winget/README.md)。
 
 #### Windows NSIS 安装器
 

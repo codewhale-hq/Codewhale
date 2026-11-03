@@ -45,10 +45,10 @@ Stage 2 of the loop: [cw-orient](../cw-orient/SKILL.md) → **slice** →
 3. **Check the contracts you are about to walk into.** One of these is
    guard-tested, the rest are convention — either way, move them with their
    code, not around it:
-   - One turn loop: `crates/tui/src/core/engine/turn_loop.rs`, guarded by
+   - One turn loop: `crates/engine/src/core/engine/turn_loop.rs`, guarded by
      `crates/core/tests/single_turn_loop.rs`. A second loop fails the guard;
      changing the shape means changing the guard with it.
-   - One base prompt: `BASE_PROMPT` in `crates/tui/src/prompts/text.rs`.
+   - One base prompt: `BASE_PROMPT` in `crates/engine/src/prompts/text.rs`.
    - The subagent tool is `agent`; `agent_open` / `agent_eval` /
      `agent_close` / `delegate_to_agent` are removed surfaces. If the shape
      must move, move the code and add the guard test that judges the new
@@ -57,11 +57,11 @@ Stage 2 of the loop: [cw-orient](../cw-orient/SKILL.md) → **slice** →
      (`docs/CACHE.md`). Any new session-context contributor must state its cache
      effect — frozen prefix vs. append-only history. Never splice a volatile
      fact into the prefix.
-   - `crates/tui/src/core/` is a module inside the TUI crate. `crates/core` is a
+   - `crates/engine/src/core/` is a module inside the TUI crate. `crates/core` is a
      different crate that runs no turns. Do not confuse them.
    - Repeatedly misidentified as dead, verify consumers before removing:
      `runtime/src/context_budget.rs`,
-     `runtime/src/prompt_zones.rs`, `tui/src/tools/remember.rs`, `config/src/route/`.
+     `runtime/src/prompt_zones.rs`, `engine/src/tools/remember.rs`, `config/src/route/`.
 
 4. **Read the scoped guidance for the files you will touch.** `crates/tui/AGENTS.md`
    owns the UI contracts (one owner per fact, `codewhale_palette::grammar` semantics, typed

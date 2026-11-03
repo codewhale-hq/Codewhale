@@ -12,7 +12,7 @@ durable ledger, and the CLI's Lane verbs had no slash equivalent at all.
 
 The contract is one typed descriptor table plus one executor per domain, in
 [`crates/lane/src/control.rs`](../crates/lane/src/control.rs) and
-[`crates/tui/src/fleet/control.rs`](../crates/tui/src/fleet/control.rs).
+[`crates/engine/src/fleet/control.rs`](../crates/engine/src/fleet/control.rs).
 `codewhale-lane` is the lowest crate the thin CLI facade and the TUI both
 already depend on, so there is exactly one place the contract can live without
 forking.
@@ -137,7 +137,7 @@ measurement is required.
   round-trips, bounding, and redaction; plus executor tests proving all three
   surfaces get byte-identical results for the same durable Lane and that
   interrupt is idempotent and fenced.
-- `crates/tui/src/fleet/control.rs` — route/usage DTO projection with typed
+- `crates/engine/src/fleet/control.rs` — route/usage DTO projection with typed
   unknowns, bounded pages and rows, absent-ledger reporting without creation,
   CLI-only `fleet.restart`, and cross-surface identity of `fleet.status`.
 - `crates/tui/src/commands/groups/core/lane.rs` and `…/fleet.rs` — slash verbs

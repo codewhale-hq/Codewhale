@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -201,7 +201,7 @@ Code mode (प्रायोगिक, डिफ़ॉल्ट रूप स�
 | `codewhale` | इंटरैक्टिव टर्मिनल ऐप |
 | `codewhale exec "…"` | बिना इंटरफ़ेस के एक काम। अकेले चलाने पर यह टूल का इस्तेमाल किए बिना जवाब देता है; `--auto` डिफ़ॉल्ट रूप से Full Access के साथ टूल चालू करता है, `--sandbox workspace-write` उन्हें सीमित करता है, और `--output-format stream-json` इवेंट को JSON के रूप में स्ट्रीम करता है |
 | `codewhale web` | `127.0.0.1` पर एक लोकल वेब UI ([गाइड](../WEB.md)) |
-| `codewhale review --pr N` | किसी GitHub pull request की सलाह के तौर पर समीक्षा। जब तक आप `--post` न जोड़ें, यह कुछ पोस्ट नहीं करता; [GitHub Action](../GITHUB_ACTION.md) यही समीक्षा CI में चलाता है |
+| `codewhale review --pr N` | किसी GitHub pull request की सलाह के तौर पर समीक्षा। [GitHub बॉट सेटअप](../GITHUB_ACTION.md#set-up-your-own-bot) स्वचालित समीक्षाओं और `@codewhale review` के लिए एक पिन किया हुआ workflow बनाता है, जो आपकी अपनी मॉडल कुंजी और वैकल्पिक App पहचान का उपयोग करता है |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md), थ्रेड, इवेंट, अनुमोदन और हर टर्न के फ़ाइल बदलावों के लिए एक लोकल HTTP API |
 | `codewhale serve --acp` | stdio पर Agent Client Protocol, Zed जैसे एडिटर के लिए |
 

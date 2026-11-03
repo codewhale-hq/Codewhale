@@ -131,7 +131,7 @@ Arena Mode) — official docs at x.ai/cli returned 404 for the deep pages.
 - `/workflow status|runs [run_id]`, `/workflow cancel [run_id]`,
   `/workflow settings`, `/workflow help` are host answers
   (`crates/tui/src/commands/groups/core/workflow.rs`,
-  `crates/tui/src/tools/workflow/mod.rs::{host_workflow_runs,
+  `crates/engine/src/tools/workflow/mod.rs::{host_workflow_runs,
   host_cancel_workflow}`); `/workflow run <path>` launches a checked-in file
   as-is; `/config workflow` / `/config goal` explain the effective tables.
 - The workflow tool reads the session `[workflow]` table for approval and

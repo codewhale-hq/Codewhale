@@ -12,6 +12,7 @@ pub mod external_credentials;
 pub mod hooks;
 pub mod instruction_budget;
 pub mod legacy_root;
+pub mod local_reasoning;
 pub mod model_reference;
 pub mod models_dev;
 pub mod notifications;

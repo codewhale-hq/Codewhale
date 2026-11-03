@@ -728,19 +728,23 @@ fn launch_resume_buttons_support_mouse_cancel_and_keyboard_choice() {
     for (rows, cols) in SIZES {
         let (_workspace, mut tui) = start(rows, cols, false);
         click_text(&mut tui, TITLE);
-        wait(&mut tui, "resume");
+        wait(&mut tui, "cancel");
         click_text(&mut tui, "cancel");
+        tui.wait_for(|frame| !frame.contains("Resume session"), WAIT)
+            .unwrap();
         wait(&mut tui, "New session");
         assert!(!tui.frame().contains(SAVED_TEXT));
         click_text(&mut tui, TITLE);
-        wait(&mut tui, "resume");
+        wait(&mut tui, "cancel");
         tui.send(keys::key::tab()).unwrap();
         tui.send(keys::key::enter()).unwrap();
+        tui.wait_for(|frame| !frame.contains("Resume session"), WAIT)
+            .unwrap();
         wait(&mut tui, "New session");
         assert!(!tui.frame().contains(SAVED_TEXT));
         click_text(&mut tui, TITLE);
-        wait(&mut tui, "resume");
-        click_text(&mut tui, "resume");
+        wait(&mut tui, "resume  Enter");
+        click_text(&mut tui, "resume  Enter");
         wait(&mut tui, SAVED_TEXT);
         tui.shutdown();
     }

@@ -16,9 +16,9 @@ starts at [cw-orient](../cw-orient/SKILL.md) with what you leave here.
 ## When to use
 
 - Ending a session with work in flight.
-- Asked for "a prompt for another agent", branch takeover instructions, a
+- Asked for "a prompt for another agent", takeover instructions, a
   continuation note, or a summary of current state for async work.
-- Handing a lane to a different model, a fleet worker, or a remote session.
+- Handing work to a different model, a fleet worker, or a remote session.
 
 ## Workflow
 
@@ -31,23 +31,25 @@ starts at [cw-orient](../cw-orient/SKILL.md) with what you leave here.
    cd <repo path>
    git status --short --branch && git branch --show-current
    git log --oneline --decorate -20
-   git worktree list
+   git log --oneline origin/main..HEAD
    ./scripts/release/check-versions.sh
    ```
    Tell them to trust that output over anything below it.
 
 3. **Cover these, in whatever order fits; drop sections that are empty:**
-   - Repository path and expected branch or worktree.
-   - The authority line: what they may and may not do without asking. Default to
-     local-only — no push, merge, tag, publish, GitHub Release, or destructive
-     cleanup without explicit approval.
+   - Repository path; it should be on `main`.
+   - The authority line: what they may do without asking. The default for
+     maintainers is that verified slices commit and push to `main`
+     (`AGENTS.md`). Tag, GitHub Release, publish, deploy, PR merge and
+     destructive cleanup need explicit approval. A task scoped local-only says
+     so.
    - Durable files to read, ordered by importance: the scoped `AGENTS.md` for
      the area, then the specific docs (`docs/CACHE.md`,
      `docs/MOTION_CONTRACT.md`, `docs/ARCHITECTURE.md`, `crates/tui/AGENTS.md`)
      the task actually touches.
    - Commits already landed, with SHAs.
-   - **Dirty worktree caveats, naming uncommitted files explicitly**, and whose
-     they are. This is the single most useful line in most handoffs.
+   - **Dirty-checkout caveats, naming uncommitted files explicitly**, and
+     whether a live writer is mid-edit on them. This is the single most useful line in most handoffs.
    - The next slices, in priority order, each bounded the way
      [cw-slice](../cw-slice/SKILL.md) bounds one.
    - The verification gate for those slices — the smallest correct one from
@@ -58,13 +60,19 @@ starts at [cw-orient](../cw-orient/SKILL.md) with what you leave here.
    command output that proves it), *suspected* (a hypothesis, labeled), and
    *blocked* (with what unblocks it). If you did not run it, it is not done.
 
-5. **Say what the branch is for.** Local-only, pushed for backup, or intended to
-   stay unpushed — the next agent cannot tell from `git` alone, and guessing
-   wrong is how work gets force-pushed away.
+5. **Say what is unpushed and why.** A commit ahead of `origin/main` is either
+   waiting on a check (name it) or blocked (name the blocker).
 
 6. **Record missing external receipts.** If the task was local-only, say which
    evidence you could not gather (CI state, registry state, review threads)
    rather than inferring it. A named gap is useful; a confident guess is not.
+
+   Before writing the handoff, run the record backstop and list anything it
+   shows as owed:
+   ```bash
+   git log --format='%h %s' "$(git log -1 --format=%H -- CHANGELOG.md)"..origin/main | grep -E '^[0-9a-f]+ (feat|fix)'
+   python3 scripts/check-contributor-credit.py
+   ```
 
 ## Red flags / don't
 

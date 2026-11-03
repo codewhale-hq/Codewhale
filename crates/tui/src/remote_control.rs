@@ -21,12 +21,12 @@ use tokio::sync::mpsc;
 
 use codewhale_models::{ContentBlock, Message};
 
-use crate::{
+use crate::runtime_chat_relay::{
+    RuntimeChatControlScope, RuntimeChatProjection, RuntimeChatPrompt, RuntimeChatRelayHost,
+};
+use codewhale_engine::{
     core::events::{Event as EngineEvent, TurnOutcomeStatus},
     git_status::normalize_observed_git_repo,
-    runtime_chat_relay::{
-        RuntimeChatControlScope, RuntimeChatProjection, RuntimeChatPrompt, RuntimeChatRelayHost,
-    },
 };
 
 const PRODUCTION_CONTROL_PLANE: &str = "https://api.codewhale.net/";
@@ -412,11 +412,13 @@ impl RuntimeEventJournal {
         let legacy_session_tag = runtime_journal_session_tag(session_id);
         std::fs::create_dir_all(dir).map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
-        }
+        // Journal files are written owner-only; the directory narrows to 0o700
+        // where the filesystem stores modes. A mount that assigns modes itself
+        // (HarmonyOS hmdfs) refuses the call, and `tighten_mode` tolerates only
+        // that case — refusing here would disable the recoverable-turn journal
+        // on a platform where no directory can ever satisfy the chmod.
+        codewhale_config::private_directory::tighten_mode(dir, 0o700)
+            .map_err(|_| JOURNAL_SETUP_ERROR.to_string())?;
         let legacy_path = dir.join(format!("journal_{legacy_session_tag}.json"));
         let active_index_path = dir.join(format!("active_classic_{legacy_session_tag}.json"));
         let classic_session_lock =
@@ -1089,6 +1091,25 @@ impl RemoteControlController {
     }
 
     pub fn start(&mut self, start: RemoteStart) -> Result<(), String> {
+        let result = self.start_inner(start);
+        if let Err(error) = &result {
+            self.record_start_failure(error);
+        }
+        result
+    }
+
+    pub(crate) fn record_start_failure(&mut self, error: &str) {
+        if matches!(self.status, Status::Off | Status::Failed)
+            && !self
+                .ownership_blocked_until
+                .is_some_and(|deadline| Instant::now() < deadline)
+        {
+            self.status = Status::Failed;
+            self.status_detail = codewhale_config::persistence::redact_secrets(error);
+        }
+    }
+
+    fn start_inner(&mut self, start: RemoteStart) -> Result<(), String> {
         if matches!(
             self.status,
             Status::Connecting | Status::Connected | Status::Stopping
@@ -1293,6 +1314,16 @@ impl RemoteControlController {
             || self.runtime_chat.as_ref().is_some_and(|host| {
                 host.has_any_unsettled_turns() || self.has_unacknowledged_integrity_events()
             })
+    }
+
+    pub(crate) async fn workspace_restore_guard(
+        &self,
+        workspace: &Path,
+    ) -> Result<Option<tokio::sync::OwnedRwLockWriteGuard<()>>, String> {
+        match self.runtime_chat.as_ref() {
+            Some(host) => host.workspace_restore_guard(workspace).await.map(Some),
+            None => Ok(None),
+        }
     }
 
     #[cfg(test)]
@@ -3183,24 +3214,11 @@ fn unicode_prefix(value: &str, chars: usize) -> String {
     value.chars().take(chars).collect()
 }
 
-fn projected_approval_id(raw: &str) -> String {
+pub(crate) fn projected_approval_id(raw: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"local-runtime:approval\0");
     hasher.update(raw.as_bytes());
     format!("local_approval_{}", &bytes_to_hex(&hasher.finalize())[..24])
-}
-
-/// Whether this view is the approval card for exactly `gate` (the projected
-/// approval id). Used by the web mirror to dismiss the matching card — never
-/// an unrelated approval that happens to be on top.
-pub(crate) fn view_is_approval_for_gate(
-    view: &dyn crate::tui::views::ModalView,
-    gate: &str,
-) -> bool {
-    view.kind() == crate::tui::views::ModalKind::Approval
-        && view
-            .approval_request_id()
-            .is_some_and(|tool_id| projected_approval_id(tool_id) == gate)
 }
 
 fn projected_error_item_id(run_id: &str, turn_id: &str, code: &str) -> String {
@@ -4604,7 +4622,7 @@ async fn runner_request(
         });
     }
     let limit = if segments.last() == Some(&"commands") {
-        codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES
+        codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES
     } else {
         MAX_RESPONSE_BYTES
     };
@@ -5576,7 +5594,7 @@ mod tests {
             .unwrap();
 
         let mut participant = tokio::spawn(async {
-            crate::client::acquire_remote_control_inference_participant().await
+            codewhale_engine::client::acquire_remote_control_inference_participant().await
         });
         assert!(
             tokio::time::timeout(Duration::from_millis(40), &mut participant)
@@ -5635,7 +5653,8 @@ mod tests {
         let host = reopened.runtime_chat.as_ref().unwrap().clone();
         assert!(host.has_any_unsettled_turns());
 
-        let participant = crate::client::acquire_remote_control_inference_participant().await;
+        let participant =
+            codewhale_engine::client::acquire_remote_control_inference_participant().await;
         let error = reopened
             .recover_runtime_chat_ownership_before_worker()
             .unwrap_err();
@@ -5647,7 +5666,7 @@ mod tests {
             .recover_runtime_chat_ownership_before_worker()
             .unwrap();
         let mut blocked = tokio::spawn(async {
-            crate::client::acquire_remote_control_inference_participant().await
+            codewhale_engine::client::acquire_remote_control_inference_participant().await
         });
         assert!(
             tokio::time::timeout(Duration::from_millis(40), &mut blocked)
@@ -5734,11 +5753,13 @@ mod tests {
             ..fixture_start()
         };
 
-        let participant = crate::client::acquire_remote_control_inference_participant().await;
+        let participant =
+            codewhale_engine::client::acquire_remote_control_inference_participant().await;
         let error = reopened.start(start.clone()).unwrap_err();
         assert!(error.contains("active local turn"), "{error}");
         assert!(reopened.worker.is_none());
-        assert_eq!(reopened.status, Status::Off);
+        assert_eq!(reopened.status, Status::Failed);
+        assert!(reopened.status_line().contains(&error));
         drop(participant);
 
         reopened.start(start).unwrap();
@@ -6495,6 +6516,7 @@ mod tests {
         assert!(worker_rx.try_recv().is_err());
 
         controller.observe_engine_event(&EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "turn_started_later".to_string(),
             created_at: chrono::Utc::now(),
             route: None,
@@ -6880,9 +6902,9 @@ mod tests {
         );
 
         controller.observe_engine_event(&EngineEvent::Error {
-            envelope: crate::error_taxonomy::ErrorEnvelope::new(
-                crate::error_taxonomy::ErrorCategory::Authentication,
-                crate::error_taxonomy::ErrorSeverity::Critical,
+            envelope: codewhale_error_taxonomy::ErrorEnvelope::new(
+                codewhale_error_taxonomy::ErrorCategory::Authentication,
+                codewhale_error_taxonomy::ErrorSeverity::Critical,
                 false,
                 "llm_auth_error",
                 message,
@@ -6943,7 +6965,7 @@ mod tests {
             .unwrap();
 
         controller.observe_engine_event(&EngineEvent::Error {
-            envelope: crate::error_taxonomy::ErrorEnvelope::network(
+            envelope: codewhale_error_taxonomy::ErrorEnvelope::network(
                 "temporary provider connection failure",
             ),
             recoverable: true,
@@ -7366,7 +7388,18 @@ mod tests {
     #[tokio::test]
     async fn pre_lease_failure_never_locks_and_allows_immediate_retry() {
         let (mut controller, _worker_rx, event_tx, _journal_root) = wired_controller();
+        let mut invalid_start = fixture_start();
+        invalid_start.runtime_commit.clear();
+        let error = controller.start(invalid_start).unwrap_err();
+        assert!(error.contains("enrollable identity"), "{error}");
+        assert_eq!(controller.status, Status::Failed);
+        assert!(controller.status_line().contains(&error));
+        assert!(controller.ownership_blocked_until.is_none());
         controller.status = Status::Connecting;
+        controller.status_detail = "connecting fixture".to_string();
+        assert!(controller.start(fixture_start()).is_err());
+        assert_eq!(controller.status, Status::Connecting);
+        assert_eq!(controller.status_detail, "connecting fixture");
         event_tx
             .send(RemoteEvent::FailedPreLease(
                 "Codewhale rejected remote-control enrollment (403): client version not accepted."
@@ -7542,6 +7575,8 @@ mod tests {
         let mut controller = RemoteControlController::default();
         controller.status = Status::Failed;
         controller.ownership_blocked_until = Some(Instant::now() + Duration::from_secs(90));
+        controller.status_detail = "fixture transport failure".to_string();
+        let deadline = controller.ownership_blocked_until;
         // Mirror semantics: local input is never locked, but reconnecting
         // while the server lease may still be live is refused — the web must
         // not see two runners for the same session.
@@ -7555,6 +7590,8 @@ mod tests {
             git_remote: None,
         };
         assert!(controller.start(start.clone()).is_err());
+        assert_eq!(controller.ownership_blocked_until, deadline);
+        assert_eq!(controller.status_detail, "fixture transport failure");
         // The web cannot answer shared approvals while the relay is failed.
         assert!(!controller.can_share_approval_with_web());
         controller.ownership_blocked_until = Some(Instant::now() - Duration::from_secs(1));
@@ -8670,7 +8707,9 @@ mod tests {
             })
             .expect_err("a corrupt journal must fail closed");
         assert_eq!(error, JOURNAL_UNTRUSTED_ERROR);
-        assert_eq!(controller.status, Status::Off, "no relay may start");
+        assert_eq!(controller.status, Status::Failed);
+        assert!(controller.status_line().contains(&error));
+        assert!(controller.worker.is_none(), "no relay may start");
         assert!(
             !corrupt_path.exists(),
             "the untrusted journal must not stay in place"
@@ -8936,7 +8975,7 @@ mod tests {
     }
     #[test]
     fn runtime_image_legacy_work_never_downgrades_to_text() {
-        let image = crate::image_attach::tests::runtime_image_fixture(1);
+        let image = codewhale_engine::image_attach::test_support::runtime_image_fixture(1);
         let command = json!({"type":"prompt.request","runId":"run_fixture","turnId":"turn_fixture","prompt":"look","images":[image]});
         assert!(
             parse_remote_command(&command, "run_fixture")
@@ -8979,7 +9018,7 @@ mod tests {
         );
         let parsed = read_bounded_json_with_limit(
             client.get(&url).send().await.unwrap(),
-            codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+            codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
         )
         .await
         .unwrap();

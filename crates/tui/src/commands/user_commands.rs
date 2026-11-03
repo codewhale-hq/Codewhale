@@ -345,7 +345,7 @@ pub fn try_dispatch_user_command(app: &mut App, input: &str) -> Option<CommandRe
             let (metadata, body) = parse_frontmatter(content);
             app.goal.objective = None;
             app.goal.started_at = None;
-            app.goal.status = crate::tools::goal::GoalStatus::Active;
+            app.goal.status = codewhale_engine::tools::goal::GoalStatus::Active;
             app.goal.token_budget = None;
             app.goal.tokens_used = 0;
             app.goal.time_used_seconds = 0;
@@ -364,7 +364,7 @@ pub fn try_dispatch_user_command(app: &mut App, input: &str) -> Option<CommandRe
                 tracing::warn!(target: "commands", "todos lock contended or poisoned — previous todos not cleared");
             }
             if let Ok(mut plan) = app.plan_state.try_lock() {
-                *plan = crate::tools::plan::PlanState::default();
+                *plan = codewhale_engine::tools::plan::PlanState::default();
             } else {
                 tracing::warn!(target: "commands", "plan_state lock contended or poisoned — previous plan not cleared");
             }
@@ -720,8 +720,8 @@ mod tests {
 
     #[test]
     fn new_user_command_clears_previous_todos_and_plan() {
-        use crate::tools::plan::UpdatePlanArgs;
-        use crate::tools::todo::TodoStatus;
+        use codewhale_engine::tools::plan::UpdatePlanArgs;
+        use codewhale_engine::tools::todo::TodoStatus;
         use codewhale_runtime::config::Config;
 
         let tmp = trusted_workspace();
@@ -829,11 +829,14 @@ mod tests {
         let _ = try_dispatch_user_command(&mut app, "/described").unwrap();
         assert_eq!(app.goal.objective.as_deref(), Some("Scan repos"));
         assert!(app.goal.started_at.is_some());
-        assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Active);
+        assert_eq!(
+            app.goal.status,
+            codewhale_engine::tools::goal::GoalStatus::Active
+        );
         assert_eq!(app.goal.token_budget, None);
         assert_eq!(app.active_allowed_tools, Some(vec!["bash".to_string()]));
 
-        app.goal.status = crate::tools::goal::GoalStatus::Blocked;
+        app.goal.status = codewhale_engine::tools::goal::GoalStatus::Blocked;
         app.goal.token_budget = Some(42);
         app.goal.tokens_used = 100;
         app.goal.time_used_seconds = 5;
@@ -841,7 +844,10 @@ mod tests {
         let _ = try_dispatch_user_command(&mut app, "/plain").unwrap();
         assert_eq!(app.goal.objective, None);
         assert_eq!(app.goal.started_at, None);
-        assert_eq!(app.goal.status, crate::tools::goal::GoalStatus::Active);
+        assert_eq!(
+            app.goal.status,
+            codewhale_engine::tools::goal::GoalStatus::Active
+        );
         assert_eq!(app.goal.token_budget, None);
         assert_eq!(app.goal.tokens_used, 0);
         assert_eq!(app.goal.time_used_seconds, 0);

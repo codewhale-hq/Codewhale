@@ -12,19 +12,8 @@
 
 import type { DraftClaimLockNamespace, DraftClaimLockStub, DraftLockAction } from "./draft-claim-lock";
 
-const MAX_OUTPUT_TOKENS = 2_000;
-const FALLBACK_BASE = "https://api.deepseek.com";
-const FALLBACK_MODEL = "deepseek-flash";
-
-interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-interface ChatResponse {
-  choices: { message: { content: string } }[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-}
+import { requestChat, type ChatMessage, type DeepSeekEnv } from "./deepseek";
+export type { DeepSeekEnv } from "./deepseek";
 
 export const AGENT_DRAFT_TYPES = [
   "triage",
@@ -53,11 +42,6 @@ export interface UsageLog {
   calls: number;
   inputTokens: number;
   outputTokens: number;
-}
-
-export interface DeepSeekEnv {
-  baseUrl?: string;
-  model?: string;
 }
 
 const AGENT_DRAFT_TYPE_SET = new Set<string>(AGENT_DRAFT_TYPES);
@@ -99,41 +83,13 @@ export function isAgentDraft(value: unknown): value is AgentDraft {
   );
 }
 
-const MODEL_TIMEOUT_MS = 180_000;
-
 export async function agentChat(
   messages: ChatMessage[],
   apiKey: string,
   jsonMode = false,
   dsEnv?: DeepSeekEnv
 ): Promise<{ content: string; usage: { input: number; output: number } }> {
-  const base = dsEnv?.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? FALLBACK_BASE;
-  const model = dsEnv?.model ?? process.env.DEEPSEEK_MODEL ?? FALLBACK_MODEL;
-  const res = await fetch(`${base}/v1/chat/completions`, {
-    method: "POST",
-    // Bounded so a stalled provider cannot hold a cron run until the
-    // platform kills it; generous because high-effort reasoning is slow.
-    signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.3,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      reasoning_effort: "high",
-      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`DeepSeek ${res.status}: ${text}`);
-  }
-
-  const data = (await res.json()) as ChatResponse;
+  const data = await requestChat(messages, apiKey, jsonMode, dsEnv, { temperature: 0.3, maxTokens: 2000 });
   const content = data.choices[0]?.message?.content ?? "";
   const usage = {
     input: data.usage?.prompt_tokens ?? 0,
@@ -299,26 +255,37 @@ export async function getAgentEnv(): Promise<CommunityAgentEnv> {
  * reply) reopens the identity; see `resolutionCovers`.
  */
 export async function saveDraft(
-  kv: KVNamespace | undefined,
+  stores: DraftClaimStores,
   draft: AgentDraft,
-  sourceUpdatedAt?: string
+  options: { sourceUpdatedAt?: string; digest?: WeeklyDigestRecord } = {}
 ): Promise<boolean> {
+  const kv = stores.CURATED_KV;
   if (!kv) return false;
   const key = draftKey(draft.type, draft.id);
-  const resolution = await getDraftResolution(kv, draft.type, draft.id);
-  if (resolution) {
-    if (resolutionCovers(resolution, sourceUpdatedAt)) return false;
-    // Reopened by new activity. Clear the marker first: if the put below
-    // then fails, the old posted draft still blocks a redraft, which is the
-    // safe side.
-    await clearDraftResolution(kv, draft.type, draft.id);
-  } else {
-    // A posted draft without a marker predates the markers; keep it.
-    const existing = await getDraft(kv, key);
-    if (existing?.posted) return false;
+  const { digest, sourceUpdatedAt } = options;
+  if (digest && (draft.type !== "digest" || digest.weekId !== draft.id || digest.approved !== false)) {
+    throw new Error("Invalid staged digest");
   }
-  await kv.put(key, JSON.stringify(draft), { expirationTtl: 60 * 60 * 24 * 30 }); // 30 days
-  return true;
+  const result = await claimDraft(stores, draft.type, draft.id, "generate");
+  if (!result.ok) return false;
+  try {
+    const resolution = await getDraftResolution(kv, draft.type, draft.id);
+    if (resolution ? resolutionCovers(resolution, sourceUpdatedAt) : (await getDraft(kv, key))?.posted) {
+      return false;
+    }
+    const serialized = JSON.stringify(draft);
+    const lock = result.claim.lock;
+    if (!lock) throw new Error("Draft generation requires DRAFT_CLAIM_LOCK");
+    await lock.act({ op: "remember-draft", token: result.claim.token, revision: await reviewedBodyHash(serialized) });
+    await kv.put(key, serialized, { expirationTtl: 60 * 60 * 24 * 30 });
+    if (digest) {
+      await kv.put(digestRecordKey(draft.id), JSON.stringify(digest), { expirationTtl: DIGEST_RECORD_TTL_SEC });
+    }
+    if (resolution) await clearDraftResolution(kv, draft.type, draft.id);
+    return true;
+  } finally {
+    await releaseDraftClaim(kv, result.claim).catch(() => undefined);
+  }
 }
 
 // --- Draft resolution markers ---
@@ -406,6 +373,7 @@ export interface DraftClaim {
   key: string;
   token: string;
   lock?: DraftClaimLockStub;
+  revision?: string;
 }
 
 /**
@@ -481,7 +449,8 @@ export async function claimDraft(
     const lock = ns.get(ns.idFromName(key));
     const granted = await lock.act({ op: "claim", token, action, leaseMs: POSTING_CLAIM_TTL_SEC * 1000 });
     if (!granted.ok) return { ok: false, reason: "held", holder: granted.holder };
-    const claim: DraftClaim = { key, token, lock };
+    const claim: DraftClaim = { key, token, lock, revision: granted.revision };
+    if (action === "generate") return { ok: true, claim };
     const drop = () => lock.act({ op: "release", token, holdMs: 0 }).catch(() => undefined);
     const resolution = await getDraftResolution(kv, type, id).catch(async (e) => {
       await drop();
@@ -494,6 +463,7 @@ export async function claimDraft(
     return { ok: true, claim };
   }
 
+  if (action === "generate") throw new Error("Draft generation requires DRAFT_CLAIM_LOCK");
   if (!kv) return { ok: true, claim: { key: "", token } };
   const visible = await kv.get(key);
   if (visible) return { ok: false, reason: "held", holder: claimHolder(visible) };
@@ -647,13 +617,14 @@ export function isPublishedDigest(value: unknown): value is WeeklyDigestRecord {
     typeof d.titleZh === "string" &&
     typeof d.summaryEn === "string" &&
     typeof d.summaryZh === "string" &&
-    typeof d.generatedAt === "string" &&
-    Array.isArray(d.sections) &&
+    typeof d.generatedAt === "string" && Number.isFinite(Date.parse(d.generatedAt)) &&
+    Array.isArray(d.sections) && d.sections.length <= 16 &&
     d.sections.every(
       (s: unknown) =>
         !!s &&
         typeof (s as { heading?: unknown }).heading === "string" &&
         Array.isArray((s as { items?: unknown }).items) &&
+        (s as { items: unknown[] }).items.length <= 32 &&
         (s as { items: unknown[] }).items.every((i) => typeof i === "string")
     )
   );

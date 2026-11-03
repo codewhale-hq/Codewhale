@@ -5,6 +5,7 @@ vi.mock("./community-agent", async (importOriginal) => {
   return { ...actual, agentChat: vi.fn() };
 });
 
+import { FakeDraftClaimLock } from "./draft-claim-lock.fake";
 import { runLinkCheck, runSemanticDrift, watchDraftId } from "./content-watch";
 import { agentChat, deleteDraft, draftStorageKey, markDraftResolved, type AgentDraft } from "./community-agent";
 
@@ -14,6 +15,7 @@ function createFakeKV() {
   const store = new Map<string, string>();
   return {
     store,
+    lock: new FakeDraftClaimLock(),
     async get(key: string): Promise<string | null> {
       return store.get(key) ?? null;
     },
@@ -70,7 +72,7 @@ describe("runLinkCheck draft identity", () => {
   });
 
   it("creates a linkcheck draft under the canonical key on first run", async () => {
-    const result = await runLinkCheck({ CURATED_KV: kv });
+    const result = await runLinkCheck({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: kv.lock });
 
     expect(result.ok).toBe(true);
     expect(result.broken).toBe(1);
@@ -86,8 +88,8 @@ describe("runLinkCheck draft identity", () => {
   });
 
   it("creates no duplicate when the same breakage is seen again", async () => {
-    await runLinkCheck({ CURATED_KV: kv });
-    const second = await runLinkCheck({ CURATED_KV: kv });
+    await runLinkCheck({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: kv.lock });
+    const second = await runLinkCheck({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: kv.lock });
 
     expect(second.broken).toBe(1); // still broken…
     expect(draftEntries(kv)).toHaveLength(1); // …but not re-drafted
@@ -97,7 +99,7 @@ describe("runLinkCheck draft identity", () => {
 describe("runSemanticDrift draft identity", () => {
   let kv: FakeKV;
 
-  const env = () => ({ CURATED_KV: kv, DEEPSEEK_API_KEY: "test-key" });
+  const env = () => ({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: kv.lock, DEEPSEEK_API_KEY: "test-key" });
 
   function mockSources() {
     vi.stubGlobal(

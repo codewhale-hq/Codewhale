@@ -92,8 +92,11 @@ function Get-UpdatedUserPath {
         if ($containsEntry) {
             return $Current
         }
-        if ($Current.Length -eq 0 -or $Current.EndsWith(';')) {
-            return "$Current$RequestedEntry"
+        if ($Current.Length -eq 0) {
+            return $RequestedEntry
+        }
+        if ($Current.EndsWith(';')) {
+            return "$Current$RequestedEntry;"
         }
         return "$Current;$RequestedEntry"
     }

@@ -3,7 +3,7 @@
 //! Unicode approximations for terminal display.
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn is_escaped(bytes: &[u8], idx: usize) -> bool {
     let mut slashes = 0;
@@ -44,18 +44,31 @@ fn find_math_end(text: &str) -> Option<(usize, bool)> {
             }
         }
     } else if b.starts_with(b"$") && !b.starts_with(b"$$") {
+        if b.get(1).is_some_and(u8::is_ascii_whitespace) {
+            return None;
+        }
         for (j, &byte) in b[1..].iter().enumerate() {
             if byte == b'{' {
                 continue;
             }
+            if byte == b'\n' {
+                return None;
+            }
             let i = j + 1;
-            if byte == b'$'
-                && !is_escaped(b, i)
-                && !b
-                    .get(i.wrapping_sub(1))
-                    .is_some_and(u8::is_ascii_whitespace)
-                && !b.get(i + 1).is_some_and(u8::is_ascii_digit)
+            if byte != b'$' || is_escaped(b, i) {
+                continue;
+            }
+            let prev = text[..i].chars().next_back().unwrap_or(' ');
+            let next = b.get(i + 1).copied().unwrap_or(b' ');
+            if next == b'{'
+                || (next.is_ascii_alphanumeric()
+                    && !prev.is_ascii_alphanumeric()
+                    && !matches!(prev, ')' | ']' | '}')
+                    && (prev.is_ascii() || prev.width() == Some(2)))
             {
+                return None;
+            }
+            if !prev.is_ascii_whitespace() && !next.is_ascii_digit() {
                 return Some((i, false));
             }
         }
@@ -878,28 +891,30 @@ fn render_latex_to_string(latex: &str) -> String {
                     // --- Brackets ---
                     "left" | "bigl" | "Bigl" | "biggl" | "Biggl" => {
                         // Consume the next token (bracket/pipe/dot) and output it
-                        let after = &input[total_cmd_end..].trim_start();
-                        if let Some(next) = after.chars().next() {
+                        let after = &input[total_cmd_end..];
+                        let delimiter = after.trim_start();
+                        if let Some(next) = delimiter.chars().next() {
                             if next == '.' {
                                 // \left. 闁?invisible delimiter, skip
                             } else {
                                 out.push(next);
                             }
-                            let skip = after.len() - after.trim_start().len() + next.len_utf8();
+                            let skip = after.len() - delimiter.len() + next.len_utf8();
                             pos = total_cmd_end + skip;
                         } else {
                             pos = total_cmd_end;
                         }
                     }
                     "right" | "bigr" | "Bigr" | "biggr" | "Biggr" => {
-                        let after = &input[total_cmd_end..].trim_start();
-                        if let Some(next) = after.chars().next() {
+                        let after = &input[total_cmd_end..];
+                        let delimiter = after.trim_start();
+                        if let Some(next) = delimiter.chars().next() {
                             if next == '.' {
                                 // \right. 闁?invisible delimiter, skip
                             } else {
                                 out.push(next);
                             }
-                            let skip = after.len() - after.trim_start().len() + next.len_utf8();
+                            let skip = after.len() - delimiter.len() + next.len_utf8();
                             pos = total_cmd_end + skip;
                         } else {
                             pos = total_cmd_end;
@@ -907,12 +922,11 @@ fn render_latex_to_string(latex: &str) -> String {
                     }
                     "big" | "Big" | "bigg" | "Bigg" => {
                         // Size modifiers 闁?skip them, the next token is what matters
-                        let after = &input[total_cmd_end..].trim_start();
-                        if let Some(next) = after.chars().next() {
+                        let after = &input[total_cmd_end..];
+                        let delimiter = after.trim_start();
+                        if let Some(next) = delimiter.chars().next() {
                             out.push(next);
-                            pos = total_cmd_end
-                                + (after.len() - after.trim_start().len())
-                                + next.len_utf8();
+                            pos = total_cmd_end + (after.len() - delimiter.len()) + next.len_utf8();
                         } else {
                             pos = total_cmd_end;
                         }
@@ -1324,7 +1338,7 @@ fn try_render_env(input: &str) -> Option<(String, usize)> {
             b'}' => depth -= 1,
             _ => {}
         }
-        search_pos += 1;
+        search_pos += remaining_search.chars().next().map_or(1, char::len_utf8);
     }
 
     None

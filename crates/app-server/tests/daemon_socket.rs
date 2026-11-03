@@ -207,7 +207,7 @@ impl BootstrapPublicationFixture {
             recovery,
         )
         .await?;
-        Ok(daemon)
+        Ok(daemon.expect("a private endpoint directory is available on this host"))
     }
 
     fn assert_publication(&self, bytes: &[u8]) {
@@ -1069,6 +1069,7 @@ async fn canonical_cli_scoped_resume_fork_keep_exact_owner_workers_and_refuse_wr
     )
     .await
     .unwrap();
+    let daemon = daemon.expect("a private endpoint directory is available on this host");
     let shutdown = daemon.shutdown_handle();
     let socket = tokio::spawn(daemon.serve());
     let selection = codewhale_app_server::ThreadControlSelection {

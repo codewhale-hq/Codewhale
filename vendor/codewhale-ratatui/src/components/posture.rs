@@ -622,7 +622,7 @@ impl<'a> MetricsLine<'a> {
         }
     }
 
-    /// Geometry for all surviving readings. Only model and context acquire
+    /// Geometry for all surviving readings. Model, context and update acquire
     /// hover styling; hosts choose which readings dispatch an action.
     /// Use the same clipped area as painting when the buffer is smaller.
     #[must_use]
@@ -695,8 +695,10 @@ impl Paint for MetricsLine<'_> {
                 put(area, buf, x, ITEM_JOIN, theme.fg(Role::Dim));
                 x += text::width(ITEM_JOIN);
             }
-            let hovered = matches!(segment.kind, MetricKind::Model | MetricKind::Context)
-                && self.hovered == Some(segment.kind);
+            let hovered = matches!(
+                segment.kind,
+                MetricKind::Model | MetricKind::Context | MetricKind::Update
+            ) && self.hovered == Some(segment.kind);
             let style = if hovered {
                 theme
                     .fg(segment.role)

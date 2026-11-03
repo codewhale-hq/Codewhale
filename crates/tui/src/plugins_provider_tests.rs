@@ -135,7 +135,7 @@ fn reviewed_provider_registration_preserves_collisions_and_revokes_existing_rout
         // First use starts from an empty document, with no provider table.
         let identity = config.resolve_provider_pin_identity("gateway").unwrap();
         let mut doc = toml_edit::DocumentMut::new();
-        crate::route_preferences::set_provider_model_document(
+        codewhale_engine::route_preferences::set_provider_model_document(
             &mut doc,
             &identity,
             "selected-model",
@@ -151,7 +151,7 @@ fn reviewed_provider_registration_preserves_collisions_and_revokes_existing_rout
                 .as_deref(),
             Some("selected-model")
         );
-        crate::route_preferences::persist_provider_selection(
+        codewhale_engine::route_preferences::persist_provider_selection(
             Some(&selection_path),
             &identity,
             Some("selected-model"),

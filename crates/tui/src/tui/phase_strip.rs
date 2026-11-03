@@ -1140,14 +1140,16 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         })
         .and_then(|(text, ink)| fit_notice(&text, notice_budget).map(|fitted| (fitted, ink)))
         .or_else(|| {
-            let ink = if app.remote_control.status() == crate::remote_control::Status::Failed {
-                ChromeInk::Failure
+            if app.remote_control.status() == crate::remote_control::Status::Failed {
+                let notice = format!("/rc status · {}", tr(app.ui_locale, MessageId::PhaseFailed));
+                fit_notice(&notice, notice_budget)
+                    .or_else(|| fit_notice("/rc status", notice_budget))
+                    .map(|text| (text, ChromeInk::Failure))
             } else {
-                ChromeInk::Info
-            };
-            app.remote_control
-                .status_word()
-                .map(|word| (format!("/rc {word}"), ink))
+                app.remote_control
+                    .status_word()
+                    .map(|word| (format!("/rc {word}"), ChromeInk::Info))
+            }
         });
 
     let (turn_clock, session_clock) = working_clock(app, phase, &phase_label);

@@ -25,10 +25,12 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
     append_host_owner_report(
         &Presentation(Locale::En),
         &mut output,
-        &crate::extension_host::OwnerReport {
-            state: Some(crate::extension_host::registry::OwnerState::Failed(
-                "\u{1b}[31m<script>".into(),
-            )),
+        &codewhale_engine::extension_host::OwnerReport {
+            state: Some(
+                codewhale_engine::extension_host::registry::OwnerState::Failed(
+                    "\u{1b}[31m<script>".into(),
+                ),
+            ),
             tools: vec!["[tool](https://example.invalid)".into()],
             diagnostics: vec!["\n# approved\u{202e}".into()],
         },
@@ -39,14 +41,14 @@ fn extension_owner_report_escapes_every_plugin_controlled_field() {
         "[tool](https://example.invalid)",
         "\n# approved\u{202e}",
     ] {
-        assert!(output.contains(&escape_review_text(value)));
+        assert!(output.contains(&escape_review_text(value, ReviewTextContext::Prose)));
         assert!(!output.contains(value));
     }
     let mut localized = String::new();
     append_host_owner_report(
         &Presentation(Locale::ZhHans),
         &mut localized,
-        &crate::extension_host::OwnerReport {
+        &codewhale_engine::extension_host::OwnerReport {
             state: None,
             tools: vec![],
             diagnostics: vec![],
@@ -69,7 +71,10 @@ fn plugin_config_summary_lists_keys_never_values_and_escapes_them() {
     assert!(output.contains("[plugins.\"greeter\".config]"), "{output}");
     assert!(output.contains("values not shown"));
     assert!(output.contains("greeting"));
-    assert!(output.contains(&escape_review_text("\u{1b}[31mkey")));
+    assert!(output.contains(&escape_review_text(
+        "\u{1b}[31mkey",
+        ReviewTextContext::Prose
+    )));
     assert!(!output.contains('\u{1b}'));
 
     let mut refused = String::new();
@@ -471,9 +476,19 @@ fn mcp_review_discloses_host_authority_and_names_without_secret_values() {
     assert!(review.contains("bearer_env=REMOTE\\_TOKEN"));
     assert!(review.contains("redirects=same-origin-only"));
     assert!(review.contains("Qualified skills: [none]"));
-    assert!(review.contains("#2 value=\"--mode=worker\""));
-    assert!(review.contains("#3 value=\"-e\""));
-    assert!(review.contains("#4 value=\"console.log('ready')\""));
+    for (position, expected) in [(2, "--mode=worker"), (3, "-e"), (4, "console.log('ready')")] {
+        let prefix = format!("#{position} value=");
+        let value = review
+            .split(prefix.as_str())
+            .nth(1)
+            .expect("reviewed argv position");
+        let actual = serde_json::Deserializer::from_str(value)
+            .into_iter::<String>()
+            .next()
+            .expect("reviewed JSON value")
+            .expect("lossless reviewed argv string");
+        assert_eq!(actual, expected);
+    }
     assert!(review.contains("oauth=disabled"));
 }
 

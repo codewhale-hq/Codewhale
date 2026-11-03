@@ -112,19 +112,37 @@ case "$BIN_DIR" in
     /*) ;;
     *) echo "ERROR: PREFIX must be an absolute user path" >&2; exit 1 ;;
 esac
+case "/$BIN_DIR/" in
+    */./*|*/../*) echo "ERROR: PREFIX must not contain . or .. path components" >&2; exit 1 ;;
+esac
 [[ ! -L "$BIN_DIR" ]] || { echo "ERROR: $BIN_DIR is a symlink; choose a fresh PREFIX" >&2; exit 1; }
-mkdir -p "$BIN_DIR"
-BIN_DIR="$(cd -P "$BIN_DIR" && pwd)"
+preflight_dir="$BIN_DIR"
+install_suffix=""
+while [[ ! -d "$preflight_dir" ]]; do
+    [[ ! -e "$preflight_dir" && ! -L "$preflight_dir" ]] || { echo "ERROR: not a directory: $preflight_dir" >&2; exit 1; }
+    install_suffix="/$(basename "$preflight_dir")$install_suffix"
+    preflight_dir="$(dirname "$preflight_dir")"
+done
+preflight_dir="$(cd -P "$preflight_dir" && pwd)"
+BIN_DIR="$preflight_dir$install_suffix"
 case "$BIN_DIR/" in
-    /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/nix/store/*|/gnu/store/*|*/node_modules/*|*/Cellar/*|*/.linuxbrew/*|*/linuxbrew/*|*/.cargo/bin/*)
+    /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/nix/store/*|/gnu/store/*|*/node_modules/*|*/Cellar/*|*/.linuxbrew/*|*/linuxbrew/*|*/.cargo/bin/*|/opt/homebrew/bin/*|/usr/local/bin/*|/opt/local/bin/*)
         echo "ERROR: refusing managed/system directory $BIN_DIR; choose a fresh user PREFIX" >&2
         exit 1
         ;;
 esac
-[[ -w "$BIN_DIR" ]] || { echo "ERROR: $BIN_DIR is not writable; choose a user PREFIX (no sudo)" >&2; exit 1; }
-for cargo_receipt in "$BIN_DIR/../.crates.toml" "$BIN_DIR/../.crates2.json"; do
+[[ -O "$preflight_dir" && -w "$preflight_dir" ]] || { echo "ERROR: $preflight_dir must be a writable directory owned by you (no sudo)" >&2; exit 1; }
+if [[ -n "$(find "$preflight_dir" -prune \( -perm -020 -o -perm -002 \) -print)" ]]; then
+    echo "ERROR: $preflight_dir is writable by its group or others; choose a private PREFIX" >&2
+    exit 1
+fi
+for cargo_receipt in "$(dirname "$BIN_DIR")/.crates.toml" "$(dirname "$BIN_DIR")/.crates2.json"; do
     [[ ! -e "$cargo_receipt" && ! -L "$cargo_receipt" ]] || { echo "ERROR: Cargo install metadata beside this directory; choose a fresh PREFIX" >&2; exit 1; }
 done
+
+(umask 077; mkdir -p "$BIN_DIR")
+[[ ! -L "$BIN_DIR" ]] || { echo "ERROR: $BIN_DIR changed to a symlink" >&2; exit 1; }
+BIN_DIR="$(cd -P "$BIN_DIR" && pwd)"
 
 check_destination() {
     local src="$1" dst="$2" mode="${3:-0755}"

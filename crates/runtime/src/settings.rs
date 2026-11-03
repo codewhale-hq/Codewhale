@@ -2416,18 +2416,89 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
         // is the native existing-file replacement operation and also preserves
         // the destination's ACLs and attributes.
         let mut temporary = tmp.into_temp_path();
-        replace_existing_settings_file(path, &temporary)
-            .with_context(|| format!("Failed to write settings to {}", path.display()))?;
-        // ReplaceFileW consumed the temporary pathname. Do not ask TempPath to
-        // clean up that now-nonexistent source when it drops.
-        temporary.disable_cleanup(true);
-        return Ok(());
+        match replace_existing_settings_file(path, &temporary) {
+            Ok(()) => {
+                // ReplaceFileW consumed the temporary pathname. Do not ask
+                // TempPath to clean up that now-nonexistent source on drop.
+                temporary.disable_cleanup(true);
+                return Ok(());
+            }
+            // A directory that refuses every rename — Codewhale's own home is
+            // one of them on this machine — will refuse this call forever, so a
+            // save that only ever replaces can never land. Rewrite in place
+            // instead: not atomic, but a settings file that saves is worth more
+            // than one that reports 1175 on every toggle.
+            Err(error) if settings_replace_is_transient(&error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "settings replacement refused; rewriting the file in place"
+                );
+                temporary.disable_cleanup(true);
+                drop(temporary);
+                rewrite_settings_in_place(path, body)?;
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to write settings to {}", path.display()));
+            }
+        }
     }
 
     tmp.persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("Failed to write settings to {}", path.display()))?;
     Ok(())
+}
+
+/// Last-resort delivery for `settings.toml`: rewrite it without a rename.
+///
+/// Deliberately not atomic — an interruption between truncate and the last byte
+/// can leave a partial document — so it runs only after every replacing call
+/// has been refused. `Settings::load_persisted` already tolerates a corrupt
+/// document by falling back to defaults with `load_error` set, so the worst case
+/// here is recoverable, while the alternative is a setting that never saves.
+#[cfg(windows)]
+fn rewrite_settings_in_place(path: &Path, body: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("Failed to open {} for an in-place write", path.display()))?;
+    file.write_all(body)
+        .with_context(|| format!("Failed to rewrite settings at {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("Failed to sync settings at {}", path.display()))?;
+    Ok(())
+}
+
+/// How many times a refused replacement is attempted before the error surfaces.
+#[cfg(windows)]
+const SETTINGS_REPLACE_ATTEMPTS: u32 = 6;
+
+/// Backoff step; attempt *n* sleeps `n * step`, so the last wait is 250ms and
+/// the whole budget is 750ms. A `settings.toml` save is a user action (a mode
+/// toggle, a `/config ... --save`), so it can afford to outlast a scanner or a
+/// second instance holding the file for a moment; it cannot afford to hang.
+#[cfg(windows)]
+const SETTINGS_REPLACE_RETRY_STEP_MS: u64 = 50;
+
+/// Whether a refused `ReplaceFileW` is worth retrying.
+///
+/// The destination being held open — by another Codewhale instance's reader, a
+/// virus scanner, or an editor's preview pane — is momentary, and every code
+/// below says exactly that: 5 `ERROR_ACCESS_DENIED`, 32
+/// `ERROR_SHARING_VIOLATION`, 33 `ERROR_LOCK_VIOLATION` and 1175
+/// `ERROR_UNABLE_TO_DELETE_FILE`, the one `ReplaceFileW` raises when it cannot
+/// displace the destination it must delete first. A permission bit or a full
+/// disk is not momentary and must surface at once.
+#[cfg(windows)]
+fn settings_replace_is_transient(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32 | 33 | 1175))
 }
 
 #[cfg(windows)]
@@ -2443,31 +2514,45 @@ fn replace_existing_settings_file(path: &Path, replacement: &Path) -> std::io::R
 
     let path_wide = wide_path(path);
     let replacement_wide = wide_path(replacement);
-    // SAFETY: both paths are NUL-terminated and live; reserved params are null.
-    unsafe {
-        // NamedTempFile marks its source with the temporary caching hint.
-        // Clear it before publication, matching tempfile's persistence path.
-        if SetFileAttributesW(replacement_wide.as_ptr(), FILE_ATTRIBUTE_NORMAL) == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+    let mut attempt: u32 = 0;
+    loop {
+        // SAFETY: both paths are NUL-terminated and live; reserved params are null.
+        let error = unsafe {
+            // NamedTempFile marks its source with the temporary caching hint.
+            // Clear it before publication, matching tempfile's persistence path.
+            // A refusal here is about the *source*, so it is never retried: the
+            // retry below exists to outlast a held *destination*.
+            if SetFileAttributesW(replacement_wide.as_ptr(), FILE_ATTRIBUTE_NORMAL) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
 
-        if ReplaceFileW(
-            path_wide.as_ptr(),
-            replacement_wide.as_ptr(),
-            std::ptr::null(),
-            0,
-            std::ptr::null(),
-            std::ptr::null(),
-        ) == 0
-        {
+            if ReplaceFileW(
+                path_wide.as_ptr(),
+                replacement_wide.as_ptr(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+            ) != 0
+            {
+                return Ok(());
+            }
+
             let error = std::io::Error::last_os_error();
             // Restore the hint so TempPath retains its normal cleanup behavior
             // when replacement fails and the source still exists.
             let _ = SetFileAttributesW(replacement_wide.as_ptr(), FILE_ATTRIBUTE_TEMPORARY);
+            error
+        };
+
+        attempt += 1;
+        if attempt >= SETTINGS_REPLACE_ATTEMPTS || !settings_replace_is_transient(&error) {
             return Err(error);
         }
+        std::thread::sleep(std::time::Duration::from_millis(
+            u64::from(attempt) * SETTINGS_REPLACE_RETRY_STEP_MS,
+        ));
     }
-    Ok(())
 }
 
 /// Per-settings-path transaction mutexes.
@@ -3022,6 +3107,31 @@ fn env_truthy(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused `ReplaceFileW` is retried only when the destination is being
+    /// held, never when the platform is refusing the write itself.
+    ///
+    /// 1175 is the one this module was reported against: `ReplaceFileW` cannot
+    /// displace a destination that another handle has open without
+    /// `FILE_SHARE_DELETE`, so `/config pet_mode --save` answered
+    /// "无法删除要被替换的文件。(os error 1175)" for a write it could have made a
+    /// moment later.
+    #[cfg(windows)]
+    #[test]
+    fn only_a_held_destination_is_retried() {
+        for code in [5, 32, 33, 1175] {
+            assert!(
+                settings_replace_is_transient(&std::io::Error::from_raw_os_error(code)),
+                "os error {code} is contention and must be retried"
+            );
+        }
+        for code in [2, 3, 112, 87] {
+            assert!(
+                !settings_replace_is_transient(&std::io::Error::from_raw_os_error(code)),
+                "os error {code} is not contention and must surface at once"
+            );
+        }
+    }
 
     /// The shared guard, under this module's historical name.
     ///

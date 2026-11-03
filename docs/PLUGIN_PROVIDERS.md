@@ -45,8 +45,8 @@ manifest or capability requires a fresh review; start a new runtime after
 changing declarations.
 
 Adding provider authority advances the activation policy to v5. With the
-extension host enabled, policy v7 also permits namespaced aliases for commands
-that collide with built-in names. Receipts from the previous policy require an
+extension host enabled, policy v8 permits namespaced aliases for commands
+that collide with built-in names and Engine-brokered read-only Git review scopes. Receipts from the previous policy require an
 explicit review again, including bundles without provider declarations. An
 old review is never silently upgraded.
 

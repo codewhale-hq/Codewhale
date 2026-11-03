@@ -163,7 +163,7 @@ MCP 工具以 `mcp_<server>_<tool>` 暴露，使用与内置工具相同的审�
 运行 `codewhale --help` 获取完整的规范列表。常见标志：
 
 - `-p, --prompt <TEXT>`：一次性提示模式（打印后退出）
-- `codewhale exec --auto --output-format stream-json <PROMPT>`：运行带工具的非交互式智能体，并为 harness 和后端封装层每行输出一个 JSON 对象。`--auto` 默认启用 Full Access（完全访问；没有 Codewhale shell 沙箱，开启信任模式）；加上 `--sandbox workspace-write` 可保留 shell 沙箱和文件工具的工作区限制，并关闭信任模式。除 `danger-full-access` 外的任何 `--sandbox`（或配置中对应的 `sandbox_mode`）都会保持信任模式关闭；`external-sandbox` 依赖你自行提供的隔离。向模型提供工具的 exec 运行会在所有输出格式下保存。退出码：`0` 表示成功，`1` 表示真正的任务/智能体失败，`75`（`EX_TEMPFAIL`）表示回合因可重试的基础设施故障而结束（所有会话内重试都用尽之后，提供商/传输层出现 `network`/`timeout`），这样 harness 就能把可重试的基础设施类退出与任务失败区分开；流式输出末尾 `metadata` 事件中的 `error_category` 携带同样的分类
+- `codewhale exec --auto --output-format stream-json <PROMPT>`：运行带工具的非交互式智能体，并为 harness 和后端封装层每行输出一个 JSON 对象。`--auto` 默认启用 Full Access（完全访问；没有 Codewhale shell 沙箱，开启信任模式）；加上 `--sandbox workspace-write` 可保留 shell 沙箱和文件工具的工作区限制，并关闭信任模式。除 `danger-full-access` 外的任何 `--sandbox`（或配置中对应的 `sandbox_mode`）都会保持信任模式关闭；`external-sandbox` 依赖你自行提供的隔离。向模型提供工具的 exec 运行会在所有输出格式下保存。退出码：`0` 表示成功，`1` 表示失败。网络和超时错误不能授权监督进程重复执行命令：原请求可能已经执行，或用户消息可能已经保存。流式输出末尾的 `metadata` 事件保留 `error_category` 供诊断使用，但它不是幂等性回执。
 - 请把 exec 标志放在提示词前。以 `-` 开头的提示词需要先加上 `--`，例如 `codewhale exec -- "- explain this option"`。单独的 `-` 是字面文本。提示词之后出现的已知 exec 长标志（包括 `--flag=value`）会被拒绝，除非它们位于显式的 `--` 之后，此时才按字面提示词文本处理。
 - `codewhale exec --prompt-file <PATH>` / `cat prompt.txt | codewhale exec --prompt-file -`：从文件或 stdin 读取提示词而不是命令行参数，用于超过操作系统单个参数长度上限（Linux 约 128 KiB）的提示词。不能与位置参数形式的提示词同时使用，位置参数 `-` 按字面文本处理；`--parent-death-watch` 占用 stdin，因此 `--prompt-file -` 与它一起使用会被拒绝
 - `codewhale exec --resume <ID|PREFIX> <PROMPT>` / `--session-id <ID|PREFIX>`：非交互式继续一个已保存的会话

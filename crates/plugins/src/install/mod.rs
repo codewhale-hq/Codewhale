@@ -35,11 +35,11 @@
 //! This module owns the source spec, the result types, and the three
 //! verbs. The pipeline stages each live next door:
 //!
-//! * [`stage`] — copy a local bundle into a private `.staging-*` sibling
+//! * `stage` — copy a local bundle into a private `.staging-*` sibling
 //!   (symlink, file-count, and size rejection; manifest validation).
-//! * [`tarball`] — the two-pass archive reader: scan for the single
+//! * `tarball` — the two-pass archive reader: scan for the single
 //!   supported manifest under the size cap, then extract just that subtree.
-//! * [`place`] — atomic rename into `<name>/`, marker write, and the
+//! * `place` — atomic rename into `<name>/`, marker write, and the
 //!   containment guards shared with discovery.
 //!
 //! Fetching is not ours: remote bytes come from

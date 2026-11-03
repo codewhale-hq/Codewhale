@@ -29,12 +29,12 @@ fn translate(presentation: &mut dyn CommandPresentationContext, key: &str) -> St
 /// This is the bounded FEAT-037 temporary action reference: the handler only
 /// constructs data-only `AppAction` payloads and never touches the goal
 /// service, config, or session manager.
-fn to_action_status(status: ProjectGoalStatus) -> crate::tools::goal::GoalStatus {
+fn to_action_status(status: ProjectGoalStatus) -> codewhale_engine::tools::goal::GoalStatus {
     match status {
-        ProjectGoalStatus::Active => crate::tools::goal::GoalStatus::Active,
-        ProjectGoalStatus::Paused => crate::tools::goal::GoalStatus::Paused,
-        ProjectGoalStatus::Complete => crate::tools::goal::GoalStatus::Complete,
-        ProjectGoalStatus::Blocked => crate::tools::goal::GoalStatus::Blocked,
+        ProjectGoalStatus::Active => codewhale_engine::tools::goal::GoalStatus::Active,
+        ProjectGoalStatus::Paused => codewhale_engine::tools::goal::GoalStatus::Paused,
+        ProjectGoalStatus::Complete => codewhale_engine::tools::goal::GoalStatus::Complete,
+        ProjectGoalStatus::Blocked => codewhale_engine::tools::goal::GoalStatus::Blocked,
     }
 }
 
@@ -46,7 +46,7 @@ fn goal_command(
 ) -> CommandResult {
     match arg {
         Some("clear") | Some("reset") => CommandResult::action(AppAction::SetGoalStatus {
-            status: crate::tools::goal::GoalStatus::Active,
+            status: codewhale_engine::tools::goal::GoalStatus::Active,
             clear: true,
         }),
         Some("done") | Some("complete") => {
@@ -207,7 +207,7 @@ fn resume_goal(
     }
 
     CommandResult::action(AppAction::SetGoalStatus {
-        status: crate::tools::goal::GoalStatus::Active,
+        status: codewhale_engine::tools::goal::GoalStatus::Active,
         clear: false,
     })
 }
@@ -314,7 +314,7 @@ mod tests {
     /// the `tool_search` activation path.
     #[test]
     fn bare_goal_brief_names_only_callable_tools() {
-        crate::tools::canonical_action_tests::assert_text_names_only_callable_tools(
+        codewhale_engine::tools::canonical_action_test_support::assert_text_names_only_callable_tools(
             "bare /goal brief",
             BARE_GOAL_BRIEF,
         );
@@ -424,7 +424,7 @@ mod tests {
         assert!(matches!(
             paused.action,
             Some(AppAction::SetGoalStatus {
-                status: crate::tools::goal::GoalStatus::Paused,
+                status: codewhale_engine::tools::goal::GoalStatus::Paused,
                 clear: false
             })
         ));
@@ -434,7 +434,7 @@ mod tests {
         assert!(matches!(
             cleared.action,
             Some(AppAction::SetGoalStatus {
-                status: crate::tools::goal::GoalStatus::Active,
+                status: codewhale_engine::tools::goal::GoalStatus::Active,
                 clear: true
             })
         ));
@@ -520,7 +520,7 @@ mod tests {
                 assert!(matches!(
                     resumed.action,
                     Some(AppAction::SetGoalStatus {
-                        status: crate::tools::goal::GoalStatus::Active,
+                        status: codewhale_engine::tools::goal::GoalStatus::Active,
                         clear: false
                     })
                 ));

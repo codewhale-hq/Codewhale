@@ -24,8 +24,8 @@ use codewhale_lane::control::operations_for_domain;
 use codewhale_lane::{ControlDomain, ControlOperation, ControlSurface};
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::fleet::control::execute_fleet_control;
 use crate::tui::app::{App, AppAction};
+use codewhale_engine::fleet::control::execute_fleet_control;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_runtime::config::Config;
 
@@ -89,7 +89,7 @@ fn split_verb(arg: Option<&str>) -> Option<(&str, Option<&str>)> {
 }
 
 fn fleet_models_text(app: &App) -> String {
-    use crate::fleet::members::fleet_models;
+    use codewhale_engine::fleet::members::fleet_models;
     let locale = app.ui_locale;
     let models = match fleet_models(&app.workspace) {
         Ok(models) if models.is_empty() => {
@@ -110,7 +110,9 @@ fn fleet_models_text(app: &App) -> String {
     for member in &models {
         let provider = codewhale_config::ProviderKind::parse(&member.provider);
         let facts = provider
-            .and_then(|p| crate::provider_lake::catalog_offering_for_model(p, &member.model))
+            .and_then(|p| {
+                codewhale_engine::provider_lake::catalog_offering_for_model(p, &member.model)
+            })
             .map(|row| {
                 let mut parts = Vec::new();
                 if let Some(cost) = row.cost.as_ref()
@@ -164,7 +166,9 @@ fn provider_id_is_configured(app: &App, config: &Config, provider_id: &str) -> b
     let Ok(identity) = config.resolve_provider_selection_identity(provider_id) else {
         return false;
     };
-    crate::provider_readiness::provider_is_configured_for_active(config, &identity, active)
+    codewhale_engine::provider_readiness::provider_is_configured_for_active(
+        config, &identity, active,
+    )
 }
 
 /// The localized reason `provider` may not enter the team, or `None` when
@@ -191,7 +195,7 @@ pub(crate) fn fleet_catalog_rejection(
     model: &str,
 ) -> Option<String> {
     let known = codewhale_config::ProviderKind::parse(provider)?;
-    let served = crate::provider_lake::all_catalog_models_for_provider(known);
+    let served = codewhale_engine::provider_lake::all_catalog_models_for_provider(known);
     (!served.is_empty() && !served.iter().any(|id| id.eq_ignore_ascii_case(model))).then(|| {
         tr(locale, MessageId::FleetAddModelNotServed)
             .replace("{provider}", provider)
@@ -381,7 +385,7 @@ mod tests {
             "got: {empty:?}"
         );
 
-        crate::fleet::members::add_fleet_model(
+        codewhale_engine::fleet::members::add_fleet_model(
             &workspace,
             "openrouter",
             "z-ai/glm-5.3-flash",
@@ -402,7 +406,7 @@ mod tests {
 
         // A selected team whose file is gone is a broken selection, and
         // `/fleet models` says so instead of "session model only".
-        let selected = crate::fleet::store::resolve_selected_fleet(&workspace)
+        let selected = codewhale_engine::fleet::store::resolve_selected_fleet(&workspace)
             .expect("ok")
             .expect("selected");
         std::fs::remove_file(&selected.path).expect("remove");

@@ -1,8 +1,8 @@
 //! Projection of the existing Runtime owner; no direct provider/tool authority.
 use super::*;
-use crate::runtime_threads::{
-    ExternalApprovalDecision, RuntimeEventRecord, RuntimeTurnStatus, RuntimeTurnStopReason,
-    StartTurnRequest, TurnRecord,
+use codewhale_engine::runtime_threads::{
+    RuntimeEventRecord, RuntimeTurnStatus, RuntimeTurnStopReason, TurnRecord,
+    manager::ExternalApprovalDecision, manager::StartTurnRequest,
 };
 use std::time::Duration;
 struct Permission {
@@ -91,20 +91,56 @@ impl AcpServer {
         {
             Ok(terminal) => terminal,
             Err(error) => {
-                self.interrupt_claimed_turn(&thread_id, &turn.id).await?;
-                let settled = tokio::time::timeout(Duration::from_secs(30), async {
+                if let Err(interrupt) = self.interrupt_claimed_turn(&thread_id, &turn.id).await {
+                    let message = format!(
+                        "ACP projection failed ({error}); Core interruption is unconfirmed ({interrupt}); inspect without replay"
+                    );
+                    return Err(error.context(message));
+                }
+                let settled = match tokio::time::timeout(Duration::from_secs(30), async {
                     loop {
                         let detail = self.runtime.get_thread_detail(&thread_id).await?;
-                        if let Some(record) = detail.turns.into_iter().find(|record| record.id == turn.id && !matches!(record.status, RuntimeTurnStatus::Queued | RuntimeTurnStatus::InProgress)) { return Ok::<_, anyhow::Error>(record); }
+                        if let Some(record) = detail.turns.into_iter().find(|record| {
+                            record.id == turn.id
+                                && !matches!(
+                                    record.status,
+                                    RuntimeTurnStatus::Queued | RuntimeTurnStatus::InProgress
+                                )
+                        }) {
+                            return Ok::<_, anyhow::Error>(record);
+                        }
                         tokio::time::sleep(Duration::from_millis(25)).await;
                     }
-                }).await.map_err(|_| anyhow!("ACP projection failed ({error}); Core cancellation is still unconfirmed, inspect its canonical receipt"))??;
-                self.save_checkpoint(&thread_id, &session_id).await?;
+                })
+                .await
+                {
+                    Ok(Ok(settled)) => settled,
+                    Ok(Err(read)) => {
+                        let message = format!(
+                            "ACP projection failed ({error}); Core terminal receipt unavailable ({read}); inspect without replay"
+                        );
+                        return Err(error.context(message));
+                    }
+                    Err(_) => {
+                        let message = format!(
+                            "ACP projection failed ({error}); Core cancellation is still unconfirmed, inspect its canonical receipt"
+                        );
+                        return Err(error.context(message));
+                    }
+                };
+                if let Err(checkpoint) = self.save_checkpoint(&thread_id, &session_id).await {
+                    let message = format!(
+                        "ACP projection failed ({error}); actual Core terminal is {:?}; checkpoint failed ({checkpoint}); inspect without replay",
+                        settled.status
+                    );
+                    return Err(error.context(message));
+                }
                 claim.armed = false;
-                return Err(anyhow!(
+                let message = format!(
                     "ACP projection failed ({error}); actual Core terminal is {:?}; partial receipts retained",
                     settled.status
-                ));
+                );
+                return Err(error.context(message));
             }
         };
         claim.armed = false;
@@ -186,7 +222,7 @@ impl AcpServer {
         let mut eof = false;
         let mut cancelled = false;
         let mut cancel_deadline: Option<tokio::time::Instant> = None;
-        let mut replay: Option<crate::runtime_threads::RuntimeEventReplay> = None;
+        let mut replay: Option<codewhale_engine::runtime_threads::RuntimeEventReplay> = None;
         let mut replay_batch = VecDeque::new();
         loop {
             if cancel_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
@@ -197,7 +233,15 @@ impl AcpServer {
             tokio::select! {
                 () = async { match cancel_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => return Err(anyhow!("Core cancellation remains nonterminal; ACP cannot report a fabricated cancelled receipt")),
                 line = reader.next_line(), if !eof => {
-                    let Some(line) = line? else {
+                    let line = match line {
+                        Ok(line) => line,
+                        Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                            write_jsonrpc_error(writer, None, -32700, error.to_string()).await?;
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    let Some(line) = line else {
                         eof = true; cancelled = true; projection.permissions.clear(); self.interrupt_claimed_turn(thread, turn).await?;
                         cancel_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(30)); continue;
                     };
@@ -409,7 +453,7 @@ impl AcpServer {
                     permissions.retain(|_, permission| permission.approval_id != id);
                 }
             }
-            crate::runtime_threads::RUNTIME_STORE_FAILURE_EVENT
+            codewhale_engine::runtime_threads::RUNTIME_STORE_FAILURE_EVENT
                 if p.get("terminal").and_then(Value::as_bool) == Some(true) =>
             {
                 return Err(anyhow!(
@@ -447,9 +491,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn acp_full_access_projects_runtime_policy_holds_and_extension_permissions() -> Result<()>
     {
-        use crate::core::engine::{MockApprovalEvent, mock_engine_handle};
-        use crate::core::events::{Event, TurnOutcomeStatus};
-        use crate::core::ops::Op;
+        use codewhale_engine::core::engine::{MockApprovalEvent, mock_engine_handle};
+        use codewhale_engine::core::events::{Event, TurnOutcomeStatus};
+        use codewhale_engine::core::ops::Op;
 
         for (forced, extension) in [(false, false), (true, false), (true, true)] {
             let mut config = fixture_config();
@@ -542,7 +586,10 @@ mod tests {
                         }
                     }
                 );
-                assert_eq!(by, Some(crate::approval_log::ApprovalDecider::Posture));
+                assert_eq!(
+                    by,
+                    Some(codewhale_engine::approval_log::ApprovalDecider::Posture)
+                );
                 assert_eq!(rig.server.runtime.pending_approvals_count(), 0);
             }
             let mut projection = Projection {
@@ -654,11 +701,13 @@ mod tests {
                     model_call: None,
                     name: "write".into(),
                     result: if forced && !extension {
-                        Err(crate::tools::spec::ToolError::permission_denied(
+                        Err(codewhale_engine::tools::spec::ToolError::permission_denied(
                             "fixture forced policy hold",
                         ))
                     } else {
-                        Ok(crate::tools::spec::ToolResult::success("fixture allowed"))
+                        Ok(codewhale_engine::tools::spec::ToolResult::success(
+                            "fixture allowed",
+                        ))
                     },
                 })
                 .await?;
@@ -847,7 +896,7 @@ mod tests {
             1,
             &thread,
             p.turn,
-            crate::runtime_threads::RUNTIME_STORE_FAILURE_EVENT,
+            codewhale_engine::runtime_threads::RUNTIME_STORE_FAILURE_EVENT,
             json!({"terminal":true,"message":"fixture store fault"}),
         );
         let error = rig
@@ -892,7 +941,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn failed_transport_after_completed_write_retains_actual_core_terminal_and_checkpoint()
     -> Result<()> {
-        use crate::llm_client::mock::canned;
+        use codewhale_engine::llm_client::mock::canned;
         let mut config = fixture_config();
         config.yolo = Some(true);
         let mut rig = Rig::new(
@@ -926,7 +975,9 @@ mod tests {
             std::fs::read_to_string(rig.workspace.join("writer-failure.txt"))?,
             "completed"
         );
-        let store = crate::session_manager::SessionManager::new(rig.server.sessions_dir.clone())?;
+        let store = codewhale_engine::session_manager::SessionManager::new(
+            rig.server.sessions_dir.clone(),
+        )?;
         let saved = store.load_session(&id)?;
         assert!(
             saved

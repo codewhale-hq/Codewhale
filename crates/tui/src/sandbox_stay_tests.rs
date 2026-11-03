@@ -3,7 +3,7 @@
 #[cfg(unix)]
 #[test]
 fn sandbox_read_guard_denies_active_and_known_agent_credentials_in_real_file_tool() {
-    use crate::tools::spec::{ToolContext, ToolSpec};
+    use codewhale_engine::tools::spec::{ToolContext, ToolSpec};
     let _env = crate::test_support::lock_test_env();
     let temp = tempfile::tempdir().expect("private fixture");
     let home = temp.path().join("home");
@@ -36,7 +36,7 @@ fn sandbox_read_guard_denies_active_and_known_agent_credentials_in_real_file_too
             let context = ToolContext::new(temp.path());
             for path in denied {
                 let result = runtime.block_on(
-                    crate::tools::file::ReadFileTool
+                    codewhale_engine::tools::file::ReadFileTool
                         .execute(serde_json::json!({"path": path}), &context),
                 );
                 assert!(result.is_err(), "file tool read a credential source");
@@ -45,7 +45,7 @@ fn sandbox_read_guard_denies_active_and_known_agent_credentials_in_real_file_too
             std::fs::write(&safe, "ordinary-readable-setting").unwrap();
             let allowed = runtime
                 .block_on(
-                    crate::tools::file::ReadFileTool
+                    codewhale_engine::tools::file::ReadFileTool
                         .execute(serde_json::json!({"path": safe}), &context),
                 )
                 .expect("ordinary settings remain readable");

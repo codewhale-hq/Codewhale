@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -211,7 +211,7 @@ l’accés i l’actives ([guia](https://github.com/codewhale-hq/codewhale-cu-pl
 | `codewhale` | L’aplicació interactiva de terminal |
 | `codewhale exec "…"` | Una tasca sense la interfície. Per si sol respon sense fer servir eines; `--auto` activa les eines amb Full Access per defecte, `--sandbox workspace-write` les restringeix, i `--output-format stream-json` emet els esdeveniments en streaming com a JSON |
 | `codewhale web` | Una interfície web local a `127.0.0.1` ([guia](../WEB.md)) |
-| `codewhale review --pr N` | Una revisió orientativa d’un pull request de GitHub. No publica res tret que hi afegeixis `--post`; la [GitHub Action](../GITHUB_ACTION.md) executa la mateixa revisió a CI |
+| `codewhale review --pr N` | Una revisió orientativa d’un pull request de GitHub. La [configuració del bot de GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) genera un workflow amb la versió fixada per a revisions automàtiques i `@codewhale review`, amb la teva pròpia clau de model i una identitat d’App opcional |
 | `codewhale app-server --http` | La [Runtime API](../RUNTIME_API.md), una API HTTP local per a fils, esdeveniments, aprovacions i els canvis de fitxers de cada torn |
 | `codewhale serve --acp` | L’Agent Client Protocol sobre stdio, per a editors com ara Zed |
 

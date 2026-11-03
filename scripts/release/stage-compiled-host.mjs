@@ -67,7 +67,7 @@ if (args.includes('--collect')) {
   const closure = json(closureFile)
   const version = option('--version')
   const sourceSha = option('--source-sha')
-  const bundle = join(root, 'crates/tui/extension-host/dist/codewhale-extension-host.mjs')
+  const bundle = join(root, 'crates/engine/extension-host/dist/codewhale-extension-host.mjs')
   const digest = hosts.sha256(readFileSync(bundle))
   const runtimeHash = hosts.sha256(readFileSync(bun))
   const revision = run(bun, ['--revision']).trim()
@@ -119,7 +119,7 @@ if (args.includes('--collect')) {
   if (selectedImage !== binary) copyFileSync(selectedImage, binary)
   if (hosts.sha256(readFileSync(binary)) !== imageHash) throw new Error('compiled image changed during staging')
   if (process.platform !== 'win32') chmodSync(binary, 0o755)
-  const testLog = run(process.execPath, ['--test', '--test-reporter=tap', 'test/compiled-host.test.mjs'], { cwd: join(root, 'crates/tui/extension-host'), env: { ...cleanEnv, CODEWHALE_COMPILED_HOST_TEST_BINARY: binary, CODEWHALE_BUN_TEST_BINARY: bun } })
+  const testLog = run(process.execPath, ['--test', '--test-reporter=tap', 'test/compiled-host.test.mjs'], { cwd: join(root, 'crates/engine/extension-host'), env: { ...cleanEnv, CODEWHALE_COMPILED_HOST_TEST_BINARY: binary, CODEWHALE_BUN_TEST_BINARY: bun } })
   writeFileSync(join(output, 'compiled-host-qualification.log'), testLog)
   const count = (name) => Number(testLog.match(new RegExp(`^# ${name} (\\d+)$`, 'm'))?.[1] ?? -1)
   if (count('pass') !== hosts.compiledMinimum(target) || count('fail') !== 0 || count('skipped') !== 0) throw new Error('compiled-image suite did not run every required case successfully')
@@ -129,7 +129,7 @@ if (args.includes('--collect')) {
   copyFileSync(binary, join(output, names.binary))
   // These are complete runtime + canonical JS dependency notices and complete
   // corresponding source, not a URL-only promise or a fabricated MIT label.
-  writeFileSync(join(output, names.notices), Buffer.concat([readFileSync(notices), Buffer.from('\n\nCodewhale extension host dependencies:\n'), readFileSync(join(root, 'crates/tui/extension-host/dist/LICENSES.txt'))]))
+  writeFileSync(join(output, names.notices), Buffer.concat([readFileSync(notices), Buffer.from('\n\nCodewhale extension host dependencies:\n'), readFileSync(join(root, 'crates/engine/extension-host/dist/LICENSES.txt'))]))
   copyFileSync(source, join(output, names.source))
   const catalog = { schema: 1, version, source_sha: sourceSha, bundle_sha256: digest, hosts: [{
     target, asset: names.binary, sha256: hosts.sha256(readFileSync(binary)),

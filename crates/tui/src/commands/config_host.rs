@@ -7,7 +7,6 @@
 //! and back for the host helpers that still return a TUI `CommandResult`.
 //!
 
-use crate::compaction::CompactionConfig;
 use crate::tui::app::{AppAction, ScreenMode};
 use codewhale_command_contract::config::{
     CommandCapabilityState, CommandCompactionConfig, CommandCompletionSound,
@@ -24,6 +23,7 @@ use codewhale_config::notifications::{
     NotificationMethod, SubagentCompletionNotification,
 };
 use codewhale_config::route::CapabilityState;
+use codewhale_engine::compaction::CompactionConfig;
 use codewhale_runtime::config::SearchProvider;
 
 /// Convert a portable config action to the concrete TUI action it requests.

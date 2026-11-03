@@ -13,12 +13,14 @@
 pub use codewhale_command_contract::elapsed;
 
 pub mod active_workshop;
+pub mod artifacts;
 pub mod audit;
 pub mod browser;
 pub mod child_env;
 pub mod context_budget;
 pub mod continual_harness;
 pub mod credentials;
+pub mod delivery_files;
 pub mod dsh_credentials;
 pub mod external_credentials;
 pub mod fast_hash;
@@ -38,8 +40,11 @@ pub mod prompt_zones;
 pub mod regex_cache;
 pub mod resource_telemetry;
 pub mod retry_status;
+pub mod runtime_control;
+pub mod runtime_log;
 pub mod runtime_policy;
 pub mod safe_label;
+pub mod session_diagnostics;
 pub mod session_tree;
 pub mod skill_state;
 pub mod sleep_guard;
@@ -48,7 +53,9 @@ pub mod startup_trace;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tool_history_repair;
+pub mod tool_output_receipts;
 pub mod turn_budget;
+pub mod working_set;
 pub mod workspace_discovery;
 
 pub const CODEWHALE_MAIN_STACK_BYTES: usize = 32 * 1024 * 1024;
@@ -71,3 +78,5 @@ pub mod config_persistence;
 pub mod oauth;
 
 pub mod settings;
+pub mod workspace_lease;
+pub mod workspace_trust;

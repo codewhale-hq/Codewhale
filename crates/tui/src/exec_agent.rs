@@ -8,7 +8,8 @@
 //! keeps the dispatch site and tests resolving unchanged.
 
 use super::*;
-use crate::core::ops::TurnSpec;
+use codewhale_engine::core::ops::TurnSpec;
+use codewhale_engine::exec_events::ExecAgentEvents;
 
 /// Resolve the headless `exec` model-step ceiling.
 ///
@@ -47,217 +48,16 @@ pub(crate) fn exec_disallowed_tools(disallowed_tools: Option<Vec<String>>) -> Op
     Some(disallowed)
 }
 
-type ExecSettlementProbe = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<crate::core::ops::SubAgentSettlement>> + Send>,
->;
-
 async fn shutdown_exec_engine(
-    handle: &crate::core::engine::EngineHandle,
+    handle: &codewhale_engine::core::engine::EngineHandle,
     deadline: tokio::time::Instant,
-) -> Option<crate::core::engine::EngineRunCompletion> {
+) -> Option<codewhale_engine::core::engine::EngineRunCompletion> {
     tokio::time::timeout_at(deadline, async {
-        let _ = handle.send(crate::core::ops::Op::Shutdown).await;
+        let _ = handle.send(codewhale_engine::core::ops::Op::Shutdown).await;
         handle.wait_run_completion().await
     })
     .await
     .ok()
-}
-
-/// Read the existing Engine stream through the one-shot host's final boundary.
-/// Successful parent receipts remain pending while admitted children or their
-/// completion inbox can still produce another normal Engine turn. This owns
-/// only the deferred output receipt, never child execution or a turn loop.
-pub(crate) struct ExecAgentEvents {
-    handle: crate::core::engine::EngineHandle,
-    deadline: tokio::time::Instant,
-    terminal: Option<crate::core::events::Event>,
-    probe: Option<ExecSettlementProbe>,
-    next_probe_at: tokio::time::Instant,
-    in_flight_usage: codewhale_models::Usage,
-}
-
-impl ExecAgentEvents {
-    pub(crate) fn new(handle: crate::core::engine::EngineHandle, deadline: Instant) -> Self {
-        Self {
-            handle,
-            deadline: deadline.into(),
-            terminal: None,
-            probe: None,
-            next_probe_at: tokio::time::Instant::now(),
-            in_flight_usage: codewhale_models::Usage::default(),
-        }
-    }
-
-    fn stop_settlement(
-        &mut self,
-        status: crate::core::events::TurnOutcomeStatus,
-        error: String,
-    ) -> crate::core::events::Event {
-        use crate::core::events::Event;
-        self.handle
-            .cancel_with_reason(crate::core::engine::CancelReason::External);
-        // Cancellation is out of band; shutdown remains in the existing
-        // Engine mailbox so it also cancels detached session children.
-        let _ = self.handle.try_send(crate::core::ops::Op::Shutdown);
-        self.probe = None;
-        let mut terminal = self.terminal.take().expect("pending parent receipt");
-        if let Event::TurnComplete {
-            status: terminal_status,
-            error: terminal_error,
-            usage,
-            parent_route_usage,
-            routed_usage_dropped_records,
-            ..
-        } = &mut terminal
-        {
-            *terminal_status = status;
-            *terminal_error = Some(error);
-            crate::core::turn::add_usage_to(usage, &self.in_flight_usage);
-            crate::core::turn::add_usage_to(parent_route_usage, &self.in_flight_usage);
-            // The host cannot prove usage settlement after abandoning the
-            // inbox. Keep reported usage and explicitly mark coverage partial.
-            *routed_usage_dropped_records = routed_usage_dropped_records.saturating_add(1);
-        }
-        self.in_flight_usage = codewhale_models::Usage::default();
-        terminal
-    }
-
-    pub(crate) async fn next(&mut self) -> Option<crate::core::events::Event> {
-        use crate::core::events::{Event, TurnOutcomeStatus};
-        // Keep the streamed event on the stack instead of allocating another
-        // box for every token merely to equalize the two small control arms.
-        #[allow(clippy::large_enum_variant)]
-        enum Input {
-            Event(Option<Event>),
-            Probe(Result<crate::core::ops::SubAgentSettlement>),
-            Poll,
-        }
-        loop {
-            if matches!(
-                self.terminal,
-                Some(Event::TurnComplete { status, .. }) if status != TurnOutcomeStatus::Completed
-            ) {
-                return self.terminal.take();
-            }
-            let settling = self.terminal.is_some();
-            if settling && self.handle.is_cancelled() {
-                return Some(self.stop_settlement(
-                    TurnOutcomeStatus::Interrupted,
-                    "Headless exec cancelled while settling children; recorded usage is partial."
-                        .to_string(),
-                ));
-            }
-            if settling && tokio::time::Instant::now() >= self.deadline {
-                return Some(self.stop_settlement(
-                    TurnOutcomeStatus::Failed,
-                    "Headless exec wall-clock budget exhausted while settling children; recorded usage is partial."
-                        .to_string(),
-                ));
-            }
-            if settling && self.probe.is_none() && tokio::time::Instant::now() >= self.next_probe_at
-            {
-                let handle = self.handle.clone();
-                self.probe = Some(Box::pin(
-                    async move { handle.get_subagent_settlement().await },
-                ));
-            }
-            let probing = self.probe.is_some();
-            let wake_at = self.deadline.min(if probing {
-                tokio::time::Instant::now() + Duration::from_millis(250)
-            } else {
-                self.next_probe_at
-            });
-            let input = {
-                let mut events = self.handle.rx_event.write().await;
-                tokio::select! {
-                    biased;
-                    // Drain queued SessionUpdated/TurnComplete events before
-                    // accepting the later actor-owned idle receipt.
-                    event = events.recv() => Input::Event(event),
-                    result = async { self.probe.as_mut().expect("active probe").await }, if probing => Input::Probe(result),
-                    () = tokio::time::sleep_until(wake_at), if settling => Input::Poll,
-                }
-            };
-            match input {
-                Input::Poll => {}
-                Input::Probe(Ok(snapshot)) if snapshot.is_settled() => {
-                    self.probe = None;
-                    return self.terminal.take();
-                }
-                Input::Probe(Ok(_)) => {
-                    self.probe = None;
-                    self.next_probe_at = tokio::time::Instant::now() + Duration::from_millis(250);
-                }
-                Input::Probe(Err(error)) => {
-                    return Some(self.stop_settlement(
-                        TurnOutcomeStatus::Failed,
-                        format!(
-                            "Cannot verify child settlement: {error}; recorded usage is partial."
-                        ),
-                    ));
-                }
-                Input::Event(None) if settling => {
-                    return Some(self.stop_settlement(
-                        TurnOutcomeStatus::Failed,
-                        "Engine event channel closed before child settlement; recorded usage is partial."
-                            .to_string(),
-                    ));
-                }
-                Input::Event(None) => return None,
-                Input::Event(Some(mut event)) => {
-                    match &mut event {
-                        Event::TurnComplete {
-                            usage,
-                            parent_route_usage,
-                            routed_usage_dropped_records,
-                            status,
-                            error,
-                            ..
-                        } => {
-                            if let Some(Event::TurnComplete {
-                                usage: prior_usage,
-                                parent_route_usage: prior_parent_usage,
-                                routed_usage_dropped_records: prior_dropped,
-                                ..
-                            }) = self.terminal.take()
-                            {
-                                crate::core::turn::add_usage_to(usage, &prior_usage);
-                                crate::core::turn::add_usage_to(
-                                    parent_route_usage,
-                                    &prior_parent_usage,
-                                );
-                                *routed_usage_dropped_records =
-                                    routed_usage_dropped_records.saturating_add(prior_dropped);
-                            }
-                            self.in_flight_usage = codewhale_models::Usage::default();
-                            if *status == TurnOutcomeStatus::Completed && error.is_none() {
-                                self.terminal = Some(event);
-                                self.next_probe_at = tokio::time::Instant::now();
-                                continue;
-                            }
-                        }
-                        Event::TurnUsage { usage, .. } => {
-                            crate::core::turn::add_usage_to(&mut self.in_flight_usage, usage);
-                        }
-                        Event::Error { envelope, .. }
-                            if settling && exec_error_event_is_fatal(envelope) =>
-                        {
-                            let terminal = self.stop_settlement(
-                                TurnOutcomeStatus::Failed,
-                                format!(
-                                    "{}; child settlement stopped and recorded usage is partial.",
-                                    envelope.message
-                                ),
-                            );
-                            self.terminal = Some(terminal);
-                        }
-                        _ => {}
-                    }
-                    return Some(event);
-                }
-            }
-        }
-    }
 }
 
 /// Attach the durable automation store headless `exec` inspects.
@@ -286,11 +86,11 @@ impl ExecAgentEvents {
 /// advertising an automation surface it silently cannot serve.
 pub(crate) fn exec_automation_services(
     fleet_authority_active: bool,
-) -> Result<Option<crate::automation_manager::SharedAutomationManager>> {
+) -> Result<Option<codewhale_engine::automation_manager::SharedAutomationManager>> {
     if fleet_authority_active {
         return Ok(None);
     }
-    let service = crate::automation_manager::AutomationManager::default_location()
+    let service = codewhale_engine::automation_manager::AutomationManager::default_location()
         .context("open the automation store for headless exec")?;
     Ok(Some(std::sync::Arc::new(tokio::sync::Mutex::new(service))))
 }
@@ -300,18 +100,15 @@ pub(crate) fn exec_automation_services(
 pub(crate) const ONE_SHOT_TOOL_CALL_NOTICE: &str = "codewhale exec: the model tried to call a tool, but this run offers none, so the tool call was removed from the answer. Re-run with --auto (or --allowed-tools) to let it use tools.";
 
 async fn persist_exec_checkpoint(
-    request: Arc<crate::core::events::SessionCheckpointRequest>,
+    request: Arc<codewhale_engine::core::events::SessionCheckpointRequest>,
     manager: Option<Arc<SessionManager>>,
     session_id: &str,
     workspace: &Path,
     turn_id: Option<&str>,
-    engine: &crate::core::engine::EngineHandle,
+    engine: &codewhale_engine::core::engine::EngineHandle,
     deadline: Instant,
+    source: &mut Option<codewhale_engine::session_manager::SessionWriteReceipt>,
 ) {
-    use crate::core::events::{
-        SessionCheckpointProjection, SessionCheckpointReceipt, SessionCheckpointRequest,
-    };
-
     if turn_id != Some(request.caller.turn_id.as_str()) {
         request.fail("exec session checkpoint does not match its active turn");
         return;
@@ -327,49 +124,46 @@ async fn persist_exec_checkpoint(
     }
     if Instant::now() >= deadline {
         request.fail("exec session checkpoint deadline expired before persistence");
-        engine.cancel_with_reason(crate::core::engine::CancelReason::External);
+        engine.cancel_with_reason(codewhale_engine::core::engine::CancelReason::External);
         return;
     }
     let Some(manager) = manager else {
         request.no_backend();
         return;
     };
+    let Some(captured_source) = source.clone() else {
+        request.fail("exec checkpoint has no admitted original session source");
+        return;
+    };
+    let Some(captured_owner) = request.snapshot.source.clone() else {
+        request.fail("exec checkpoint has no native Engine source");
+        return;
+    };
     let write_request = Arc::clone(&request);
-    let mut writer = tokio::task::spawn_blocking(move || -> Result<SessionCheckpointReceipt> {
-        let snapshot = &write_request.snapshot;
-        let id = persist_exec_session(
-            &snapshot.messages,
-            &snapshot.model,
-            PersistedProviderRoute {
-                kind: &snapshot.model_provider,
-                id: snapshot.model_provider_id.as_deref(),
-            },
-            &snapshot.workspace,
-            &snapshot.system_prompt,
-            Some(&snapshot.session_id),
-            snapshot.total_tokens,
-            None,
-            manager.as_ref(),
-            &[],
-            Some(write_request.as_ref()),
-        )?;
-        let persisted = manager
-            .load_session_snapshot(&id)
-            .context("could not read back exec session checkpoint")?;
-        write_request
-            .validate_prefix(
-                &persisted.metadata.id,
-                &persisted.metadata.workspace,
-                &persisted.messages,
-            )
-            .map_err(anyhow::Error::msg)?;
-        Ok(SessionCheckpointReceipt {
-            persisted_sha256: SessionCheckpointRequest::prefix_hash(&persisted.messages)
-                .map_err(anyhow::Error::msg)?,
-            messages_len: persisted.messages.len(),
-            projection: SessionCheckpointProjection::Exact,
-        })
-    });
+    let mut writer = tokio::task::spawn_blocking(
+        move || -> Result<codewhale_engine::session_manager::SessionPublication> {
+            let snapshot = &write_request.snapshot;
+            let publication = persist_exec_session(
+                &snapshot.messages,
+                &snapshot.model,
+                PersistedProviderRoute {
+                    kind: &snapshot.model_provider,
+                    id: snapshot.model_provider_id.as_deref(),
+                },
+                &snapshot.workspace,
+                &snapshot.system_prompt,
+                Some(&snapshot.session_id),
+                snapshot.total_tokens,
+                None,
+                manager.as_ref(),
+                &[],
+                Some(write_request.as_ref()),
+                &captured_source,
+                &captured_owner,
+            )?;
+            Ok(publication)
+        },
+    );
     let result = tokio::select! {
         biased;
         () = request.withdraw.cancelled() => {
@@ -384,13 +178,16 @@ async fn persist_exec_checkpoint(
         () = tokio::time::sleep_until(deadline.into()) => {
             request.fail("exec session checkpoint deadline expired; its write may have completed");
             request.withdraw.cancel();
-            engine.cancel_with_reason(crate::core::engine::CancelReason::External);
+            engine.cancel_with_reason(codewhale_engine::core::engine::CancelReason::External);
             writer.await
         }
         result = &mut writer => result,
     };
     match result {
-        Ok(Ok(receipt)) => request.succeed(receipt),
+        Ok(Ok(publication)) => {
+            *source = Some(publication.write_receipt());
+            request.succeed(publication.checkpoint_receipt);
+        }
         Ok(Err(error)) => request.fail(format!("exec session checkpoint failed: {error:#}")),
         Err(error) => request.fail(format!("exec session checkpoint writer failed: {error}")),
     }
@@ -407,7 +204,7 @@ pub(crate) async fn run_exec_agent(
     allow_sandbox_elevation: bool,
     explicit_sandbox: Option<&str>,
     json_output: bool,
-    resume_session: Option<session_manager::SavedSession>,
+    resume_session: Option<codewhale_engine::session_manager::SavedSession>,
     force_configured_route: bool,
     output_format: ExecOutputFormat,
     max_turns: u32,
@@ -423,15 +220,17 @@ pub(crate) async fn run_exec_agent(
     // store, and writes the one-shot `--json` receipt shape.
     one_shot: bool,
 ) -> Result<()> {
-    use crate::compaction::CompactionConfig;
-    use crate::core::engine::{EngineConfig, spawn_engine};
-    use crate::core::events::Event;
-    use crate::core::ops::Op;
-    use crate::tools::plan::new_shared_plan_state;
-    use crate::tools::todo::new_shared_todo_list;
     use codewhale_config::AppMode;
+    use codewhale_engine::compaction::CompactionConfig;
+    use codewhale_engine::core::engine::{EngineConfig, spawn_engine};
+    use codewhale_engine::core::events::Event;
+    use codewhale_engine::core::ops::Op;
+    use codewhale_engine::tools::plan::new_shared_plan_state;
+    use codewhale_engine::tools::todo::new_shared_todo_list;
     use codewhale_execpolicy::ApprovalMode;
 
+    let _timing = codewhale_runtime::logging::PhaseTimer::start("exec_total");
+    let startup_timing = codewhale_runtime::logging::PhaseTimer::start("exec_startup");
     ignore_sigpipe_for_headless_exec();
 
     // Withhold `request_user_input`; a headless run has no responder.
@@ -449,7 +248,7 @@ pub(crate) async fn run_exec_agent(
     validate_exec_tool_authority_resume(tool_authority_json.as_deref(), resume_session.is_some())?;
     let fleet_authority = tool_authority_json
         .as_deref()
-        .map(crate::tools::spec::ToolAuthorityEnvelope::from_json)
+        .map(codewhale_engine::tools::spec::ToolAuthorityEnvelope::from_json)
         .transpose()
         .map_err(anyhow::Error::msg)?;
     let fleet_authority_active = fleet_authority.is_some();
@@ -461,7 +260,8 @@ pub(crate) async fn run_exec_agent(
         .map(|authority| authority.shell)
         .unwrap_or_default();
     if let Some(envelope) = fleet_authority {
-        crate::tools::spec::install_process_tool_authority(envelope).map_err(anyhow::Error::msg)?;
+        codewhale_engine::tools::spec::install_process_tool_authority(envelope)
+            .map_err(anyhow::Error::msg)?;
     }
 
     let fleet_capture = match (
@@ -484,6 +284,11 @@ pub(crate) async fn run_exec_agent(
         (None, None) => None,
         _ => anyhow::bail!("incomplete Fleet session capture destination"),
     };
+
+    let mut exec_write_receipt = resume_session
+        .as_ref()
+        .and_then(|saved| saved.write_receipt.clone());
+    let exec_is_fresh = resume_session.is_none();
 
     let exec_session_id = fleet_capture
         .as_ref()
@@ -516,25 +321,31 @@ pub(crate) async fn run_exec_agent(
         ))
     };
     if should_persist_session {
-        open_exec_session_manager()?;
+        let manager = open_exec_session_manager()?;
+        if exec_is_fresh {
+            exec_write_receipt = Some(manager.expect_absent_session(&exec_session_id)?);
+        }
     }
 
     let route = resolve_cli_exec_route(config, model, prompt, force_configured_route).await?;
     let execution_config = config_for_cli_route(config, &route)?;
-    crate::provider_lake::refresh_account_catalog_before_first_request(&execution_config).await;
+    codewhale_engine::provider_lake::refresh_account_catalog_before_first_request(
+        &execution_config,
+    )
+    .await;
     let auto_model = route.auto_model;
     let effective_identity = execution_config
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
     let effective_provider = effective_identity.provider;
     let effective_model = route.model;
-    let validated_route = crate::route_runtime::resolve_runtime_route_for_identity(
+    let validated_route = codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
         &execution_config,
         &effective_identity,
         Some(&effective_model),
     )
     .map_err(anyhow::Error::msg)?
-    .validate_for(crate::route_runtime::RouteErrorSurface::Headless)
+    .validate_for(codewhale_engine::route_runtime::RouteErrorSurface::Headless)
     .map_err(anyhow::Error::msg)?;
     let effective_identity = validated_route.identity.clone();
     let effective_provider_name = effective_identity.key.to_string();
@@ -551,7 +362,8 @@ pub(crate) async fn run_exec_agent(
         "sha256:{}",
         codewhale_runtime::hashing::sha256_hex(prompt.as_bytes())
     );
-    let binary_sha256 = current_binary_sha256();
+    let mut binary_identity =
+        (output_format == ExecOutputFormat::StreamJson).then(start_binary_sha256);
     let approval_posture = if auto_approve { "auto_tools" } else { "ask" }.to_string();
     // The Full Access posture travels in the op's auto_approve/approval_mode
     // fields; modes no longer carry permission.
@@ -565,12 +377,12 @@ pub(crate) async fn run_exec_agent(
             .and_then(ApprovalMode::from_config_value)
             .unwrap_or_default()
     };
-    let turn_sandbox_policy = crate::core::authority::sandbox_policy_for_turn(
+    let turn_sandbox_policy = codewhale_engine::core::authority::sandbox_policy_for_turn(
         mode,
         turn_approval_mode,
         execution_config.sandbox_mode.as_deref(),
         &workspace,
-        crate::core::authority::SandboxNetworkAccess::from_config(
+        codewhale_engine::core::authority::SandboxNetworkAccess::from_config(
             execution_config.sandbox_network_access,
         ),
     );
@@ -580,7 +392,8 @@ pub(crate) async fn run_exec_agent(
             codewhale_sandbox::SandboxPolicy::DangerFullAccess
         );
     let active_route_limits =
-        crate::route_budget::known_route_limits(validated_route.candidate.limits());
+        codewhale_engine::route_budget::known_route_limits(validated_route.candidate.limits());
+    let effective_context_window = validated_route.context_window;
     let max_subagents = if max_subagents
         == config.max_subagents_for_provider(
             &config
@@ -612,7 +425,7 @@ pub(crate) async fn run_exec_agent(
         if codewhale_runtime::settings::Settings::auto_compact_explicitly_configured() {
             settings.auto_compact
         } else {
-            crate::route_budget::auto_compact_default_for_route(
+            codewhale_engine::route_budget::auto_compact_default_for_route(
                 effective_provider,
                 &effective_model,
                 active_route_limits,
@@ -621,17 +434,15 @@ pub(crate) async fn run_exec_agent(
     let compaction = CompactionConfig {
         enabled: auto_compact_enabled,
         model: effective_model.clone(),
-        effective_context_window: Some(crate::route_budget::route_context_window_tokens(
-            effective_provider,
-            &effective_model,
-            active_route_limits,
-        )),
-        token_threshold: crate::route_budget::compaction_threshold_for_route_at_percent(
-            effective_provider,
-            &effective_model,
-            active_route_limits,
-            settings.auto_compact_threshold_percent,
-        ),
+        effective_context_window: Some(validated_route.context_window.tokens),
+        token_threshold:
+            codewhale_engine::route_budget::compaction_threshold_for_route_at_percent_with_window(
+                effective_provider,
+                &effective_model,
+                active_route_limits,
+                Some(validated_route.context_window.tokens),
+                settings.auto_compact_threshold_percent,
+            ),
         summary_instructions: execution_config.compaction_summary_instructions(),
         retained_user_message_tokens: execution_config.compaction_retained_user_message_tokens(),
         ..Default::default()
@@ -654,7 +465,7 @@ pub(crate) async fn run_exec_agent(
         outer_network_access,
         outer_shell_authority,
     );
-    if crate::core::engine::tool_catalog::allowlist_is_native_file_and_shell_only(
+    if codewhale_engine::core::engine::tool_catalog::allowlist_is_native_file_and_shell_only(
         allowed_tools.as_deref(),
     ) {
         engine_features.disable(codewhale_runtime::features::Feature::Mcp);
@@ -673,17 +484,17 @@ pub(crate) async fn run_exec_agent(
     // tool runtime services. Fleet workers never opt in: the narrowed
     // authority envelope does not carry the operator's hook set into a child.
     let exec_hook_executor = (exec_hooks_enabled && !fleet_authority_active).then(|| {
-        let hooks_config = crate::hooks::config::load_with_project_and_plugins(
+        let hooks_config = codewhale_engine::hooks::config::load_with_project_and_plugins(
             execution_config.hooks_config(),
             &workspace,
             Some(engine_plugin_registry.as_ref()),
         );
-        std::sync::Arc::new(crate::hooks::HookExecutor::new(
+        std::sync::Arc::new(codewhale_engine::hooks::HookExecutor::new(
             hooks_config,
             workspace.clone(),
         ))
     });
-    let exec_allow_shell = crate::tools::spec::fleet_exec_shell_enabled(
+    let exec_allow_shell = codewhale_engine::tools::spec::fleet_exec_shell_enabled(
         fleet_authority_active,
         outer_shell_authority,
         disallowed_tools.as_deref(),
@@ -694,15 +505,16 @@ pub(crate) async fn run_exec_agent(
         && exec_allow_shell
         && explicit_sandbox
             .is_some_and(|sandbox| sandbox.eq_ignore_ascii_case("danger-full-access"));
-    let exec_shell_manager = crate::tools::shell::new_shared_shell_manager(workspace.clone());
+    let exec_shell_manager =
+        codewhale_engine::tools::shell::new_shared_shell_manager(workspace.clone());
     let exec_automations = exec_automation_services(fleet_authority_active || one_shot)?;
-    let runtime_services = crate::tools::spec::RuntimeToolServices {
+    let runtime_services = codewhale_engine::tools::spec::RuntimeToolServices {
         shell_manager: Some(exec_shell_manager.clone()),
         persist_services_enabled,
         automations: exec_automations,
         media_originals_dir: codewhale_runtime::media_originals::default_store_dir(),
         hook_executor: exec_hook_executor.clone(),
-        ..crate::tools::spec::RuntimeToolServices::default()
+        ..codewhale_engine::tools::spec::RuntimeToolServices::default()
     };
 
     let engine_config = EngineConfig {
@@ -710,29 +522,30 @@ pub(crate) async fn run_exec_agent(
         active_route_limits,
         workspace: workspace.clone(),
         session_id: Some(exec_session_id.clone()),
-        session_checkpoint_backend: Some(crate::core::events::SessionCheckpointProjection::Exact),
+        session_checkpoint_backend: Some(
+            codewhale_engine::core::events::SessionCheckpointProjection::Exact,
+        ),
         subagent_state_root: None,
         plugin_registry: Some(std::sync::Arc::clone(&engine_plugin_registry)),
         allow_shell: exec_allow_shell,
         trust_mode,
         notes_path: execution_config.notes_path(),
         mcp_config_path: execution_config.mcp_config_path(),
+        mcp_auth_context: Default::default(),
         // Non-interactive exec has no user-level MCP OAuth callback
         // overrides; the loopback default applies.
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         skills_dir: execution_config.skills_dir(),
-        skills_discovery_mode: crate::skills::SkillDiscoveryMode::from_config(
-            &execution_config.skills_config(),
-        ),
+        skills_config: std::sync::Arc::new(execution_config.skills_config()),
         instructions: {
-            let mut instrs: Vec<crate::prompts::InstructionSource> = execution_config
+            let mut instrs: Vec<codewhale_engine::prompts::InstructionSource> = execution_config
                 .instructions_paths()
                 .into_iter()
                 .map(Into::into)
                 .collect();
             if let Some(ref extra) = append_system_prompt {
-                instrs.push(crate::prompts::InstructionSource::Inline {
+                instrs.push(codewhale_engine::prompts::InstructionSource::Inline {
                     name: "cli:append-system-prompt".into(),
                     content: extra.clone(),
                 });
@@ -750,13 +563,14 @@ pub(crate) async fn run_exec_agent(
         subagents_enabled: !fleet_authority_active
             && execution_config.subagents_enabled_for_provider(&effective_identity),
         features: engine_features,
-        auto_review_policy: crate::core::authority::auto_review::AutoReviewPolicy::from_config(
-            &execution_config,
-        ),
+        auto_review_policy:
+            codewhale_engine::core::authority::auto_review::AutoReviewPolicy::from_config(
+                &execution_config,
+            ),
         compaction: compaction.clone(),
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),
-        goal_state: crate::tools::goal::new_shared_goal_state(),
+        goal_state: codewhale_engine::tools::goal::new_shared_goal_state(),
         max_spawn_depth: if fleet_authority_active {
             0
         } else {
@@ -775,11 +589,13 @@ pub(crate) async fn run_exec_agent(
         lsp_config,
         runtime_services,
         subagent_model_overrides: execution_config.subagent_model_overrides(),
-        fleet_roster: std::sync::Arc::new(crate::fleet::identity::load_effective_roster(
-            &execution_config.fleet_config(),
-            &workspace,
-            Some(engine_plugin_registry.as_ref()),
-        )),
+        fleet_roster: std::sync::Arc::new(
+            codewhale_engine::fleet::identity::load_effective_roster(
+                &execution_config.fleet_config(),
+                &workspace,
+                Some(engine_plugin_registry.as_ref()),
+            ),
+        ),
         subagent_api_timeout: std::time::Duration::from_secs(
             execution_config.subagent_api_timeout_secs_for_provider(&effective_identity),
         ),
@@ -807,7 +623,7 @@ pub(crate) async fn run_exec_agent(
         strict_tool_mode: execution_config.strict_tool_mode.unwrap_or(false),
         goal_objective: None,
         goal_token_budget: None,
-        goal_status: crate::tools::goal::GoalStatus::Active,
+        goal_status: codewhale_engine::tools::goal::GoalStatus::Active,
         goal_max_continuations: execution_config.goal_max_continuations(),
         goal_continuation_delay_seconds: execution_config.goal_continuation_delay_seconds(),
         goal_enforce_token_budget: execution_config.goal_enforce_token_budget(),
@@ -844,7 +660,7 @@ pub(crate) async fn run_exec_agent(
         } else {
             execution_config.tools_always_load()
         },
-        user_input_limits: crate::tools::user_input::UserInputLimits::from_config(
+        user_input_limits: codewhale_engine::tools::user_input::UserInputLimits::from_config(
             &execution_config,
         ),
         user_input_timeout: execution_config.user_input_timeout(),
@@ -862,11 +678,11 @@ pub(crate) async fn run_exec_agent(
         advisor_config: execution_config
             .advisor
             .as_ref()
-            .map(crate::tools::subagent::AdvisorConfig::from_toml)
-            .unwrap_or_else(crate::tools::subagent::AdvisorConfig::disabled),
+            .map(codewhale_engine::tools::subagent::AdvisorConfig::from_toml)
+            .unwrap_or_else(codewhale_engine::tools::subagent::AdvisorConfig::disabled),
     };
 
-    let engine_handle = spawn_engine(engine_config, &execution_config, None);
+    let engine_handle = spawn_engine(engine_config, &execution_config, None).await;
     // A restricted posture that resolves to no enforcing sandbox must reach
     // the person running exec, not only the model's posture line: policy-only
     // is accepted (read-only already fails closed in the shell tool), but it
@@ -900,6 +716,7 @@ pub(crate) async fn run_exec_agent(
 
         engine_handle
             .send(Op::SyncSession {
+                control: codewhale_engine::core::ops::SessionControlId::new(),
                 session_id: Some(saved_id.clone()),
                 messages: saved.messages,
                 system_prompt: saved.system_prompt.map(SystemPrompt::Text),
@@ -931,6 +748,7 @@ pub(crate) async fn run_exec_agent(
         .unwrap_or_else(codewhale_hooks::LifecycleOutbox::disabled);
     // Wall clock for the outbox `turn_end` duration starts at the same
     // `Op::SendMessage` boundary where `turn_start` is emitted below.
+    drop(startup_timing);
     let exec_turn_started_at = Instant::now();
 
     engine_handle
@@ -945,7 +763,7 @@ pub(crate) async fn run_exec_agent(
             initial_routed_usage: Box::default(),
             goal_objective: None,
             goal_token_budget: None,
-            goal_status: crate::tools::goal::GoalStatus::Active,
+            goal_status: codewhale_engine::tools::goal::GoalStatus::Active,
             allowed_tools: allowed_tools.clone(),
             dynamic_tools: Vec::new(),
             hook_executor: exec_hook_executor.clone(),
@@ -958,7 +776,7 @@ pub(crate) async fn run_exec_agent(
             translation_enabled: false,
             approval_mode: turn_approval_mode,
             verbosity: execution_config.verbosity.clone(),
-            provenance: crate::core::ops::UserInputProvenance::ExternalUser,
+            provenance: codewhale_engine::core::ops::UserInputProvenance::ExternalUser,
             // Headless exec does not correlate submissions.
             submission_id: None,
         }))
@@ -997,11 +815,12 @@ pub(crate) async fn run_exec_agent(
     let mut reported_sandbox_contract = false;
 
     let mut active_turn_id = None;
-    let mut image_request_receipts = Vec::new();
+    let mut provider_request_receipts = Vec::new();
     let mut latest_session_id = loaded_session_id;
     let mut latest_messages: Arc<Vec<Message>> = Arc::new(Vec::new());
+    let mut latest_source: Option<codewhale_engine::core::ops::SessionSnapshotSource> = None;
     let mut latest_system_prompt: Option<SystemPrompt> = None;
-    let mut latest_model = effective_model;
+    let mut latest_model = effective_model.clone();
     let mut latest_workspace = workspace.clone();
     let mut tool_starts: HashMap<String, (Instant, String)> = HashMap::new();
     let mut turn_usage_seq: u32 = 0;
@@ -1055,7 +874,7 @@ pub(crate) async fn run_exec_agent(
             } if !json_output => {
                 eprintln!(
                     "{}",
-                    crate::core::events::tool_projection_warning_message(
+                    codewhale_engine::core::events::tool_projection_warning_message(
                         &provider,
                         &omitted_tool_names,
                         omitted_tool_count,
@@ -1228,7 +1047,7 @@ pub(crate) async fn run_exec_agent(
                     "sub-agent {id} {}: {}",
                     outcome
                         .as_ref()
-                        .map(crate::tools::subagent::subagent_status_name)
+                        .map(codewhale_engine::tools::subagent::subagent_status_name)
                         .unwrap_or("settled (outcome unconfirmed)"),
                     summarize_tool_output(&result)
                 );
@@ -1268,12 +1087,18 @@ pub(crate) async fn run_exec_agent(
                 // and network calls) cannot be supplied by a headless posture.
                 if auto_approve && !approval_force_prompt {
                     let _ = engine_handle
-                        .approve_tool_call_by(id, crate::approval_log::ApprovalDecider::Posture)
+                        .approve_tool_call_by(
+                            id,
+                            codewhale_engine::approval_log::ApprovalDecider::Posture,
+                        )
                         .await;
                 } else {
                     approval_required = true;
                     let _ = engine_handle
-                        .deny_tool_call_by(id, crate::approval_log::ApprovalDecider::Posture)
+                        .deny_tool_call_by(
+                            id,
+                            codewhale_engine::approval_log::ApprovalDecider::Posture,
+                        )
                         .await;
                 }
             }
@@ -1289,7 +1114,7 @@ pub(crate) async fn run_exec_agent(
                         .retry_tool_with_policy_by(
                             tool_id,
                             policy,
-                            crate::approval_log::ApprovalDecider::Posture,
+                            codewhale_engine::approval_log::ApprovalDecider::Posture,
                         )
                         .await;
                 } else {
@@ -1316,7 +1141,10 @@ pub(crate) async fn run_exec_agent(
                         })?;
                     }
                     let _ = engine_handle
-                        .deny_tool_call_by(tool_id, crate::approval_log::ApprovalDecider::Posture)
+                        .deny_tool_call_by(
+                            tool_id,
+                            codewhale_engine::approval_log::ApprovalDecider::Posture,
+                        )
                         .await;
                 }
             }
@@ -1345,17 +1173,31 @@ pub(crate) async fn run_exec_agent(
                 }
             }
             Event::ProviderRequestReceipt { receipt } => {
-                if receipt
+                let image_projection = receipt
                     .get("wire_observations")
                     .and_then(serde_json::Value::as_array)
                     .is_some_and(|observations| {
                         observations
                             .iter()
                             .any(|observation| observation.get("image_projection").is_some())
-                    })
-                {
+                    });
+                let coverage = receipt.get("coverage").cloned().and_then(|value| {
+                    serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(
+                        value,
+                    )
+                    .ok()
+                });
+                let unknown_primary = receipt["primary"].as_bool() == Some(true)
+                    && matches!(
+                        coverage,
+                        Some(
+                            codewhale_engine::llm_client::ProviderUsageCoverage::Missing
+                                | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
+                        )
+                    );
+                if image_projection || unknown_primary {
                     should_persist_session = true;
-                    image_request_receipts.push(receipt.clone());
+                    provider_request_receipts.push(receipt.clone());
                 }
                 if output_format == ExecOutputFormat::StreamJson {
                     emit_exec_stream_event(&ExecStreamEvent::ProviderRequestReceipt { receipt })?;
@@ -1384,12 +1226,35 @@ pub(crate) async fn run_exec_agent(
                 }
             }
             Event::TurnComplete {
+                turn_id,
+                submission_id,
+                compaction_id,
                 status,
                 error,
                 usage,
                 tool_catalog,
                 ..
             } => {
+                let _timing = codewhale_runtime::logging::PhaseTimer::start("exec_postprocessing");
+                let terminal_source = codewhale_engine::core::ops::SessionSnapshotSource::terminal(
+                    turn_id,
+                    submission_id,
+                    compaction_id,
+                );
+                let terminal_snapshot = match engine_handle.get_session_snapshot().await {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(error) => {
+                        tracing::warn!(%error, "exec terminal session snapshot could not be read; checkpoint retained");
+                        None
+                    }
+                }.filter(|snapshot| {
+                            snapshot.source.as_ref() == terminal_source.as_ref()
+                                && terminal_source.is_some()
+                                && snapshot.session_id == exec_session_id
+                                && snapshot.workspace == exec_session_workspace
+                                && latest_source.as_ref() == terminal_source.as_ref()
+                                && snapshot.messages.as_slice() == latest_messages.as_slice()
+                        });
                 let mut terminal_status = status;
                 let terminal_error = error;
                 #[cfg(unix)]
@@ -1397,7 +1262,7 @@ pub(crate) async fn run_exec_agent(
                 settled_usage = Some(usage.clone());
                 if matches!(
                     terminal_status,
-                    crate::core::events::TurnOutcomeStatus::Completed
+                    codewhale_engine::core::events::TurnOutcomeStatus::Completed
                 ) && terminal_error.is_none()
                 {
                     #[cfg(unix)]
@@ -1428,14 +1293,16 @@ pub(crate) async fn run_exec_agent(
                             }
                             Err(error) => {
                                 manager.abort_persistent_services();
-                                terminal_status = crate::core::events::TurnOutcomeStatus::Failed;
+                                terminal_status =
+                                    codewhale_engine::core::events::TurnOutcomeStatus::Failed;
                                 terminal_error = Some(format!(
                                     "Persistent service ownership transfer failed: {error}"
                                 ));
                             }
                         },
                         Err(_) => {
-                            terminal_status = crate::core::events::TurnOutcomeStatus::Failed;
+                            terminal_status =
+                                codewhale_engine::core::events::TurnOutcomeStatus::Failed;
                             terminal_error = Some(
                                 "Persistent service ownership transfer failed: shell manager lock poisoned"
                                     .to_string(),
@@ -1453,7 +1320,7 @@ pub(crate) async fn run_exec_agent(
                     && summary.error.is_none()
                     && matches!(
                         terminal_status,
-                        crate::core::events::TurnOutcomeStatus::Failed
+                        codewhale_engine::core::events::TurnOutcomeStatus::Failed
                     )
                 {
                     summary.error = Some(
@@ -1465,12 +1332,27 @@ pub(crate) async fn run_exec_agent(
                     last_error_category = summary
                         .error
                         .as_deref()
-                        .map(crate::error_taxonomy::classify_error_message);
+                        .map(codewhale_error_taxonomy::classify_error_message);
                     summary.error_category =
                         last_error_category.map(|category| category.to_string());
                 }
                 let saved_session_id = if should_persist_session && !latest_messages.is_empty() {
                     let saved = open_exec_session_manager().and_then(|manager| {
+                        if exec_write_receipt.is_none() && exec_is_fresh {
+                            exec_write_receipt =
+                                Some(manager.expect_absent_session(&exec_session_id)?);
+                        }
+                        let source = exec_write_receipt.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("exec original source was not admitted")
+                        })?;
+                        let owner = terminal_snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.source.as_ref())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "exec terminal snapshot belongs to another native turn"
+                                )
+                            })?;
                         persist_exec_session(
                             &latest_messages,
                             &latest_model,
@@ -1482,9 +1364,10 @@ pub(crate) async fn run_exec_agent(
                             &latest_system_prompt,
                             latest_session_id.as_deref(),
                             u64::from(usage.input_tokens) + u64::from(usage.output_tokens),
-                            (terminal_status == crate::core::events::TurnOutcomeStatus::Failed)
+                            (terminal_status
+                                == codewhale_engine::core::events::TurnOutcomeStatus::Failed)
                                 .then_some(summary.error.as_deref().unwrap_or_else(|| {
-                                    crate::core::termination::classify_turn_termination(
+                                    codewhale_engine::core::termination::classify_turn_termination(
                                         terminal_status,
                                         last_error_category,
                                         tool_error_seen,
@@ -1493,12 +1376,15 @@ pub(crate) async fn run_exec_agent(
                                     .as_str()
                                 })),
                             manager.as_ref(),
-                            &image_request_receipts,
+                            &provider_request_receipts,
                             None,
+                            source,
+                            owner,
                         )
                     });
                     match saved {
-                        Ok(id) => {
+                        Ok(publication) => {
+                            let id = publication.metadata.id.clone();
                             if output_format == ExecOutputFormat::Text && !json_output {
                                 eprintln!("{}", exec_saved_session_line(&id));
                             }
@@ -1508,13 +1394,15 @@ pub(crate) async fn run_exec_agent(
                             let error = format!(
                                 "Failed to save exec session: {err:#}. The task may already have run; do not retry automatically."
                             );
-                            terminal_status = crate::core::events::TurnOutcomeStatus::Failed;
+                            terminal_status =
+                                codewhale_engine::core::events::TurnOutcomeStatus::Failed;
                             summary.status = Some("failed".to_string());
                             summary.error = Some(match summary.error.take() {
                                 Some(previous) => format!("{previous}; {error}"),
                                 None => error.clone(),
                             });
-                            last_error_category = Some(crate::error_taxonomy::ErrorCategory::State);
+                            last_error_category =
+                                Some(codewhale_error_taxonomy::ErrorCategory::State);
                             summary.error_category =
                                 last_error_category.map(|category| category.to_string());
                             if output_format == ExecOutputFormat::StreamJson {
@@ -1534,9 +1422,13 @@ pub(crate) async fn run_exec_agent(
                 {
                     let outbox_status = format!("{terminal_status:?}").to_lowercase();
                     let kind = match terminal_status {
-                        crate::core::events::TurnOutcomeStatus::Completed => "turn.completed",
-                        crate::core::events::TurnOutcomeStatus::Failed => "turn.failed",
-                        crate::core::events::TurnOutcomeStatus::Interrupted => "turn.interrupted",
+                        codewhale_engine::core::events::TurnOutcomeStatus::Completed => {
+                            "turn.completed"
+                        }
+                        codewhale_engine::core::events::TurnOutcomeStatus::Failed => "turn.failed",
+                        codewhale_engine::core::events::TurnOutcomeStatus::Interrupted => {
+                            "turn.interrupted"
+                        }
                     };
                     lifecycle_outbox.emit(codewhale_hooks::LifecycleEvent {
                         event: "turn_end".to_string(),
@@ -1557,12 +1449,13 @@ pub(crate) async fn run_exec_agent(
                         }),
                     });
                 }
-                let termination_reason = crate::core::termination::classify_turn_termination(
-                    terminal_status,
-                    last_error_category,
-                    tool_error_seen,
-                    approval_required,
-                );
+                let termination_reason =
+                    codewhale_engine::core::termination::classify_turn_termination(
+                        terminal_status,
+                        last_error_category,
+                        tool_error_seen,
+                        approval_required,
+                    );
                 summary.termination_reason = Some(termination_reason.as_str().to_string());
                 // State the exit class here rather than inferring it later
                 // from the process exit code: `Canceled` exits 130, the same
@@ -1583,13 +1476,17 @@ pub(crate) async fn run_exec_agent(
                     // wrong ceiling is visible in the receipt rather than
                     // requiring packet capture.
                     let codewhale_max_output_tokens =
-                        crate::route_budget::effective_max_output_tokens_for_route(
+                        codewhale_engine::route_budget::effective_max_output_tokens_for_turn_with_window(
                             effective_provider,
                             &latest_model,
                             active_route_limits,
+                            (latest_model == effective_model)
+                                .then_some(effective_context_window.tokens),
+                            None,
+                            None,
                         );
                     let codewhale_max_output_tokens_source =
-                        crate::route_budget::output_ceiling_source(
+                        codewhale_engine::route_budget::output_ceiling_source(
                             effective_provider,
                             &latest_model,
                         )
@@ -1603,6 +1500,10 @@ pub(crate) async fn run_exec_agent(
                         !summary.output.trim().is_empty(),
                     )
                     .unwrap_or_default();
+                    let binary_sha256 = match binary_identity.take() {
+                        Some(worker) => worker.await.ok().flatten(),
+                        None => None,
+                    };
                     emit_exec_stream_event(&ExecStreamEvent::Metadata {
                         meta: Box::new(ExecStreamMeta {
                             receipt_kind: "terminal",
@@ -1625,7 +1526,7 @@ pub(crate) async fn run_exec_agent(
                             retry_count: observed_retry_count,
                             approval_posture: approval_posture.clone(),
                             sandbox_posture: sandbox_posture.clone(),
-                            binary_sha256: binary_sha256.clone(),
+                            binary_sha256,
                             config_sha256: None,
                             prompt_sha256: prompt_sha256.clone(),
                             tool_catalog_sha256: tool_catalog.as_ref().and_then(|catalog| {
@@ -1670,6 +1571,7 @@ pub(crate) async fn run_exec_agent(
                 should_persist_session = true;
             }
             Event::SessionUpdated {
+                source,
                 session_id,
                 messages,
                 system_prompt,
@@ -1696,7 +1598,13 @@ pub(crate) async fn run_exec_agent(
                         continue;
                     }
                     let manager = if should_persist_session {
-                        open_exec_session_manager().map(Some)
+                        open_exec_session_manager().and_then(|manager| {
+                            if exec_write_receipt.is_none() && exec_is_fresh {
+                                exec_write_receipt =
+                                    Some(manager.expect_absent_session(&exec_session_id)?);
+                            }
+                            Ok(Some(manager))
+                        })
                     } else {
                         Ok(None)
                     };
@@ -1710,6 +1618,7 @@ pub(crate) async fn run_exec_agent(
                                 active_turn_id.as_deref(),
                                 &engine_handle,
                                 exec_deadline,
+                                &mut exec_write_receipt,
                             )
                             .await
                         }
@@ -1717,6 +1626,7 @@ pub(crate) async fn run_exec_agent(
                             .fail(format!("could not open exec checkpoint store: {error:#}")),
                     }
                 }
+                latest_source = source;
                 latest_session_id = Some(session_id);
                 latest_messages = messages;
                 latest_system_prompt = system_prompt;
@@ -1728,7 +1638,7 @@ pub(crate) async fn run_exec_agent(
             // strips that markup from the answer; say why the answer is short
             // and how to give the model tools, instead of exiting on nothing.
             Event::Status { message }
-                if one_shot && message == crate::core::engine::FAKE_WRAPPER_NOTICE =>
+                if one_shot && message == codewhale_engine::core::engine::FAKE_WRAPPER_NOTICE =>
             {
                 eprintln!("{ONE_SHOT_TOOL_CALL_NOTICE}");
             }
@@ -1760,7 +1670,7 @@ pub(crate) async fn run_exec_agent(
 
     let shutdown_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let completion = shutdown_exec_engine(&engine_handle, shutdown_deadline).await;
-    if completion != Some(crate::core::engine::EngineRunCompletion::NormalReturn) {
+    if completion != Some(codewhale_engine::core::engine::EngineRunCompletion::NormalReturn) {
         tracing::warn!(target: "engine", ?completion, "exec engine run completion was not confirmed");
     }
 
@@ -1772,9 +1682,9 @@ pub(crate) async fn run_exec_agent(
             "Engine event channel closed before a terminal turn receipt".to_string()
         });
         let category = last_error_category
-            .unwrap_or_else(|| crate::error_taxonomy::classify_error_message(&error));
-        let termination_reason = crate::core::termination::classify_turn_termination(
-            crate::core::events::TurnOutcomeStatus::Failed,
+            .unwrap_or_else(|| codewhale_error_taxonomy::classify_error_message(&error));
+        let termination_reason = codewhale_engine::core::termination::classify_turn_termination(
+            codewhale_engine::core::events::TurnOutcomeStatus::Failed,
             Some(category),
             tool_error_seen,
             approval_required,
@@ -1808,8 +1718,7 @@ pub(crate) async fn run_exec_agent(
         }
     }
 
-    // Drain the terminal receipt before either returning or taking the explicit
-    // retryable-failure process exit below. Outbox failures cannot change the
+    // Drain the terminal receipt before returning. Outbox failures cannot change the
     // authoritative turn outcome.
     if let Err(error) = lifecycle_outbox.flush(Duration::from_secs(2)).await {
         tracing::warn!(target: "lifecycle_outbox", %error, "exec lifecycle outbox did not drain before exit");
@@ -1825,20 +1734,6 @@ pub(crate) async fn run_exec_agent(
     if let Some(error) = summary.error.as_ref()
         && !error.trim().is_empty()
     {
-        // Distinguish retryable infrastructure failures (provider/transport,
-        // after all in-session retries are exhausted) from genuine task
-        // failures so supervisors and bench harnesses can tell them apart at
-        // the process level without parsing the stream. Genuine failures
-        // keep the historical `bail!` → exit 1 path.
-        let exit_code = exec_failure_exit_code(summary.error_category.as_deref());
-        // The final line always carries the message: automation greps it and
-        // a caller may keep only the last stderr line, even when the stream
-        // already printed the same error above.
-        if exit_code != 1 {
-            eprintln!("Error: exec turn failed: {error}");
-            let _ = io::stdout().flush();
-            std::process::exit(exit_code);
-        }
         bail!("exec turn failed: {error}");
     }
 
@@ -1854,8 +1749,8 @@ pub(crate) async fn run_exec_agent(
 }
 
 fn exec_retry_status(message: &str) -> Option<ExecStreamEvent> {
-    (crate::core::events::is_retry_status_receipt(message)
-        || crate::core::events::is_request_image_status_receipt(message))
+    (codewhale_engine::core::events::is_retry_status_receipt(message)
+        || codewhale_engine::core::events::is_request_image_status_receipt(message))
     .then(|| ExecStreamEvent::Status {
         message: message.to_string(),
     })
@@ -1863,7 +1758,7 @@ fn exec_retry_status(message: &str) -> Option<ExecStreamEvent> {
 
 fn accumulate_exec_retry_count(
     previous: Option<u32>,
-    terminal: Option<&crate::tool_inspection::TurnStopDiagnostics>,
+    terminal: Option<&codewhale_engine::tool_inspection::TurnStopDiagnostics>,
 ) -> Option<u32> {
     let Some(terminal) = terminal.filter(|facts| facts.status.is_some()) else {
         return previous;
@@ -1883,9 +1778,9 @@ mod tests {
         ExecAgentEvents, exec_automation_services, exec_disallowed_tools, shutdown_exec_engine,
     };
 
-    use crate::core::engine::mock_engine_handle;
-    use crate::core::events::{Event, TurnOutcomeStatus};
-    use crate::core::ops::{Op, SubAgentSettlement};
+    use codewhale_engine::core::engine::mock_engine_handle;
+    use codewhale_engine::core::events::{Event, TurnOutcomeStatus};
+    use codewhale_engine::core::ops::{Op, SubAgentSettlement};
     use codewhale_models::Usage;
     use codewhale_tools::names::REQUEST_USER_INPUT_NAME;
     use std::time::{Duration, Instant};
@@ -1914,7 +1809,7 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!(
             wait.await,
-            Some(crate::core::engine::EngineRunCompletion::NormalReturn)
+            Some(codewhale_engine::core::engine::EngineRunCompletion::NormalReturn)
         );
         task.await.unwrap();
     }
@@ -1951,7 +1846,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_completion_exec_shutdown_uses_observed_exit_when_mailbox_closed() {
-        use crate::core::engine::EngineRunCompletion;
+        use codewhale_engine::core::engine::EngineRunCompletion;
         for normal in [true, false] {
             let mut engine = mock_engine_handle();
             let run = engine.observe_run_for_test(async {});
@@ -1984,7 +1879,7 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let mut config = crate::core::engine::EngineConfig {
+            let mut config = codewhale_engine::core::engine::EngineConfig {
                 workspace: home.path().into(),
                 snapshots_enabled: false,
                 memory_enabled: false,
@@ -1994,15 +1889,19 @@ mod tests {
             config
                 .features
                 .disable(codewhale_runtime::features::Feature::Mcp);
-            let handle =
-                crate::core::engine::spawn_engine(config, &crate::config::Config::default(), None);
+            let handle = codewhale_engine::core::engine::spawn_engine(
+                config,
+                &crate::config::Config::default(),
+                None,
+            )
+            .await;
             assert_eq!(
                 shutdown_exec_engine(
                     &handle,
                     tokio::time::Instant::now() + Duration::from_secs(5)
                 )
                 .await,
-                Some(crate::core::engine::EngineRunCompletion::NormalReturn)
+                Some(codewhale_engine::core::engine::EngineRunCompletion::NormalReturn)
             );
         });
     }
@@ -2131,16 +2030,19 @@ mod tests {
             "the event reader does not send early Shutdown"
         );
 
-        use crate::core::events::{
+        use codewhale_engine::core::events::{
             SessionCheckpointCaller, SessionCheckpointProjection, SessionCheckpointRequest,
         };
-        use crate::core::ops::SessionSnapshot;
+        use codewhale_engine::core::ops::SessionSnapshot;
         use std::sync::Arc;
         use tokio_util::sync::CancellationToken;
 
         let tmp = tempfile::tempdir().unwrap();
         let manager = Arc::new(
-            crate::session_manager::SessionManager::new(tmp.path().join("fleet-capture")).unwrap(),
+            codewhale_engine::session_manager::SessionManager::new(
+                tmp.path().join("fleet-capture"),
+            )
+            .unwrap(),
         );
         let workspace = tmp.path().join("workspace");
         let messages: Vec<codewhale_models::Message> = serde_json::from_value(serde_json::json!([
@@ -2148,6 +2050,11 @@ mod tests {
             {"role":"assistant","content":[{"type":"tool_use","id":"provider-call","execution_id":"exec-call","name":"review","input":{}}]}
         ])).unwrap();
         let snapshot = Arc::new(SessionSnapshot {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                "exec-turn".into(),
+                None,
+            )),
+
             session_id: "exec-checkpoint".into(),
             messages: messages.clone(),
             total_tokens: 23,
@@ -2181,6 +2088,7 @@ mod tests {
                 receive,
             )
         };
+        let mut source = Some(manager.expect_absent_session(&snapshot.session_id).unwrap());
         let (request, receive) = checkpoint(caller.clone(), Arc::clone(&snapshot));
         super::persist_exec_checkpoint(
             Arc::clone(&request),
@@ -2190,6 +2098,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert!(receive.await.unwrap().unwrap());
@@ -2207,7 +2116,7 @@ mod tests {
         completed.push(serde_json::from_value(serde_json::json!({
             "role":"user","content":[{"type":"tool_result","tool_use_id":"provider-call","execution_id":"exec-call","content":"review complete"}]
         })).unwrap());
-        crate::persist_exec_session(
+        let publication = crate::persist_exec_session(
             &completed,
             &snapshot.model,
             crate::PersistedProviderRoute {
@@ -2222,8 +2131,11 @@ mod tests {
             manager.as_ref(),
             &[],
             None,
+            source.as_ref().unwrap(),
+            snapshot.source.as_ref().unwrap(),
         )
         .unwrap();
+        source = Some(publication.write_receipt());
         super::persist_exec_checkpoint(
             request,
             Some(Arc::clone(&manager)),
@@ -2232,6 +2144,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert_eq!(
@@ -2260,6 +2173,7 @@ mod tests {
                 Some("exec-turn"),
                 &engine.handle,
                 Instant::now() + Duration::from_secs(3),
+                &mut source,
             )
             .await;
             assert!(receive.await.unwrap().is_err(), "{mismatch}");
@@ -2283,6 +2197,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert!(receive.await.unwrap().is_err());
@@ -2295,12 +2210,14 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert!(!receive.await.unwrap().unwrap());
 
         let failed_store = Arc::new(
-            crate::session_manager::SessionManager::new(tmp.path().join("failed-store")).unwrap(),
+            codewhale_engine::session_manager::SessionManager::new(tmp.path().join("failed-store"))
+                .unwrap(),
         );
         std::fs::create_dir(failed_store.sessions_dir().join("exec-checkpoint.json")).unwrap();
         let (request, receive) = checkpoint(caller.clone(), Arc::clone(&snapshot));
@@ -2312,6 +2229,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert!(receive.await.unwrap().is_err());
@@ -2324,6 +2242,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now(),
+            &mut source,
         )
         .await;
         assert!(receive.await.unwrap().is_err());
@@ -2403,9 +2322,9 @@ mod tests {
         engine.tx_event.send(completed_parent(5)).await.unwrap();
         engine
             .tx_event
-            .send(Event::error(crate::error_taxonomy::ErrorEnvelope::fatal(
-                "fan-in route unavailable",
-            )))
+            .send(Event::error(
+                codewhale_error_taxonomy::ErrorEnvelope::fatal("fan-in route unavailable"),
+            ))
             .await
             .unwrap();
         assert!(matches!(events.next().await, Some(Event::Error { .. })));
@@ -2552,7 +2471,7 @@ mod tests {
 
     #[test]
     fn exec_retry_count_requires_terminal_facts_and_keeps_unknown_distinct_from_zero() {
-        use crate::tool_inspection::TurnStopDiagnostics;
+        use codewhale_engine::tool_inspection::TurnStopDiagnostics;
         assert_eq!(super::accumulate_exec_retry_count(None, None), None);
         assert_eq!(
             super::accumulate_exec_retry_count(None, Some(&TurnStopDiagnostics::default())),

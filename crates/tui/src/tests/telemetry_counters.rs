@@ -8,7 +8,7 @@ fn a_custom_provider_is_recorded_as_the_literal_custom() {
     // label all return the customer's own `[providers.<name>]` table key
     // when the route is custom, and `/status` already prints it. The
     // recording API takes a `ProviderKind` by value so none of them fit.
-    crate::client::record_provider_response(codewhale_config::ProviderKind::Custom, 200);
+    codewhale_engine::client::record_provider_response(codewhale_config::ProviderKind::Custom, 200);
     let providers = session_counters().providers();
     assert!(
         providers.iter().any(|name| name == "custom"),

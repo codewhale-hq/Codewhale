@@ -46,7 +46,7 @@ of that surface is what every model sees before it has run a single
 tools** that map to the *same* implementation under different names:
 
 - `exec_wait` and `exec_shell_wait` are both `ShellWaitTool`
-  (`crates/tui/src/tools/registry.rs:526,529`).
+  (`crates/engine/src/tools/registry.rs:526,529`).
 - `exec_interact` and `exec_shell_interact` are both `ShellInteractTool`
   (`registry.rs:527,530`).
 - `tts` and `speech` are both `SpeechTool`
@@ -94,7 +94,7 @@ progress). Both are ordinary persisted history. Nothing is appended to a parent 
 step or a sub-agent step. The complete list stays visible in the UI, which is a
 different surface from the request.
 
-`crates/tui/src/todo_snapshot.rs` renders the one bounded body — hard-bounded in
+`crates/engine/src/todo_snapshot.rs` renders the one bounded body — hard-bounded in
 both item count and characters, in-progress item preserved preferentially, any
 elision marked — for the three seams that show a snapshot *once*, because a
 person asked: the `<codewhale:fork_state>` block a newly forked agent is handed,
@@ -163,14 +163,14 @@ Neither state ever changes the *behavior* of the call. Replay always works.
 ## 3. Representation in code
 
 The lifecycle is represented as **const name-sets plus an alias/manifest table**
-in `crates/tui/src/core/engine/tool_catalog.rs`, alongside the existing
+in `crates/engine/src/core/engine/tool_catalog.rs`, alongside the existing
 `DEFAULT_ACTIVE_NATIVE_TOOLS` (`tool_catalog.rs:37-64`) and
 `ARCEE_FIRST_TURN_NATIVE_TOOLS` (`tool_catalog.rs:106-115`).
 
 ### 3a. Name-sets and the manifest (sketch)
 
 ```rust
-// crates/tui/src/core/engine/tool_catalog.rs  (planned)
+// crates/engine/src/core/engine/tool_catalog.rs  (planned)
 
 /// Tools removed from the active set AND from tool-search, but still
 /// registered and dispatchable with byte-identical behavior. Silent.
@@ -251,7 +251,7 @@ This was the proposed manifest. Columns are the #2681 AC columns. No entry was
 
 > **Superseded in part.** `exec_wait` and `exec_interact` were removed
 > (`shell_surface_exposes_lowercase_bash_and_hides_legacy_handler` in
-> `crates/tui/src/tools/registry/tests.rs`); they are not callable. The
+> `crates/engine/src/tools/registry/tests.rs`); they are not callable. The
 > work-progress rows are not uniformly removed. `todo_write` is the canonical
 > model-visible `TodoWriteTool`; `ToolRegistryBuilder::with_todo_tool` also
 > registers hidden replay aliases `work_update`, `TodoWrite`, `todo`,
@@ -362,7 +362,7 @@ else or an explicit budget bump in this doc.
 niches and receive **canonical guidance only** — no lifecycle change.
 
 The RLM surface (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` /
-`rlm_session_objects`, `crates/tui/src/tools/rlm.rs`) is likewise out of scope;
+`rlm_session_objects`, `crates/engine/src/tools/rlm.rs`) is likewise out of scope;
 `handle_read` retrieves var handles, and `finalize` / `FINAL` is an in-kernel
 Python function, **not a tool** — so there is nothing to retire there.
 

@@ -103,3 +103,17 @@ pub trait CommandVoiceInputContext {
     fn control_enabled(&self) -> bool;
     fn set_control_enabled(&mut self, enabled: bool);
 }
+
+pub fn public_site_locale_segment(tag: &str) -> &'static str {
+    match tag {
+        "zh-Hans" | "zh-Hant" => "zh",
+        "ja" => "ja",
+        "vi" => "vi",
+        "ko" => "ko",
+        "es-419" => "es",
+        "pt-BR" => "pt-BR",
+        "ru" => "ru",
+        "uk" => "uk",
+        _ => "en",
+    }
+}

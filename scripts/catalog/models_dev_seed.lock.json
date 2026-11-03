@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-10-23T14:52:11Z",
-    "sha256": "32dcb918ab35c61aa6ff1502c153965a3a35135956e9ffe73c7b06d1fa756fee"
+    "fetched_at": "2026-10-30T05:26:16Z",
+    "sha256": "5048a9f4555766dbe616aa3fbe49a6c5cae7fdcce56b7a9fa529383992ed9036"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -2885,6 +2885,52 @@
             "cache_read": 0.12
           }
         }
+      },
+      "MiniMax-M3.1-Flash": {
+        "id": "MiniMax-M3.1-Flash",
+        "canonical_model_id": "minimax/MiniMax-M3.1-Flash",
+        "name": "MiniMax-M3.1-Flash",
+        "description": "Frontier multimodal coding model with 1M context window and tunable thinking depth",
+        "family": "minimax",
+        "release_date": "2026-10-19",
+        "last_updated": "2026-10-19",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": false,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 524288
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.015
+        }
       }
     },
     "moonshotai": {
@@ -3055,6 +3101,102 @@
           "output": 15,
           "cache_read": 0.3,
           "cache_write": 3
+        }
+      },
+      "kimi-k3.1-pro": {
+        "id": "kimi-k3.1-pro",
+        "canonical_model_id": "moonshotai/kimi-k3.1-pro",
+        "name": "Kimi K3.1 Pro",
+        "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+        "family": "kimi-k3",
+        "release_date": "2026-10-23",
+        "last_updated": "2026-10-23",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "interleaved": {
+          "field": "reasoning_content"
+        },
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.2,
+          "cache_write": 2
+        }
+      },
+      "kimi-k3.1-pro-highspeed": {
+        "id": "kimi-k3.1-pro-highspeed",
+        "canonical_model_id": "moonshotai/kimi-k3.1-pro",
+        "name": "Kimi K3.1 Pro Highspeed",
+        "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+        "family": "kimi-k3",
+        "release_date": "2026-10-23",
+        "last_updated": "2026-10-23",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ]
+          }
+        ],
+        "interleaved": {
+          "field": "reasoning_content"
+        },
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 1048576
+        },
+        "cost": {
+          "input": 4,
+          "output": 20,
+          "cache_read": 0.2,
+          "cache_write": 4
         }
       }
     },
@@ -4085,6 +4227,100 @@
             }
           }
         }
+      },
+      "gpt-6.1-terra": {
+        "id": "gpt-6.1-terra",
+        "canonical_model_id": "openai/gpt-6.1-terra",
+        "name": "GPT-6.1 Terra",
+        "description": "Fast, efficient model for visual reasoning, precise computer use, and clear, natural writing.",
+        "family": "gpt-terra",
+        "knowledge": "2026-06-01",
+        "release_date": "2026-10-26",
+        "last_updated": "2026-10-26",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 1,
+          "output": 5,
+          "cache_read": 0.05,
+          "cache_write": 1.25,
+          "tiers": [
+            {
+              "input": 2,
+              "output": 7.5,
+              "cache_read": 0.1,
+              "cache_write": 2.5,
+              "tier": {
+                "type": "context",
+                "size": 272000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 2,
+            "output": 7.5,
+            "cache_read": 0.1,
+            "cache_write": 2.5
+          }
+        },
+        "experimental": {
+          "modes": {
+            "fast": {
+              "cost": {
+                "input": 2,
+                "output": 10,
+                "cache_read": 0.1,
+                "cache_write": 2.5
+              },
+              "provider": {
+                "body": {
+                  "service_tier": "priority"
+                }
+              }
+            },
+            "pro": {
+              "provider": {
+                "body": {
+                  "reasoning": {
+                    "mode": "pro"
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "openrouter": {
@@ -4175,9 +4411,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.885312,
-          "output": 1.770624,
-          "cache_read": 0.073776
+          "input": 0.816234,
+          "output": 1.632468,
+          "cache_read": 0.06802
         }
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -4290,8 +4526,8 @@
         },
         "cost": {
           "input": 0.1,
-          "output": 0.95,
-          "cache_read": 0.05
+          "output": 0.9,
+          "cache_read": 0.025
         }
       },
       "qwen/qwen3.6-flash": {
@@ -4545,9 +4781,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.0341,
+          "input": 0.006,
           "output": 7,
-          "cache_read": 0.033
+          "cache_read": 0.005
         }
       },
       "z-ai/glm-5.3": {
@@ -4587,9 +4823,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.079,
-          "output": 1.4,
-          "cache_read": 0.078
+          "input": 0.08,
+          "output": 3.6,
+          "cache_read": 0.076
         }
       },
       "z-ai/glm-5.3-flash": {
@@ -4628,11 +4864,11 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 943717
+          "output": 131072
         },
         "cost": {
-          "input": 0.15,
-          "output": 0.5,
+          "input": 0.0497,
+          "output": 0.0701,
           "cache_read": 0.03
         }
       }

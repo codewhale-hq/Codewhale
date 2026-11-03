@@ -2,7 +2,7 @@
  * active, pinned public keys authenticate the exact payload bytes. */
 import { DOMAIN, MAX_PAYLOAD_BYTES, TRUSTED_KEYS, type TrustedKey } from "./cloud-facts/keys";
 import { readBoundedBody } from "./bounded-body";
-import type { KVStreamNamespace } from "./kv";
+import { readBoundedKvJson, type KVStreamNamespace } from "./kv";
 
 export const CHANNEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const KV_PREFIX = "facts:cloud:";
@@ -280,18 +280,8 @@ export async function fetchCurrentRow(channel: string, env: CloudFactsEnv, opts:
   } finally { clearTimeout(timer); }
 }
 
-async function kvGet(env: CloudFactsEnv, channel: string): Promise<unknown> {
-  if (!env.CURATED_KV) return null;
-  try {
-    const body = await env.CURATED_KV.get(`${KV_PREFIX}${channel}`, "stream");
-    if (!body) return null;
-    const bytes = await readBoundedBody({ body, headers: new Headers() }, MAX_ENVELOPE_BYTES);
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch { return null; }
-}
-
 async function retireLastGood(env: CloudFactsEnv, channel: string): Promise<void> {
-  if (!env.CURATED_KV || !isEnvelope(await kvGet(env, channel))) return;
+  if (!env.CURATED_KV || !isEnvelope(await readBoundedKvJson(env.CURATED_KV, KV_PREFIX + channel, MAX_ENVELOPE_BYTES))) return;
   try {
     await env.CURATED_KV.put(`${KV_PREFIX}${channel}`, JSON.stringify({ retired: "no-current-head" }), { expirationTtl: KV_TTL_SECS });
   } catch { /* Best effort, like the write; the copy still expires on its TTL. */ }
@@ -315,7 +305,7 @@ export async function resolveCloudFacts(channel: string, env: CloudFactsEnv, opt
     envelope = envelopeFromRow(row);
   } catch {
     source = "kv-stale";
-    envelope = await kvGet(env, channel);
+    envelope = await readBoundedKvJson(env.CURATED_KV, KV_PREFIX + channel, MAX_ENVELOPE_BYTES);
     if (!envelope) return { kind: "unavailable", reason: "facts-transport-unavailable" };
   }
   const verification = await verifyEnvelope(envelope, keys, { channel, now: (opts.now ?? Date.now)() });

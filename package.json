@@ -2,7 +2,7 @@
   "name": "codewhale",
   "private": true,
   "scripts": {
-    "test": "npm test --workspaces --if-present && npm --prefix crates/tui/extension-host test && npm --prefix web test",
+    "test": "npm test --workspaces --if-present && npm --prefix crates/engine/extension-host test && npm --prefix web test",
     "check:web": "npm --prefix web run check"
   },
   "workspaces": [

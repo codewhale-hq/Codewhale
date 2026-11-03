@@ -1,9 +1,11 @@
 use super::*;
-use crate::automation_manager::{
+use codewhale_engine::automation_manager::{
     AutomationManager, AutomationStatus, CreateAutomationRequest, run_now_shared,
 };
-use crate::runtime_threads::{RuntimeThreadManager, RuntimeThreadManagerConfig};
-use crate::task_manager::{TaskManager, TaskManagerConfig};
+use codewhale_engine::runtime_threads::{
+    manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+};
+use codewhale_engine::task_manager::{TaskManager, TaskManagerConfig};
 
 fn fixture_config() -> Config {
     let mut config = Config::default().with_legacy_root(
@@ -28,7 +30,7 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     );
     let mut config = fixture_config();
     let sessions = SessionManager::default_location()?;
-    let original = crate::session_manager::create_saved_session_with_id_and_mode(
+    let original = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "legacy-conversation".into(),
         &[text_message("user", "retain this earlier conversation")],
         "deepseek-v4-pro",
@@ -39,7 +41,9 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     );
     assert!(original.metadata.runtime_store.is_none());
     sessions.save_session(&original)?;
-    sessions.save_checkpoint(&original)?;
+    let checkpoint = sessions.save_checkpoint(&original)?;
+    let checkpoint_before = std::fs::read(&checkpoint)?;
+    let original = sessions.load_session_snapshot(&original.metadata.id)?;
     let mut app = Box::new(create_test_app());
     apply_loaded_session_with_goal(&mut app, &mut config, original.clone(), None)
         .map_err(anyhow::Error::msg)?;
@@ -74,8 +78,9 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     assert!(
         sessions
             .load_session_checkpoint(&original.metadata.id)?
-            .is_none()
+            .is_some()
     );
+    assert_eq!(std::fs::read(checkpoint)?, checkpoint_before);
     drop(app);
     drop(tasks);
     drop(explicit_store);
@@ -105,7 +110,7 @@ async fn runtime_store_binding_exit_preserves_inflight_recovery() -> anyhow::Res
         (false, true, false),
         (false, false, true),
     ] {
-        let original = crate::session_manager::create_saved_session_with_mode(
+        let original = codewhale_engine::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
             root.path(),
@@ -376,7 +381,7 @@ fn runtime_store_binding_retention_does_not_follow_session_directory_symlinks() 
     let root = tempfile::tempdir()?;
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
     let sessions = SessionManager::default_location()?;
-    let saved = crate::session_manager::create_saved_session_with_id_and_mode(
+    let saved = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "linked-session".into(),
         &[],
         "fixture",
@@ -416,7 +421,7 @@ fn runtime_store_binding_rejects_foreign_missing_or_overridden_store() -> anyhow
     let before = std::fs::read(&state_path)?;
     let mut wrong = binding.clone();
     wrong.execution_scope = "0".repeat(64);
-    let open = |binding: &crate::runtime_threads::RuntimeStoreBinding| {
+    let open = |binding: &codewhale_engine::runtime_threads::RuntimeStoreBinding| {
         RuntimeThreadManager::open_for_session(
             config.clone(),
             root.path().into(),
@@ -462,7 +467,7 @@ fn missing_runtime_store_recovers_without_reusing_authority_or_resurrecting_stal
     let _runtime = crate::test_support::EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
     let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
     let sessions = SessionManager::default_location()?;
-    let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+    let mut saved = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "interrupted".into(),
         &[text_message("user", "retain my work")],
         "deepseek-v4-pro",
@@ -471,7 +476,7 @@ fn missing_runtime_store_recovers_without_reusing_authority_or_resurrecting_stal
         None,
         None,
     );
-    let missing = crate::runtime_threads::RuntimeStoreBinding {
+    let missing = codewhale_engine::runtime_threads::RuntimeStoreBinding {
         data_dir: root.path().join("sessions/previous/runtime"),
         execution_scope: "0".repeat(64),
     };
@@ -562,7 +567,7 @@ async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_re
     let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
     let sessions = SessionManager::default_location()?;
     let mut config = fixture_config();
-    let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+    let mut saved = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "picker-interrupted".into(),
         &[text_message("user", "retain my work")],
         "deepseek-v4-pro",
@@ -571,11 +576,12 @@ async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_re
         None,
         None,
     );
-    saved.metadata.runtime_store = Some(crate::runtime_threads::RuntimeStoreBinding {
+    saved.metadata.runtime_store = Some(codewhale_engine::runtime_threads::RuntimeStoreBinding {
         data_dir: root.path().join("sessions/previous/runtime"),
         execution_scope: "0".repeat(64),
     });
     sessions.save_session(&saved)?;
+    let saved = sessions.load_session_snapshot("picker-interrupted")?;
     let mut app = Box::new(create_test_app());
     let tasks = TaskManager::start(
         TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1)),
@@ -608,7 +614,16 @@ async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_re
         "binding repair survives a contended UI restore"
     );
     drop(held);
-    apply_loaded_session_with_goal(&mut app, &mut config, saved.clone(), None)
+    let stale_error = apply_loaded_session_with_goal(&mut app, &mut config, saved.clone(), None)
+        .expect_err("the repaired binding invalidates its original picker source");
+    assert!(
+        stale_error.contains("changed after its captured source"),
+        "{stale_error}"
+    );
+    assert_eq!(app.current_session_id.as_deref(), Some("picker-current"));
+    assert_eq!(app.api_messages, current_messages);
+    let recovered = sessions.load_session_snapshot("picker-interrupted")?;
+    apply_loaded_session_with_goal(&mut app, &mut config, recovered, None)
         .map_err(anyhow::Error::msg)?;
     assert_eq!(
         app.current_session_id.as_deref(),
@@ -648,11 +663,11 @@ fn adoptable_empty_store_reports_nothing_to_abandon() -> anyhow::Result<()> {
     let store_dir = root.path().join("sessions/interrupted/runtime");
     // Open a real store, so the layout under test is the product's rather than
     // the test's idea of it.
-    drop(crate::runtime_threads::RuntimeThreadStore::open(
+    drop(codewhale_engine::runtime_threads::RuntimeThreadStore::open(
         store_dir.clone(),
     )?);
 
-    let binding = crate::runtime_threads::RuntimeStoreBinding {
+    let binding = codewhale_engine::runtime_threads::RuntimeStoreBinding {
         data_dir: store_dir.clone(),
         execution_scope: "0".repeat(64),
     };
@@ -694,7 +709,7 @@ fn adoptable_empty_store_reports_nothing_to_abandon() -> anyhow::Result<()> {
         std::fs::write(&marker, "{}")?;
         assert_eq!(
             binding.adoption_refusal()?,
-            Some(crate::runtime_threads::StoreAdoptionRefusal::HasDurableWork { dir }),
+            Some(codewhale_engine::runtime_threads::StoreAdoptionRefusal::HasDurableWork { dir }),
             "{dir} holds work; the store must not be adopted"
         );
         assert!(
@@ -757,7 +772,7 @@ fn recorded_binding_is_confined_under_a_non_canonical_home() -> anyhow::Result<(
     );
 
     // Confinement still refuses a store outside the sessions root.
-    let outside = crate::runtime_threads::RuntimeStoreBinding {
+    let outside = codewhale_engine::runtime_threads::RuntimeStoreBinding {
         data_dir: root.path().join("elsewhere/previous/runtime"),
         execution_scope: binding.execution_scope.clone(),
     };
@@ -780,16 +795,16 @@ fn adoptable_empty_store_refuses_a_live_holder() -> anyhow::Result<()> {
     let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
 
     let store_dir = root.path().join("sessions/held/runtime");
-    drop(crate::runtime_threads::RuntimeThreadStore::open(
+    drop(codewhale_engine::runtime_threads::RuntimeThreadStore::open(
         store_dir.clone(),
     )?);
-    let binding = crate::runtime_threads::RuntimeStoreBinding {
+    let binding = codewhale_engine::runtime_threads::RuntimeStoreBinding {
         data_dir: store_dir.clone(),
         execution_scope: "0".repeat(64),
     };
     assert!(binding.is_adoptable_empty_store()?);
 
-    let _held = crate::runtime_threads::RuntimeProcessOwnerLock::acquire(&store_dir)?;
+    let _held = codewhale_engine::runtime_threads::RuntimeProcessOwnerLock::acquire(&store_dir)?;
     assert!(
         binding.has_live_holder()?,
         "the held owner lock reads as held"
@@ -822,11 +837,11 @@ fn adoptable_empty_store_refuses_a_scope_pinned_automation() -> anyhow::Result<(
     let _legacy = crate::test_support::EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
 
     let store_dir = root.path().join("sessions/pinned/runtime");
-    drop(crate::runtime_threads::RuntimeThreadStore::open(
+    drop(codewhale_engine::runtime_threads::RuntimeThreadStore::open(
         store_dir.clone(),
     )?);
     let scope = "ab".repeat(32);
-    let binding = crate::runtime_threads::RuntimeStoreBinding {
+    let binding = codewhale_engine::runtime_threads::RuntimeStoreBinding {
         data_dir: store_dir.clone(),
         execution_scope: scope.clone(),
     };
@@ -879,10 +894,10 @@ async fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
     let mut config = fixture_config();
 
     let store_dir = root.path().join("sessions/previous/runtime");
-    drop(crate::runtime_threads::RuntimeThreadStore::open(
+    drop(codewhale_engine::runtime_threads::RuntimeThreadStore::open(
         store_dir.clone(),
     )?);
-    let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+    let mut saved = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "picker-adoptable".into(),
         &[text_message("user", "retain my work")],
         "deepseek-v4-pro",
@@ -891,11 +906,12 @@ async fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
         None,
         None,
     );
-    saved.metadata.runtime_store = Some(crate::runtime_threads::RuntimeStoreBinding {
+    saved.metadata.runtime_store = Some(codewhale_engine::runtime_threads::RuntimeStoreBinding {
         data_dir: store_dir,
         execution_scope: "0".repeat(64),
     });
     sessions.save_session(&saved)?;
+    let saved = sessions.load_session_snapshot("picker-adoptable")?;
 
     let mut app = Box::new(create_test_app());
     let tasks = TaskManager::start(
@@ -956,11 +972,12 @@ async fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Resul
     let mut config = fixture_config();
 
     let store_dir = root.path().join("sessions/previous/runtime");
-    drop(crate::runtime_threads::RuntimeThreadStore::open(
+    drop(codewhale_engine::runtime_threads::RuntimeThreadStore::open(
         store_dir.clone(),
     )?);
-    let binding = crate::runtime_threads::RuntimeStoreBinding::for_store_dir(&store_dir)?;
-    let mut saved = crate::session_manager::create_saved_session_with_id_and_mode(
+    let binding =
+        codewhale_engine::runtime_threads::RuntimeStoreBinding::for_store_dir(&store_dir)?;
+    let mut saved = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "picker-adoptable".into(),
         &[text_message("user", "retain my work")],
         "deepseek-v4-pro",
@@ -971,7 +988,8 @@ async fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Resul
     );
     saved.metadata.runtime_store = Some(binding.clone());
     sessions.save_session(&saved)?;
-    let mut sibling = crate::session_manager::create_saved_session_with_id_and_mode(
+    let saved = sessions.load_session_snapshot("picker-adoptable")?;
+    let mut sibling = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "same-host-sibling".into(),
         &[text_message("user", "saved in the same host")],
         "deepseek-v4-pro",

@@ -24,18 +24,18 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::fleet::store::{
-    FleetEntry, FleetScope, SelectedFleet, delete_fleet, list_fleets, migrate_legacy_roster,
-    selected_fleet, set_selected,
-};
 use crate::tui::app::App;
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
+};
+use codewhale_engine::fleet::store::{
+    FleetEntry, FleetScope, SelectedFleet, delete_fleet, list_fleets, migrate_legacy_roster,
+    selected_fleet, set_selected,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
+use codewhale_tui_kit::menu_style;
 
 /// Rows one PageUp/PageDown travels. Pages clamp at the ends per the shared
 /// vocabulary instead of wrapping (#6290).
@@ -132,20 +132,21 @@ impl FleetListView {
         if rows == 0 {
             return;
         }
-        self.row = crate::tui::list_nav::wrap_index(self.row, rows, delta);
+        self.row = codewhale_tui_kit::list_nav::wrap_index(self.row, rows, delta);
         self.hovered_row.set(None);
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. Steps wrap; pages travel [`FLEET_LIST_PAGE`]
     /// rows and clamp. The list is single-column, so the region axis is a
     /// no-op.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
         let len = self.entries.len();
         if len == 0 {
             return false;
         }
-        let Some(next) = crate::tui::list_nav::apply(self.row, len, FLEET_LIST_PAGE, motion) else {
+        let Some(next) = codewhale_tui_kit::list_nav::apply(self.row, len, FLEET_LIST_PAGE, motion)
+        else {
             return false;
         };
         self.row = next;
@@ -257,7 +258,9 @@ impl ModalView for FleetListView {
             // Movement keys come from the shared vocabulary (#6290), j/k
             // aliases included — this surface captures no text. Pages are new
             // here; they used to do nothing.
-            _ if crate::tui::list_nav::motion(&key).is_some_and(|m| self.apply_motion(m)) => {
+            _ if codewhale_tui_kit::list_nav::motion(&key)
+                .is_some_and(|m| self.apply_motion(m)) =>
+            {
                 ViewAction::None
             }
             KeyCode::Enter => {
@@ -576,7 +579,7 @@ impl FleetListView {
         let Ok(text) = std::fs::read_to_string(&entry.path) else {
             return "unreadable".to_string();
         };
-        match crate::fleet::store::FleetFile::parse(&text) {
+        match codewhale_engine::fleet::store::FleetFile::parse(&text) {
             Ok(fleet) => {
                 let coordinator = match &fleet.operator {
                     Some(op) => format!("{}/{}", op.provider, op.model),
@@ -611,7 +614,7 @@ fn outcome_to_action(outcome: Option<FleetListOutcome>) -> ViewAction {
 /// How many legacy per-role profile files exist across both scopes.
 fn legacy_profile_file_count(workspace: &std::path::Path) -> usize {
     let mut count = 0;
-    if let Ok(dir) = crate::fleet::profile::personal_agent_profile_dir()
+    if let Ok(dir) = codewhale_engine::fleet::profile::personal_agent_profile_dir()
         && let Ok(read) = std::fs::read_dir(dir)
     {
         count += read
@@ -632,8 +635,8 @@ fn legacy_profile_file_count(workspace: &std::path::Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet::store::{FleetFile, save_fleet};
     use crate::tui::app::{App, TuiOptions};
+    use codewhale_engine::fleet::store::{FleetFile, save_fleet};
     use codewhale_runtime::config::Config;
     use std::sync::OnceLock;
 
@@ -657,7 +660,7 @@ mod tests {
 
     fn sample_fleet(name: &str) -> FleetFile {
         let mut fleet = FleetFile::new(name.to_string(), None).unwrap();
-        fleet.operator = Some(crate::fleet::store::FleetOperator {
+        fleet.operator = Some(codewhale_engine::fleet::store::FleetOperator {
             provider: "deepseek".to_string(),
             model: "deepseek-v4-flash".to_string(),
             reasoning: None,
@@ -827,7 +830,7 @@ mod tests {
 
         // The selection really persisted, at the personal scope. The
         // SelectedFleet path is the fleet file the marker names.
-        let sel = crate::fleet::store::selected_fleet(ws.path()).expect("selection");
+        let sel = codewhale_engine::fleet::store::selected_fleet(ws.path()).expect("selection");
         assert_eq!(sel.name, "DeepSeek Flash");
         assert_eq!(sel.scope, FleetScope::Personal);
         assert!(
@@ -909,7 +912,7 @@ mod tests {
         };
         assert!(message.contains("Folder Fleet"), "{message}");
         assert!(message.contains("folder"), "{message}");
-        let sel = crate::fleet::store::selected_fleet(ws.path()).expect("selection");
+        let sel = codewhale_engine::fleet::store::selected_fleet(ws.path()).expect("selection");
         assert_eq!(sel.name, "Folder Fleet");
         assert_eq!(sel.scope, FleetScope::Workspace);
 
@@ -962,7 +965,7 @@ members = []"#;
             std::fs::read_to_string(&legacy_path).unwrap(),
             legacy_source
         );
-        assert!(crate::fleet::store::selected_fleet(ws.path()).is_none());
+        assert!(codewhale_engine::fleet::store::selected_fleet(ws.path()).is_none());
     }
 
     #[test]
@@ -1010,8 +1013,8 @@ provider = "deepseek"
             entries.iter().any(|e| e.name == "Default" && !e.legacy),
             "{entries:?}"
         );
-        let sel =
-            crate::fleet::store::selected_fleet(ws.path()).expect("selection after migration");
+        let sel = codewhale_engine::fleet::store::selected_fleet(ws.path())
+            .expect("selection after migration");
         assert_eq!(sel.name, "Default");
 
         // SAFETY: serialised by lock_test_env.

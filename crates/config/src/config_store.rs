@@ -190,7 +190,7 @@ impl ConfigStore {
     /// Render the exact body [`save`](Self::save) would write: the serialized
     /// config with comments and disabled keys from the originally-loaded file
     /// merged back in. Exposed so setup flows can stage this body into a
-    /// [`persistence::SetupTransaction`] alongside sibling files and keep the
+    /// `persistence::SetupTransaction` alongside sibling files and keep the
     /// comment-preserving write atomic with the rest of the transaction.
     pub fn rendered_body(&self) -> Result<String> {
         catalog::configured::validate_configured_models(

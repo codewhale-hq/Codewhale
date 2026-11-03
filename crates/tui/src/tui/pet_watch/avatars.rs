@@ -1,12 +1,8 @@
 //! Terminal avatar selection projects the existing owner frame and clock.
 use super::*;
 use base64::Engine as _;
-use codewhale_ratatui::{
-    Paint,
-    avatar::{Pack, RegisteredPack},
-    avatar_sprite::Sprite,
-    whale_girl,
-};
+use codewhale_protocol::avatar::{Pack, RegisteredPack};
+use codewhale_ratatui::{Paint, avatar_sprite::Sprite, whale_girl};
 use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
@@ -68,7 +64,7 @@ impl Avatars {
             let workspace = workspace.to_path_buf();
             let key = entry.image_key(page);
             runtime.spawn(async move {
-                let png = crate::extension_host::avatars::atlas(
+                let png = codewhale_engine::extension_host::avatars::atlas(
                     workspace,
                     entry.handle,
                     page,
@@ -120,7 +116,8 @@ impl Avatars {
                 let workspace = workspace.to_path_buf();
                 self.pending = Some(rx);
                 runtime.spawn(async move {
-                    let _ = tx.send(crate::extension_host::avatars::catalog(workspace).await);
+                    let _ = tx
+                        .send(codewhale_engine::extension_host::avatars::catalog(workspace).await);
                 });
             }
         }

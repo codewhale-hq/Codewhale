@@ -162,8 +162,11 @@ fn guarded_ocean_semantic_alias_reverse_unknown_ink_and_style_facts_survive_fina
                 .add_modifier(Modifier::ITALIC),
         ),
     ])];
-    let protected =
-        ocean_semantic_surfaces(&rows, area, crate::tui::ui_text::grapheme_display_width);
+    let protected = ocean_semantic_surfaces(
+        &rows,
+        area,
+        codewhale_tui_kit::ui_text::grapheme_display_width,
+    );
     assert_eq!(protected, vec![Rect::new(13, 5, 8, 1)]);
     let mut buf = ordinary(area);
     buf[(7, 6)].set_symbol("x").set_fg(Color::Reset);

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -214,7 +214,7 @@ Computer Use (экспериментальный, только macOS) может
 | `codewhale` | Интерактивное терминальное приложение |
 | `codewhale exec "…"` | Одна задача без интерфейса. Сам по себе он отвечает, не используя инструменты; `--auto` по умолчанию включает инструменты с Full Access, `--sandbox workspace-write` ограничивает их, а `--output-format stream-json` выводит события потоком в формате JSON |
 | `codewhale web` | Локальный веб-интерфейс на `127.0.0.1` ([руководство](../WEB.md)) |
-| `codewhale review --pr N` | Рекомендательный обзор pull request на GitHub. Он ничего не публикует, если вы не добавите `--post`; [GitHub Action](../GITHUB_ACTION.md) выполняет тот же обзор в CI |
+| `codewhale review --pr N` | Рекомендательный обзор pull request на GitHub. [Настройка бота GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) создаёт закреплённый workflow для автоматических обзоров и `@codewhale review`, используя ваш собственный ключ модели и необязательную идентификацию App |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md) — локальный HTTP API для тредов, событий, одобрений и изменений файлов в каждом ходе |
 | `codewhale serve --acp` | Agent Client Protocol через stdio для редакторов, например Zed |
 

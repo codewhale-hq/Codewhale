@@ -6,8 +6,8 @@
 
 use std::fmt::Write as _;
 
-use crate::tools::subagent::CoordinationDetailProjection;
-use crate::tools::subagent::coord::{DecisionStatus, ReconciliationReceipt};
+use codewhale_engine::tools::subagent::CoordinationDetailProjection;
+use codewhale_engine::tools::subagent::coord::{DecisionStatus, ReconciliationReceipt};
 use codewhale_localization::{Locale, MessageId, tr};
 
 #[must_use]
@@ -278,7 +278,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::tools::subagent::coord::{
+    use codewhale_engine::tools::subagent::coord::{
         ContextProjectionReceipt, CoordinationDetailMetrics, CoordinationHotPath, DecisionRecord,
         PersistedWriteClaim, WriteContentionDisposition, WriteContentionReceipt, WriteScopeClaim,
     };

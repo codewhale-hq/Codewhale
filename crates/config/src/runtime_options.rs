@@ -71,7 +71,7 @@ pub enum ProviderSource {
 /// Where the resolved runtime model id came from.
 ///
 /// This mirrors the precedence chain in
-/// [`ConfigToml::resolve_runtime_options_with_secrets`] so diagnostics can say
+/// `ConfigToml::resolve_runtime_options_with_secrets` so diagnostics can say
 /// *why* a model was chosen instead of presenting a built-in default as if the
 /// user had asked for it. [`Self::ProviderDefault`] is the only variant that
 /// means "nothing was configured".
@@ -140,7 +140,7 @@ pub struct ResolvedRuntimeOptions {
     pub telemetry_explicit_off: bool,
     /// Where a telemetry batch would be sent, if telemetry were on.
     ///
-    /// Already resolved: [`DEFAULT_TELEMETRY_ENDPOINT`] when nobody configured
+    /// Already resolved: `DEFAULT_TELEMETRY_ENDPOINT` when nobody configured
     /// one, the configured value when somebody did, and `None` when somebody
     /// configured an empty one — which means the dry-run sink, not "unset".
     /// Which schemes are actually contactable is decided where a batch would be

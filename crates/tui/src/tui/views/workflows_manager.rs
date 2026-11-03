@@ -10,8 +10,8 @@
 //! `r` re-reads the journal.
 //!
 //! This view never asks the model anything: it reads
-//! [`crate::tools::workflow::host_workflow_run_details`] and writes only
-//! through [`crate::tools::workflow::host_cancel_workflow`].
+//! [`codewhale_engine::tools::workflow::host_workflow_run_details`] and writes only
+//! through [`codewhale_engine::tools::workflow::host_cancel_workflow`].
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -27,12 +27,12 @@ use ratatui::{
 };
 
 use super::{ActionHint, ModalKind, ModalView, ViewAction, render_modal_footer};
-use crate::tools::workflow::{
+use crate::tui::app::App;
+use codewhale_engine::tools::workflow::{
     HostWorkflowChildRow, HostWorkflowRunDetail, host_cancel_workflow, host_workflow_run_details,
 };
-use crate::tui::app::App;
-use crate::tui::list_nav::wrap_index;
 use codewhale_palette as palette;
+use codewhale_tui_kit::list_nav::wrap_index;
 
 fn now_ms() -> u64 {
     SystemTime::now()

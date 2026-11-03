@@ -40,14 +40,14 @@ noise; concrete ones become fixes with credit.
    changes atomic`. Good: a maintainer knows the fix from the title alone.
 4. **Write the body in sections** (skip none that apply):
    - **Why this matters** — who it affects (multi-terminal QA, Fleet workers,
-     DeepSeek-first users) and the cost of leaving it.
+     users on any provider route) and the cost of leaving it.
    - **Current behavior** — what happens today, with the error/log block and
      `crates/.../file.rs:line` code pointers to inspect.
    - **Desired behavior** — the target, as a short numbered list.
    - **Repro or evidence** — exact steps or the captured log. For ideas, the
      concrete trigger/example that motivates it.
    - **Acceptance criteria** — falsifiable checkboxes a verifier can run, e.g.
-     `- [ ] cargo test -p tui passes` or `- [ ] route mismatch blocks before
+     `- [ ] scripts/dev-test.sh tui <filter> passes` or `- [ ] route mismatch blocks before
      the API call with a local diagnostic`. If you cannot state how it's
      verified, the issue is not ready.
    - **Related** — `#N` for the issues/PRs/reports this touches.

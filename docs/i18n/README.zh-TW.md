@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -179,7 +179,7 @@ Codewhale 發現這類檔案卻沒有載入時，會發出警告。
 | `codewhale` | 互動式終端機應用程式 |
 | `codewhale exec "…"` | 在沒有介面的情況下執行一項任務。單獨使用時，它只回答、不使用工具；`--auto` 預設以「完整存取」權限啟用工具，`--sandbox workspace-write` 對工具加以限制，`--output-format stream-json` 以 JSON 串流輸出事件 |
 | `codewhale web` | 在 `127.0.0.1` 上的本機 Web UI（[指南](../WEB.md)） |
-| `codewhale review --pr N` | 對 GitHub PR（Pull Request）進行僅供參考的審查。除非你加上 `--post`，否則不會張貼任何內容；[GitHub Action](../GITHUB_ACTION.md) 會在 CI 中執行相同的審查 |
+| `codewhale review --pr N` | 對 GitHub PR（Pull Request）進行僅供參考的審查。[GitHub 機器人設定](../GITHUB_ACTION.md#set-up-your-own-bot) 會產生一個固定版本的工作流程，用於自動審查和 `@codewhale review`，使用你自己的模型金鑰和可選的 App 身分 |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md)，用於執行緒、事件、核准與每個回合檔案變更的本機 HTTP API |
 | `codewhale serve --acp` | 透過 stdio 提供的 Agent Client Protocol，供 Zed 等編輯器使用 |
 

@@ -172,7 +172,7 @@ jobs:
             # push to main still runs it unconditionally as the pre-release
             # safety net for anything this filter misses.
             case "${path}" in
-              crates/app-server/*|crates/tui/src/runtime_api*|crates/tui/src/runtime_mobile.html|crates/tui/src/runtime_threads*|crates/tui/src/main.rs|scripts/mobile-smoke.sh|.github/workflows/ci.yml|Cargo.lock|Cargo.toml)
+              crates/app-server/*|crates/tui/src/runtime_api*|crates/tui/src/runtime_mobile.html|crates/engine/src/runtime_threads*|crates/tui/src/main.rs|scripts/mobile-smoke.sh|.github/workflows/ci.yml|Cargo.lock|Cargo.toml)
                 mobile=true
                 ;;
             esac
@@ -327,7 +327,7 @@ jobs:
         # testing; then reject any bundle drift. Node 22 matches the host floor.
         run: |
           set -euo pipefail
-          cd crates/tui/extension-host
+          cd crates/engine/extension-host
           npm ci --ignore-scripts
           npm test
           npm run typecheck
@@ -344,7 +344,7 @@ jobs:
         # suites only; the Rust host tests run on Node.
         run: |
           set -euo pipefail
-          cd crates/tui/extension-host
+          cd crates/engine/extension-host
           npm run test:bun
 
   extension-host-runtimes:
@@ -359,7 +359,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: crates/tui/extension-host
+        working-directory: crates/engine/extension-host
         shell: bash
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -384,7 +384,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: extension-host-runtime-${{ matrix.os }}
-          path: crates/tui/extension-host/dist/builtin-modules.json
+          path: crates/engine/extension-host/dist/builtin-modules.json
           if-no-files-found: error
 
   vscode-extension:
@@ -470,7 +470,7 @@ jobs:
         # codewhale-runtime owns `safe_label` (its hostile-authority test)
         # since RS-2; add the next package when another safety module moves.
         run: |
-          sh scripts/with-hermetic-test-home.sh cargo nextest run -p codewhale-tui -p codewhale-runtime --lib --locked --no-tests=fail -E 'test(auto_review) | test(authority) | test(sandbox)'
+          sh scripts/with-hermetic-test-home.sh cargo nextest run -p codewhale-engine -p codewhale-tui -p codewhale-runtime --lib --locked --no-tests=fail -E 'test(auto_review) | test(authority) | test(sandbox)'
           sh scripts/with-hermetic-test-home.sh cargo test -p codewhale-execpolicy --locked
 
   lint:
@@ -896,7 +896,7 @@ jobs:
           set -euo pipefail
           bun_binary="$(bun -p 'process.execPath')"
           host_binary="$(node -p "require('path').join(process.env.RUNNER_TEMP, 'codewhale-extension-host' + (process.platform === 'win32' ? '.exe' : ''))")"
-          compiled_info="$(node crates/tui/extension-host/compile-host.mjs --bun "$bun_binary" --output "$host_binary")"
+          compiled_info="$(node crates/engine/extension-host/compile-host.mjs --bun "$bun_binary" --output "$host_binary")"
           printf 'CODEWHALE_COMPILED_HOST_TEST_BINARY=%s\n' "$host_binary" >> "$GITHUB_ENV"
           node - "$host_binary" "$bun_binary" "$compiled_info" >> "$GITHUB_ENV" <<'JS'
           const fs = require('node:fs'), crypto = require('node:crypto');
@@ -908,7 +908,7 @@ jobs:
           console.log('CODEWHALE_COMPILED_HOST_TEST_SHA256=' + digest(process.argv[2]));
           console.log('CODEWHALE_COMPILED_HOST_TEST_BUN=' + process.argv[3]);
           console.log('CODEWHALE_COMPILED_HOST_TEST_RUNTIME_SHA256=' + digest(process.argv[3]));
-          console.log('CODEWHALE_COMPILED_HOST_TEST_BUNDLE_SHA256=' + digest('crates/tui/extension-host/dist/codewhale-extension-host.mjs'));
+          console.log('CODEWHALE_COMPILED_HOST_TEST_BUNDLE_SHA256=' + digest('crates/engine/extension-host/dist/codewhale-extension-host.mjs'));
           JS
           # The required hermetic full invocation executes the shared actual
           # compiled Native secret/history/write scenario on each OS; Windows
@@ -1149,7 +1149,7 @@ jobs:
           python3 scripts/compiled-host-native-receipt.py \
             --junit target/nextest/ci/junit.xml \
             --compiled-image "$CODEWHALE_COMPILED_HOST_TEST_BINARY" \
-            --bundle crates/tui/extension-host/dist/codewhale-extension-host.mjs \
+            --bundle crates/engine/extension-host/dist/codewhale-extension-host.mjs \
             --bun "$CODEWHALE_COMPILED_HOST_TEST_BUN" --source-sha "$GITHUB_SHA" \
             --image-platform "$CODEWHALE_COMPILED_HOST_TEST_PLATFORM" --image-arch "$CODEWHALE_COMPILED_HOST_TEST_ARCH" \
             --host-sha256 "$CODEWHALE_COMPILED_HOST_TEST_SHA256" \

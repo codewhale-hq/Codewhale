@@ -27,7 +27,7 @@ pub struct ConfigToml {
     /// Exact saved selector for a named custom provider or a built-in alias.
     ///
     /// This is runtime parse state rather than a second on-disk key. The
-    /// serialized `provider` value is restored by [`ConfigStore`] so a typed
+    /// serialized `provider` value is restored by `ConfigStore` so a typed
     /// dispatcher read/write cannot collapse a named route to `custom` or a
     /// regional selector to its catalog parent.
     #[doc(hidden)]
@@ -41,7 +41,7 @@ pub struct ConfigToml {
     /// Where telemetry batches are sent, when telemetry is enabled at all.
     ///
     /// Unset here means "take the shipped default",
-    /// [`DEFAULT_TELEMETRY_ENDPOINT`] — not "send nowhere". Setting it to the
+    /// `DEFAULT_TELEMETRY_ENDPOINT` — not "send nowhere". Setting it to the
     /// empty string is the way to say send nowhere: that resolves to no
     /// endpoint, which appends batches to `dryrun.jsonl` and constructs no HTTP
     /// client. Either way a persistent or run-scoped opt-out still prevents any

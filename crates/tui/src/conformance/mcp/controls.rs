@@ -21,7 +21,7 @@ use super::{
     assert_no_secret, run_case,
 };
 use crate::conformance::golden;
-use crate::tools::spec::{RichToolResult, ToolError};
+use codewhale_engine::tools::spec::{RichToolResult, ToolError};
 
 /// Run `name` with `mutate` against both actual production backends.
 fn mutated(name: &str, mutate: impl FnOnce(&mut Value)) -> Result<(), String> {

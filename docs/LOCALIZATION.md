@@ -172,7 +172,7 @@ what the `(partial)` badge is honest about.
 | hreflang alternates cover every routed locale | `web/lib/page-meta.test.ts` | **Shipped** (#3091) |
 | Cyrillic packs stay script-pure (no mixed-language copy, ru≠uk) | `cyrillic_packs_have_script_purity_and_no_mixed_language_fixtures` in `crates/localization/src/lib.rs` + `dictionaries.test.ts` | **Shipped** (#3092/#4791) |
 | Devanagari grapheme-safe clip/wrap at 40/60/80 columns | `truncate_to_width_never_splits_devanagari_clusters` + width fixtures in `crates/localization/src/lib.rs` | **Shipped** (#4790) |
-| Adding a UI locale never changes model-visible prompt bytes | `v092_locales_add_no_prompt_bookends_so_prompt_bytes_stay_stable` in `crates/tui/src/prompts.rs` | **Shipped** (cache-stability contract) |
+| Adding a UI locale never changes model-visible prompt bytes | `v092_locales_add_no_prompt_bookends_so_prompt_bytes_stay_stable` in `crates/engine/src/prompts.rs` | **Shipped** (cache-stability contract) |
 | No shipped locale renders a missing-message marker | `no_shipped_locale_renders_a_missing_message_marker` in `crates/localization/src/lib.rs` | **Shipped** |
 
 ## How to add a locale

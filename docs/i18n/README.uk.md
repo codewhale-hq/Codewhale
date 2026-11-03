@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -216,7 +216,7 @@ Codewhale сам читає `AGENTS.md`. Файли інструкцій, нап
 | `codewhale` | Інтерактивний термінальний застосунок |
 | `codewhale exec "…"` | Одне завдання без інтерфейсу. Без додаткових прапорців він відповідає, не використовуючи інструментів; `--auto` за замовчуванням вмикає інструменти з «Повним доступом», `--sandbox workspace-write` обмежує їх, а `--output-format stream-json` передає події потоком у форматі JSON |
 | `codewhale web` | Локальний вебінтерфейс на `127.0.0.1` ([посібник](../WEB.md)) |
-| `codewhale review --pr N` | Рекомендаційний огляд pull request у GitHub. Нічого не публікує, якщо не додати `--post`; [GitHub Action](../GITHUB_ACTION.md) виконує такий самий огляд у CI |
+| `codewhale review --pr N` | Рекомендаційний огляд pull request у GitHub. [Налаштування бота GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) створює закріплений workflow для автоматичних оглядів і `@codewhale review`, використовуючи власний ключ моделі та необов'язкову ідентифікацію App |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md) — локальний HTTP API для тредів, подій, підтверджень і змін у файлах кожного ходу |
 | `codewhale serve --acp` | Agent Client Protocol через stdio для редакторів, як-от Zed |
 

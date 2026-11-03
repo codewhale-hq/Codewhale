@@ -1801,8 +1801,10 @@ impl FakeSkillGroup {
                 workspace: "/ws".into(),
                 skills_dir: "/ws/.codewhale/skills".into(),
                 mode_label: "compatible".into(),
+                bundled_status: vec![],
                 dirs: vec!["/ws/.codewhale/skills".into()],
                 entries: vec![SkillEntry {
+                    index_note: None,
                     name: "demo".into(),
                     description: "Demo skill".into(),
                     source: SkillSourceKind::Native,

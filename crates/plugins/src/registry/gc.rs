@@ -916,8 +916,11 @@ fn make_tree_removable(path: &Path) -> io::Result<()> {
     if metadata.is_dir() {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+            // Removal is the goal here; a mount that assigns its own modes
+            // already leaves the owner able to delete, and `tighten_mode`
+            // keeps the error for a filesystem that stores modes.
+            codewhale_config::private_directory::tighten_mode(path, 0o700)
+                .map_err(|error| io::Error::other(error.to_string()))?;
         }
         #[cfg(not(unix))]
         {

@@ -1231,7 +1231,7 @@ pub fn apply_caustic_shimmer(
     let protected = codewhale_ratatui::ocean::ocean_semantic_surfaces(
         lines,
         area,
-        crate::tui::ui_text::grapheme_display_width,
+        codewhale_tui_kit::ui_text::grapheme_display_width,
     );
     let paint = codewhale_ratatui::ocean::OceanPaintFacts {
         ground: ramp

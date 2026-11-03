@@ -53,7 +53,7 @@ pub use prune::prune_older_than;
 /// cap disk usage (#1112): the newest this many, plus the newest this many
 /// turn boundaries (`pre-turn:` / `post-turn:`), so a burst of per-tool
 /// snapshots can never push out the restore points of the turns that took
-/// them (see [`SnapshotRepo::prune_keep_last_n`]).
+/// them (see `SnapshotRepo::prune_keep_last_n`).
 pub const DEFAULT_MAX_SNAPSHOTS: usize = 50;
 pub use delta::{DeltaChange, SnapshotDelta};
 #[allow(unused_imports)]

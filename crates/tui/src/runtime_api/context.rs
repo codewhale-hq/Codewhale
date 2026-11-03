@@ -81,7 +81,7 @@ pub(super) async fn get_thread_context(
                 .ok()
         })
         .and_then(|identity| {
-            crate::route_runtime::resolve_runtime_route_for_identity(
+            codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
                 &config,
                 &identity,
                 Some(&thread.model),

@@ -7,7 +7,7 @@
 //! - `~/.codewhale/sessions/`   — saved session JSON files (tool call history)
 //! - `~/.codewhale/tasks/runtime/events/` — runtime thread JSONL event streams
 //! - `~/.codewhale/sessions/<id>/runtime/events/` — session-scoped runtime
-//!   stores (`default_runtime_store_root` in `crates/tui/src/runtime_threads.rs`)
+//!   stores (`default_runtime_store_root` in `crates/engine/src/runtime_threads.rs`)
 //!
 //! `CODEWHALE_RUNTIME_DIR` / `DEEPSEEK_RUNTIME_DIR` is an *exclusive* store root
 //! for every Runtime store in the writing process, so when it is set the reader
@@ -823,7 +823,7 @@ fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
 /// Every Runtime event directory this install can have written to.
 ///
 /// Mirrors `default_runtime_store_root` / `runtime_dir_override` in
-/// `crates/tui/src/runtime_threads.rs`: the task-scoped store lives at
+/// `crates/engine/src/runtime_threads.rs`: the task-scoped store lives at
 /// `<tasks>/runtime`, a session-scoped store at `<sessions>/<id>/runtime`, and
 /// an explicit `CODEWHALE_RUNTIME_DIR` replaces both. Missing directories are
 /// simply empty; the walk stays inside the resolved state roots.

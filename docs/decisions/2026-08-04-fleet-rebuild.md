@@ -8,7 +8,7 @@ below is anchored to code or a user statement; nothing is aspiration.
 Today two parallel stores exist:
 - per-role profile files (`~/.codewhale/agents/*.toml`, `.codewhale/agents/*.toml`,
   `[fleet.profiles]`, built-ins) merged by id with `ShadowedProfile` receipts
-  (crates/tui/src/fleet/roster.rs) — the "⚠ shadow" pile the UI must not show;
+  (crates/engine/src/fleet/roster.rs) — the "⚠ shadow" pile the UI must not show;
 - named fleet files (`fleets/<name>.toml` at `$CODEWHALE_HOME` or workspace)
   consumed by the workflow crate (`crates/workflow/src/named_fleet.rs`,
   `fleet_exact.rs`) with `QualifiedFleetId` ambiguity rejection.

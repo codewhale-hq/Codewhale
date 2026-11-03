@@ -12,8 +12,8 @@ use std::process::Command;
 
 use codewhale_command_contract::handler::CommandContexts;
 
-use crate::project_context;
 use crate::tui::app::AppAction;
+use codewhale_engine::project_context;
 
 use crate::commands::CommandResult;
 
@@ -23,7 +23,7 @@ use crate::commands::CommandResult;
 /// FEAT-021 portable dispatch: consumes only the workspace path (supplied
 /// through the `WORKSPACE` facet) and the UI language name (through the
 /// `PRESENTATION` facet); the workspace scan and prompt composition stay
-/// handler-owned (D2). `codewhale_util::utils`/`crate::project_context` are leaf,
+/// handler-owned (D2). `codewhale_util::utils`/`codewhale_engine::project_context` are leaf,
 /// path-parameterized helpers (no App/service state), consistent with D8.
 fn init(workspace: &Path, language: &str) -> CommandResult {
     // Ensure .deepseek/ is gitignored if we're inside a git repo.

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { KEYS } from './setup.mjs';
 
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -86,8 +87,7 @@ export function parseArtifact(raw) {
 }
 
 export function findingsArtifact(data, receipt, env) {
-  const secrets = ['GH_TOKEN', 'CODEWHALE_API_KEY', 'DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY',
-    'OPENROUTER_API_KEY', 'ZAI_API_KEY', 'MODELSTUDIO_API_KEY'].map(key => env[key]).filter(Boolean);
+  const secrets = ['GH_TOKEN', ...Object.values(KEYS)].map(key => env[key]).filter(Boolean);
   const clean = value => typeof value === 'string'
     ? secrets.reduce((result, secret) => result.split(secret).join('[REDACTED]'), value)
     : Array.isArray(value) ? value.map(clean)
@@ -114,20 +114,26 @@ export function issueBody(issue) {
   return body;
 }
 
-export function renderSummary(value, issues, duplicateCount) {
-  const result = ['## Codewhale review', `Reviewed commit: ${value.head_sha}`, markdown(value.review.summary)];
-  if (value.review.merge_risk) result.push(`**Merge risk: ${value.review.merge_risk.level}** — ${markdown(value.review.merge_risk.reason)}`);
-  for (const issue of issues) {
+export function hasRecordedEvidence(issue) {
+  return ['reproduced', 'traced'].includes(issue.evidence?.tier)
+    && typeof issue.evidence.detail === 'string' && issue.evidence.detail.trim().length > 0;
+}
+
+export function renderSummary(value, issues, duplicateCount, withheldCount = 0) {
+  const result = ['## Codewhale review', `Reviewed commit: ${value.head_sha}`,
+    issues.length ? `${issues.length} finding(s) with recorded evidence.`
+      : 'No new findings met the publication evidence requirement.'];
+  for (const issue of issues.filter(item => item.authorship !== 'preexisting')) {
     const location = issue.path ? `\n\nLocation: ${markdown(issue.path)}${issue.line ? `:${issue.line}` : ''}` : '';
-    result.push(`${issue.authorship === 'preexisting' ? 'Pre-existing finding\n\n' : ''}${issueBody(issue)}${location}`);
+    result.push(`${issue.authorship == null ? 'Attribution to this change was not recorded.\n\n' : ''}${issueBody(issue)}${location}`);
   }
+  const preexisting = issues.filter(item => item.authorship === 'preexisting');
+  if (preexisting.length) result.push('<details><summary>Pre-existing findings</summary>\n\n'
+    + preexisting.map(issue => `${issueBody(issue)}${issue.path ? `\n\nLocation: ${markdown(issue.path)}${issue.line ? `:${issue.line}` : ''}` : ''}`).join('\n\n')
+    + '\n\n</details>');
   if (duplicateCount) result.push(`${duplicateCount} finding(s) already reported by this publisher on unchanged file content were omitted.`);
-  if (value.review.suggestions.length) result.push('Suggestions:\n\n' + value.review.suggestions.map(item =>
-    `- ${item.path ? `${markdown(item.path)}${item.line ? `:${item.line}` : ''}: ` : ''}${markdown(item.suggestion)}`).join('\n'));
-  for (const [field, label] of [['not_reviewed', 'Not reviewed'], ['verified', 'Verified'], ['ruled_out', 'Checked without findings']]) {
-    if (value.review[field].length) result.push(`${label}:\n\n${value.review[field].map(item => `- ${markdown(item)}`).join('\n')}`);
-  }
-  if (value.review.overall_assessment) result.push(markdown(value.review.overall_assessment));
-  result.push('Advisory review. Binary contents and arbitrary unchanged callers are outside its coverage.');
+  if (withheldCount) result.push(`${withheldCount} candidate finding(s) had missing, empty or suspected evidence and were withheld. Investigation details remain in the analysis artifact.`);
+  result.push(`[Analysis and coverage](https://github.com/${value.repository}/actions/runs/${value.run_id}). Recorded evidence is supplied by the reviewer; publication does not independently reproduce it.`,
+    'Advisory review, not an approval or proof that the change is bug-free. Binary contents and arbitrary unchanged callers are outside its coverage.');
   return result.filter(Boolean).join('\n\n');
 }

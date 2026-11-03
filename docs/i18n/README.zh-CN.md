@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -180,7 +180,7 @@ Codewhale 会自动读取 `AGENTS.md`。为其他工具编写的指令文件，�
 | `codewhale` | 交互式终端应用 |
 | `codewhale exec "…"` | 不启动界面，运行一个任务。单独使用时，它只作答而不使用工具；`--auto` 默认以“完全访问”权限启用工具，`--sandbox workspace-write` 对工具施加限制，`--output-format stream-json` 以 JSON 形式流式输出事件 |
 | `codewhale web` | 监听 `127.0.0.1` 的本地 Web 界面（[指南](../WEB.md)） |
-| `codewhale review --pr N` | 对 GitHub PR 进行仅供参考的审查。除非你加上 `--post`，否则它不会发布任何内容；[GitHub Action](../GITHUB_ACTION.md) 会在 CI 中运行同样的审查 |
+| `codewhale review --pr N` | 对 GitHub PR 进行仅供参考的审查。[GitHub 机器人设置](../GITHUB_ACTION.md#set-up-your-own-bot) 会生成一个固定版本的 workflow，用于自动审查和 `@codewhale review`，使用你自己的模型密钥和可选的 App 身份 |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md)，用于对话线程、事件、审批以及每个回合文件改动的本地 HTTP API |
 | `codewhale serve --acp` | 通过 stdio 提供 Agent Client Protocol，供 Zed 等编辑器使用 |
 

@@ -82,6 +82,7 @@ fn cached_build_scripts_classify_the_current_manifest_and_require_it() {
     let fixture = Fixture::new();
     for (name, source) in [
         ("cli", include_str!("../../cli/build.rs")),
+        ("engine", include_str!("../../engine/build.rs")),
         ("tui", include_str!("../../tui/build.rs")),
     ] {
         let original = fixture.0.path().join(format!("{name} original"));

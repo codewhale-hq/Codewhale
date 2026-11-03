@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -177,7 +177,7 @@ Codewhale は `AGENTS.md` を自動で読み込みます。
 | `codewhale` | 対話型のターミナルアプリ |
 | `codewhale exec "…"` | インターフェースなしで 1 つのタスクを実行します。オプションなしではツールを使わずに回答し、`--auto` は既定でフルアクセスでツールを有効にし、`--sandbox workspace-write` はそれらを制限し、`--output-format stream-json` でイベントを JSON としてストリーミングします |
 | `codewhale web` | `127.0.0.1` で動作するローカル Web UI（[ガイド](../WEB.md)） |
-| `codewhale review --pr N` | GitHub のプルリクエストに対する参考としてのレビュー。`--post` を付けない限り何も投稿しません。[GitHub Action](../GITHUB_ACTION.md) は同じレビューを CI で実行します |
+| `codewhale review --pr N` | GitHub のプルリクエストに対する参考としてのレビュー。[GitHub ボット設定](../GITHUB_ACTION.md#set-up-your-own-bot) は、自動レビューと `@codewhale review` のためのバージョンを固定したワークフローを生成し、自分のモデルキーと任意の App ID を使います |
 | `codewhale app-server --http` | [Runtime API](../RUNTIME_API.md)。スレッド、イベント、承認、各ターンのファイル変更のためのローカル HTTP API |
 | `codewhale serve --acp` | stdio 経由の Agent Client Protocol。Zed などのエディター向け |
 

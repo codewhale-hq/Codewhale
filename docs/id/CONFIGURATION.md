@@ -31,3 +31,7 @@ Codewhale memiliki beberapa lapisan instruksi yang sengaja dipisahkan agar konst
 - Berkas Konstitusi Pengguna: `~/.codewhale/constitution.json`
 - Berkas Konfigurasi MCP: `~/.codewhale/mcp.json`
 - Berkas Sesi: `~/.codewhale/sessions/`
+
+## Kebijakan Skill Bawaan
+
+`[skills.bundled]` memisahkan pemasangan dari penemuan skill. `install` menerima `"auto"` (bawaan), `"all"`, atau `"none"`; `selected`, `disabled`, dan `explicit_only` mengatur nama skill bawaan tanpa menghapus berkas atau menimpa salinan yang diedit pengguna. Lihat [panduan lengkap](../SKILLS.md#bundled-skills) dan jalankan `codewhale doctor` atau `/skills inspect` untuk status yang berlaku.

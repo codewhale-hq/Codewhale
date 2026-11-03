@@ -1,5 +1,8 @@
-name: Codewhale review
-description: Review a pinned pull request with a checksummed Codewhale release and an explicit outcome receipt.
+name: Codewhale
+description: Review pull requests automatically or on an authorized @codewhale review request, using your chosen model.
+branding:
+  icon: code
+  color: blue
 inputs:
   version:
     description: Exact released CLI tag (vX.Y.Z). Must support review --json.
@@ -10,11 +13,19 @@ inputs:
   model:
     description: Exact model ID. Account mode requires provider/model from the account catalog.
     required: true
+  reasoning-effort:
+    description: Optional Engine reasoning setting (auto, off, low, medium, high, max).
   github-token:
     description: GitHub token with contents read and pull-requests read; legacy post:true also requires pull-requests write.
     default: ${{ github.token }}
   pr-number:
     description: PR number for workflow_dispatch; pull_request events use the event snapshot.
+  trigger-phrase:
+    description: Bot mention used for a standalone @name review line in a new PR comment.
+    default: '@codewhale'
+  allow-forks:
+    description: Allow inert fork review only on a write-authorized issue_comment or manual run from the default branch.
+    default: 'false'
   max-chars:
     description: Maximum diff characters per complete pass.
     default: '200000'
@@ -52,7 +63,10 @@ runs:
         CW_VERSION: ${{ inputs.version }}
         CW_PROVIDER: ${{ inputs.provider }}
         CW_MODEL: ${{ inputs.model }}
+        CW_REASONING_EFFORT: ${{ inputs.reasoning-effort }}
         CW_PR_NUMBER: ${{ inputs.pr-number }}
+        CW_TRIGGER_PHRASE: ${{ inputs.trigger-phrase }}
+        CW_ALLOW_FORKS: ${{ inputs.allow-forks }}
         CW_MAX_CHARS: ${{ inputs.max-chars }}
         CW_MAX_PASSES: ${{ inputs.max-passes }}
         CW_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}

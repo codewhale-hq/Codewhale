@@ -35,7 +35,10 @@ pub(super) fn available_models_message(
     current_provider: &str,
     current_model: &str,
     models: &[String],
-    fleet: &Result<Vec<crate::fleet::members::FleetModel>, crate::fleet::store::FleetStoreError>,
+    fleet: &Result<
+        Vec<codewhale_engine::fleet::members::FleetModel>,
+        codewhale_engine::fleet::store::FleetStoreError,
+    >,
 ) -> String {
     use codewhale_localization::{MessageId, tr};
     let mut lines = Vec::new();
@@ -111,7 +114,7 @@ mod tests {
     /// "the session model only".
     #[test]
     fn available_models_message_names_a_broken_fleet_selection() {
-        let broken = Err(crate::fleet::store::FleetStoreError::NotFound(
+        let broken = Err(codewhale_engine::fleet::store::FleetStoreError::NotFound(
             "selected fleet `Ops`".to_string(),
         ));
         let msg = available_models_message(
@@ -133,13 +136,13 @@ mod tests {
     #[test]
     fn fleet_current_marker_matches_the_exact_route_not_the_bare_id() {
         let fleet = vec![
-            crate::fleet::members::FleetModel {
+            codewhale_engine::fleet::members::FleetModel {
                 provider: "openrouter".to_string(),
                 model: "deepseek/deepseek-v4-flash".to_string(),
                 roles: vec!["scout".to_string()],
                 fleet: "Ops".to_string(),
             },
-            crate::fleet::members::FleetModel {
+            codewhale_engine::fleet::members::FleetModel {
                 provider: "novita".to_string(),
                 model: "deepseek/deepseek-v4-flash".to_string(),
                 roles: Vec::new(),

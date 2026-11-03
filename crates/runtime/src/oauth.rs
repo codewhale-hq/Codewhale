@@ -4352,7 +4352,7 @@ pub fn owned_generation_is_dangling(provider: OAuthProvider, config: &Config) ->
 /// Best-effort repair for the [#5032] bricked-launch state: remove the stale
 /// `oauth_credential_generation` pointer from the PERSISTED config file so
 /// the next launch is no longer bricked. Mirrors the document edits in
-/// [`activate_login_locked`] (which replaces the pointer under the config
+/// `activate_login_locked` (which replaces the pointer under the config
 /// lock) and [`crate::config::clear_api_key`]'s unlocked scrub.
 ///
 /// Leaves `auth_mode = "oauth"` intact: the user still wants OAuth, they

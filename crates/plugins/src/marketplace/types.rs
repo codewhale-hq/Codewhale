@@ -231,7 +231,7 @@ pub enum MarketplaceSourceSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MarketplaceInstallPlan {
-    /// Maps onto a real [`PluginInstallSource`] spec.
+    /// Maps onto a real [`PluginInstallSource`](crate::install::PluginInstallSource) spec.
     Supported { spec: String, source_kind: String },
     /// Cannot be installed by Codewhale today, and why.
     Unsupported { reason: String, raw: String },

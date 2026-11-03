@@ -38,10 +38,11 @@ base64 = "0.23.1"
 codewhale-cloud-facts = { path = "../cloud-facts", version = "0.10.2" }
 codewhale-localization = { path = "../localization", version = "0.10.2" }
 codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-util = { path = "../util", version = "0.10.2" }
 codewhale-release = { path = "../release", version = "0.10.2" }
 codewhale-paths = { path = "../paths", version = "0.10.2" }
 dirs.workspace = true
-jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 parking_lot = "0.12"
 reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
 ring = { version = "0.17", optional = true }
@@ -52,6 +53,7 @@ anyhow.workspace = true
 chrono.workspace = true
 codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
 codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.2" }
 codewhale-core = { path = "../core", version = "0.10.2" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
 codewhale-lane = { path = "../lane", version = "0.10.2" }
@@ -61,6 +63,7 @@ codewhale-palette = { path = "../palette", version = "0.10.2", default-features 
 codewhale-secrets = { path = "../secrets", version = "0.10.2" }
 colored = "3.0.0"
 fd-lock = "4.0.4"
+ignore = "0.4"
 lru = "0.18"
 regex = "1.11"
 serde = { workspace = true, features = ["rc"] }
@@ -72,6 +75,7 @@ tokio.workspace = true
 tokio-util = { version = "0.7.16", features = ["io"] }
 toml.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 uuid.workspace = true
 wait-timeout = "0.2"
 
@@ -89,7 +93,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading"] }
 
 [target.'cfg(not(target_env = "ohos"))'.dependencies]
 portable-pty = "0.9"

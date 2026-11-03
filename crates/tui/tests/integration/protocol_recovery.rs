@@ -26,16 +26,16 @@ use std::fs;
 // include each so a contributor moving a marker into a sibling submodule
 // does not silently break these regression checks.
 const ENGINE_SOURCES: &[&str] = &[
-    include_str!("../../src/core/engine.rs"),
-    include_str!("../../src/core/engine/streaming.rs"),
-    include_str!("../../src/core/engine/turn_loop.rs"),
-    include_str!("../../src/core/engine/dispatch.rs"),
-    include_str!("../../src/core/engine/tool_setup.rs"),
-    include_str!("../../src/core/engine/tool_execution.rs"),
-    include_str!("../../src/core/engine/tool_catalog.rs"),
-    include_str!("../../src/core/engine/context.rs"),
-    include_str!("../../src/core/engine/approval.rs"),
-    include_str!("../../src/core/engine/lsp_hooks.rs"),
+    include_str!("../../../engine/src/core/engine.rs"),
+    include_str!("../../../engine/src/core/engine/streaming.rs"),
+    include_str!("../../../engine/src/core/engine/turn_loop.rs"),
+    include_str!("../../../engine/src/core/engine/dispatch.rs"),
+    include_str!("../../../engine/src/core/engine/tool_setup.rs"),
+    include_str!("../../../engine/src/core/engine/tool_execution.rs"),
+    include_str!("../../../engine/src/core/engine/tool_catalog.rs"),
+    include_str!("../../../engine/src/core/engine/context.rs"),
+    include_str!("../../../engine/src/core/engine/approval.rs"),
+    include_str!("../../../engine/src/core/engine/lsp_hooks.rs"),
 ];
 
 fn any_engine_source_contains(needle: &str) -> bool {
@@ -166,7 +166,10 @@ fn legacy_parser_marker_helper_flags_fake_wrappers_without_enabling_execution() 
 fn engine_source_file_still_exists_and_is_non_trivial() {
     // Sanity check so the `include_str!` above is meaningful — if the engine
     // module ever moves, this test must be updated alongside it.
-    let metadata = fs::metadata("src/core/engine.rs").expect("engine.rs must exist next to tests");
+    let metadata = fs::metadata(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../engine/src/core/engine.rs"),
+    )
+    .expect("engine.rs must exist in the Engine crate");
     assert!(
         metadata.len() > 10_000,
         "engine.rs is unexpectedly small ({} bytes); did the file move?",

@@ -172,6 +172,30 @@ fn every_event() -> Vec<Event> {
             probes: 2,
             probes_failed: 0,
         },
+        Event::ModelUsage {
+            provider: "deepseek".to_string(),
+            model: "other".to_string(),
+            counters: crate::event::ModelCounters {
+                turns_ok: 12,
+                turns_failed: 1,
+                turns_interrupted: 0,
+                input_tokens: 418_230,
+                output_tokens: 9_120,
+                cache_read_tokens: 380_001,
+                cache_write_tokens: 0,
+            },
+            turn_wall: TurnWall {
+                lt_5s: 3,
+                five_to_thirty: 8,
+                thirty_to_onetwenty: 2,
+                gte_120s: 0,
+            },
+        },
+        Event::ToolUsage {
+            tool: "read_file".to_string(),
+            calls: 41,
+            errors: 2,
+        },
     ]
 }
 
@@ -279,6 +303,8 @@ fn every_payload_field_is_bounded() {
             "install_id" => uuid::Uuid::parse_str(&value).is_ok(),
             p if p.ends_with(".site") => is_reduced_panic_site(&value),
             p if p.ends_with(".previous_version") => is_app_version(&value),
+            p if p.ends_with(".tool") => is_reported_tool_name(&value),
+            p if p.ends_with(".model") => is_reported_model_id(&value),
             _ => enums.contains(&value),
         };
         assert!(ok, "unbounded string leaf at {path}: {value:?}");
@@ -1632,7 +1658,7 @@ fn no_public_api_accepts_a_bare_bool() {
 // ------------------------------------------------- docs and code are welded --
 
 const TELEMETRY_DOC: &str = include_str!("../../../docs/TELEMETRY.md");
-const GOLDEN_V3: &str = include_str!("../tests/golden/v3.json");
+const GOLDEN_V4: &str = include_str!("../tests/golden/v4.json");
 
 /// Extract the fenced ```jsonc blocks from the schema doc, in order.
 fn jsonc_blocks(doc: &str) -> Vec<String> {
@@ -1758,7 +1784,7 @@ fn event_field_names_match_documented_schema() {
     let blocks = jsonc_blocks(TELEMETRY_DOC);
     assert_eq!(
         blocks.len(),
-        7,
+        9,
         "expected one jsonc block for the envelope and one per event variant; \
          a parse miss must fail rather than silently pass"
     );
@@ -1838,9 +1864,9 @@ fn event_field_names_match_documented_schema() {
 }
 
 #[test]
-fn golden_payload_v3() {
+fn golden_payload_v4() {
     assert_eq!(NOTICE_VERSION.to_string(), TELEMETRY_NOTICE_VERSION);
-    // `crates/telemetry/tests/golden/v3.json` is one fully-populated instance of
+    // `crates/telemetry/tests/golden/v4.json` is one fully-populated instance of
     // the envelope and every event. Any field add, remove, or retype fails here
     // until the developer re-blesses it under a bumped `SCHEMA_VERSION` — and it
     // is also the artifact a future receiver author reads to know exactly what
@@ -1856,15 +1882,15 @@ fn golden_payload_v3() {
     rendered.push('\n');
 
     if std::env::var("CODEWHALE_BLESS_TELEMETRY_GOLDEN").is_ok() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/v3.json");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/v4.json");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("create golden dir");
         std::fs::write(&path, &rendered).expect("write golden");
         return;
     }
 
     assert_eq!(
-        rendered, GOLDEN_V3,
-        "the v3 payload changed; bump SCHEMA_VERSION and re-bless the golden file"
+        rendered, GOLDEN_V4,
+        "the v4 payload changed; bump SCHEMA_VERSION and re-bless the golden file"
     );
 }
 

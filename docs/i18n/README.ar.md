@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:1e61f10f7706 -->
+<!-- source: README.md sha256:0430d94f3d47 -->
 <div align="center">
 
 <picture>
@@ -194,7 +194,7 @@ OpenAI، وكذلك النماذج المحلية عبر Ollama أو vLLM أو S
 | `codewhale` | تطبيق الطرفية التفاعلي |
 | `codewhale exec "…"` | مهمة واحدة دون الواجهة. دون خيارات إضافية يجيب دون استخدام الأدوات؛ ويفعّل `--auto` الأدوات مع Full Access افتراضيًا، ويقيّدها `--sandbox workspace-write`، ويبث `--output-format stream-json` الأحداث بصيغة JSON |
 | `codewhale web` | واجهة ويب محلية على `127.0.0.1` ([الدليل](../WEB.md)) |
-| `codewhale review --pr N` | مراجعة استشارية لطلب pull request على GitHub. لا ينشر شيئًا ما لم تضف `--post`؛ ويُجري [GitHub Action](../GITHUB_ACTION.md) المراجعة نفسها في CI |
+| `codewhale review --pr N` | مراجعة استشارية لطلب pull request على GitHub. يُنشئ [إعداد بوت GitHub](../GITHUB_ACTION.md#set-up-your-own-bot) سير عمل مثبّت الإصدار للمراجعات التلقائية و`@codewhale review`، باستخدام مفتاح النموذج الخاص بك وهوية App اختيارية |
 | `codewhale app-server --http` | واجهة [Runtime API](../RUNTIME_API.md)، وهي واجهة HTTP محلية للخيوط والأحداث والموافقات وتغييرات الملفات في كل دورة |
 | `codewhale serve --acp` | بروتوكول Agent Client Protocol عبر stdio، لمحررات مثل Zed |
 
