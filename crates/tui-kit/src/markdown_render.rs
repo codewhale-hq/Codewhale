@@ -21,6 +21,7 @@
 //! cell and re-runs only the render step on width changes. That makes resize a
 //! re-flow operation rather than a re-parse + re-flow operation.
 
+use std::borrow::Cow;
 #[cfg(any(test, feature = "test-support"))]
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -552,6 +553,24 @@ fn stable_block_prefix_len(blocks: &[Block]) -> usize {
 ///
 /// Extracted from the original loop body unchanged so the batch and streaming
 /// paths cannot drift: both call exactly this.
+fn expand_tabs(line: &str) -> Cow<'_, str> {
+    if !line.contains('\t') {
+        return Cow::Borrowed(line);
+    }
+    let mut expanded = String::with_capacity(line.len());
+    let mut column = 0;
+    for grapheme in line.graphemes(true) {
+        let width = markdown_grapheme_width(grapheme, column);
+        if grapheme == "\t" {
+            expanded.extend(std::iter::repeat_n(' ', width));
+        } else {
+            expanded.push_str(grapheme);
+        }
+        column += width;
+    }
+    Cow::Owned(expanded)
+}
+
 fn push_parsed_line(
     raw_line: &str,
     blocks: &mut Vec<Block>,
@@ -560,6 +579,8 @@ fn push_parsed_line(
     code_block_id: &mut usize,
     in_list: &mut bool,
 ) {
+    let raw_line = expand_tabs(raw_line);
+    let raw_line = raw_line.as_ref();
     let trimmed = raw_line.trim_start();
     let fence_char = if trimmed.starts_with('~') { '~' } else { '`' };
     let fence_len = trimmed.chars().take_while(|c| *c == fence_char).count();
@@ -623,6 +644,12 @@ fn push_parsed_line(
         return;
     }
 
+    if is_horizontal_rule(trimmed) {
+        *in_list = false;
+        blocks.push(Block::HorizontalRule);
+        return;
+    }
+
     if let Some((bullet, text)) = parse_list_item(trimmed) {
         *in_list = true;
         blocks.push(Block::ListItem {
@@ -630,12 +657,6 @@ fn push_parsed_line(
             bullet,
             text: text.to_string(),
         });
-        return;
-    }
-
-    if is_horizontal_rule(trimmed) {
-        *in_list = false;
-        blocks.push(Block::HorizontalRule);
         return;
     }
 
@@ -1009,7 +1030,7 @@ pub fn render_plain_text(content: &str, width: u16, base_style: Style) -> Vec<Li
         if raw_line.is_empty() {
             lines.push(Line::from(""));
         } else {
-            lines.extend(wrap_plain_line(raw_line, width, base_style));
+            lines.extend(wrap_plain_line(&expand_tabs(raw_line), width, base_style));
         }
     }
     if lines.is_empty() {
