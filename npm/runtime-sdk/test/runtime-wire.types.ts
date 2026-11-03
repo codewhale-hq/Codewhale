@@ -4,6 +4,7 @@ import type {
   DynamicToolItemStatus, DynamicToolCallParams, DynamicToolCallResult,
   DynamicToolCallContent, TurnEnvironmentParams,
 } from "../index.js";
+import { createRuntimeClient } from "../index.js";
 import type { Json } from "../generated/runtime.js";
 
 type Assert<T extends true> = T;
@@ -29,3 +30,6 @@ const event: RuntimeEventEnvelope = {
 const values: Json = [image, capabilities, experimental, inputSpec, publishedSpec, status, content, environment, result, request, event];
 const optionalMembers: Json = { optional: undefined, nested: { omitted: undefined, values } };
 void optionalMembers;
+
+const settlement: Promise<void> = createRuntimeClient().deliverDynamicToolResult(request, result, { signal: new AbortController().signal });
+void settlement;

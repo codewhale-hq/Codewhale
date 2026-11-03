@@ -5,7 +5,8 @@ Runtime API. The package is intentionally transport-only: it never bypasses the
 Rust runtime, sandbox, approvals, provider configuration, or Runtime execution
 ledger.
 
-Version 0.10.2 wraps Fleet operations and read-only thread event streaming.
+Version 0.10.3 wraps Fleet operations, read-only thread event streaming and
+client-executed dynamic-tool result delivery.
 It does **not** provide thread creation/resume, turn start/steer/interrupt,
 approval, clarification or model discovery helpers. Those operations already
 exist on the full Engine HTTP API; use the recipe below. This package is
@@ -61,13 +62,41 @@ exported from the same generated file; the SDK does not maintain another copy.
 Generate the JSON Schema and TypeScript package outputs with
 `cargo run -p codewhale-app-server-protocol --features schema --bin codewhale-app-server-schema -- --write`.
 Use `--check` to verify the committed schema and both TypeScript destinations.
-This ownership change does not add Codex RPC methods or turn/interaction helpers.
+The SDK result helper consumes these generated dynamic-tool contracts. This
+does not add Codex RPC methods or turn-start helpers.
 
 Input defaults remain optional in DynamicToolSpec and DynamicToolCallResult.
 DynamicToolSpecOutput describes the serialized spec published in thread metadata;
 Runtime event/capability fields describe the server's emitted representation.
 Generated Json admits omitted undefined object members, while its root and array
 values exclude undefined. The Native host generator keeps its existing format.
+
+## Deliver a dynamic-tool result
+
+Pass the exact pending call from `snapshot.pending_dynamic_tool_calls` or a
+validated `tool_call.requested` journal payload, together with the result from
+your registered client-side tool:
+
+```js
+await client.deliverDynamicToolResult(call, {
+  success: true,
+  content: [{ type: "input_text", text: output }],
+}, { signal });
+```
+
+The generated `DynamicToolCallParams` supplies all three Runtime identifiers;
+the helper encodes each path segment and submits once to the existing result
+endpoint. It resolves with no value after the empty HTTP 202 acknowledgement.
+That confirms result acceptance, not turn completion. Continue reading the
+Runtime journal or thread snapshot for the terminal outcome. Unknown, expired
+or already settled calls remain `RuntimeApiError` responses with their actual
+HTTP status; a 404 is not inferred to mean that the endpoint is unsupported.
+
+The helper neither executes tools nor invents results. An aborted request or
+lost response leaves acceptance uncertain and does not cancel Engine work;
+reload the canonical pending calls and journal before deciding what to do.
+It never automatically retries a mutation. Authenticated requests and this
+mutation refuse redirects, including unauthenticated use of the helper.
 
 ## Fleet Helpers
 
