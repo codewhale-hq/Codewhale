@@ -403,7 +403,7 @@ pub fn pin_recorded_environment(os: &str, shell: &str) -> RecordedEnvironmentGua
 /// The replayed shell on this thread, when a recorded environment is pinned.
 /// Tool descriptions that name the shell use it too, so a replay never
 /// depends on which shell first initialized their process-wide caches.
-#[cfg(all(any(test, feature = "test-support"), unix))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn recorded_shell() -> Option<String> {
     RECORDED_ENVIRONMENT.with(|cell| cell.borrow().as_ref().map(|(_, shell)| shell.clone()))
 }

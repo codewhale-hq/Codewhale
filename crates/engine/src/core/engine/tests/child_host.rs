@@ -1091,7 +1091,11 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
     );
     assert!(record.usage.total_tokens.is_none());
     assert!(record.has_unreported_usage);
-    let pending = crate::cost_status::drain();
+    let native = crate::cost_status::drain();
+    let mut pending = crate::session_manager::SessionCostSnapshot::default();
+    for record in &native.source_records {
+        pending.project_usage_record(record).unwrap();
+    }
     assert_eq!(pending.priced_turns, 0);
     assert_eq!(pending.unpriced_turns, 1);
     assert!(pending.unpriced_reasons.contains("request_outcome_unknown"));

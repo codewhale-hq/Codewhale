@@ -302,6 +302,7 @@ fn run_scripted_turn_with_deadline(
         let config = Config::default();
         let engine_config = EngineConfig {
             workspace: sandbox.workspace.clone(),
+            subagent_state_root: Some(sandbox.home.clone()),
             snapshots_enabled: false,
             subagents_enabled: false,
             session_id: Some("conformance-session".to_string()),

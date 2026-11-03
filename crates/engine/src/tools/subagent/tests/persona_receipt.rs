@@ -69,7 +69,7 @@ replacements = ["BackupRoute/fixture-backup-model"]
     config.set_feature("extension_host", true).unwrap();
     let mut runtime = stub_runtime().with_api_config(config.clone());
     runtime.client = CodewhaleClient::new(&config).unwrap();
-    runtime.context = ToolContext::new(fixture.workspace())
+    runtime.context = fixture_tool_context(fixture.workspace())
         .with_features(config.features())
         .with_plugin_registry(parent.plugin_view());
     runtime.manager = new_shared_subagent_manager(fixture.workspace().to_path_buf(), 2);

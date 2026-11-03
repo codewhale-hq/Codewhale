@@ -402,7 +402,7 @@ fn command_availability_on_path(
         // child PATH. A static miss in the child PATH is therefore not proof
         // that spawn will fail. PATHEXT is intentionally not consulted: Rust
         // only supplies an omitted `.exe`; `.cmd`/`.bat` must be explicit.
-        return McpCommandAvailability::NotChecked;
+        McpCommandAvailability::NotChecked
     }
     #[cfg(not(windows))]
     {

@@ -490,17 +490,19 @@ export function apply(ctx) {
                     "Recovered admitted turn",
                 ),
             );
-            let turn = runtime_threads
-                .start_turn(
-                    &thread.id,
-                    StartTurnRequest {
-                        prompt: "Already-admitted command turn".into(),
-                        operation_key: Some(format!("extension-command-{fingerprint}")),
-                        ..Default::default()
-                    },
-                )
+            let response: Value = client
+                .post(format!("http://{addr}/v1/threads/{}/turns", thread.id))
+                .json(&json!({
+                    "prompt": "Already-admitted command turn",
+                    "operation_key": format!("extension-command-{fingerprint}"),
+                }))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
                 .await?;
-            wait_for_terminal_turn_status(
+            let turn: TurnRecord = serde_json::from_value(response["turn"].clone())?;
+            let status = wait_for_terminal_turn_status(
                 &client,
                 addr,
                 &thread.id,
@@ -508,6 +510,12 @@ export function apply(ctx) {
                 Duration::from_secs(20),
             )
             .await?;
+            assert_eq!(
+                status,
+                "completed",
+                "{:?}",
+                runtime_threads.get_thread_detail(&thread.id).await?.turns
+            );
             let store = codewhale_engine::runtime_threads::RuntimeThreadStore::open(
                 runtime_threads.session_store_binding().data_dir,
             )?;
@@ -578,17 +586,19 @@ export function apply(ctx) {
                 "Existing operation result",
             ),
         );
-        let accepted = runtime_threads
-            .start_turn(
-                &thread.id,
-                StartTurnRequest {
-                    prompt: "Existing operation input".into(),
-                    operation_key: Some(format!("extension-command-{uncertain_fingerprint}")),
-                    ..Default::default()
-                },
-            )
+        let response: Value = client
+            .post(format!("http://{addr}/v1/threads/{}/turns", thread.id))
+            .json(&json!({
+                "prompt": "Existing operation input",
+                "operation_key": format!("extension-command-{uncertain_fingerprint}"),
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
             .await?;
-        wait_for_terminal_turn_status(
+        let accepted: TurnRecord = serde_json::from_value(response["turn"].clone())?;
+        let status = wait_for_terminal_turn_status(
             &client,
             addr,
             &thread.id,
@@ -596,6 +606,12 @@ export function apply(ctx) {
             Duration::from_secs(20),
         )
         .await?;
+        assert_eq!(
+            status,
+            "completed",
+            "{:?}",
+            runtime_threads.get_thread_detail(&thread.id).await?.turns
+        );
         if owned {
             let store = codewhale_engine::runtime_threads::RuntimeThreadStore::open(
                 runtime_threads.session_store_binding().data_dir,

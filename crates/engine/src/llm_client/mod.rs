@@ -1657,15 +1657,15 @@ impl OutboundWireObservationBatch {
             };
         }
         match last.map(|last| last.transmission) {
-            None | Some(RequestTransmission::NotDispatched) => ProviderUsageCoverage::NotDispatched,
+            Some(RequestTransmission::NotDispatched) => ProviderUsageCoverage::NotDispatched,
             Some(RequestTransmission::Rejected) => ProviderUsageCoverage::Rejected,
-            Some(RequestTransmission::OutcomeUnknown) if reported && complete => {
+            None | Some(RequestTransmission::OutcomeUnknown) if reported && complete => {
                 ProviderUsageCoverage::Reported
             }
-            Some(RequestTransmission::OutcomeUnknown) if reported => {
+            None | Some(RequestTransmission::OutcomeUnknown) if reported => {
                 ProviderUsageCoverage::Incomplete
             }
-            Some(RequestTransmission::OutcomeUnknown) => ProviderUsageCoverage::Missing,
+            None | Some(RequestTransmission::OutcomeUnknown) => ProviderUsageCoverage::Missing,
         }
     }
 }

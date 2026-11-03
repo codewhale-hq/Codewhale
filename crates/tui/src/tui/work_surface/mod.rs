@@ -1407,33 +1407,60 @@ mod tests {
             Some(ProviderKind::Deepseek.provider().default_base_url()),
             chrono::Utc::now(),
         );
-        let usage = |source_id: &str, input_tokens, output_tokens| MailboxMessage::TokenUsage {
-            record: None,
-            agent_id: "agent_stream".to_string(),
-            source_id: source_id.to_string(),
-            route: Box::new(route.clone()),
-            usage: codewhale_models::Usage {
-                input_tokens,
-                output_tokens,
-                ..Default::default()
-            },
-        };
+        let store = tempfile::tempdir().unwrap();
+        let manager =
+            codewhale_engine::session_manager::SessionManager::new(store.path().to_path_buf())
+                .unwrap();
+        let receipt = manager.expect_absent_session("fleet-fixture").unwrap();
+        let origin = receipt
+            .usage_origin(codewhale_engine::cost_status::scope_token())
+            .unwrap();
+        app.set_current_session_id(Some("fleet-fixture".into()));
+        app.session_write_receipt = Some(receipt);
+        let usage =
+            |source_id: &str, input_tokens, output_tokens| {
+                let tokens = codewhale_models::Usage {
+                    input_tokens,
+                    output_tokens,
+                    ..Default::default()
+                };
+                let source = codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
+                    source_id,
+                    codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+                    Some(origin.clone()),
+                );
+                let record = source.prepare(
+                &route, &tokens,
+                codewhale_engine::llm_client::ProviderUsageCoverage::Reported,
+                codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+            ).unwrap();
+                codewhale_engine::cost_status::report_runtime_usage_record(
+                    codewhale_engine::cost_status::scope_token(),
+                    None,
+                    &record,
+                )
+                .unwrap();
+                MailboxMessage::TokenUsage {
+                    record: Some(Box::new(record)),
+                    agent_id: "agent_stream".to_string(),
+                    source_id: source_id.to_string(),
+                    route: Box::new(route.clone()),
+                    usage: codewhale_models::Usage {
+                        input_tokens,
+                        output_tokens,
+                        ..Default::default()
+                    },
+                }
+            };
 
-        crate::tui::subagent_routing::handle_subagent_mailbox(
-            &mut app,
-            99,
-            &usage("response-1", 10_000, 1_000),
-        );
+        let first_usage = usage("response-1", 10_000, 1_000);
+        crate::tui::subagent_routing::handle_subagent_mailbox(&mut app, 99, &first_usage);
         let first = fleet_row(&render_rows(&mut app, 120, 4));
         assert!(first.contains("deepseek-v4-pro"), "{first}");
         assert!(first.contains("11.0k tokens"), "{first}");
 
         // Replaying the same mailbox envelope must not inflate the receipt.
-        crate::tui::subagent_routing::handle_subagent_mailbox(
-            &mut app,
-            1,
-            &usage("response-1", 10_000, 1_000),
-        );
+        crate::tui::subagent_routing::handle_subagent_mailbox(&mut app, 1, &first_usage);
         let replay = fleet_row(&render_rows(&mut app, 120, 4));
         assert!(replay.contains("11.0k tokens"), "{replay}");
 

@@ -1519,6 +1519,17 @@ async fn productive_tool_results_do_not_hit_no_user_input_backstop() {
         ));
     }
     turns.push(canned::simple_text_turn(FINAL_ANSWER));
+    for turn in &mut turns {
+        for event in turn {
+            if let codewhale_models::StreamEvent::MessageDelta { usage, .. } = event {
+                *usage = Some(Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    ..Default::default()
+                });
+            }
+        }
+    }
 
     let mock = std::sync::Arc::new(MockLlmClient::new(turns));
     let client: crate::core::model_client::SharedModelClient = mock.clone();

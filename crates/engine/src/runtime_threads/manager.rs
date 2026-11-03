@@ -1239,7 +1239,7 @@ fn thread_usage_split(thread: &ThreadRecord, turns: &[TurnRecord]) -> ThreadUsag
                 UsageGroupBy::Thread,
                 record,
                 turn,
-                &thread,
+                thread,
             );
         }
         for child in &turn.routed_usage {
@@ -11384,7 +11384,7 @@ impl RuntimeThreadManager {
             .map_err(|_| Unavailable)?;
         let lock_path = self
             .store
-            .turn_operation_lock_path(&fingerprint)
+            .turn_operation_lock_path(fingerprint)
             .map_err(|_| Unavailable)?;
         let lock_file = match open_runtime_store_file(
             &lock_path,
@@ -11401,7 +11401,7 @@ impl RuntimeThreadManager {
             {
                 return match self
                     .store
-                    .load_turn_operation_binding(&fingerprint)
+                    .load_turn_operation_binding(fingerprint)
                     .map_err(|_| Unavailable)?
                 {
                     None => Ok(None),
@@ -11423,7 +11423,7 @@ impl RuntimeThreadManager {
         })?;
         let Some(binding) = self
             .store
-            .load_turn_operation_binding(&fingerprint)
+            .load_turn_operation_binding(fingerprint)
             .map_err(|_| Unavailable)?
         else {
             return Ok(None);
@@ -16500,8 +16500,9 @@ source_usage_records: Default::default(),
                         .as_deref()
                         .is_some_and(|started| started == mailbox_turn_id);
                     if belongs_to_turn {
-                        if let Some(record) =
-                            record.as_ref().filter(|record| record.settlement.is_some())
+                        if let Some(record) = record
+                            .as_deref()
+                            .filter(|record| record.settlement.is_some())
                         {
                             self.append_usage_source_to_turn(&turn_id, record)?;
                             continue;
@@ -16996,12 +16997,12 @@ source_usage_records: Default::default(),
                         payload["timeout"] = json!(true);
                     }
                     let projection = projection_lock.lock().await;
-                    if *outcome == crate::approval_log::ApprovalOutcome::Timeout {
-                        if let Err(error) = self.emit_event(&thread_id, Some(&turn_id), None,
-                            "approval.timeout", json!({"approval_id": approval_id, "tool_call_id": id, "timeout_secs": publication.timeout_seconds()})).await {
-                            let _ = publication.acknowledge(Err(format!("Runtime approval timeout append failed: {error}")));
-                            return Err(error);
-                        }
+                    if *outcome == crate::approval_log::ApprovalOutcome::Timeout
+                        && let Err(error) = self.emit_event(&thread_id, Some(&turn_id), None,
+                            "approval.timeout", json!({"approval_id": approval_id, "tool_call_id": id, "timeout_secs": publication.timeout_seconds()})).await
+                    {
+                        let _ = publication.acknowledge(Err(format!("Runtime approval timeout append failed: {error}")));
+                        return Err(error);
                     }
                     if let Err(error) = self
                         .emit_event(
@@ -17319,7 +17320,6 @@ source_usage_records: Default::default(),
                     duration_ms,
                     first_token_ms,
                     request_ms,
-                    finish_reason: _,
                     ..
                 } => {
                     let cost = if let Some(record) = accounting.as_ref() {

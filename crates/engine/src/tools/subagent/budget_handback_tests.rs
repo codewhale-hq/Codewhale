@@ -1,4 +1,4 @@
-use super::tests::{chat_fixture_response, make_worker_spec, stub_runtime};
+use super::tests::{chat_fixture_response, fixture_tool_context, make_worker_spec, stub_runtime};
 use super::*;
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
 use tempfile::{TempDir, tempdir};
@@ -152,7 +152,7 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
     let mut runtime = stub_runtime();
     runtime.client = CodewhaleClient::new(&config).unwrap();
     runtime.api_config = Some(Arc::new(config));
-    runtime.context = ToolContext::new(workspace.path().to_path_buf());
+    runtime.context = fixture_tool_context(workspace.path().to_path_buf());
     runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.manager = Arc::clone(&manager);
     runtime.worker_profile = spec.runtime_profile.clone();

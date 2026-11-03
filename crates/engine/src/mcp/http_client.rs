@@ -1438,11 +1438,9 @@ mod tests {
         for selected in ["Accept", "Content-Type", "X-Unsafe"] {
             let mut invalid = session.clone();
             invalid.mcp_auth.headers.retain(|name, _| name == selected);
-            let error = invalid
-                .prepare_mcp_request(invalid.post(url), true)
-                .await
-                .err()
-                .expect("invalid selected headers must refuse request preparation");
+            let Err(error) = invalid.prepare_mcp_request(invalid.post(url), true).await else {
+                panic!("invalid selected headers must refuse request preparation");
+            };
             assert!(
                 error
                     .downcast_ref::<super::super::McpCredentialConfigurationError>()

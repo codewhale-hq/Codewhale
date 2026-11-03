@@ -2025,7 +2025,10 @@ mod recovery {
             first.error
         );
         assert_eq!(first.max_output_tokens, NonZeroU32::new(1500));
-        assert_eq!(first.schema_version, OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION);
+        assert_eq!(
+            first.schema_version,
+            SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION
+        );
         let calls = mock.captured_requests();
         assert_eq!(
             calls.len(),
@@ -2077,7 +2080,10 @@ mod recovery {
         let second = wait_for_terminal_turn(&manager, &second.id).await?;
         assert_eq!(second.status, RuntimeTurnStatus::Completed);
         assert_eq!(second.max_output_tokens, None);
-        assert_eq!(second.schema_version, CURRENT_RUNTIME_SCHEMA_VERSION);
+        assert_eq!(
+            second.schema_version,
+            SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION
+        );
         assert!(
             mock.last_request().unwrap().max_tokens > 1500,
             "cap cannot leak to the next turn"
@@ -17944,14 +17950,24 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
         })
     );
     assert_eq!(manager.pending_approvals_count(), 0);
-    let decided = manager
-        .events_since(&thread.id, None)?
-        .into_iter()
-        .find(|event| {
-            event.event == "approval.decided"
-                && event.payload.get("posture").and_then(Value::as_str) == Some("auto_review")
-        })
-        .context("auto-review hold must emit approval.decided")?;
+    let decided = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(event) = manager
+                .events_since(&thread.id, None)?
+                .into_iter()
+                .find(|event| {
+                    event.event == "approval.decided"
+                        && event.payload.get("posture").and_then(Value::as_str)
+                            == Some("auto_review")
+                })
+            {
+                return Ok::<_, anyhow::Error>(event);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .context("auto-review hold must emit approval.decided")??;
     assert_eq!(
         decided.payload.get("tool_call_id").and_then(Value::as_str),
         Some("tool_auto_hold")
@@ -21839,10 +21855,8 @@ mod runtime_image_inputs {
             ..Default::default()
         };
         let turn = manager.start_turn(&thread.id, request.clone()).await?;
-        assert_eq!(
-            wait_for_terminal_turn(&manager, &turn.id).await?.status,
-            RuntimeTurnStatus::Completed
-        );
+        let completed = wait_for_terminal_turn(&manager, &turn.id).await?;
+        assert_eq!(completed.status, RuntimeTurnStatus::Completed);
         assert_eq!(turn.max_output_tokens, max_output_tokens);
         assert_eq!(
             turn.schema_version,
@@ -21899,7 +21913,7 @@ mod runtime_image_inputs {
         let replayed = reopened.start_turn(&thread.id, request).await?;
         assert_eq!(replayed.id, turn.id);
         assert_eq!(replayed.max_output_tokens, max_output_tokens);
-        assert_eq!(replayed.schema_version, turn.schema_version);
+        assert_eq!(replayed.schema_version, completed.schema_version);
         assert!(
             reopened.active.lock().await.engines.is_empty(),
             "exact replay needs no provider or Engine"
@@ -21919,7 +21933,7 @@ mod runtime_image_inputs {
         let forked_turns = reopened.store.list_turns_for_thread(&fork.id)?;
         assert_eq!(forked_turns.len(), 1);
         assert_eq!(forked_turns[0].max_output_tokens, max_output_tokens);
-        assert_eq!(forked_turns[0].schema_version, turn.schema_version);
+        assert_eq!(forked_turns[0].schema_version, completed.schema_version);
         let messages = reopened.restore_thread_messages(&fork)?;
         assert_eq!(
             crate::image_attach::runtime_images_from_blocks(

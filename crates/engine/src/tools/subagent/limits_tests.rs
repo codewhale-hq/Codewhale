@@ -1,4 +1,6 @@
-use super::tests::{make_snapshot, make_worker_spec, stub_runtime};
+use super::tests::{
+    delayed_chat_client, fixture_tool_context, make_snapshot, make_worker_spec, stub_runtime,
+};
 use super::*;
 use tempfile::tempdir;
 
@@ -316,10 +318,13 @@ async fn child_wall_time_is_unbounded_unless_an_owner_sets_it() {
         4,
     )));
     let mut runtime = stub_runtime().child_runtime();
-    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.context = fixture_tool_context(tmp.path().to_path_buf());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.manager = Arc::clone(&manager);
     runtime.worker_profile.wall_time_secs = None;
-    runtime.cancel_token.cancel(); // inspect admission; no provider request may run
+    let (client, _, _, config) = delayed_chat_client(Duration::ZERO, "done").await;
+    runtime.client = client;
+    runtime.api_config = Some(Arc::new(config));
     let spawn = |guard: &mut SubAgentManager, wall_time: Option<Duration>| {
         let child = guard
             .spawn_background_with_assignment_options(
@@ -376,6 +381,7 @@ async fn child_wall_time_is_unbounded_unless_an_owner_sets_it() {
         let record = &guard.worker_records[receipt["agent_id"].as_str().unwrap()];
         assert_eq!(record.spec.max_spawn_depth, runtime.max_spawn_depth);
     }
+    runtime.cancel_token.cancel();
 }
 
 #[tokio::test]

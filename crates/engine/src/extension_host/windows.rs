@@ -1133,7 +1133,7 @@ fn token_has_lpac_attribute(token: &OwnedHandle) -> io::Result<bool> {
     let start = buffer.as_ptr() as usize;
     let end = start + buffer.len() * size_of::<usize>();
     let inside = |pointer: usize, bytes: usize, align: usize| {
-        pointer % align == 0
+        pointer.is_multiple_of(align)
             && pointer >= start
             && pointer.checked_add(bytes).is_some_and(|last| last <= end)
     };

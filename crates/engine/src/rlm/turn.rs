@@ -472,7 +472,7 @@ mod tests {
             "billed usage must still be charged"
         );
         assert_eq!(result.routed_usage.len(), 1);
-        assert_eq!(result.routed_usage[0].usage.usage, expected_usage);
+        assert_eq!(result.routed_usage[0].usage.usage, usage);
         assert_eq!(result.routed_usage_dropped_records, 0);
         assert_eq!(mock.call_count(), 1, "truncation must not retry");
         assert!(
@@ -513,13 +513,20 @@ mod tests {
         .await;
 
         assert_eq!(result.termination, RlmTermination::Error);
-        assert_eq!(result.usage, Usage::default());
-        assert!(result.routed_usage.is_empty());
-        assert_eq!(result.routed_usage_drop_records.len(), 1);
-        assert_eq!(result.routed_usage_dropped_records, 1);
         assert_eq!(
-            result.routed_usage_drop_records[0].route.model,
-            "root-model"
+            result.usage,
+            Usage {
+                request_usages: vec![Usage::default()],
+                ..Default::default()
+            }
+        );
+        assert_eq!(result.routed_usage.len(), 1);
+        assert!(result.routed_usage_drop_records.is_empty());
+        assert_eq!(result.routed_usage_dropped_records, 0);
+        assert_eq!(result.routed_usage[0].usage.route.model, "root-model");
+        assert_eq!(
+            result.routed_usage[0].settlement.as_ref().unwrap().coverage,
+            crate::llm_client::ProviderUsageCoverage::Missing
         );
     }
 
@@ -718,11 +725,30 @@ mod tests {
             );
             let mut expected_usage = text_response(partial).usage;
             expected_usage.request_usages = vec![text_response(partial).usage];
+            if pending_model {
+                expected_usage.request_usages.push(Usage::default());
+            }
             assert_eq!(result.usage, expected_usage);
             assert_eq!(client.0.call_count(), 1);
             let snapshot = usage.snapshot().await;
-            assert_eq!(snapshot.records.len(), 1, "keep completed usage");
-            assert_eq!(snapshot.dropped_records, u64::from(pending_model));
+            assert_eq!(
+                snapshot.records.len(),
+                1 + usize::from(pending_model),
+                "keep completed usage and the pending native source"
+            );
+            assert_eq!(snapshot.dropped_records, 0);
+            assert_eq!(
+                snapshot
+                    .records
+                    .iter()
+                    .filter(|record| record
+                        .settlement
+                        .as_ref()
+                        .is_some_and(|revision| revision.coverage
+                            == crate::llm_client::ProviderUsageCoverage::Missing))
+                    .count(),
+                usize::from(pending_model)
+            );
             if pending_model {
                 assert_eq!(result.trace.len(), 1, "keep completed rounds");
                 assert!(!result.trace[0].had_error);

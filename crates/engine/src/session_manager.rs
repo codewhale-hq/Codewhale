@@ -1414,13 +1414,13 @@ impl SessionCostSnapshot {
             record.permits_replacement(previous.map(|previous| &previous.record))?;
         } else {
             record.validate()?;
-            if let Some(previous) = previous {
-                if !record.follows_protected(&previous.record)? {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "protected usage projection changed route or spend owner",
-                    ));
-                }
+            if let Some(previous) = previous
+                && !record.follows_protected(&previous.record)?
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "protected usage projection changed route or spend owner",
+                ));
             }
         }
         let next = crate::cost_status::UsageSourceContribution::for_record(record);
@@ -3223,7 +3223,7 @@ impl SessionManager {
                 changed = true;
             }
             if changed {
-                Self::write_late_usage_candidate(&path, &original, &ledger)?;
+                Self::write_late_usage_candidate(path, &original, &ledger)?;
             }
             return Ok(true);
         }
@@ -3238,12 +3238,12 @@ impl SessionManager {
         {
             if !ledger.overflowed {
                 ledger.overflowed = true;
-                Self::write_late_usage_ledger(&path, &ledger)?;
+                Self::write_late_usage_ledger(path, &ledger)?;
             }
             return Ok(true);
         }
         ledger.records.push(incoming);
-        Self::write_late_usage_candidate(&path, &original, &ledger)?;
+        Self::write_late_usage_candidate(path, &original, &ledger)?;
         Ok(true)
     }
 
@@ -3611,17 +3611,17 @@ impl SessionManager {
             }
         };
         for mut record in ledger.records {
+            if let Some(receipt) = record
+                .decision
+                .as_ref()
+                .filter(|receipt| receipt.is_bounded())
+            {
+                metadata
+                    .cost
+                    .route_receipts
+                    .insert(receipt.diagnostic_receipt());
+            }
             if record.diagnostic_only {
-                if let Some(receipt) = record
-                    .decision
-                    .as_ref()
-                    .filter(|receipt| receipt.is_bounded())
-                {
-                    metadata
-                        .cost
-                        .route_receipts
-                        .insert(receipt.diagnostic_receipt());
-                }
                 continue;
             }
             if record.settlement.is_some() {
@@ -3657,14 +3657,6 @@ impl SessionManager {
             }
             if record.usage.as_ref() == Some(&codewhale_models::Usage::default()) {
                 record.usage = None;
-            }
-            if let Some(receipt) = &record.decision
-                && receipt.is_bounded()
-            {
-                metadata
-                    .cost
-                    .route_receipts
-                    .insert(receipt.diagnostic_receipt());
             }
             let coverage =
                 crate::cost_status::MissingUsageCoverage::for_route(&record.route, record.reason);

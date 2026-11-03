@@ -473,7 +473,10 @@ pub(super) fn handle_subagent_mailbox_for_turn(
         ..
     } = message
     {
-        if let Some(record) = record.as_ref().filter(|record| record.settlement.is_some()) {
+        if let Some(record) = record
+            .as_deref()
+            .filter(|record| record.settlement.is_some())
+        {
             let pending = codewhale_engine::cost_status::drain();
             app.absorb_pending_background_cost(&pending);
             if let Err(error) = app.absorb_usage_source(record) {
@@ -680,13 +683,16 @@ fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
     } = message
     {
         let (route, usage) = record
-            .as_ref()
+            .as_deref()
             .filter(|record| record.settlement.is_some())
             .map_or((route.as_ref(), usage), |record| {
                 (&record.usage.route, &record.usage.usage)
             });
         let total = u64::from(usage.input_tokens).saturating_add(u64::from(usage.output_tokens));
-        if let Some(record) = record.as_ref().filter(|record| record.settlement.is_some()) {
+        if let Some(record) = record
+            .as_deref()
+            .filter(|record| record.settlement.is_some())
+        {
             let key = codewhale_engine::cost_status::usage_source_fingerprint(&record.source_id);
             let previous = meta.received_usage_sources.insert(key, total).unwrap_or(0);
             meta.received_tokens = Some(

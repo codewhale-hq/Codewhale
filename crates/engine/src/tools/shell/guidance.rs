@@ -75,7 +75,7 @@ pub(super) fn command_guidance(kind: &ShellKind) -> String {
 pub(super) fn runtime_command_guidance() -> &'static str {
     // A conformance replay of a recorded host names that host's shell, not
     // whichever shell first initialized this process-wide cache (#6698).
-    #[cfg(all(test, unix))]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(binary) = crate::prompts::recorded_shell() {
         let kind = ShellKind::Custom {
             binary,
@@ -97,7 +97,7 @@ fn render_description(guidance: &str) -> String {
 }
 
 pub(super) fn description() -> &'static str {
-    #[cfg(all(test, unix))]
+    #[cfg(any(test, feature = "test-support"))]
     if crate::prompts::recorded_shell().is_some() {
         return Box::leak(render_description(runtime_command_guidance()).into_boxed_str());
     }

@@ -120,7 +120,7 @@ impl Masker {
             volatile_keys,
             uuids: HashMap::new(),
             uuid_re: regex::Regex::new(
-                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                r"(?P<prefix>primary:)(?P<simple>[0-9a-fA-F]{32})\b|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
             )
             .expect("uuid regex"),
             timestamp_re: regex::Regex::new(
@@ -172,12 +172,17 @@ impl Masker {
         let uuids = &mut self.uuids;
         self.uuid_re
             .replace_all(&out, |captures: &regex::Captures<'_>| {
-                let raw = captures[0].to_ascii_lowercase();
+                let raw = captures
+                    .name("simple")
+                    .map_or(&captures[0], |id| id.as_str())
+                    .replace('-', "")
+                    .to_ascii_lowercase();
                 let next = uuids.len() + 1;
-                uuids
-                    .entry(raw)
-                    .or_insert_with(|| format!("<uuid:{next}>"))
-                    .clone()
+                let masked = uuids.entry(raw).or_insert_with(|| format!("<uuid:{next}>"));
+                format!(
+                    "{}{masked}",
+                    captures.name("prefix").map_or("", |prefix| prefix.as_str())
+                )
             })
             .into_owned()
     }

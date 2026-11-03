@@ -24,6 +24,13 @@ struct PublicationValue {
     )>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(super) type MockApprovalPublications = Arc<
+    parking_lot::Mutex<
+        std::collections::HashMap<String, (NativeApprovalPublication, ApprovalProducer)>,
+    >,
+>;
+
 pub(crate) struct ApprovalProducer {
     source: NativeApprovalPublication,
     current: Option<Arc<parking_lot::Mutex<Option<NativeApprovalPublication>>>>,

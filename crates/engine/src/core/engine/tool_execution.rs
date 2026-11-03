@@ -24,23 +24,23 @@ fn inherited_interactive_shell_refusal(tool_name: &str, interactive: bool) -> Op
         .map(|message| ToolError::execution_failed(message.to_string()))
 }
 
-#[cfg(all(any(test, feature = "test-support"), unix))]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static REPLAY_SPAN_SEQ: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 /// Number operation spans on this thread from 1 until the guard drops, the
 /// way an otherwise idle process would (see [`OperationSpanGuard::span_id`]).
-#[cfg(all(any(test, feature = "test-support"), unix))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn pin_replay_span_sequence() -> ReplaySpanSequenceGuard {
     REPLAY_SPAN_SEQ.with(|cell| cell.set(Some(1)));
     ReplaySpanSequenceGuard
 }
 
-#[cfg(all(any(test, feature = "test-support"), unix))]
+#[cfg(any(test, feature = "test-support"))]
 pub struct ReplaySpanSequenceGuard;
 
-#[cfg(all(any(test, feature = "test-support"), unix))]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for ReplaySpanSequenceGuard {
     fn drop(&mut self) {
         REPLAY_SPAN_SEQ.with(|cell| cell.set(None));
@@ -71,7 +71,7 @@ impl<'a> OperationSpanGuard<'a> {
         // A conformance replay numbers its own spans. The process-wide
         // counter also counts every span another test starts in a shared
         // process, so a golden recorded in isolation drifted there (#6698).
-        #[cfg(all(any(test, feature = "test-support"), unix))]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(seq) = REPLAY_SPAN_SEQ.with(|cell| {
             let seq = cell.get()?;
             cell.set(Some(seq + 1));

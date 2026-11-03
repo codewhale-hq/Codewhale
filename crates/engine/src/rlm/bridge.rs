@@ -761,7 +761,10 @@ mod tests {
         assert_eq!(snapshot.usage.input_tokens, 7);
         assert_eq!(snapshot.usage.output_tokens, 11);
         assert_eq!(snapshot.records.len(), 1);
-        assert_eq!(snapshot.records[0].usage.usage, snapshot.usage);
+        assert_eq!(
+            snapshot.usage.request_usages,
+            vec![snapshot.records[0].usage.usage.clone()]
+        );
         assert!(snapshot.drop_records.is_empty());
         assert_eq!(snapshot.dropped_records, 0);
     }
@@ -792,14 +795,24 @@ mod tests {
 
         let first = bridge.usage_snapshot().await;
         let replay = bridge.usage_snapshot().await;
-        assert_eq!(first.usage, Usage::default());
-        assert!(first.records.is_empty());
-        assert_eq!(first.drop_records.len(), 1);
-        assert_eq!(first.dropped_records, 1);
-        assert_eq!(replay.drop_records, first.drop_records);
-        assert_eq!(replay.dropped_records, 1);
-        assert_eq!(first.drop_records[0].route.model, "child-model");
-        assert!(first.drop_records[0].source_id.starts_with("rlm:"));
+        assert_eq!(
+            first.usage,
+            Usage {
+                request_usages: vec![Usage::default()],
+                ..Default::default()
+            }
+        );
+        assert_eq!(first.records.len(), 1);
+        assert!(first.drop_records.is_empty());
+        assert_eq!(first.dropped_records, 0);
+        assert_eq!(replay.records, first.records);
+        assert_eq!(replay.dropped_records, 0);
+        assert_eq!(first.records[0].usage.route.model, "child-model");
+        assert!(first.records[0].source_id.starts_with("rlm:"));
+        assert_eq!(
+            first.records[0].settlement.as_ref().unwrap().coverage,
+            crate::llm_client::ProviderUsageCoverage::Missing
+        );
     }
 
     #[tokio::test]
@@ -922,7 +935,7 @@ mod tests {
         expected_usage.request_usages = vec![usage.clone()];
         assert_eq!(snapshot.usage, expected_usage);
         assert_eq!(snapshot.records.len(), 1);
-        assert_eq!(snapshot.records[0].usage.usage, expected_usage);
+        assert_eq!(snapshot.records[0].usage.usage, usage);
         let rejected_fragments: Vec<_> = snapshot
             .nested_events
             .iter()

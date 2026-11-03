@@ -166,6 +166,15 @@ pub fn admitted_context(engine: &Engine, turn_id: &str) -> ToolContext {
         reasoning_effort_auto: false,
     };
     let mut context = engine.build_tool_context_for_turn(&authority, &route);
+    if context.accounting_origin.is_none() {
+        let sessions = crate::session_manager::SessionManager::default_location()
+            .expect("fixture accounting store");
+        context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            crate::cost_status::scope_token(),
+            sessions.sessions_dir().to_path_buf(),
+            engine.session.id.clone(),
+        ));
+    }
     let caller = CapturedRlmCaller::capture(engine, &authority, &route, &context, turn_id)
         .expect("actual Core admission");
     context.rlm_caller = Some(Arc::new(caller));
@@ -613,11 +622,21 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
     assert_eq!(result.iterations, 2);
     assert_eq!(result.usage.input_tokens, 7);
     assert_eq!(result.usage.output_tokens, 11);
-    assert_eq!(result.routed_usage.len(), 1);
-    assert_eq!(result.routed_usage_drop_records.len(), 1);
+    assert_eq!(result.routed_usage.len(), 2);
+    assert!(result.routed_usage_drop_records.is_empty());
     assert_eq!(
-        result.routed_usage_drop_records[0].reason,
-        crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+        result
+            .routed_usage
+            .iter()
+            .filter(|record| record
+                .settlement
+                .as_ref()
+                .is_some_and(|revision| revision.coverage
+                    == crate::llm_client::ProviderUsageCoverage::Missing
+                    && revision.reason
+                        == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown))
+            .count(),
+        1
     );
     let context_path = PathBuf::from(
         result
@@ -632,7 +651,7 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         !context_path.exists(),
         "cancelled nested Engine releases its owned kernel/context file"
     );
-    assert_eq!(usage.snapshot().await.dropped_records, 1);
+    assert_eq!(usage.snapshot().await.dropped_records, 0);
 }
 
 #[tokio::test]

@@ -456,7 +456,7 @@ owner = "crates/tui/src/commands/groups/core/queue.rs"
 [[feature]]
 id = "receipts"
 name = "Receipts"
-summary = "/receipts lists recorded files, commands, calls, approvals and failures; the API serves the same receipt as JSON or Markdown."
+summary = "/receipts lists files, commands, calls, approvals and failures; the API serves the same receipt as JSON or Markdown."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.10.1"
@@ -585,7 +585,7 @@ owner = "crates/app-server/src/runtime_api.rs"
 [[feature]]
 id = "compatibility-tool-free-turns"
 name = "Compatibility turn admission"
-summary = "Initialized local controls use the held Runtime for explicit tool-free turns, loaded-thread paging and canonical names; interactive clients use HTTP/SSE."
+summary = "Local controls use Runtime for tool-free turns, thread paging and canonical names; interactive clients use HTTP/SSE."
 status = "stable"
 surfaces = { api = "stable" }
 since = "0.10.2"
@@ -830,7 +830,7 @@ owner = ".github/workflows/release-artifacts.yml"
 [[feature]]
 id = "chatgpt-plan-sign-in"
 name = "Sign in with ChatGPT"
-summary = "Uses official OAuth and the selected account catalog for eligible ChatGPT plan requests, with distinct token-verification errors."
+summary = "Uses official OAuth and the account catalog for ChatGPT plan requests, with distinct token-verification errors."
 status = "experimental"
 surfaces = { tui = "preview", api = "partial", web = "none" }
 since = "0.10.1"
@@ -979,7 +979,7 @@ owner = "crates/cli/src/metrics.rs"
 [[feature]]
 id = "cache-call-receipts"
 name = "Per-call cache receipts"
-summary = "/cache calls shows bounded native source receipts with frozen prices, selected currency and explicit missing cache telemetry."
+summary = "/cache calls shows bounded native receipts with frozen prices, selected currency and explicit missing cache telemetry."
 status = "experimental"
 surfaces = { tui = "partial" }
 since = "unreleased"

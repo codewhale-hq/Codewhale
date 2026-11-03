@@ -862,7 +862,7 @@ async fn successful_config_set_still_invalidates_the_stdio_bridge() {
 #[tokio::test]
 async fn config_update_keeps_the_stdio_thread_mapping() {
     let (state, _tmp, server) = thread_control::compatibility_fixture().await;
-    thread_control::resolve(&state, "canonical-1", true)
+    let resolved = thread_control::resolve(&state, "canonical-1", true)
         .await
         .unwrap();
     let bridge = state.runtime_bridge.lock().await.clone().unwrap();
@@ -878,13 +878,10 @@ async fn config_update_keeps_the_stdio_thread_mapping() {
         "reload keeps the already captured owner"
     );
     assert_eq!(
-        state
-            .runtime_thread_map
-            .lock()
+        thread_control::resolve(&state, "canonical-1", true)
             .await
-            .get("canonical-1")
-            .map(String::as_str),
-        Some("canonical-1")
+            .unwrap(),
+        resolved
     );
     let result = dispatch_stdio_request(
         &state,
@@ -1810,12 +1807,21 @@ async fn stdio_thread_goal_methods_refuse_execution_and_read_existing_goal() {
         set.wire.data.unwrap()["error"],
         "interactive_execution_unsupported"
     );
-    thread_control::handle(
-        &state,
-        serde_json::from_value(json!({"kind":"goal_set","thread_id":id,"objective":"Release 0.10.1","token_budget":59000})).unwrap(),
-    )
-    .await
-    .unwrap();
+    let bridge = state.runtime_bridge.lock().await.clone().unwrap();
+    let bridge = bridge.lock().await;
+    bridge
+        .request_json(
+            bridge
+                .authed(
+                    bridge
+                        .client
+                        .put(format!("{}/v1/threads/{id}/goal", bridge.base_url)),
+                )
+                .json(&json!({"objective":"Release 0.10.1","token_budget":59000})),
+        )
+        .await
+        .unwrap();
+    drop(bridge);
     let got = dispatch_stdio_request(&state, "thread/goal/get", json!({"thread_id":id}))
         .await
         .unwrap();

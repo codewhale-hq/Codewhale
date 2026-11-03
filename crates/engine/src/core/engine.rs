@@ -744,19 +744,7 @@ pub struct EngineHandle {
     tx_approval: mpsc::Sender<SubmittedApproval>,
     current_approval: Arc<parking_lot::Mutex<Option<NativeApprovalPublication>>>,
     #[cfg(any(test, feature = "test-support"))]
-    mock_approval_publications: Option<
-        Arc<
-            parking_lot::Mutex<
-                HashMap<
-                    String,
-                    (
-                        NativeApprovalPublication,
-                        approval_publication::ApprovalProducer,
-                    ),
-                >,
-            >,
-        >,
-    >,
+    mock_approval_publications: Option<approval_publication::MockApprovalPublications>,
     /// Send user input responses to the engine
     tx_user_input: mpsc::Sender<UserInputDecision>,
     /// Send steer input for an in-flight turn.
@@ -1654,9 +1642,9 @@ impl Engine {
     /// Replay the execution-boundary facts a conformance golden was recorded
     /// under. They reach the model only through `<turn_meta>`'s sandbox
     /// posture line; production engines always probe this host at
-    /// construction, and never call this. Its only caller, the scripted
-    /// conformance families, is Unix-only.
-    #[cfg(all(any(test, feature = "test-support"), unix))]
+    /// construction, and never call this. Its callers are the scripted
+    /// conformance families.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn pin_recorded_platform_posture(
         &mut self,
         enforcement: codewhale_sandbox::policy::SandboxEnforcement,
@@ -11476,7 +11464,7 @@ pub mod streaming;
 mod token_estimate_cache;
 pub mod tool_catalog;
 pub mod tool_execution;
-#[cfg(all(any(test, feature = "test-support"), unix))]
+#[cfg(any(test, feature = "test-support"))]
 pub use tool_execution::pin_replay_span_sequence;
 mod tool_media;
 mod tool_preparation;

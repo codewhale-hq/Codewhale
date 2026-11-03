@@ -12826,6 +12826,9 @@ async fn auto_dispatch_keeps_last_and_pending_receipts_aligned() {
     let _deepseek = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
     let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-test-key");
     let mut app = create_test_app();
+    let manager = codewhale_engine::session_manager::SessionManager::default_location().unwrap();
+    let session_id = super::event_loop::ensure_runtime_session_id(&mut app);
+    app.session_write_receipt = Some(manager.expect_absent_session(&session_id).unwrap());
     app.set_provider_identity(ProviderKind::Zai, "zai");
     app.reasoning_effort = ReasoningEffort::Low;
     app.reasoning_effort_preference = Some(ReasoningEffort::Low);
@@ -14691,6 +14694,30 @@ async fn reserved_dispatch_waits_for_ui_acceptance_before_engine_op() {
 
 #[tokio::test]
 async fn reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn() {
+    const PROBE: &str = "CODEWHALE_RESERVED_DISPATCH_LIFECYCLE_PROBE";
+    if std::env::var_os(PROBE).is_none() {
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "tui::ui::tests::reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(PROBE, "1")
+            .output()
+            .expect("reserved dispatch lifecycle subprocess");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    let _environment = crate::test_support::lock_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
     use codewhale_engine::core::engine::{Engine, EngineConfig};
     use codewhale_engine::core::events::TurnOutcomeStatus;
     use codewhale_engine::core::ops::Op;
@@ -14712,6 +14739,11 @@ async fn reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn()
 
     let workspace = TempDir::new().expect("workspace");
     let mut app = create_test_app();
+    let manager = codewhale_engine::session_manager::SessionManager::default_location().unwrap();
+    let session_id = super::event_loop::ensure_runtime_session_id(&mut app);
+    app.session_write_receipt = Some(manager.expect_absent_session(&session_id).unwrap());
+    let (persistence, persistence_task) = persistence_actor::spawn_persistence_actor(manager);
+    persistence_actor::init_actor(persistence.clone());
     app.workspace = workspace.path().to_path_buf();
     let config = Config::default();
     let mock = Arc::new(MockLlmClient::new(vec![
@@ -14721,6 +14753,7 @@ async fn reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn()
     let (engine, handle) = Engine::new_with_model_client(
         EngineConfig {
             workspace: workspace.path().to_path_buf(),
+            session_id: Some(session_id),
             snapshots_enabled: false,
             subagents_enabled: false,
             terminal_chrome_enabled: false,
@@ -14763,6 +14796,7 @@ async fn reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn()
                 .contains(prompt)
         );
         apply(&mut app, &handle, &config).expect("accept UI dispatch");
+        flush_offline_queue_test_actor(&persistence).await;
         assert!(app.is_loading);
         assert!(app.dispatch_started_at.is_some());
         let mut events = handle.rx_event.write().await;
@@ -14823,6 +14857,8 @@ async fn reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn()
         .await
         .expect("Engine shutdown timeout")
         .expect("Engine task");
+    assert!(persistence.try_send(PersistRequest::Shutdown));
+    persistence_task.await.expect("persistence task");
 }
 
 #[tokio::test]
@@ -26772,6 +26808,9 @@ async fn composer_send_anchors_new_message_at_tail() {
     let _env_lock = crate::test_support::lock_test_env();
     let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-test-key");
     let mut app = create_test_app();
+    let manager = codewhale_engine::session_manager::SessionManager::default_location().unwrap();
+    let session_id = super::event_loop::ensure_runtime_session_id(&mut app);
+    app.session_write_receipt = Some(manager.expect_absent_session(&session_id).unwrap());
     app.set_provider_identity(ProviderKind::Zai, "zai");
     app.set_model_selection("auto".to_string());
     let config = {

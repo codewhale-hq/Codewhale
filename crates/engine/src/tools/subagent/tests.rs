@@ -3241,7 +3241,8 @@ async fn tool_free_subagent_omits_chat_tools_and_tool_choice() {
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = manager;
-    runtime.context = ToolContext::new(tmp.path());
+    runtime.context = fixture_tool_context(tmp.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     let result = tokio::time::timeout(Duration::from_secs(15), async {
         let started = runtime
             .manager
@@ -13973,6 +13974,7 @@ fn subagent_registry_with_mcp_action(auto_approve: bool) -> (ChildCoreProbe, tem
         crate::approval_log::ApprovalReceiptStore::new(home.path().join("sessions")),
     ));
     runtime.context.auto_approve = auto_approve;
+    runtime.context.runtime.runtime_mcp_servers = Some((home.path().to_path_buf(), Arc::default()));
     // Core dispatches MCP through the captured pool; the registry facade supplies its schema.
     runtime = runtime.with_mcp_pool(Some(Arc::new(tokio::sync::Mutex::new(
         crate::mcp::McpPool::new(codewhale_mcp::config::McpConfig::default()),
@@ -14594,8 +14596,8 @@ async fn a_parked_child_stops_holding_its_write_claim() {
     let record = manager.get_worker_record(&parked).expect("worker record");
     assert_eq!(
         record.status,
-        AgentWorkerStatus::WaitingForUser,
-        "the parked projection is unchanged; only coordination learns to read it"
+        AgentWorkerStatus::Interrupted,
+        "the parked projection records the interrupted turn"
     );
     assert!(
         record.parked_at_turn_end,
@@ -15959,6 +15961,24 @@ fn persisted_advisory_assignment_roles_replay_and_repersist_as_consultant() {
     }
 }
 
+pub fn fixture_tool_context(workspace: impl Into<PathBuf>) -> ToolContext {
+    let mut context = ToolContext::new(workspace);
+    let sessions =
+        crate::session_manager::SessionManager::default_location().expect("fixture session store");
+    let sessions = crate::session_manager::SessionManager::new(
+        sessions.sessions_dir().join("fixture-origins").join(
+            codewhale_runtime::hashing::sha256_hex(context.workspace.to_string_lossy().as_bytes()),
+        ),
+    )
+    .expect("fixture origin store");
+    context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        crate::cost_status::scope_token(),
+        sessions.sessions_dir().to_path_buf(),
+        context.state_namespace.clone(),
+    ));
+    context
+}
+
 /// Build a minimal `SubAgentRuntime` for tests that exercise pure runtime
 /// helpers (depth, cancellation, child_runtime). Doesn't construct a real
 /// HTTP client — calls that hit `runtime.client` would fail, but the
@@ -15966,7 +15986,8 @@ fn persisted_advisory_assignment_roles_replay_and_repersist_as_consultant() {
 pub fn stub_runtime() -> SubAgentRuntime {
     use tokio_util::sync::CancellationToken;
 
-    let workspace = std::env::temp_dir().join("codewhale-test-stub");
+    let workspace =
+        std::env::temp_dir().join(format!("codewhale-test-stub-{}", uuid::Uuid::new_v4()));
     let context = ToolContext::new(workspace.clone());
     // A real session always carries its config; spawn-time protocol
     // rebinding (#5042) needs it to rebuild the client for model-aware
@@ -17199,7 +17220,11 @@ fn worker_spec_workflow_run_id_is_optional_on_disk() {
 
 #[tokio::test]
 async fn run_subagent_task_claims_before_delivery_and_then_finalizes() {
-    let manager = Arc::new(RwLock::new(SubAgentManager::new(PathBuf::from("."), 2)));
+    let workspace = tempdir().unwrap();
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(
+        workspace.path().to_path_buf(),
+        2,
+    )));
     let (task_input_tx, task_input_rx) = mpsc::unbounded_channel();
     let agent_id = "agent_noop".to_string();
     let mut agent = SubAgent::new(
@@ -17211,13 +17236,15 @@ async fn run_subagent_task_claims_before_delivery_and_then_finalizes() {
         None,
         None,
         task_input_tx,
-        PathBuf::from("."),
+        workspace.path().to_path_buf(),
         "boot_test".to_string(),
     );
     agent.status = SubAgentStatus::Running;
 
     let (completion_tx, mut completion_rx) = mpsc::channel::<SubAgentCompletion>(16);
     let mut runtime = runtime_with_depth(1, Some(completion_tx));
+    runtime.context = fixture_tool_context(workspace.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     // Answer the child's single model call from a loopback stub instead of the
     // stub client's real provider URL: the old network round-trip (DNS, TLS,
     // a 401) is what made the post-release wait flaky (fleet-6).
@@ -17291,6 +17318,8 @@ async fn run_subagent_task_claims_before_delivery_and_then_finalizes() {
     let (client, calls, _bodies, config) =
         delayed_chat_client(Duration::ZERO, "activation done").await;
     let mut runtime = runtime_with_depth(1, Some(completion_tx));
+    runtime.context = fixture_tool_context(workspace.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.client = client;
     runtime.api_config = Some(Arc::new(config));
     runtime.context.workspace = workspace.path().to_path_buf();
@@ -17760,7 +17789,8 @@ async fn fatal_provider_failure_mid_run_parks_a_continuable_checkpoint() {
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(tmp.path());
+    runtime.context = fixture_tool_context(tmp.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
 
     run_subagent_task(SubAgentTask {
         manager_handle: Arc::clone(&manager),
@@ -17865,7 +17895,8 @@ async fn fatal_provider_failure_mid_run_parks_a_continuable_checkpoint() {
     resume_runtime.client = healthy_client;
     resume_runtime.api_config = Some(Arc::new(fixture_config));
     resume_runtime.manager = Arc::clone(&manager);
-    resume_runtime.context = ToolContext::new(tmp.path());
+    resume_runtime.context = fixture_tool_context(tmp.path());
+    resume_runtime.accounting_origin = SubAgentAccountingOrigin::capture(&resume_runtime.context);
 
     run_subagent_task(SubAgentTask {
         manager_handle: Arc::clone(&manager),
@@ -18044,7 +18075,8 @@ async fn repeated_typed_denials_stop_worker_as_failed_not_budget() {
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(tmp.path());
+    runtime.context = fixture_tool_context(tmp.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
 
     run_subagent_task(SubAgentTask {
         manager_handle: Arc::clone(&manager),
@@ -18934,7 +18966,8 @@ async fn launch_gate_queues_extra_direct_children() {
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(tmp.path());
+    runtime.context = fixture_tool_context(tmp.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.mailbox = Some(mailbox);
 
     runtime.spawn_depth = 1;
@@ -18982,6 +19015,10 @@ async fn launch_gate_queues_extra_direct_children() {
     let (agent_b, task_b) = spawn("agent_gate_b", Some(Arc::clone(&gate)));
     {
         let mut mgr = manager.write().await;
+        let mut spec = make_worker_spec(&agent_b.id, tmp.path().to_path_buf());
+        spec.agent_type = FleetRole::Worker;
+        spec.runtime_profile = runtime.worker_profile.clone();
+        mgr.register_worker_for_session(spec, &runtime.context.state_namespace, None);
         mgr.agents.insert(agent_b.id.clone(), agent_b);
     }
 
@@ -19043,7 +19080,10 @@ async fn launch_gate_queues_extra_direct_children() {
         }
     })
     .await;
-    assert!(collected.is_ok(), "queued child should complete");
+    assert!(
+        collected.is_ok(),
+        "queued child should complete: {messages:?}"
+    );
 
     let queued_b = messages.iter().position(|m| {
         matches!(
@@ -19803,7 +19843,8 @@ async fn spawn_budget_capped_worker_with_pause(
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(workspace.to_path_buf());
+    runtime.context = fixture_tool_context(workspace.to_path_buf());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
 
     let task = SubAgentTask {
         manager_handle: Arc::clone(&manager),
@@ -20028,7 +20069,8 @@ async fn worker_compacts_past_its_context_window_and_keeps_working() {
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.context = fixture_tool_context(tmp.path().to_path_buf());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.compaction.effective_context_window = Some(300_000);
     runtime.compaction.token_threshold = 200_000;
     assert!(runtime.compaction.enabled, "the inherited default compacts");
@@ -24201,6 +24243,8 @@ async fn parked_followup_executes_on_the_saved_cross_provider_route() {
     let mut runtime = stub_runtime().with_api_config(config.clone());
     runtime.client = CodewhaleClient::new(&config).expect("session client builds");
     runtime.manager = Arc::clone(&manager);
+    runtime.context = fixture_tool_context(tmp.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     assert_eq!(
         runtime.client.api_provider(),
         ProviderKind::Deepseek,
@@ -24238,8 +24282,8 @@ async fn parked_followup_executes_on_the_saved_cross_provider_route() {
         id
     };
 
+    let context = runtime.context.clone();
     let tool = AgentTool::new(Arc::clone(&manager), runtime);
-    let context = ToolContext::new(tmp.path());
     let result = tool
         .execute(
             json!({"action": "followup", "agent_id": agent_id, "message": "Continue."}),
@@ -24912,7 +24956,14 @@ mod child_permission_gate {
         let workspace = tmp.path().to_path_buf();
         let session_id = format!("child_gate_{}", uuid::Uuid::new_v4().simple());
         runtime.manager = new_shared_subagent_manager(workspace.clone(), 5);
-        runtime.context = ToolContext::new(workspace.clone()).with_state_namespace(session_id);
+        runtime.context =
+            ToolContext::new(workspace.clone()).with_state_namespace(session_id.clone());
+        runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+        runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            runtime.accounting_origin.cost_scope,
+            tmp.path().join("sessions"),
+            session_id,
+        ));
         runtime.context.auto_approve = auto_approve;
         runtime.context.approval_mode = approval_mode;
         runtime.context.live_posture = live_posture;
@@ -26186,7 +26237,11 @@ mod child_permission_gate {
             .expect("semantic guardian success remains usable");
         assert!(output.contains("guardian-missing-usage"), "{output}");
 
-        let pending = crate::cost_status::drain();
+        let native = crate::cost_status::drain();
+        let mut pending = crate::session_manager::SessionCostSnapshot::default();
+        for record in &native.source_records {
+            pending.project_usage_record(record).unwrap();
+        }
         assert_eq!(pending.priced_turns, 0);
         assert_eq!(pending.unpriced_turns, 1);
         assert!(
@@ -27624,7 +27679,8 @@ mod readonly_shell_6015 {
         seed_read_only_role_deny_list(&mut runtime);
         runtime.client = client;
         runtime.api_config = Some(Arc::new(config));
-        runtime.context = ToolContext::new(workspace);
+        runtime.context = fixture_tool_context(workspace);
+        runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
         runtime
     }
 
@@ -28095,7 +28151,8 @@ async fn late_launch_permit_still_gets_the_full_work_budget() {
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(tmp.path());
+    runtime.context = fixture_tool_context(tmp.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime = runtime.with_cancel_token(CancellationToken::new());
     {
         let mut manager = manager.write().await;

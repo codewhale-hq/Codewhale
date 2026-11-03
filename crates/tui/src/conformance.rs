@@ -27,14 +27,12 @@
 //! Known limits, stated so nobody assumes them: the harness pins what the
 //! Rust side does today. A provider error after a collected tool call must
 //! settle it without executing it (C02-05); the invariant is mandatory. It runs
-//! no real provider, MCP server binary, or Node host. The `events`, `prompt`
-//! and `hooks` goldens were recorded on Unix and are compiled only there:
-//! hook fixtures are POSIX shell, and a Windows turn differs in shell and
-//! path facts that no recorded golden covers yet. `sse` and `mcp` run
+//! no real provider, MCP server binary, or Node host. The `events` and `prompt`
+//! goldens replay their recorded host facts on every platform. `hooks` remains
+//! Unix-only because its fixtures run POSIX shell. `sse` and `mcp` also run
 //! everywhere.
 #![cfg(test)]
 
-#[cfg(unix)]
 #[cfg(test)]
 mod events;
 #[cfg(test)]
@@ -44,7 +42,6 @@ pub(crate) mod golden;
 mod hooks;
 #[cfg(test)]
 mod mcp;
-#[cfg(unix)]
 #[cfg(test)]
 mod prompt;
 #[cfg(test)]
