@@ -7919,6 +7919,36 @@ async fn patch_undo_endpoint_refuses_turns_it_cannot_prove() -> Result<()> {
         create_seeded_thread(&addr, &runtime_threads, &root, "Roll back the patch").await?;
     let client = codewhale_release::tls::reqwest_client();
 
+    let info: serde_json::Value = client
+        .get(format!("http://{addr}/v1/runtime/info"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(info["capabilities"]["thread_patch_undo_turn_id"], true);
+    let resp = client
+        .get(format!(
+            "http://{addr}/v1/threads/{thread_id}/patch-undo?turn_id=foreign_turn"
+        ))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = client
+        .post(format!("http://{addr}/v1/threads/{thread_id}/patch-undo"))
+        .json(&json!({"turn_id": "foreign_turn", "depth": 0}))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = client
+        .post(format!("http://{addr}/v1/threads/{thread_id}/patch-undo"))
+        .json(&json!({"expected_turn_ids": []}))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let refused: serde_json::Value = resp.json().await?;
+    assert_eq!(refused["error"]["code"], "undo_selection_changed");
+
     // A workspace directory that is not available proves nothing about the
     // files a turn changed: the undo is refused instead of forking the
     // conversation away from them.
@@ -8057,6 +8087,28 @@ fn patch_undo_helper_restores_only_the_dropped_turns_changes() -> Result<()> {
         true,
         shell_turn_receipts(&repo, &pre, &post, "thr_a"),
     );
+    let snapshot_count = repo.list(usize::MAX)?.len();
+    let (preview, paths) =
+        patch_undo_workspace_files_impl(&workspace, std::slice::from_ref(&turn), true, true, None)
+            .expect("a trusted preview should succeed");
+    assert!(!preview.files_restored);
+    assert_eq!(paths, vec!["a.txt", "made/new.txt"]);
+    let refused = patch_undo_workspace_files_impl(
+        &workspace,
+        std::slice::from_ref(&turn),
+        true,
+        false,
+        Some(&[]),
+    )
+    .expect_err("an unreviewed file plan must refuse before restoring");
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(refused.code, Some("undo_selection_changed"));
+
+    assert_eq!(fs::read_to_string(&a)?, "second write");
+    assert!(workspace.join("made/new.txt").is_file());
+    assert_eq!(fs::read_to_string(&other)?, "later work");
+    assert_eq!(repo.list(usize::MAX)?.len(), snapshot_count);
+
     let restored = patch_undo_workspace_files(&workspace, std::slice::from_ref(&turn), true)
         .expect("a trusted rollback should succeed");
     assert!(restored.files_restored, "{:?}", restored.summary);

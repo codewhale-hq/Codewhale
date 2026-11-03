@@ -86,6 +86,8 @@ pub struct RuntimeCapabilities {
     pub thread_create_idempotency: bool,
     #[serde(default)]
     pub thread_idle_precondition: bool,
+    #[serde(default)]
+    pub thread_patch_undo_turn_id: bool,
     /// Explicit per-thread shell opt-in is checked against loaded policy and
     /// cannot broaden a conversation while it has an active turn.
     #[serde(default)]
@@ -495,6 +497,7 @@ mod tests {
             threads: true,
             thread_create_idempotency: true,
             thread_idle_precondition: true,
+            thread_patch_undo_turn_id: true,
             thread_shell_consent: true,
             turns: true,
             turn_operation_idempotency: true,
@@ -543,6 +546,17 @@ mod tests {
                 .client_token_intents
         );
         assert_eq!(obj.get("threads").unwrap(), &json!(true));
+        assert_eq!(obj.get("thread_patch_undo_turn_id"), Some(&json!(true)));
+        let mut legacy_patch_undo = value.clone();
+        legacy_patch_undo
+            .as_object_mut()
+            .unwrap()
+            .remove("thread_patch_undo_turn_id");
+        assert!(
+            !serde_json::from_value::<RuntimeCapabilities>(legacy_patch_undo)
+                .unwrap()
+                .thread_patch_undo_turn_id
+        );
         assert_eq!(obj.get("thread_shell_consent"), Some(&json!(true)));
         assert!(
             serde_json::from_value::<RuntimeCapabilities>(value.clone())

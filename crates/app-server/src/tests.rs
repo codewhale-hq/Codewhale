@@ -1782,7 +1782,7 @@ async fn stdio_thread_goal_methods_refuse_execution_and_read_existing_goal() {
         .unwrap();
     assert_eq!(capabilities.result["goal_execution"], false);
     assert!(
-        capabilities.result["methods"]
+        !capabilities.result["methods"]
             .as_array()
             .unwrap()
             .iter()
@@ -1807,21 +1807,20 @@ async fn stdio_thread_goal_methods_refuse_execution_and_read_existing_goal() {
         set.wire.data.unwrap()["error"],
         "interactive_execution_unsupported"
     );
-    let bridge = state.runtime_bridge.lock().await.clone().unwrap();
-    let bridge = bridge.lock().await;
-    bridge
-        .request_json(
-            bridge
-                .authed(
-                    bridge
-                        .client
-                        .put(format!("{}/v1/threads/{id}/goal", bridge.base_url)),
-                )
-                .json(&json!({"objective":"Release 0.10.1","token_budget":59000})),
-        )
+    let (endpoint, token) = {
+        let shared = state.runtime_bridge.lock().await.clone().unwrap();
+        let bridge = shared.lock().await;
+        (bridge.base_url.clone(), bridge.auth_token.clone().unwrap())
+    };
+    codewhale_release::tls::reqwest_client()
+        .put(format!("{endpoint}/v1/threads/{id}/goal"))
+        .bearer_auth(token)
+        .json(&json!({"objective":"Release 0.10.1","token_budget":59000}))
+        .send()
         .await
+        .unwrap()
+        .error_for_status()
         .unwrap();
-    drop(bridge);
     let got = dispatch_stdio_request(&state, "thread/goal/get", json!({"thread_id":id}))
         .await
         .unwrap();
@@ -3044,7 +3043,6 @@ const EXPECTED_CAPABILITY_METHODS: &[&str] = &[
     "thread/read",
     "thread/name/set",
     "thread/set_name",
-    "thread/goal/set",
     "thread/goal/get",
     "thread/goal/clear",
     "thread/archive",

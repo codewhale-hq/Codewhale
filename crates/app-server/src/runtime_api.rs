@@ -1569,6 +1569,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         threads: true,
         thread_create_idempotency: true,
         thread_idle_precondition: true,
+        thread_patch_undo_turn_id: true,
         thread_shell_consent: true,
         turns: true,
         turn_operation_idempotency: true,
@@ -3081,7 +3082,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/undo", post(undo_thread_turn))
         .route("/v1/threads/{id}/fork-at-turn", post(fork_thread_at_turn))
-        .route("/v1/threads/{id}/patch-undo", post(patch_undo_thread_turn))
+        .route(
+            "/v1/threads/{id}/patch-undo",
+            get(preview_patch_undo_thread_turn).post(patch_undo_thread_turn),
+        )
         .route("/v1/threads/{id}/file-revert", post(revert_thread_file))
         .route("/v1/threads/{id}/retry", post(retry_thread_turn))
         .route(
@@ -8703,6 +8707,10 @@ struct UndoTurnRequest {
     /// The user turn to undo, with every turn after it. Wins over `depth`.
     #[serde(default)]
     turn_id: Option<String>,
+    #[serde(default)]
+    expected_turn_ids: Option<Vec<String>>,
+    #[serde(default)]
+    expected_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -8814,12 +8822,92 @@ struct PatchUndoResponse {
     original_user_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
 }
 
+async fn prepare_patch_undo(
+    state: &RuntimeApiState,
+    id: &str,
+    req: &UndoTurnRequest,
+) -> Result<codewhale_engine::runtime_threads::manager::PreparedThreadFork, ApiError> {
+    let prepared = match req.turn_id.as_deref() {
+        Some(turn_id) => {
+            state
+                .runtime_threads
+                .prepare_fork_dropping_user_turn_in_sessions_dir(id, turn_id, &state.sessions_dir)
+                .await
+        }
+        None => {
+            state
+                .runtime_threads
+                .prepare_fork_at_user_message_in_sessions_dir(
+                    id,
+                    req.depth.unwrap_or(0),
+                    &state.sessions_dir,
+                )
+                .await
+        }
+    }
+    .map_err(map_thread_err)?;
+    if let Some(expected) = &req.expected_turn_ids {
+        let actual: Vec<_> = prepared
+            .dropped_turns()
+            .iter()
+            .map(|turn| &turn.turn_id)
+            .collect();
+        if actual != expected.iter().collect::<Vec<_>>() {
+            return Err(ApiError::conflict(
+                "The selected turn range changed; review it again before undoing files.",
+            )
+            .with_code("undo_selection_changed"));
+        }
+    }
+    Ok(prepared)
+}
+
+#[derive(Debug, Serialize)]
+struct PatchUndoPreview {
+    turn_ids: Vec<String>,
+    paths: Vec<String>,
+    summary: Option<String>,
+}
+
+async fn preview_patch_undo_thread_turn(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Query(req): Query<UndoTurnRequest>,
+) -> Result<Json<PatchUndoPreview>, ApiError> {
+    let (_reservation, thread) = state
+        .runtime_threads
+        .thread_restore_guard(&id)
+        .await
+        .map_err(map_thread_err)?;
+    let prepared = prepare_patch_undo(&state, &id, &req).await?;
+    let dropped_turns = prepared.dropped_turns().to_vec();
+    let turn_ids = dropped_turns
+        .iter()
+        .map(|turn| turn.turn_id.clone())
+        .collect();
+    let trusted = thread.trust_mode || thread.auto_approve;
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let (result, paths) = tokio::task::spawn_blocking(move || {
+        let _reservation = _reservation;
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        patch_undo_workspace_files_impl(&thread.workspace, &dropped_turns, trusted, true, None)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Patch undo preview failed: {error}")))??;
+    Ok(Json(PatchUndoPreview {
+        turn_ids,
+        paths,
+        summary: result.summary,
+    }))
+}
+
 async fn patch_undo_thread_turn(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
     Json(req): Json<UndoTurnRequest>,
 ) -> Result<(StatusCode, Json<PatchUndoResponse>), ApiError> {
-    let depth = req.depth.unwrap_or(0);
     // Admission first, then the thread record under it: trust, session
     // binding and workspace are the values that hold while files change.
     // Active turns in an overlapping workspace are rejected (409). The wait
@@ -8838,13 +8926,9 @@ async fn patch_undo_thread_turn(
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::spawn(async move {
         let reservation = reservation;
-        // Validate depth/history before touching any file, so an invalid
+        // Validate the selected turn/history before touching any file, so an invalid
         // undo request cannot leave a half-applied workspace.
-        let prepared = state
-            .runtime_threads
-            .prepare_fork_at_user_message_in_sessions_dir(&id, depth, &state.sessions_dir)
-            .await
-            .map_err(map_thread_err)?;
+        let prepared = prepare_patch_undo(&state, &id, &req).await?;
         // File rollback is a workspace mutation, so it needs the trust the
         // TUI's `/undo` requires. Read from the thread's own record: the
         // client does not get to assert it.
@@ -8860,7 +8944,7 @@ async fn patch_undo_thread_turn(
         let patch_result = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-            patch_undo_workspace_files(&workspace, &dropped_turns, trusted)
+            patch_undo_workspace_files_impl(&workspace, &dropped_turns, trusted, false, req.expected_paths.as_deref()).map(|(result, _)| result)
         })
         .await
         .map_err(|e| ApiError::internal(format!("Patch undo task failed: {e}")))??;
@@ -9142,6 +9226,26 @@ pub fn patch_undo_workspace_files(
     dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
     trusted: bool,
 ) -> Result<PatchUndoResult, ApiError> {
+    patch_undo_workspace_files_impl(workspace, dropped_turns, trusted, false, None)
+        .map(|(result, _)| result)
+}
+
+fn patch_undo_workspace_files_impl(
+    workspace: &FsPath,
+    dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
+    trusted: bool,
+    preview: bool,
+    expected_paths: Option<&[String]>,
+) -> Result<(PatchUndoResult, Vec<String>), ApiError> {
+    let check_paths = |paths: &[String]| {
+        if expected_paths.is_some_and(|expected| expected != paths) {
+            return Err(ApiError::conflict(
+                "The files to restore changed; review the selection again before undoing files.",
+            )
+            .with_code("undo_selection_changed"));
+        }
+        Ok(())
+    };
     // An unreadable workspace directory (unmounted volume, disconnected
     // share, permissions) proves nothing about the files a turn changed, so
     // the conversation is not forked away from them.
@@ -9179,14 +9283,15 @@ pub fn patch_undo_workspace_files(
         );
     }
     if windows.is_empty() {
-        return Ok(PatchUndoResult {
+        check_paths(&[])?;
+        return Ok((PatchUndoResult {
             files_restored: false,
             summary: Some(
                 "The undone turn(s) ran no tools, so they changed no workspace files; nothing to restore."
                     .to_string(),
             ),
             snapshot_label: None,
-        });
+        }, Vec::new()));
     }
 
     // Every repository failure is operational and aborts: "nothing to
@@ -9366,18 +9471,23 @@ pub fn patch_undo_workspace_files(
     }
     let first = &segments[0];
     if to_restore.is_empty() {
-        return Ok(PatchUndoResult {
-            files_restored: false,
-            summary: Some(if plan.is_empty() {
-                "The undone turn(s) left workspace files unchanged; nothing to restore.".to_string()
-            } else {
-                format!(
-                    "The files the undone turn(s) changed are already at their state before turn {}; nothing to restore.",
-                    first.turn_id
-                )
-            }),
-            snapshot_label: None,
-        });
+        check_paths(&[])?;
+        return Ok((
+            PatchUndoResult {
+                files_restored: false,
+                summary: Some(if plan.is_empty() {
+                    "The undone turn(s) left workspace files unchanged; nothing to restore."
+                        .to_string()
+                } else {
+                    format!(
+                        "The files the undone turn(s) changed are already at their state before turn {}; nothing to restore.",
+                        first.turn_id
+                    )
+                }),
+                snapshot_label: None,
+            },
+            Vec::new(),
+        ));
     }
 
     // Restoring is a workspace mutation. Gate it exactly where the TUI gates
@@ -9389,6 +9499,22 @@ pub fn patch_undo_workspace_files(
              Turn on /trust or switch this thread to Full Access, then undo again.",
         )
         .with_code(PATCH_UNDO_UNTRUSTED));
+    }
+
+    let paths: Vec<String> = to_restore
+        .iter()
+        .map(|(path, _, _)| path.display().to_string())
+        .collect();
+    check_paths(&paths)?;
+    if preview {
+        return Ok((
+            PatchUndoResult {
+                files_restored: false,
+                summary: None,
+                snapshot_label: Some(first.pre_label.clone()),
+            },
+            paths,
+        ));
     }
 
     let restore_plan: Vec<(PathBuf, codewhale_snapshot::SnapshotId)> = to_restore
@@ -9425,17 +9551,20 @@ pub fn patch_undo_workspace_files(
         .iter()
         .map(|outcome| format!("{} {}", outcome.action.as_str(), outcome.path.display()))
         .collect();
-    Ok(PatchUndoResult {
-        files_restored: true,
-        summary: Some(format!(
-            "Restored {} file(s) to their state before turn {} (snapshot '{}'):\n{}",
-            outcomes.len(),
-            first.turn_id,
-            first.pre_label,
-            lines.join("\n")
-        )),
-        snapshot_label: Some(first.pre_label.clone()),
-    })
+    Ok((
+        PatchUndoResult {
+            files_restored: true,
+            summary: Some(format!(
+                "Restored {} file(s) to their state before turn {} (snapshot '{}'):\n{}",
+                outcomes.len(),
+                first.turn_id,
+                first.pre_label,
+                lines.join("\n")
+            )),
+            snapshot_label: Some(first.pre_label.clone()),
+        },
+        paths,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
