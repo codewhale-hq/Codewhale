@@ -74,16 +74,16 @@ fn resolved_home_state(workspace: &Path) -> Option<std::path::PathBuf> {
 ///   inside the path, so a repository-supplied link is refused exactly as it
 ///   was before this helper existed.
 ///
-/// `relative` is joined as given. Every caller passes literal path components
-/// it wrote itself; a `relative` carrying `..` or an absolute path would step
-/// outside the state directory, so this is asserted for those callers rather
-/// than defended against a caller that does not exist.
+/// `relative` is joined as given and must be a relative path of literal
+/// components. Every caller passes components it wrote itself; anything else
+/// could step outside the state directory this root exists to bound, so the
+/// contract is enforced in release builds too rather than only in debug ones.
 #[must_use]
 pub fn workspace_state_path(
     workspace: &Path,
     relative: &Path,
 ) -> (std::path::PathBuf, std::path::PathBuf) {
-    debug_assert!(
+    assert!(
         path_is_confined(relative),
         "workspace state path must be a relative path of literal components: {}",
         relative.display()
