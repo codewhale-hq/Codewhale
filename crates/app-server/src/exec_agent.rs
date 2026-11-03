@@ -68,6 +68,18 @@ pub(crate) fn exec_disallowed_tools(disallowed_tools: Option<Vec<String>>) -> Op
     Some(disallowed)
 }
 
+async fn shutdown_exec_engine(
+    handle: &codewhale_engine::core::engine::EngineHandle,
+    deadline: tokio::time::Instant,
+) -> Option<codewhale_engine::core::engine::EngineRunCompletion> {
+    tokio::time::timeout_at(deadline, async {
+        let _ = handle.send(codewhale_engine::core::ops::Op::Shutdown).await;
+        handle.wait_run_completion().await
+    })
+    .await
+    .ok()
+}
+
 /// Attach the durable automation store headless `exec` inspects.
 ///
 /// Headless exec builds its catalog from the same tool surface the TUI and the
@@ -1600,9 +1612,6 @@ pub async fn run_exec_agent(
                     })?;
                     emit_exec_stream_event(&ExecStreamEvent::Done)?;
                 }
-                let _ =
-                    tokio::time::timeout(Duration::from_secs(2), engine_handle.send(Op::Shutdown))
-                        .await;
                 break;
             }
             Event::CompactionStarted { .. } => {
@@ -1708,6 +1717,12 @@ pub async fn run_exec_agent(
         }
     }
 
+    let shutdown_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let completion = shutdown_exec_engine(&engine_handle, shutdown_deadline).await;
+    if completion != Some(codewhale_engine::core::engine::EngineRunCompletion::NormalReturn) {
+        tracing::warn!(target: "engine", ?completion, "exec engine run completion was not confirmed");
+    }
+
     if summary.status.is_none() {
         if let Ok(mut manager) = exec_shell_manager.lock() {
             manager.abort_persistent_services();
@@ -1808,7 +1823,9 @@ fn accumulate_exec_retry_count(
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecAgentEvents, exec_automation_services, exec_disallowed_tools};
+    use super::{
+        ExecAgentEvents, exec_automation_services, exec_disallowed_tools, shutdown_exec_engine,
+    };
 
     use codewhale_engine::core::engine::mock_engine_handle;
     use codewhale_engine::core::events::{Event, TurnOutcomeStatus};
@@ -1816,6 +1833,127 @@ mod tests {
     use codewhale_models::Usage;
     use codewhale_tools::names::REQUEST_USER_INPUT_NAME;
     use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn run_completion_exec_shutdown_waits_after_mailbox_delivery() {
+        let mut engine = mock_engine_handle();
+        let (release, receiver) = tokio::sync::oneshot::channel();
+        let run = engine.observe_run_for_test(async move {
+            receiver.await.unwrap();
+        });
+        let task = tokio::spawn(run);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let wait = shutdown_exec_engine(&engine.handle, deadline);
+        tokio::pin!(wait);
+        tokio::select! {
+            biased;
+            result = &mut wait => panic!("send alone is not completion: {result:?}"),
+            op = engine.rx_op.recv() => assert!(matches!(op, Some(Op::Shutdown))),
+        }
+        assert!(
+            tokio::time::timeout_at(tokio::time::Instant::now(), &mut wait)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        assert_eq!(
+            wait.await,
+            Some(codewhale_engine::core::engine::EngineRunCompletion::NormalReturn)
+        );
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_completion_exec_shutdown_has_one_deadline_for_send_and_wait() {
+        let mut engine = mock_engine_handle();
+        let _run = engine.observe_run_for_test(std::future::pending());
+        let deadline = tokio::time::Instant::now() - Duration::from_secs(1);
+        tokio::time::sleep_until(deadline).await;
+        {
+            let mut shutdown = Box::pin(shutdown_exec_engine(&engine.handle, deadline));
+            std::future::poll_fn(|cx| {
+                assert!(matches!(
+                    std::future::Future::poll(shutdown.as_mut(), cx),
+                    std::task::Poll::Ready(None)
+                ));
+                std::task::Poll::Ready(())
+            })
+            .await;
+        }
+        assert!(matches!(engine.rx_op.recv().await, Some(Op::Shutdown)));
+        while engine.handle.try_send(Op::Shutdown).is_ok() {}
+        let mut shutdown = Box::pin(shutdown_exec_engine(&engine.handle, deadline));
+        std::future::poll_fn(|cx| {
+            assert!(matches!(
+                std::future::Future::poll(shutdown.as_mut(), cx),
+                std::task::Poll::Ready(None)
+            ));
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn run_completion_exec_shutdown_uses_observed_exit_when_mailbox_closed() {
+        use codewhale_engine::core::engine::EngineRunCompletion;
+        for normal in [true, false] {
+            let mut engine = mock_engine_handle();
+            let run = engine.observe_run_for_test(async {});
+            let expected = if normal {
+                run.await;
+                EngineRunCompletion::NormalReturn
+            } else {
+                drop(run);
+                EngineRunCompletion::AbnormalTermination
+            };
+            engine.rx_op.close();
+            assert_eq!(
+                shutdown_exec_engine(
+                    &engine.handle,
+                    tokio::time::Instant::now() + Duration::from_secs(2)
+                )
+                .await,
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn run_completion_exec_shutdown_consumes_real_spawned_engine() {
+        let _env = crate::test_support::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut config = codewhale_engine::core::engine::EngineConfig {
+                workspace: home.path().into(),
+                snapshots_enabled: false,
+                memory_enabled: false,
+                subagents_enabled: false,
+                ..Default::default()
+            };
+            config
+                .features
+                .disable(codewhale_runtime::features::Feature::Mcp);
+            let handle = codewhale_engine::core::engine::spawn_engine(
+                config,
+                &crate::config::Config::default(),
+                None,
+            )
+            .await;
+            assert_eq!(
+                shutdown_exec_engine(
+                    &handle,
+                    tokio::time::Instant::now() + Duration::from_secs(5)
+                )
+                .await,
+                Some(codewhale_engine::core::engine::EngineRunCompletion::NormalReturn)
+            );
+        });
+    }
 
     fn completed_parent(input_tokens: u32) -> Event {
         let usage = Usage {

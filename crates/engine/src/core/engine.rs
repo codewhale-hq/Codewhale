@@ -726,6 +726,7 @@ impl CancelReason {
 /// Handle to communicate with the engine
 #[derive(Clone)]
 pub struct EngineHandle {
+    run_completion: Option<tokio::sync::watch::Receiver<Option<EngineRunCompletion>>>,
     mcp_auth_context: Arc<dyn codewhale_runtime::credentials::AuthContext>,
     goal_state: SharedGoalState,
     pub sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement,
@@ -2673,6 +2674,7 @@ impl Engine {
             child_host,
         };
         let handle = EngineHandle {
+            run_completion: None,
             mcp_auth_context: Arc::clone(&engine.config.mcp_auth_context.0),
             goal_state: engine.config.goal_state.clone(),
             sandbox_enforcement,
@@ -10775,7 +10777,7 @@ pub async fn spawn_engine(
     mcp_handoff: Option<crate::mcp::McpHandoff>,
 ) -> EngineHandle {
     let api_config = api_config.clone();
-    let (engine, handle) = codewhale_runtime::runtime_control::owner_work(move || {
+    let (engine, mut handle) = codewhale_runtime::runtime_control::owner_work(move || {
         let (engine, handle) = Engine::new(config, &api_config);
         engine
             .mcp_pool_slot
@@ -10790,11 +10792,9 @@ pub async fn spawn_engine(
     // Box the run future before supervision. An extra async wrapper embeds
     // the large engine state again in both its own and the supervisor's poll
     // frames, which can overflow an ordinary worker-thread stack.
-    spawn_supervised(
-        "engine-event-loop",
-        std::panic::Location::caller(),
-        Box::pin((*engine).run()),
-    );
+    let (run, completion) = run_completion::observe(Box::pin((*engine).run()));
+    handle.run_completion = Some(completion);
+    spawn_supervised("engine-event-loop", std::panic::Location::caller(), run);
     handle
 }
 
@@ -10831,11 +10831,9 @@ pub fn spawn_engine_with_authoritative_route_config(
     engine.host_profile = host_profile;
     engine.authoritative_route_config = Some(authoritative_route_config);
 
-    let worker = spawn_supervised(
-        "engine-event-loop",
-        std::panic::Location::caller(),
-        Box::pin(engine.run()),
-    );
+    let (run, completion) = run_completion::observe(Box::pin(engine.run()));
+    handle.run_completion = Some(completion);
+    let worker = spawn_supervised("engine-event-loop", std::panic::Location::caller(), run);
 
     (handle, worker)
 }
@@ -10874,6 +10872,18 @@ pub enum MockApprovalEvent {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockEngineHandle {
+    pub fn observe_run_for_test<F>(
+        &mut self,
+        future: F,
+    ) -> impl Future<Output = ()> + Send + 'static + use<F>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let (run, completion) = run_completion::observe(Box::pin(future));
+        self.handle.run_completion = Some(completion);
+        run
+    }
+
     pub async fn recv_approval_event(&mut self) -> Option<MockApprovalEvent> {
         self.recv_approval_decision().await.map(|(event, _)| event)
     }
@@ -10972,6 +10982,7 @@ pub fn mock_engine_handle() -> MockEngineHandle {
     )));
     let compaction_cancellation = Arc::new(StdMutex::new(CompactionCancellationState::default()));
     let handle = EngineHandle {
+        run_completion: None,
         mcp_auth_context: crate::mcp::process_mcp_auth_context(),
         goal_state: new_shared_goal_state(),
         sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
@@ -11431,6 +11442,8 @@ mod approval_publication;
 mod compaction;
 mod context;
 pub mod handle;
+mod run_completion;
+pub use run_completion::EngineRunCompletion;
 pub mod preview;
 use crate::compaction::estimate_input_tokens_conservative;
 #[cfg(test)]
