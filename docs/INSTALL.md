@@ -119,6 +119,7 @@ box) to quit. It prints the command to resume the session later.
 | You need | Why |
 |---|---|
 | Linux x86_64 or arm64, or macOS | Prebuilt binaries exist for these. The Linux binaries are **static** (musl), so they have no glibc or libdbus dependency and run on any distro. |
+| HarmonyOS PC | Run the Linux ARM64 build inside the Linux subsystem (融合开发引擎), or build natively for `aarch64-unknown-linux-ohos` and sign it; see [HarmonyOS and OpenHarmony](HarmonyOS.md). |
 | `curl` (or `wget`) and `sha256sum` (or `shasum`) | The installer uses them to download and verify. |
 | A model provider key, e.g. [DeepSeek](https://platform.deepseek.com/api_keys) | Codewhale does nothing useful without a model. |
 | `git` (recommended) | Codewhale works best inside a git repository. |
@@ -1159,7 +1160,9 @@ them ([details](https://github.com/codewhale-hq/Codewhale/blob/37ecdfcc49bc68a9b
 
 The [latest stable release](https://github.com/codewhale-hq/CodeWhale/releases/latest)
 publishes Linux x64/arm64, macOS x64/arm64, Windows x64/arm64, and Android arm64
-assets. Artifact presence is distinct from platform qualification.
+assets. A release that includes the OpenHarmony leg also publishes a native
+HarmonyOS/OpenHarmony arm64 tarball. Artifact presence is distinct from platform
+qualification.
 The table below describes the current source tree's platform and secondary
 packaging support; `latest` installation still selects the published release.
 Android/Termux is preview pending real-device QA. Linux ARM64 is available from
@@ -1171,6 +1174,7 @@ v0.8.8 onward. Linux RISC-V prebuilts are temporarily paused because the locked
 | Linux | x64 (x86_64) | `codewhale-linux-x64`, `codew-linux-x64` | ✅ | ✅ |
 | Linux | arm64 | `codewhale-linux-arm64`, `codew-linux-arm64` | ✅ | ✅ |
 | Android / Termux | arm64 (aarch64) | `codewhale-android-arm64.tar.gz` (published in v0.9.12; device support is preview) | ⚠️⁴ preview | ⚠️⁴ preview |
+| HarmonyOS / OpenHarmony (native) | arm64 (aarch64) | `codewhale-ohos-arm64.tar.gz` (self-signed inside; only in releases that list it), otherwise build and sign — see [HarmonyOS](HarmonyOS.md) | ❌ | ❌ |
 | Linux | riscv64 | temporarily unsupported until upstream bindings land | ❌¹ | ❌³ |
 | macOS | x64 | `codewhale-macos-x64`, `codew-macos-x64` | ✅ | ✅ |
 | macOS | arm64 (M-series) | `codewhale-macos-arm64`, `codew-macos-arm64` | ✅ | ✅ |
@@ -1196,6 +1200,9 @@ Android / Termux is not the same target as Linux arm64. Do not install the
 Linux `codewhale-linux-arm64` archive in Termux; use the Termux-specific
 Android archive when a release or release candidate publishes one, or build
 from source inside Termux.
+
+The HarmonyOS row is the native target only. Inside the Linux subsystem
+(融合开发引擎, an openEuler virtual machine) the ordinary Linux ARM64 asset works.
 
 The current Linux **x64 and arm64** assets are **static musl builds**.
 The x64 release path has used musl since v0.8.65; v0.9.6 extends the same build
