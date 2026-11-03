@@ -822,30 +822,6 @@ fn request_query_secret_values(url: &reqwest::Url) -> Vec<String> {
     values
 }
 
-/// Redirects are followed only within one host, over the same or a stronger
-/// scheme.
-///
-/// Provider keys ride in headers this stack may send under names reqwest does
-/// not strip on a cross-host hop (`x-api-key`, operator `http_headers`), so a
-/// compromised or open-redirecting endpoint could otherwise collect a key by
-/// answering `302`. A same-host hop to plaintext would expose the same key to
-/// anything on the path, so a downgrade stops too. Upgrades and same-scheme
-/// hops still work for the endpoints that use them.
-fn same_host_redirects() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
-        let from = attempt.previous().last();
-        let next = attempt.url();
-        let same_host = from.is_some_and(|previous| previous.host_str() == next.host_str());
-        let downgrade =
-            from.is_some_and(|previous| previous.scheme() == "https" && next.scheme() == "http");
-        if same_host && !downgrade && attempt.previous().len() < 10 {
-            attempt.follow()
-        } else {
-            attempt.stop()
-        }
-    })
-}
-
 pub fn redact_model_bound_text(text: &str, exact_secret_values: &[String]) -> String {
     let mut redacted = text.to_string();
     for secret in exact_secret_values {
@@ -1808,15 +1784,9 @@ impl CodewhaleClient {
             config,
             AuthHeaderSurface::Inference,
         )?;
-        let http_client = if plugin_provider.is_some()
-            || api_key_source == "Claude sign-in"
-            || api_provider == ProviderKind::OpenaiCodex
-        {
-            http_client.redirect(reqwest::redirect::Policy::none())
-        } else {
-            http_client.redirect(same_host_redirects())
-        }
-        .build()?;
+        let http_client = http_client
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         let models_http_client = Self::http_client_builder_with_auth_mode(
             &api_key,
             &http_headers,
@@ -1830,9 +1800,8 @@ impl CodewhaleClient {
         )?
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-        // Always keep an HTTP/1.1 twin for automatic stream-header fallback
-        // when H2 stalls. When `force_http1` is pinned, both clients are
-        // HTTP/1.1 and the fallback is a no-op retry path.
+        // The HTTP/1.1 twin is eligible only after a proven pre-dispatch failure.
+        // A stalled request may already have been accepted by the provider.
         let http1_client = Self::http_client_builder_with_auth_mode(
             &api_key,
             &http_headers,
@@ -1844,12 +1813,9 @@ impl CodewhaleClient {
             config,
             AuthHeaderSurface::Inference,
         )?;
-        let http1_client = if plugin_provider.is_some() || api_key_source == "Claude sign-in" {
-            http1_client.redirect(reqwest::redirect::Policy::none())
-        } else {
-            http1_client
-        }
-        .build()?;
+        let http1_client = http1_client
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
 
         let route_facts = crate::provider_lake::configured_catalog_offering_for_route(
             config,
@@ -2420,7 +2386,8 @@ impl CodewhaleClient {
             .tcp_keepalive(config.tcp_keepalive())
             .http2_keep_alive_interval(config.http2_keep_alive_interval())
             .http2_keep_alive_timeout(config.http2_keep_alive_timeout())
-            .min_tls_version(reqwest::tls::Version::TLS_1_2);
+            .min_tls_version(reqwest::tls::Version::TLS_1_2)
+            .retry(reqwest::retry::never());
         if api_provider == ProviderKind::OpenaiCodex {
             builder = builder.redirect(reqwest::redirect::Policy::none());
         }
@@ -3891,6 +3858,7 @@ impl CodewhaleClient {
                             NON_STREAMING_HTTP_TIMEOUT,
                             build,
                             &disclosure,
+                            crate::llm_client::RetryOperation::ReadOnly,
                         )
                         .await
                         .map_err(ModelsFetchError::Interactive)?
@@ -4489,8 +4457,13 @@ impl CodewhaleClient {
     where
         F: FnMut() -> reqwest::RequestBuilder,
     {
-        self.send_with_retry_total_error_body(non_streaming_request_envelope(), build, disclosure)
-            .await
+        self.send_with_retry_total_error_body(
+            non_streaming_request_envelope(),
+            build,
+            disclosure,
+            crate::llm_client::RetryOperation::Inference,
+        )
+        .await
     }
 
     /// [`Self::send_with_retry_error_body`] with a caller-pinned per-attempt
@@ -4503,6 +4476,7 @@ impl CodewhaleClient {
         total: Duration,
         mut build: F,
         disclosure: &ErrorBodyDisclosure,
+        operation: crate::llm_client::RetryOperation,
     ) -> Result<reqwest::Response>
     where
         F: FnMut() -> reqwest::RequestBuilder,
@@ -4520,14 +4494,29 @@ impl CodewhaleClient {
                         .authorize_plugin_request(request)
                         .await
                         .map_err(|error| LlmError::Other(error.to_string()))?;
-                    request
-                        .send()
+                    let (client, request) = request.build_split();
+                    let request = request
+                        .map_err(|error| LlmError::Other(error.without_url().to_string()))?;
+                    if operation == crate::llm_client::RetryOperation::ReadOnly
+                        && request.method() != reqwest::Method::GET
+                        && request.method() != reqwest::Method::HEAD
+                    {
+                        return Err(LlmError::Other(
+                            "Read-only retry requires GET or HEAD".to_string(),
+                        ));
+                    }
+                    let pending = crate::llm_client::begin_outbound_transmission(request.method());
+                    let result = client
+                        .execute(request)
                         .await
-                        .map_err(|error| LlmError::from_reqwest(&error.without_url()))
+                        .map_err(|error| LlmError::from_reqwest(&error.without_url()));
+                    crate::llm_client::settle_outbound_transmission(pending, &result);
+                    result
                 }
             },
             Some(total),
             disclosure,
+            operation,
         )
         .await
     }
@@ -4546,9 +4535,18 @@ impl CodewhaleClient {
                     let request = build(policy);
                     async move {
                         let request = self.authorize_plugin_request(request).await?;
-                        request.send().await.map_err(|error| {
-                            anyhow::Error::new(LlmError::from_reqwest(&error.without_url()))
-                        })
+                        let (client, request) = request.build_split();
+                        let request = request.map_err(|error| {
+                            anyhow::Error::new(LlmError::Other(error.without_url().to_string()))
+                        })?;
+                        let pending =
+                            crate::llm_client::begin_outbound_transmission(request.method());
+                        let result = client
+                            .execute(request)
+                            .await
+                            .map_err(|error| LlmError::from_reqwest(&error.without_url()));
+                        crate::llm_client::settle_outbound_transmission(pending, &result);
+                        result.map_err(anyhow::Error::new)
                     }
                 })
                 .await
@@ -4560,6 +4558,7 @@ impl CodewhaleClient {
             },
             None,
             &ErrorBodyDisclosure::Full,
+            crate::llm_client::RetryOperation::Inference,
         )
         .await
     }
@@ -4569,15 +4568,19 @@ impl CodewhaleClient {
         mut attempt: F,
         attempt_total: Option<Duration>,
         disclosure: &ErrorBodyDisclosure,
+        operation: crate::llm_client::RetryOperation,
     ) -> Result<reqwest::Response>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = std::result::Result<reqwest::Response, LlmError>>,
     {
         if self.isolated_request_state {
-            return self.send_with_isolated_retry(attempt, disclosure).await;
+            return self
+                .send_with_isolated_retry(attempt, disclosure, operation)
+                .await;
         }
-        let retry_cfg: LlmRetryConfig = self.retry.clone().into();
+        let mut retry_cfg: LlmRetryConfig = self.retry.clone().into();
+        retry_cfg.operation = operation;
         let pause_scope = self.rate_limit_scope();
         let callback_scope = pause_scope.clone();
         // Non-streaming calls retain their whole-retry envelope. Streaming
@@ -4609,12 +4612,14 @@ impl CodewhaleClient {
                     let raw = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
                     let body_retry_after = retry_delay_from_error_body(&raw);
                     let body = self.disclosed_http_error_body(disclosure, status.as_u16(), &raw);
-                    Err(self.http_error_with_route_context(
+                    let error = self.http_error_with_route_context(
                         status.as_u16(),
                         &body,
                         header_retry_after,
                         body_retry_after,
-                    ))
+                    );
+                    crate::llm_client::settle_outbound_http_error(&error);
+                    Err(error)
                 }
             },
             Some(Box::new(move |err, attempt, delay| {
@@ -4703,12 +4708,14 @@ impl CodewhaleClient {
         &self,
         mut attempt: F,
         disclosure: &ErrorBodyDisclosure,
+        operation: crate::llm_client::RetryOperation,
     ) -> Result<reqwest::Response>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = std::result::Result<reqwest::Response, LlmError>>,
     {
-        let retry_cfg: LlmRetryConfig = self.retry.clone().into();
+        let mut retry_cfg: LlmRetryConfig = self.retry.clone().into();
+        retry_cfg.operation = operation;
         let request_result = crate::llm_client::observe_request_retries(
             None,
             with_retry(
@@ -4727,12 +4734,14 @@ impl CodewhaleClient {
                         let body_retry_after = retry_delay_from_error_body(&raw);
                         let body =
                             self.disclosed_http_error_body(disclosure, status.as_u16(), &raw);
-                        Err(self.http_error_with_route_context(
+                        let error = self.http_error_with_route_context(
                             status.as_u16(),
                             &body,
                             header_retry_after,
                             body_retry_after,
-                        ))
+                        );
+                        crate::llm_client::settle_outbound_http_error(&error);
+                        Err(error)
                     }
                 },
                 Some(Box::new(|err, attempt, delay| {
@@ -4810,7 +4819,14 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
             ("rate_limited", human)
         }
         LlmError::ServerError { status, .. } => ("server_error", format!("upstream {status}")),
-        LlmError::NetworkError(_) => ("network_error", "network error".to_string()),
+        LlmError::NetworkError(_) => (
+            "network_error",
+            "network error; request outcome unknown".to_string(),
+        ),
+        LlmError::ConnectError { .. } => (
+            "connect_error",
+            "connection failed before dispatch".to_string(),
+        ),
         LlmError::Timeout(_) => ("timeout", "timeout".to_string()),
         _ => ("other", "other".to_string()),
     }
@@ -6690,8 +6706,8 @@ pub mod system_one;
 
 /// Longest a request may take to open its stream and deliver the first body
 /// byte before the client itself times out (#6184): the first-byte bound plus
-/// two header waits, because a failed or stalled open on the dual client
-/// retries once on the HTTP/1.1 twin under its own header wait. HTTP retries
+/// two header waits, because a proven pre-dispatch failure on the dual client
+/// may use the HTTP/1.1 twin under its own header wait. HTTP retries
 /// inside one open attempt run within that attempt's header wait. The engine
 /// heartbeat uses this as its awaiting-model bound, so it must cover the
 /// fallback or an in-progress recovery reads as a stall (#6711).

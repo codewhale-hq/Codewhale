@@ -528,9 +528,10 @@ pub fn router_failure_from_error(error: &anyhow::Error) -> AutoRouterFailure {
             .map_or(AutoRouterFailure::Transport, |status| {
                 AutoRouterFailure::Http { status }
             }),
-        LlmError::NetworkError(_) | LlmError::Timeout(_) | LlmError::ParseError(_) => {
-            AutoRouterFailure::Transport
-        }
+        LlmError::NetworkError(_)
+        | LlmError::ConnectError { .. }
+        | LlmError::Timeout(_)
+        | LlmError::ParseError(_) => AutoRouterFailure::Transport,
     }
 }
 

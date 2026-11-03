@@ -527,7 +527,9 @@ async fn truncated_response_continues_turn() {
                 assert_eq!(reported.reasoning_tokens, Some(3));
                 saw_turn_usage = true;
             }
-            Event::SessionUpdated { messages, .. } => {
+            Event::SessionUpdated {
+                source: _,
+                messages, .. } => {
                 saw_truncation_observation |= messages.iter().any(|message| {
                     message.content.iter().any(|block| {
                         matches!(

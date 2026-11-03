@@ -213,10 +213,11 @@ impl SessionPickerView {
             Ok((sessions, recovery_sessions, warning)) => {
                 self.sessions = sessions;
                 self.recovery_sessions = recovery_sessions;
-                self.load_error = None;
-                self.status = warning.map(|error| {
+                let warning = warning.map(|error| {
                     tr(self.locale, MessageId::SessionsLoadFailed).replace("{error}", &error)
                 });
+                self.load_error = self.sessions.is_empty().then(|| warning.clone()).flatten();
+                self.status = warning;
                 self.apply_sort_and_filter();
                 if let Some(session_id) = select {
                     self.select_with_fallback(&session_id);
@@ -728,6 +729,13 @@ impl SessionPickerView {
         } else {
             !session.archived
         };
+        if self.current_session_id.as_deref() == Some(session.id.as_str())
+            && let Err(error) = crate::tui::persistence_actor::flush_before_transition()
+        {
+            self.status =
+                Some(tr(self.locale, MessageId::SessionsArchiveFailed).replace("{error}", &error));
+            return ViewAction::None;
+        }
         let metadata = match manager.set_session_archived(
             &session.id,
             archived,
@@ -803,27 +811,31 @@ impl SessionPickerView {
                 return ViewAction::None;
             }
         };
-        let mut saved = match manager.load_session(&session.id) {
-            Ok(s) => s,
-            Err(e) => {
+        if self.current_session_id.as_deref() == Some(session.id.as_str())
+            && let Err(error) = crate::tui::persistence_actor::flush_before_transition()
+        {
+            self.status =
+                Some(tr(self.locale, MessageId::SessionsRenameFailed).replace("{error}", &error));
+            return ViewAction::None;
+        }
+        let metadata = match manager.rename_session(
+            &session.id,
+            new_title,
+            codewhale_engine::session_manager::SessionMutator::Owner,
+        ) {
+            Ok(metadata) => metadata,
+            Err(error) => {
                 self.status = Some(
-                    tr(self.locale, MessageId::SessionsLoadFailed)
-                        .replace("{error}", &e.to_string()),
+                    tr(self.locale, MessageId::SessionsRenameFailed)
+                        .replace("{error}", &error.to_string()),
                 );
                 return ViewAction::None;
             }
         };
-        saved.metadata.title = new_title.to_string();
-        if let Err(e) = manager.save_session(&saved) {
-            self.status = Some(
-                tr(self.locale, MessageId::SessionsRenameFailed).replace("{error}", &e.to_string()),
-            );
-            return ViewAction::None;
-        }
         // Update our local metadata cache. The cached preview renders the old
         // title, so it is dropped rather than shown again (U08-09).
         if let Some(meta) = self.sessions.iter_mut().find(|s| s.id == session.id) {
-            meta.title = new_title.to_string();
+            *meta = metadata.clone();
         }
         self.preview_cache.remove(&session.id);
         self.apply_sort_and_filter();
@@ -831,7 +843,7 @@ impl SessionPickerView {
         self.status =
             Some(tr(self.locale, MessageId::SessionsRenamed).replace("{title}", new_title));
         ViewAction::Emit(ViewEvent::SessionRenamed {
-            metadata: Box::new(saved.metadata),
+            metadata: Box::new(metadata),
         })
     }
 
@@ -1826,8 +1838,12 @@ mod tests {
 
     fn test_session(idx: usize, title: &str) -> SessionMetadata {
         SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id: format!("session-{idx:02}"),
             title: title.to_string(),
+            title_is_custom: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             message_count: idx + 1,

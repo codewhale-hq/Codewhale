@@ -43,7 +43,7 @@
 //! readable message beats letting one through to a provider-side 400.
 
 use anyhow::{Result, bail};
-use codewhale_protocol::runtime::{
+use codewhale_app_server_protocol::runtime::{
     MAX_RUNTIME_IMAGE_BYTES, MAX_RUNTIME_IMAGE_TOTAL_BYTES, MAX_RUNTIME_IMAGES, RuntimeImageInput,
 };
 use image::codecs::jpeg::JpegEncoder;

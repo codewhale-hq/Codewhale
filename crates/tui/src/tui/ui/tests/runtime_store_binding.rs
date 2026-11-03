@@ -41,7 +41,9 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     );
     assert!(original.metadata.runtime_store.is_none());
     sessions.save_session(&original)?;
-    sessions.save_checkpoint(&original)?;
+    let checkpoint = sessions.save_checkpoint(&original)?;
+    let checkpoint_before = std::fs::read(&checkpoint)?;
+    let original = sessions.load_session_snapshot(&original.metadata.id)?;
     let mut app = Box::new(create_test_app());
     apply_loaded_session_with_goal(&mut app, &mut config, original.clone(), None)
         .map_err(anyhow::Error::msg)?;
@@ -76,8 +78,9 @@ async fn runtime_store_binding_persists_on_exit_without_a_model_turn() -> anyhow
     assert!(
         sessions
             .load_session_checkpoint(&original.metadata.id)?
-            .is_none()
+            .is_some()
     );
+    assert_eq!(std::fs::read(checkpoint)?, checkpoint_before);
     drop(app);
     drop(tasks);
     drop(explicit_store);
@@ -578,6 +581,7 @@ async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_re
         execution_scope: "0".repeat(64),
     });
     sessions.save_session(&saved)?;
+    let saved = sessions.load_session_snapshot("picker-interrupted")?;
     let mut app = Box::new(create_test_app());
     let tasks = TaskManager::start(
         TaskManagerConfig::from_runtime(&config, root.path().into(), None, Some(1)),
@@ -610,7 +614,16 @@ async fn picker_recovers_missing_store_into_the_idle_host_and_persists_before_re
         "binding repair survives a contended UI restore"
     );
     drop(held);
-    apply_loaded_session_with_goal(&mut app, &mut config, saved.clone(), None)
+    let stale_error = apply_loaded_session_with_goal(&mut app, &mut config, saved.clone(), None)
+        .expect_err("the repaired binding invalidates its original picker source");
+    assert!(
+        stale_error.contains("changed after its captured source"),
+        "{stale_error}"
+    );
+    assert_eq!(app.current_session_id.as_deref(), Some("picker-current"));
+    assert_eq!(app.api_messages, current_messages);
+    let recovered = sessions.load_session_snapshot("picker-interrupted")?;
+    apply_loaded_session_with_goal(&mut app, &mut config, recovered, None)
         .map_err(anyhow::Error::msg)?;
     assert_eq!(
         app.current_session_id.as_deref(),
@@ -898,6 +911,7 @@ async fn picker_adopts_existing_empty_unheld_store() -> anyhow::Result<()> {
         execution_scope: "0".repeat(64),
     });
     sessions.save_session(&saved)?;
+    let saved = sessions.load_session_snapshot("picker-adoptable")?;
 
     let mut app = Box::new(create_test_app());
     let tasks = TaskManager::start(
@@ -974,6 +988,7 @@ async fn picker_adoption_keeps_a_store_another_document_binds() -> anyhow::Resul
     );
     saved.metadata.runtime_store = Some(binding.clone());
     sessions.save_session(&saved)?;
+    let saved = sessions.load_session_snapshot("picker-adoptable")?;
     let mut sibling = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
         "same-host-sibling".into(),
         &[text_message("user", "saved in the same host")],

@@ -137,9 +137,10 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
             .and_then(|tool| tool.defer_loading)
     };
 
-    for core in ["read", "write", "edit", "bash", "agent"] {
+    for core in ["read", "write", "edit", "bash"] {
         assert_eq!(defer_loading(core), Some(false));
     }
+    assert_eq!(defer_loading("agent"), Some(true));
     assert_eq!(defer_loading("Git"), Some(true));
     assert_eq!(defer_loading("Run"), Some(true));
     assert_eq!(defer_loading("remember"), Some(true));
@@ -205,9 +206,10 @@ fn capability_compact_surface_defers_nonessential_core_tools() {
             .and_then(|tool| tool.defer_loading)
     };
 
-    for core in ["read", "write", "edit", "bash", "agent"] {
+    for core in ["read", "write", "edit", "bash"] {
         assert_eq!(defer_loading(core), Some(false));
     }
+    assert_eq!(defer_loading("agent"), Some(true));
     assert_eq!(defer_loading("Git"), Some(true));
     assert_eq!(defer_loading("update_plan"), Some(true));
     assert_eq!(defer_loading(TOOL_SEARCH_NAME), Some(false));
@@ -235,7 +237,7 @@ fn capability_full_surface_preserves_small_default_head() {
         crate::model_profile::ToolSurfaceBudget::Full,
     );
 
-    for name in ["read", "write", "edit", "bash", "agent"] {
+    for name in ["read", "write", "edit", "bash"] {
         assert_eq!(
             catalog
                 .iter()
@@ -245,13 +247,15 @@ fn capability_full_surface_preserves_small_default_head() {
             "{name} should stay eager on full tool surfaces"
         );
     }
-    assert_eq!(
-        catalog
-            .iter()
-            .find(|tool| tool.name == "Run")
-            .and_then(|tool| tool.defer_loading),
-        Some(true)
-    );
+    for name in ["agent", "Run"] {
+        assert_eq!(
+            catalog
+                .iter()
+                .find(|tool| tool.name == name)
+                .and_then(|tool| tool.defer_loading),
+            Some(true)
+        );
+    }
 }
 
 #[test]

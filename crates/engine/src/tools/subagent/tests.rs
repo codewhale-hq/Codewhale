@@ -1008,7 +1008,9 @@ fn persisted_subagent_state_has_bounded_serialized_size() {
     // Sanity-check: file is valid JSON and contains expected records.
     let parsed: serde_json::Value =
         serde_json::from_slice(&serialized).expect("persisted state is valid JSON");
-    let workers = parsed["workers"].as_array().expect("workers array");
+    let workers = parsed["state"]["workers"]
+        .as_array()
+        .expect("workers array");
     assert_eq!(
         workers.len(),
         10,
@@ -1023,31 +1025,36 @@ fn coordination_ledger_persists_and_replays_bounded_contracts() {
     let mut manager =
         SubAgentManager::new(tmp.path().to_path_buf(), 4).with_state_path(state_path.clone());
     manager
-        .coordination
-        .register_claim(
-            WriteScopeClaim {
-                owner: "agent_writer".into(),
-                roots: vec!["src".into()],
-                exact_files: vec!["Cargo.toml".into()],
-                contracts: vec!["public-api".into()],
-            },
-            false,
-            |_| false,
-        )
-        .expect("claim");
-    manager
-        .record_coordination_decision(DecisionRecord {
-            decision_id: "decision_storage".into(),
-            subject: "storage".into(),
-            status: DecisionStatus::Accepted,
-            owner: "agent_writer".into(),
-            scope: vec!["router".into()],
-            constraints: vec!["bounded".into()],
-            evidence_handles: vec!["test:coordination".into()],
-            version: 1,
-            sequence: 0,
+        .with_store_transaction(|manager| {
+            manager
+                .coordination
+                .register_claim(
+                    WriteScopeClaim {
+                        owner: "agent_writer".into(),
+                        roots: vec!["src".into()],
+                        exact_files: vec!["Cargo.toml".into()],
+                        contracts: vec!["public-api".into()],
+                    },
+                    false,
+                    |_| false,
+                )
+                .expect("claim");
+            manager
+                .record_coordination_decision(DecisionRecord {
+                    decision_id: "decision_storage".into(),
+                    subject: "storage".into(),
+                    status: DecisionStatus::Accepted,
+                    owner: "agent_writer".into(),
+                    scope: vec!["router".into()],
+                    constraints: vec!["bounded".into()],
+                    evidence_handles: vec!["test:coordination".into()],
+                    version: 1,
+                    sequence: 0,
+                })
+                .expect("decision");
+            Ok(())
         })
-        .expect("decision");
+        .unwrap();
     manager.persist_state().unwrap().join().unwrap();
 
     let mut loaded = SubAgentManager::new(tmp.path().to_path_buf(), 4).with_state_path(state_path);
@@ -1411,7 +1418,12 @@ fn session_close_finalizes_live_fleet_and_releases_write_claims() {
     assert!(overlap.contains("worker-a"), "{overlap}");
 
     // Session close finalizes both owners and releases their claims.
-    assert!(manager.finalize_session_close() > 0);
+    assert!(
+        manager
+            .finalize_session_close()
+            .expect("durable worker operation")
+            > 0
+    );
     assert!(!manager.active_coordination_owners().contains(&legacy_id));
     assert!(!manager.active_coordination_owners().contains("worker-a"));
     assert!(manager.coordination.write_claims.is_empty());
@@ -1427,7 +1439,12 @@ fn session_close_finalizes_live_fleet_and_releases_write_claims() {
 
     // Idempotent: a second close pass has no live fleet to finalize and
     // must not release (or re-own) anything.
-    assert_eq!(manager.finalize_session_close(), 0);
+    assert_eq!(
+        manager
+            .finalize_session_close()
+            .expect("durable worker operation"),
+        0
+    );
     assert!(manager.coordination.write_claims.is_empty());
     manager
         .preflight_worker_coordination(&make_write_worker_spec(
@@ -1650,7 +1667,9 @@ fn a_second_session_without_the_lock_keeps_its_running_agents_live() {
     let agent_id = agent.id.clone();
     contender.agents.insert(agent_id.clone(), agent);
 
-    let cancelled = contender.cleanup(Duration::from_secs(3600));
+    let cancelled = contender
+        .cleanup(Duration::from_secs(3600))
+        .expect("durable worker operation");
     assert_eq!(
         cancelled, 0,
         "lock loss alone must not terminalize anything"
@@ -1780,7 +1799,9 @@ fn cleanup_terminalizes_orphans_on_heartbeat_evidence_not_on_lock_ownership() {
     let fresh = insert_orphan(&mut contender, "fresh-orphan", Duration::from_secs(1));
     let stale = insert_orphan(&mut contender, "stale-orphan", Duration::from_secs(300));
 
-    let cancelled = contender.cleanup(Duration::from_secs(3600));
+    let cancelled = contender
+        .cleanup(Duration::from_secs(3600))
+        .expect("durable worker operation");
     assert_eq!(
         cancelled, 1,
         "only the agent with stale heartbeat evidence terminalizes"
@@ -7421,7 +7442,9 @@ async fn late_completion_does_not_overwrite_cancelled_outcome() {
     late.status = SubAgentStatus::Completed;
     late.result = Some("late success".to_string());
     assert!(
-        !manager.update_from_result(&agent_id, late),
+        !manager
+            .update_from_result(&agent_id, late)
+            .expect("durable worker operation"),
         "late completion must lose the terminal transition"
     );
 
@@ -7505,7 +7528,11 @@ async fn completion_claim_preserves_running_gate_and_excludes_late_cancel() {
     let mut result = manager.get_result(&agent_id).unwrap();
     result.status = SubAgentStatus::Completed;
     result.result = Some("done".to_string());
-    assert!(manager.update_from_result(&agent_id, result));
+    assert!(
+        manager
+            .update_from_result(&agent_id, result)
+            .expect("durable worker operation")
+    );
     assert_eq!(
         manager.get_result(&agent_id).unwrap().status,
         SubAgentStatus::Completed
@@ -10269,7 +10296,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
     .expect("API timeout should publish an Interrupted mailbox lifecycle event");
     assert_eq!(interrupted_envelope.0, agent_id);
     assert!(
-        interrupted_envelope.1.contains("API call timed out"),
+        interrupted_envelope.1.contains("outcome unknown"),
         "reason should carry the timeout context: {}",
         interrupted_envelope.1
     );
@@ -10280,7 +10307,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
         .expect("sub-agent task should finish");
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        SUBAGENT_API_TIMEOUT_MAX_RETRIES.saturating_add(1) as usize,
+        1,
         "needs-input interruption must not park for continuation; the API call \
          is retried up to the timeout-retry budget, then stops"
     );
@@ -10296,7 +10323,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
         .checkpoint
         .as_ref()
         .expect("timeout should preserve checkpoint");
-    assert_eq!(checkpoint.reason, "api_timeout");
+    assert_eq!(checkpoint.reason, "request_outcome_unknown");
     assert!(checkpoint.continuable);
     assert_eq!(checkpoint.steps_taken, 1);
     assert!(
@@ -10349,7 +10376,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        SUBAGENT_API_TIMEOUT_MAX_RETRIES.saturating_add(1) as usize,
+        1,
         "projection inspection must not respawn the child implicitly"
     );
 }
@@ -10421,8 +10448,8 @@ async fn subagent_retries_api_timeout_before_succeeding() {
 
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "one timed-out API attempt should be retried exactly once"
+        1,
+        "unknown dispatched timeout must not replay"
     );
     let snapshot = {
         let manager = manager.read().await;
@@ -10430,8 +10457,13 @@ async fn subagent_retries_api_timeout_before_succeeding() {
             .get_result(&agent_id)
             .expect("agent should stay registered")
     };
-    assert_eq!(snapshot.status, SubAgentStatus::Completed);
-    assert_eq!(snapshot.result.as_deref(), Some("recovered answer"));
+    assert!(!matches!(snapshot.status, SubAgentStatus::Completed));
+    assert!(
+        !snapshot
+            .result
+            .as_deref()
+            .is_some_and(|value| value == "recovered answer")
+    );
 }
 
 #[test]
@@ -10472,7 +10504,7 @@ fn api_timeout_retry_delay_stays_within_jitter_bounds() {
 fn transient_provider_classifier_matches_sse_header_timeout() {
     let err = anyhow::anyhow!("SSE stream request did not receive response headers after 45s");
 
-    assert!(is_transient_subagent_provider_error(&err));
+    assert!(!is_transient_subagent_provider_error(&err));
 }
 
 #[test]
@@ -10483,11 +10515,11 @@ fn transient_provider_classifier_matches_body_decode_failures() {
     // issue #7, DeepSeek stream decode).
     let decode = anyhow::anyhow!("error decoding response body")
         .context("Failed to read Chat API response body");
-    assert!(is_transient_subagent_provider_error(&decode));
+    assert!(!is_transient_subagent_provider_error(&decode));
 
     let parse = anyhow::anyhow!("expected value at line 1 column 1")
         .context("Failed to parse Chat API JSON");
-    assert!(is_transient_subagent_provider_error(&parse));
+    assert!(!is_transient_subagent_provider_error(&parse));
 
     let auth = anyhow::anyhow!("401 unauthorized: invalid api key");
     assert!(
@@ -10549,8 +10581,8 @@ fn transient_provider_classifier_uses_typed_retryability_without_keywords() {
         LlmError::Timeout(Duration::from_secs(1)),
     ] {
         let error = anyhow::Error::new(error);
-        assert!(is_transient_subagent_provider_error(&error));
-        assert!(retryable_subagent_provider_failure(&error, 1).is_some());
+        assert!(!is_transient_subagent_provider_error(&error));
+        assert!(retryable_subagent_provider_failure(&error, 1).is_none());
     }
     let error = anyhow::Error::new(LlmError::RateLimited {
         message: "slow down".to_string(),
@@ -10624,8 +10656,8 @@ async fn subagent_retries_transient_provider_header_timeout_before_succeeding() 
 
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "one transient provider failure should be retried exactly once"
+        1,
+        "unknown dispatched header timeout must not replay"
     );
     let snapshot = {
         let manager = manager.read().await;
@@ -10633,8 +10665,13 @@ async fn subagent_retries_transient_provider_header_timeout_before_succeeding() 
             .get_result(&agent_id)
             .expect("agent should stay registered")
     };
-    assert_eq!(snapshot.status, SubAgentStatus::Completed);
-    assert_eq!(snapshot.result.as_deref(), Some("recovered answer"));
+    assert!(!matches!(snapshot.status, SubAgentStatus::Completed));
+    assert!(
+        !snapshot
+            .result
+            .as_deref()
+            .is_some_and(|value| value == "recovered answer")
+    );
 }
 
 #[tokio::test]
@@ -11306,7 +11343,12 @@ async fn cleanup_auto_cancels_stale_running_agent_and_releases_slot() {
         0,
         "stale running agents must not keep the concurrency slot occupied"
     );
-    assert_eq!(manager.cleanup(Duration::from_secs(60 * 60)), 1);
+    assert_eq!(
+        manager
+            .cleanup(Duration::from_secs(60 * 60))
+            .expect("durable worker operation"),
+        1
+    );
 
     let snapshot = manager
         .get_result(&agent_id)
@@ -11420,7 +11462,12 @@ async fn cleanup_keeps_recent_running_agent() {
     manager.agents.insert(agent_id.clone(), agent);
 
     assert_eq!(manager.running_count(), 1);
-    assert_eq!(manager.cleanup(Duration::from_secs(60 * 60)), 0);
+    assert_eq!(
+        manager
+            .cleanup(Duration::from_secs(60 * 60))
+            .expect("durable worker operation"),
+        0
+    );
     assert_eq!(
         manager.get_result(&agent_id).expect("agent").status,
         SubAgentStatus::Running
@@ -11469,7 +11516,12 @@ async fn touch_refreshes_stale_running_agent_heartbeat() {
     assert_eq!(manager.running_count(), 0);
     assert!(manager.touch(&agent_id));
     assert_eq!(manager.running_count(), 1);
-    assert_eq!(manager.cleanup(Duration::from_secs(60 * 60)), 0);
+    assert_eq!(
+        manager
+            .cleanup(Duration::from_secs(60 * 60))
+            .expect("durable worker operation"),
+        0
+    );
     manager
         .agents
         .get_mut(&agent_id)
@@ -11505,6 +11557,8 @@ fn test_persist_and_reload_marks_running_agent_as_interrupted() {
         .expect("persist state")
         .join()
         .expect("persist thread");
+
+    drop(manager);
 
     let mut reloaded = SubAgentManager::new(workspace, 2)
         .with_state_path(default_state_path(tmp.path()).expect("default state path"));
@@ -11553,13 +11607,13 @@ fn generated_whale_name_is_not_persisted_or_replayed_on_load() {
         serde_json::from_str(&std::fs::read_to_string(&state_path).expect("read persisted state"))
             .expect("parse persisted state");
     assert!(
-        persisted["agents"][0].get("nickname").is_none(),
+        persisted["state"]["agents"][0].get("nickname").is_none(),
         "generated locale text is not durable identity"
     );
 
     // Recreate a pre-fix state file whose generated display came from a
     // Japanese session. Loading under a later session must discard it.
-    persisted["agents"][0]["nickname"] = json!(generated);
+    persisted["state"]["agents"][0]["nickname"] = json!(generated);
     std::fs::write(
         &state_path,
         serde_json::to_string_pretty(&persisted).expect("serialize legacy state"),
@@ -11611,7 +11665,7 @@ fn explicit_nonmatching_whale_word_is_persisted_and_loaded() {
         serde_json::from_str(&std::fs::read_to_string(&state_path).expect("read persisted state"))
             .expect("parse persisted state");
     assert_eq!(
-        persisted["agents"][0]["nickname"],
+        persisted["state"]["agents"][0]["nickname"],
         json!(explicit_whale),
         "the explicit whale-word nickname remains durable"
     );
@@ -14422,7 +14476,9 @@ fn park_child_at_turn_end(manager: &mut SubAgentManager, agent_id: &str) {
     terminal.checkpoint = checkpoint;
     terminal.needs_input = needs_input;
     assert!(
-        manager.finish_terminal_result(agent_id, terminal, true, false),
+        manager
+            .finish_terminal_result(agent_id, terminal, true, false)
+            .expect("durable worker operation"),
         "the parked projection must own the terminal transition"
     );
 }
@@ -15801,10 +15857,13 @@ fn persisted_advisory_assignment_roles_replay_and_repersist_as_consultant() {
         )
         .expect("parse canonical state");
         assert_eq!(
-            repersisted["agents"][0]["assignment"]["role"],
+            repersisted["state"]["agents"][0]["assignment"]["role"],
             json!("advisor")
         );
-        assert_eq!(repersisted["agents"][0]["agent_type"], json!("advisor"));
+        assert_eq!(
+            repersisted["state"]["agents"][0]["agent_type"],
+            json!("advisor")
+        );
     }
 }
 
@@ -16507,7 +16566,9 @@ fn ownerless_legacy_rows_fail_closed_and_scoped_close_preserves_foreign_workers(
     assign_test_session_owner(&mut manager, &agent_b, "session-b");
 
     assert_eq!(
-        manager.finalize_session_close_for_session("session-a"),
+        manager
+            .finalize_session_close_for_session("session-a")
+            .expect("durable worker operation"),
         1,
         "paired agent and worker record are one finalized worker"
     );
@@ -17275,12 +17336,14 @@ async fn run_subagent_task_claims_before_delivery_and_then_finalizes() {
             .denied_tools
             .contains(&"write".to_string())
     );
-    held.cleanup(Duration::ZERO);
+    held.cleanup(Duration::ZERO)
+        .expect("durable worker operation");
     assert!(held.worker_records.contains_key(&identity.child_id));
     drop(held);
-    let persisted: PersistedSubAgentState =
+    let persisted: DurableSubAgentStore =
         serde_json::from_slice(&std::fs::read(&state_path).expect("persisted file"))
             .expect("persisted worker state");
+    let persisted = persisted.state;
     assert_eq!(
         persisted
             .workers
@@ -17320,9 +17383,9 @@ async fn run_subagent_task_claims_before_delivery_and_then_finalizes() {
             .expect("activation state")
             .clone(),
     };
-    let blocked_path = workspace.path().join("blocked-worker-store");
-    std::fs::create_dir(&blocked_path).expect("block publication with a directory");
-    manager.write().await.state_path = Some(blocked_path);
+    let retained_path = state_path.with_extension("retained-before-failure");
+    std::fs::rename(&state_path, &retained_path).expect("retain admitted store bytes");
+    std::fs::create_dir(&state_path).expect("block the admitted publication destination");
     drop(prepared);
     let error = tokio::time::timeout(Duration::from_secs(30), failed.settled())
         .await
@@ -17332,10 +17395,12 @@ async fn run_subagent_task_claims_before_delivery_and_then_finalizes() {
     assert!(failed.accepted().await.is_err());
     {
         let mut held = manager.write().await;
-        held.cleanup(Duration::ZERO);
+        held.cleanup(Duration::ZERO)
+            .expect_err("blocked durable worker store");
         assert!(held.agents.contains_key(&identity.child_id));
         assert!(held.worker_records.contains_key(&identity.child_id));
-        held.state_path = Some(state_path);
+        std::fs::remove_dir(&state_path).expect("remove the fixture obstruction");
+        std::fs::rename(&retained_path, &state_path).expect("restore the admitted store bytes");
     }
     let retried = persist_child_settlement(&manager, &identity)
         .await
@@ -20032,7 +20097,9 @@ fn cleanup_evicts_stale_terminal_worker_records_and_keeps_live_ones() {
     }
 
     // One-hour retention matches COMPLETED_AGENT_RETENTION used by cleanup callers.
-    let auto_cancelled = manager.cleanup(Duration::from_secs(60 * 60));
+    let auto_cancelled = manager
+        .cleanup(Duration::from_secs(60 * 60))
+        .expect("durable worker operation");
     assert_eq!(auto_cancelled, 0);
 
     assert!(
@@ -20085,7 +20152,9 @@ fn cleanup_removes_complete_transcript_after_worker_retention_expires() {
         .expect("write transcript artifact");
     assert!(artifact.exists());
 
-    manager.cleanup(Duration::from_secs(60 * 60));
+    manager
+        .cleanup(Duration::from_secs(60 * 60))
+        .expect("durable worker operation");
 
     assert!(manager.get_worker_record(agent_id).is_none());
     assert!(
@@ -20108,7 +20177,9 @@ fn cleanup_due_gates_write_locked_cleanup_to_a_bounded_cadence() {
         "a never-cleaned manager should be due"
     );
 
-    manager.cleanup(Duration::from_secs(3600));
+    manager
+        .cleanup(Duration::from_secs(3600))
+        .expect("durable worker operation");
     assert!(
         !manager.cleanup_due(Duration::from_secs(3600)),
         "immediately after cleanup it should not be due again within the interval"
@@ -20495,7 +20566,7 @@ fn write_json_atomic_survives_concurrent_writers() {
                 snapshot_sequence: i + 1,
                 ..PersistedSubAgentState::default()
             };
-            let _ = write_json_atomic(&ws, &p, &payload);
+            let _ = write_json_atomic(&ws, &p, &DurableSubAgentStore::from_legacy(payload));
         }));
     }
     for h in handles {
@@ -20505,7 +20576,7 @@ fn write_json_atomic_survives_concurrent_writers() {
     let contents = std::fs::read_to_string(&*path).expect("read state.json");
     let parsed: serde_json::Value =
         serde_json::from_str(&contents).expect("state.json must be complete/valid JSON");
-    assert!(parsed.get("snapshot_sequence").is_some());
+    assert!(parsed["state"].get("snapshot_sequence").is_some());
     // No stray temp files left behind.
     let leftover: Vec<_> = std::fs::read_dir(path.parent().unwrap())
         .expect("read subagents dir")
@@ -21464,7 +21535,12 @@ async fn tracked_running_background_shell_keeps_its_owner_off_the_heartbeat_reap
         1,
         "a worker waiting on a tracked background shell must survive the heartbeat"
     );
-    assert_eq!(manager.cleanup(Duration::from_secs(60 * 60)), 0);
+    assert_eq!(
+        manager
+            .cleanup(Duration::from_secs(60 * 60))
+            .expect("durable worker operation"),
+        0
+    );
 
     // The converse: once the job stops running, nothing extends the heartbeat.
     {
@@ -24398,7 +24474,11 @@ fn user_follow_up_to_completed_child_requires_a_runtime_to_resume() {
     let mut terminal = manager.get_result(&agent_id).expect("snapshot");
     terminal.status = SubAgentStatus::Completed;
     terminal.result = Some("done".to_string());
-    assert!(manager.finish_terminal_result(&agent_id, terminal, true, false));
+    assert!(
+        manager
+            .finish_terminal_result(&agent_id, terminal, true, false)
+            .expect("durable worker operation")
+    );
     let err = manager
         .continue_child_from_user(handle, None, &agent_id, "one more")
         .expect_err("no runtime, no resume");
@@ -25468,7 +25548,11 @@ mod child_permission_gate {
                 let mut terminal = manager.get_result(&agent_id).expect("owned agent");
                 terminal.status = SubAgentStatus::Cancelled;
                 terminal.needs_input = None;
-                assert!(manager.finish_terminal_result(&agent_id, terminal, false, true));
+                assert!(
+                    manager
+                        .finish_terminal_result(&agent_id, terminal, false, true)
+                        .expect("durable worker operation")
+                );
             }
         });
         let approval_id = next_child_approval_id(&mut rx).await;
@@ -25629,7 +25713,12 @@ mod child_permission_gate {
                 "held",
             )
             .unwrap();
-        assert!(manager.finalize_session_close_for_session("workspace") > 0);
+        assert!(
+            manager
+                .finalize_session_close_for_session("workspace")
+                .expect("durable worker operation")
+                > 0
+        );
         assert_eq!(
             manager.pending_child_approvals(),
             0,

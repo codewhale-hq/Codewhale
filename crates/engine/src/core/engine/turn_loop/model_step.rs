@@ -114,6 +114,10 @@ impl Engine {
         let retry_observation = self.request_retry_observation();
         let transport_retries = retry_observation.retries.clone();
         let mut request_receipt = Some(PendingProviderRequestReceipt {
+            request_id: retry_observation.request_id.clone(),
+            route: client.effective_route_envelope(&stream_request.model, chrono::Utc::now()),
+            primary: self.child_host.is_none() && self.rlm_host.is_none(),
+            invoked: false,
             turn_id: turn.id.clone(),
             request_index: turn
                 .stop_diagnostics
@@ -143,6 +147,9 @@ impl Engine {
                 let opening =
                     crate::llm_client::observe_request_retries(Some(retry_observation), async {
                         request_started = true;
+                        if let Some(receipt) = request_receipt.as_mut() {
+                            receipt.invoked = true;
+                        }
                         turn.stop_diagnostics.model_requests_started = turn
                             .stop_diagnostics
                             .model_requests_started
@@ -312,7 +319,10 @@ impl Engine {
                     e.downcast_ref::<LlmError>(),
                     Some(LlmError::InvalidRequest { status: 413, .. })
                 );
-                if !body_size_rejection
+                let refusal_proven =
+                    crate::tools::subagent::engine::provider_request_refusal_proven(&e);
+                if refusal_proven
+                    && !body_size_rejection
                     && self.rlm_host.is_none()
                     && let Some(rejection) =
                         crate::llm_client::image_count_rejection(&format!("{e:#}").to_lowercase())
@@ -328,7 +338,8 @@ impl Engine {
                 // Recovery/classification keeps its existing input. Expanding
                 // diagnostics must not introduce another model request.
                 let message = self.decorate_auth_error_message(e.to_string());
-                if !body_size_rejection
+                if refusal_proven
+                    && !body_size_rejection
                     && self.rlm_host.is_none()
                     && is_context_length_error_message(&message)
                     && progress.context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
@@ -351,7 +362,8 @@ impl Engine {
                 if let Some(message) = self.report_context_recovery_failure(turn).await {
                     return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(message)));
                 }
-                if !body_size_rejection
+                if refusal_proven
+                    && !body_size_rejection
                     && self.rlm_host.is_none()
                     && is_image_input_rejection_message(&message)
                     && self.active_route_capabilities.image_input != CapabilityState::Unsupported
@@ -382,16 +394,6 @@ impl Engine {
                         });
                 let mut envelope =
                     crate::llm_error_envelope::envelope_for_llm_error(e, message.clone());
-                // #6699: the request never became a stream (connect
-                // failure, response-header stall). The transport layer
-                // already spent its own retries; re-issue the identical
-                // request from here through the same bounded resume
-                // budget every other stream failure spends. Nothing
-                // streamed, so there is no fragment to keep or discard,
-                // and no error event is emitted for an attempt that is
-                // retried — an exhausted budget falls through to the
-                // normal failure below. Only a failure with no response
-                // headers qualifies; a provider rejection never does.
                 if self.rlm_host.is_none()
                     && open_transport_failure
                     && !self.cancel_token.is_cancelled()
@@ -400,7 +402,7 @@ impl Engine {
                     turn.stop_diagnostics.stream_resumes =
                         turn.stop_diagnostics.stream_resumes.saturating_add(1);
                     let _ = self.send_retry_status(format!(
-                        "Retry attempt: stream-open {attempt}/{}; connection failed before response headers",
+                        "Retry attempt: stream-open {attempt}/{}; connection failed before request dispatch",
                         progress.stream_retry_budget.limit()
                     )).await;
                     codewhale_runtime::logging::warn(format!(
@@ -411,7 +413,7 @@ impl Engine {
                 }
                 if open_transport_failure && progress.stream_retry_budget.spent() > 0 {
                     let _ = self.send_retry_status(format!(
-                        "Retry exhaustion: stream-open stopped after {} retries; connection failed before response headers",
+                        "Retry exhaustion: stream-open stopped after {} retries; connection failed before request dispatch",
                         progress.stream_retry_budget.spent()
                     )).await;
                 }
@@ -483,23 +485,17 @@ impl Engine {
             pending_message_complete,
             last_text_index,
             stream_errors,
-            terminal_stream_error,
             steer_preempted,
             pending_steers,
-            pending_resume,
             stream_start,
             first_token_at,
             request_dispatched_at,
             stream_error,
-            frame_error,
         } = self
             .process_stream(
-                client.as_ref(),
                 stream,
                 &stream_request,
                 request_dispatched_at,
-                progress.stream_retry_budget.spent(),
-                &mut turn.stop_diagnostics,
                 request_receipt,
             )
             .await;
@@ -518,8 +514,7 @@ impl Engine {
         }
         // C02-05: a response whose stream failed or was steered — a provider error
         // frame, a transport error, a stall, or a cap — is not a complete
-        // response. Unless the retry below re-issues the request, nothing
-        // it collected may execute or continue the turn.
+        // response. Nothing it collected may execute or continue the turn.
         let response_stream_failed = steer_preempted || stream_error.is_some();
         progress.turn_error = progress.turn_error.take().or(stream_error.clone());
         turn.stop_diagnostics
@@ -658,6 +653,10 @@ impl Engine {
                 .await;
         }
 
+        if response_stream_failed && let Some(state) = self.child_host.as_mut() {
+            state.request_stop_reason = Some("request_outcome_unknown");
+        }
+
         if let Some(state) = self.rlm_host.as_mut() {
             state.usage.record_nested_event(serde_json::json!({"run_id": state.run_id, "depth_remaining": match state.mode { rlm_host::RlmMode::Completion => 0, rlm_host::RlmMode::Recursive { depth_remaining } => depth_remaining }, "kind":"code", "content":current_text_visible})).await;
             if is_incomplete_stop_reason(stop_reason.as_deref())
@@ -678,44 +677,11 @@ impl Engine {
                 };
                 self.add_interrupted_assistant_text(&current_text_visible)
                     .await;
-                self.post_held_frame_error(&frame_error).await;
                 return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(error)));
             }
             // Rejected fragments remain in the interrupted Session/code receipt,
             // but cannot replace the last admitted answer or execute FINAL/REPL.
             state.last_response = current_text_visible.clone();
-        }
-        if response_stream_failed && self.child_host.is_some() {
-            let error = if progress
-                .turn_error
-                .as_deref()
-                .is_some_and(|reason| reason.contains("child step API request timed out"))
-            {
-                anyhow::Error::new(LlmError::Timeout(
-                    child_job
-                        .as_ref()
-                        .expect("captured child")
-                        .authority
-                        .runtime
-                        .step_api_timeout,
-                ))
-            } else {
-                anyhow!(
-                    "{}",
-                    progress
-                        .turn_error
-                        .as_deref()
-                        .unwrap_or("child stream failed")
-                )
-            };
-            if !terminal_stream_error
-                && stop_reason
-                    .as_deref()
-                    .is_none_or(|reason| reason.trim().is_empty())
-                && let Some(recovery) = self.recover_child_request(progress, &error).await
-            {
-                return recovery;
-            }
         }
         if !response_stream_failed {
             progress.child_request_retries = Default::default();
@@ -803,215 +769,11 @@ impl Engine {
                     )
                 };
                 codewhale_runtime::logging::warn(&error);
-                self.post_held_frame_error(&frame_error).await;
                 return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(error)));
             }
         }
 
-        // #103 Phase 3 — transparent retry. The inner loop above bails
-        // when reqwest yields chunk decode errors three times in a row;
-        // most of the time those are recoverable proxy / HTTP/2 issues
-        // and the request can simply be re-issued. Re-issue silently up
-        // to DEFAULT_STREAM_MAX_RESUMES, but only when the stream produced
-        // nothing actionable — if any tool call landed or text was
-        // streamed, ship the partial state to the rest of the turn
-        // pipeline so we don't double-bill the user by re-running it.
-        // The post-content exceptions to that rule are the #2990
-        // sleep-resume and the mid-stream network-drop resumes: those
-        // discard the uncommitted fragment unless an operator watched
-        // visible text land (see `StreamResume::InteractiveNetworkDrop`).
-        //
-        // The resume itself is typed state, consumed here by value, so
-        // one drop schedules exactly one retry; and no resume path
-        // appends a synthetic user message to the persisted
-        // conversation — the retried request is the persisted
-        // conversation re-issued, nothing else.
-        // A flushed redacted block or non-blank thinking is received content,
-        // the same rule `current_thinking` follows.
-        let stream_died_with_nothing = stream_errors > 0
-            && !terminal_stream_error
-            && tool_uses.is_empty()
-            && current_text_visible.trim().is_empty()
-            && current_thinking.trim().is_empty()
-            && completed_thinking.iter().all(|block| {
-                matches!(
-                    block,
-                    ContentBlock::Thinking { thinking, redacted_data: None, .. }
-                        if thinking.trim().is_empty()
-                )
-            })
-            && !pending_message_complete;
-        let pending_resume = match pending_resume {
-            Some(resume) => Some(resume),
-            None if stream_died_with_nothing => Some(StreamResume::NoContentStreamDeath),
-            None => None,
-        };
-        if self.rlm_host.is_none()
-            && self.child_host.is_none()
-            && !terminal_stream_error
-            && let Some(resume) = pending_resume
-            && let Some(attempt) = progress.stream_retry_budget.authorize()
-        {
-            let limit = progress.stream_retry_budget.limit();
-            turn.stop_diagnostics.stream_resumes =
-                turn.stop_diagnostics.stream_resumes.saturating_add(1);
-            let reason = match resume {
-                StreamResume::AfterSleep => "system sleep interrupted the stream",
-                StreamResume::HeadlessNetworkDrop => "network drop; incomplete reply discarded",
-                StreamResume::InteractiveNetworkDrop => {
-                    "network drop; continuing the admitted reply"
-                }
-                StreamResume::NoContentStreamDeath => {
-                    "stream ended before a response was completed"
-                }
-            };
-            let _ = self
-                .send_retry_status(format!(
-                    "Retry attempt: stream-resume {attempt}/{limit}; {reason}"
-                ))
-                .await;
-            match resume {
-                StreamResume::AfterSleep => {
-                    codewhale_runtime::logging::warn(format!(
-                        "Resuming after system sleep (attempt {attempt}/{limit}); discarding partial output and retrying request"
-                    ));
-                    // Finalize any partially-rendered assistant cell so
-                    // the retried stream renders fresh instead of
-                    // appending to the pre-sleep fragment.
-                    if pending_message_complete {
-                        let index = last_text_index.unwrap_or(0);
-                        let _ = self.send_event(Event::MessageComplete { index }).await;
-                    }
-                }
-                StreamResume::HeadlessNetworkDrop => {
-                    codewhale_runtime::logging::warn(format!(
-                        "Resuming headless turn after mid-stream network drop (attempt {attempt}/{limit}); discarding partial output and retrying request"
-                    ));
-                }
-                StreamResume::InteractiveNetworkDrop => {
-                    // Commit the partial assistant message so the retried
-                    // request sees the prefix as already delivered. Build
-                    // the blocks inline; the outer `content_blocks`
-                    // variable is still empty at this point and will be
-                    // rebuilt on the next round.
-                    let mut resume_blocks: Vec<ContentBlock> = Vec::new();
-                    // Thinking blocks the stream already terminated stay in
-                    // the retry prefix, in wire order, ahead of the block
-                    // that was still open when the stream died.
-                    resume_blocks.append(&mut completed_thinking);
-                    // A wire-only placeholder must not ride into the
-                    // retry prefix as stored reasoning either.
-                    let thinking_is_placeholder_only =
-                        crate::client::is_reasoning_replay_placeholder(&current_thinking);
-                    if (!current_thinking.is_empty() && !thinking_is_placeholder_only)
-                        || current_thinking_state.is_some()
-                    {
-                        resume_blocks.push(ContentBlock::Thinking {
-                            thinking: current_thinking.clone(),
-                            signature: current_thinking_signature.clone(),
-                            state: current_thinking_state.clone(),
-                            redacted_data: None,
-                        });
-                    }
-                    if !current_text_visible.is_empty() {
-                        resume_blocks.push(ContentBlock::Text {
-                            text: current_text_visible.clone(),
-                            cache_control: None,
-                        });
-                    }
-                    for tool in &tool_uses {
-                        resume_blocks.push(ContentBlock::ToolUse {
-                            execution_id: Some(tool.execution_id.clone()),
-                            id: tool.id.clone(),
-                            name: tool.name.clone(),
-                            input: tool.input.clone(),
-                            caller: tool.caller.clone(),
-                            thought_signature: tool.thought_signature.clone(),
-                        });
-                    }
-                    let has_sendable_assistant_content = resume_blocks.iter().any(|block| {
-                        matches!(
-                            block,
-                            ContentBlock::Text { .. } | ContentBlock::ToolUse { .. }
-                        )
-                    });
-                    if !has_sendable_assistant_content {
-                        // Thinking-only drop: nothing visible streamed, so
-                        // nothing is preserved and nothing is committed.
-                        // The re-issued request is identical to the one
-                        // that died. Neither the log line nor the status
-                        // copy may claim a partial reply was preserved —
-                        // that claim is what minted the fake `[runtime]`
-                        // user turn in session 1589c05d.
-                        codewhale_runtime::logging::warn(format!(
-                            "Resuming interactive turn after mid-stream network drop (attempt {attempt}/{limit}); only hidden reasoning streamed — no partial reply to preserve, retrying request"
-                        ));
-                    } else {
-                        codewhale_runtime::logging::warn(format!(
-                            "Resuming interactive turn after mid-stream network drop (attempt {attempt}/{limit}); preserving partial reply and retrying request"
-                        ));
-                        // Finalize the partial text cell so the UI stops
-                        // streaming and the retried content lands in a
-                        // fresh cell instead of appending to an
-                        // unfinished one.
-                        if let Some(index) = last_text_index {
-                            let _ = self.send_event(Event::MessageComplete { index }).await;
-                        }
-                        // Persist the fragment the operator already saw —
-                        // exactly one assistant cell for it, and no
-                        // synthetic user turn after it. The retried
-                        // request therefore ends with this fragment, which
-                        // is the provider-neutral "continue from here"
-                        // contract; retry status receipts stay outside the
-                        // session messages and provider request history.
-                        // They never manufacture a user turn.
-                        self.add_session_message(Message {
-                            role: Role::Assistant,
-                            content: resume_blocks,
-                        })
-                        .await;
-                    }
-                }
-                StreamResume::NoContentStreamDeath => {
-                    codewhale_runtime::logging::warn(format!(
-                        "Stream died with no content (attempt {attempt}/{limit}); retrying request"
-                    ));
-                }
-            }
-            // Don't preserve the per-stream `turn_error` — we're
-            // about to retry, and a successful retry should not
-            // surface the transient error as the turn outcome.
-            progress.turn_error = None;
-            return PhaseResult::Retry;
-        }
-        // #6795: the request is not being re-issued, so a retryable error
-        // frame that was held back is now the turn's outcome. Post it as the
-        // non-recoverable envelope it was built as (severity Error), once.
-        self.post_held_frame_error(&frame_error).await;
-        if pending_resume.is_some() {
-            if progress.stream_retry_budget.spent() > 0 {
-                let _ = self
-                    .send_retry_status(format!(
-                        "Retry exhaustion: stream-resume stopped after {} retries; stream interrupted",
-                        progress.stream_retry_budget.spent()
-                    ))
-                    .await;
-            }
-            codewhale_runtime::logging::warn(format!(
-                "Stream retry budget exhausted ({} attempts); failing turn",
-                progress.stream_retry_budget.spent()
-            ));
-        } else if stream_errors == 0 {
-            if progress.stream_retry_budget.spent() > 0 && pending_message_complete {
-                let _ = self
-                    .send_retry_status(format!(
-                        "Retry recovery: stream recovered after {} retries",
-                        progress.stream_retry_budget.spent()
-                    ))
-                    .await;
-            }
-            // Healthy round → reset retry budget so we don't carry over
-            // state from a previous bad round.
+        if stream_errors == 0 {
             progress.stream_retry_budget.reset();
         }
 
@@ -1056,8 +818,6 @@ impl Engine {
         // not-executed result and never reach planning, approval or a
         // handler; the visible text is kept as an interrupted fragment
         // and no tool_use enters history, so the transcript stays paired.
-        // A retry never gets here: it `continue`d above with this batch
-        // dropped, and the re-issued request streams its own calls.
         if response_stream_failed && !tool_uses.is_empty() {
             let error = progress
                 .turn_error
@@ -1184,7 +944,7 @@ impl Engine {
             });
         }
 
-        if pending_message_complete {
+        if pending_message_complete && !response_stream_failed {
             let index = last_text_index.unwrap_or(0);
             let _ = self.send_event(Event::MessageComplete { index }).await;
         }
@@ -1226,7 +986,11 @@ impl Engine {
         // Add assistant message to session
         if has_sendable_assistant_content {
             self.add_session_message(Message {
-                role: Role::Assistant,
+                role: if response_stream_failed {
+                    Role::InterruptedAssistant
+                } else {
+                    Role::Assistant
+                },
                 content: content_blocks,
             })
             .await;

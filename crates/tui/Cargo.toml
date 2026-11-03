@@ -80,6 +80,7 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2" }
 # Independent terminal kit, pinned and vendored for reproducible binary builds.
 codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.0" }
 codewhale-sanitize = { path = "../sanitize", version = "0.10.2" }

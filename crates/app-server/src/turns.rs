@@ -3,7 +3,7 @@ use crate::{
     AppState, JsonRpcError, RuntimeThreadHint, TurnTerminalStatus, TurnTranscript, thread_control,
 };
 use anyhow::{Result, anyhow};
-use codewhale_protocol::runtime::RuntimeImageInput;
+use codewhale_app_server_protocol::runtime::RuntimeImageInput;
 use codewhale_protocol::{PromptRequest, PromptResponse, ThreadRequest, ThreadResponse};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -160,7 +160,13 @@ pub(crate) async fn run_bridged_turn<W: AsyncWrite + Unpin>(
         let mut thread_map = state.runtime_thread_map.lock().await;
         bridge.forget_thread(&mut thread_map, turn.thread_key);
     }
-    result.map_err(|err| JsonRpcError::internal(err.to_string()))
+    result.map_err(|err| {
+        let mut response = JsonRpcError::internal(err.to_string());
+        if crate::stdio::is_control_write_failure(&err) {
+            response.transport_error = Some(err);
+        }
+        response
+    })
 }
 
 /// Run a prompt as a genuine model turn and return what the model actually

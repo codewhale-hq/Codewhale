@@ -87,9 +87,12 @@ Runtime events join the current preparation's logical prefix outcome with
 provider-wire tool bytes and digest, route identity and endpoint fingerprint,
 and that request's reported usage. A prepared wire observation does not prove
 provider delivery. Missing usage or adapter measurements remain
-unknown. Transparent retries settle their own receipt before cumulative usage
-is folded; their preparation is explicitly marked reused. Transport retries are
-counted, but missing per-attempt usage is never presented as free work.
+unknown. Receipts bind physical send identities and typed transmission
+confidence to the captured route. Automatic retries require an ordinary rate
+limit or a proven transient connection failure before dispatch. Missing headers,
+server failures and interrupted streams remain uncertain and do not authorize
+another inference request. Missing per-attempt usage is never presented as free
+work; primary late cumulative contribution reconciliation remains separate work.
 
 These are observations, not additional billing records. They do not establish
 that eviction caused every cache miss. A cache refill can depend on provider

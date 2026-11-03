@@ -72,6 +72,10 @@ struct PreparedModelStep {
 }
 
 pub(super) struct PendingProviderRequestReceipt {
+    pub(super) request_id: String,
+    pub(super) route: crate::cost_status::EffectiveRouteEnvelope,
+    pub(super) primary: bool,
+    pub(super) invoked: bool,
     pub(super) turn_id: String,
     pub(super) request_index: u32,
     pub(super) prefix_check: serde_json::Value,
@@ -160,24 +164,16 @@ struct StreamOutcome {
     pending_message_complete: bool,
     last_text_index: Option<usize>,
     stream_errors: u32,
-    terminal_stream_error: bool,
     steer_preempted: bool,
     /// Unsettled steers queued mid-stream. Each is committed into the turn's
     /// record at a step boundary, or dropped — and dropping one reports
     /// `SteerOutcome::Dropped` to its sender, so an interrupted or failed
     /// turn cannot silently swallow user guidance (#6276).
     pending_steers: Vec<handle::PendingSteer>,
-    /// Typed, engine-internal drop-recovery state. `Option` + consume-once
-    /// means one drop schedules exactly one resume; see [`StreamResume`].
-    pending_resume: Option<StreamResume>,
     stream_start: Instant,
     first_token_at: Option<Instant>,
     request_dispatched_at: Instant,
     stream_error: Option<String>,
-    /// Envelope of a retryable provider error frame (#6795), held back so a
-    /// retry that succeeds leaves no error card. Posted by the caller when the
-    /// request is not re-issued.
-    frame_error: Option<ErrorEnvelope>,
 }
 
 pub(super) fn initial_stream_error_user_message(
@@ -812,6 +808,8 @@ pub(super) fn replace_runtime_mcp_tools(
     let changed = *tool_catalog != catalog_before || *active_tool_names != active_before;
     if changed {
         super::tool_catalog::configure_composition_entry(tool_catalog, None, &[]);
+    } else {
+        *tool_catalog = catalog_before;
     }
     changed
 }
@@ -987,32 +985,13 @@ impl Engine {
         })
     }
 
-    /// Post the retryable error frame `process_stream` held back (#6795), once,
-    /// for a turn that ends without re-issuing the request. Every return that
-    /// ends the turn between the stream and the retry decision calls this, so
-    /// no exit leaves the TUI to synthesize its own amber warning instead.
-    ///
-    /// Boxed so the several call sites embed a pointer, not this future, in
-    /// the already very large model-step state machine (a debug-build test
-    /// thread has a 2 MiB stack).
-    pub(super) fn post_held_frame_error<'a>(
-        &'a self,
-        frame_error: &'a Option<ErrorEnvelope>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            if let Some(envelope) = frame_error {
-                let _ = self.send_stream_event(Event::error(envelope.clone())).await;
-            }
-        })
-    }
-
     /// Tell the transcript why a turn stopped on one of Codewhale's own
     /// ceilings (step count, wall clock). Without an error event the TUI adds
     /// its own hard-coded amber warning for a failed turn (#6843); this card
     /// is a budget error that leaves the session online. A child run reports
     /// through its parent's receipt, so it posts only the status line.
     ///
-    /// Boxed for the same reason as [`Self::post_held_frame_error`].
+    /// Boxed to keep the parent turn future bounded.
     pub(super) fn post_turn_budget_stop<'a>(
         &'a self,
         message: &'a str,
@@ -1620,9 +1599,8 @@ impl Engine {
         // Turn-scoped budget for reasoning-only recovery. Some reasoning models
         // (and OpenAI-shim routes) close a turn after emitting only hidden
         // reasoning — a protocol-complete but answerless response that reaches
-        // the failure tail with `stream_errors == 0`, so the transport resume
-        // path above never sees it. A clean stop there is almost always
-        // transient; re-request a bounded number of times before surfacing
+        // the failure tail with `stream_errors == 0`. A clean stop there
+        // permits a bounded answer-recovery request before surfacing
         // a hard failure. Each retry may incur provider usage and cost.
         let reasoning_only_reprompts: u32 = 0;
         // Turn-scoped budget for a clean terminal stop that carried nothing at
@@ -1641,13 +1619,9 @@ impl Engine {
         // status receipt with its exact text (C02-04, "model-visible means
         // logged"): the runtime event log can reconstruct the request.
         let reasoning_only_nudge: Option<String> = None;
-        // Outer stream-retry budget: when the chunked-transfer connection
-        // dies mid-stream and either nothing useful was streamed (#103
-        // Phase 3), the host slept mid-turn (#2990), or a host hit a
-        // mid-stream network drop (v0.9.4 Terminal-Bench P0), we re-issue
-        // the request up to `[tui].stream_max_resumes` times (default
-        // DEFAULT_STREAM_MAX_RESUMES) before surfacing the failure to the user. A
-        // stream that never opened (#6699) spends the same budget.
+        // Outer stream-open retry budget: only a typed transient connection
+        // failure proven to precede dispatch can spend it. An opened stream
+        // never reissues its request automatically.
         // `StreamRetryBudget` enforces that bound in mechanism —
         // `authorize()` is the only way to spend a resume.
         let stream_retry_budget =
@@ -3898,6 +3872,7 @@ impl Engine {
                             };
                             let request = crate::core::events::SessionCheckpointRequest::new(caller, snapshot, prefix_sha256, projection, withdraw, reply);
                             let event = Event::SessionUpdated {
+                                source: self.session.snapshot_source.clone(),
                                 checkpoint: Some(request.clone()),
                                 session_id: self.session.id.clone(),
                                 messages: self.session.messages.snapshot(),
@@ -4714,11 +4689,52 @@ impl Engine {
         let Some(pending) = pending.take() else {
             return;
         };
+        let usage = usage.filter(|usage| usage_has_reported_data(usage));
         let wire = pending.wire.drain();
+        let source_id = wire
+            .last_transmission
+            .as_ref()
+            .map_or(pending.request_id.as_str(), |attempt| {
+                attempt.source_id.as_str()
+            });
+        let transmission = wire.last_transmission.as_ref().map_or(
+            if pending.invoked {
+                crate::llm_client::RequestTransmission::OutcomeUnknown
+            } else {
+                crate::llm_client::RequestTransmission::NotDispatched
+            },
+            |attempt| attempt.transmission,
+        );
+        let coverage = match transmission {
+            crate::llm_client::RequestTransmission::NotDispatched => {
+                crate::llm_client::ProviderUsageCoverage::NotDispatched
+            }
+            crate::llm_client::RequestTransmission::Rejected => {
+                crate::llm_client::ProviderUsageCoverage::Rejected
+            }
+            crate::llm_client::RequestTransmission::OutcomeUnknown => {
+                if usage.is_some() && matches!(outcome, "completed" | "review_response") {
+                    crate::llm_client::ProviderUsageCoverage::Reported
+                } else if usage.is_some() {
+                    crate::llm_client::ProviderUsageCoverage::Incomplete
+                } else {
+                    crate::llm_client::ProviderUsageCoverage::Missing
+                }
+            }
+        };
         let _ = self.send_event(Event::ProviderRequestReceipt {
             receipt: json!({
+                "session_id": self.session.id,
                 "turn_id": pending.turn_id,
                 "request_index": pending.request_index,
+                "request_id": pending.request_id,
+                "source_id": source_id,
+                "route": pending.route.sanitized_for_persistence(),
+                "primary": pending.primary,
+                "transmission": transmission,
+                "coverage": coverage,
+                "physical_requests": wire.transmissions,
+                "physical_requests_dropped": wire.transmissions_dropped,
                 "prefix_check": pending.prefix_check,
                 "reused_preparation": pending.reused_preparation,
                 "wire_observations": wire.observations,
@@ -4733,28 +4749,17 @@ impl Engine {
         }).await;
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn process_stream(
         &mut self,
-        client: &dyn crate::core::model_client::ModelClient,
         stream: crate::llm_client::StreamEventBox,
         stream_request: &codewhale_models::MessageRequest,
-        mut request_dispatched_at: Instant,
-        drop_resumes_spent: u32,
-        diagnostics: &mut crate::tool_inspection::TurnStopDiagnostics,
+        request_dispatched_at: Instant,
         mut request_receipt: Option<PendingProviderRequestReceipt>,
     ) -> StreamOutcome {
-        // The stream value is itself `Pin<Box<dyn Stream + Send>>`, which
-        // is `Unpin`, so we can rebind it on a transparent retry without
-        // breaking the existing pin invariants.
         let mut stream = stream;
         let mut stream_error: Option<String> = None;
-        let mut terminal_stream_error = false;
         let mut steer_preempted = false;
         let stream_cancel = self.cancel_token.clone();
-        // #6795: the envelope of a retryable error frame, posted only if the
-        // retry budget does not re-issue the request.
-        let mut frame_error: Option<ErrorEnvelope> = None;
 
         let mut current_text_raw = String::new();
         let mut current_text_visible = String::new();
@@ -4770,7 +4775,6 @@ impl Engine {
         // later block must never overwrite an earlier one.
         let mut completed_thinking: Vec<ContentBlock> = Vec::new();
         let mut tool_uses: Vec<ToolUseState> = Vec::new();
-        let mut settled_usage = Usage::default();
         let mut usage = Usage {
             input_tokens: 0,
             output_tokens: 0,
@@ -4782,9 +4786,6 @@ impl Engine {
         // must not surface as fabricated zeros.
         let mut usage_reported = false;
         let mut attempt_usage_reported = false;
-        let receipt_identity = request_receipt
-            .as_ref()
-            .map(|receipt| (receipt.turn_id.clone(), receipt.prefix_check.clone()));
         let mut stop_reason: Option<String> = None;
         let mut current_block_kind: Option<ContentBlockKind> = None;
         // Map block_index → tool_uses position. Required because the
@@ -4803,30 +4804,10 @@ impl Engine {
         let mut pending_message_complete = false;
         let mut last_text_index: Option<usize> = None;
         let mut stream_errors = 0u32;
-        // #103 transparent retry bookkeeping. `any_content_received` flips
-        // on the first actionable content event so we know whether the user
-        // has seen output. Absence of content does not establish zero usage.
-        // This is distinct from the outer drop-resume budget (which
-        // restarts the whole turn-step when a stream died with no
-        // content-block delta delivered to the consumer).
         let mut any_content_received = false;
-        let mut transparent_stream_retries = 0u32;
         let mut pending_steers: Vec<handle::PendingSteer> = Vec::new();
-        // `stream_start` is reset on a transparent retry so the wall-clock
-        // budget restarts with the fresh stream.
-        let mut stream_start = Instant::now();
-        // First content-bearing event of this model call, for TTFT.
+        let stream_start = Instant::now();
         let mut first_token_at: Option<Instant> = None;
-        // #2990 sleep-resume bookkeeping: monotonic and wall-clock stamps
-        // of the last stream progress. `Instant` pauses across a host
-        // suspend while `SystemTime` does not, so a large divergence on
-        // the next error tells "machine slept" apart from "network died".
-        let mut last_progress_mono = Instant::now();
-        let mut last_progress_wall = std::time::SystemTime::now();
-        // Typed drop-recovery state: at most one `StreamResume` is ever
-        // scheduled per stream, and it is consumed exactly once by the
-        // post-loop block. It never becomes a synthetic user message.
-        let mut pending_resume: Option<StreamResume> = None;
         let mut stream_content_bytes: usize = 0;
         let (chunk_timeout_secs, chunk_timeout) = stream_chunk_timeout_budget(&self.config);
         // R1: the per-step stream caps are resolved from config rather than
@@ -4836,15 +4817,9 @@ impl Engine {
         let max_duration = self.config.stream_max_duration;
         let max_duration_secs = max_duration.as_secs();
         let max_content_bytes = self.config.stream_max_content_bytes;
-        let mut retry_limits = self.config.stream_retry_limits;
         let child_request_deadline = self
             .child_job()
             .map(|job| request_dispatched_at + job.authority.runtime.step_api_timeout);
-        // Child retries must return through the one phase dispatch boundary,
-        // so each attempt retains its own route/source and usage settlement.
-        if self.child_host.is_some() {
-            retry_limits.max_transparent_retries = 0;
-        }
 
         // Process stream events
         loop {
@@ -4893,11 +4868,9 @@ impl Engine {
                                     bound: Some(chunk_timeout),
                                 },
                             );
-                            // A stall is a stream error like any other:
-                            // count it so the nothing-streamed retry can
-                            // fire, and record it so an unrecovered stall
-                            // fails the turn with the real reason instead
-                            // of ending "Completed" over a frozen block.
+                            // A stalled admitted stream keeps its unknown outcome
+                            // and fails with the real reason rather than completing
+                            // over a frozen block.
                             stream_errors = stream_errors.saturating_add(1);
                             stream_error.get_or_insert(envelope.message.clone());
                             let _ = self.send_stream_event(Event::error(envelope)).await;
@@ -4934,8 +4907,6 @@ impl Engine {
                     if let StreamEvent::MessageStart { message } = &e {
                         self.turn_heartbeat.set_provider_request(message.id.clone());
                     }
-                    last_progress_mono = Instant::now();
-                    last_progress_wall = std::time::SystemTime::now();
                     // Only content-bearing events make a stream productive.
                     // Ping, usage/terminal deltas, block stops, and MessageStop
                     // are protocol bookkeeping; counting them as content hid
@@ -4952,265 +4923,13 @@ impl Engine {
                     let message = self.decorate_auth_error_message(e.to_string());
                     let user_message =
                         stream_read_error_user_message(&message, any_content_received);
-                    if self.rlm_host.is_none()
-                        && let Some(rejection) = crate::llm_client::image_count_rejection(
-                            &format!("{e:#}").to_lowercase(),
-                        )
-                    {
-                        let sent = codewhale_models::image_window::count_request_images(
-                            &stream_request.messages,
-                        );
-                        let model = self.session.model.clone();
-                        if self.learn_image_cap(&model, sent, rejection).is_some() {
-                            terminal_stream_error = true;
-                            stream_error.get_or_insert(user_message.clone());
-                            let _ = self
-                                .send_stream_event(Event::error(
-                                    codewhale_error_taxonomy::ErrorEnvelope::image_count_exceeded(
-                                        user_message,
-                                    ),
-                                ))
-                                .await;
-                            break;
-                        }
-                    }
                     let envelope =
                         crate::llm_error_envelope::envelope_for_llm_error(e, user_message.clone());
-                    if self.child_host.is_some() {
-                        terminal_stream_error = !envelope.recoverable;
-                        stream_error.get_or_insert(user_message);
-                        let _ = self.send_stream_event(Event::error(envelope)).await;
-                        break;
-                    }
-                    // Typed account, authorization, and protocol failures cannot
-                    // be repaired by sleep recovery or replaying the request.
-                    if !envelope.recoverable {
-                        terminal_stream_error = true;
-                        stream_error.get_or_insert(user_message);
-                        let _ = self.send_stream_event(Event::error(envelope)).await;
-                        break;
-                    }
-                    // #2990: wall-clock far ahead of the monotonic clock
-                    // since the last chunk means the host slept mid-stream.
-                    // The partial output predates the sleep and the user
-                    // was not watching — schedule a full request retry in
-                    // the post-loop block instead of failing the turn.
-                    let wall_elapsed = last_progress_wall
-                        .elapsed()
-                        .unwrap_or_else(|_| last_progress_mono.elapsed());
-                    if should_resume_after_sleep(
-                        sleep_gap_detected(last_progress_mono.elapsed(), wall_elapsed),
-                        drop_resumes_spent,
-                        retry_limits.max_resumes,
-                        self.cancel_token.is_cancelled(),
-                    ) {
-                        codewhale_runtime::logging::warn(format!(
-                            "Stream error after suspected system sleep ({:?} monotonic vs {:?} wall since last chunk); scheduling request retry: {message}",
-                            last_progress_mono.elapsed(),
-                            wall_elapsed,
-                        ));
-                        // Like the network-drop resumes below, keep the real
-                        // error as the prospective outcome: the retry clears
-                        // it, and an exhausted resume budget then fails the
-                        // turn with it instead of admitting the partial
-                        // response as if it had completed.
-                        stream_error.get_or_insert(stream_read_error_user_message(
-                            &message,
-                            any_content_received,
-                        ));
-                        pending_resume = Some(StreamResume::AfterSleep);
-                        break;
-                    }
-                    // #103: when the stream errors before any content was
-                    // streamed AND we still have retry budget, transparently
-                    // resend the request. The user has seen nothing, but the
-                    // provider may already have consumed or billed tokens.
-                    if should_transparently_retry_stream(
-                        any_content_received,
-                        transparent_stream_retries,
-                        retry_limits.max_transparent_retries,
-                        self.cancel_token.is_cancelled(),
-                    ) {
-                        transparent_stream_retries = transparent_stream_retries.saturating_add(1);
-                        codewhale_runtime::logging::info(format!(
-                            "Transparent stream retry {transparent_stream_retries}/{} (no content received yet): {message}",
-                            retry_limits.max_transparent_retries,
-                        ));
-                        // Drop the failed stream before issuing the new
-                        // request to release the underlying connection.
-                        let _ = self.send_retry_status(format!(
-                            "Retry attempt: transparent-stream {transparent_stream_retries}/{}; stream failed before content",
-                            retry_limits.max_transparent_retries
-                        )).await;
-                        drop(stream);
-                        self.settle_provider_request_receipt(
-                            &mut request_receipt,
-                            attempt_usage_reported.then_some(&usage),
-                            "transparent_stream_retry",
-                        )
-                        .await;
-                        request_dispatched_at = Instant::now();
-                        let retry_observation = self.request_retry_observation();
-                        let transport_retries = retry_observation.retries.clone();
-                        request_receipt =
-                            receipt_identity.as_ref().map(|(turn_id, prefix_check)| {
-                                PendingProviderRequestReceipt {
-                                    turn_id: turn_id.clone(),
-                                    request_index: diagnostics
-                                        .model_requests_started
-                                        .saturating_add(1),
-                                    prefix_check: prefix_check.clone(),
-                                    reused_preparation: true,
-                                    wire: retry_observation.wire_observations.clone(),
-                                    transport_retries: transport_retries.clone(),
-                                    started_at: request_dispatched_at,
-                                }
-                            });
-                        let retry_stream_result = tokio::select! {
-                            biased;
-                            () = stream_cancel.cancelled() => None,
-                            pending = self.wait_turn_steer() => {
-                                pending_steers.push(pending);
-                                steer_preempted = true;
-                                None
-                            },
-                            result = crate::llm_client::observe_request_retries(Some(retry_observation), async {
-                                diagnostics.transparent_stream_retries =
-                                    diagnostics.transparent_stream_retries.saturating_add(1);
-                                diagnostics.model_requests_started =
-                                    diagnostics.model_requests_started.saturating_add(1);
-                                client.create_message_stream(stream_request.clone()).await
-                            }) => Some(result),
-                        };
-                        diagnostics.transport_retries =
-                            diagnostics.transport_retries.saturating_add(
-                                transport_retries.load(std::sync::atomic::Ordering::Relaxed),
-                            );
-                        let Some(retry_stream_result) = retry_stream_result else {
-                            self.settle_provider_request_receipt(
-                                &mut request_receipt,
-                                None,
-                                if steer_preempted {
-                                    "steered_before_stream"
-                                } else {
-                                    "cancelled_before_stream"
-                                },
-                            )
-                            .await;
-                            break;
-                        };
-                        match retry_stream_result {
-                            Ok(fresh) => {
-                                if usage_has_reported_data(&usage) {
-                                    crate::core::turn::add_usage_to(
-                                        &mut settled_usage,
-                                        &std::mem::take(&mut usage),
-                                    );
-                                } else {
-                                    usage = Usage::default();
-                                }
-                                attempt_usage_reported = false;
-                                stream = fresh;
-                                stream_start = Instant::now();
-                                // Roll back the error counter — this one
-                                // didn't surface to the user.
-                                stream_errors = stream_errors.saturating_sub(1);
-                                continue;
-                            }
-                            Err(retry_err) => {
-                                self.settle_provider_request_receipt(
-                                    &mut request_receipt,
-                                    None,
-                                    "open_failed",
-                                )
-                                .await;
-                                let retry_msg = self.decorate_auth_error_message(format!(
-                                    "Stream retry failed: {retry_err}"
-                                ));
-                                stream_error.get_or_insert(retry_msg.clone());
-                                let envelope = crate::llm_error_envelope::envelope_for_llm_error(
-                                    retry_err, retry_msg,
-                                );
-                                terminal_stream_error = !envelope.recoverable;
-                                let _ = self.send_stream_event(Event::error(envelope)).await;
-                                break;
-                            }
-                        }
-                    }
-                    // Headless hosts (exec / stream-json): a mid-stream
-                    // network drop must not forfeit the whole session the
-                    // way it does interactively. No operator is watching
-                    // the partial deltas, the fragment was never committed
-                    // to the conversation, and no tool from the incomplete
-                    // response has executed, so break out and let the
-                    // post-loop block re-issue the request (bounded by
-                    // DEFAULT_STREAM_MAX_RESUMES), exactly like the #2990
-                    // sleep-resume. Do NOT emit an error event here: the
-                    // exec host forwards every error event onto the
-                    // stream-json error channel, and a successful retry
-                    // would leave that terminal-looking event on the
-                    // stream even though the turn recovered. When the
-                    // budget is already exhausted this check is false
-                    // and the normal surface-the-error path below runs,
-                    // so the final failure is still reported.
-                    let network_class_error = matches!(
-                        codewhale_error_taxonomy::classify_error_message(&message),
-                        ErrorCategory::Network | ErrorCategory::Timeout
-                    );
-                    if should_resume_after_network_drop(
-                        !self.config.terminal_chrome_enabled,
-                        network_class_error,
-                        drop_resumes_spent,
-                        retry_limits.max_resumes,
-                        self.cancel_token.is_cancelled(),
-                    ) {
-                        codewhale_runtime::logging::warn(format!(
-                            "Headless stream resume: network drop after partial content; scheduling request retry: {message}"
-                        ));
-                        // Keep the real error as the prospective turn
-                        // outcome; the post-loop retry clears it, and if
-                        // the turn still fails the last attempt surfaces
-                        // it through the normal path below.
-                        stream_error.get_or_insert(stream_read_error_user_message(
-                            &message,
-                            any_content_received,
-                        ));
-                        pending_resume = Some(StreamResume::HeadlessNetworkDrop);
-                        break;
-                    }
-                    // Interactive TUI: a network/timeout-class stream drop
-                    // after partial text (but before any tool call) should
-                    // preserve the visible fragment and re-issue the
-                    // request, bounded by DEFAULT_STREAM_MAX_RESUMES. This keeps the
-                    // turn alive instead of failing with a terminal-looking
-                    // error. The resume is typed state — no synthetic user
-                    // continuation message is appended.
-                    if should_resume_interactive_after_network_drop(
-                        self.config.terminal_chrome_enabled,
-                        network_class_error,
-                        any_content_received,
-                        tool_uses.is_empty(),
-                        drop_resumes_spent,
-                        retry_limits.max_resumes,
-                        self.cancel_token.is_cancelled(),
-                    ) {
-                        codewhale_runtime::logging::warn(format!(
-                            "Interactive stream resume: network drop after partial content; scheduling typed resume: {message}"
-                        ));
-                        stream_error.get_or_insert(stream_read_error_user_message(
-                            &message,
-                            any_content_received,
-                        ));
-                        pending_resume = Some(StreamResume::InteractiveNetworkDrop);
-                        break;
-                    }
-                    stream_error.get_or_insert(user_message.clone());
-                    // Recoverable failures retain their bounded retry tail.
+                    stream_error.get_or_insert(user_message);
+                    let mut envelope = envelope;
+                    envelope.recoverable = false;
                     let _ = self.send_stream_event(Event::error(envelope)).await;
-                    if stream_errors >= retry_limits.max_errors {
-                        break;
-                    }
-                    continue;
+                    break;
                 }
             };
 
@@ -5578,56 +5297,9 @@ impl Engine {
                     codewhale_runtime::logging::warn(format!(
                         "Provider stream error event: {message}"
                     ));
-                    if self.rlm_host.is_none()
-                        && let Some(rejection) =
-                            crate::llm_client::image_count_rejection(&message.to_lowercase())
-                    {
-                        let sent = codewhale_models::image_window::count_request_images(
-                            &stream_request.messages,
-                        );
-                        let model = self.session.model.clone();
-                        if self.learn_image_cap(&model, sent, rejection).is_some() {
-                            terminal_stream_error = true;
-                            stream_error.get_or_insert(message.to_string());
-                            let _ = self
-                                .send_stream_event(Event::error(
-                                    codewhale_error_taxonomy::ErrorEnvelope::image_count_exceeded(
-                                        message.to_string(),
-                                    ),
-                                ))
-                                .await;
-                            break;
-                        }
-                    }
-                    // #6795: a gateway can report a transient upstream failure
-                    // as an error frame inside a 200. With nothing actionable
-                    // streamed that is a no-content stream death like a
-                    // transport error or a stall: count it so the existing
-                    // retry budget re-issues the request, and keep it as the
-                    // prospective outcome so an exhausted budget fails the
-                    // turn with the provider's reason. No error event yet: a
-                    // retry that succeeds must not leave a terminal-looking
-                    // card behind. Auth, invalid-model and every other class
-                    // stays terminal on the first frame, as does any frame
-                    // after content (replaying would duplicate side effects).
-                    //
-                    // Either way the turn-ending envelope is non-recoverable,
-                    // so its severity is Error. A retryable frame holds it back
-                    // (`frame_error`): the post-loop retry either re-issues the
-                    // request and discards it, or the budget is spent and it is
-                    // posted then, once, so the card never promises a retry the
-                    // engine will not make.
+                    stream_errors = stream_errors.saturating_add(1);
                     let envelope = ErrorEnvelope::classify(message.to_string(), false);
-                    let transient = matches!(
-                        envelope.category,
-                        ErrorCategory::Network | ErrorCategory::Timeout
-                    );
-                    if transient && !any_content_received {
-                        stream_errors = stream_errors.saturating_add(1);
-                        frame_error = Some(envelope);
-                    } else {
-                        let _ = self.send_stream_event(Event::error(envelope)).await;
-                    }
+                    let _ = self.send_stream_event(Event::error(envelope)).await;
                     stream_error.get_or_insert(message.to_string());
                     break;
                 }
@@ -5648,31 +5320,11 @@ impl Engine {
                 self.finalize_streamed_tool_input(tool_state).await;
             }
         }
-        if transparent_stream_retries > 0 && !steer_preempted {
-            let message = if self.cancel_token.is_cancelled() {
-                "Retry interrupted: transparent stream cancelled".to_string()
-            } else if stream_errors == 0 && pending_message_complete {
-                format!(
-                    "Retry recovery: transparent stream recovered after {transparent_stream_retries} retries"
-                )
-            } else if stream_errors > 0
-                && transparent_stream_retries >= retry_limits.max_transparent_retries
-            {
-                format!(
-                    "Retry exhaustion: transparent stream stopped after {transparent_stream_retries} retries; stream did not complete"
-                )
-            } else {
-                format!(
-                    "Retry stopped: transparent stream ended after {transparent_stream_retries} retries; completion was not observed"
-                )
-            };
-            let _ = self.send_retry_status(message).await;
-        }
         let receipt_outcome = if self.cancel_token.is_cancelled() {
             "cancelled"
         } else if steer_preempted {
             "steered"
-        } else if stream_error.is_some() || stream_errors > 0 || pending_resume.is_some() {
+        } else if stream_error.is_some() || stream_errors > 0 {
             "incomplete"
         } else if pending_message_complete {
             "completed"
@@ -5685,14 +5337,6 @@ impl Engine {
             receipt_outcome,
         )
         .await;
-        let usage = if usage_has_reported_data(&settled_usage) {
-            if usage_has_reported_data(&usage) {
-                crate::core::turn::add_usage_to(&mut settled_usage, &usage);
-            }
-            settled_usage
-        } else {
-            usage
-        };
         StreamOutcome {
             current_text_raw,
             current_text_visible,
@@ -5707,15 +5351,12 @@ impl Engine {
             pending_message_complete,
             last_text_index,
             stream_errors,
-            terminal_stream_error,
             steer_preempted,
             pending_steers,
-            pending_resume,
             stream_start,
             first_token_at,
             request_dispatched_at,
             stream_error,
-            frame_error,
         }
     }
 
@@ -7023,23 +6664,14 @@ mod tests {
                 Ok(canned::message_stop()),
             ]);
             let request = stream_backpressure_request();
-            let mut diagnostics = crate::tool_inspection::TurnStopDiagnostics::default();
             let outcome = tokio::time::timeout(
                 Duration::from_secs(1),
-                engine.process_stream(
-                    model.as_ref(),
-                    Box::pin(stream),
-                    &request,
-                    Instant::now(),
-                    0,
-                    &mut diagnostics,
-                    None,
-                ),
+                engine.process_stream(Box::pin(stream), &request, Instant::now(), None),
             )
             .await
             .unwrap();
-            assert!(outcome.terminal_stream_error);
-            assert!(outcome.pending_resume.is_none());
+            assert!(outcome.stream_error.is_some());
+            assert_eq!(outcome.stream_errors, 1);
             assert!(!outcome.pending_message_complete);
             assert!(outcome.current_text_raw.is_empty());
             assert_eq!(
@@ -7047,7 +6679,6 @@ mod tests {
                 0,
                 "terminal errors must not transparently retry"
             );
-            assert_eq!(diagnostics.transparent_stream_retries, 0);
             assert!(
                 matches!(rx.try_recv(), Ok(Event::Error { envelope, .. }) if envelope.code == "llm_quota_exhausted" && !envelope.recoverable)
             );
@@ -7145,16 +6776,8 @@ mod tests {
                 counted.fetch_add(1, Ordering::SeqCst);
             });
             let request = stream_backpressure_request();
-            let mut diagnostics = crate::tool_inspection::TurnStopDiagnostics::default();
-            let mut process = Box::pin(engine.process_stream(
-                model.as_ref(),
-                Box::pin(stream),
-                &request,
-                Instant::now(),
-                0,
-                &mut diagnostics,
-                None,
-            ));
+            let mut process =
+                Box::pin(engine.process_stream(Box::pin(stream), &request, Instant::now(), None));
             assert!(
                 tokio::time::timeout(Duration::from_millis(25), &mut process)
                     .await
@@ -7186,10 +6809,6 @@ mod tests {
                 outcome.usage.input_tokens, 17,
                 "{label}: billed usage retained"
             );
-            assert!(
-                outcome.pending_resume.is_none(),
-                "{label}: cancellation cannot retry"
-            );
             assert_eq!(model.call_count(), 0, "{label}: no provider retry");
             assert_eq!(
                 rx.len(),
@@ -7212,7 +6831,7 @@ mod tests {
         use crate::llm_client::mock::canned;
 
         let tmp = tempdir().expect("tempdir");
-        let (mut engine, model, mut rx) = stream_backpressure_fixture(tmp.path(), 1);
+        let (mut engine, _model, mut rx) = stream_backpressure_fixture(tmp.path(), 1);
         engine
             .tx_event
             .send(Event::status("occupied"))
@@ -7230,16 +6849,8 @@ mod tests {
             )),
         ]);
         let request = stream_backpressure_request();
-        let mut diagnostics = crate::tool_inspection::TurnStopDiagnostics::default();
-        let mut process = Box::pin(engine.process_stream(
-            model.as_ref(),
-            Box::pin(stream),
-            &request,
-            Instant::now(),
-            0,
-            &mut diagnostics,
-            None,
-        ));
+        let mut process =
+            Box::pin(engine.process_stream(Box::pin(stream), &request, Instant::now(), None));
         assert!(
             tokio::time::timeout(Duration::from_millis(25), &mut process)
                 .await
@@ -7307,18 +6918,9 @@ mod tests {
                     counted.fetch_add(1, Ordering::SeqCst);
                 });
                 let request = stream_backpressure_request();
-                let mut diagnostics = crate::tool_inspection::TurnStopDiagnostics::default();
                 let outcome = tokio::time::timeout(
                     Duration::from_secs(1),
-                    engine.process_stream(
-                        model.as_ref(),
-                        Box::pin(stream),
-                        &request,
-                        Instant::now(),
-                        0,
-                        &mut diagnostics,
-                        None,
-                    ),
+                    engine.process_stream(Box::pin(stream), &request, Instant::now(), None),
                 )
                 .await
                 .expect("empty tool starts must be bounded");

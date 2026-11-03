@@ -208,7 +208,7 @@ async fn event_capacity_invalid_images_release_queued_control_and_keep_classifie
             unreachable!()
         };
         spec.images
-            .push(codewhale_protocol::runtime::RuntimeImageInput {
+            .push(codewhale_app_server_protocol::runtime::RuntimeImageInput {
                 mime: "image/png".into(),
                 data_base64: "invalid@base64".into(),
             });

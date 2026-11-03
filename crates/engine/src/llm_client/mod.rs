@@ -369,11 +369,36 @@ impl QuotaExhaustionError {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestTransmission {
+    NotDispatched,
+    Rejected,
+    OutcomeUnknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderUsageCoverage {
+    Reported,
+    Missing,
+    Incomplete,
+    NotDispatched,
+    Rejected,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RetryOperation {
+    #[default]
+    Inference,
+    ReadOnly,
+}
+
 /// Classified LLM errors with retryability information.
 ///
 /// This enum categorizes API errors to enable smart retry decisions.
-/// Some errors (rate limits, transient server errors) are retryable,
-/// while others (auth failures, invalid requests) should fail immediately.
+/// Only authoritative rate limits and proven transient pre-dispatch failures
+/// permit an inference retry.
 #[derive(Debug)]
 pub enum LlmError {
     /// Rate limit exceeded (HTTP 429)
@@ -395,6 +420,12 @@ pub enum LlmError {
 
     /// Network connectivity error
     NetworkError(String),
+
+    ConnectError {
+        message: String,
+        transient: bool,
+        timed_out: bool,
+    },
 
     /// Request timed out
     Timeout(Duration),
@@ -435,6 +466,9 @@ impl std::fmt::Display for LlmError {
                 write!(f, "Server error ({status}): {message}")
             }
             LlmError::NetworkError(msg) => write!(f, "Network error: {msg}"),
+            LlmError::ConnectError { message, .. } => {
+                write!(f, "Connection failed before request dispatch: {message}")
+            }
             LlmError::Timeout(d) => write!(f, "Request timed out after {d:?}"),
             LlmError::AuthenticationError(auth) => {
                 write!(f, "Authentication failed: {}", auth.to_user_message())
@@ -455,28 +489,38 @@ impl std::fmt::Display for LlmError {
 impl std::error::Error for LlmError {}
 
 impl LlmError {
-    /// Determines if this error is potentially transient and worth retrying.
-    ///
-    /// Retryable errors:
-    /// - Rate limits (with backoff)
-    /// - Server errors (5xx)
-    /// - Network errors (connection issues)
-    /// - Timeouts
-    ///
-    /// Non-retryable errors:
-    /// - Provider plan quota exhaustion
-    /// - Authentication failures
-    /// - Invalid requests
-    /// - Content policy violations
-    /// - Context length errors
+    pub fn transmission(&self) -> RequestTransmission {
+        match self {
+            Self::ConnectError { .. } => RequestTransmission::NotDispatched,
+            Self::RateLimited { .. }
+            | Self::QuotaExhausted(_)
+            | Self::AuthenticationError(_)
+            | Self::AuthorizationError(_)
+            | Self::InvalidRequest { .. }
+            | Self::ModelError(_)
+            | Self::ContentPolicyError(_)
+            | Self::ContextLengthError(_) => RequestTransmission::Rejected,
+            _ => RequestTransmission::OutcomeUnknown,
+        }
+    }
+
     pub fn is_retryable(&self) -> bool {
+        self.is_retryable_for(RetryOperation::Inference)
+    }
+
+    pub fn is_retryable_for(&self, operation: RetryOperation) -> bool {
         matches!(
             self,
-            LlmError::RateLimited { .. }
-                | LlmError::ServerError { .. }
-                | LlmError::NetworkError(_)
-                | LlmError::Timeout(_)
-        )
+            Self::RateLimited { .. }
+                | Self::ConnectError {
+                    transient: true,
+                    ..
+                }
+        ) || (operation == RetryOperation::ReadOnly
+            && matches!(
+                self,
+                Self::ServerError { .. } | Self::NetworkError(_) | Self::Timeout(_)
+            ))
     }
 
     /// Returns the server-suggested retry delay if available.
@@ -510,6 +554,16 @@ impl LlmError {
         retry_after: Option<Duration>,
         body_retry_after: Option<Duration>,
     ) -> Self {
+        if (499..=599).contains(&status) {
+            return Self::ServerError {
+                status,
+                message: body.to_string(),
+            };
+        }
+        if !matches!(status, 400 | 401 | 402 | 403 | 404 | 413 | 429) {
+            return Self::Other(format!("HTTP {status}: {body}"));
+        }
+
         if status == 413 {
             return LlmError::InvalidRequest {
                 status,
@@ -591,15 +645,6 @@ impl LlmError {
                     }
                 }
             }
-            // Several OpenAI-compatible gateways use nginx's non-standard
-            // 499 for an upstream request that was cancelled before response
-            // streaming began. At this boundary no response body stream has
-            // been exposed, so it is eligible for the same bounded retry
-            // policy as a 5xx gateway failure.
-            499..=599 => LlmError::ServerError {
-                status,
-                message: body.to_string(),
-            },
             _ => LlmError::Other(format!("HTTP {status}: {body}")),
         }
     }
@@ -685,14 +730,36 @@ impl LlmError {
 
     /// Constructs an `LlmError` from a reqwest error.
     pub fn from_reqwest(err: &reqwest::Error) -> Self {
-        if err.is_timeout() {
+        if err.is_connect() {
+            LlmError::ConnectError {
+                message: err.to_string(),
+                transient: !has_tls_cause(err),
+                timed_out: err.is_timeout(),
+            }
+        } else if err.is_timeout() {
             LlmError::Timeout(Duration::from_secs(0))
-        } else if err.is_connect() {
-            LlmError::NetworkError(format!("Connection failed: {err}"))
-        } else if err.is_request() {
+        } else if err.is_request() || err.is_body() || err.is_decode() {
             LlmError::NetworkError(format!("Request failed: {err}"))
         } else {
             LlmError::Other(err.to_string())
+        }
+    }
+}
+
+pub(crate) fn has_tls_cause(mut error: &(dyn std::error::Error + 'static)) -> bool {
+    loop {
+        if error.is::<rustls::Error>() {
+            return true;
+        }
+        if let Some(inner) = error
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+        {
+            error = inner;
+        } else if let Some(source) = error.source() {
+            error = source;
+        } else {
+            return false;
         }
     }
 }
@@ -1174,6 +1241,7 @@ impl From<serde_json::Error> for LlmError {
 /// - `retryable_status_codes`: [429, 499, 500, 502, 503, 504]
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
+    pub operation: RetryOperation,
     /// Whether retry logic is enabled
     pub enabled: bool,
 
@@ -1211,6 +1279,7 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
+            operation: RetryOperation::Inference,
             enabled: true,
             max_retries: 3,
             initial_delay: 1.0,
@@ -1301,6 +1370,7 @@ impl RetryConfig {
     /// Checks if a given HTTP status code should trigger a retry
     pub fn is_retryable_status(&self, status: u16) -> bool {
         self.retryable_status_codes.contains(&status)
+            && (self.operation == RetryOperation::ReadOnly || status == 429)
     }
 }
 
@@ -1407,16 +1477,28 @@ pub struct OutboundWireObservation {
     pub image_projection: Option<ImageProjectionReceipt>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OutboundTransmissionObservation {
+    pub source_id: String,
+    pub method: String,
+    pub transmission: RequestTransmission,
+    pub http_status: Option<u16>,
+}
+
 #[derive(Debug, Default, serde::Serialize)]
 pub struct OutboundWireObservationBatch {
     pub observations: Vec<OutboundWireObservation>,
     pub dropped: u64,
+    pub transmissions: Vec<OutboundTransmissionObservation>,
+    pub transmissions_dropped: u64,
+    pub last_transmission: Option<OutboundTransmissionObservation>,
 }
 
 #[derive(Debug, Default)]
 struct OutboundWireObservationBuffer {
     batch: OutboundWireObservationBatch,
     retained_bytes: usize,
+    next_transmission: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1432,6 +1514,59 @@ impl OutboundWireObservations {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         buffer.retained_bytes = 0;
         std::mem::take(&mut buffer.batch)
+    }
+
+    fn begin_transmission(&self, request_id: &str, method: &reqwest::Method) -> String {
+        let mut buffer = self
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        buffer.next_transmission = buffer.next_transmission.saturating_add(1);
+        let source_id = format!("{request_id}:{}", buffer.next_transmission);
+        let observation = OutboundTransmissionObservation {
+            source_id: source_id.clone(),
+            method: method.as_str().to_string(),
+            transmission: RequestTransmission::OutcomeUnknown,
+            http_status: None,
+        };
+        buffer.batch.last_transmission = Some(observation.clone());
+        if buffer.batch.transmissions.len() < 32 {
+            buffer.batch.transmissions.push(observation);
+        } else {
+            buffer.batch.transmissions_dropped =
+                buffer.batch.transmissions_dropped.saturating_add(1);
+        }
+        source_id
+    }
+
+    fn settle_transmission(
+        &self,
+        source_id: &str,
+        transmission: RequestTransmission,
+        http_status: Option<u16>,
+    ) {
+        let mut buffer = self
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(attempt) = buffer
+            .batch
+            .transmissions
+            .iter_mut()
+            .find(|attempt| attempt.source_id == source_id)
+        {
+            attempt.transmission = transmission;
+            attempt.http_status = http_status;
+        }
+        if let Some(attempt) = buffer
+            .batch
+            .last_transmission
+            .as_mut()
+            .filter(|attempt| attempt.source_id == source_id)
+        {
+            attempt.transmission = transmission;
+            attempt.http_status = http_status;
+        }
     }
 
     fn record(&self, observation: OutboundWireObservation) {
@@ -1483,6 +1618,7 @@ impl OutboundWireObservations {
 
 #[derive(Clone)]
 pub struct RequestRetryObservation {
+    pub request_id: String,
     pub retries: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub emit: RetryStatusEmitter,
     pub wire_observations: OutboundWireObservations,
@@ -1497,6 +1633,67 @@ pub async fn observe_request_retries<F: Future>(
     future: F,
 ) -> F::Output {
     REQUEST_RETRY_OBSERVATION.scope(observation, future).await
+}
+
+pub fn begin_outbound_transmission(
+    method: &reqwest::Method,
+) -> Option<(OutboundWireObservations, String)> {
+    REQUEST_RETRY_OBSERVATION
+        .try_with(|observation| {
+            observation.as_ref().map(|observation| {
+                let wire = observation.wire_observations.clone();
+                let source = wire.begin_transmission(&observation.request_id, method);
+                (wire, source)
+            })
+        })
+        .ok()
+        .flatten()
+}
+
+pub fn settle_outbound_transmission(
+    pending: Option<(OutboundWireObservations, String)>,
+    result: &Result<reqwest::Response, LlmError>,
+) {
+    let Some((wire, source)) = pending else {
+        return;
+    };
+    let (transmission, status) = match result {
+        Ok(response) => {
+            let status = response.status().as_u16();
+            let transmission = if matches!(status, 401 | 403 | 413 | 429) {
+                RequestTransmission::Rejected
+            } else {
+                RequestTransmission::OutcomeUnknown
+            };
+            (transmission, Some(status))
+        }
+        Err(error) => (error.transmission(), None),
+    };
+    wire.settle_transmission(&source, transmission, status);
+}
+
+pub fn settle_outbound_http_error(error: &LlmError) {
+    let _ = REQUEST_RETRY_OBSERVATION.try_with(|observation| {
+        if let Some(observation) = observation {
+            let mut buffer = observation
+                .wire_observations
+                .buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(last) = buffer.batch.last_transmission.as_mut() {
+                last.transmission = error.transmission();
+                let source = last.source_id.clone();
+                if let Some(attempt) = buffer
+                    .batch
+                    .transmissions
+                    .iter_mut()
+                    .find(|attempt| attempt.source_id == source)
+                {
+                    attempt.transmission = error.transmission();
+                }
+            }
+        }
+    });
 }
 
 pub fn observe_outbound_wire(observation: impl FnOnce() -> OutboundWireObservation) {
@@ -1550,7 +1747,8 @@ pub fn retry_reason_summary(error: &LlmError) -> String {
     match error {
         LlmError::RateLimited { .. } => "rate limited".into(),
         LlmError::ServerError { status, .. } => format!("upstream {status}"),
-        LlmError::NetworkError(_) => "network error".into(),
+        LlmError::NetworkError(_) => "network error; request outcome unknown".into(),
+        LlmError::ConnectError { .. } => "connection failed before dispatch".into(),
         LlmError::Timeout(_) => "timeout".into(),
         _ => "non-retryable provider failure".into(),
     }
@@ -1588,17 +1786,6 @@ async fn observe_transport_stopped(retries: u32, error: &LlmError, exhausted: bo
 ///
 /// * `Ok(T)` - The successful result from the operation
 /// * `Err(RetryError)` - All retries exhausted or non-retryable error encountered
-///
-/// # Known limitation: ambiguous failures are replayed
-///
-/// A timeout or connection loss after the request was written is retried
-/// like a connect failure, so a provider that already accepted the first
-/// attempt may bill a second completion. Every caller sends model inference
-/// (messages, FIM, translation, speech, provider web search): a replay costs
-/// compute but has no external side effect, and the provider APIs used here
-/// expose no idempotency key for these requests that could dedupe it. An
-/// operation with an external side effect must not be retried through this
-/// helper without an idempotency key the server honors.
 ///
 /// # Example
 ///
@@ -1672,7 +1859,7 @@ where
             }
             Err(err) => {
                 // Non-retryable errors fail immediately
-                if !err.is_retryable() {
+                if !err.is_retryable_for(config.operation) {
                     observe_transport_stopped(attempt, &err, false).await;
                     return Err(RetryError {
                         last_error: err,
@@ -1862,6 +2049,9 @@ mod tests {
     #[test]
     fn test_retry_config_defaults() {
         let config = RetryConfig::default();
+        assert_eq!(config.operation, RetryOperation::Inference);
+        assert!(!config.is_retryable_status(500));
+        assert!(config.is_retryable_status(429));
         assert!(config.enabled);
         assert_eq!(config.max_retries, 3);
         assert_f64_eq(config.initial_delay, 1.0);
@@ -1940,7 +2130,10 @@ mod tests {
 
     #[test]
     fn test_is_retryable_status() {
-        let config = RetryConfig::default();
+        let config = RetryConfig {
+            operation: RetryOperation::ReadOnly,
+            ..RetryConfig::default()
+        };
 
         assert!(config.is_retryable_status(429)); // Rate limit
         assert!(config.is_retryable_status(499)); // Upstream request cancelled
@@ -2247,7 +2440,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_retry_success_first_attempt() {
-        let config = RetryConfig::default();
+        let config = RetryConfig {
+            operation: RetryOperation::ReadOnly,
+            ..RetryConfig::default()
+        };
         let mut call_count = 0;
 
         let result = with_retry(
@@ -2291,9 +2487,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_retry_eventual_success() {
-        let config = RetryConfig::new()
+        let mut config = RetryConfig::new()
             .with_max_retries(3)
-            .with_initial_delay(0.01); // Fast for testing
+            .with_initial_delay(0.01);
+        config.operation = RetryOperation::ReadOnly; // Fast for testing
 
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let cc = call_count.clone();
@@ -2324,9 +2521,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_retry_exhausted() {
-        let config = RetryConfig::new()
+        let mut config = RetryConfig::new()
             .with_max_retries(2)
             .with_initial_delay(0.01);
+        config.operation = RetryOperation::ReadOnly;
 
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let cc = call_count.clone();
@@ -2354,9 +2552,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_retry_callback() {
-        let config = RetryConfig::new()
+        let mut config = RetryConfig::new()
             .with_max_retries(2)
             .with_initial_delay(0.01);
+        config.operation = RetryOperation::ReadOnly;
 
         let callback_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let cc = callback_count.clone();

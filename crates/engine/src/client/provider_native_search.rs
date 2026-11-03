@@ -287,12 +287,17 @@ impl ProviderNativeSearchClient {
     pub(super) async fn get_json(&self, url: &str) -> Result<Value> {
         let response = self
             .inner
-            .send_with_retry(|| {
-                self.inner
-                    .http_client
-                    .get(url)
-                    .header("Accept", "application/json")
-            })
+            .send_with_retry_total_error_body(
+                super::non_streaming_request_envelope(),
+                || {
+                    self.inner
+                        .http_client
+                        .get(url)
+                        .header("Accept", "application/json")
+                },
+                &super::ErrorBodyDisclosure::Full,
+                crate::llm_client::RetryOperation::ReadOnly,
+            )
             .await
             .context("provider-native web search request failed")?;
         response

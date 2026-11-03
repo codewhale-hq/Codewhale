@@ -876,6 +876,7 @@ dependencies = [
  "axum",
  "chrono",
  "codewhale-agent",
+ "codewhale-app-server-protocol",
  "codewhale-config",
  "codewhale-core",
  "codewhale-hooks",
@@ -898,6 +899,15 @@ dependencies = [
  "tracing",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "codewhale-app-server-protocol"
+version = "0.10.2"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1062,6 +1072,7 @@ dependencies = [
  "clap",
  "codewhale-agent",
  "codewhale-agent-contract",
+ "codewhale-app-server-protocol",
  "codewhale-build-support",
  "codewhale-command-contract",
  "codewhale-commands",
@@ -1187,6 +1198,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "codewhale-app-server-protocol",
  "codewhale-paths",
  "codewhale-protocol",
  "codewhale-release",
@@ -1413,6 +1425,7 @@ name = "codewhale-protocol"
 version = "0.10.2"
 dependencies = [
  "chrono",
+ "codewhale-app-server-protocol",
  "serde",
  "serde_json",
  "uuid",
@@ -1703,6 +1716,7 @@ dependencies = [
  "codewhale-agent",
  "codewhale-agent-contract",
  "codewhale-app-server",
+ "codewhale-app-server-protocol",
  "codewhale-build-support",
  "codewhale-cloud-facts",
  "codewhale-command-contract",
@@ -6954,9 +6968,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
  "atomic",
  "getrandom 0.4.3",

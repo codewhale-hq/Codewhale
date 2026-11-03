@@ -18,9 +18,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::{AsyncBufRead, AsyncWrite};
 #[cfg(test)]
-use tokio::io::BufReader;
-use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncWriteExt, BufReader};
 mod runtime;
 const ACP_PROTOCOL_VERSION: u64 = 1;
 const MAX_ACP_SESSIONS: usize = 64;
@@ -203,7 +203,16 @@ impl AcpServer {
         reader: &mut codewhale_app_server::stdio::BoundedLines<R>,
         writer: &mut W,
     ) -> Result<()> {
-        while let Some(line) = reader.next_line().await? {
+        loop {
+            let line = match reader.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
+                Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                    write_jsonrpc_error(writer, None, -32700, error.to_string()).await?;
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
             if line.trim().is_empty() {
                 continue;
             }
@@ -248,6 +257,9 @@ impl AcpServer {
                         }
                     }
                     Err(error) => {
+                        if codewhale_app_server::stdio::is_control_write_failure(&error) {
+                            return Err(error);
+                        }
                         write_jsonrpc_error(
                             writer,
                             response_id,
@@ -274,6 +286,9 @@ impl AcpServer {
                         (Ok(()), Some(id)) => write_jsonrpc_result(writer, id, result).await?,
                         (Ok(()), None) => {}
                         (Err(error), id) => {
+                            if codewhale_app_server::stdio::is_control_write_failure(&error) {
+                                return Err(error);
+                            }
                             write_jsonrpc_error(writer, id, -32603, error.to_string()).await?
                         }
                     }
@@ -1245,18 +1260,30 @@ where
     .await
 }
 
-async fn write_json_line<W>(writer: &mut W, value: Value) -> Result<()>
+async fn write_json_line<W>(writer: &mut W, mut value: Value) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        writer.write_all(value.to_string().as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await
-    })
-    .await
-    .map_err(|_| anyhow!("ACP transport write did not settle within 30 seconds"))??;
-    Ok(())
+    let frame = match codewhale_app_server::stdio::serialize_control_frame(&value) {
+        Ok(frame) => frame,
+        Err(error)
+            if codewhale_app_server::stdio::is_frame_refusal(&error)
+                && value.get("method").is_none() =>
+        {
+            let id = value.get_mut("id").map(Value::take).unwrap_or(Value::Null);
+            let mut failure = json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"ACP response exceeds the 8 MiB transport limit; inspect canonical state without replay"}});
+            match codewhale_app_server::stdio::serialize_control_frame(&failure) {
+                Ok(frame) => frame,
+                Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                    failure["id"] = Value::Null;
+                    codewhale_app_server::stdio::serialize_control_frame(&failure)?
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    };
+    codewhale_app_server::stdio::write_control_line(writer, &frame).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
