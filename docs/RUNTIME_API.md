@@ -15,8 +15,9 @@ such as Zed.
 for `codewhale app-server --http` / `--mobile`; both launch the identical
 server. Desktop, web, SDK and custom integrations should target
 `app-server --http`. `--stdio` and `--socket` expose compatibility controls.
-The current bare `app-server` HTTP listener serves compatibility routes and
-the full `/v1/*` router through the same Runtime owner.
+Bare `app-server` selects initialized JSONL control over stdio. Local stdio,
+socket and ACP owners do not bind a hidden TCP listener. Explicit `--http`
+retains HTTP/SSE and compatibility routes on the same Runtime owner.
 
 `codewhale exec` is the separate one-shot headless worker path (stream-json,
 fleet worker subprocess, CI primitive). It is not part of this API, but it
@@ -56,9 +57,9 @@ For the read-only record of what a thread or turn did, see
 | `codewhale web [--port 7878]` | HTTP/SSE on `127.0.0.1:7878` + embedded client | First-class loopback-only browser client; opens the default browser |
 | `codewhale app-server --http` | HTTP/SSE on `127.0.0.1:7878` | Full `/v1/*` runtime API (canonical) |
 | `codewhale app-server --mobile` | HTTP/SSE on loopback + `/mobile` | Runtime API + local mobile control page |
-| `codewhale app-server --stdio` | JSON-RPC 2.0 over stdio | Compatibility controls and explicit tool-free turns; no full Engine event or approval/input channel. |
-| `codewhale app-server --socket [--socket-path P]` | JSON-RPC 2.0 over a `0600` Unix domain socket (macOS/Linux) or an owner-only named pipe (Windows) | Desktop daemon: multi-client, kernel peer identity checked, `daemon/attach` claim handshake. Windows native-app qualification remains open. |
-| `codewhale app-server` | HTTP on `127.0.0.1:8787` | Compatibility `/healthz`, `/thread`, `/app`, `/prompt`, plus the full `/v1/*` router. Compatibility turn requests require explicit `allowed_tools: []`; those routes refuse interactive execution before a turn starts. New integrations should use `app-server --http`. |
+| `codewhale app-server --stdio` | Initialized JSONL over stdio | Compatibility controls and explicit tool-free turns through the held manager; no hidden TCP listener or full Codex interaction channel. |
+| `codewhale app-server --socket [--socket-path P]` | RPC text messages over WebSocket on a `0600` Unix domain socket (macOS/Linux) or an owner-only named pipe (Windows) | Desktop daemon: multi-client, kernel peer identity checked, `daemon/attach` claim handshake. Windows native-app qualification remains open. |
+| `codewhale app-server` | Initialized JSONL over stdio | Same selection as `--stdio`; HTTP requires explicit `--http`. |
 | `codewhale serve --http` / `--mobile` | same server as `app-server --http`/`--mobile` | Compatibility aliases |
 
 `app-server --http` and `--mobile` launch the same mature runtime API server
@@ -67,9 +68,29 @@ every endpoint documented below is identical across both entrypoints. The
 runtime API token is read from `--auth-token`, then `CODEWHALE_RUNTIME_TOKEN`,
 then `DEEPSEEK_RUNTIME_TOKEN`; use `--insecure-no-auth` only with a loopback
 bind. The `serve` compatibility aliases keep their `--insecure` flag.
-The legacy in-process `codewhale app-server` also requires an explicit
-`--auth-token` or `CODEWHALE_APP_SERVER_TOKEN` before binding a non-loopback
-host; its generated one-time `cwapp_*` token is loopback-only.
+Bare `app-server` does not open an HTTP port. Selected attached HTTP listeners
+retain their explicit bearer and non-loopback security checks.
+
+Initialized stdio/private-socket controls support `thread/loaded/list` with
+`{cursor?: string | null, limit?: number | null}`. The result is
+`{data: string[], nextCursor: string | null}` from the held manager's loaded
+engine snapshot, including idle and archived engines still in memory. It does
+not enumerate saved history or only running turns. Omit the limit for the full
+snapshot. A zero limit returns no entries and retains a continuation when
+entries remain. Pass the opaque `nextCursor` back unchanged; loading or
+unloading between pages can change the snapshot. The
+`app/thread_loaded_list`, `app/thread-loaded-list` and `app/request`
+`ThreadLoadedList` compatibility forms retain their thread-object wrapper and
+now use that same loaded-engine authority. Full-tool `turn/start`, interaction
+responses and subscription/reconnect parity remain unavailable.
+
+The pinned `thread/name/set` control takes `{threadId: string, name: string}`
+and returns `{}` after the existing held owner persists the canonical title.
+The legacy `thread/set_name`, `thread/set-name` and typed compatibility request
+retain their current parameter and response shapes. An empty or whitespace-only
+name clears the title through the same manager. The durable Runtime journal
+continues to publish `thread.updated`; the pinned `thread/name/updated` fan-out
+and per-connection subscriptions remain part of the unfinished event contract.
 
 Device tokens minted by the master through `POST /v1/auth/client-tokens`
 have an immutable `intent`: `watch` (the default when omitted) or explicit
@@ -421,11 +442,22 @@ the Runtime token (or an explicitly insecure loopback server); the public
 bootstrap response remains usable but reports `signed_out`. Signed-out local
 Work remains supported and never allocates cloud compute implicitly.
 
-The `--stdio` control transport is newline-delimited JSON-RPC 2.0. Probe it
+The `--stdio` control transport uses newline-delimited RPC. Request IDs are
+strings or signed 64-bit integers. Output omits `jsonrpc`; input also accepts
+unknown input fields, as the pinned Codex decoder does. Complete `initialize`
+once and receive its result. Clients then send the ID-absent `initialized`
+notification before ordinary requests. It has no reply or authority effect;
+as in the pinned implementation, server initialization is committed by the
+successful initialize request. Repeated initialization and business requests
+before initialize refuse. Malformed envelopes are discarded
+without a fabricated null-ID response; invalid-ID method objects follow the
+pinned notification fallback and cannot become business calls. Probe it
 without spending model tokens:
 
 ```bash
 printf '%s\n' \
+  '{"id":"init","method":"initialize","params":{"clientInfo":{"name":"probe","version":"1"}}}' \
+  '{"method":"initialized"}' \
   '{"jsonrpc":"2.0","id":1,"method":"healthz"}' \
   '{"jsonrpc":"2.0","id":2,"method":"capabilities"}' \
   '{"jsonrpc":"2.0","id":3,"method":"shutdown"}' \
@@ -439,8 +471,9 @@ deadline; owner attachment, request forwarding and frontend readiness keep
 their tighter 5-second envelopes. A partial write, flush failure or deadline
 ends the affected stream; it cannot be followed by another response or an
 automatic replay. This write deadline also applies to compatibility stdio
-replies/events and relay stdout. The current stdio host can bind a private
-loopback listener for its internal Runtime bridge.
+replies/events and relay stdout. Compatibility execution, history, provider
+catalogs, output-limit preflight and saved-config reload call the same held
+native frontend directly; they do not make loopback HTTP requests.
 
 `capabilities` returns the advertised method families (`thread/*`, `app/*`,
 `prompt/*`) and the full method list; `thread/capabilities`,
@@ -451,9 +484,9 @@ local integration clients can rely on it not changing silently.
 ### Daemon socket: `codewhale app-server --socket`
 
 The socket transport exposes compatibility controls on a long-lived daemon.
-The wire is the `--stdio` transport verbatim — the same
-newline-delimited JSON-RPC 2.0 methods, dispatched by the same code — with one
-handshake in front of it.
+The same dispatcher consumes RPC objects over private-channel WebSocket text
+messages. Process stdio uses JSONL; the private channel upgrades before its
+attachment handshake.
 
 **Endpoint.** `--socket-path` if given; else `$CODEWHALE_HOME/run/daemon.sock`
 when `CODEWHALE_HOME` is set (an explicit home is an isolation boundary); else
@@ -463,17 +496,26 @@ when `CODEWHALE_HOME` is set (an explicit home is an isolation boundary); else
 socket is `0600`, and every accepted peer must present the daemon's own uid.
 On start, a socket file nobody answers on is removed; a live one makes the new
 daemon exit with `a live listener already answers on <path>; refusing to
-replace it`; a non-socket file at the path is never touched. On Windows `--socket` fails with a typed
-`UnsupportedPlatform` error naming the reserved pipe `\\.\pipe\codewhale-daemon`
-— there is no silent TCP fallback. The daemon prints
+replace it`; a non-socket file at the path is never touched. On Windows the owner-private named-pipe transport uses the same dispatcher;
+its native application qualification remains open. There is no TCP fallback. The daemon prints
 `codewhale daemon: listening on <path>` to stderr once it is accepting.
 
-**Handshake.** The first request on a connection must be `daemon/attach`
-(`healthz` is also allowed beforehand, so a shell can probe liveness). Every
-other method is refused with `-32010 attach_required` until then.
+**Handshake.** After kernel peer admission, upgrade the private connection to
+WebSocket. Upgrade headers are limited to 16 KiB and five seconds; any Origin
+header refuses. Each subsequent text message contains one complete JSON object,
+with an 8 MiB frame and reassembled-message limit. Binary messages are unsupported
+and discarded without negotiation of compression. Control, scoped Control, ACP
+and listener attachments all use this framing. Process stdio remains JSONL.
+
+The first RPC request must be `daemon/attach` (`healthz` is also allowed beforehand). Every
+other method is refused with `-32010 attach_required` until then. After the
+private attachment handshake, complete `initialize` followed by `initialized`
+on the Control connection before business requests. ACP retains its JSON-RPC 2.0
+envelope, permission response IDs and EOF cancellation policy inside WebSocket
+text messages. Named-pipe ACLs and peer-process checks remain mandatory.
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"daemon/attach","params":{
+{"id":1,"method":"daemon/attach","params":{
   "client":{"name":"codewhale-desktop","version":"1.2.3","pid":4242},
   "mode":"claim",
   "expect_daemon_version":"0.9.11"}}
@@ -492,7 +534,8 @@ is `-32014 already_attached`.
 
 **Capabilities.** On this transport `capabilities.methods` is the pinned stdio
 set plus `daemon/attach` (second entry, after `healthz`); `transport` reads
-`unix-socket`. `shutdown` is advertised to every connection because the method
+`unix-socket` (or `named-pipe` on Windows), and `framing` is `websocket-text`.
+Stdio advertises `framing: "jsonl"`. `shutdown` is advertised to every connection because the method
 exists, but only the owner may call it (below).
 
 **Ownership.** Only the owner may `shutdown`; a guest's `shutdown` is refused
@@ -3396,6 +3439,27 @@ The closed version-1 receipt is at most 4 KiB when normalized. Required fields a
 This manager-owned source uses Runtime provenance through the same turn admission and execution path. It cannot count as a person's answer or resume a goal requiring that answer. The operation fingerprint includes normalized intent, prompt and Runtime-derived owner/thread/workspace context. Fresh admission returns 201, exact replay 200, conflicting intent 409. UserMessage metadata durably retains `input_provenance: "watch_event"`, `watch_event`, SHA-256 of the exact UTF-8 admitted prompt (preserved without trimming for typed watch input) as `input_prompt_sha256`, and the derived `runtime_binding`. Metadata alone never selects this authority. Ordinary `/turns` and the local `/rc` consumer refuse watch authority.
 
 The existing authenticated operation lookup returns the same flat TurnRecord for ordinary turns and additive watch fields from that durable input for watch turns. It holds the existing shared operation claim while reading, creates no record or lock, and never starts a turn. Missing, incomplete or mismatched lookup is not proof of nonadmission. A Platform accepted command ACK precedes native admission; recovery may acknowledge an exact already-admitted receipt but must not send a replacement POST on absence, revocation or uncertainty. Disable/re-enable fencing belongs to Platform's existing queue and revalidation owner. This route does not make revocation atomic with later dispatch or confirm cancellation of earlier accepted work, and it does not implement whole continuous operation.
+
+
+### App Server wire migration status
+
+The selected reference is Codex `rust-v0.166.0`, commit
+`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. The shared RPC envelope and
+initialization lifecycle serve JSONL stdio and private-channel WebSocket text
+messages. The decoder includes request, notification, response and error
+variants with signed-i64 or string IDs. Legacy thread/message and response
+events remain compatibility methods; they do not establish Codex thread/turn/item
+parity. TCP WebSocket listener, full-tool turn/start, independent Codex subscriptions, bidirectional interactions, durable idempotent
+settlement and the complete SDK remain required. The native Engine journal
+and turn loop remain authoritative. No default approval deadline is introduced.
+Owner restart interrupts active work rather than re-offering pending interactions.
+
+`/v1/chat/completions` admits one nonempty user text message through the existing
+manager and journal. Unsupported histories, system/tool messages, tools, images,
+streaming and other options refuse before admission. Standard usage and
+finish_reason remain null until their native completeness mapping is implemented;
+no zero or final-reason guess is made. This bounded compatibility input does not
+establish complete chat or Codex parity.
 
 ## Local whale voice
 

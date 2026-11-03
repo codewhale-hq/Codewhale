@@ -22,8 +22,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 OAUTH = REPO / "crates" / "runtime" / "src" / "oauth.rs"
-CLIENT = REPO / "crates" / "tui" / "src" / "client.rs"
-PAGE = REPO / "crates" / "tui" / "src" / "runtime_web" / "orca-evidence.html"
+CLIENT = REPO / "crates" / "engine" / "src" / "client.rs"
+PAGE = REPO / "crates" / "app-server" / "src" / "runtime_web" / "orca-evidence.html"
 
 CATALOG_SOURCE = "https://api.orcarouter.ai/v1/models?capability=chat"
 EXCHANGE_PATH = "/api/v1/auth/keys"

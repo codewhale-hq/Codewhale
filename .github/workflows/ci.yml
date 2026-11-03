@@ -172,7 +172,7 @@ jobs:
             # push to main still runs it unconditionally as the pre-release
             # safety net for anything this filter misses.
             case "${path}" in
-              crates/app-server/*|crates/tui/src/runtime_api*|crates/tui/src/runtime_mobile.html|crates/engine/src/runtime_threads*|crates/tui/src/main.rs|scripts/mobile-smoke.sh|.github/workflows/ci.yml|Cargo.lock|Cargo.toml)
+              crates/app-server/*|crates/engine/src/runtime_threads*|crates/tui/src/main.rs|scripts/mobile-smoke.sh|.github/workflows/ci.yml|Cargo.lock|Cargo.toml)
                 mobile=true
                 ;;
             esac
@@ -269,9 +269,9 @@ jobs:
           node --test scripts/release/ensure-release-assets-absent.test.js
           node --test scripts/release/verify-release-inventory.test.js
       - name: Run runtime web client tests
-        # crates/tui/tests/runtime_web_client.test.mjs exercises the embedded
+        # crates/app-server/tests/runtime_web_client.test.mjs exercises the embedded
         # web client's event/snapshot state machine; it ran nowhere before.
-        run: node --test crates/tui/tests/runtime_web_client.test.mjs
+        run: node --test crates/app-server/tests/runtime_web_client.test.mjs
 
   plugin-conversion:
     name: Plugin conversion

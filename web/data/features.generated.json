@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "5fd4dc2de75f8bb2f8dada400263e3805d12fca38899367b4b30948c8b51c4e8"
+    "sha256": "959e3836a39657a2c5d4ac7faff682e0a63863364dc27f09a7a2febd6ed31cdd"
   },
   "features": [
     {
@@ -753,7 +753,7 @@
     {
       "id": "compatibility-tool-free-turns",
       "name": "Compatibility turn admission",
-      "summary": "Compatibility transports require explicit tool-free turns; interactive clients use the full HTTP/SSE API.",
+      "summary": "Initialized local controls use the held Runtime for explicit tool-free turns, loaded-thread paging and canonical names; interactive clients use HTTP/SSE.",
       "status": "stable",
       "surfaces": {
         "api": "stable"
@@ -1299,6 +1299,32 @@
       "flag": null,
       "docs": null,
       "registryLine": 961
+    },
+    {
+      "id": "usage-statistics",
+      "name": "Usage statistics",
+      "summary": "Read-only native usage subtotals and execution diagnostics; missing coverage stays explicit.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "partial"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
+      "registryLine": 970
+    },
+    {
+      "id": "cache-call-receipts",
+      "name": "Per-call cache receipts",
+      "summary": "/cache calls shows bounded native source receipts with frozen prices, selected currency and explicit missing cache telemetry.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "partial"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
+      "registryLine": 980
     }
   ]
 }

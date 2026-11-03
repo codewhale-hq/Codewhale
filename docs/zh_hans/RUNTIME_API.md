@@ -16,7 +16,7 @@ API（`/v1/*`）、基于 stdio 的 JSON-RPC 控制传输，以及面向手机�
 `codewhale serve --http` / `serve --mobile` 仍作为 `codewhale app-server --http` /
 `--mobile` 的**兼容别名**存在；两者启动的是同一个服务器。新的集成应当以
 `app-server --http` 为目标。`--stdio` 和 `--socket` 提供兼容控制接口。
-当前裸 `app-server` 的 HTTP 监听器通过同一个 Runtime owner 提供兼容路由和完整 `/v1/*` 路由。
+裸 `app-server` 默认使用须初始化的 stdio JSONL 控制；stdio、socket 和 ACP 不绑定隐藏 TCP 监听器。显式 `--http` 仍通过同一个 Runtime owner 提供 HTTP/SSE 与兼容路由。
 
 `codewhale exec` 是另一条一次性的无头 worker 路径（stream-json、fleet worker 子进程、
 CI 原语）。它不属于本 API，但共享同一个运行时、提供商/模型解析、权限配置
@@ -54,9 +54,9 @@ local supervisor / SDK / automation harness
 | `codewhale web [--port 7878]` | 在 `127.0.0.1:7878` 上的 HTTP/SSE + 内嵌客户端 | 一等公民的仅回环浏览器客户端；打开默认浏览器 |
 | `codewhale app-server --http` | 在 `127.0.0.1:7878` 上的 HTTP/SSE | 完整的 `/v1/*` 运行时 API（规范入口） |
 | `codewhale app-server --mobile` | 回环上的 HTTP/SSE + `/mobile` | 运行时 API + 本地移动端控制页 |
-| `codewhale app-server --stdio` | 基于 stdio 的 JSON-RPC 2.0 | 兼容控制与显式禁用工具的回合；宿主仍可能绑定内部 Runtime 桥接使用的私有回环监听器。 |
-| `codewhale app-server --socket [--socket-path P]` | 基于权限为 `0600` 的 Unix 域套接字（macOS/Linux）或仅限所有者的命名管道（Windows）的 JSON-RPC 2.0 | 桌面守护进程：多客户端、内核对端身份校验、`daemon/attach` 认领握手。Windows 原生应用验收仍待完成。 |
-| `codewhale app-server` | 在 `127.0.0.1:8787` 上的 HTTP | 兼容 `/healthz`、`/thread`、`/app`、`/prompt`，并提供完整 `/v1/*` 路由。兼容回合请求必须显式带 `allowed_tools: []`；这些路由在回合开始前拒绝交互执行。新集成请用 `app-server --http`。 |
+| `codewhale app-server --stdio` | 须初始化的 stdio JSONL | 兼容控制与显式禁用工具的回合，直接使用持有的 manager；不绑定隐藏 TCP 监听器。 |
+| `codewhale app-server --socket [--socket-path P]` | 权限为 `0600` 的 Unix 域套接字（macOS/Linux）或仅限所有者的命名管道（Windows）上的 WebSocket RPC 文本消息 | 桌面守护进程：多客户端、内核对端身份校验、`daemon/attach` 认领握手。Windows 原生应用验收仍待完成。 |
+| `codewhale app-server` | 须初始化的 stdio JSONL | 与 `--stdio` 相同；HTTP 须显式选择 `--http`。 |
 | `codewhale serve --http` / `--mobile` | 与 `app-server --http`/`--mobile` 相同的服务器 | 兼容别名 |
 
 `app-server --http` 与 `--mobile` 启动的是历史上经由 `serve --http` 访问的同一个
@@ -64,9 +64,23 @@ local supervisor / SDK / automation harness
 都完全一致。运行时 API 令牌按 `--auth-token`、`CODEWHALE_RUNTIME_TOKEN`、
 `DEEPSEEK_RUNTIME_TOKEN` 的顺序读取；只有在绑定回环地址时才能使用
 `--insecure-no-auth`。`serve` 兼容别名保留各自的 `--insecure` 标志。
-旧式的进程内 `codewhale app-server` 在绑定非回环主机之前，同样要求显式的
-`--auth-token` 或 `CODEWHALE_APP_SERVER_TOKEN`；它生成的一次性 `cwapp_*` 令牌
-只能用于回环。
+裸 `app-server` 不打开 HTTP 端口。附加的 HTTP 监听器仍保留显式 bearer 与非回环安全校验。
+
+已初始化的 stdio/私有套接字控制支持 `thread/loaded/list`，参数为
+`{cursor?: string | null, limit?: number | null}`，结果为
+`{data: string[], nextCursor: string | null}`。数据来自持有的 manager 中已加载
+引擎的快照，包括仍在内存中的空闲或已归档引擎；不会把已保存历史或仅在运行的回合
+当作已加载列表。省略 limit 返回完整快照；limit 为零时返回空页，仍有条目时保留
+继续游标。继续分页时原样传回不透明的 nextCursor；分页期间加载或卸载会改变快照。`app/thread_loaded_list`、
+`app/thread-loaded-list` 和 `app/request` 的 ThreadLoadedList 兼容形式保留
+线程对象包装，并使用同一个已加载引擎权威。完整工具 turn/start、交互回复及订阅/重连
+兼容仍不可用。
+
+精确的 `thread/name/set` 接收 `{threadId: string, name: string}`，并在现有
+owner 保存规范标题后返回 `{}`。旧的 `thread/set_name`、`thread/set-name`
+及兼容请求保留原有参数和响应。空白名称通过同一个 manager 清除标题。
+Runtime 持久日志仍发布 `thread.updated`；`thread/name/updated` 通知扇出与
+连接订阅属于尚未完成的事件协议。
 
 ### 设备令牌的 Watch / Drive 意图
 
@@ -330,10 +344,12 @@ Fleet 回执工件保留自己的路由
 才会包含 `account_id` 与 `session_id`；公开的 bootstrap 响应仍然可用，但会报告
 `signed_out`。未登录状态下的本地 Work 仍然受支持，并且绝不会隐式分配云端算力。
 
-`--stdio` 控制传输是换行分隔的 JSON-RPC 2.0。可以在不消耗模型 token 的情况下探测它：
+`--stdio` 使用换行分隔的 RPC；请求 ID 为字符串或有符号 64 位整数，输出不含 `jsonrpc`。客户端接收 `initialize` 结果后发送不带 ID 的 `initialized` 通知，再提交业务请求。服务端在 initialize 成功时提交初始化，initialized 无授权效果；重复初始化和 initialize 之前的业务请求拒绝。无有效 envelope 的消息丢弃，不编造 null-ID 错误响应。可以在不消耗模型 token 的情况下探测它：
 
 ```bash
 printf '%s\n' \
+  '{"id":"init","method":"initialize","params":{"clientInfo":{"name":"probe","version":"1"}}}' \
+  '{"method":"initialized"}' \
   '{"jsonrpc":"2.0","id":1,"method":"healthz"}' \
   '{"jsonrpc":"2.0","id":2,"method":"capabilities"}' \
   '{"jsonrpc":"2.0","id":3,"method":"shutdown"}' \
@@ -374,8 +390,7 @@ HTTP 返回 400，`error.code` 为 `invalid_request`，同一详情位于 `error
 ### 守护进程套接字：`codewhale app-server --socket`
 
 此套接字传输在长期存活的守护进程上暴露兼容控制。
-其线上协议就是 `--stdio` 传输本身——同样的换行分隔 JSON-RPC 2.0 方法，由同一份代码
-分发——只是在前面加了一次握手。
+内核对端校验之后先升级为 WebSocket，再进行私有 attach 握手；同一分发器处理每个文本消息中的一个完整 JSON 对象。升级头限 16 KiB 和五秒，带 Origin 的请求拒绝，帧与重组消息均限 8 MiB。二进制消息不受支持，不协商压缩。Control、限定作用域的 Control、ACP 和监听器附着均使用此分帧；进程 stdio 仍使用 JSONL。
 
 **端点。** 若给了 `--socket-path` 就用它；否则若设置了 `CODEWHALE_HOME` 则用
 `$CODEWHALE_HOME/run/daemon.sock`（显式指定 home 即是一条隔离边界）；否则用
@@ -385,9 +400,7 @@ HTTP 返回 400，`error.code` 为 `invalid_request`，同一详情位于 `error
 每个被接受的连接方都必须出示守护进程自身的 uid。
 启动时，无人应答的套接字文件会被删除；若有一个仍在工作的，则新守护进程以
 `a live listener already answers on <path>; refusing to
-replace it` 退出；路径上本就不是套接字的文件永不被触碰。在 Windows 上 `--socket` 会失败，
-返回一个带类型的 `UnsupportedPlatform` 错误，并点名预留管道 `\\.\pipe\codewhale-daemon`
-——没有静默的 TCP 回退。守护进程开始接受连接后会向 stderr 打印
+replace it` 退出；路径上本就不是套接字的文件永不被触碰。Windows 使用仅所有者可访问的命名管道、ACL 与内核对端进程校验；原生应用验收仍待完成，没有 TCP 回退。守护进程开始接受连接后会向 stderr 打印
 `codewhale daemon: listening on <path>`。
 
 **握手。** 一条连接上的第一个请求必须是 `daemon/attach`
@@ -395,7 +408,7 @@ replace it` 退出；路径上本就不是套接字的文件永不被触碰。�
 `-32010 attach_required` 被拒绝。
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"daemon/attach","params":{
+{"id":1,"method":"daemon/attach","params":{
   "client":{"name":"codewhale-desktop","version":"1.2.3","pid":4242},
   "mode":"claim",
   "expect_daemon_version":"0.9.11"}}
@@ -2753,3 +2766,12 @@ Engine 自行读取的资料不可用或无效时，本回合改用未登录的�
 输入通过原有 manager admission 使用 Runtime 来源，不能充当人的回答或恢复等待人的目标。相同操作的准确重放返回 200，新 admission 返回 201，意图冲突返回 409。UserMessage metadata 持久保存 `input_provenance: "watch_event"`、规范化 receipt、实际接收且不去除首尾空白的 UTF-8 prompt 的 `input_prompt_sha256`，以及由 Runtime 派生的 `runtime_binding`；任意 metadata 不会授予这一来源。普通 `/turns` 与本地 `/rc` 拒绝 watch 授权。
 
 现有只读 operation lookup 在原有共享 claim 下返回原 TurnRecord；watch turn 还返回来自持久输入的上述字段，不创建记录、锁文件或新 turn。缺失、不完整或不匹配的 lookup 不是未接收的证明。Platform 的 accepted ACK 早于 Native admission；恢复只能确认准确的已接收记录，不能因未知、撤销或缺失而重新 POST。此切片不保证最后检查之后的原子撤销、不宣称已取消先前工作，也不完成全部持续运行功能。
+
+
+### App Server wire 迁移状态
+
+stdio JSONL 与私有 WebSocket 文本消息共用请求、通知、响应、错误四种 RPC envelope 和 initialize/initialized 生命周期。请求 ID 是字符串或有符号 64 位整数，输出不含 jsonrpc；未知输入字段的行为遵循固定版本的解码器。客户端须先接收 initialize 结果并发送 initialized 通知；与固定版本实现一致，服务端在 initialize 成功时提交初始化，initialized 无确认或授权效果；重复初始化和 initialize 之前的业务请求拒绝。无效消息丢弃，不生成 null-ID 错误。私有 attach 之后仍须初始化，ACP 的 JSON-RPC 2.0 envelope、权限响应 ID 与 EOF 取消策略保持不变。
+
+兼容执行、历史、提供商目录、输出上限预检和配置 reload 直接调用同一个已持有的 Native frontend，不经回环 HTTP。chat completions 只接收一个非空 user 文本，记录真实 manager 回合；不支持的历史、工具、图片、流及其他选项在 admission 前拒绝。usage 与 finish_reason 暂为 null，不能推测为零或已完成。
+
+目标固定为 Codex rust-v0.166.0 / 6ff1e1ca3b30fc8b914720681fcf5fe62e95f856。TCP WebSocket 监听器、完整 thread/turn/item、带工具的 turn/start、独立订阅、双向交互、持久幂等结算和完整 SDK 仍须完成。默认审批无限等待；owner 重启仍中断工作，不重新提供未决交互。

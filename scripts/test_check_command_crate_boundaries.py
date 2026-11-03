@@ -198,8 +198,8 @@ class RatchetTests(unittest.TestCase):
             {"lib.rs": "mod core;\nuse codewhale_runtime::{elapsed};\n", "core.rs": ""},
             {"lib.rs": "pub mod elapsed;\n", "elapsed.rs": "fn f() { ratatui::x(); }\n"},
         )
-        self.assertIn("elapsed", report.closure)
-        self.assertEqual(report.counts["uilib"], {"elapsed|ratatui": 1})
+        self.assertIn("codewhale_runtime::elapsed", report.closure)
+        self.assertEqual(report.counts["uilib"], {"codewhale_runtime::elapsed|ratatui": 1})
 
     def test_rise_and_unrecorded_drop_both_fail(self) -> None:
         report = self.report({

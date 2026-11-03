@@ -29,8 +29,8 @@ release_crates=(
   codewhale-command-contract
   codewhale-commands
   # TUI support crates added in 0.9.13: localization (i18n), models (catalog
-  # facade), palette (design tokens). Only tui consumes them, so they sit
-  # after core/config/build-support and before tui.
+  # facade), palette (design tokens). Their Engine, host and TUI consumers
+  # publish after core/config/build-support and these prerequisites.
   codewhale-localization
   codewhale-models
   codewhale-palette
@@ -45,7 +45,6 @@ release_crates=(
   codewhale-runtime
   codewhale-net
   codewhale-notify
-  codewhale-app-server
   codewhale-account-cli
   codewhale-sandbox
   codewhale-dependencies
@@ -57,6 +56,7 @@ release_crates=(
   codewhale-skills
   codewhale-tui-kit
   codewhale-engine
+  codewhale-app-server
   codewhale-tui
   codewhale-cli
 )

@@ -119,7 +119,7 @@ describe("api client", () => {
             return;
           }
           // The real contract: `start_thread_turn` answers 201 CREATED
-          // (crates/tui/src/runtime_api.rs:4613-4631).
+          // (crates/app-server/src/runtime_api.rs:4613-4631).
           response.writeHead(201, { "Content-Type": "application/json" });
           response.end(
             JSON.stringify({

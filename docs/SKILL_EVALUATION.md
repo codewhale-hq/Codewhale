@@ -34,7 +34,7 @@ development set, then evaluate the frozen candidate against the untouched
 holdout with repeated paired runs. Promote only an improvement that survives
 those runs and the normal source gates. Keep the previous version for rollback.
 
-Codewhale's `crates/tui/src/eval.rs` provides deterministic tool-loop checks;
+Codewhale's `crates/app-server/src/eval.rs` provides deterministic tool-loop checks;
 it does not measure model skill quality. Existing Engine, skill-discovery,
 plugin-lifecycle, and compaction survival tests are prerequisite checks. A
 real provider comparison is a separate, bounded-cost experiment. No model

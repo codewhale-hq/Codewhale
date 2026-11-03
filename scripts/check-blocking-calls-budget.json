@@ -6,6 +6,34 @@
   "crates/account-cli/src/work.rs": {
     "std_fs": 1
   },
+  "crates/app-server/src/exec_agent.rs": {
+    "std_fs": 1
+  },
+  "crates/app-server/src/mcp_server.rs": {
+    "std_fs": 1
+  },
+  "crates/app-server/src/remote_control.rs": {
+    "std_fs": 6
+  },
+  "crates/app-server/src/remote_setup/bundle.rs": {
+    "std_fs": 2
+  },
+  "crates/app-server/src/runtime_api.rs": {
+    "path_canonicalize": 4
+  },
+  "crates/app-server/src/runtime_api/diagnostics.rs": {
+    "std_fs": 4
+  },
+  "crates/app-server/src/runtime_api/git.rs": {
+    "std_fs": 6
+  },
+  "crates/app-server/src/runtime_api/workspace.rs": {
+    "path_canonicalize": 4,
+    "std_fs": 3
+  },
+  "crates/app-server/src/runtime_chat_relay.rs": {
+    "thread_sleep": 1
+  },
   "crates/cli/src/config_bundles.rs": {
     "path_canonicalize": 2,
     "std_fs": 6
@@ -440,32 +468,7 @@
   },
   "crates/tui/src/lib.rs": {
     "path_canonicalize": 4,
-    "std_fs": 35
-  },
-  "crates/tui/src/mcp_server.rs": {
-    "std_fs": 1
-  },
-  "crates/tui/src/remote_control.rs": {
-    "std_fs": 6
-  },
-  "crates/tui/src/remote_setup/bundle.rs": {
-    "std_fs": 2
-  },
-  "crates/tui/src/runtime_api.rs": {
-    "path_canonicalize": 4
-  },
-  "crates/tui/src/runtime_api/diagnostics.rs": {
-    "std_fs": 4
-  },
-  "crates/tui/src/runtime_api/git.rs": {
-    "std_fs": 6
-  },
-  "crates/tui/src/runtime_api/workspace.rs": {
-    "path_canonicalize": 4,
-    "std_fs": 3
-  },
-  "crates/tui/src/runtime_chat_relay.rs": {
-    "thread_sleep": 1
+    "std_fs": 34
   },
   "crates/tui/src/tui/app/init.rs": {
     "std_fs": 1

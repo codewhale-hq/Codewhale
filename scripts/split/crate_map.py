@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Measure codewhale-tui and codewhale-engine at unit granularity and check a target crate map.
+"""Measure codewhale-tui, codewhale-engine and codewhale-app-server at unit granularity and check a target crate map.
 
     python3 scripts/split/crate_map.py graph [--split-above N] [--json out.json]
     python3 scripts/split/crate_map.py check docs/design/crate-map.toml [--json out.json]
 
-`graph` cuts `crates/tui/src` and `crates/engine/src` into units: a module whose production subtree is
+`graph` cuts `crates/tui/src`, `crates/engine/src` and `crates/app-server/src` into units: a module whose production subtree is
 larger than `--split-above` (default 12,000 lines) is split into its own file
 (`<module>/<self>`) plus one unit per child module, recursively. It then
 resolves every `crate::`, `super::` and `self::` path in production code to the
@@ -55,11 +55,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import count_lines  # noqa: E402
 import module_graph as mg  # noqa: E402
 
-SOURCE_ROOTS = (mg.TUI_SRC, mg.ENGINE_SRC)
+SOURCE_ROOTS = (mg.TUI_SRC, mg.ENGINE_SRC, mg.APP_SERVER_SRC)
 ROOT = "<root>"
 SELF = "<self>"
-PATH_RE = re.compile(r"\b(crate|super|self)((?:\s*::\s*(?:super\b|[A-Za-z_][A-Za-z0-9_]*))+)")
-GROUP_RE = re.compile(r"\b(crate|super|self)((?:\s*::\s*(?:super\b|[A-Za-z_][A-Za-z0-9_]*))*)\s*::\s*\{")
+PATH_RE = re.compile(r"\b(crate|super|self|codewhale_engine|codewhale_app_server|codewhale_tui)((?:\s*::\s*(?:super\b|[A-Za-z_][A-Za-z0-9_]*))+)")
+GROUP_RE = re.compile(r"\b(crate|super|self|codewhale_engine|codewhale_app_server|codewhale_tui)((?:\s*::\s*(?:super\b|[A-Za-z_][A-Za-z0-9_]*))*)\s*::\s*\{")
 
 
 def group_paths(code: str, open_brace: int) -> list[list[str]]:
@@ -119,11 +119,9 @@ def load():
                 continue
             if mg.file_is_test(rel, exact, prefixes, crate.production_files):
                 continue
-            key = "engine_root.rs" if root == mg.ENGINE_SRC and rel == "lib.rs" else rel
+            key = {mg.ENGINE_SRC: "engine_root.rs", mg.APP_SERVER_SRC: "app_server_root.rs"}.get(root, rel) if rel == "lib.rs" else rel
             if key in files:
                 raise ValueError(f"duplicate module path across source roots: {key}")
-            code = re.sub(r"\bcodewhale_engine\b", "crate           ", code)
-            stripped = re.sub(r"\bcodewhale_engine\b", "crate           ", stripped)
             files[key] = (src, code, stripped or code, root / rel)
     modules = {module_of(rel) for rel in files}
     for m in list(modules):
@@ -191,7 +189,7 @@ def build(split_above: int):
 
     edges = collections.Counter()
     items = collections.defaultdict(collections.Counter)
-    for rel, (_, code, stripped, _) in files.items():
+    for rel, (_, code, stripped, source_path) in files.items():
         mod = module_of(rel)
         src_unit = unit_of[mod]
         found = []
@@ -210,14 +208,16 @@ def build(split_above: int):
                 continue
             found.append((match.group(1), [t.strip() for t in match.group(2).split("::") if t.strip()]))
         for head, tokens in found:
-            base = "" if head == "crate" else (parent(mod) if head == "super" else mod)
-            dst_mod = resolve(tokens, base, modules)
+            root_names = {"codewhale_engine": "engine_root", "codewhale_app_server": "app_server_root", "codewhale_tui": ""}
+            local_root = "engine_root" if source_path.is_relative_to(mg.ENGINE_SRC) else ("app_server_root" if source_path.is_relative_to(mg.APP_SERVER_SRC) else "")
+            base = "" if head == "crate" or head in root_names else (parent(mod) if head == "super" else mod)
+            dst_mod = resolve(tokens, base, modules) or root_names.get(head, local_root)
             dst_unit = unit_of.get(dst_mod, ROOT)
             if dst_unit == src_unit:
                 continue
             edges[(src_unit, dst_unit)] += 1
             depth = len(dst_mod.split("/")) if dst_mod else 0
-            rest = tokens[depth:] if head == "crate" else tokens
+            rest = tokens[depth:] if head == "crate" or head in root_names else tokens
             leaf = next((t for t in rest if t not in ("super", "self")), dst_mod or ROOT)
             items[(src_unit, dst_unit)][leaf] += 1
     return sizes, edges, items
