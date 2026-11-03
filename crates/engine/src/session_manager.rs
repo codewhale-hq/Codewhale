@@ -30,6 +30,7 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 /// Maximum active transcripts to retain separately for exec and interactive modes.
@@ -71,6 +72,482 @@ const MAX_SESSION_GOAL_OBJECTIVE_CHARS: usize = 8_192;
 const MAX_SESSION_GOAL_FILE_BYTES: u64 = 64 * 1_024;
 pub const CURRENT_SESSION_SCHEMA_VERSION: u32 = 1;
 pub(crate) const SESSION_METADATA_READ_LIMIT: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionObservation {
+    sessions_dir: PathBuf,
+    session_id: String,
+    document_sha256: Option<String>,
+    checkpoint_sha256: Option<String>,
+}
+
+impl SessionObservation {
+    pub(crate) fn same_checkpoint(&self, other: &Self) -> bool {
+        self.sessions_dir == other.sessions_dir
+            && self.session_id == other.session_id
+            && self.checkpoint_sha256 == other.checkpoint_sha256
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeSessionMutation {
+    before: SessionObservation,
+    after: SessionObservation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionWriteOwner {
+    Submission(String),
+    Engine(crate::core::ops::SessionSnapshotSource),
+    Control(crate::core::ops::SessionControlId),
+}
+
+impl SessionWriteOwner {
+    pub fn snapshot_source(&self) -> Option<crate::core::ops::SessionSnapshotSource> {
+        match self {
+            Self::Engine(source) => Some(source.clone()),
+            Self::Control(id) => Some(crate::core::ops::SessionSnapshotSource::control(id.clone())),
+            Self::Submission(_) => None,
+        }
+    }
+
+    pub fn matches_source(&self, source: &crate::core::ops::SessionSnapshotSource) -> bool {
+        match self {
+            Self::Submission(id) => source.submission_id.as_deref() == Some(id.as_str()),
+            Self::Engine(own) => own == source,
+            Self::Control(id) => source.control_id.as_ref() == Some(id),
+        }
+    }
+
+    pub fn same_execution(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Engine(a), Self::Engine(b)) => a == b,
+            (Self::Submission(a), Self::Submission(b)) => a == b,
+            (Self::Submission(id), Self::Engine(source))
+            | (Self::Engine(source), Self::Submission(id)) => {
+                source.submission_id.as_ref() == Some(id)
+            }
+            (Self::Control(a), Self::Control(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    pub fn control() -> Self {
+        Self::Control(crate::core::ops::SessionControlId::new())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPublicationKind {
+    Checkpoint,
+    Snapshot,
+    Completion,
+}
+
+#[derive(Debug, Clone)]
+struct NativeCheckpointAuthority {
+    sha256: String,
+    owner: SessionWriteOwner,
+}
+
+#[derive(Debug, Clone)]
+struct SessionPublicationBase {
+    observation: SessionObservation,
+    checkpoint: Option<NativeCheckpointAuthority>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionPublication {
+    pub path: PathBuf,
+    pub metadata: SessionMetadata,
+    observation: SessionObservation,
+    pub checkpoint_receipt: crate::core::events::SessionCheckpointReceipt,
+    checkpoint: Option<NativeCheckpointAuthority>,
+}
+
+impl SessionPublication {
+    pub fn observation(&self) -> &SessionObservation {
+        &self.observation
+    }
+
+    fn base(&self) -> SessionPublicationBase {
+        SessionPublicationBase {
+            observation: self.observation.clone(),
+            checkpoint: self.checkpoint.clone(),
+        }
+    }
+
+    pub fn write_receipt(&self) -> SessionWriteReceipt {
+        SessionWriteReceipt::from_base(self.base())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionWriteReceipt(Arc<Mutex<SessionWriteState>>);
+
+#[derive(Debug)]
+enum SessionWriteState {
+    Observed(SessionPublicationBase),
+    Pending {
+        predecessor: SessionWriteReceipt,
+        owner: SessionWriteOwner,
+        publication_id: String,
+        checkpoint_predecessor: Option<SessionWriteOwner>,
+        acknowledgement_required: bool,
+        result: Option<Result<Box<SessionPublication>, String>>,
+        closed: bool,
+    },
+}
+
+impl SessionWriteReceipt {
+    fn from_base(base: SessionPublicationBase) -> Self {
+        Self(Arc::new(Mutex::new(SessionWriteState::Observed(base))))
+    }
+
+    pub(crate) fn observed(observation: SessionObservation) -> Self {
+        Self::from_base(SessionPublicationBase {
+            observation,
+            checkpoint: None,
+        })
+    }
+
+    pub fn capture(&self, owner: SessionWriteOwner) -> io::Result<Self> {
+        self.capture_with_id(owner, Uuid::new_v4().to_string())
+    }
+
+    pub(crate) fn capture_history_control(
+        &self,
+        operation: &crate::runtime_threads::RuntimeHistoryOperation,
+    ) -> io::Result<Self> {
+        let id = operation
+            .session_publication_id()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        self.capture_with_id(
+            SessionWriteOwner::Control(crate::core::ops::SessionControlId::for_admitted_history(
+                id.clone(),
+            )),
+            id,
+        )
+    }
+
+    fn capture_with_id(
+        &self,
+        owner: SessionWriteOwner,
+        publication_id: String,
+    ) -> io::Result<Self> {
+        let (resolved, retry) = match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            SessionWriteState::Observed(base) => (Some(base.clone()), false),
+            SessionWriteState::Pending {
+                result: Some(Ok(publication)),
+                ..
+            } => (Some(publication.base()), false),
+            SessionWriteState::Pending { closed: true, .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "session publication was refused or superseded before its write",
+                ));
+            }
+            SessionWriteState::Pending {
+                result: Some(Err(_)),
+                acknowledgement_required: true,
+                ..
+            } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "checkpoint acknowledgement failed; recover or retry that captured checkpoint before publishing its successor",
+                ));
+            }
+            SessionWriteState::Pending {
+                result: Some(Err(_)),
+                ..
+            } => (None, true),
+            SessionWriteState::Pending { result: None, .. } => (None, false),
+        };
+        let predecessor = if let Some(base) = resolved {
+            Self::from_base(base)
+        } else if retry {
+            Self::from_base(self.retry_base()?)
+        } else {
+            self.clone()
+        };
+        Ok(Self(Arc::new(Mutex::new(SessionWriteState::Pending {
+            predecessor,
+            owner,
+            publication_id,
+            checkpoint_predecessor: None,
+            acknowledgement_required: false,
+            result: None,
+            closed: false,
+        }))))
+    }
+
+    fn retry_base(&self) -> io::Result<SessionPublicationBase> {
+        let mut current = self.clone();
+        loop {
+            let next = match &*current
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            {
+                SessionWriteState::Observed(base) => return Ok(base.clone()),
+                SessionWriteState::Pending {
+                    result: Some(Ok(publication)),
+                    ..
+                } => return Ok(publication.base()),
+                SessionWriteState::Pending { closed: true, .. } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        "refused or superseded publication cannot grant retry authority",
+                    ));
+                }
+                SessionWriteState::Pending {
+                    acknowledgement_required: true,
+                    result: Some(Err(_)),
+                    ..
+                } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        "failed checkpoint acknowledgement cannot grant successor publication authority",
+                    ));
+                }
+                SessionWriteState::Pending {
+                    result: Some(Err(_)),
+                    predecessor,
+                    ..
+                } => predecessor.clone(),
+                SessionWriteState::Pending { result: None, .. } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        "retry predecessor still owes its real publication acknowledgement",
+                    ));
+                }
+            };
+            current = next;
+        }
+    }
+
+    fn base(&self) -> io::Result<SessionPublicationBase> {
+        match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            SessionWriteState::Observed(base) => Ok(base.clone()),
+            SessionWriteState::Pending {
+                result: Some(Ok(publication)),
+                ..
+            } => Ok(publication.base()),
+            SessionWriteState::Pending {
+                result: Some(Err(error)),
+                ..
+            } => Err(io::Error::new(io::ErrorKind::ResourceBusy, error.clone())),
+            SessionWriteState::Pending { result: None, .. } => Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "session publication predecessor has not acknowledged its write",
+            )),
+        }
+    }
+
+    pub fn adopt_mutation(&self, mutation: &NativeSessionMutation) -> io::Result<Self> {
+        let before = &mutation.before;
+        let after = &mutation.after;
+        let mut base = self.base()?;
+        if &base.observation != before
+            || before.sessions_dir != after.sessions_dir
+            || before.session_id != after.session_id
+            || before.checkpoint_sha256 != after.checkpoint_sha256
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "lifecycle mutation did not replace this captured session source",
+            ));
+        }
+        base.observation = after.clone();
+        Ok(Self::from_base(base))
+    }
+
+    pub(crate) fn targets(&self, sessions_dir: &Path, id: &str) -> io::Result<bool> {
+        let base = self.base()?;
+        Ok(base.observation.sessions_dir == sessions_dir && base.observation.session_id == id)
+    }
+
+    pub fn observation(&self) -> io::Result<SessionObservation> {
+        self.base().map(|base| base.observation)
+    }
+
+    fn expected(&self) -> io::Result<SessionPublicationBase> {
+        let predecessor = match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            SessionWriteState::Pending { closed: true, .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "session publication was refused or superseded before its write",
+                ));
+            }
+            SessionWriteState::Pending { predecessor, .. } => predecessor.clone(),
+            SessionWriteState::Observed(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "session publication has no captured native producer",
+                ));
+            }
+        };
+        predecessor.base()
+    }
+
+    pub fn require_checkpoint_acknowledgement(&self) {
+        if let SessionWriteState::Pending {
+            acknowledgement_required,
+            ..
+        } = &mut *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            *acknowledgement_required = true;
+        }
+    }
+
+    pub fn publication_id(&self) -> Option<String> {
+        match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            SessionWriteState::Pending { publication_id, .. } => Some(publication_id.clone()),
+            SessionWriteState::Observed(_) => None,
+        }
+    }
+
+    pub fn owner(&self) -> Option<SessionWriteOwner> {
+        match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            SessionWriteState::Pending { owner, .. } => Some(owner.clone()),
+            SessionWriteState::Observed(_) => None,
+        }
+    }
+
+    fn checkpoint_predecessor(&self) -> Option<SessionWriteOwner> {
+        match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            SessionWriteState::Pending {
+                checkpoint_predecessor,
+                ..
+            } => checkpoint_predecessor.clone(),
+            SessionWriteState::Observed(_) => None,
+        }
+    }
+
+    pub fn is_successor_of(&self, previous: &Self) -> bool {
+        if Arc::ptr_eq(&self.0, &previous.0) {
+            return false;
+        }
+        match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            SessionWriteState::Pending {
+                predecessor,
+                result: None,
+                closed: false,
+                ..
+            } => Arc::ptr_eq(&predecessor.0, &previous.0),
+            _ => false,
+        }
+    }
+
+    pub fn coalesce_after(&self, previous: &Self, kind: SessionPublicationKind) -> bool {
+        if Arc::ptr_eq(&self.0, &previous.0) {
+            return false;
+        }
+        let mut current = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let SessionWriteState::Pending {
+            predecessor,
+            checkpoint_predecessor: current_checkpoint,
+            result: None,
+            ..
+        } = &mut *current
+        else {
+            return false;
+        };
+        if !Arc::ptr_eq(&predecessor.0, &previous.0) {
+            return false;
+        }
+        let mut prior = previous
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let SessionWriteState::Pending {
+            predecessor: base,
+            owner,
+            checkpoint_predecessor,
+            result,
+            closed,
+            ..
+        } = &mut *prior
+        else {
+            return false;
+        };
+        if result.is_some() || *closed {
+            return false;
+        }
+        *predecessor = base.clone();
+        *current_checkpoint = if kind == SessionPublicationKind::Checkpoint {
+            Some(owner.clone())
+        } else {
+            checkpoint_predecessor.clone()
+        };
+        *closed = true;
+        *result = Some(Err(
+            "session publication coalesced without a durable acknowledgement".into(),
+        ));
+        true
+    }
+
+    fn finish(&self, result: &io::Result<SessionPublication>) {
+        if let SessionWriteState::Pending { result: stored, .. } = &mut *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            *stored = Some(
+                result
+                    .as_ref()
+                    .map(|publication| Box::new(publication.clone()))
+                    .map_err(ToString::to_string),
+            );
+        }
+    }
+
+    pub fn refuse(&self, error: impl Into<String>) {
+        if let SessionWriteState::Pending { result, closed, .. } = &mut *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            && result.is_none()
+        {
+            *closed = true;
+            *result = Some(Err(error.into()));
+        }
+    }
+}
 
 struct SessionWriteMetadata {
     saved: Option<SessionMetadata>,
@@ -420,6 +897,10 @@ pub struct SessionMetadata {
     /// Legacy/imported conversations have no binding until saved by a host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_store: Option<crate::runtime_threads::RuntimeStoreBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_id: Option<String>,
+    #[serde(skip)]
+    pub native_mutation_observation: Option<NativeSessionMutation>,
     /// Human-readable title (derived from first message)
     pub title: String,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -1219,6 +1700,8 @@ pub fn push_turn_outcome(outcomes: &mut Vec<SavedTurnOutcome>, outcome: SavedTur
 /// Starting with v0.9.5 (#5262) the canonical history is the append-only entry journal (`journal` / `leaf_id`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedSession {
+    #[serde(skip)]
+    pub write_receipt: Option<SessionWriteReceipt>,
     /// Schema version for migration compatibility
     #[serde(default = "default_session_schema_version")]
     pub schema_version: u32,
@@ -1267,6 +1750,30 @@ pub struct SavedSession {
     pub turn_outcomes: Vec<SavedTurnOutcome>,
 }
 impl SavedSession {
+    pub fn capture_publication(
+        &mut self,
+        owner: SessionWriteOwner,
+    ) -> io::Result<SessionWriteReceipt> {
+        let receipt = self
+            .write_receipt
+            .as_ref()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "session source was not admitted; reopen it before publishing",
+                )
+            })?
+            .capture(owner)?;
+        self.metadata.publication_id = receipt.publication_id();
+        self.write_receipt = Some(receipt.clone());
+        Ok(receipt)
+    }
+
+    pub fn adopt_publication(&mut self, publication: &SessionPublication) {
+        self.metadata = publication.metadata.clone();
+        self.write_receipt = Some(publication.write_receipt());
+    }
+
     /// Drop the journal-derived compatibility projection before an async
     /// persistence request takes ownership. Disk serialization restores it.
     pub fn compact_for_persistence_queue(&mut self) {
@@ -1409,6 +1916,9 @@ impl SavedSession {
         let title = conversation_derived_title(&messages)
             .unwrap_or_else(|| crate::session_manager::DEFAULT_SESSION_TITLE.to_string());
         let metadata = SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id: Uuid::new_v4().to_string(),
             title,
             title_is_custom: false,
@@ -1432,6 +1942,7 @@ impl SavedSession {
         let mut journal = journal;
         journal.spawn_depth = spawn_depth;
         Ok(Self {
+            write_receipt: None,
             schema_version: CURRENT_SESSION_SCHEMA_VERSION,
             metadata,
             messages,
@@ -2093,8 +2604,6 @@ impl SessionManager {
         ))
     }
 
-    /// Only mutations create accounting storage. Snapshot/list reads must work
-    /// for a healthy transcript even when no sidecar has ever been written.
     fn ensure_late_usage_paths(&self, session_id: &str) -> io::Result<(PathBuf, PathBuf)> {
         self.late_usage_paths(session_id)?;
         let dir = self.sessions_dir.join(LATE_USAGE_DIR);
@@ -2741,32 +3250,355 @@ impl SessionManager {
         metadata.forked_from_message_count = persisted.forked_from_message_count;
     }
 
-    /// Save a session to disk using atomic write (temp file + fsync + rename).
-    ///
-    /// Borrowing form: clones once so the ~150 existing `&session` call sites
-    /// keep working. The debounced persistence path already owns its value and
-    /// calls [`Self::save_session_owned`] instead (#6214 T3).
+    pub(crate) fn capture_session_write_source(&self, id: &str) -> io::Result<SessionWriteReceipt> {
+        self.with_session_write_admission(id, || self.observe_session_admitted(id))?
+            .map(SessionWriteReceipt::observed)
+            .ok_or_else(Self::retired_session_write_error)
+    }
+
+    pub fn expect_absent_session(&self, id: &str) -> io::Result<SessionWriteReceipt> {
+        let id = self.validated_session_id(id)?.to_string();
+        Ok(SessionWriteReceipt::observed(SessionObservation {
+            sessions_dir: self.sessions_dir.clone(),
+            session_id: id,
+            document_sha256: None,
+            checkpoint_sha256: None,
+        }))
+    }
+
+    fn hash_session_record(path: &Path) -> io::Result<Option<String>> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let mut file = match open_private_read_file(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let count = file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+        }
+        Ok(Some(codewhale_runtime::hashing::hex_bytes(
+            digest.finalize(),
+        )))
+    }
+
+    fn observe_session_admitted(&self, id: &str) -> io::Result<SessionObservation> {
+        self.load_session_write_metadata(id)?;
+        Ok(SessionObservation {
+            sessions_dir: self.sessions_dir.clone(),
+            session_id: self.validated_session_id(id)?.to_string(),
+            document_sha256: Self::hash_session_record(&self.validated_session_path(id)?)?,
+            checkpoint_sha256: Self::hash_session_record(&self.validated_checkpoint_path(id)?)?,
+        })
+    }
+
+    fn validate_unadmitted_read(
+        &self,
+        id: &str,
+        path: &Path,
+        expected_sha256: &str,
+        admission_held: bool,
+    ) -> io::Result<bool> {
+        let verify = || {
+            if Self::hash_session_record(path)?.as_deref() != Some(expected_sha256) {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "session record changed during recovery read; reopen it",
+                ));
+            }
+            Ok(true)
+        };
+        if admission_held {
+            return verify();
+        }
+        let mut entered = false;
+        let observed = self.with_session_read_lock(id, |late_path| {
+            entered = true;
+            if Self::late_usage_is_deleted(late_path).unwrap_or(false) {
+                return Ok(false);
+            }
+            verify()
+        });
+        match observed {
+            Err(_) if !entered => {
+                if self
+                    .late_usage_paths(id)
+                    .ok()
+                    .and_then(|(late_path, _)| Self::late_usage_is_deleted(&late_path).ok())
+                    == Some(true)
+                {
+                    return Ok(false);
+                }
+                verify()
+            }
+            result => result,
+        }
+    }
+
+    fn validate_publication_admitted(
+        &self,
+        session: &SavedSession,
+        receipt: &SessionWriteReceipt,
+    ) -> io::Result<SessionPublicationBase> {
+        let expected = receipt.expected()?;
+        if expected.observation.sessions_dir != self.sessions_dir
+            || expected.observation.session_id != session.metadata.id
+            || expected.observation != self.observe_session_admitted(&session.metadata.id)?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "session document or checkpoint changed after its captured source; source retained",
+            ));
+        }
+        Ok(expected)
+    }
+
+    fn validate_checkpoint_authority(base: &SessionPublicationBase) -> io::Result<()> {
+        if let Some(hash) = base.observation.checkpoint_sha256.as_ref()
+            && base
+                .checkpoint
+                .as_ref()
+                .is_none_or(|checkpoint| &checkpoint.sha256 != hash)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "checkpoint has no native owning publication receipt; recover it explicitly before automatic publication",
+            ));
+        }
+        Ok(())
+    }
+
+    fn publication_receipt(
+        session: &SavedSession,
+    ) -> io::Result<crate::core::events::SessionCheckpointReceipt> {
+        Ok(crate::core::events::SessionCheckpointReceipt {
+            persisted_sha256: crate::core::events::SessionCheckpointRequest::prefix_hash(
+                &session.messages,
+            )
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+            messages_len: session.messages.len(),
+            projection: crate::core::events::SessionCheckpointProjection::Exact,
+        })
+    }
+
+    pub fn publish_session(&self, session: &SavedSession) -> io::Result<SessionPublication> {
+        self.publish_session_inner(session.clone(), JournalPrune::Keep, false)
+    }
+
+    pub fn publish_session_preserving_lifecycle(
+        &self,
+        session: &SavedSession,
+    ) -> io::Result<SessionPublication> {
+        self.publish_session_inner(session.clone(), JournalPrune::Keep, true)
+    }
+
+    pub fn publish_session_bounded(&self, session: SavedSession) -> io::Result<SessionPublication> {
+        self.publish_session_inner(session, JournalPrune::Excess, true)
+    }
+
+    fn publish_session_inner(
+        &self,
+        mut session: SavedSession,
+        prune: JournalPrune,
+        preserve_lifecycle: bool,
+    ) -> io::Result<SessionPublication> {
+        let receipt = session
+            .write_receipt
+            .clone()
+            .filter(|receipt| receipt.owner().is_some())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "session publication lacks a captured native producer",
+                )
+            })?;
+        let id = session.metadata.id.clone();
+        let exec_mode = session.metadata.mode.as_deref() == Some("exec");
+        let result = self
+            .with_session_write_admission(&id, || {
+                let base = self.validate_publication_admitted(&session, &receipt)?;
+                let persisted = self.load_session_write_metadata(&id)?;
+                session.make_storage_compatible();
+                let checkpoint_receipt = Self::publication_receipt(&session)?;
+                let metadata =
+                    self.write_session_admitted(session, prune, preserve_lifecycle, &persisted)?;
+                Ok(SessionPublication {
+                    path: self.validated_session_path(&id)?,
+                    metadata,
+                    observation: self.observe_session_admitted(&id)?,
+                    checkpoint_receipt,
+                    checkpoint: base.checkpoint,
+                })
+            })
+            .and_then(|result| result.ok_or_else(Self::retired_session_write_error));
+        receipt.finish(&result);
+        if result.is_ok()
+            && let Err(error) = self.cleanup_old_sessions_for_mode(None, Some(exec_mode))
+        {
+            tracing::warn!(session_id = %id, %error, "session published but retention could not be inspected");
+        }
+        result
+    }
+
+    pub fn publish_checkpoint_owned(
+        &self,
+        mut session: SavedSession,
+    ) -> io::Result<SessionPublication> {
+        let receipt = session
+            .write_receipt
+            .clone()
+            .filter(|receipt| receipt.owner().is_some())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "checkpoint lacks a captured native producer",
+                )
+            })?;
+        let id = session.metadata.id.clone();
+        let result = self
+            .with_session_write_admission(&id, || {
+                let base = self.validate_publication_admitted(&session, &receipt)?;
+                Self::validate_checkpoint_authority(&base)?;
+                let persisted = self.load_session_write_metadata(&id)?;
+                Self::prepare_session_write(&mut session, &persisted, true)?;
+                let session_path = self.validated_session_path(&id)?;
+                self.archive_before_first_graph_write(&session, &session_path)?;
+                fs::create_dir_all(self.checkpoints_dir())?;
+                let path = self.validated_checkpoint_path(&id)?;
+                let already_persisted = path.exists() || session_path.exists();
+                self.hydrate_approval_receipts(&mut session)?;
+                session.make_storage_compatible();
+                session.metadata.publication_id = receipt.publication_id();
+                let checkpoint_receipt = Self::publication_receipt(&session)?;
+                let metadata = session.metadata.clone();
+                let content = serialize_saved_session(session)?;
+                write_atomic(&path, content.as_bytes())?;
+                self.stamp_session_boot_owner_for_new_record(&id, already_persisted);
+                let observation = self.observe_session_admitted(&id)?;
+                let checkpoint =
+                    observation
+                        .checkpoint_sha256
+                        .clone()
+                        .map(|sha256| NativeCheckpointAuthority {
+                            sha256,
+                            owner: receipt
+                                .owner()
+                                .expect("validated native checkpoint producer"),
+                        });
+                Ok(SessionPublication {
+                    path,
+                    metadata,
+                    observation,
+                    checkpoint_receipt,
+                    checkpoint,
+                })
+            })
+            .and_then(|result| result.ok_or_else(Self::retired_session_write_error));
+        receipt.finish(&result);
+        result
+    }
+
+    pub fn publish_completed_session(
+        &self,
+        mut session: SavedSession,
+    ) -> io::Result<(SessionPublication, io::Result<()>)> {
+        let receipt = session
+            .write_receipt
+            .clone()
+            .filter(|receipt| {
+                matches!(
+                    receipt.owner(),
+                    Some(SessionWriteOwner::Engine(_) | SessionWriteOwner::Control(_))
+                )
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "completion lacks a captured terminal or control owner",
+                )
+            })?;
+        let id = session.metadata.id.clone();
+        let exec_mode = session.metadata.mode.as_deref() == Some("exec");
+        let result = self
+            .with_session_write_admission(&id, || {
+                let base = self.validate_publication_admitted(&session, &receipt)?;
+                Self::validate_checkpoint_authority(&base)?;
+                if let Some(checkpoint) = base.checkpoint.as_ref() {
+                    let owner = receipt
+                        .owner()
+                        .expect("validated native completion producer");
+                    if !matches!(owner, SessionWriteOwner::Control(_))
+                        && !owner.same_execution(&checkpoint.owner)
+                        && receipt
+                            .checkpoint_predecessor()
+                            .as_ref()
+                            .is_none_or(|predecessor| !owner.same_execution(predecessor))
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::ResourceBusy,
+                            "completion does not own its captured checkpoint predecessor",
+                        ));
+                    }
+                }
+                let persisted = self.load_session_write_metadata(&id)?;
+                session.make_storage_compatible();
+                let checkpoint_receipt = Self::publication_receipt(&session)?;
+                let metadata =
+                    self.write_session_admitted(session, JournalPrune::Excess, true, &persisted)?;
+                let mut observation = self.observe_session_admitted(&id)?;
+                let clear = self.clear_session_checkpoint_admitted(&id);
+                if clear.is_ok() {
+                    observation.checkpoint_sha256 = None;
+                }
+                Ok((
+                    SessionPublication {
+                        path: self.validated_session_path(&id)?,
+                        metadata,
+                        observation,
+                        checkpoint_receipt,
+                        checkpoint: if clear.is_ok() { None } else { base.checkpoint },
+                    },
+                    clear,
+                ))
+            })
+            .and_then(|result| result.ok_or_else(Self::retired_session_write_error));
+        receipt.finish(
+            &result
+                .as_ref()
+                .map(|(publication, _)| publication.clone())
+                .map_err(|error| io::Error::new(error.kind(), error.to_string())),
+        );
+        if result.is_ok()
+            && let Err(error) = self.cleanup_old_sessions_for_mode(None, Some(exec_mode))
+        {
+            tracing::warn!(session_id = %id, %error, "completion published but retention could not be inspected");
+        }
+        result
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn save_session(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         self.save_session_owned(session.clone())
     }
 
     /// Save a session to disk, consuming it.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn save_session_owned(&self, session: SavedSession) -> std::io::Result<PathBuf> {
         self.save_session_inner(session, JournalPrune::Keep, false)
     }
 
-    /// The autosave path (#6842): like [`Self::save_session_owned`], but when
-    /// the journal carries more than `JOURNAL_PRUNE_DEAD_THRESHOLD`
-    /// off-branch entries, or the file being replaced is over
-    /// `MAX_CANONICAL_HISTORY_BYTES` and carries any, first append the excess
-    /// (all of them in the second case) to the session's journal archive
-    /// (fsynced), then write the document without them. If the archive cannot
-    /// be written nothing is pruned. Runs on the persistence actor
-    /// (`tui/persistence_actor.rs` `flush_inner`), never the UI loop.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn save_session_bounded(&self, session: SavedSession) -> std::io::Result<PathBuf> {
         self.save_session_inner(session, JournalPrune::Excess, true)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn commit_completed_session(&self, session: SavedSession) -> io::Result<io::Result<()>> {
         let session_id = session.metadata.id.clone();
         let exec_mode = session.metadata.mode.as_deref() == Some("exec");
@@ -2825,6 +3657,7 @@ impl SessionManager {
             Ok((size(&projected)?, size(&projected.transport_form())?))
         };
         let mut session = self.load_session_snapshot_with_limit(id, None, false)?;
+        session.capture_publication(SessionWriteOwner::control())?;
         let loaded = size(&session.transport_form())?;
         let (mut whole, mut carried) = project(&session)?;
         let mut pruned_operations = false;
@@ -2866,10 +3699,11 @@ impl SessionManager {
         if whole > limit && carried > limit {
             return Ok(Some((carried, pruned_operations)));
         }
-        self.save_session_inner(session, JournalPrune::AllOffBranch, true)?;
+        self.publish_session_inner(session, JournalPrune::AllOffBranch, true)?;
         Ok(None)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn save_session_inner(
         &self,
         session: SavedSession,
@@ -2920,6 +3754,13 @@ impl SessionManager {
             JournalPrune::AllOffBranch => self.archive_dead_journal_entries(&mut session, 0, 0)?,
         };
         self.hydrate_approval_receipts(&mut session)?;
+        session.metadata.publication_id = Some(
+            session
+                .write_receipt
+                .as_ref()
+                .and_then(SessionWriteReceipt::publication_id)
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        );
         let metadata = session.metadata.clone();
         let content = serialize_saved_session(session)?;
         write_atomic(&path, content.as_bytes())?;
@@ -2947,13 +3788,23 @@ impl SessionManager {
         let (metadata, changed) = self
             .with_session_write_admission(id, || {
                 let persisted = self.load_session_write_metadata(id)?;
+                let before = self.observe_session_admitted(id)?;
                 let mut session = self.load_session_snapshot_with_limit(id, None, true)?;
                 repair_recovered_session(&mut session);
                 if !mutate(&mut session.metadata) {
+                    session.metadata.native_mutation_observation = Some(NativeSessionMutation {
+                        before: before.clone(),
+                        after: before,
+                    });
                     return Ok((session.metadata, false));
                 }
-                self.write_session_admitted(session, JournalPrune::Keep, false, &persisted)
-                    .map(|metadata| (metadata, true))
+                let mut metadata =
+                    self.write_session_admitted(session, JournalPrune::Keep, false, &persisted)?;
+                metadata.native_mutation_observation = Some(NativeSessionMutation {
+                    before,
+                    after: self.observe_session_admitted(id)?,
+                });
+                Ok((metadata, true))
             })?
             .ok_or_else(Self::retired_session_write_error)?;
         if changed {
@@ -2975,6 +3826,7 @@ impl SessionManager {
     }
 
     /// Save a crash-recovery checkpoint, consuming the session.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn save_checkpoint_owned(&self, session: SavedSession) -> std::io::Result<PathBuf> {
         let session_id = session.metadata.id.clone();
         let path = self.validated_checkpoint_path(&session_id)?;
@@ -2987,6 +3839,7 @@ impl SessionManager {
             fs::create_dir_all(self.checkpoints_dir())?;
             let already_persisted = path.exists() || session_path.exists();
             self.hydrate_approval_receipts(&mut durable_session)?;
+            durable_session.metadata.publication_id = Some(Uuid::new_v4().to_string());
             let content = serialize_saved_session(durable_session)?;
             write_atomic(&path, content.as_bytes())?;
             self.stamp_session_boot_owner_for_new_record(&session_id, already_persisted);
@@ -3393,6 +4246,57 @@ impl SessionManager {
         } else {
             self.apply_late_usage_to_metadata(&mut session.metadata);
         }
+        if let Some(id) = expected_id {
+            let mut admission_entered = false;
+            let mut capture = || -> io::Result<SessionObservation> {
+                admission_entered = true;
+                let observation = self.observe_session_admitted(id)?;
+                if observation.checkpoint_sha256.as_deref()
+                    != Some(codewhale_runtime::hashing::sha256_hex(content.as_bytes()).as_str())
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        "checkpoint changed during its admitted load",
+                    ));
+                }
+                Ok(observation)
+            };
+            let observation = if admission_held {
+                capture()
+            } else {
+                self.with_session_write_admission(id, capture)
+                    .and_then(|observation| {
+                        observation.ok_or_else(Self::retired_session_write_error)
+                    })
+            };
+            match observation {
+                Ok(observation) => {
+                    session.write_receipt = Some(SessionWriteReceipt::observed(observation))
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::FileTooLarge
+                        || (!admission_entered
+                            && error.kind() != io::ErrorKind::NotFound
+                            && session
+                                .metadata
+                                .cost
+                                .unpriced_reasons
+                                .contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
+                {
+                    if !self.validate_unadmitted_read(
+                        id,
+                        path,
+                        &codewhale_runtime::hashing::sha256_hex(content.as_bytes()),
+                        admission_held,
+                    )? {
+                        return Ok(None);
+                    }
+                    session.write_receipt = None;
+                    tracing::warn!(session_id = %id, %error, "checkpoint loaded without publication authority");
+                }
+                Err(error) => return Err(error),
+            }
+        }
         Ok(Some(session))
     }
 
@@ -3487,6 +4391,7 @@ impl SessionManager {
 
     /// Clear one session's crash-recovery checkpoint. Scoped: this can never
     /// remove another session's checkpoint file or the legacy slot.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn clear_session_checkpoint(&self, session_id: &str) -> io::Result<()> {
         self.with_session_write_admission(session_id, || {
             self.clear_session_checkpoint_admitted(session_id)
@@ -3575,8 +4480,8 @@ impl SessionManager {
             // A checkpoint another running session is still refreshing is
             // that session's in-flight work, not a prior crash.
             if Some(id.as_str()) == exclude
-                || !self.session_from_prior_instance(&id)
-                || self.is_session_live_anywhere(&id)
+                || !self.session_from_prior_instance(id)
+                || self.is_session_live_anywhere(id)
             {
                 continue;
             }
@@ -3895,6 +4800,53 @@ impl SessionManager {
             ));
         }
 
+        let mut admission_entered = false;
+        let mut capture = || -> io::Result<SessionObservation> {
+            admission_entered = true;
+            let observation = self.observe_session_admitted(id)?;
+            if observation.document_sha256.as_deref()
+                != Some(codewhale_runtime::hashing::sha256_hex(content.as_bytes()).as_str())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "session changed during its admitted load; reopen it",
+                ));
+            }
+            Ok(observation)
+        };
+        let observation = if admission_held {
+            capture()
+        } else {
+            self.with_session_write_admission(id, capture)
+                .and_then(|observation| observation.ok_or_else(Self::retired_session_write_error))
+        };
+        match observation {
+            Ok(observation) => {
+                session.write_receipt = Some(SessionWriteReceipt::observed(observation))
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::FileTooLarge
+                    || (!admission_entered
+                        && error.kind() != io::ErrorKind::NotFound
+                        && session
+                            .metadata
+                            .cost
+                            .unpriced_reasons
+                            .contains(LATE_USAGE_UNAVAILABLE_REASON)) =>
+            {
+                if !self.validate_unadmitted_read(
+                    id,
+                    &path,
+                    &codewhale_runtime::hashing::sha256_hex(content.as_bytes()),
+                    admission_held,
+                )? {
+                    return Err(Self::retired_session_write_error());
+                }
+                session.write_receipt = None;
+                tracing::warn!(session_id = %id, %error, "history loaded without publication authority");
+            }
+            Err(error) => return Err(error),
+        }
         Ok(session)
     }
 
@@ -3974,8 +4926,14 @@ impl SessionManager {
                 return Ok(None);
             };
             let persisted = self.load_session_write_metadata(id)?;
-            self.write_session_admitted(candidate, JournalPrune::Keep, true, &persisted)
-                .map(|metadata| Some(metadata.mode.as_deref() == Some("exec")))
+            let metadata =
+                self.write_session_admitted(candidate, JournalPrune::Keep, true, &persisted)?;
+            let observation = self.observe_session_admitted(id)?;
+            if let Some(recovery) = recovered.as_mut() {
+                recovery.session.metadata = metadata.clone();
+                recovery.session.write_receipt = Some(SessionWriteReceipt::observed(observation));
+            }
+            Ok(Some(metadata.mode.as_deref() == Some("exec")))
         });
         match publication {
             Ok(Some(Some(exec_mode))) => {
@@ -3989,7 +4947,8 @@ impl SessionManager {
                 tracing::warn!(session_id = %id, error_kind = ?error.kind(), %error, "repaired session history could not be persisted; the repair will re-run on the next load");
             }
             Err(error) if !admission_entered => {
-                let recovery = self.recover_session_for_resume(id)?;
+                let mut recovery = self.recover_session_for_resume(id)?;
+                recovery.session.write_receipt = None;
                 check_workspace(&recovery.session)?;
                 tracing::warn!(session_id = %id, error_kind = ?error.kind(), %error, "session write admission failed; recovered history was left in memory without publication");
                 return Ok(recovery);
@@ -4126,6 +5085,7 @@ impl SessionManager {
             Err(error) => return Err(error),
         }
         let mut session = parsed;
+        session.write_receipt = None;
         if let Some(journal) = session.journal.as_ref() {
             validate_saved_journal(journal)?;
         }
@@ -5330,8 +6290,13 @@ fn create_saved_session_inner(
 
     let leaf_id = journal.leaf_id.clone();
     SavedSession {
+        write_receipt: None,
+
         schema_version: CURRENT_SESSION_SCHEMA_VERSION,
         metadata: SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id,
             title,
             title_is_custom: false,

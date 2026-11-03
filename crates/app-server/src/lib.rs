@@ -5,13 +5,13 @@ use anyhow::Context as _;
 use anyhow::{Result, anyhow};
 use axum::http::{Method, StatusCode};
 use codewhale_agent::ModelRegistry;
+#[cfg(test)]
+use codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
+use codewhale_app_server_protocol::runtime::RuntimeImageInput;
 use codewhale_config::ConfigStore;
 use codewhale_core::Runtime;
 use codewhale_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink, UnixSocketHookSink};
 use codewhale_protocol::EventFrame;
-#[cfg(test)]
-use codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
-use codewhale_protocol::runtime::RuntimeImageInput;
 use codewhale_state::StateStore;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;

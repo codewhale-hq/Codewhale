@@ -729,6 +729,13 @@ impl SessionPickerView {
         } else {
             !session.archived
         };
+        if self.current_session_id.as_deref() == Some(session.id.as_str())
+            && let Err(error) = crate::tui::persistence_actor::flush_before_transition()
+        {
+            self.status =
+                Some(tr(self.locale, MessageId::SessionsArchiveFailed).replace("{error}", &error));
+            return ViewAction::None;
+        }
         let metadata = match manager.set_session_archived(
             &session.id,
             archived,
@@ -804,6 +811,13 @@ impl SessionPickerView {
                 return ViewAction::None;
             }
         };
+        if self.current_session_id.as_deref() == Some(session.id.as_str())
+            && let Err(error) = crate::tui::persistence_actor::flush_before_transition()
+        {
+            self.status =
+                Some(tr(self.locale, MessageId::SessionsRenameFailed).replace("{error}", &error));
+            return ViewAction::None;
+        }
         let metadata = match manager.rename_session(
             &session.id,
             new_title,
@@ -1824,6 +1838,9 @@ mod tests {
 
     fn test_session(idx: usize, title: &str) -> SessionMetadata {
         SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id: format!("session-{idx:02}"),
             title: title.to_string(),
             title_is_custom: false,

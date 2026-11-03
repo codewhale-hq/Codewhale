@@ -147,27 +147,24 @@ fn saved_session_version(session: &SavedSession) -> Option<usize> {
 fn drain_retained_requests(receiver: &mut PersistRequestReceiver) -> (usize, usize, Option<usize>) {
     let pending = receiver.take_pending();
     assert!(
-        pending.checkpoints.is_empty()
-            && pending.completed_commits.is_empty()
-            && pending.offline_queue.is_empty(),
+        pending.offline_queue.is_empty(),
         "backlog fixture retained an unexpected request variant"
     );
     let mut retained_queued_requests = 0;
     let mut estimated_retained_payload_bytes = 0;
-    for session in pending.sessions.values() {
-        let (PendingSession::Snapshot(session) | PendingSession::Completion(session)) = session;
-        retained_queued_requests += 1;
-        estimated_retained_payload_bytes += retained_session_payload_bytes(session);
+    for slot in pending.publications.values() {
+        for publication in slot.barrier.iter().chain(slot.latest.iter()) {
+            assert_eq!(publication.kind, PublicationKind::Snapshot);
+            retained_queued_requests += 1;
+            estimated_retained_payload_bytes +=
+                retained_session_payload_bytes(&publication.session);
+        }
     }
-    let applied_version =
-        pending
-            .sessions
-            .get(BACKLOG_SESSION_ID)
-            .and_then(|session| match session {
-                PendingSession::Snapshot(session) | PendingSession::Completion(session) => {
-                    saved_session_version(session)
-                }
-            });
+    let applied_version = pending
+        .publications
+        .get(BACKLOG_SESSION_ID)
+        .and_then(|slot| slot.latest.as_ref().or(slot.barrier.as_ref()))
+        .and_then(|publication| saved_session_version(&publication.session));
     (
         retained_queued_requests,
         estimated_retained_payload_bytes,
@@ -185,12 +182,23 @@ fn measure_paused_persistence_backlog() -> PersistenceBacklogObservation {
 
     let (tx, mut receiver) = persistence_request_channel();
     let handle = PersistActorHandle { tx };
+    let manager = SessionManager::default_location().expect("measurement session store");
+    let mut source = manager.expect_absent_session(BACKLOG_SESSION_ID).unwrap();
+    let mut journal: Option<codewhale_runtime::session_tree::SessionJournal> = None;
     let rss_before_bytes = current_process_rss_bytes();
     let mut accepted_requests = 0;
     let mut enqueue_elapsed_ns = 0;
 
     for index in 0..BACKLOG_REQUESTS_ATTEMPTED {
-        let session = backlog_session(tmp.path(), index);
+        let mut session = backlog_session(tmp.path(), index);
+        if let Some(previous) = journal.as_ref() {
+            session.journal = Some(previous.clone());
+        }
+        journal = session.journal.clone();
+        session.write_receipt = Some(source);
+        source = session
+            .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .unwrap();
         let started = Instant::now();
         let accepted = handle.try_send(PersistRequest::SessionSnapshot(session));
         enqueue_elapsed_ns += started.elapsed().as_nanos();
@@ -288,18 +296,18 @@ fn applied_version_follows_production_drain_order_instead_of_numeric_maximum() {
     let tmp = tempfile::tempdir().expect("isolated measurement workspace");
     let (tx, mut receiver) = persistence_request_channel();
     let handle = PersistActorHandle { tx };
-    assert!(
-        handle.try_send(PersistRequest::SessionSnapshot(backlog_session(
-            tmp.path(),
-            BACKLOG_EXPECTED_APPLIED_VERSION,
-        )))
-    );
-    assert!(
-        handle.try_send(PersistRequest::SessionSnapshot(backlog_session(
-            tmp.path(),
-            BACKLOG_EXPECTED_APPLIED_VERSION - 1,
-        )))
-    );
+    let manager = SessionManager::new(tmp.path().join("sessions")).unwrap();
+    let mut first = backlog_session(tmp.path(), BACKLOG_EXPECTED_APPLIED_VERSION);
+    first.write_receipt = Some(manager.expect_absent_session(BACKLOG_SESSION_ID).unwrap());
+    first
+        .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+        .unwrap();
+    let mut last = first.clone();
+    last.metadata.total_tokens = (BACKLOG_EXPECTED_APPLIED_VERSION - 1) as u64;
+    last.capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+        .unwrap();
+    assert!(handle.try_send(PersistRequest::SessionSnapshot(first)));
+    assert!(handle.try_send(PersistRequest::SessionSnapshot(last)));
 
     let (_, _, applied_version) = drain_retained_requests(&mut receiver);
     assert_eq!(

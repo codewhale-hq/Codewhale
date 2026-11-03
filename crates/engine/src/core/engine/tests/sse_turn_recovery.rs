@@ -361,7 +361,12 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
             ),
             "this regression has no pending approval or user-input gate: {event:?}"
         );
-        if let Event::SessionUpdated { session_id, .. } = event {
+        if let Event::SessionUpdated {
+            source: _,
+            session_id,
+            ..
+        } = event
+        {
             assert_eq!(session_id, SESSION_ID);
         }
     }

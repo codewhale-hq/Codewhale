@@ -807,6 +807,8 @@ pub(super) fn replace_runtime_mcp_tools(
     let changed = *tool_catalog != catalog_before || *active_tool_names != active_before;
     if changed {
         super::tool_catalog::configure_composition_entry(tool_catalog, None, &[]);
+    } else {
+        *tool_catalog = catalog_before;
     }
     changed
 }
@@ -3854,6 +3856,7 @@ impl Engine {
                             };
                             let request = crate::core::events::SessionCheckpointRequest::new(caller, snapshot, prefix_sha256, projection, withdraw, reply);
                             let event = Event::SessionUpdated {
+                                source: self.session.snapshot_source.clone(),
                                 checkpoint: Some(request.clone()),
                                 session_id: self.session.id.clone(),
                                 messages: self.session.messages.snapshot(),

@@ -111,7 +111,9 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
         .iter()
         .rev()
         .find_map(|event| match event {
-            Event::SessionUpdated { messages, .. } => Some(messages.clone()),
+            Event::SessionUpdated {
+                source: _,
+                messages, .. } => Some(messages.clone()),
             _ => None,
         })
         .expect("final SessionUpdated");

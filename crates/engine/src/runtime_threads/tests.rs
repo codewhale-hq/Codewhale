@@ -6,6 +6,9 @@ use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::{Op, TurnSpec};
 use crate::route_budget::known_route_limits;
 use crate::tools::subagent::SubAgentStatus;
+use codewhale_app_server_protocol::runtime::{
+    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult,
+};
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_models::{SystemPrompt, ToolCaller};
 use codewhale_protocol::agent_mail::{
@@ -13,9 +16,6 @@ use codewhale_protocol::agent_mail::{
     AgentMailSendRequest,
 };
 use codewhale_protocol::agent_mail::{AgentMailDeliveryMode, AgentMailSender, AgentMailStatus};
-use codewhale_protocol::runtime::{
-    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult,
-};
 use codewhale_runtime::config::Config;
 use codewhale_runtime::runtime_policy::RuntimePolicyProjection;
 use std::time::{Duration, Instant};
@@ -535,6 +535,8 @@ mod recovery {
         ];
         for len in 0..=messages.len() {
             let checkpoint = SavedSessionCheckpoint {
+                publication_observation: None,
+
                 covered_turn_id: None,
                 messages_sha256: session_messages_sha256(&messages[..len])?,
                 messages_len: None,
@@ -548,6 +550,8 @@ mod recovery {
             assert_eq!(checkpoint_prefix_len(&exact, &messages)?, Some(len));
         }
         let diverged = SavedSessionCheckpoint {
+            publication_observation: None,
+
             covered_turn_id: None,
             messages_sha256: session_messages_sha256(&[msg(Role::User, "other")])?,
             messages_len: Some(1),
@@ -4552,6 +4556,7 @@ async fn compact_lifecycle_outlives_caller_and_preserves_concurrent_thread_updat
     harness
         .tx_event
         .send(EngineEvent::CompactionStarted {
+            previous_source: None,
             id: "manual_owned".to_string(),
             auto: false,
             message: "compaction started".to_string(),
@@ -8666,6 +8671,7 @@ async fn thread_lifecycle_persists_across_restart() -> Result<()> {
         if matches!(rx_op.recv().await, Some(Op::SendMessage(TurnSpec { .. }))) {
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_turn_1".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -8837,6 +8843,7 @@ async fn initial_classifier_usage_is_persisted_before_terminal_and_merged_exactl
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "engine_classifier_receipt".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -9425,6 +9432,7 @@ async fn monitor_deduplicates_sink_and_metadata_and_persists_metadata_only_missi
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "engine_metadata_receipt".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -9512,6 +9520,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "engine_route_receipt".to_string(),
             created_at: started_at,
             route: None,
@@ -9690,6 +9699,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: second_engine_turn.to_string(),
             created_at: Utc::now(),
             route: None,
@@ -9773,6 +9783,7 @@ async fn monitor_persists_request_snapshots_and_matching_terminal_diagnostics() 
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: engine_turn_id.to_string(),
             created_at: Utc::now(),
             route: None,
@@ -10103,6 +10114,7 @@ async fn monitor_persists_request_snapshots_and_matching_terminal_diagnostics() 
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: second_engine_turn_id.to_string(),
             created_at: Utc::now(),
             route: None,
@@ -10198,6 +10210,7 @@ async fn completed_turn_without_engine_output_fails() -> Result<()> {
         if matches!(rx_op.recv().await, Some(Op::SendMessage(TurnSpec { .. }))) {
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_empty_turn".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -10326,6 +10339,7 @@ async fn worker_lifecycle_receipts_preserve_owner_outcome_and_durable_replay() -
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "engine_worker_lifecycle".into(),
                 created_at: Utc::now(),
                 route: None,
@@ -10383,6 +10397,7 @@ async fn worker_lifecycle_receipts_preserve_owner_outcome_and_durable_replay() -
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "engine_next_parent".into(),
                 created_at: Utc::now(),
                 route: None,
@@ -10674,6 +10689,7 @@ async fn preturn_control_status_does_not_make_empty_turn_succeed() -> Result<()>
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_empty_after_control_status".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -10735,6 +10751,7 @@ async fn engine_error_remains_failed_after_nominal_turn_complete() -> Result<()>
         if matches!(rx_op.recv().await, Some(Op::SendMessage(TurnSpec { .. }))) {
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_error_then_complete".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -11318,6 +11335,7 @@ async fn compact_interrupt_persists_canceled_item_for_the_exact_request() -> Res
     harness
         .tx_event
         .send(EngineEvent::CompactionStarted {
+            previous_source: None,
             id: compaction_id.clone(),
             auto: false,
             message: "compaction started".to_string(),
@@ -11563,6 +11581,7 @@ async fn multi_turn_continuity_same_thread() -> Result<()> {
             turn_index = turn_index.saturating_add(1);
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: format!("engine_turn_{turn_index}"),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -11810,6 +11829,7 @@ async fn host_goal_loop_kickoff_arms_one_continuation_and_parks_at_engine_cap() 
             let _ = tx_event.send(EngineEvent::GoalUpdated { snapshot }).await;
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: format!("engine_goal_{pass}"),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -11932,6 +11952,7 @@ async fn host_goal_loop_skips_rearm_without_update_goal_and_after_failed_pass() 
             let _ = tx_event.send(EngineEvent::GoalUpdated { snapshot }).await;
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_goal_no_update".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -12026,6 +12047,7 @@ async fn host_goal_loop_skips_rearm_without_update_goal_and_after_failed_pass() 
                 .await;
             let _ = failed_tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_goal_failed".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -12127,6 +12149,7 @@ async fn host_goal_loop_mirrors_terminal_snapshot_and_does_not_rearm() -> Result
                 let _ = tx_event.send(EngineEvent::GoalUpdated { snapshot }).await;
                 let _ = tx_event
                     .send(EngineEvent::TurnStarted {
+                        previous_source: None,
                         turn_id: format!("engine_{status}"),
                         created_at: chrono::Utc::now(),
                         route: None,
@@ -12238,6 +12261,7 @@ async fn model_created_goal_persists_through_adopted_revision() -> Result<()> {
             let _ = tx_event.send(EngineEvent::GoalUpdated { snapshot }).await;
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_model_created".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -12325,6 +12349,7 @@ async fn model_created_goal_never_overwrites_concurrent_explicit_goal() -> Resul
             let _ = tx_event.send(EngineEvent::GoalUpdated { snapshot }).await;
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_concurrent".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -13021,6 +13046,7 @@ async fn interrupt_turn_marks_interrupted_after_cleanup() -> Result<()> {
         if matches!(rx_op.recv().await, Some(Op::SendMessage(TurnSpec { .. }))) {
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_turn_interrupt".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -14460,6 +14486,7 @@ async fn thread_detail_cursor_precedes_projection_reads_at_terminal_boundary() -
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "snapshot_terminal".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -14645,6 +14672,7 @@ async fn thread_detail_materializes_stream_prefixes_before_their_delta_cursor() 
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "delta_snapshot".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -14783,6 +14811,7 @@ async fn superseded_reasoning_segment_closes_when_the_retried_stream_starts() ->
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "retried_stream".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -14932,6 +14961,7 @@ async fn turn_end_closes_a_tool_call_that_never_completed() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "unanswered_tool_call".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -15093,6 +15123,7 @@ async fn thread_detail_delta_boundary_is_replay_idempotent() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "delta_boundary".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -15452,6 +15483,7 @@ async fn dynamic_tool_result_settles_snapshot_and_emits_one_safe_resolution() ->
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "dynamic_result".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -15617,6 +15649,7 @@ async fn dynamic_tool_result_receipt_outlives_canceled_delivery_future() -> Resu
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "dynamic_detached_settlement".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -16563,6 +16596,7 @@ async fn dynamic_tool_timeout_clears_snapshot_and_emits_once() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "dynamic_timeout".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -16654,6 +16688,7 @@ async fn terminal_turn_cancels_pending_dynamic_tool_exactly_once() -> Result<()>
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "dynamic_cancel".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -16765,6 +16800,7 @@ async fn engine_withdrawal_retires_approval_and_unblocks_queued_events() -> Resu
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "engine_withdrawal".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -16920,6 +16956,7 @@ async fn approval_wait_heartbeat_is_never_sequenced_after_the_decision() -> Resu
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "engine_turn_wait".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -18482,6 +18519,7 @@ async fn steer_turn_on_active_turn_records_item_and_event() -> Result<()> {
         if matches!(rx_op.recv().await, Some(Op::SendMessage(TurnSpec { .. }))) {
             let _ = tx_event
                 .send(EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: "engine_turn_steer".to_string(),
                     created_at: chrono::Utc::now(),
                     route: None,
@@ -19151,6 +19189,8 @@ fn answer_session_snapshot(
     .expect("snapshot message");
     if let Some(tx) = tx.lock().expect("snapshot sender").take() {
         let _ = tx.send(crate::core::ops::SessionSnapshot {
+            source: None,
+
             session_id: String::new(),
             messages,
             total_tokens: 0,
@@ -19208,6 +19248,7 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                     op_count = op_count.saturating_add(1);
                     let _ = tx_event
                         .send(EngineEvent::TurnStarted {
+                            previous_source: None,
                             turn_id: "engine_turn_auto".to_string(),
                             created_at: chrono::Utc::now(),
                             route: None,
@@ -19224,6 +19265,11 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                             {"role":"user","content":[{"type":"text","text":"auto checkpoint prefix"}]}
                         ])).unwrap();
                         let snapshot = Arc::new(crate::core::ops::SessionSnapshot {
+                            source: Some(crate::core::ops::SessionSnapshotSource::turn(
+                                "engine_turn_auto".into(),
+                                None,
+                            )),
+
                             session_id: checkpoint_thread.clone(),
                             messages: messages.clone(),
                             total_tokens: 0,
@@ -19249,6 +19295,7 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                         );
                         tx_event
                             .send(EngineEvent::SessionUpdated {
+                                source: request.snapshot.source.clone(),
                                 checkpoint: Some(request),
                                 session_id: checkpoint_thread.clone(),
                                 messages: Arc::new(messages),
@@ -19271,6 +19318,7 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                     }
                     let _ = tx_event
                         .send(EngineEvent::CompactionStarted {
+                            previous_source: None,
                             id: "auto_compact_1".to_string(),
                             auto: true,
                             message: "auto compact begin".to_string(),
@@ -19314,6 +19362,7 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                     op_count = op_count.saturating_add(1);
                     let _ = tx_event
                         .send(EngineEvent::CompactionStarted {
+                            previous_source: None,
                             id: "manual_compact_1".to_string(),
                             auto: false,
                             message: "manual compact begin".to_string(),
@@ -21296,7 +21345,7 @@ mod runtime_image_inputs {
             (
                 "look",
                 "deepseek-v4-flash-vision-exp",
-                codewhale_protocol::runtime::RuntimeImageInput {
+                codewhale_app_server_protocol::runtime::RuntimeImageInput {
                     mime: "image/jpeg".into(),
                     ..good
                 },
@@ -21509,6 +21558,7 @@ mod runtime_image_inputs {
         let run = tokio::spawn(engine.run());
         handle
             .send(Op::SyncSession {
+                control: crate::core::ops::SessionControlId::new(),
                 session_id: stored_thread.session_id.clone(),
                 messages: reopened.restore_thread_messages(&stored_thread)?,
                 system_prompt: None,
@@ -21768,6 +21818,7 @@ mod runtime_image_inputs {
             // and observe its durable settlement before restoring that case.
             for event in [
                 EngineEvent::TurnStarted {
+                    previous_source: None,
                     turn_id: turn.id.clone(),
                     created_at: Utc::now(),
                     route: None,
@@ -21807,7 +21858,7 @@ mod runtime_image_inputs {
 fn runtime_image_native_fingerprint_keeps_legacy_text_and_binds_bytes() -> Result<()> {
     let thread = sample_thread("thr_image_legacy");
     let policy = RuntimePolicyProjection::from_persisted("agent", Some("ask"), false);
-    let fingerprint = |images: &[codewhale_protocol::runtime::RuntimeImageInput]| {
+    let fingerprint = |images: &[codewhale_app_server_protocol::runtime::RuntimeImageInput]| {
         runtime_turn_request_fingerprint(
             &thread,
             "hello",
@@ -21956,6 +22007,7 @@ async fn notices_raise_from_engine_events_and_clear_on_settle_or_ack() -> Result
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: turn.id.clone(),
             created_at: Utc::now(),
             route: None,
@@ -23019,6 +23071,7 @@ async fn engine_plumbing_items_are_tagged_internal_and_retry_hints_are_dropped()
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "engine_plumbing_visibility".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -23790,6 +23843,7 @@ async fn runtime_receipts_mask_configured_secrets() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: turn.id.clone(),
             created_at: Utc::now(),
             route: None,
@@ -24049,6 +24103,7 @@ async fn tool_completion_items_carry_typed_artifact_refs() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: turn.id.clone(),
             created_at: Utc::now(),
             route: None,
@@ -24292,6 +24347,7 @@ async fn run_workspace_turn(
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "engine-turn".to_string(),
             created_at: Utc::now(),
             route: None,
@@ -24903,6 +24959,7 @@ mod execution_identity {
         harness
             .tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: turn.id.clone(),
                 created_at: Utc::now(),
                 route: None,
@@ -25143,6 +25200,7 @@ mod execution_identity {
         harness
             .tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: turn.id.clone(),
                 created_at: Utc::now(),
                 route: None,

@@ -2100,6 +2100,7 @@ pub(crate) async fn handle_view_events(
                         }
                         let _ = engine_handle
                             .send(Op::SyncSession {
+                                control: app.session_sync_control(),
                                 session_id: app.current_session_id.clone(),
                                 messages: app.api_messages.as_ref().clone(),
                                 system_prompt: app.system_prompt.clone(),
@@ -2183,6 +2184,7 @@ pub(crate) async fn handle_view_events(
                 }));
             }
             ViewEvent::SessionArchived { metadata } => {
+                app.adopt_session_mutation(&metadata);
                 // The manager already wrote the flag. Keep the active app's
                 // cached metadata in step so the next autosave carries the new
                 // state forward instead of reverting it, and drop the rail

@@ -7,10 +7,15 @@
         updated_at: DateTime<Utc>,
     ) {
         let session = SavedSession {
-            schema_version: CURRENT_SESSION_SCHEMA_VERSION,
+        write_receipt: None,
+
+        schema_version: CURRENT_SESSION_SCHEMA_VERSION,
             messages: vec![make_test_message("user", "hi")],
             metadata: SessionMetadata {
-                id: id.to_string(),
+            publication_id: None,
+            native_mutation_observation: None,
+
+            id: id.to_string(),
                 title: format!("session-{id}"),
                 title_is_custom: false,
                 created_at: updated_at,
@@ -52,10 +57,15 @@
         updated_at: DateTime<Utc>,
     ) {
         let session = SavedSession {
-            schema_version: CURRENT_SESSION_SCHEMA_VERSION,
+        write_receipt: None,
+
+        schema_version: CURRENT_SESSION_SCHEMA_VERSION,
             messages: Vec::new(),
             metadata: SessionMetadata {
-                id: id.to_string(),
+            publication_id: None,
+            native_mutation_observation: None,
+
+            id: id.to_string(),
                 title: DEFAULT_SESSION_TITLE.to_string(),
                 title_is_custom: false,
                 created_at: updated_at,

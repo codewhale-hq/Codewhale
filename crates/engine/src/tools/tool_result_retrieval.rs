@@ -229,12 +229,12 @@ impl ToolSpec for RetrieveToolResultTool {
                 "evidence changed since the previous window",
             ));
         }
-        if let Some(ownership) = legacy_ownership {
-            if ownership.size_bytes != snapshot.size_bytes || ownership.digest != snapshot.digest {
-                return Err(ToolError::execution_failed(
-                    "legacy evidence content is corrupt",
-                ));
-            }
+        if let Some(ownership) = legacy_ownership
+            && (ownership.size_bytes != snapshot.size_bytes || ownership.digest != snapshot.digest)
+        {
+            return Err(ToolError::execution_failed(
+                "legacy evidence content is corrupt",
+            ));
         }
         let owned_reference = reference.to_string();
         let session_id = context.state_namespace.clone();
@@ -735,10 +735,10 @@ impl TextInspection {
             self.leading.push(record);
         }
         if self.mode == "summary" || self.mode == "tail" {
-            if self.trailing.len() == self.line_count {
-                if let Some(record) = self.trailing.pop_front() {
-                    self.release(&record);
-                }
+            if self.trailing.len() == self.line_count
+                && let Some(record) = self.trailing.pop_front()
+            {
+                self.release(&record);
             }
             let record = self.retain(line_no, line, budget)?;
             self.trailing.push_back(record);
@@ -784,10 +784,10 @@ impl TextInspection {
             }
         }
         if self.context_lines > 0 && self.matches.len() < self.max_matches {
-            if self.previous.len() == self.context_lines {
-                if let Some(record) = self.previous.pop_front() {
-                    self.release(&record);
-                }
+            if self.previous.len() == self.context_lines
+                && let Some(record) = self.previous.pop_front()
+            {
+                self.release(&record);
             }
             let record = self.retain(line_no, line, budget)?;
             self.previous.push_back(record);
@@ -970,19 +970,17 @@ async fn stream_evidence(
             }
         }
     }
-    if let Some(state) = state.as_mut() {
-        if !line.is_empty() {
-            if let Err(error) = std::str::from_utf8(&line)
-                .map_err(|_| {
-                    ToolError::execution_failed(
-                        "evidence encoding is binary; bounded text inspection is unavailable",
-                    )
-                })
-                .and_then(|text| state.push_line(text))
-            {
-                text_error = Some(error);
-            }
-        }
+    if let Some(state) = state.as_mut()
+        && !line.is_empty()
+        && let Err(error) = std::str::from_utf8(&line)
+            .map_err(|_| {
+                ToolError::execution_failed(
+                    "evidence encoding is binary; bounded text inspection is unavailable",
+                )
+            })
+            .and_then(|text| state.push_line(text))
+    {
+        text_error = Some(error);
     }
     if tokio::time::Instant::now() >= deadline {
         return Err(ToolError::execution_failed(

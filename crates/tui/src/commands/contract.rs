@@ -27,6 +27,7 @@
 //! helpers remain production-dead until the first slice migrates (FEAT-018+),
 //! so this transitional module keeps a bounded dead-code allow.
 
+use crate::commands::groups::plugins::render::ReviewTextContext;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -360,10 +361,20 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             Err(e) => return Err(format!("could not open sessions directory: {e}")),
         };
         crate::tui::persistence_actor::flush_before_transition()?;
+        let source = app
+            .session_write_receipt
+            .as_ref()
+            .ok_or_else(|| {
+                "Session source was not admitted; reopen its managed record before branching"
+                    .to_string()
+            })?
+            .capture(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .map_err(|error| error.to_string())?;
         let mut session = match manager.load_session(&session_id) {
             Ok(s) => s,
             Err(e) => return Err(format!("could not load session {session_id}: {e}")),
         };
+        session.write_receipt = Some(source);
         session.ensure_journal();
         let journal_len_before = session
             .journal
@@ -379,11 +390,10 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         }
         match session.journal_branch_to(entry_id) {
             Ok(()) => {
-                if let Err(e) = manager.save_session(&session) {
-                    return Err(format!(
-                        "branch could not be persisted; active conversation unchanged: {e}"
-                    ));
-                }
+                let publication = manager.publish_session(&session).map_err(|error| {
+                    format!("branch could not be persisted; active conversation unchanged: {error}")
+                })?;
+                session.adopt_publication(&publication);
                 app.restore_api_messages(session.messages.clone(), &session);
                 let leaf_display = session
                     .leaf_id
@@ -500,6 +510,9 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             .map_err(|error| format!("Failed to snapshot Work state: {error}"))?;
         let manager = codewhale_engine::session_manager::SessionManager::default_location()
             .map_err(|error| format!("could not open sessions directory: {error}"))?;
+        crate::tui::persistence_actor::flush_before_transition()?;
+        let control_owner = codewhale_engine::session_manager::SessionWriteOwner::control();
+        let control_source = app.session_write_receipt.clone();
         let mut session = crate::tui::ui::build_session_snapshot(&mut app, &manager)?;
         let work_owner = app.current_session_id.clone();
         // Snapshots are journal-only (#6214 T3); exports need the legacy
@@ -544,11 +557,22 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                 let managed =
                     in_place || manager.owns_session_path(&session.metadata.id, &save_path);
                 let result = if managed {
-                    manager.save_session_bounded(session.clone()).and_then(|_| {
-                        session.metadata =
-                            manager.load_session_metadata_by_id(&session.metadata.id)?;
-                        Ok(())
-                    })
+                    if let Some(source) = control_source {
+                        session.write_receipt = Some(
+                            source
+                                .capture(control_owner)
+                                .map_err(|error| error.to_string())?,
+                        );
+                    } else {
+                        session
+                            .capture_publication(control_owner)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    manager
+                        .publish_session_bounded(session.clone())
+                        .map(|publication| {
+                            session.adopt_publication(&publication);
+                        })
                 } else {
                     let json = match serde_json::to_string_pretty(&session) {
                         Ok(json) => json,
@@ -563,6 +587,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                             queue_transition,
                         );
                         app.set_current_session_id(Some(session.metadata.id.clone()));
+                        app.session_write_receipt = session.write_receipt.clone();
                         app.current_session_metadata = Some(session.metadata.clone());
                         app.session_title = Some(session.metadata.title.clone());
                         if let Err(err) = app.publish_saved_work_state(
@@ -601,15 +626,39 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             }
         };
 
+        crate::tui::persistence_actor::flush_before_transition()?;
+        let control_owner = codewhale_engine::session_manager::SessionWriteOwner::control();
+        let control_source = app
+            .session_write_receipt
+            .as_ref()
+            .map(|source| source.capture(control_owner.clone()))
+            .transpose()
+            .map_err(|error| error.to_string())?;
         let mut parent = crate::tui::ui::build_session_snapshot(&mut app, &manager)?;
-        let work_owner = app.current_session_id.clone();
-        parent.make_storage_compatible();
-        if let Err(err) = manager.save_session_bounded(parent.clone()) {
-            return Err(format!("Failed to save parent session: {err}"));
+        if let Some(source) = control_source {
+            parent.write_receipt = Some(source);
+        } else if parent.write_receipt.is_some() {
+            parent
+                .capture_publication(control_owner)
+                .map_err(|error| error.to_string())?;
         }
 
+        let work_owner = app.current_session_id.clone();
+        parent.make_storage_compatible();
+        let publication = manager
+            .publish_session_bounded(parent.clone())
+            .map_err(|error| format!("Failed to save parent session: {error}"))?;
+        parent.adopt_publication(&publication);
+        app.session_write_receipt = parent.write_receipt.clone();
+
+        let fork_id = uuid::Uuid::new_v4().to_string();
+        let fork_source = manager
+            .expect_absent_session(&fork_id)
+            .map_err(|error| error.to_string())?
+            .capture(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .map_err(|error| error.to_string())?;
         let mut forked = parent.clone();
-        forked.metadata.id = uuid::Uuid::new_v4().to_string();
+        forked.metadata.id = fork_id;
         forked.metadata.created_at = chrono::Utc::now();
         forked.metadata.updated_at = forked.metadata.created_at;
         forked.metadata.archived = false;
@@ -625,9 +674,11 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         let queue_transition =
             crate::tui::ui::prepare_offline_queue_transition(&app, &forked.metadata.id)?;
 
-        if let Err(err) = manager.save_session(&forked) {
-            return Err(format!("Failed to save forked session: {err}"));
-        }
+        forked.write_receipt = Some(fork_source);
+        let publication = manager
+            .publish_session(&forked)
+            .map_err(|error| format!("Failed to save forked session: {error}"))?;
+        forked.adopt_publication(&publication);
         if let Err(err) =
             app.publish_saved_work_state(work_owner.as_deref(), parent.work_state.as_ref())
         {
@@ -696,6 +747,12 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                 source_session.metadata.spawn_depth,
             )
         });
+        let fork_id = uuid::Uuid::new_v4().to_string();
+        let fork_source = manager
+            .expect_absent_session(&fork_id)
+            .map_err(|error| error.to_string())?
+            .capture(codewhale_engine::session_manager::SessionWriteOwner::control())
+            .map_err(|error| error.to_string())?;
         let forked_journal = journal.fork_from(None).unwrap_or_else(|_| {
             codewhale_runtime::session_tree::SessionJournal::with_spawn_depth(
                 source_session.metadata.spawn_depth.saturating_add(1),
@@ -703,7 +760,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         });
         let messages = forked_journal.to_messages();
         let mut forked = codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
-            uuid::Uuid::new_v4().to_string(),
+            fork_id,
             &messages,
             &source_session.metadata.model,
             &app.workspace,
@@ -730,9 +787,11 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         forked.artifacts = source_session.artifacts.clone();
         forked.work_state = source_session.work_state.clone();
         forked.last_auto_route = source_session.last_auto_route.clone();
-        if let Err(err) = manager.save_session(&forked) {
-            return Err(format!("Failed to save forked session: {err}"));
-        }
+        forked.write_receipt = Some(fork_source);
+        let publication = manager
+            .publish_session(&forked)
+            .map_err(|error| format!("Failed to save forked session: {error}"))?;
+        forked.adopt_publication(&publication);
         let parent_label =
             codewhale_engine::session_manager::truncate_id(&source_session.metadata.id).to_string();
         let fork_label =
@@ -787,6 +846,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         app.session_context_references.clear();
         app.tool_evidence.clear();
         app.set_current_session_id(Some(new_id.clone()));
+        crate::tui::ui::expect_fresh_session(&mut app, &new_id)?;
         app.current_session_metadata = None;
         app.session_title =
             Some(codewhale_engine::session_manager::DEFAULT_SESSION_TITLE.to_string());
@@ -874,12 +934,14 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                 return Err(format!("could not open sessions directory: {err}"));
             }
         };
+        crate::tui::persistence_actor::flush_before_transition()?;
         match manager.set_session_archived(
             session_id,
             archived,
             codewhale_engine::session_manager::SessionMutator::Owner,
         ) {
             Ok(metadata) => {
+                app.adopt_session_mutation(&metadata);
                 if let Some(cached) = app.current_session_metadata.as_mut()
                     && cached.id == metadata.id
                 {
@@ -1239,21 +1301,24 @@ impl CommandSessionControlContext for SessionControlAdapter<'_> {
             Err(e) => return Err(format!("Could not open sessions directory: {e}")),
         };
 
-        // Mirrors the baseline `/rename` write path exactly: load (with
-        // first-snapshot recovery), sync live state, snapshot Work state,
-        // carry context/artifacts/route/cost/model/workspace/mode metadata,
-        // persist, then publish. Publication failures keep their post-save
-        // partial-success semantics.
-        let mut session = match manager.load_session(&session_id) {
-            Ok(s) => s,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                match live_session_before_first_snapshot(&manager, &session_id, &app) {
-                    Some(s) => s,
-                    None => return Err(format!("Could not load session: {err}")),
-                }
-            }
-            Err(e) => return Err(format!("Could not load session: {e}")),
-        };
+        crate::tui::persistence_actor::flush_before_transition()?;
+        let control_owner = codewhale_engine::session_manager::SessionWriteOwner::control();
+        let control_source = app
+            .session_write_receipt
+            .as_ref()
+            .map(|source| source.capture(control_owner.clone()))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let mut session = crate::tui::ui::build_session_snapshot(&mut app, &manager)?;
+        if let Some(source) = control_source {
+            session.write_receipt = Some(source);
+        } else if session.write_receipt.is_some() {
+            session
+                .capture_publication(control_owner)
+                .map_err(|error| error.to_string())?;
+        }
+
+        session.make_storage_compatible();
         session = codewhale_engine::session_manager::update_session(
             session,
             &app.api_messages,
@@ -1281,8 +1346,10 @@ impl CommandSessionControlContext for SessionControlAdapter<'_> {
         session.metadata.title = new_title.to_string();
         session.metadata.title_is_custom = true;
 
-        match manager.save_session(&session) {
-            Ok(_) => {
+        match manager.publish_session(&session) {
+            Ok(publication) => {
+                session.adopt_publication(&publication);
+                app.session_write_receipt = session.write_receipt.clone();
                 app.current_session_metadata = Some(session.metadata.clone());
                 app.session_title = Some(new_title.to_string());
                 if let Err(err) =
@@ -1421,16 +1488,24 @@ fn persist_session_display(
             return Err("No active session. Send a message first to start a session.".to_string());
         }
     };
-    let mut session = match manager.load_session(&session_id) {
-        Ok(session) => session,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            match live_session_before_first_snapshot(&manager, &session_id, app) {
-                Some(session) => session,
-                None => return Err(format!("Could not load session: {error}")),
-            }
-        }
-        Err(error) => return Err(format!("Could not load session: {error}")),
-    };
+    crate::tui::persistence_actor::flush_before_transition()?;
+    let control_owner = codewhale_engine::session_manager::SessionWriteOwner::control();
+    let control_source = app
+        .session_write_receipt
+        .as_ref()
+        .map(|source| source.capture(control_owner.clone()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let mut session = crate::tui::ui::build_session_snapshot(app, &manager)?;
+    if let Some(source) = control_source {
+        session.write_receipt = Some(source);
+    } else if session.write_receipt.is_some() {
+        session
+            .capture_publication(control_owner)
+            .map_err(|error| error.to_string())?;
+    }
+
+    session.make_storage_compatible();
     session = codewhale_engine::session_manager::update_session(
         session,
         &app.api_messages,
@@ -1457,8 +1532,11 @@ fn persist_session_display(
     app.sync_cost_to_metadata(&mut session.metadata);
     stage(&mut session);
 
-    match manager.save_session(&session) {
-        Ok(_) => {
+    match manager.publish_session_preserving_lifecycle(&session) {
+        Ok(publication) => {
+            session.adopt_publication(&publication);
+            app.session_write_receipt = session.write_receipt.clone();
+            app.current_session_metadata = Some(session.metadata.clone());
             commit(app);
             // The render loop syncs the resolved prefix into the terminal
             // title; force a frame so the change lands immediately.
@@ -1521,30 +1599,6 @@ fn plan_snapshot_to_sections(
     }
 }
 
-/// Recover the session document for a live turn that has not completed (and
-/// therefore persisted) its first snapshot yet (#5430). Mirrors the legacy
-/// `/rename`/`/title` recovery exactly.
-fn live_session_before_first_snapshot(
-    manager: &codewhale_engine::session_manager::SessionManager,
-    session_id: &str,
-    app: &App,
-) -> Option<codewhale_engine::session_manager::SavedSession> {
-    if let Ok(Some(checkpoint)) = manager.load_session_checkpoint(session_id) {
-        return Some(checkpoint);
-    }
-    Some(
-        codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
-            session_id.to_string(),
-            &app.api_messages,
-            &app.model_selection_for_persistence(),
-            &app.workspace,
-            u64::from(app.session.total_tokens),
-            app.system_prompt.as_ref(),
-            Some(app.mode.as_setting()),
-        ),
-    )
-}
-
 /// `/resume <file>` import: read, parse a container or plain saved session,
 /// and apply it atomically. Errors are the exact baseline text.
 fn import_foreign_file(app: &mut App, path: &Path) -> Result<ResumeImportReceipt, String> {
@@ -1604,9 +1658,18 @@ fn import_session_container(
         .set_model_provider_route(&provider, provider_id.as_deref());
     let new_id = imported.metadata.id.clone();
     let queue_transition = crate::tui::ui::prepare_offline_queue_transition(app, &new_id)?;
-    if let Err(e) = manager.save_session(&imported) {
-        return Err(format!("imported session could not be saved: {e}"));
-    }
+    imported.write_receipt = Some(
+        manager
+            .expect_absent_session(&new_id)
+            .map_err(|error| error.to_string())?,
+    );
+    imported
+        .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
+        .map_err(|error| error.to_string())?;
+    let publication = manager
+        .publish_session(&imported)
+        .map_err(|error| format!("imported session could not be saved: {error}"))?;
+    imported.adopt_publication(&publication);
     crate::tui::ui::install_offline_queue_transition(app, queue_transition);
     app.set_current_session_id(Some(new_id.clone()));
     app.current_session_metadata = Some(imported.metadata.clone());
@@ -3942,8 +4005,11 @@ fn scan_managed_plugins_portable(
             });
         }
         Err(error) => {
-            let root_text = escape_review_text(&configured_root.display().to_string());
-            let error_text = escape_review_text(&error.to_string());
+            let root_text = escape_review_text(
+                &configured_root.display().to_string(),
+                ReviewTextContext::Prose,
+            );
+            let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
             return Err(tr(
                 codewhale_localization::Locale::En,
                 codewhale_localization::MessageId::PluginKimiRootInspectFailed,
@@ -3953,7 +4019,10 @@ fn scan_managed_plugins_portable(
         }
     };
     if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
-        let root_text = escape_review_text(&configured_root.display().to_string());
+        let root_text = escape_review_text(
+            &configured_root.display().to_string(),
+            ReviewTextContext::Prose,
+        );
         return Err(tr(
             codewhale_localization::Locale::En,
             codewhale_localization::MessageId::PluginKimiRootMustBeDirectory,
@@ -3961,8 +4030,11 @@ fn scan_managed_plugins_portable(
         .replace("{root}", &root_text));
     }
     let canonical_root = configured_root.canonicalize().map_err(|error| {
-        let root_text = escape_review_text(&configured_root.display().to_string());
-        let error_text = escape_review_text(&error.to_string());
+        let root_text = escape_review_text(
+            &configured_root.display().to_string(),
+            ReviewTextContext::Prose,
+        );
+        let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
         tr(
             codewhale_localization::Locale::En,
             codewhale_localization::MessageId::PluginKimiRootCanonicalizeFailed,
@@ -3972,8 +4044,11 @@ fn scan_managed_plugins_portable(
     })?;
     let mut entries = fs::read_dir(&canonical_root)
         .map_err(|error| {
-            let root_text = escape_review_text(&canonical_root.display().to_string());
-            let error_text = escape_review_text(&error.to_string());
+            let root_text = escape_review_text(
+                &canonical_root.display().to_string(),
+                ReviewTextContext::Prose,
+            );
+            let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
             tr(
                 codewhale_localization::Locale::En,
                 codewhale_localization::MessageId::PluginKimiRootListFailed,
@@ -3983,7 +4058,7 @@ fn scan_managed_plugins_portable(
         })?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| {
-            let error_text = escape_review_text(&error.to_string());
+            let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
             tr(
                 codewhale_localization::Locale::En,
                 codewhale_localization::MessageId::PluginKimiEntryReadFailed,
@@ -4007,8 +4082,9 @@ fn scan_managed_plugins_portable(
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) => {
-                let path_text = escape_review_text(&path.display().to_string());
-                let error_text = escape_review_text(&error.to_string());
+                let path_text =
+                    escape_review_text(&path.display().to_string(), ReviewTextContext::Prose);
+                let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
                 rejected.push(
                     tr(
                         codewhale_localization::Locale::En,
@@ -4021,7 +4097,7 @@ fn scan_managed_plugins_portable(
             }
         };
         if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
-            let path_text = escape_review_path(&path);
+            let path_text = escape_review_path(&path, ReviewTextContext::Prose);
             rejected.push(
                 tr(
                     codewhale_localization::Locale::En,
@@ -4037,8 +4113,12 @@ fn scan_managed_plugins_portable(
         let canonical_path = match path.canonicalize() {
             Ok(path) if path.parent() == Some(canonical_root.as_path()) => path,
             Ok(canonical_path) => {
-                let path_text = escape_review_text(&path.display().to_string());
-                let canonical_text = escape_review_text(&canonical_path.display().to_string());
+                let path_text =
+                    escape_review_text(&path.display().to_string(), ReviewTextContext::Prose);
+                let canonical_text = escape_review_text(
+                    &canonical_path.display().to_string(),
+                    ReviewTextContext::Prose,
+                );
                 rejected.push(
                     tr(
                         codewhale_localization::Locale::En,
@@ -4050,8 +4130,9 @@ fn scan_managed_plugins_portable(
                 continue;
             }
             Err(error) => {
-                let path_text = escape_review_text(&path.display().to_string());
-                let error_text = escape_review_text(&error.to_string());
+                let path_text =
+                    escape_review_text(&path.display().to_string(), ReviewTextContext::Prose);
+                let error_text = escape_review_text(&error.to_string(), ReviewTextContext::Prose);
                 rejected.push(
                     tr(
                         codewhale_localization::Locale::En,
@@ -4089,13 +4170,13 @@ fn scan_managed_plugins_portable(
 }
 
 /// Escape review text exactly like the plugin render helpers (FEAT-020 D2).
-fn escape_review_text(value: &str) -> String {
-    crate::commands::groups::plugins::render::escape_review_text(value)
+fn escape_review_text(value: &str, context: ReviewTextContext) -> String {
+    crate::commands::groups::plugins::render::escape_review_text(value, context)
 }
 
 /// Escape a review path exactly like the plugin render helpers (FEAT-020 D2).
-fn escape_review_path(path: &Path) -> String {
-    crate::commands::groups::plugins::render::escape_review_path(path)
+fn escape_review_path(path: &Path, context: ReviewTextContext) -> String {
+    crate::commands::groups::plugins::render::escape_review_path(path, context)
 }
 
 impl CommandPluginContext for PluginAdapter<'_> {
@@ -4671,8 +4752,8 @@ impl CommandPluginContext for PluginAdapter<'_> {
                 .to_string()
         })?;
         let state = store.load()?;
-        let catalog_text = escape_review_text(catalog);
-        let candidate_text = escape_review_text(candidate);
+        let catalog_text = escape_review_text(catalog, ReviewTextContext::InlineCode);
+        let candidate_text = escape_review_text(candidate, ReviewTextContext::InlineCode);
         let entry = state.get(catalog).cloned().ok_or_else(|| {
             format!("No marketplace named `{catalog_text}`. Use /plugin marketplace list.")
         })?;
@@ -4704,7 +4785,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
                             codewhale_command_contract::facets::PluginMutationOutcome::NoChange,
                     });
                 }
-                return Err(escape_review_text(&reason));
+                return Err(escape_review_text(&reason, ReviewTextContext::Prose));
             }
             codewhale_plugins::marketplace::document::CatalogInstallResolution::Unsupported {
                 reason,
@@ -4714,7 +4795,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
                     .unwrap_or(reason);
                 return Err(format!(
                     "Candidate `{candidate_text}` cannot be installed by Codewhale: {}",
-                    escape_review_text(&localized)
+                    escape_review_text(&localized, ReviewTextContext::Prose)
                 ));
             }
             codewhale_plugins::marketplace::document::CatalogInstallResolution::HasErrors {
@@ -4722,7 +4803,7 @@ impl CommandPluginContext for PluginAdapter<'_> {
             } => {
                 return Err(format!(
                     "Candidate `{candidate_text}` has parse errors and cannot be installed:\n{}",
-                    escape_review_text(&diagnostics)
+                    escape_review_text(&diagnostics, ReviewTextContext::Prose)
                 ));
             }
         };
@@ -7561,6 +7642,7 @@ mod tests {
         save_control_session(&tmpdir, "rename-1");
         let mut app = control_test_app(&tmpdir);
         app.current_session_id = Some("rename-1".to_string());
+        app.capture_session_fixture_source();
 
         let receipt = {
             let mut bundle = app.command_contexts();
@@ -7607,6 +7689,7 @@ mod tests {
 
         let mut app = control_test_app(&tmpdir);
         app.current_session_id = Some("midturn-1".to_string());
+        app.capture_session_fixture_source();
         app.api_messages = std::sync::Arc::new(vec![user_message("first turn still streaming")]);
 
         let receipt = {
@@ -7646,6 +7729,7 @@ mod tests {
         save_control_session(&tmpdir, "title-1");
         let mut app = control_test_app(&tmpdir);
         app.current_session_id = Some("title-1".to_string());
+        app.capture_session_fixture_source();
 
         // No session window title and no config default -> unset, no source.
         let report = {

@@ -314,6 +314,8 @@
             assert_eq!(restored.metadata.cost.cny_unpriced_turns, 1);
             assert_eq!(restored.metadata.cost.usage_source_fingerprints.len(), 1);
             if malformed == "tombstone" {
+                assert!(restored.write_receipt.is_none());
+                assert!(restored.capture_publication(SessionWriteOwner::control()).is_err());
                 assert!(
                     manager.save_session(&restored).is_err(),
                     "an invalid deletion marker must fail closed for writes"

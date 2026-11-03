@@ -15258,7 +15258,13 @@ fn persist_exec_session(
     manager: &SessionManager,
     provider_request_receipts: &[serde_json::Value],
     checkpoint: Option<&codewhale_engine::core::events::SessionCheckpointRequest>,
-) -> Result<String> {
+    source: &session_manager::SessionWriteReceipt,
+    owner: &codewhale_engine::core::ops::SessionSnapshotSource,
+) -> Result<session_manager::SessionPublication> {
+    let captured = source.capture(session_manager::SessionWriteOwner::Engine(owner.clone()))?;
+    if checkpoint.is_some() {
+        captured.require_checkpoint_acknowledgement();
+    }
     let mut saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
         match manager.load_session_snapshot(id) {
             Ok(existing) => session_manager::update_session(
@@ -15290,6 +15296,7 @@ fn persist_exec_session(
             Some("exec"),
         )
     };
+    saved.write_receipt = Some(captured);
     stamp_exec_session_metadata(
         &mut saved,
         model,
@@ -15394,11 +15401,9 @@ fn persist_exec_session(
             )
             .map_err(anyhow::Error::msg)?;
     }
-    let id = saved.metadata.id.clone();
     manager
-        .save_session(&saved)
-        .context("could not save exec session")?;
-    Ok(id)
+        .publish_session(&saved)
+        .context("could not save exec session")
 }
 
 fn stamp_exec_session_metadata(

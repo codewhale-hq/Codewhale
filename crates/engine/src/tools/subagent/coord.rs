@@ -341,13 +341,13 @@ impl AgentsFollowupTool {
                     .map_err(|error| ToolError::invalid_input(error.to_string()))?;
                 let resumed_already = source != target;
                 let receipt = if super::subagent_checkpoint_is_continuable(&snapshot)
-                    && runtime.is_some()
+                    && let Some(runtime) = runtime
                 {
                     let snapshot = manager
                         .resume_from_checkpoint_for_session(
                             &session,
                             Arc::clone(&manager_handle),
-                            runtime.expect("runtime checked"),
+                            runtime,
                             &target,
                             &message,
                         )

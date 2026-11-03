@@ -995,8 +995,12 @@ impl Run<'_> {
         // A run that stopped between saving the document and binding the
         // thread left the document behind at this same id; reuse it.
         if exists(&id) || self.sessions.session_document_exists(&id) {
-            return Ok(self.sessions.load_session(&id)?);
+            return Ok(self.sessions.resume_session(&id)?.session);
         }
+        let source = self
+            .sessions
+            .expect_absent_session(&id)?
+            .capture(crate::session_manager::SessionWriteOwner::control())?;
         let mut session = crate::session_manager::create_saved_session_with_id_and_mode(
             id,
             &recovered.messages,
@@ -1022,7 +1026,9 @@ impl Run<'_> {
             .unwrap_or_else(|| session.metadata.title.clone());
         session.metadata.title = recovered_title(&label);
         session.metadata.runtime_store = Some(held.binding().clone());
-        self.sessions.save_session(&session)?;
+        session.write_receipt = Some(source);
+        let publication = self.sessions.publish_session(&session)?;
+        session.adopt_publication(&publication);
         Ok(session)
     }
 

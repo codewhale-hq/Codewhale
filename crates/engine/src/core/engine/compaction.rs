@@ -64,9 +64,15 @@ impl Engine {
         id: String,
         auto: bool,
         message: String,
+        previous_source: Option<crate::core::ops::SessionSnapshotSource>,
     ) {
         let _ = self
-            .send_event(Event::CompactionStarted { id, auto, message })
+            .send_event(Event::CompactionStarted {
+                previous_source,
+                id,
+                auto,
+                message,
+            })
             .await;
     }
 
@@ -315,8 +321,6 @@ impl Engine {
         // Manual compaction terminals identify the compaction operation, never
         // a surrounding host submission or a model turn.
         let compaction_id = Some(id.clone());
-        self.emit_compaction_started(id.clone(), false, "Making room…".to_string())
-            .await;
         let Some(cancel_token) = self.claim_compaction(&id) else {
             let message = "Making room stopped before it started".to_string();
             self.emit_compaction_cancelled(id, false, message).await;
@@ -336,6 +340,17 @@ impl Engine {
                 .await;
             return;
         };
+        let previous_source = self.session.snapshot_source.clone();
+        self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::compaction(
+            id.clone(),
+        ));
+        self.emit_compaction_started(
+            id.clone(),
+            false,
+            "Making room…".to_string(),
+            previous_source,
+        )
+        .await;
         if let Err(err) = self.install_resolved_runtime_route(route) {
             let message =
                 format!("Cannot compact context because its provider route is not ready: {err}");
@@ -708,8 +723,13 @@ impl Engine {
             let compaction_cancel = self
                 .claim_compaction(&compaction_id)
                 .expect("a fresh automatic compaction id cannot be pre-canceled");
-            self.emit_compaction_started(compaction_id.clone(), true, "Making room…".to_string())
-                .await;
+            self.emit_compaction_started(
+                compaction_id.clone(),
+                true,
+                "Making room…".to_string(),
+                self.session.snapshot_source.clone(),
+            )
+            .await;
             let auto_messages_before = self.session.messages.len();
             let auto_tokens_before = self.estimated_input_tokens();
             let turn_cancel = self.cancel_token.clone();
@@ -933,8 +953,13 @@ impl Engine {
             .emergency_compaction_attempts
             .saturating_add(1);
         let start_message = format!("Making room now ({reason})");
-        self.emit_compaction_started(id.clone(), true, start_message)
-            .await;
+        self.emit_compaction_started(
+            id.clone(),
+            true,
+            start_message,
+            self.session.snapshot_source.clone(),
+        )
+        .await;
         let Some(compaction_cancel) = self.claim_compaction(&id) else {
             self.emit_compaction_cancelled(
                 id,

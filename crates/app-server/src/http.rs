@@ -12,7 +12,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
-use codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
+use codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
 use codewhale_protocol::{AppRequest, AppResponse, PromptRequest, ThreadRequest};
 use serde_json::{Value, json};
 use std::path::PathBuf;

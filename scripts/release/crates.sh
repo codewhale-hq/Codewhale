@@ -5,6 +5,7 @@ release_crates=(
   codewhale-build-support
   codewhale-mcp
   codewhale-paths
+  codewhale-app-server-protocol
   codewhale-protocol
   codewhale-sanitize
   codewhale-release

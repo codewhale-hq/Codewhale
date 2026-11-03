@@ -878,28 +878,30 @@ fn render_latex_to_string(latex: &str) -> String {
                     // --- Brackets ---
                     "left" | "bigl" | "Bigl" | "biggl" | "Biggl" => {
                         // Consume the next token (bracket/pipe/dot) and output it
-                        let after = &input[total_cmd_end..].trim_start();
-                        if let Some(next) = after.chars().next() {
+                        let after = &input[total_cmd_end..];
+                        let delimiter = after.trim_start();
+                        if let Some(next) = delimiter.chars().next() {
                             if next == '.' {
                                 // \left. 闁?invisible delimiter, skip
                             } else {
                                 out.push(next);
                             }
-                            let skip = after.len() - after.trim_start().len() + next.len_utf8();
+                            let skip = after.len() - delimiter.len() + next.len_utf8();
                             pos = total_cmd_end + skip;
                         } else {
                             pos = total_cmd_end;
                         }
                     }
                     "right" | "bigr" | "Bigr" | "biggr" | "Biggr" => {
-                        let after = &input[total_cmd_end..].trim_start();
-                        if let Some(next) = after.chars().next() {
+                        let after = &input[total_cmd_end..];
+                        let delimiter = after.trim_start();
+                        if let Some(next) = delimiter.chars().next() {
                             if next == '.' {
                                 // \right. 闁?invisible delimiter, skip
                             } else {
                                 out.push(next);
                             }
-                            let skip = after.len() - after.trim_start().len() + next.len_utf8();
+                            let skip = after.len() - delimiter.len() + next.len_utf8();
                             pos = total_cmd_end + skip;
                         } else {
                             pos = total_cmd_end;
@@ -907,12 +909,11 @@ fn render_latex_to_string(latex: &str) -> String {
                     }
                     "big" | "Big" | "bigg" | "Bigg" => {
                         // Size modifiers 闁?skip them, the next token is what matters
-                        let after = &input[total_cmd_end..].trim_start();
-                        if let Some(next) = after.chars().next() {
+                        let after = &input[total_cmd_end..];
+                        let delimiter = after.trim_start();
+                        if let Some(next) = delimiter.chars().next() {
                             out.push(next);
-                            pos = total_cmd_end
-                                + (after.len() - after.trim_start().len())
-                                + next.len_utf8();
+                            pos = total_cmd_end + (after.len() - delimiter.len()) + next.len_utf8();
                         } else {
                             pos = total_cmd_end;
                         }
@@ -1324,7 +1325,7 @@ fn try_render_env(input: &str) -> Option<(String, usize)> {
             b'}' => depth -= 1,
             _ => {}
         }
-        search_pos += 1;
+        search_pos += remaining_search.chars().next().map_or(1, char::len_utf8);
     }
 
     None
