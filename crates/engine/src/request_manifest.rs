@@ -479,6 +479,8 @@ pub struct BodyFacts {
     pub reasoning_wire_effort_source: Option<String>,
     /// `tool_choice` as it appears on the wire, as a short shape label.
     pub tool_choice: Option<SafeLabel>,
+    pub omitted_tool_count: usize,
+    pub omitted_tool_names: Vec<String>,
     pub prompt: PromptProvenance,
 
     /// Canonical JSON byte length of the complete body. The four accounting
@@ -651,6 +653,11 @@ impl RequestManifest {
                 // (DeepSeek thinking), so carrying the pre-transform value
                 // would report a choice the provider never receives.
                 tool_choice: tool_choice_label(inputs.prepared.body.get("tool_choice")),
+                omitted_tool_count: inputs.prepared.omitted_tool_names.len(),
+                omitted_tool_names:
+                    codewhale_models::tool_projection::bounded_tool_projection_warning_names(
+                        &inputs.prepared.omitted_tool_names,
+                    ),
                 prompt: inputs.prompt,
                 body_canonical_json_bytes: view.body_bytes,
                 system_canonical_json_bytes: view.system_bytes,
@@ -970,6 +977,20 @@ impl RequestManifest {
                 .as_ref()
                 .map_or("not sent", SafeLabel::as_str),
         );
+        if body.omitted_tool_count > 0 {
+            push_row(
+                out,
+                "omitted incompatible tools",
+                &format!(
+                    "{}: {}",
+                    body.omitted_tool_count,
+                    crate::core::events::tool_projection_warning_tool_list(
+                        &body.omitted_tool_names,
+                        body.omitted_tool_count,
+                    )
+                ),
+            );
+        }
 
         out.push_str("\nSystem prompt (as prepared)\n");
         push_row(out, "assembly", body.prompt.assembly.label());

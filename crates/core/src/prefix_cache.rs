@@ -198,7 +198,7 @@ pub struct PrefixStabilityManager {
     /// delivered as history, with the pinned header untouched).
     context_update_count: u64,
     /// Process-local cache for the tool-catalog JSON serialization. Avoids
-    /// re-running `tool_to_api_json` + join on every `check_and_update`
+    /// re-running `logical_tool_fingerprint_json` + join on every `check_and_update`
     /// when the tool set is unchanged (the common case once tools are
     /// registered at session start).
     tool_catalog_cache: ToolCatalogCache,
@@ -296,7 +296,10 @@ impl ToolCatalogCache {
         // "stable" while the real prefix misses every turn (ops C1). Keep
         // only the digest in the cache — the joined string is not needed on
         // the hot path (#3854).
-        let serialized: Vec<String> = tools.iter().filter_map(tool_to_api_json).collect();
+        let serialized: Vec<String> = tools
+            .iter()
+            .filter_map(logical_tool_fingerprint_json)
+            .collect();
         let joined = serialized.join("\n");
         let entry = CachedCatalog {
             sha256_hex: sha256_hex(joined.as_bytes()),
@@ -351,8 +354,8 @@ fn tool_set_identity(tools: &[Tool]) -> u64 {
     for tool in tools {
         tool.name.hash(&mut hasher);
         tool.description.hash(&mut hasher);
-        // `strict` participates in `tool_to_api_json` output (it is part of
-        // the wire-format the chat API receives), so it MUST be part of the
+        // `strict` participates in `logical_tool_fingerprint_json` output (it is
+        // logical catalog intent), so it MUST be part of the
         // identity. Omitting it lets two semantically different catalogs
         // collide and serve a stale fingerprint.
         tool.strict.hash(&mut hasher);
@@ -704,10 +707,9 @@ impl PrefixStabilityManager {
     }
 }
 
-/// Serialize a tool to the same JSON shape the chat API receives,
-/// excluding internal-only fields like `allowed_callers`, `defer_loading`,
-/// `input_examples`, and `cache_control` that are never sent to DeepSeek.
-fn tool_to_api_json(tool: &Tool) -> Option<String> {
+/// Serialize the logical tool fields used by this stability fingerprint.
+/// Provider wire projection and omission are measured by the prepared request.
+fn logical_tool_fingerprint_json(tool: &Tool) -> Option<String> {
     let mut value = serde_json::json!({
         "type": "function",
         "function": {

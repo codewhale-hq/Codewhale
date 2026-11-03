@@ -388,10 +388,8 @@ fn root_composition_constraint_note(obj: &Map<String, Value>) -> Option<String> 
 /// Strip `dependentSchemas` / `dependentRequired` from every node.
 ///
 /// MFJS validates each node against a closed keyword allow-list, so a schema
-/// carrying either keyword is refused outright — and that refusal reaches
-/// `sanitize_moonshot_chat_tools`, which fails the whole request build, so one
-/// composed schema would break *every* tool-bearing Moonshot turn rather than
-/// degrade its own tool.
+/// carrying either keyword would otherwise be omitted by route projection.
+/// Keep the remaining schema and disclose the lost conditional constraints.
 fn drop_dependent_keywords(schema: &mut Value) -> Option<String> {
     strip_dependent_keywords(schema).then(|| {
         "This provider cannot express conditional requirements from the original schema. \

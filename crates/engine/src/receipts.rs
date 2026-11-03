@@ -345,7 +345,8 @@ pub fn thread_receipt(
 // Loading from disk (`codewhale receipts`)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ReceiptFormat {
     Md,
     Json,

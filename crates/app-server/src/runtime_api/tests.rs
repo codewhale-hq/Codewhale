@@ -10115,6 +10115,7 @@ async fn thread_receipt_routes_require_auth_and_return_the_receipt_shape() -> Re
 
     for path in [
         format!("/v1/threads/{id}/receipt"),
+        format!("/v1/threads/{id}/receipt?format=md"),
         format!("/v1/threads/{id}/turns/turn_x/receipt"),
     ] {
         let anonymous = client.get(format!("http://{addr}{path}")).send().await?;
@@ -10135,6 +10136,27 @@ async fn thread_receipt_routes_require_auth_and_return_the_receipt_shape() -> Re
     assert_eq!(receipt["actions"], json!([]));
     assert_eq!(receipt["totals"]["commands"], 0);
     assert!(receipt["not_recorded"].is_array());
+
+    let markdown = client
+        .get(format!("http://{addr}/v1/threads/{id}/receipt?format=md"))
+        .bearer_auth(&token)
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(
+        markdown.headers()[header::CONTENT_TYPE],
+        "text/markdown; charset=utf-8"
+    );
+    let actual = markdown.text().await?;
+    assert!(actual.contains(&id), "{actual}");
+    assert!(actual.contains("Not recorded"), "{actual}");
+    assert!(!actual.contains("schema_id"), "{actual}");
+    let unsupported = client
+        .get(format!("http://{addr}/v1/threads/{id}/receipt?format=html"))
+        .bearer_auth(&token)
+        .send()
+        .await?;
+    assert_eq!(unsupported.status(), StatusCode::BAD_REQUEST);
 
     let foreign_turn = client
         .get(format!(

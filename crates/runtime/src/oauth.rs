@@ -20,7 +20,9 @@ use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codewhale_config::ExternalCredentialReadGrant;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, Validation, decode, decode_header, errors::ErrorKind, jwk::JwkSet,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -2579,8 +2581,39 @@ fn verify_chatgpt_jwt<T: serde::de::DeserializeOwned + Clone>(
     validation.validate_nbf = true;
     validation.leeway = 0;
     let claims = decode::<Value>(token, &key, &validation)
-        .map_err(|_| {
-            anyhow::anyhow!("ChatGPT token signature or identity claims failed verification")
+        .map_err(|error| match error.kind() {
+            ErrorKind::InvalidSignature => {
+                anyhow::anyhow!("ChatGPT token signature verification failed")
+            }
+            ErrorKind::ExpiredSignature => anyhow::anyhow!(
+                "ChatGPT token has expired; check your device date and time, then sign in again"
+            ),
+            ErrorKind::ImmatureSignature => anyhow::anyhow!(
+                "ChatGPT token is not valid yet; synchronize your device clock, then sign in again"
+            ),
+            ErrorKind::InvalidIssuer => {
+                anyhow::anyhow!("ChatGPT token issuer does not match the expected issuer")
+            }
+            ErrorKind::InvalidAudience => {
+                anyhow::anyhow!("ChatGPT token audience does not match this registration")
+            }
+            ErrorKind::InvalidSubject => {
+                anyhow::anyhow!("ChatGPT token subject does not match the expected account")
+            }
+            ErrorKind::MissingRequiredClaim(claim)
+                if ["exp", "iss", "aud", "sub"].contains(&claim.as_str()) =>
+            {
+                anyhow::anyhow!("ChatGPT token is missing required {claim} claim")
+            }
+            ErrorKind::InvalidClaimFormat(claim)
+                if ["exp", "iss", "aud", "sub", "nbf"].contains(&claim.as_str()) =>
+            {
+                anyhow::anyhow!("ChatGPT token has an invalid {claim} claim format")
+            }
+            ErrorKind::InvalidAlgorithm | ErrorKind::UnsupportedAlgorithm => anyhow::anyhow!(
+                "ChatGPT token signature algorithm does not match the verification key"
+            ),
+            _ => anyhow::anyhow!("ChatGPT token format or identity claims failed verification"),
         })?
         .claims;
     let exact_audience = claims.get("aud").is_some_and(|aud| {
@@ -8328,35 +8361,47 @@ consent_version = 1
         let claims = signer.id_claims();
         let signed = signer.token(claims.clone());
         assert_eq!(verify(&signed).unwrap().subject, "test-sub");
-        for (field, wrong) in [
-            ("iss", Value::from("https://other.invalid")),
-            ("aud", Value::from("oaiapp_other")),
+        for (field, wrong, expected) in [
+            ("iss", Value::from("https://other.invalid"), "issuer"),
+            ("aud", Value::from("oaiapp_other"), "audience"),
             (
                 "aud",
                 serde_json::json!(["oaiapp_codewhale_test", "another-audience"]),
+                "audience",
             ),
-            ("exp", Value::from(1)),
-            ("nonce", Value::from("another-nonce")),
-            ("sub", Value::from("another-subject")),
-            ("sub", Value::from("")),
+            ("exp", Value::from(1), "expired"),
+            (
+                "nbf",
+                Value::from(now_unix_secs().unwrap() + 3600),
+                "not valid yet",
+            ),
+            ("nonce", Value::from("another-nonce"), "nonce"),
+            ("sub", Value::from("another-subject"), "different account"),
+            ("sub", Value::from(""), "no subject"),
         ] {
             let mut changed = claims.clone();
             changed[field] = wrong;
-            assert!(
-                verify(&signer.token(changed)).is_err(),
-                "accepted invalid {field}"
-            );
+            let error = verify(&signer.token(changed)).unwrap_err().to_string();
+            assert!(error.contains(expected), "invalid {field}: {error}");
         }
         for required in ["iss", "aud", "exp", "sub", "nonce"] {
             let mut changed = claims.clone();
             changed.as_object_mut().unwrap().remove(required);
-            assert!(
-                verify(&signer.token(changed)).is_err(),
-                "accepted missing {required}"
-            );
+            let error = verify(&signer.token(changed)).unwrap_err().to_string();
+            let expected = if required == "nonce" {
+                "nonce did not match".to_string()
+            } else {
+                format!("missing required {required} claim")
+            };
+            assert!(error.contains(&expected), "missing {required}: {error}");
         }
         let other_signer = SiwcSigningFixture::new();
-        assert!(verify(&other_signer.token(claims.clone())).is_err());
+        assert!(
+            verify(&other_signer.token(claims.clone()))
+                .unwrap_err()
+                .to_string()
+                .contains("signature verification failed")
+        );
         let parts: Vec<_> = signed.split('.').collect();
         let bad_payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"attacker"}"#);
         assert!(verify(&format!("{}.{}.{}", parts[0], bad_payload, parts[2])).is_err());

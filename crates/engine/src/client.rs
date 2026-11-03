@@ -3186,13 +3186,7 @@ impl CodewhaleClient {
             }
         }
         let declared_wire_model = self.declared_wire_model(&request.model).map(str::to_string);
-        if self.is_local_ds4_model(&request.model)
-            && let Some(tools) = request.tools.as_mut()
-        {
-            for tool in tools {
-                tool.strict = None;
-            }
-        }
+        let strict_tools_disabled = self.is_local_ds4_model(&request.model);
         let requested_effort = request.reasoning_effort.clone();
         // Same value computed for the seam above.
         let dialect = outbound_dialect;
@@ -3210,6 +3204,7 @@ impl CodewhaleClient {
                     stream,
                     request_route_limits,
                     self.context_window_for_model(&request.model),
+                    strict_tools_disabled,
                 )?;
                 if let Some(effort) = published_wire_effort.as_deref() {
                     if wire.body.get("reasoning_effort").is_some() {
@@ -3248,7 +3243,8 @@ impl CodewhaleClient {
                 .with_omitted_tool_names(wire.omitted_tool_names))
             }
             WireFormat::AnthropicMessages => {
-                let mut body = self.build_anthropic_body(&request, stream);
+                let (mut body, omitted_tool_names) =
+                    self.build_anthropic_wire_body(&request, stream)?;
                 if let Some(model) = &declared_wire_model {
                     body["model"] = json!(model);
                 }
@@ -3273,14 +3269,15 @@ impl CodewhaleClient {
                     requested_effort,
                     None,
                     entrypoint,
-                ))
+                )
+                .with_omitted_tool_names(omitted_tool_names))
             }
             WireFormat::Responses => {
-                let mut body = responses::build_responses_body_for_provider(
+                let (mut body, omitted_tool_names) = responses::build_responses_wire_body(
                     &request,
                     self.api_provider,
                     self.chatgpt_reasoning_api.as_deref(),
-                );
+                )?;
                 if let Some(model) = &declared_wire_model {
                     body["model"] = json!(model);
                 }
@@ -3308,7 +3305,8 @@ impl CodewhaleClient {
                     requested_effort,
                     None,
                     entrypoint,
-                ))
+                )
+                .with_omitted_tool_names(omitted_tool_names))
             }
         }
     }
@@ -4946,6 +4944,16 @@ impl CodewhaleClient {
         let cacheable = allow_response_cache
             && codewhale_runtime::llm_response_cache::request_is_cacheable(&request);
         let prepared = self.prepare_outbound_request(request.clone(), false)?;
+        if !prepared.omitted_tool_names.is_empty() {
+            tracing::warn!(
+                provider = %prepared.endpoint.provider_display,
+                omitted_tool_count = prepared.omitted_tool_names.len(),
+                omitted_tools = ?codewhale_models::tool_projection::bounded_tool_projection_warning_names(
+                    &prepared.omitted_tool_names,
+                ),
+                "omitted incompatible tools for this request"
+            );
+        }
         match self.dispatch_prepared_message(&prepared, cacheable).await {
             Err(error) => {
                 let Some(retry) =
