@@ -473,7 +473,7 @@ done
     expect(registry).toContain("Arc::new(LowercaseBashTool)");
     expect(registry).toContain('FileTool::new("File")');
     expect(registry).toContain('BashTool::new("Bash")');
-    expect(toolsPage).toContain("8 names / 16 KiB");
+    expect(toolsPage).toContain("8 names / 24 KiB");
     expect(toolsPage).toContain("Web search/fetch");
     expect(toolsPage).not.toContain("docs/TOOL_LIFECYCLE.md");
   });

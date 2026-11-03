@@ -20,7 +20,7 @@ Workflow 通过同一个子智能体运行时执行命名步骤；Fleet 管理�
 按 `Tab` 补全输入框（composer）菜单，或在输入框为空时循环切换可见模式：**Plan → Work → Operate → Plan**。`Tab` 从不发送或排队输入框中的文本；用 `Enter` 发送或排队。按 `Shift+Tab` 循环切换权限姿态（Ask → Auto-Review → Full Access）。按 `Ctrl+T` 循环切换思考强度。运行 `/mode` 打开模式选择器，或直接用 `/mode work`、`/mode plan`、`/mode operate` 切换。
 
 - **Plan**：设计优先的提示方式。原语（primitive）名称保持不变，仍是大家熟悉的那些，但运行时会集中拒绝文件修改和 shell 执行。只读检查与策略允许的研究（包括延迟加载的 Web 搜索/抓取）仍然可用。当一个 Plan 回合成功结束并给出非空回复（包括纯文字计划）时，TUI 会询问如何继续：Work（Ask）、Work（Auto-Review），或继续规划。选择 Work 会把已批准的原文作为普通后续消息发送，并保留该回合已有的 To-dos，或追加一个待办的计划项而不替换无关的工作。
-- **Work**（内部为 `agent`）：普通的多步执行。第一回合的工具箱包含 `read`、`write`、`edit`、`file_search`、`bash`、`agent`、`workflow`、`todo_write` 和 `load_skill`，以及无需先搜索即可使用的目标与后台 shell 控制工具 `create_goal`、`get_goal`、`update_goal` 和 `task_shell_wait`。当请求属于一个持久的目标时，智能体会调用 `create_goal`；宿主从不根据措辞去推断目标，契约也不得告诉模型相反的内容。审批、沙箱、仓库规则（repository law）和托管策略决定什么可以执行。
+- **Work**（内部为 `agent`）：普通的多步执行。第一回合的工具箱包含 `read`、`write`、`edit`、`file_search`、`bash`、`todo_write`、`load_skill` 和 `task_shell_wait`，以及 `create_goal` 与合成工具 `tool_search`；`agent`、`workflow`、`get_goal` 和 `update_goal` 通过搜索发现加载（`get_goal`/`update_goal` 在目标激活时直接可用）。当请求属于一个持久的目标时，智能体会调用 `create_goal`；宿主从不根据措辞去推断目标，契约也不得告诉模型相反的内容。审批、沙箱、仓库规则（repository law）和托管策略决定什么可以执行。
 - **Operate**：以全力运行的 Work，即“ultra”模式。工具与权限和 Work 相同，区别在于如何使用它们。每个实质性请求都会成为一个目标（`create_goal`），计划保持可见（`todo_write`），多部分工作通过 `workflow` 和并行的 `agent` 工作者执行，非平凡的改动在宣布完成前先交给独立的审查者，长时间运行的命令继续在后台运行，循环或监视类工作则作为 `automation` 提出（获批后创建）。它会一直进行，直到目标被验证、被你阻塞或被暂停。
 
 `Act` 和 `/mode act` 仍然是 Work 的兼容别名。保存的设置仍然规范化为内部值 `agent`。

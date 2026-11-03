@@ -1207,6 +1207,7 @@ readline.createInterface({ input: process.stdin }).on('line', async line => {
             McpAccess::Connect,
             route,
             "",
+            None,
         );
         tokio::pin!(build);
         std::future::poll_fn(|cx| {
@@ -1747,6 +1748,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
             McpAccess::Connect,
             route,
             "discovery",
+            None,
         )
         .await;
     (

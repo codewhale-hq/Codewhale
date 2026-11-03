@@ -643,11 +643,6 @@ workflow({
             assert_eq!(leaf.role.as_deref(), Some(expected_role));
             assert_eq!(leaf.mode, TaskMode::ReadOnly);
             assert!(!leaf.permissions.allow_write);
-            // No explicit `allowed_tools` anywhere: the read-only lowering
-            // alone scopes the source-gathering explore role, and its
-            // catalog-visible surface (tool_search + deferred grep_files) is
-            // pinned from the TUI side (scout_surface_keeps_tool_search_
-            // grep_files_activation_path).
             assert!(leaf.permissions.allowed_tools.is_empty());
             assert_eq!(
                 leaf.permissions.deny_all_tools,
@@ -669,11 +664,8 @@ workflow({
             if expected_role == "explore" {
                 assert!(
                     leaf.prompt.contains("use `tool_search` with")
-                        && leaf.prompt.contains("Use `grep_files` with")
-                        && leaf.prompt.contains(
-                            "the content-search tool is deferred, so this activation is required before it can be called"
-                        ),
-                    "the scout must activate the deferred content-search tool before searching with it"
+                        && leaf.prompt.contains("Use `grep_files` with"),
+                    "the scout must name content search and its discovery fallback"
                 );
                 assert!(
                     leaf.prompt

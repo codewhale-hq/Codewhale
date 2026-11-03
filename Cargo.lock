@@ -872,11 +872,11 @@ dependencies = [
 name = "codewhale-app-server"
 version = "0.10.2"
 dependencies = [
- "codewhale-app-server-protocol",
  "anyhow",
  "axum",
  "chrono",
  "codewhale-agent",
+ "codewhale-app-server-protocol",
  "codewhale-config",
  "codewhale-core",
  "codewhale-hooks",
@@ -1062,7 +1062,6 @@ dependencies = [
 name = "codewhale-engine"
 version = "0.10.2"
 dependencies = [
- "codewhale-app-server-protocol",
  "anyhow",
  "arboard",
  "async-stream",
@@ -1073,6 +1072,7 @@ dependencies = [
  "clap",
  "codewhale-agent",
  "codewhale-agent-contract",
+ "codewhale-app-server-protocol",
  "codewhale-build-support",
  "codewhale-command-contract",
  "codewhale-commands",
@@ -1195,10 +1195,10 @@ dependencies = [
 name = "codewhale-hooks"
 version = "0.10.2"
 dependencies = [
- "codewhale-app-server-protocol",
  "anyhow",
  "async-trait",
  "chrono",
+ "codewhale-app-server-protocol",
  "codewhale-paths",
  "codewhale-protocol",
  "codewhale-release",
@@ -1424,8 +1424,8 @@ dependencies = [
 name = "codewhale-protocol"
 version = "0.10.2"
 dependencies = [
- "codewhale-app-server-protocol",
  "chrono",
+ "codewhale-app-server-protocol",
  "serde",
  "serde_json",
  "uuid",
@@ -1703,7 +1703,6 @@ dependencies = [
 name = "codewhale-tui"
 version = "0.10.2"
 dependencies = [
- "codewhale-app-server-protocol",
  "ahash",
  "ansi-to-tui",
  "anyhow",
@@ -1717,6 +1716,7 @@ dependencies = [
  "codewhale-agent",
  "codewhale-agent-contract",
  "codewhale-app-server",
+ "codewhale-app-server-protocol",
  "codewhale-build-support",
  "codewhale-cloud-facts",
  "codewhale-command-contract",

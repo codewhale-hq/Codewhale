@@ -82,6 +82,10 @@ impl ToolSpec for ReadTool {
                 "max_bytes": {
                     "type": "number",
                     "description": "Output budget in bytes for this one call. Defaults to 100000; values above the 500000 maximum are clamped down rather than rejected, and a value below the active default leaves the default in place."
+                },
+                "expected_revision": {
+                    "type": "string",
+                    "description": "Optional snapshot guard from a code navigation reference. Pass the reference's path, offset, limit and expected_revision together; changed source is refused instead of silently reading stale offsets. Omit for an ordinary read."
                 }
             },
             "required": ["path"],

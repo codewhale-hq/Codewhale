@@ -301,14 +301,113 @@ async fn text_fallback_tool_calls_share_the_response_tool_limit() {
 
 #[tokio::test]
 async fn step_budget_final_report_is_report_only() {
-    // C02-10: the one response granted after the step budget is spent asks
-    // for no tools, and a call it returns anyway is refused, not executed.
+    // C02-10: announce a finite deadline while tools still work, without
+    // extending it. The report-only response still cannot execute a call.
+    for limit in [1, 4, 0] {
+        let workspace = tempdir().unwrap();
+        let working_steps = if limit == 0 { 4 } else { limit };
+        let mut responses: Vec<_> = (0..working_steps)
+            .map(|step| canned::tool_call_turn(&format!("call-step-{step}"), WRITE_TOOL, "{}"))
+            .collect();
+        responses.push(if limit == 0 {
+            canned::simple_text_turn("done")
+        } else {
+            canned::tool_call_turn("call-final-report", WRITE_TOOL, "{}")
+        });
+        let mock = Arc::new(MockLlmClient::new(responses));
+        let (mut engine, handle) = Engine::new_with_model_client(
+            deterministic_engine_config(workspace.path()),
+            &Config::default(),
+            mock.clone(),
+        );
+        engine.session.auto_approve = true;
+        let executions = Arc::new(AtomicUsize::new(0));
+        let surface = write_surface(&engine, workspace.path(), executions.clone());
+        let mut turn =
+            crate::core::turn::TurnContext::new(if limit == 0 { u32::MAX } else { limit });
+
+        let (status, error) = engine.run_turn(&mut turn, surface, None, None).await;
+
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            working_steps as usize,
+            "only in-budget calls run, limit={limit}"
+        );
+        if limit == 0 {
+            assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+            assert!(error.is_none());
+        } else {
+            assert_eq!(status, TurnOutcomeStatus::Failed);
+            assert!(
+                error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("Maximum model steps")),
+                "{error:?}"
+            );
+        }
+        let requests = mock.captured_requests();
+        assert_eq!(requests.len(), working_steps as usize + 1);
+        for (index, request) in requests.iter().enumerate() {
+            let notices: Vec<_> = request
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } if text.starts_with("Model-step budget:") => {
+                        Some(text)
+                    }
+                    _ => None,
+                })
+                .collect();
+            let notice_due = limit > 0 && index >= limit.saturating_sub(3) as usize;
+            assert_eq!(
+                notices.len(),
+                usize::from(notice_due),
+                "one logged deadline before tools are disabled: limit={limit}, request={index}"
+            );
+            if let Some(notice) = notices.first() {
+                assert!(notice.contains(&format!("remaining_requests={}", limit.min(3))));
+                assert!(notice.contains(&format!("limit={limit}")));
+            }
+            if limit == 0 || index < working_steps as usize {
+                assert_ne!(request.tool_choice, Some(json!("none")));
+            } else {
+                assert_eq!(request.tool_choice, Some(json!("none")));
+            }
+        }
+        let logged_notices = engine
+            .session
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(|block| {
+                matches!(block, ContentBlock::Text { text, .. } if text.starts_with("Model-step budget:"))
+            })
+            .count();
+        assert_eq!(logged_notices, usize::from(limit > 0));
+        let refused = drain_events(&handle).await.into_iter().any(|event| {
+            matches!(
+                event,
+                Event::ToolCallComplete {
+                    model_call: Some(ref call),
+                    result: Err(ToolError::PermissionDenied { ref message }),
+                    ..
+                } if call.provider_id == "call-final-report" && message.contains("final report")
+            )
+        });
+        assert_eq!(refused, limit > 0, "the final-report call stays fenced");
+    }
+}
+
+#[tokio::test]
+async fn step_budget_text_report_preserves_exhaustion_status() {
     let workspace = tempdir().unwrap();
+    let report = "The repair is unfinished; only the initial tool call ran.";
     let mock = Arc::new(MockLlmClient::new(vec![
         canned::tool_call_turn("call-step-1", WRITE_TOOL, "{}"),
-        canned::tool_call_turn("call-final-report", WRITE_TOOL, "{}"),
+        canned::simple_text_turn(report),
     ]));
-    let (mut engine, handle) = Engine::new_with_model_client(
+    let (mut engine, _) = Engine::new_with_model_client(
         deterministic_engine_config(workspace.path()),
         &Config::default(),
         mock.clone(),
@@ -320,33 +419,30 @@ async fn step_budget_final_report_is_report_only() {
 
     let (status, error) = engine.run_turn(&mut turn, surface, None, None).await;
 
-    assert_eq!(
-        executions.load(Ordering::SeqCst),
-        1,
-        "only the in-budget step runs"
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    let requests = mock.captured_requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].tool_choice, Some(json!("none")));
+    assert!(
+        engine.session.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Text { text, .. } if text == report))
+        }),
+        "the partial report remains available"
     );
-    assert_eq!(status, TurnOutcomeStatus::Failed);
+    assert_eq!(
+        status,
+        TurnOutcomeStatus::Failed,
+        "a final report is not task completion"
+    );
     assert!(
         error
             .as_deref()
             .is_some_and(|e| e.contains("Maximum model steps")),
         "{error:?}"
     );
-    let requests = mock.captured_requests();
-    assert_eq!(requests.len(), 2);
-    assert_ne!(requests[0].tool_choice, Some(json!("none")));
-    assert_eq!(requests[1].tool_choice, Some(json!("none")));
-    let refused = drain_events(&handle).await.into_iter().any(|event| {
-        matches!(
-            event,
-            Event::ToolCallComplete {
-                model_call: Some(ref call),
-                result: Err(ToolError::PermissionDenied { ref message }),
-                ..
-            } if call.provider_id == "call-final-report" && message.contains("final report")
-        )
-    });
-    assert!(refused, "the final-report call is refused with the reason");
 }
 
 #[test]

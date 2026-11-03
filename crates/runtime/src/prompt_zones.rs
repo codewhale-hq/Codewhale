@@ -182,6 +182,249 @@ impl std::fmt::Display for PrefixDrift {
     }
 }
 
+/// Exact header of the parent turn's latest model request, shared with
+/// fork children so a same-route child can extend the parent's live
+/// cached prefix instead of starting cold.
+///
+/// Written once per model request by the turn loop (after the request
+/// is final), read once per fork spawn. `None` until the first request
+/// of the session goes out. The history half of the prefix rides
+/// `SubAgentForkContext.messages` (turn-start snapshot); the system and
+/// tools here must byte-match a cached request or inheritance silently
+/// costs more than a cold start — every gate below fails closed.
+#[derive(Debug, Clone)]
+pub struct LiveHeaderSnapshot<R = ()> {
+    /// Exact system prompt, shape-preserving (`Text` stays `Text`).
+    pub system: Option<SystemPrompt>,
+    /// Wire-order canonical tools JSON (see [`wire_tool_catalog_json`]).
+    pub tools_json: String,
+    /// Canonical ordered tool names used to match the child's already-active
+    /// policy-filtered tools without activating additional schemas.
+    pub active_names: Vec<String>,
+    /// Route the request was built for (caches are per route).
+    pub model: String,
+    pub provider: codewhale_config::ProviderKind,
+    pub provider_identity: String,
+    pub endpoint_fingerprint: Option<String>,
+    pub route_receipt: Option<R>,
+    /// Request messages the hot proof covers. Each new request must
+    /// start with these byte-for-byte (element-wise) to keep the
+    /// proof; compaction or any rewrite resets to cold.
+    pub history: Vec<Message>,
+    /// Provider-reported cached-input tokens for this logical request, carried
+    /// across equal headers and append-only history with the same opaque route.
+    /// Positive usage permits matching prefix reuse; it does not establish
+    /// which components or the entire history were cache hits.
+    pub last_hit_tokens: Option<u32>,
+}
+
+/// Cloneable handle to the turn's live-header cell. Created once per
+/// Engine (turns run strictly one at a time); fork contexts clone the
+/// `Arc` and read it at spawn.
+pub type SharedLiveHeader<R = ()> = Arc<std::sync::Mutex<Option<LiveHeaderSnapshot<R>>>>;
+
+/// Empty live-header cell: nothing cached yet, every gate reads cold.
+#[must_use]
+pub fn new_live_header_cell<R>() -> SharedLiveHeader<R> {
+    Arc::new(std::sync::Mutex::new(None))
+}
+
+/// Wire-canonical tools serialization: per-tool chat-API JSON in wire
+/// order, joined by `\n`. Each segment goes through
+/// [`codewhale_core::prefix_cache::tool_to_api_json`], so internal-only
+/// fields (`defer_loading`, `allowed_callers`, …) that never reach the
+/// provider cannot false-negative a byte comparison. Unlike
+/// [`tool_catalog_digest`] (sorted for hashing), order is part of the
+/// wire bytes. `None` if any tool fails to serialize; the inherit gate
+/// treats that as a mismatch.
+#[must_use]
+pub fn wire_tool_catalog_json(tools: &[Tool]) -> Option<String> {
+    let mut out = String::new();
+    for (index, tool) in tools.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(&codewhale_core::prefix_cache::tool_to_api_json(tool)?);
+    }
+    Some(out)
+}
+
+/// Trial gate: `CODEWHALE_FORK_INHERIT=off` disables prefix inheritance
+/// (same-binary A/B against the default-on arm). Process-pinned.
+#[must_use]
+pub fn fork_inherit_enabled() -> bool {
+    static GATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *GATE.get_or_init(|| {
+        std::env::var("CODEWHALE_FORK_INHERIT")
+            .map(|raw| raw.trim() != "off")
+            .unwrap_or(true)
+    })
+}
+
+/// Trial diagnostics: `CODEWHALE_FORK_TRIAL=1` mirrors fork-inherit trial
+/// events (decision + child first-response cache split) to stderr as
+/// single-line JSON. Headless `exec` installs no tracing subscriber, so
+/// the `tracing` trial logs are invisible there; this is the metered
+/// readout for same-binary A/B trials. Off unless explicitly enabled.
+#[must_use]
+pub fn fork_trial_diag_enabled() -> bool {
+    static GATE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *GATE.get_or_init(|| {
+        std::env::var("CODEWHALE_FORK_TRIAL")
+            .map(|raw| raw.trim() == "1")
+            .unwrap_or(false)
+    })
+}
+
+/// Hot-proof carry-over for the per-request snapshot write.
+///
+/// Tool calls (including fork spawns) execute before the current
+/// request's usage lands, so a snapshot that reset its proof on every
+/// write would read cold at every spawn. The new request keeps the old
+/// proof only when it extends the old head byte-for-byte: same system,
+/// same wire tools, messages grown append-only. Drift, compaction, or
+/// any rewrite resets to `None`. Fails closed throughout.
+#[must_use]
+pub fn carry_hot_forward<R: PartialEq>(
+    old: Option<&LiveHeaderSnapshot<R>>,
+    new_system: &Option<SystemPrompt>,
+    new_tools_json: &str,
+    new_history: &[Message],
+    new_route_receipt: Option<&R>,
+) -> Option<u32> {
+    let old = old?;
+    if new_route_receipt.is_none() || old.route_receipt.as_ref() != new_route_receipt {
+        return None;
+    }
+    let hits = old.last_hit_tokens.filter(|hits| *hits > 0)?;
+    if &old.system != new_system {
+        return None;
+    }
+    if old.tools_json != new_tools_json {
+        return None;
+    }
+    if !new_history.starts_with(&old.history) {
+        return None;
+    }
+    Some(hits)
+}
+
+/// Fork-inherit decision with a trial-log reason and, when inheriting,
+/// the head of the parent's wire block the child reproduces byte-for-byte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForkInheritDecision {
+    pub inherit: bool,
+    pub reason: &'static str,
+    /// Longest matching canonical tool head from the child's policy-filtered
+    /// active catalog. It determines ordering, never grants or removes tools.
+    /// Empty unless `inherit` is true.
+    pub prefix_tools: Vec<Tool>,
+}
+
+/// Pure inherit gate with graceful prefix tiers.
+///
+/// Full-block equality almost never holds in production: the parent's
+/// wire block grows by deferred discovery while the child's grant is
+/// fixed and usually narrower. Instead the gate resolves the longest
+/// head of the parent's wire block the child reproduces byte-for-byte
+/// (same actual route receipt and positive parent cache usage required):
+/// `inherited_full` matches all parent tool definitions; `inherited_prefix`
+/// matches a shorter head. Neither outcome proves full history cache coverage
+/// or provider savings. No common head and every guard failure stay cold.
+///
+/// The grant boundary enforces itself through catalog lookup: names
+/// outside the child's grant end the run, so narrowed roles inherit a
+/// shorter head instead of cold-starting — no role table. `gate_on` is
+/// [`fork_inherit_enabled`] read by the caller, so every arm stays
+/// unit-testable.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_fork_inherit<R: PartialEq>(
+    gate_on: bool,
+    snapshot: Option<&LiveHeaderSnapshot<R>>,
+    child_model: &str,
+    child_provider: codewhale_config::ProviderKind,
+    child_provider_identity: &str,
+    child_wire_format: codewhale_config::provider::WireFormat,
+    child_endpoint_fingerprint: Option<&str>,
+    child_route_receipt: Option<&R>,
+    child_catalog: &[Tool],
+    history_len: usize,
+) -> ForkInheritDecision {
+    let cold = |reason: &'static str| ForkInheritDecision {
+        inherit: false,
+        reason,
+        prefix_tools: Vec::new(),
+    };
+    if !gate_on {
+        return cold("gate_off");
+    }
+    if child_wire_format != codewhale_config::provider::WireFormat::ChatCompletions {
+        return cold("wire_format_unsupported");
+    }
+    let Some(snapshot) = snapshot else {
+        return cold("no_snapshot");
+    };
+    if snapshot.system.is_none() {
+        return cold("no_parent_system");
+    }
+    if snapshot.model != child_model {
+        return cold("model_mismatch");
+    }
+    if snapshot.provider != child_provider {
+        return cold("provider_mismatch");
+    }
+    if snapshot.provider_identity != child_provider_identity {
+        return cold("route_mismatch");
+    }
+    if snapshot.endpoint_fingerprint.as_deref() != child_endpoint_fingerprint
+        || child_endpoint_fingerprint.is_none()
+    {
+        return cold("endpoint_mismatch");
+    }
+    if child_route_receipt.is_none() || snapshot.route_receipt.as_ref() != child_route_receipt {
+        return cold("route_receipt_mismatch");
+    }
+    if snapshot.last_hit_tokens.unwrap_or(0) == 0 {
+        return cold("prefix_cold");
+    }
+    if history_len == 0 {
+        return cold("empty_history");
+    }
+    if snapshot.active_names.is_empty() {
+        return cold("no_parent_tools");
+    }
+    let parent_wire: Vec<&str> = snapshot.tools_json.split('\n').collect();
+    let mut prefix = Vec::new();
+    for (index, name) in snapshot.active_names.iter().enumerate() {
+        let Some(parent_json) = parent_wire.get(index) else {
+            break;
+        };
+        let Some(tool) = child_catalog.iter().find(|tool| &tool.name == name) else {
+            break;
+        };
+        let tool = tool.clone();
+        let wire = codewhale_core::prefix_cache::tool_to_api_json(&tool);
+        if wire.as_deref() != Some(*parent_json) {
+            break;
+        }
+        prefix.push(tool);
+    }
+    if prefix.is_empty() {
+        return cold("tools_mismatch");
+    }
+    let full = prefix.len() == snapshot.active_names.len();
+    ForkInheritDecision {
+        inherit: true,
+        reason: if full {
+            "inherited_full"
+        } else {
+            "inherited_prefix"
+        },
+        prefix_tools: prefix,
+    }
+}
+
 // ── AppendLog ──────────────────────────────────────────────────────────
 
 /// Append-only conversation history. Derefs to `&[Message]` via
@@ -732,5 +975,329 @@ mod tests {
         } else {
             panic!("expected Text content block");
         }
+    }
+
+    fn inherit_snapshot() -> LiveHeaderSnapshot<&'static str> {
+        let tools = vec![make_tool("read"), make_tool("agent")];
+        LiveHeaderSnapshot {
+            system: Some(SystemPrompt::Text("parent system".to_string())),
+            tools_json: wire_tool_catalog_json(&tools).expect("serializes"),
+            active_names: tools.iter().map(|tool| tool.name.clone()).collect(),
+            model: "deepseek-chat".to_string(),
+            provider: codewhale_config::ProviderKind::Deepseek,
+            provider_identity: "deepseek".to_string(),
+            endpoint_fingerprint: Some("fixture-endpoint".to_string()),
+            route_receipt: Some("fixture-route"),
+            history: vec![make_message("user", "hi")],
+            last_hit_tokens: Some(1200),
+        }
+    }
+
+    #[test]
+    fn wire_tool_json_is_order_sensitive_and_stable() {
+        let pair = [make_tool("a"), make_tool("b")];
+        let swapped = [make_tool("b"), make_tool("a")];
+        let forward = wire_tool_catalog_json(&pair).expect("serializes");
+        let backward = wire_tool_catalog_json(&swapped).expect("serializes");
+        assert_ne!(forward, backward, "wire order is part of the bytes");
+        assert_eq!(
+            forward,
+            wire_tool_catalog_json(&pair).expect("stable"),
+            "same order serializes identically"
+        );
+        assert_eq!(wire_tool_catalog_json(&[]).expect("empty"), "");
+        // Internal-only flags never reach the wire bytes.
+        let mut flagged = make_tool("a");
+        flagged.defer_loading = Some(true);
+        flagged.allowed_callers = Some(vec!["x".to_string()]);
+        assert_eq!(
+            wire_tool_catalog_json(&[flagged]).expect("serializes"),
+            wire_tool_catalog_json(&[make_tool("a")]).expect("serializes"),
+        );
+    }
+
+    #[test]
+    fn fork_inherit_requires_every_gate() {
+        let snapshot = inherit_snapshot();
+        let full_catalog = vec![make_tool("read"), make_tool("agent")];
+        let decide =
+            |snapshot: Option<&LiveHeaderSnapshot<&'static str>>, model: &str, catalog: &[Tool]| {
+                resolve_fork_inherit(
+                    true,
+                    snapshot,
+                    model,
+                    codewhale_config::ProviderKind::Deepseek,
+                    "deepseek",
+                    codewhale_config::provider::WireFormat::ChatCompletions,
+                    Some("fixture-endpoint"),
+                    Some(&"fixture-route"),
+                    catalog,
+                    4,
+                )
+            };
+        let ok = decide(Some(&snapshot), "deepseek-chat", &full_catalog);
+        assert!(ok.inherit, "{ok:?}");
+        assert_eq!(ok.reason, "inherited_full");
+        assert_eq!(ok.prefix_tools.len(), 2);
+        let mut missing_receipt = snapshot.clone();
+        missing_receipt.route_receipt = None;
+        assert_eq!(
+            decide(Some(&missing_receipt), "deepseek-chat", &full_catalog).reason,
+            "route_receipt_mismatch"
+        );
+        let mut changed_receipt = snapshot.clone();
+        changed_receipt.route_receipt = Some("different-fixture-route");
+        assert_eq!(
+            decide(Some(&changed_receipt), "deepseek-chat", &full_catalog).reason,
+            "route_receipt_mismatch"
+        );
+        let unsupported = resolve_fork_inherit(
+            true,
+            Some(&snapshot),
+            "deepseek-chat",
+            codewhale_config::ProviderKind::Deepseek,
+            "deepseek",
+            codewhale_config::provider::WireFormat::AnthropicMessages,
+            Some("fixture-endpoint"),
+            Some(&"fixture-route"),
+            &full_catalog,
+            4,
+        );
+        assert!(!unsupported.inherit);
+        assert_eq!(unsupported.reason, "wire_format_unsupported");
+
+        // Narrowed grant: head matches, tail grant-gap ends the run.
+        let narrowed = vec![make_tool("read")];
+        let prefix = decide(Some(&snapshot), "deepseek-chat", &narrowed);
+        assert!(prefix.inherit, "{prefix:?}");
+        assert_eq!(prefix.reason, "inherited_prefix");
+        assert_eq!(prefix.prefix_tools.len(), 1);
+
+        // Grant gap at the head: no common head, stays cold.
+        let gap_at_head = vec![make_tool("agent")];
+        assert_eq!(
+            decide(Some(&snapshot), "deepseek-chat", &gap_at_head).reason,
+            "tools_mismatch"
+        );
+        // Schema skew on the head tool also ends the run at zero.
+        let mut skewed = make_tool("read");
+        skewed.description = "different".to_string();
+        assert_eq!(
+            decide(Some(&snapshot), "deepseek-chat", &[skewed]).reason,
+            "tools_mismatch"
+        );
+        // Internal-only flag skew must NOT end the run: those bytes
+        // never reach the provider.
+        let mut flagged = make_tool("read");
+        flagged.defer_loading = Some(true);
+        flagged.allowed_callers = Some(vec!["parent-only".to_string()]);
+        let flagged_catalog = vec![flagged, make_tool("agent")];
+        let flagged_ok = decide(Some(&snapshot), "deepseek-chat", &flagged_catalog);
+        assert!(flagged_ok.inherit, "{flagged_ok:?}");
+        assert_eq!(flagged_ok.reason, "inherited_full");
+
+        assert_eq!(
+            decide(None, "deepseek-chat", &full_catalog).reason,
+            "no_snapshot"
+        );
+        let mut no_system = snapshot.clone();
+        no_system.system = None;
+        assert_eq!(
+            decide(Some(&no_system), "deepseek-chat", &full_catalog).reason,
+            "no_parent_system"
+        );
+        assert_eq!(
+            decide(Some(&snapshot), "other-model", &full_catalog).reason,
+            "model_mismatch"
+        );
+        let provider_mismatch = resolve_fork_inherit(
+            true,
+            Some(&snapshot),
+            "deepseek-chat",
+            codewhale_config::ProviderKind::Openai,
+            "deepseek",
+            codewhale_config::provider::WireFormat::ChatCompletions,
+            Some("fixture-endpoint"),
+            Some(&"fixture-route"),
+            &full_catalog,
+            4,
+        );
+        assert_eq!(provider_mismatch.reason, "provider_mismatch");
+        assert!(!provider_mismatch.inherit);
+        let route_mismatch = resolve_fork_inherit(
+            true,
+            Some(&snapshot),
+            "deepseek-chat",
+            codewhale_config::ProviderKind::Deepseek,
+            "custom-mirror",
+            codewhale_config::provider::WireFormat::ChatCompletions,
+            Some("fixture-endpoint"),
+            Some(&"fixture-route"),
+            &full_catalog,
+            4,
+        );
+        assert_eq!(route_mismatch.reason, "route_mismatch");
+        for cold in [None, Some(0)] {
+            let mut snapshot = snapshot.clone();
+            snapshot.last_hit_tokens = cold;
+            assert_eq!(
+                decide(Some(&snapshot), "deepseek-chat", &full_catalog).reason,
+                "prefix_cold",
+                "cold={cold:?}"
+            );
+        }
+        let empty_history = resolve_fork_inherit(
+            true,
+            Some(&snapshot),
+            "deepseek-chat",
+            codewhale_config::ProviderKind::Deepseek,
+            "deepseek",
+            codewhale_config::provider::WireFormat::ChatCompletions,
+            Some("fixture-endpoint"),
+            Some(&"fixture-route"),
+            &full_catalog,
+            0,
+        );
+        assert_eq!(empty_history.reason, "empty_history");
+        let mut no_tools = snapshot.clone();
+        no_tools.active_names.clear();
+        assert_eq!(
+            decide(Some(&no_tools), "deepseek-chat", &full_catalog).reason,
+            "no_parent_tools"
+        );
+        let gated_off = resolve_fork_inherit(
+            false,
+            Some(&snapshot),
+            "deepseek-chat",
+            codewhale_config::ProviderKind::Deepseek,
+            "deepseek",
+            codewhale_config::provider::WireFormat::ChatCompletions,
+            Some("fixture-endpoint"),
+            Some(&"fixture-route"),
+            &full_catalog,
+            4,
+        );
+        assert_eq!(gated_off.reason, "gate_off");
+        assert!(!gated_off.inherit);
+    }
+
+    #[test]
+    fn carry_hot_forward_keeps_append_only_and_resets_rewrites() {
+        let snapshot = inherit_snapshot();
+        let grown = vec![
+            make_message("user", "hi"),
+            make_message("assistant", "hello"),
+        ];
+        assert_eq!(
+            carry_hot_forward(
+                Some(&snapshot),
+                &snapshot.system,
+                &snapshot.tools_json,
+                &grown,
+                Some(&"fixture-route")
+            ),
+            Some(1200),
+            "append-only growth keeps the proof"
+        );
+        // Identical re-send (transparent retry) also extends.
+        assert_eq!(
+            carry_hot_forward(
+                Some(&snapshot),
+                &snapshot.system,
+                &snapshot.tools_json,
+                &snapshot.history,
+                Some(&"fixture-route")
+            ),
+            Some(1200)
+        );
+        let edited = vec![make_message("user", "edited")];
+        assert_eq!(
+            carry_hot_forward(
+                Some(&snapshot),
+                &snapshot.system,
+                &snapshot.tools_json,
+                &edited,
+                Some(&"fixture-route")
+            ),
+            None,
+            "in-place rewrite resets"
+        );
+        assert_eq!(
+            carry_hot_forward(
+                Some(&snapshot),
+                &snapshot.system,
+                &snapshot.tools_json,
+                &[],
+                Some(&"fixture-route")
+            ),
+            None,
+            "compaction shrink resets"
+        );
+        let other_system = Some(SystemPrompt::Text("other".to_string()));
+        assert_eq!(
+            carry_hot_forward(
+                Some(&snapshot),
+                &other_system,
+                &snapshot.tools_json,
+                &grown,
+                Some(&"fixture-route")
+            ),
+            None,
+            "system drift resets"
+        );
+        assert_eq!(
+            carry_hot_forward(
+                Some(&snapshot),
+                &snapshot.system,
+                "{\"name\":\"other\"}",
+                &grown,
+                Some(&"fixture-route")
+            ),
+            None,
+            "tool drift resets"
+        );
+        assert_eq!(
+            carry_hot_forward(
+                None,
+                &snapshot.system,
+                &snapshot.tools_json,
+                &grown,
+                Some(&"fixture-route")
+            ),
+            None
+        );
+        assert_eq!(
+            carry_hot_forward(
+                Some(&snapshot),
+                &snapshot.system,
+                &snapshot.tools_json,
+                &grown,
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            carry_hot_forward(
+                Some(&snapshot),
+                &snapshot.system,
+                &snapshot.tools_json,
+                &grown,
+                Some(&"different-fixture-route")
+            ),
+            None
+        );
+        let mut cold = snapshot.clone();
+        cold.last_hit_tokens = Some(0);
+        assert_eq!(
+            carry_hot_forward(
+                Some(&cold),
+                &cold.system,
+                &cold.tools_json,
+                &grown,
+                Some(&"fixture-route")
+            ),
+            None,
+            "zero hits never carry"
+        );
     }
 }
