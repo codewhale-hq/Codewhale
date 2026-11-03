@@ -525,6 +525,7 @@ pub struct ThreadForkParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThreadListParams {
     #[serde(default)]
     pub include_archived: bool,
@@ -533,6 +534,7 @@ pub struct ThreadListParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ThreadReadParams {
     pub thread_id: String,
 }

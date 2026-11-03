@@ -631,6 +631,16 @@ in the app-server can produce model output, so a prompt either runs or fails.
 and replies `status: "completed"` with the streamed frames in `events` — where
 it previously replied `accepted` without doing anything.
 
+### Compatibility list and read parameters
+
+`thread/list` accepts only `include_archived` and `limit`; `thread/read`
+accepts only `thread_id` and returns the complete legacy history projection.
+Both also apply inside `thread/request`. Unknown fields fail with `-32602`
+before contacting the canonical owner. Workspace, cursor, `archived`, search
+and `includeTurns` parameters from the pinned v2 contract are not implemented
+by these compatibility methods; they are rejected instead of silently ignored.
+These method names do not establish Codex wire parity.
+
 ### Thread ids and restarts
 
 `thread/message`, `thread/request` messages, and HTTP `POST /thread` messages

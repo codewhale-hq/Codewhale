@@ -542,6 +542,7 @@ struct DestinationStatus {
     target: PathBuf,
     /// Whether `target` already exists (saving would replace it).
     target_exists: bool,
+    original: Option<String>,
 }
 
 /// Which control on the Review step owns keyboard focus.
@@ -698,7 +699,6 @@ fn deterministic_composition_advisory(
 /// A role assignment edits only route keys in the original document. The
 /// source and possible destinations are captured before opening the picker.
 struct RouteAssignment {
-    editor_id: uuid::Uuid,
     id: String,
     template: toml::Table,
     original_member: codewhale_engine::fleet::profile::AgentProfile,
@@ -718,15 +718,8 @@ struct ModelDraftRequest {
     reasoning_effort: Option<String>,
 }
 
-fn assignment_source(path: &Path) -> Result<Option<String>, String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(format!("Cannot read {}: {err}", path.display())),
-    }
-}
-
 pub struct FleetSetupView {
+    editor_id: uuid::Uuid,
     snapshot: FleetSetupSnapshot,
     assignment: Option<RouteAssignment>,
     step: Step,
@@ -803,6 +796,7 @@ impl FleetSetupView {
     /// validates a dormant external-consent route so the same row becomes
     /// Ready without closing and reopening the modal.
     pub fn refresh_from_snapshot(&mut self, snapshot: FleetSetupSnapshot) {
+        let old_editor_id = self.editor_id;
         let old_step = self.step;
         let old_role_idx = self.role_idx;
         let old_model_idx = self.model_idx;
@@ -820,6 +814,7 @@ impl FleetSetupView {
 
         *self = Self::from_snapshot(snapshot);
 
+        self.editor_id = old_editor_id;
         self.step = old_step;
         self.role_idx = old_role_idx;
         self.model_idx = old_model_idx.min(self.filtered_model_indices().len().saturating_sub(1));
@@ -898,11 +893,16 @@ impl FleetSetupView {
             }
             _ => None,
         };
-        let source = if source_scope.is_some() {
+        let source = if let Some(scope) = source_scope {
             Some((
                 member.source.clone(),
-                assignment_source(&member.source)?
-                    .ok_or_else(|| "The saved role disappeared. Reopen Fleet.".to_string())?,
+                codewhale_engine::fleet::profile::read_agent_profile_document(
+                    scope,
+                    &app.workspace,
+                    &member.source,
+                )
+                .map_err(|err| err.to_string())?
+                .ok_or_else(|| "The saved role disappeared. Reopen Fleet.".to_string())?,
             ))
         } else {
             None
@@ -924,7 +924,6 @@ impl FleetSetupView {
             toml::from_str::<toml::Table>(&draft.render_toml()).map_err(|err| err.to_string())?
         };
         view.assignment = Some(RouteAssignment {
-            editor_id: uuid::Uuid::new_v4(),
             id: member.id.clone(),
             template,
             original_member: member.clone(),
@@ -942,26 +941,29 @@ impl FleetSetupView {
             .into_iter()
             .flatten()
             .filter(|destination| destination.unavailable_reason.is_none())
-            .map(|destination| {
-                Ok((
-                    destination.target.clone(),
-                    assignment_source(&destination.target)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+            .map(|destination| (destination.target.clone(), destination.original.clone()))
+            .collect();
         view.assignment.as_mut().unwrap().destinations = targets;
         view.step = Step::Destination;
         Ok(view)
     }
 
     pub(crate) fn route_pick_request(&self) -> ViewAction {
-        self.assignment
-            .as_ref()
-            .map_or(ViewAction::None, |assignment| {
-                ViewAction::Emit(ViewEvent::FleetProfileRoutePickRequested {
-                    editor_id: assignment.editor_id,
-                })
+        self.assignment.as_ref().map_or(ViewAction::None, |_| {
+            ViewAction::Emit(ViewEvent::FleetProfileRoutePickRequested {
+                editor_id: self.editor_id,
             })
+        })
+    }
+
+    pub(crate) fn profile_commit_matches(&self, editor_id: uuid::Uuid) -> bool {
+        self.editor_id == editor_id && self.assignment.is_none() && self.step == Step::Review
+    }
+
+    pub(crate) fn profile_save_failed(&mut self, reason: String) {
+        self.notice = Some(reason);
+        self.replace_armed = false;
+        self.review_scroll = 0;
     }
 
     pub(crate) fn assignment_context(&self) -> (String, String) {
@@ -975,7 +977,7 @@ impl FleetSetupView {
         let assignment = self
             .assignment
             .as_ref()
-            .filter(|assignment| assignment.editor_id == editor_id)?;
+            .filter(|_| self.editor_id == editor_id)?;
         Some(super::fleet_detail::FleetRouteSelection {
             provider: assignment.provider.clone(),
             model: assignment.model.clone(),
@@ -996,7 +998,7 @@ impl FleetSetupView {
         let Some(assignment) = self
             .assignment
             .as_mut()
-            .filter(|assignment| assignment.editor_id == editor_id)
+            .filter(|_| self.editor_id == editor_id)
         else {
             return false;
         };
@@ -1021,7 +1023,7 @@ impl FleetSetupView {
         let assignment = self
             .assignment
             .as_ref()
-            .filter(|assignment| assignment.editor_id == editor_id)
+            .filter(|_| self.editor_id == editor_id)
             .ok_or_else(|| "This assignment is no longer open.".to_string())?;
         if !matches!(
             resolve_fleet_setup_edit_target(&app.workspace),
@@ -1056,8 +1058,15 @@ impl FleetSetupView {
         {
             return Err(reason);
         }
-        if let Some((path, expected)) = &assignment.source
-            && assignment_source(path)?.as_ref() != Some(expected)
+        if let (Some(scope), Some((path, expected))) = (assignment.source_scope, &assignment.source)
+            && codewhale_engine::fleet::profile::read_agent_profile_document(
+                scope,
+                &app.workspace,
+                path,
+            )
+            .map_err(|err| err.to_string())?
+            .as_ref()
+                != Some(expected)
         {
             return Err("This role changed on disk. Reopen Fleet before saving.".into());
         }
@@ -1070,23 +1079,6 @@ impl FleetSetupView {
             .iter()
             .find(|(path, _)| path == target)
             .ok_or("Save destination changed. Reopen Fleet.")?;
-        if assignment_source(target)? != expected.1 {
-            return Err("The destination changed on disk. Reopen Fleet before saving.".into());
-        }
-        let dir = target.parent().ok_or("Invalid profile destination")?;
-        let identities = if self.profile_scope == FleetProfileScope::Project {
-            codewhale_engine::fleet::profile::load_workspace_agent_profile_identities(
-                &app.workspace,
-            )
-        } else {
-            codewhale_engine::fleet::profile::load_agent_profile_identities_from_dir(dir)
-        }
-        .map_err(|err| err.to_string())?;
-        if identities.iter().any(|profile| {
-            profile.id.eq_ignore_ascii_case(&assignment.id) && profile.source != *target
-        }) {
-            return Err("Another file already defines this role. Reopen Fleet.".into());
-        }
         let mut table = assignment.template.clone();
         for alias in [
             "model",
@@ -1110,9 +1102,15 @@ impl FleetSetupView {
         }
         table.insert("loadout".into(), toml::Value::String("inherit".into()));
         let text = toml::to_string_pretty(&table).map_err(|err| err.to_string())?;
-        let mut transaction = codewhale_config::persistence::SetupTransaction::new();
-        transaction.stage(target.clone(), text.into_bytes());
-        transaction.commit().map_err(|err| err.to_string())?;
+        codewhale_engine::fleet::profile::save_agent_profile_document(
+            self.profile_scope,
+            &app.workspace,
+            target,
+            expected.1.as_deref(),
+            &assignment.id,
+            &text,
+        )
+        .map_err(|err| err.to_string())?;
         Ok(format!(
             "{} model saved · {}",
             assignment.id,
@@ -1207,6 +1205,7 @@ impl FleetSetupView {
         }
         let composition = deterministic_composition_advisory(&snapshot.available_models);
         Self {
+            editor_id: uuid::Uuid::new_v4(),
             snapshot,
             assignment: None,
             step: Step::Role,
@@ -1284,12 +1283,22 @@ impl FleetSetupView {
                 .replace("{name}", &draft.file_name())
                 .replace("{model_label}", &model_label),
         );
-        let content = format!(
-            "{}{}",
-            self.scope_preview_header(header),
-            draft.render_toml()
-        );
+        let rendered = draft.render_toml();
+        let file_name = draft.file_name();
+        let target_changed = self
+            .destination_for(self.profile_scope)
+            .is_none_or(|destination| {
+                destination
+                    .target
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    != Some(file_name.as_str())
+            });
         self.model_draft = Some(draft);
+        if target_changed {
+            self.refresh_destinations();
+        }
+        let content = format!("{}{}", self.scope_preview_header(header), rendered);
         self.model_draft_preview = Some(content.clone());
         self.review_scroll = 0;
         Some((title, content))
@@ -1725,7 +1734,11 @@ impl FleetSetupView {
     /// change the answer — entering Review, and toggling project/user scope —
     /// so the Review step never touches the filesystem while painting.
     fn refresh_destinations(&mut self) {
-        let file = format!("{}.toml", profile_file_stem(&self.selected_role()));
+        let file = self
+            .model_draft
+            .as_ref()
+            .map(|draft| draft.file_name())
+            .unwrap_or_else(|| format!("{}.toml", profile_file_stem(&self.selected_role())));
         let statuses = DESTINATION_ORDER.map(|scope| {
             let file = self
                 .assignment
@@ -1862,15 +1875,19 @@ impl FleetSetupView {
             self.replace_armed = true;
             return ViewAction::None;
         }
-        if let Some(assignment) = &self.assignment {
+        if self.assignment.is_some() {
             return ViewAction::Emit(ViewEvent::FleetProfileRouteCommitRequested {
-                editor_id: assignment.editor_id,
+                editor_id: self.editor_id,
             });
         }
         match self.model_draft.clone() {
-            Some(draft) => ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested {
+            Some(draft) => ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested {
+                editor_id: self.editor_id,
                 draft,
                 scope: self.profile_scope,
+                expected: self
+                    .destination_for(self.profile_scope)
+                    .and_then(|d| d.original.clone()),
             }),
             None => self.commit_starter_profile_action(),
         }
@@ -1911,9 +1928,13 @@ impl FleetSetupView {
     /// structured choices already visible on this screen, so a second TOML
     /// ratification state adds no trust boundary.
     fn commit_starter_profile_action(&self) -> ViewAction {
-        ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested {
+        ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested {
+            editor_id: self.editor_id,
             draft: self.starter_profile_draft(),
             scope: self.profile_scope,
+            expected: self
+                .destination_for(self.profile_scope)
+                .and_then(|d| d.original.clone()),
         })
     }
 
@@ -2533,7 +2554,10 @@ impl FleetSetupView {
         // and its label are visible at every scroll offset and every size.
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Min(1)])
+            .constraints([
+                Constraint::Length(if self.notice.is_some() { 4 } else { 2 }),
+                Constraint::Min(1),
+            ])
             .split(area);
         self.render_review_actions(rows[0], buf);
         let body = rows[1];
@@ -2786,9 +2810,15 @@ impl FleetSetupView {
             spans.push(Span::styled(text, style));
             spans.push(Span::raw(" "));
         }
-        Paragraph::new(vec![Line::from(spans), Line::from("")])
-            .wrap(Wrap { trim: true })
-            .render(area, buf);
+        Paragraph::new(vec![
+            Line::from(spans),
+            Line::from(Span::styled(
+                self.notice.as_deref().unwrap_or_default(),
+                Style::default().fg(palette::TEXT_PRIMARY),
+            )),
+        ])
+        .wrap(Wrap { trim: true })
+        .render(area, buf);
     }
 
     fn review_policy_summary(&self) -> String {
@@ -3029,12 +3059,29 @@ fn destination_status(
                 .replace("{path}", &parent.display().to_string()),
         );
     }
-    let target_exists = unavailable_reason.is_none() && target.is_file();
+    let original = if unavailable_reason.is_none() {
+        match codewhale_engine::fleet::profile::read_agent_profile_document(
+            scope, workspace, &target,
+        ) {
+            Ok(text) => text,
+            Err(error) => {
+                unavailable_reason = Some(
+                    tr(locale, MessageId::FleetProfileIdentityVerifyFailed)
+                        .replace("{error}", &error.to_string()),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let target_exists = original.is_some();
     DestinationStatus {
         scope,
         unavailable_reason,
         target,
         target_exists,
+        original,
     }
 }
 
@@ -3094,7 +3141,7 @@ approval_required = true
         );
         let mut view =
             FleetSetupView::new_for_route_assignment(&app, &config, "custom-reviewer").unwrap();
-        let editor_id = view.assignment.as_ref().unwrap().editor_id;
+        let editor_id = view.editor_id;
         assert_eq!(view.selected_role(), "custom-reviewer");
         assert_eq!(
             view.destination_for(FleetProfileScope::Project)
@@ -3135,9 +3182,21 @@ approval_required = true
         }
         assert!(!after.contains_key("model") && !after.contains_key("provider"));
         assert_eq!(after["reasoning_effort"].as_str(), Some("high"));
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let conflict = codewhale_engine::fleet::profile::save_agent_profile_document(
+            FleetProfileScope::Project,
+            workspace.path(),
+            &path,
+            Some(original),
+            "custom-reviewer",
+            original,
+        )
+        .unwrap_err();
+        assert!(conflict.is::<codewhale_engine::fleet::profile::AgentProfileWriteConflict>());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
         let mut stale =
             FleetSetupView::new_for_route_assignment(&app, &config, "custom-reviewer").unwrap();
-        let stale_id = stale.assignment.as_ref().unwrap().editor_id;
+        let stale_id = stale.editor_id;
         stale.accept_route(stale_id, "deepseek".into(), "auto".into(), None);
         let changed = format!(
             "{}\n# Another editor changed this file\n",
@@ -3162,7 +3221,7 @@ approval_required = true
             &config,
         );
         let mut view = FleetSetupView::new_for_route_assignment(&app, &config, "manager").unwrap();
-        let id = view.assignment.as_ref().unwrap().editor_id;
+        let id = view.editor_id;
         view.accept_route(id, "deepseek".into(), "auto".into(), None);
         assert_eq!(view.step, Step::Destination);
         assert!(!view.scope_decided);
@@ -3264,10 +3323,8 @@ approval_required = true
     /// A hermetic personal profile dir shared by the fixture snapshot, so no
     /// test reads the developer's real `$CODEWHALE_HOME/agents`.
     fn test_personal_dir() -> PathBuf {
-        static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-        DIR.get_or_init(|| tempfile::tempdir().expect("personal dir"))
-            .path()
-            .join("agents")
+        codewhale_engine::fleet::profile::personal_agent_profile_dir()
+            .expect("hermetic personal profile directory")
     }
 
     fn sample_draft() -> Box<codewhale_engine::fleet::profile::FleetProfileDraft> {
@@ -3515,7 +3572,7 @@ approval_required = true
         view.handle_key(key(KeyCode::BackTab));
         view.handle_key(key(KeyCode::Enter)); // arm again
         let action = view.handle_key(key(KeyCode::Enter)); // confirm
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, scope }) =
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, scope, .. }) =
             action
         else {
             panic!("second Enter saves");
@@ -3753,7 +3810,7 @@ approval_required = true
         assert_eq!(accepted.step, Step::Review);
         assert_eq!(accepted.composition_decision, CompositionDecision::Accepted);
         assert_eq!(accepted.selected_route().as_ref(), Some(&expected));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, .. }) =
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, .. }) =
             accepted.handle_key(key(KeyCode::Enter))
         else {
             panic!("only the existing review save path may persist an accepted suggestion");
@@ -3948,7 +4005,7 @@ approval_required = true
 
         // And ratifying commits exactly that route.
         let action = view.handle_key(key(KeyCode::Char('g')));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, scope }) =
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, scope, .. }) =
             action
         else {
             panic!("expected ratify commit event");
@@ -4069,7 +4126,7 @@ approval_required = true
 
         // A structured starter draft is save-ready from the summary.
         let action = view.handle_key(key(KeyCode::Char('g')));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, scope }) =
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, scope, .. }) =
             action
         else {
             panic!("expected starter commit event");
@@ -4086,15 +4143,44 @@ approval_required = true
         assert!(title.contains("GLM-5.2"));
         assert!(content.contains("id = \"reviewer\""), "{content}");
         assert!(content.contains("Nothing is saved until"), "{content}");
+        assert_eq!(
+            view.destination_for(view.profile_scope)
+                .unwrap()
+                .target
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("reviewer.toml")
+        );
 
         let action = view.handle_key(key(KeyCode::Char('g')));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, scope }) =
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, scope, .. }) =
             action
         else {
             panic!("expected ratify commit event");
         };
         assert_eq!(scope, FleetProfileScope::Personal);
         assert_eq!(draft.id, "reviewer");
+        let editor_id = view.editor_id;
+        assert!(view.profile_commit_matches(editor_id));
+        assert!(!view.profile_commit_matches(uuid::Uuid::new_v4()));
+        let preview = view.model_draft_preview.clone();
+        let expected = view
+            .destination_for(view.profile_scope)
+            .unwrap()
+            .original
+            .clone();
+        view.profile_save_failed("The profile changed. Review it again before saving.".into());
+        assert_eq!(view.step, Step::Review);
+        assert_eq!(view.model_draft.as_ref().unwrap().id, "reviewer");
+        assert_eq!(view.model_draft_preview, preview);
+        assert_eq!(
+            view.destination_for(view.profile_scope).unwrap().original,
+            expected
+        );
+        assert!(!view.replace_armed);
+        assert!(rendered_text(&view, 120, 32).contains("The profile changed."));
+        view.handle_key(key(KeyCode::Left));
+        assert!(!view.profile_commit_matches(editor_id));
     }
 
     #[test]
@@ -4119,8 +4205,7 @@ approval_required = true
 
         to_review(&mut view);
         let action = view.handle_key(key(KeyCode::Char('g')));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, .. }) =
-            action
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, .. }) = action
         else {
             panic!("expected fresh deterministic starter");
         };
@@ -4154,8 +4239,7 @@ approval_required = true
         );
         assert!(view.model_draft.is_none());
         let action = view.handle_key(key(KeyCode::Char('g')));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, .. }) =
-            action
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, .. }) = action
         else {
             panic!("expected the deterministic starter for the current answers");
         };
@@ -4411,7 +4495,7 @@ approval_required = true
         // The Review summary is already the structured confirmation surface;
         // one Enter saves the deterministic starter without another state.
         let action = view.handle_key(key(KeyCode::Enter));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, scope }) =
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, scope, .. }) =
             action
         else {
             panic!("expected one-Enter starter save");
@@ -4463,7 +4547,7 @@ approval_required = true
         assert_eq!(view.profile_scope, FleetProfileScope::Project);
 
         let action = view.handle_key(key(KeyCode::Enter));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, scope }) =
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, scope, .. }) =
             action
         else {
             panic!("expected project profile save event");
@@ -4480,8 +4564,7 @@ approval_required = true
         let mut view = FleetSetupView::from_snapshot(snapshot());
         to_review(&mut view);
         let action = view.handle_key(key(KeyCode::Enter));
-        let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft, .. }) =
-            action
+        let ViewAction::Emit(ViewEvent::FleetProfileDraftCommitRequested { draft, .. }) = action
         else {
             panic!("expected inherit starter save");
         };

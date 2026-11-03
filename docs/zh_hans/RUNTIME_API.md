@@ -488,6 +488,15 @@ HTTP `POST /prompt` 都会在运行时上执行一个**真实回合**，经由
 并回复 `status: "completed"`，`events` 中带上流式帧——而
 它以前只是回复 `accepted` 而什么都不做。
 
+### 兼容层的列表与读取参数
+
+`thread/list` 只接受 `include_archived` 和 `limit`；`thread/read`
+只接受 `thread_id`，返回完整的旧协议历史投影。通过 `thread/request`
+调用时也适用。未知字段会在访问规范 Runtime 所有者之前以 `-32602` 拒绝。
+这些兼容方法尚未实现固定 v2 合约中的工作区、游标、`archived`、搜索和
+`includeTurns` 参数，因此会明确拒绝，而不会静默忽略。同名方法不代表
+已实现 Codex 线协议兼容。
+
 ### 线程标识与重启
 
 规范线程 owner 保留完整已保存会话图、当前分支以及线程/会话绑定。
