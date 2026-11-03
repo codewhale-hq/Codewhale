@@ -579,6 +579,7 @@
                 .unwrap()
                 .is_some()
         );
+        fs::remove_file(checkpoints.join("latest.json")).expect("remove malformed listing fixture");
         let mut collision = session.clone();
         collision.metadata.id = format!("{}-other", session.metadata.id);
         manager.save_checkpoint(&collision).expect("save colliding checkpoint");

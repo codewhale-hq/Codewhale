@@ -160,9 +160,7 @@ pub(super) async fn list_sessions(
     tokio::task::spawn_blocking(move || {
         let manager = SessionManager::new(state.sessions_dir)
             .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-        let all = manager
-            .list_sessions()
-            .map_err(|e| ApiError::internal(format!("Failed to list sessions: {e}")))?;
+        let all = manager.list_sessions().map_err(map_session_list_err)?;
         // This route keeps returning full `SessionMetadata` for compatibility;
         // `/v1/sessions/summary` is the projected shape. Membership *and* order
         // come from the shared projection so the two routes never disagree.
@@ -190,9 +188,7 @@ pub(super) async fn list_sessions_summary(
     tokio::task::spawn_blocking(move || {
         let manager = SessionManager::new(state.sessions_dir)
             .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-        let all = manager
-            .list_sessions()
-            .map_err(|e| ApiError::internal(format!("Failed to list sessions: {e}")))?;
+        let all = manager.list_sessions().map_err(map_session_list_err)?;
         Ok::<_, ApiError>(project_sessions(&all, &projection, None))
     })
     .await
@@ -530,19 +526,8 @@ pub(super) async fn create_session_from_thread(
         });
     }
 
-    let messages =
-        messages_from_thread_detail(&state.runtime_threads, &detail).map_err(|error| {
-            ApiError::internal(format!("Failed to reconstruct thread history: {error}"))
-        })?;
-    if messages.is_empty() {
-        return Err(ApiError::bad_request(format!(
-            "Thread {thread_id} has no user or assistant messages to save"
-        )));
-    }
-
     let manager = SessionManager::new(state.sessions_dir.clone())
         .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
-    let total_tokens = total_tokens_from_thread_detail(&detail);
     // Export is idempotent (#6144). Every POST used to mint a fresh document
     // and rebind the thread to it, so each re-export left the previous
     // document unreferenced, and a crash between the save and the bind below
@@ -563,6 +548,30 @@ pub(super) async fn create_session_from_thread(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(map_session_err(&session_handle, error, "read")),
     };
+    let control_owner = codewhale_engine::session_manager::SessionWriteOwner::control();
+    let captured_source = if let Some(existing) = existing.as_ref() {
+        existing
+            .write_receipt
+            .as_ref()
+            .ok_or_else(|| ApiError::conflict("Export target source was not admitted"))?
+            .capture(control_owner)
+    } else {
+        manager
+            .expect_absent_session(&session_handle)
+            .and_then(|source| source.capture(control_owner))
+    }
+    .map_err(|error| ApiError::conflict(error.to_string()))?;
+    let messages =
+        messages_from_thread_detail(&state.runtime_threads, &detail).map_err(|error| {
+            ApiError::internal(format!("Failed to reconstruct thread history: {error}"))
+        })?;
+    if messages.is_empty() {
+        return Err(ApiError::bad_request(format!(
+            "Thread {thread_id} has no user or assistant messages to save"
+        )));
+    }
+
+    let total_tokens = total_tokens_from_thread_detail(&detail);
     let created = existing.is_none();
     let mut session = match existing {
         Some(existing) => {
@@ -602,15 +611,18 @@ pub(super) async fn create_session_from_thread(
         session_title_override(req.title.as_deref(), detail.thread.title.as_deref())
     {
         session.metadata.title = title;
+        session.metadata.title_is_custom = true;
     }
     let title = session.metadata.title.clone();
     let message_count = session.metadata.message_count;
 
+    session.write_receipt = Some(captured_source);
     persist_thread_cost(&state.runtime_threads, thread_id, &mut session).await?;
 
-    manager
-        .save_session(&session)
-        .map_err(|e| ApiError::internal(format!("Failed to save session: {e}")))?;
+    let publication = manager
+        .publish_session(&session)
+        .map_err(|error| map_session_err(&session.metadata.id, error, "save"))?;
+    session.adopt_publication(&publication);
 
     // Link the session to the thread so that `ensure_engine_loaded` can
     // restore the full message history from the session file.
@@ -839,20 +851,6 @@ pub(crate) async fn save_session_in_runtime(
         });
     }
 
-    // Get the engine handle (loads the thread into an engine if needed),
-    // then request a session snapshot. This reuses the same code path as
-    // TUI's `build_session_snapshot`: the engine holds the authoritative
-    // messages and token usage, so we don't need to reconstruct from turns.
-    let engine = runtime
-        .get_engine(&thread_id)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to get engine for thread: {e}")))?;
-
-    let snapshot = engine
-        .get_session_snapshot()
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to get session snapshot: {e}")))?;
-
     let manager = SessionManager::new(sessions_dir.to_path_buf())
         .map_err(|e| ApiError::internal(format!("Failed to open sessions dir: {e}")))?;
 
@@ -886,23 +884,58 @@ pub(crate) async fn save_session_in_runtime(
     // collide with another thread's document. Snapshot ownership does not
     // depend on this binding: a thread owns the restore points recorded on
     // its turns.
-    let document_id = match req.session_id {
-        Some(named) => named,
-        None => runtime
-            .get_thread(&thread_id)
-            .await
-            .map_err(map_thread_err)?
-            .session_id
-            .unwrap_or_else(|| snapshot.session_id.clone()),
-    };
+    let document_id = req
+        .session_id
+        .clone()
+        .or_else(|| detail.thread.session_id.clone())
+        .unwrap_or_else(|| codewhale_engine::runtime_threads::thread_session_id(&thread_id));
     let _lease = reserve_session_write(sessions_dir, &document_id, "save").await?;
+    let existing = match manager.load_session_snapshot(&document_id) {
+        Ok(session) => Some(session),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(map_session_err(&document_id, error, "read")),
+    };
+    let captured_source = if detail.thread.session_id.as_deref() == Some(document_id.as_str()) {
+        let captured_runtime = std::sync::Arc::clone(runtime);
+        let id = thread_id.clone();
+        codewhale_engine::runtime_threads::manager::history::history_owner_work(move || {
+            captured_runtime.saved_session_publication_source(&id)
+        }).await.map_err(|error| ApiError::conflict(error.to_string()))?
+    } else if let Some(existing) = existing.as_ref() {
+        existing.write_receipt.clone()
+    } else {
+        Some(manager.expect_absent_session(&document_id).map_err(|error| ApiError::conflict(error.to_string()))?)
+    }.ok_or_else(|| ApiError::conflict("This Runtime history has no admitted full-document publication source; reopen its saved session before saving"))?;
+
+    let captured_source = captured_source
+        .capture(codewhale_engine::session_manager::SessionWriteOwner::control())
+        .map_err(|error| ApiError::conflict(error.to_string()))?;
+    // Get the engine handle (loads the thread into an engine if needed),
+    // then request a session snapshot. This reuses the same code path as
+    // TUI's `build_session_snapshot`: the engine holds the authoritative
+    // messages and token usage, so we don't need to reconstruct from turns.
+    let engine = runtime
+        .get_engine(&thread_id)
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get engine for thread: {e}")))?;
+
+    let snapshot = engine
+        .get_session_snapshot()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get session snapshot: {e}")))?;
+
+    if snapshot.session_id != detail.thread.id || snapshot.workspace != detail.thread.workspace {
+        return Err(ApiError::conflict(
+            "Engine snapshot source changed before session publication",
+        ));
+    }
 
     // Build or update the session, mirroring TUI's `build_session_snapshot`.
     // Only `io::ErrorKind::NotFound` falls back to creating a new session;
     // other I/O errors (e.g. PermissionDenied) are propagated so callers
     // don't silently overwrite a corrupt or inaccessible session file.
-    let mut session = match manager.load_session(&document_id) {
-        Ok(existing) => {
+    let mut session = match existing {
+        Some(existing) => {
             let mut updated = codewhale_engine::session_manager::update_session(
                 existing,
                 &snapshot.messages,
@@ -917,7 +950,7 @@ pub(crate) async fn save_session_in_runtime(
             updated.metadata.mode = Some(snapshot.mode.clone());
             updated
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        None => {
             let mut session =
                 codewhale_engine::session_manager::create_saved_session_with_id_and_mode(
                     document_id.clone(),
@@ -934,12 +967,8 @@ pub(crate) async fn save_session_in_runtime(
             );
             session
         }
-        Err(e) => {
-            return Err(ApiError::internal(format!(
-                "Failed to load session {document_id}: {e}"
-            )));
-        }
     };
+    session.write_receipt = Some(captured_source);
 
     persist_thread_cost(runtime, &thread_id, &mut session).await?;
 
@@ -948,9 +977,10 @@ pub(crate) async fn save_session_in_runtime(
     }
 
     // Save the session.
-    manager
-        .save_session(&session)
-        .map_err(|e| ApiError::internal(format!("Failed to save session: {e}")))?;
+    let publication = manager
+        .publish_session(&session)
+        .map_err(|error| map_session_err(&session.metadata.id, error, "save"))?;
+    session.adopt_publication(&publication);
 
     // Link the session to the thread so that `ensure_engine_loaded` can
     // restore the full message history (including thinking/tool blocks)
@@ -1111,9 +1141,21 @@ pub(super) fn session_to_detail(session: SavedSession) -> SessionDetailResponse 
     }
 }
 
+fn map_session_list_err(err: std::io::Error) -> ApiError {
+    if err.kind() == std::io::ErrorKind::FileTooLarge {
+        map_session_err("catalog", err, "list")
+    } else {
+        ApiError::internal(format!("Failed to list sessions: {err}"))
+    }
+}
+
 pub(super) fn map_session_err(id: &str, err: std::io::Error, action: &str) -> ApiError {
     match err.kind() {
         std::io::ErrorKind::NotFound => ApiError::not_found(format!("Session '{id}' not found")),
+        std::io::ErrorKind::FileTooLarge => ApiError {
+            code: Some("session_metadata_too_large"),
+            ..ApiError::payload_too_large(format!("Failed to {action} session '{id}': {err}"))
+        },
         std::io::ErrorKind::InvalidData => {
             ApiError::bad_request(format!("Failed to parse session '{id}': {err}"))
         }
@@ -1808,6 +1850,12 @@ pub(crate) async fn initialize_empty_session(
         }
         Err(error) => return Err(map_session_err(session_id, error, "read")),
     }
+    let source = manager
+        .expect_absent_session(session_id)
+        .and_then(|source| {
+            source.capture(codewhale_engine::session_manager::SessionWriteOwner::control())
+        })
+        .map_err(|error| ApiError::conflict(error.to_string()))?;
     let mut session = create_saved_session_with_id_and_mode(
         session_id.to_string(),
         &[],
@@ -1820,9 +1868,11 @@ pub(crate) async fn initialize_empty_session(
     stamp_session_provider_from_thread(&runtime.read_config(), &detail, &mut session.metadata)
         .map_err(ApiError::bad_request)?;
     session.metadata.runtime_store = Some(runtime.session_store_binding());
-    manager
-        .save_session(&session)
-        .map_err(|error| ApiError::internal(error.to_string()))?;
+    session.write_receipt = Some(source);
+    let publication = manager
+        .publish_session(&session)
+        .map_err(|error| map_session_err(session_id, error, "initialize"))?;
+    session.adopt_publication(&publication);
     runtime
         .set_thread_session_checkpoint(thread_id, &session)
         .await

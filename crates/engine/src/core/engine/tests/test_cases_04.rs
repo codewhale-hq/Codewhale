@@ -64,7 +64,9 @@ async fn queued_goal_clear_refreshes_prompt_and_cancels_stale_continuation() {
                 Event::TurnStarted { .. } => {
                     panic!("queued clear must prevent a stale goal continuation")
                 }
-                Event::SessionUpdated { system_prompt, .. } => {
+                Event::SessionUpdated {
+                    source: _,
+                    system_prompt, .. } => {
                     let prompt = match system_prompt.expect("clear SessionUpdated prompt") {
                         SystemPrompt::Text(text) => text,
                         SystemPrompt::Blocks(blocks) => blocks

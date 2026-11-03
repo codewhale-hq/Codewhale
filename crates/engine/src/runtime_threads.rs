@@ -49,6 +49,10 @@ use crate::tools::subagent::{
     SharedSubAgentManager, SubAgentStatus, new_shared_runtime_subagent_manager,
 };
 use crate::tools::todo::new_shared_todo_list;
+use codewhale_app_server_protocol::runtime::{
+    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult, DynamicToolSpec,
+    TurnEnvironmentParams,
+};
 #[cfg(test)]
 use codewhale_config::AppMode;
 use codewhale_config::ProviderKind;
@@ -64,10 +68,6 @@ use codewhale_protocol::agent_mail::{
     AgentMailEventPayload, AgentMailFailureCode, AgentMailFailureReceipt, AgentMailMessageId,
     AgentMailSendRequest, AgentMailSendResponse, AgentMailStatus, MAX_AGENT_MAIL_DELIVERY_ATTEMPTS,
     MAX_AGENT_MAIL_SUMMARY_BYTES,
-};
-use codewhale_protocol::runtime::{
-    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult, DynamicToolSpec,
-    TurnEnvironmentParams,
 };
 use codewhale_runtime::config::{Config, MAX_SUBAGENTS, ProviderIdentity};
 use codewhale_runtime::runtime_policy::RuntimePolicyProjection;
@@ -411,6 +411,8 @@ pub struct ThreadReadMarker {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SavedSessionCheckpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_observation: Option<crate::session_manager::SessionObservation>,
     pub covered_turn_id: Option<String>,
     /// Fingerprint of the document's first `messages_len` messages.
     pub messages_sha256: String,
@@ -683,6 +685,14 @@ fn unanswered_call_result(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeTurnRequestDiagnostics {
+    #[serde(default)]
+    pub primary_coverage_recorded: bool,
+    #[serde(default)]
+    pub primary_usage_reported: u32,
+    #[serde(default)]
+    pub primary_usage_unknown: u32,
+    #[serde(default)]
+    pub primary_usage_missing: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<RuntimeTurnStopReason>,
     /// Parent streaming model-client calls, including stream retries.
@@ -716,6 +726,10 @@ pub enum RuntimeTurnStopReason {
 impl From<&crate::tool_inspection::TurnStopDiagnostics> for RuntimeTurnRequestDiagnostics {
     fn from(diagnostics: &crate::tool_inspection::TurnStopDiagnostics) -> Self {
         Self {
+            primary_coverage_recorded: false,
+            primary_usage_reported: 0,
+            primary_usage_unknown: 0,
+            primary_usage_missing: 0,
             stop_reason: diagnostics.reason.map(|reason| match reason {
                 crate::tool_inspection::TurnStopReason::ProviderNoToolCall => {
                     RuntimeTurnStopReason::ProviderNoToolCall
@@ -966,8 +980,8 @@ pub struct TurnRecord {
         serialize_with = "serialize_routed_usage_drop_records"
     )]
     pub routed_usage_drop_records: Vec<RuntimeUsageDropRecord>,
-    /// Fingerprints of provider-call identities already appended to this turn.
-    /// This durable ledger makes mailbox delivery, direct sinks, fallback
+    /// Fingerprints of provider-call identities already settled by this turn.
+    /// Primary membership adds no routed amount. This ledger makes mailbox, sink, fallback
     /// recovery, and process restart idempotent without persisting raw ids.
     #[serde(
         default,
@@ -4709,6 +4723,10 @@ impl HeldRuntimeStore {
         let mut thread = store.load_thread(thread_id)?;
         thread.session_id = Some(session.metadata.id.clone());
         thread.saved_session_checkpoint = Some(SavedSessionCheckpoint {
+            publication_observation: session
+                .write_receipt
+                .as_ref()
+                .and_then(|receipt| receipt.observation().ok()),
             covered_turn_id: thread.latest_turn_id.clone(),
             messages_sha256: session_messages_sha256(&session.messages)?,
             messages_len: Some(session.messages.len()),
@@ -5057,6 +5075,8 @@ pub struct RuntimeHistoryOperation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_document_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication_base: Option<crate::session_manager::SessionObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     goal_source_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     goal_target_digest: Option<String>,
@@ -5079,6 +5099,18 @@ pub struct RuntimeHistoryWitness {
     pub workspace: PathBuf,
 }
 impl RuntimeHistoryOperation {
+    pub fn session_publication_id(&self) -> Result<String> {
+        self.validate()?;
+        Ok(codewhale_runtime::hashing::sha256_hex(
+            codewhale_runtime::hashing::canonical_json(&serde_json::json!({
+                "session_publication": 1,
+                "key_fingerprint": self.key_fingerprint,
+                "receipt": self.receipt,
+            }))
+            .as_bytes(),
+        ))
+    }
+
     fn validate(&self) -> Result<()> {
         anyhow::ensure!(
             self.version == 1 && self.receipt.version == 1,

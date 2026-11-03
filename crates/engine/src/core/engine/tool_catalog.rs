@@ -432,9 +432,9 @@ pub(super) fn configure_composition_entry(
     catalog: &mut [Tool],
     name: Option<&str>,
     members: &[String],
-) {
+) -> bool {
     if !composition_eager(catalog) {
-        return;
+        return false;
     }
     let mut definition = crate::tools::codemode::execute_tools_tool_definition();
     if !members.is_empty()
@@ -469,8 +469,18 @@ pub(super) fn configure_composition_entry(
         .iter_mut()
         .find(|t| t.name == EXECUTE_TOOLS_TOOL_NAME)
     {
-        tool.description = definition.description;
-        tool.input_schema = definition.input_schema;
+        let mut changed = false;
+        if tool.description != definition.description {
+            tool.description = definition.description;
+            changed = true;
+        }
+        if tool.input_schema != definition.input_schema {
+            tool.input_schema = definition.input_schema;
+            changed = true;
+        }
+        changed
+    } else {
+        false
     }
 }
 

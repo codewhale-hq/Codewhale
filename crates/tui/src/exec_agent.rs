@@ -95,11 +95,8 @@ async fn persist_exec_checkpoint(
     turn_id: Option<&str>,
     engine: &codewhale_engine::core::engine::EngineHandle,
     deadline: Instant,
+    source: &mut Option<codewhale_engine::session_manager::SessionWriteReceipt>,
 ) {
-    use codewhale_engine::core::events::{
-        SessionCheckpointProjection, SessionCheckpointReceipt, SessionCheckpointRequest,
-    };
-
     if turn_id != Some(request.caller.turn_id.as_str()) {
         request.fail("exec session checkpoint does not match its active turn");
         return;
@@ -122,42 +119,39 @@ async fn persist_exec_checkpoint(
         request.no_backend();
         return;
     };
+    let Some(captured_source) = source.clone() else {
+        request.fail("exec checkpoint has no admitted original session source");
+        return;
+    };
+    let Some(captured_owner) = request.snapshot.source.clone() else {
+        request.fail("exec checkpoint has no native Engine source");
+        return;
+    };
     let write_request = Arc::clone(&request);
-    let mut writer = tokio::task::spawn_blocking(move || -> Result<SessionCheckpointReceipt> {
-        let snapshot = &write_request.snapshot;
-        let id = persist_exec_session(
-            &snapshot.messages,
-            &snapshot.model,
-            PersistedProviderRoute {
-                kind: &snapshot.model_provider,
-                id: snapshot.model_provider_id.as_deref(),
-            },
-            &snapshot.workspace,
-            &snapshot.system_prompt,
-            Some(&snapshot.session_id),
-            snapshot.total_tokens,
-            None,
-            manager.as_ref(),
-            &[],
-            Some(write_request.as_ref()),
-        )?;
-        let persisted = manager
-            .load_session_snapshot(&id)
-            .context("could not read back exec session checkpoint")?;
-        write_request
-            .validate_prefix(
-                &persisted.metadata.id,
-                &persisted.metadata.workspace,
-                &persisted.messages,
-            )
-            .map_err(anyhow::Error::msg)?;
-        Ok(SessionCheckpointReceipt {
-            persisted_sha256: SessionCheckpointRequest::prefix_hash(&persisted.messages)
-                .map_err(anyhow::Error::msg)?,
-            messages_len: persisted.messages.len(),
-            projection: SessionCheckpointProjection::Exact,
-        })
-    });
+    let mut writer = tokio::task::spawn_blocking(
+        move || -> Result<codewhale_engine::session_manager::SessionPublication> {
+            let snapshot = &write_request.snapshot;
+            let publication = persist_exec_session(
+                &snapshot.messages,
+                &snapshot.model,
+                PersistedProviderRoute {
+                    kind: &snapshot.model_provider,
+                    id: snapshot.model_provider_id.as_deref(),
+                },
+                &snapshot.workspace,
+                &snapshot.system_prompt,
+                Some(&snapshot.session_id),
+                snapshot.total_tokens,
+                None,
+                manager.as_ref(),
+                &[],
+                Some(write_request.as_ref()),
+                &captured_source,
+                &captured_owner,
+            )?;
+            Ok(publication)
+        },
+    );
     let result = tokio::select! {
         biased;
         () = request.withdraw.cancelled() => {
@@ -178,7 +172,10 @@ async fn persist_exec_checkpoint(
         result = &mut writer => result,
     };
     match result {
-        Ok(Ok(receipt)) => request.succeed(receipt),
+        Ok(Ok(publication)) => {
+            *source = Some(publication.write_receipt());
+            request.succeed(publication.checkpoint_receipt);
+        }
         Ok(Err(error)) => request.fail(format!("exec session checkpoint failed: {error:#}")),
         Err(error) => request.fail(format!("exec session checkpoint writer failed: {error}")),
     }
@@ -276,6 +273,11 @@ pub(crate) async fn run_exec_agent(
         _ => anyhow::bail!("incomplete Fleet session capture destination"),
     };
 
+    let mut exec_write_receipt = resume_session
+        .as_ref()
+        .and_then(|saved| saved.write_receipt.clone());
+    let exec_is_fresh = resume_session.is_none();
+
     let exec_session_id = fleet_capture
         .as_ref()
         .map(|(id, _)| id.clone())
@@ -307,7 +309,10 @@ pub(crate) async fn run_exec_agent(
         ))
     };
     if should_persist_session {
-        open_exec_session_manager()?;
+        let manager = open_exec_session_manager()?;
+        if exec_is_fresh {
+            exec_write_receipt = Some(manager.expect_absent_session(&exec_session_id)?);
+        }
     }
 
     let route = resolve_cli_exec_route(config, model, prompt, force_configured_route).await?;
@@ -665,7 +670,7 @@ pub(crate) async fn run_exec_agent(
             .unwrap_or_else(codewhale_engine::tools::subagent::AdvisorConfig::disabled),
     };
 
-    let engine_handle = spawn_engine(engine_config, &execution_config, None);
+    let engine_handle = spawn_engine(engine_config, &execution_config, None).await;
     // A restricted posture that resolves to no enforcing sandbox must reach
     // the person running exec, not only the model's posture line: policy-only
     // is accepted (read-only already fails closed in the shell tool), but it
@@ -699,6 +704,7 @@ pub(crate) async fn run_exec_agent(
 
         engine_handle
             .send(Op::SyncSession {
+                control: codewhale_engine::core::ops::SessionControlId::new(),
                 session_id: Some(saved_id.clone()),
                 messages: saved.messages,
                 system_prompt: saved.system_prompt.map(SystemPrompt::Text),
@@ -797,9 +803,10 @@ pub(crate) async fn run_exec_agent(
     let mut reported_sandbox_contract = false;
 
     let mut active_turn_id = None;
-    let mut image_request_receipts = Vec::new();
+    let mut provider_request_receipts = Vec::new();
     let mut latest_session_id = loaded_session_id;
     let mut latest_messages: Arc<Vec<Message>> = Arc::new(Vec::new());
+    let mut latest_source: Option<codewhale_engine::core::ops::SessionSnapshotSource> = None;
     let mut latest_system_prompt: Option<SystemPrompt> = None;
     let mut latest_model = effective_model.clone();
     let mut latest_workspace = workspace.clone();
@@ -1154,17 +1161,31 @@ pub(crate) async fn run_exec_agent(
                 }
             }
             Event::ProviderRequestReceipt { receipt } => {
-                if receipt
+                let image_projection = receipt
                     .get("wire_observations")
                     .and_then(serde_json::Value::as_array)
                     .is_some_and(|observations| {
                         observations
                             .iter()
                             .any(|observation| observation.get("image_projection").is_some())
-                    })
-                {
+                    });
+                let coverage = receipt.get("coverage").cloned().and_then(|value| {
+                    serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(
+                        value,
+                    )
+                    .ok()
+                });
+                let unknown_primary = receipt["primary"].as_bool() == Some(true)
+                    && matches!(
+                        coverage,
+                        Some(
+                            codewhale_engine::llm_client::ProviderUsageCoverage::Missing
+                                | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
+                        )
+                    );
+                if image_projection || unknown_primary {
                     should_persist_session = true;
-                    image_request_receipts.push(receipt.clone());
+                    provider_request_receipts.push(receipt.clone());
                 }
                 if output_format == ExecOutputFormat::StreamJson {
                     emit_exec_stream_event(&ExecStreamEvent::ProviderRequestReceipt { receipt })?;
@@ -1193,6 +1214,9 @@ pub(crate) async fn run_exec_agent(
                 }
             }
             Event::TurnComplete {
+                turn_id,
+                submission_id,
+                compaction_id,
                 status,
                 error,
                 usage,
@@ -1200,6 +1224,25 @@ pub(crate) async fn run_exec_agent(
                 ..
             } => {
                 let _timing = codewhale_runtime::logging::PhaseTimer::start("exec_postprocessing");
+                let terminal_source = codewhale_engine::core::ops::SessionSnapshotSource::terminal(
+                    turn_id,
+                    submission_id,
+                    compaction_id,
+                );
+                let terminal_snapshot = match engine_handle.get_session_snapshot().await {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(error) => {
+                        tracing::warn!(%error, "exec terminal session snapshot could not be read; checkpoint retained");
+                        None
+                    }
+                }.filter(|snapshot| {
+                            snapshot.source.as_ref() == terminal_source.as_ref()
+                                && terminal_source.is_some()
+                                && snapshot.session_id == exec_session_id
+                                && snapshot.workspace == exec_session_workspace
+                                && latest_source.as_ref() == terminal_source.as_ref()
+                                && snapshot.messages.as_slice() == latest_messages.as_slice()
+                        });
                 let mut terminal_status = status;
                 let terminal_error = error;
                 #[cfg(unix)]
@@ -1283,6 +1326,21 @@ pub(crate) async fn run_exec_agent(
                 }
                 let saved_session_id = if should_persist_session && !latest_messages.is_empty() {
                     let saved = open_exec_session_manager().and_then(|manager| {
+                        if exec_write_receipt.is_none() && exec_is_fresh {
+                            exec_write_receipt =
+                                Some(manager.expect_absent_session(&exec_session_id)?);
+                        }
+                        let source = exec_write_receipt.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("exec original source was not admitted")
+                        })?;
+                        let owner = terminal_snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.source.as_ref())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "exec terminal snapshot belongs to another native turn"
+                                )
+                            })?;
                         persist_exec_session(
                             &latest_messages,
                             &latest_model,
@@ -1306,12 +1364,15 @@ pub(crate) async fn run_exec_agent(
                                     .as_str()
                                 })),
                             manager.as_ref(),
-                            &image_request_receipts,
+                            &provider_request_receipts,
                             None,
+                            source,
+                            owner,
                         )
                     });
                     match saved {
-                        Ok(id) => {
+                        Ok(publication) => {
+                            let id = publication.metadata.id.clone();
                             if output_format == ExecOutputFormat::Text && !json_output {
                                 eprintln!("{}", exec_saved_session_line(&id));
                             }
@@ -1501,6 +1562,7 @@ pub(crate) async fn run_exec_agent(
                 should_persist_session = true;
             }
             Event::SessionUpdated {
+                source,
                 session_id,
                 messages,
                 system_prompt,
@@ -1527,7 +1589,13 @@ pub(crate) async fn run_exec_agent(
                         continue;
                     }
                     let manager = if should_persist_session {
-                        open_exec_session_manager().map(Some)
+                        open_exec_session_manager().and_then(|manager| {
+                            if exec_write_receipt.is_none() && exec_is_fresh {
+                                exec_write_receipt =
+                                    Some(manager.expect_absent_session(&exec_session_id)?);
+                            }
+                            Ok(Some(manager))
+                        })
                     } else {
                         Ok(None)
                     };
@@ -1541,6 +1609,7 @@ pub(crate) async fn run_exec_agent(
                                 active_turn_id.as_deref(),
                                 &engine_handle,
                                 exec_deadline,
+                                &mut exec_write_receipt,
                             )
                             .await
                         }
@@ -1548,6 +1617,7 @@ pub(crate) async fn run_exec_agent(
                             .fail(format!("could not open exec checkpoint store: {error:#}")),
                     }
                 }
+                latest_source = source;
                 latest_session_id = Some(session_id);
                 latest_messages = messages;
                 latest_system_prompt = system_prompt;
@@ -1633,8 +1703,7 @@ pub(crate) async fn run_exec_agent(
         }
     }
 
-    // Drain the terminal receipt before either returning or taking the explicit
-    // retryable-failure process exit below. Outbox failures cannot change the
+    // Drain the terminal receipt before returning. Outbox failures cannot change the
     // authoritative turn outcome.
     if let Err(error) = lifecycle_outbox.flush(Duration::from_secs(2)).await {
         tracing::warn!(target: "lifecycle_outbox", %error, "exec lifecycle outbox did not drain before exit");
@@ -1650,20 +1719,6 @@ pub(crate) async fn run_exec_agent(
     if let Some(error) = summary.error.as_ref()
         && !error.trim().is_empty()
     {
-        // Distinguish retryable infrastructure failures (provider/transport,
-        // after all in-session retries are exhausted) from genuine task
-        // failures so supervisors and bench harnesses can tell them apart at
-        // the process level without parsing the stream. Genuine failures
-        // keep the historical `bail!` → exit 1 path.
-        let exit_code = exec_failure_exit_code(summary.error_category.as_deref());
-        // The final line always carries the message: automation greps it and
-        // a caller may keep only the last stderr line, even when the stream
-        // already printed the same error above.
-        if exit_code != 1 {
-            eprintln!("Error: exec turn failed: {error}");
-            let _ = io::stdout().flush();
-            std::process::exit(exit_code);
-        }
         bail!("exec turn failed: {error}");
     }
 
@@ -1857,6 +1912,11 @@ mod tests {
             {"role":"assistant","content":[{"type":"tool_use","id":"provider-call","execution_id":"exec-call","name":"review","input":{}}]}
         ])).unwrap();
         let snapshot = Arc::new(SessionSnapshot {
+            source: Some(codewhale_engine::core::ops::SessionSnapshotSource::turn(
+                "exec-turn".into(),
+                None,
+            )),
+
             session_id: "exec-checkpoint".into(),
             messages: messages.clone(),
             total_tokens: 23,
@@ -1890,6 +1950,7 @@ mod tests {
                 receive,
             )
         };
+        let mut source = Some(manager.expect_absent_session(&snapshot.session_id).unwrap());
         let (request, receive) = checkpoint(caller.clone(), Arc::clone(&snapshot));
         super::persist_exec_checkpoint(
             Arc::clone(&request),
@@ -1899,6 +1960,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert!(receive.await.unwrap().unwrap());
@@ -1916,7 +1978,7 @@ mod tests {
         completed.push(serde_json::from_value(serde_json::json!({
             "role":"user","content":[{"type":"tool_result","tool_use_id":"provider-call","execution_id":"exec-call","content":"review complete"}]
         })).unwrap());
-        crate::persist_exec_session(
+        let publication = crate::persist_exec_session(
             &completed,
             &snapshot.model,
             crate::PersistedProviderRoute {
@@ -1931,8 +1993,11 @@ mod tests {
             manager.as_ref(),
             &[],
             None,
+            source.as_ref().unwrap(),
+            snapshot.source.as_ref().unwrap(),
         )
         .unwrap();
+        source = Some(publication.write_receipt());
         super::persist_exec_checkpoint(
             request,
             Some(Arc::clone(&manager)),
@@ -1941,6 +2006,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert_eq!(
@@ -1969,6 +2035,7 @@ mod tests {
                 Some("exec-turn"),
                 &engine.handle,
                 Instant::now() + Duration::from_secs(3),
+                &mut source,
             )
             .await;
             assert!(receive.await.unwrap().is_err(), "{mismatch}");
@@ -1992,6 +2059,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert!(receive.await.unwrap().is_err());
@@ -2004,6 +2072,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert!(!receive.await.unwrap().unwrap());
@@ -2022,6 +2091,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now() + Duration::from_secs(3),
+            &mut source,
         )
         .await;
         assert!(receive.await.unwrap().is_err());
@@ -2034,6 +2104,7 @@ mod tests {
             Some("exec-turn"),
             &engine.handle,
             Instant::now(),
+            &mut source,
         )
         .await;
         assert!(receive.await.unwrap().is_err());

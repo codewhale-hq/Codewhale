@@ -211,7 +211,8 @@
   },
   "crates/engine/src/tools/subagent/mod.rs": {
     "path_canonicalize": 4,
-    "std_fs": 4
+    "std_fs": 4,
+    "thread_sleep": 1
   },
   "crates/engine/src/tools/subagent/worktree.rs": {
     "path_canonicalize": 6

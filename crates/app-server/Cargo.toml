@@ -13,6 +13,7 @@ autobins = false
 workspace = true
 
 [dependencies]
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true

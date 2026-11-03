@@ -198,7 +198,6 @@ async fn exhausted_stream_resume_never_executes_the_failed_batch() {
         client.clone(),
     );
     engine.session.auto_approve = true;
-    let resumes = engine.config.stream_retry_limits.max_resumes as usize;
     let executions = Arc::new(AtomicUsize::new(0));
     let surface = write_surface(&engine, workspace.path(), executions.clone());
     let mut turn = crate::core::turn::TurnContext::new(4);
@@ -210,7 +209,7 @@ async fn exhausted_stream_resume_never_executes_the_failed_batch() {
         0,
         "no attempt's batch may run"
     );
-    assert_eq!(client.calls.load(Ordering::SeqCst), 1 + resumes);
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
     assert_eq!(status, TurnOutcomeStatus::Failed);
     assert!(
         error

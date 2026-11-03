@@ -14,7 +14,7 @@ GROUP = "crates/tui/src/commands/groups/session/mod.rs"
 PROOF = "tests/portable-session/src/commands/groups/mod.rs"
 ALLOWED_WORKSPACE = {
     "codewhale-portable-session", "codewhale-command-contract",
-    "codewhale-protocol", "codewhale-sanitize",
+    "codewhale-protocol", "codewhale-app-server-protocol", "codewhale-sanitize",
 }
 FORBIDDEN_SERVICES = {
     "tokio", "reqwest", "hyper", "rusqlite", "sqlx", "keyring", "dbus",

@@ -661,20 +661,20 @@ fn runtime_image_validation_preserves_exact_bytes_and_rejects_corruption() {
         std::slice::from_ref(&input)
     );
     for bad in [
-        codewhale_protocol::runtime::RuntimeImageInput {
+        codewhale_app_server_protocol::runtime::RuntimeImageInput {
             mime: "image/jpeg".into(),
             ..input.clone()
         },
-        codewhale_protocol::runtime::RuntimeImageInput {
+        codewhale_app_server_protocol::runtime::RuntimeImageInput {
             data_base64: "not base64".into(),
             ..input.clone()
         },
-        codewhale_protocol::runtime::RuntimeImageInput {
+        codewhale_app_server_protocol::runtime::RuntimeImageInput {
             data_base64: String::new(),
             ..input.clone()
         },
         // Existing signature sniffing alone accepted this truncated PNG.
-        codewhale_protocol::runtime::RuntimeImageInput {
+        codewhale_app_server_protocol::runtime::RuntimeImageInput {
             data_base64: STANDARD.encode(b"\x89PNG\r\n\x1a\n"),
             ..input.clone()
         },
@@ -688,16 +688,18 @@ fn runtime_image_validation_bounds_count_encoded_size_and_decode_dimensions() {
     let input = runtime_image_fixture(7);
     assert!(prepare_runtime_images(&vec![input.clone(); 11]).is_err());
     assert!(
-        prepare_runtime_images(&[codewhale_protocol::runtime::RuntimeImageInput {
-            data_base64: "A".repeat(MAX_IMAGE_BYTES.div_ceil(3) * 4 + 1),
-            ..input
-        }])
+        prepare_runtime_images(
+            &[codewhale_app_server_protocol::runtime::RuntimeImageInput {
+                data_base64: "A".repeat(MAX_IMAGE_BYTES.div_ceil(3) * 4 + 1),
+                ..input
+            }]
+        )
         .is_err()
     );
     let wide = image::DynamicImage::ImageRgba8(image::RgbaImage::new(MAX_IMAGE_DIMENSION + 1, 1));
     let mut bytes = std::io::Cursor::new(Vec::new());
     wide.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-    let input = codewhale_protocol::runtime::RuntimeImageInput {
+    let input = codewhale_app_server_protocol::runtime::RuntimeImageInput {
         mime: "image/png".into(),
         data_base64: STANDARD.encode(bytes.into_inner()),
     };

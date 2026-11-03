@@ -16,11 +16,13 @@
     "index.js",
     "index.d.ts",
     "README.md",
-    "package.json"
+    "package.json",
+    "generated"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs && node --check index.js && npm run test:types",
-    "test:types": "tsc --noEmit --strict --target ES2022 --module NodeNext test/thread-events.types.ts"
+    "test:types": "tsc --noEmit --strict --target ES2022 --module NodeNext test/thread-events.types.ts test/runtime-wire.types.ts",
+    "test:wire-types:exact": "tsc --noEmit --strict --exactOptionalPropertyTypes --target ES2022 --module NodeNext test/runtime-wire.types.ts"
   },
   "devDependencies": {
     "typescript": "5.9.3"

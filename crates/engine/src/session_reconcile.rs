@@ -46,7 +46,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::runtime_threads::{RuntimeStoreBinding, ThreadRecord};
-use crate::session_manager::{SavedSession, SessionManager, is_runtime_store_dir_name};
+use crate::session_manager::{
+    SavedSession, SessionManager, is_offline_queue_file, is_runtime_store_dir_name,
+    read_session_reference_bytes,
+};
 
 pub const SET_ASIDE_DIR: &str = ".set-aside";
 const RECONCILE_DIR: &str = ".reconcile";
@@ -124,11 +127,14 @@ impl ReconcileSummary {
         !self.dry_run && self.actions() > 0
     }
 
-    /// One line for the first frame, only when something changed.
+    /// One line for the first frame when something changed or inspection failed.
     #[must_use]
     pub fn notice(&self) -> Option<String> {
         if !self.changed() {
-            return None;
+            return self
+                .errors
+                .first()
+                .map(|error| format!("Session inspection incomplete: {error}"));
         }
         let mut parts = Vec::new();
         if self.sessions_recovered > 0 {
@@ -322,6 +328,10 @@ pub fn retire_unbound_store(
         return None;
     }
     let references = collect_document_references(sessions.sessions_dir(), false);
+    if !references.incomplete.is_empty() {
+        tracing::warn!(store = %store.display(), error = %references.incomplete[0], "released store kept because reference inspection is incomplete");
+        return None;
+    }
     if references.binds(store) {
         return None;
     }
@@ -475,9 +485,14 @@ struct References {
     document_tokens: HashSet<String>,
     /// Document texts, kept only to answer non-uuid ids (rare).
     document_texts: Vec<String>,
+    incomplete: Vec<String>,
 }
 
 impl References {
+    fn failed(&mut self, path: &Path, error: impl std::fmt::Display) {
+        self.incomplete.push(format!("{}: {error}", path.display()));
+    }
+
     fn binds(&self, store: &Path) -> bool {
         self.bound_stores.contains(&canonical(store)) || self.bound_stores.contains(store)
     }
@@ -525,28 +540,59 @@ fn document_id(path: &Path) -> Option<String> {
 /// `keep_text`, also collect what R6 needs to know which ids documents mention.
 fn collect_document_references(sessions_dir: &Path, keep_text: bool) -> References {
     let mut references = References::default();
+    let checkpoints_dir = sessions_dir.join(CHECKPOINTS_DIR);
     let scan = |dir: &Path, references: &mut References, keep_text: bool| {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) => {
+                references.failed(dir, error);
+                return;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    references.failed(dir, error);
+                    continue;
+                }
+            };
             let path = entry.path();
+            if dir == checkpoints_dir
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(is_offline_queue_file)
+            {
+                continue;
+            }
             let Some(id) = document_id(&path) else {
                 continue;
             };
-            let Ok(metadata) = SessionManager::load_session_metadata(&path) else {
-                continue;
-            };
             references.documents.insert(id);
+            let metadata = match SessionManager::load_session_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    references.failed(&path, error);
+                    continue;
+                }
+            };
+            references.documents.insert(metadata.id);
             if let Some(binding) = metadata.runtime_store {
                 references.bound_stores.insert(canonical(&binding.data_dir));
                 references.bound_stores.insert(binding.data_dir);
             }
-            if keep_text && let Ok(bytes) = fs::read(&path) {
-                references.document_tokens.extend(uuid_tokens(&bytes));
-                references
-                    .document_texts
-                    .push(String::from_utf8_lossy(&bytes).into_owned());
+            if keep_text {
+                match read_session_reference_bytes(&path) {
+                    Ok(bytes) => {
+                        references.document_tokens.extend(uuid_tokens(&bytes));
+                        references
+                            .document_texts
+                            .push(String::from_utf8_lossy(&bytes).into_owned());
+                    }
+                    Err(error) => references.failed(&path, error),
+                }
             }
         }
     };
@@ -596,8 +642,11 @@ impl Run<'_> {
     fn execute(&mut self) {
         self.repair_documents();
         let mut references = collect_document_references(&self.sessions_dir, true);
-        let stores = self.store_dirs();
+        let stores = self.store_dirs(&mut references);
         self.collect_thread_references(&stores, &mut references);
+        self.summary
+            .errors
+            .extend(references.incomplete.iter().cloned());
         for store in &stores {
             if !self.budget_left() {
                 return;
@@ -612,43 +661,91 @@ impl Run<'_> {
 
     /// R1: set aside documents that cannot be read at all.
     fn repair_documents(&mut self) {
-        let Ok(entries) = fs::read_dir(&self.sessions_dir) else {
-            return;
+        let entries = match fs::read_dir(&self.sessions_dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.error("session documents", error);
+                return;
+            }
         };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        let mut paths = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => paths.push(entry.path()),
+                Err(error) => self.error("session documents", error),
+            }
+        }
         paths.sort();
         for path in paths {
             let Some(id) = document_id(&path) else {
                 continue;
             };
-            if self.options.skip_session.as_deref() == Some(id.as_str())
-                || SessionManager::load_session_metadata(&path).is_ok()
-            {
+            if self.options.skip_session.as_deref() == Some(id.as_str()) {
                 continue;
             }
-            match classify_unlisted_document(&path) {
-                DocumentState::Readable => continue,
-                DocumentState::NewerSchema => {
-                    self.summary.documents_newer_schema += 1;
+            match SessionManager::load_session_metadata(&path) {
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+                Err(error) => {
+                    self.error(&path.display().to_string(), error);
                     continue;
                 }
-                DocumentState::Unreadable(reason) => {
-                    if !self.budget_left() {
-                        return;
-                    }
-                    self.set_aside_path(&path, &format!("unreadable document: {reason}"), true);
-                    self.summary.documents_set_aside += 1;
+            }
+            let sessions = self.sessions;
+            let result = sessions.with_session_file_lock(&id, || {
+                match SessionManager::load_session_metadata(&path) {
+                    Ok(_) => return Ok(()),
+                    Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+                    Err(error) => return Err(error),
                 }
+                match classify_unlisted_document(&path) {
+                    DocumentState::Readable => {}
+                    DocumentState::NewerSchema => self.summary.documents_newer_schema += 1,
+                    DocumentState::Unavailable(reason) => {
+                        self.error(&path.display().to_string(), reason)
+                    }
+                    DocumentState::Unreadable(reason) => {
+                        if self.budget_left() {
+                            let errors = self.summary.errors.len();
+                            self.set_aside_path(
+                                &path,
+                                &format!("unreadable document: {reason}"),
+                                true,
+                            );
+                            if self.summary.errors.len() == errors {
+                                self.summary.documents_set_aside += 1;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                self.error(&path.display().to_string(), error);
+            }
+            if self.summary.limit_reached {
+                return;
             }
         }
     }
 
-    fn store_dirs(&self) -> Vec<StoreDir> {
+    fn store_dirs(&self, references: &mut References) -> Vec<StoreDir> {
         let mut out = Vec::new();
-        let Ok(entries) = fs::read_dir(&self.sessions_dir) else {
-            return out;
+        let entries = match fs::read_dir(&self.sessions_dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                references.failed(&self.sessions_dir, error);
+                return out;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    references.failed(&self.sessions_dir, error);
+                    continue;
+                }
+            };
             let owner = entry.file_name();
             let Some(owner_id) = owner.to_str() else {
                 continue;
@@ -658,10 +755,21 @@ impl Run<'_> {
             {
                 continue;
             }
-            let Ok(children) = fs::read_dir(entry.path()) else {
-                continue;
+            let children = match fs::read_dir(entry.path()) {
+                Ok(children) => children,
+                Err(error) => {
+                    references.failed(&entry.path(), error);
+                    continue;
+                }
             };
-            for child in children.flatten() {
+            for child in children {
+                let child = match child {
+                    Ok(child) => child,
+                    Err(error) => {
+                        references.failed(&entry.path(), error);
+                        continue;
+                    }
+                };
                 if is_runtime_store_dir_name(&child.file_name()) && child.path().is_dir() {
                     out.push(StoreDir {
                         owner_id: owner_id.to_string(),
@@ -681,14 +789,36 @@ impl Run<'_> {
         let mut roots: Vec<PathBuf> = stores.iter().map(|store| store.path.clone()).collect();
         let tasks = crate::task_manager::default_tasks_dir().join("runtime");
         roots.push(tasks.clone());
-        if let Ok(entries) = fs::read_dir(&tasks) {
-            roots.extend(entries.flatten().map(|entry| entry.path()));
+        match fs::read_dir(&tasks) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => roots.push(entry.path()),
+                        Err(error) => references.failed(&tasks, error),
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => references.failed(&tasks, error),
         }
         for root in roots {
-            let Ok(entries) = fs::read_dir(root.join("threads")) else {
-                continue;
+            let threads = root.join("threads");
+            let entries = match fs::read_dir(&threads) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    references.failed(&threads, error);
+                    continue;
+                }
             };
-            for entry in entries.flatten() {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        references.failed(&threads, error);
+                        continue;
+                    }
+                };
                 let path = entry.path();
                 if path.extension().is_none_or(|ext| ext != "json") {
                     continue;
@@ -698,17 +828,25 @@ impl Run<'_> {
                         .thread_named
                         .insert(crate::runtime_threads::thread_session_id(thread_id));
                 }
-                if let Ok(raw) = fs::read(&path)
-                    && let Ok(value) = serde_json::from_slice::<Value>(&raw)
-                    && let Some(session_id) = value.get("session_id").and_then(Value::as_str)
-                {
-                    references.thread_named.insert(session_id.to_string());
+                match read_session_reference_bytes(&path).and_then(|raw| {
+                    serde_json::from_slice::<Value>(&raw)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+                }) {
+                    Ok(value) => {
+                        if let Some(session_id) = value.get("session_id").and_then(Value::as_str) {
+                            references.thread_named.insert(session_id.to_string());
+                        }
+                    }
+                    Err(error) => references.failed(&path, error),
                 }
             }
         }
     }
 
     fn repair_store(&mut self, store: &StoreDir, references: &References) {
+        if !references.incomplete.is_empty() {
+            return;
+        }
         let binding = match RuntimeStoreBinding::for_store_dir(&store.path) {
             Ok(binding) => binding,
             Err(error) => return self.error(&format!("store {}", store.path.display()), error),
@@ -857,8 +995,12 @@ impl Run<'_> {
         // A run that stopped between saving the document and binding the
         // thread left the document behind at this same id; reuse it.
         if exists(&id) || self.sessions.session_document_exists(&id) {
-            return Ok(self.sessions.load_session(&id)?);
+            return Ok(self.sessions.resume_session(&id)?.session);
         }
+        let source = self
+            .sessions
+            .expect_absent_session(&id)?
+            .capture(crate::session_manager::SessionWriteOwner::control())?;
         let mut session = crate::session_manager::create_saved_session_with_id_and_mode(
             id,
             &recovered.messages,
@@ -884,13 +1026,18 @@ impl Run<'_> {
             .unwrap_or_else(|| session.metadata.title.clone());
         session.metadata.title = recovered_title(&label);
         session.metadata.runtime_store = Some(held.binding().clone());
-        self.sessions.save_session(&session)?;
+        session.write_receipt = Some(source);
+        let publication = self.sessions.publish_session(&session)?;
+        session.adopt_publication(&publication);
         Ok(session)
     }
 
     /// R6: directories with no document and no store that hold only
     /// artifacts or approval receipts nothing names.
     fn repair_artifact_dirs(&mut self, references: &References) {
+        if !references.incomplete.is_empty() {
+            return;
+        }
         let Ok(entries) = fs::read_dir(&self.sessions_dir) else {
             return;
         };
@@ -937,10 +1084,10 @@ impl Run<'_> {
             return;
         }
         let detail = if hash {
-            fs::read(path).map_or(
-                Value::Null,
-                |bytes| json!({"sha256": file_sha256(&bytes), "bytes": bytes.len()}),
-            )
+            match read_session_reference_bytes(path) {
+                Ok(bytes) => json!({"sha256": file_sha256(&bytes), "bytes": bytes.len()}),
+                Err(error) => return self.error(&format!("set aside {}", path.display()), error),
+            }
         } else {
             json!({"kind": "directory"})
         };
@@ -970,14 +1117,15 @@ enum DocumentState {
     Readable,
     NewerSchema,
     Unreadable(String),
+    Unavailable(String),
 }
 
 /// A document `list_sessions` could not list: newer, readable after all, or
 /// genuinely unreadable.
 fn classify_unlisted_document(path: &Path) -> DocumentState {
-    let bytes = match fs::read(path) {
+    let bytes = match read_session_reference_bytes(path) {
         Ok(bytes) => bytes,
-        Err(error) => return DocumentState::Unreadable(error.to_string()),
+        Err(error) => return DocumentState::Unavailable(error.to_string()),
     };
     if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
         && value

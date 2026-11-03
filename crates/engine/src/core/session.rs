@@ -300,6 +300,7 @@ impl ToolActivationCache {
 /// Session state for the engine.
 #[derive(Debug, Clone)]
 pub struct Session {
+    pub snapshot_source: Option<crate::core::ops::SessionSnapshotSource>,
     /// Model being used
     pub model: String,
 
@@ -467,6 +468,7 @@ impl Session {
             approval_mode: ApprovalMode::Suggest,
             notes_path,
             mcp_config_path,
+            snapshot_source: None,
             id: uuid::Uuid::new_v4().to_string(),
             project_context: None,
             last_system_prompt_hash: None,

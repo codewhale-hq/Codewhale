@@ -10,7 +10,9 @@ pub const PNG_1X1: &[u8] = &[
     0x42, 0x60, 0x82,
 ];
 
-pub fn runtime_image_fixture(color: u8) -> codewhale_protocol::runtime::RuntimeImageInput {
+pub fn runtime_image_fixture(
+    color: u8,
+) -> codewhale_app_server_protocol::runtime::RuntimeImageInput {
     let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
         2,
         2,
@@ -18,13 +20,15 @@ pub fn runtime_image_fixture(color: u8) -> codewhale_protocol::runtime::RuntimeI
     ));
     let mut bytes = std::io::Cursor::new(Vec::new());
     image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
-    codewhale_protocol::runtime::RuntimeImageInput {
+    codewhale_app_server_protocol::runtime::RuntimeImageInput {
         mime: "image/png".into(),
         data_base64: STANDARD.encode(bytes.into_inner()),
     }
 }
 
-pub fn runtime_image_fixture_bytes(size: usize) -> codewhale_protocol::runtime::RuntimeImageInput {
+pub fn runtime_image_fixture_bytes(
+    size: usize,
+) -> codewhale_app_server_protocol::runtime::RuntimeImageInput {
     let mut image = runtime_image_fixture(42);
     let mut bytes = STANDARD.decode(&image.data_base64).unwrap();
     bytes.resize(size, 0);
