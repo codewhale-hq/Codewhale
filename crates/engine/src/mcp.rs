@@ -4062,10 +4062,11 @@ impl McpPool {
         &mut self,
         plugins: Arc<codewhale_plugins::PluginRegistry>,
     ) -> Result<()> {
+        let workspace = checked_workspace_path(plugins.workspace())?;
         anyhow::ensure!(
             self.workspace
                 .as_deref()
-                .is_none_or(|workspace| workspace == plugins.workspace()),
+                .is_none_or(|current| current == workspace),
             "another MCP workspace must use its own selected pool fork"
         );
         let next = plugins.caller_selection();
@@ -4073,7 +4074,7 @@ impl McpPool {
             .plugin_registry
             .as_deref()
             .and_then(codewhale_plugins::PluginRegistry::caller_selection);
-        if next == previous && self.workspace.as_deref() == Some(plugins.workspace()) {
+        if next == previous && self.workspace.as_deref() == Some(workspace.as_path()) {
             return Ok(());
         }
         anyhow::ensure!(
@@ -4100,7 +4101,7 @@ impl McpPool {
             self.drop_all_connections("caller selection changed");
             self.config_hash = hash_mcp_config(&config);
             self.config = config;
-            self.workspace = Some(plugins.workspace().to_path_buf());
+            self.workspace = Some(workspace);
             self.plugin_registry = Some(plugins);
             self.catalog_generation.fetch_add(1, Ordering::SeqCst);
         }
@@ -4114,7 +4115,7 @@ impl McpPool {
         &self,
         plugins: Arc<codewhale_plugins::PluginRegistry>,
     ) -> Result<Self> {
-        let workspace = plugins.workspace().to_path_buf();
+        let workspace = checked_workspace_path(plugins.workspace())?;
         let config = match self.config_sources.first() {
             Some(primary) => {
                 load_config_with_workspace_and_plugins(primary, &workspace, plugins.as_ref())?

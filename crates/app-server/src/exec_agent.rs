@@ -1920,9 +1920,9 @@ mod tests {
 
     #[test]
     fn run_completion_exec_shutdown_consumes_real_spawned_engine() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codewhale_engine::test_support::lock_test_env();
         let home = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
+        let _home = codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1940,7 +1940,7 @@ mod tests {
                 .disable(codewhale_runtime::features::Feature::Mcp);
             let handle = codewhale_engine::core::engine::spawn_engine(
                 config,
-                &crate::config::Config::default(),
+                &codewhale_runtime::config::Config::default(),
                 None,
             )
             .await;
