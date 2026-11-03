@@ -456,7 +456,7 @@ owner = "crates/tui/src/commands/groups/core/queue.rs"
 [[feature]]
 id = "receipts"
 name = "Receipts"
-summary = "/receipts lists what a session did: files, commands, calls, approvals and failures."
+summary = "/receipts lists recorded files, commands, calls, approvals and failures; the API serves the same receipt as JSON or Markdown."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.10.1"

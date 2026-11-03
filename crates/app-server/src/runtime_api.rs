@@ -8586,14 +8586,21 @@ async fn get_thread_usage(
     }))
 }
 
+#[derive(Deserialize)]
+struct ReceiptQuery {
+    format: Option<codewhale_engine::receipts::ReceiptFormat>,
+}
+
 /// `GET /v1/threads/{id}/receipt` — what the thread did, built by the one
 /// receipt builder from the thread snapshot and its `approval.*` events
 /// (`docs/RECEIPTS.md`). Read-only.
 async fn get_thread_receipt(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
-) -> Result<Json<codewhale_engine::receipts::Receipt>, ApiError> {
-    thread_receipt(&state, &id, None).await.map(Json)
+    Query(query): Query<ReceiptQuery>,
+) -> Result<Response, ApiError> {
+    let receipt = thread_receipt(&state, &id, None).await?;
+    Ok(receipt_response(receipt, query.format))
 }
 
 /// `GET /v1/threads/{id}/turns/{turn_id}/receipt` — the same receipt scoped
@@ -8601,8 +8608,24 @@ async fn get_thread_receipt(
 async fn get_turn_receipt(
     State(state): State<RuntimeApiState>,
     Path((id, turn_id)): Path<(String, String)>,
-) -> Result<Json<codewhale_engine::receipts::Receipt>, ApiError> {
-    thread_receipt(&state, &id, Some(&turn_id)).await.map(Json)
+    Query(query): Query<ReceiptQuery>,
+) -> Result<Response, ApiError> {
+    let receipt = thread_receipt(&state, &id, Some(&turn_id)).await?;
+    Ok(receipt_response(receipt, query.format))
+}
+
+fn receipt_response(
+    receipt: codewhale_engine::receipts::Receipt,
+    format: Option<codewhale_engine::receipts::ReceiptFormat>,
+) -> Response {
+    match format.unwrap_or(codewhale_engine::receipts::ReceiptFormat::Json) {
+        codewhale_engine::receipts::ReceiptFormat::Json => Json(receipt).into_response(),
+        codewhale_engine::receipts::ReceiptFormat::Md => (
+            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+            codewhale_engine::receipts::render_markdown(&receipt),
+        )
+            .into_response(),
+    }
 }
 
 async fn thread_receipt(
