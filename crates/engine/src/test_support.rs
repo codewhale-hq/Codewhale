@@ -238,11 +238,9 @@ mod tests {
             &codewhale_snapshot::snapshot_dir_for(Path::new("/nonexistent/codewhale-fence-probe"))
                 .expect("snapshot dir"),
         );
-        let audit = codewhale_runtime::audit::audit_log_path().expect("audit log path");
-        assert!(
-            audit.starts_with(std::env::temp_dir()),
-            "the audit log resolved outside the temp dir: {}",
-            audit.display()
+        inside(
+            "audit log",
+            &codewhale_runtime::audit::audit_log_path().expect("audit log path"),
         );
     }
 
@@ -340,6 +338,8 @@ mod tests {
                 "{}",
                 direct_config_path.display()
             );
+            assert!(config_path.exists());
+            assert!(settings_path.exists());
             let receipt = std::env::var_os(RECEIPT_ENV).expect("receipt path");
             std::fs::write(
                 receipt,
@@ -405,8 +405,11 @@ mod tests {
         assert!(written_config.starts_with(&isolated_root));
         assert!(written_settings.starts_with(&isolated_root));
         assert!(direct_config.starts_with(&isolated_root));
-        assert!(written_config.exists());
-        assert!(written_settings.exists());
+        assert!(
+            !isolated_root.exists(),
+            "probe leaked {}",
+            isolated_root.display()
+        );
     }
 
     #[test]

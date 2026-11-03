@@ -88,9 +88,7 @@ fn default_audit_path() -> anyhow::Result<PathBuf> {
     // somebody's real profile just as `~/.codewhale` does.
     #[cfg(any(test, feature = "test-support"))]
     if !crate::test_support::home_is_sealed() {
-        return Ok(std::env::temp_dir()
-            .join(format!("codewhale-test-audit-{}", std::process::id()))
-            .join("audit.log"));
+        return Ok(crate::test_support::isolated_test_state_root().join("audit.log"));
     }
     Ok(codewhale_config::codewhale_home()?.join("audit.log"))
 }
@@ -119,7 +117,11 @@ mod tests {
             .join(".codewhale")
             .join("audit.log");
         assert_ne!(path, real);
-        assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
+        assert!(
+            path.starts_with(crate::test_support::isolated_test_state_root()),
+            "{}",
+            path.display()
+        );
     }
 
     #[test]
