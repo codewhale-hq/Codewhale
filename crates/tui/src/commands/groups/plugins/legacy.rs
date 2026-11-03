@@ -8,6 +8,7 @@
 //! FEAT-020: this module consumes the portable `PluginLegacyScan` from the
 //! plugin facet; no concrete `App` or `PluginMetadata` crosses the boundary.
 
+use super::render::ReviewTextContext;
 use codewhale_command_contract::facets::{CommandPluginContext, CommandPresentationContext};
 use std::fmt::Write as _;
 
@@ -66,7 +67,12 @@ fn list_legacy_tools(
             tool.path.display()
         );
     }
-    super::append_diagnostics(presentation, &mut output, &scan.diagnostics);
+    super::append_diagnostics(
+        presentation,
+        &mut output,
+        &scan.diagnostics,
+        ReviewTextContext::Prose,
+    );
     CommandResult::message(output)
 }
 
@@ -130,6 +136,11 @@ fn show_legacy_tool_detail(
         .filter(|diagnostic| diagnostic.path.as_deref() == Some(tool.path.as_path()))
         .cloned()
         .collect();
-    super::append_diagnostics(presentation, &mut output, &diagnostics);
+    super::append_diagnostics(
+        presentation,
+        &mut output,
+        &diagnostics,
+        ReviewTextContext::Prose,
+    );
     CommandResult::message(output)
 }
