@@ -346,6 +346,9 @@ mod tests {
     fn metadata(id: &str, title: &str, workspace: &str, minutes_ago: i64) -> SessionMetadata {
         let ts = Utc::now() - Duration::minutes(minutes_ago);
         SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id: id.to_string(),
             title: title.to_string(),
             title_is_custom: false,

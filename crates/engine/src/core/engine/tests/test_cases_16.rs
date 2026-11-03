@@ -88,7 +88,9 @@ async fn trust_warning_is_internal_and_tracks_current_state() {
     engine.refresh_system_prompt_with_reason("model");
     engine.emit_session_updated().await;
     let event = handle.rx_event.write().await.recv().await.unwrap();
-    let Event::SessionUpdated { messages, .. } = event else {
+    let Event::SessionUpdated {
+        source: _,
+        messages, .. } = event else {
         panic!("expected session update");
     };
     assert_eq!(

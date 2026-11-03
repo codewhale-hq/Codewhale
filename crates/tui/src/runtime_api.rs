@@ -24,15 +24,15 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 #[cfg(windows)]
 use codewhale_app_server::daemon_socket::default_socket_path;
+use codewhale_app_server_protocol::runtime::{
+    DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
+    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
+};
 #[cfg(unix)]
 use codewhale_paths::daemon_socket::default_socket_path;
 use codewhale_protocol::agent_mail::{
     AgentMailDeliveryMode, AgentMailEnvelope, AgentMailMessageId, AgentMailSendRequest,
     AgentMailSendResponse,
-};
-use codewhale_protocol::runtime::{
-    DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
-    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
 };
 use codewhale_secrets::account::RuntimeAccountInfo;
 #[cfg(not(test))]
@@ -1236,7 +1236,7 @@ struct StreamTurnRequest {
     max_output_tokens: Option<std::num::NonZeroU32>,
     prompt: String,
     #[serde(default)]
-    images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     model: Option<String>,
     mode: Option<String>,
     permission_posture: Option<String>,
@@ -2913,7 +2913,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/stream",
             post(stream_turn).layer(DefaultBodyLimit::max(
-                codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+                codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
             )),
         )
         .route("/v1/git", get(git::git_status_detail))
@@ -3048,7 +3048,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/turns",
             post(start_thread_turn).layer(DefaultBodyLimit::max(
-                codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+                codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
             )),
         )
         .route(
@@ -8457,7 +8457,7 @@ struct UndoTurnResponse {
     /// so the GUI can pre-populate the input box.
     original_user_text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    original_user_images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    original_user_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
 }
 
 async fn undo_thread_turn(
@@ -8555,7 +8555,7 @@ struct PatchUndoResponse {
     /// The original user text from the removed turn (for re-editing).
     original_user_text: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    original_user_images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    original_user_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
 }
 
 async fn patch_undo_thread_turn(
@@ -9404,7 +9404,7 @@ struct RetryTurnRequest {
     /// them, so a retry the client starts must re-send them; without it the
     /// retried turn silently lost tools such as the desktop's `open_in_app`.
     #[serde(default)]
-    dynamic_tools: Vec<codewhale_protocol::runtime::DynamicToolSpec>,
+    dynamic_tools: Vec<codewhale_app_server_protocol::runtime::DynamicToolSpec>,
 }
 
 #[derive(Debug, Serialize)]

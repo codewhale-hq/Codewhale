@@ -1370,7 +1370,7 @@ pub struct StartTurnRequest {
     pub max_output_tokens: Option<std::num::NonZeroU32>,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    pub images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     /// Optional caller-supplied idempotency key, scoped to this Runtime store
     /// and thread. The raw key is validated but never persisted.
     #[serde(default, alias = "operationKey")]
@@ -1501,7 +1501,7 @@ pub(super) fn runtime_turn_request_fingerprint(
     trust_mode: bool,
     dynamic_tools: &[DynamicToolSpec],
     environment_id: Option<&str>,
-    images: &[codewhale_protocol::runtime::RuntimeImageInput],
+    images: &[codewhale_app_server_protocol::runtime::RuntimeImageInput],
     max_output_tokens: Option<std::num::NonZeroU32>,
 ) -> Result<String> {
     let mut payload = json!({
@@ -2611,7 +2611,7 @@ pub struct PreparedThreadFork {
     pub(super) thread: ThreadRecord,
     pub(super) records: Vec<(TurnRecord, Vec<TurnItemRecord>)>,
     pub(super) original_user_text: Option<String>,
-    pub(super) original_images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    pub(super) original_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     pub(super) max_output_tokens: Option<std::num::NonZeroU32>,
     /// The checked full source/goal/lease, retained prefix and covered cloned
     /// turn travel together. The private target document is written only at
@@ -8005,7 +8005,7 @@ impl RuntimeThreadManager {
                         "invalid existing history target identity"
                     );
                 }
-                let operation = RuntimeHistoryOperation {
+                let mut operation = RuntimeHistoryOperation {
                     version: 1,
                     key_fingerprint: fingerprint.clone(),
                     committed: false,
@@ -8013,6 +8013,7 @@ impl RuntimeThreadManager {
                     journal_witness: None,
                     association: None,
                     target_document_digest: None,
+                    publication_base: None,
                     goal_source_digest: None,
                     goal_target_digest: None,
                     session_goal_source_digest: None,
@@ -8032,6 +8033,15 @@ impl RuntimeThreadManager {
                             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     },
                 };
+                let sessions =
+                    crate::session_manager::SessionManager::new(self.sessions_dir().to_path_buf())?;
+                let source = if target.is_some() {
+                    sessions.capture_session_write_source(&operation.receipt.session_id)?
+                } else {
+                    sessions.expect_absent_session(&operation.receipt.session_id)?
+                };
+                operation.publication_base = Some(source.observation()?);
+                operation.validate()?;
                 self.store.save_history_operation(&operation)?;
                 Ok(operation)
             })
@@ -8076,14 +8086,14 @@ impl RuntimeThreadManager {
 
     pub fn bind_history_operation_witness(
         &self,
-        mut operation: RuntimeHistoryOperation,
+        operation: RuntimeHistoryOperation,
         witness: RuntimeHistoryWitness,
         association: codewhale_protocol::CanonicalThreadOperationAssociation,
     ) -> Result<RuntimeHistoryOperation> {
         let fingerprint = operation.key_fingerprint.clone();
         self.store
             .with_turn_operation_claim(Some(&fingerprint), || {
-                let current = self
+                let mut current = self
                     .store
                     .load_history_operation(&fingerprint)?
                     .ok_or_else(|| anyhow!("history reservation is absent"))?;
@@ -8102,11 +8112,11 @@ impl RuntimeThreadManager {
                     !current.committed,
                     "committed operation has no journal witness"
                 );
-                operation.journal_witness = Some(witness);
-                operation.association = Some(association);
-                operation.validate()?;
-                self.store.save_history_operation(&operation)?;
-                Ok(operation)
+                current.journal_witness = Some(witness);
+                current.association = Some(association);
+                current.validate()?;
+                self.store.save_history_operation(&current)?;
+                Ok(current)
             })
     }
 
@@ -8202,6 +8212,7 @@ impl RuntimeThreadManager {
         };
         engine
             .send(Op::SyncSession {
+                control: crate::core::ops::SessionControlId::new(),
                 session_id: Some(thread.id.clone()),
                 messages: session.messages.clone(),
                 system_prompt_override: system_prompt.is_some(),
@@ -8456,6 +8467,124 @@ impl RuntimeThreadManager {
         Ok(())
     }
 
+    pub fn saved_session_publication_source(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<crate::session_manager::SessionWriteReceipt>> {
+        let _thread_mutation = self.store.thread_mutation.lock();
+        let thread = self.store.load_thread(thread_id)?;
+        let Some(id) = thread.session_id.as_deref() else {
+            return Ok(None);
+        };
+        let Some(observation) = thread
+            .saved_session_checkpoint
+            .as_ref()
+            .and_then(|checkpoint| checkpoint.publication_observation.clone())
+        else {
+            return Ok(None);
+        };
+        let source = crate::session_manager::SessionWriteReceipt::observed(observation);
+        anyhow::ensure!(
+            source.targets(self.sessions_dir(), id)?,
+            "saved publication source belongs to another store or session"
+        );
+        Ok(Some(source))
+    }
+
+    pub fn capture_history_publication_source(
+        &self,
+        operation: &RuntimeHistoryOperation,
+        source: crate::session_manager::SessionWriteReceipt,
+    ) -> Result<crate::session_manager::SessionWriteReceipt> {
+        validate_runtime_turn_operation_key(&operation.receipt.operation_key)?;
+        let fingerprint = codewhale_runtime::hashing::sha256_hex(
+            format!(
+                "codewhale:history-operation:v1\0{}",
+                operation.receipt.operation_key
+            )
+            .as_bytes(),
+        );
+        self.store
+            .with_turn_operation_claim(Some(&fingerprint), || {
+                let current = self
+                    .lookup_history_operation(
+                        &operation.receipt.operation_key,
+                        &operation.receipt.request_digest,
+                    )?
+                    .ok_or_else(|| anyhow!("history reservation is absent"))?;
+                anyhow::ensure!(
+                    current.receipt == operation.receipt
+                        && !current.committed
+                        && current.journal_witness == operation.journal_witness
+                        && current.association == operation.association,
+                    "history operation changed before native publication admission"
+                );
+                anyhow::ensure!(
+                    source.targets(self.sessions_dir(), &current.receipt.session_id)?,
+                    "history publication source belongs to another store or target"
+                );
+                anyhow::ensure!(
+                    current.publication_base.as_ref() == Some(&source.observation()?),
+                    "history original publication source is absent or changed; recovery required"
+                );
+                Ok(source.capture_history_control(&current)?)
+            })
+    }
+
+    pub fn verify_prepared_history_publication(
+        &self,
+        operation: &RuntimeHistoryOperation,
+        session: &crate::session_manager::SavedSession,
+    ) -> Result<()> {
+        validate_runtime_turn_operation_key(&operation.receipt.operation_key)?;
+        let fingerprint = codewhale_runtime::hashing::sha256_hex(
+            format!(
+                "codewhale:history-operation:v1\0{}",
+                operation.receipt.operation_key
+            )
+            .as_bytes(),
+        );
+        self.store
+            .with_turn_operation_claim(Some(&fingerprint), || {
+                let current = self
+                    .lookup_history_operation(
+                        &operation.receipt.operation_key,
+                        &operation.receipt.request_digest,
+                    )?
+                    .ok_or_else(|| anyhow!("history reservation is absent"))?;
+                anyhow::ensure!(
+                    current.receipt == operation.receipt && !current.committed,
+                    "prepared history operation changed before recovery"
+                );
+                let source = session.write_receipt.as_ref().ok_or_else(|| {
+                    anyhow!("prepared target lacks an admitted native read source")
+                })?;
+                anyhow::ensure!(
+                    source.targets(self.sessions_dir(), &current.receipt.session_id)?,
+                    "prepared target belongs to another store or session"
+                );
+                let observed = source.observation()?;
+                anyhow::ensure!(
+                    session.metadata.publication_id.as_deref()
+                        == Some(current.session_publication_id()?.as_str()),
+                    "uncommitted target belongs to another publication generation; recovery required"
+                );
+                anyhow::ensure!(
+                    current
+                        .publication_base
+                        .as_ref()
+                        .is_some_and(|base| base.same_checkpoint(&observed)),
+                    "prepared target checkpoint changed or its original source is unknown"
+                );
+                anyhow::ensure!(
+                    current.target_document_digest.as_ref()
+                        == Some(&history::saved_document_digest(session)?),
+                    "uncommitted target is not its exact prepared publication; recovery required"
+                );
+                Ok(())
+            })
+    }
+
     /// Bind full-fidelity saved history to the exact prefix it covers. Callers
     /// hold session_checkpoint_guard across the snapshot, save and this write.
     pub async fn set_thread_session_checkpoint(
@@ -8470,6 +8599,10 @@ impl RuntimeThreadManager {
             let mut thread = self.store.load_thread(thread_id)?;
             thread.session_id = Some(session_id.clone());
             thread.saved_session_checkpoint = Some(SavedSessionCheckpoint {
+                publication_observation: session
+                    .write_receipt
+                    .as_ref()
+                    .and_then(|receipt| receipt.observation().ok()),
                 covered_turn_id: thread.latest_turn_id.clone(),
                 messages_sha256,
                 messages_len: Some(session.messages.len()),
@@ -8831,6 +8964,10 @@ impl RuntimeThreadManager {
                     "native fork source document or local goal changed; source retained"
                 );
             }
+            let target_id = Uuid::new_v4().to_string();
+            let source = manager
+                .expect_absent_session(&target_id)?
+                .capture(crate::session_manager::SessionWriteOwner::control())?;
             let mut session = match captured.session {
                 Some(source) => {
                     let parent = source.metadata.clone();
@@ -8867,7 +9004,7 @@ impl RuntimeThreadManager {
             session.leaf_id = journal.leaf_id.clone();
             session.metadata.spawn_depth = journal.spawn_depth;
             session.messages = journal.to_messages();
-            session.metadata.id = Uuid::new_v4().to_string();
+            session.metadata.id = target_id;
             session.metadata.created_at = forked.created_at;
             session.metadata.updated_at = forked.updated_at;
             session.metadata.message_count = session.messages.len();
@@ -8915,7 +9052,9 @@ impl RuntimeThreadManager {
                 !manager.session_document_exists(&session_id),
                 "native fork target already exists"
             );
-            manager.save_session(&session)?;
+            session.write_receipt = Some(source);
+            let publication = manager.publish_session(&session)?;
+            session.adopt_publication(&publication);
             let mut goal = captured.goal;
             if let Some(goal) = goal.as_mut()
                 && goal.status == crate::session_manager::SessionGoalStatus::Active
@@ -8926,6 +9065,7 @@ impl RuntimeThreadManager {
             manager.save_session_goal(&session_id, goal.as_ref())?;
             forked.session_id = Some(session_id);
             forked.saved_session_checkpoint = Some(SavedSessionCheckpoint {
+                publication_observation: Some(publication.observation().clone()),
                 covered_turn_id,
                 messages_sha256: session_messages_sha256(&session.messages)?,
                 messages_len: Some(session.messages.len()),
@@ -9080,7 +9220,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         self.fork_at_user_message_in_sessions_dir(id, depth, self.sessions_dir())
@@ -9095,7 +9235,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
@@ -9144,7 +9284,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         self.fork_at_user_turn_in_sessions_dir(id, turn_id, self.sessions_dir())
@@ -9159,7 +9299,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
@@ -9188,7 +9328,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         let (admission, _) = self.thread_restore_guard(id).await?;
@@ -9565,6 +9705,8 @@ impl RuntimeThreadManager {
                 ),
             };
             forked.saved_session_checkpoint = Some(SavedSessionCheckpoint {
+                publication_observation: None,
+
                 covered_turn_id: covered_turns
                     .checked_sub(1)
                     .map(|index| source_turns[index].id.clone()),
@@ -9658,7 +9800,7 @@ impl RuntimeThreadManager {
     ) -> Result<(
         ThreadRecord,
         Option<String>,
-        Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+        Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
         Option<std::num::NonZeroU32>,
     )> {
         let (captured_source, prefix, covered_turn_id) = prepared.own_session;
@@ -10268,6 +10410,8 @@ impl RuntimeThreadManager {
             );
             thread.session_id = Some(operation.receipt.session_id.clone());
             thread.saved_session_checkpoint = Some(SavedSessionCheckpoint {
+                publication_observation: None,
+
                 covered_turn_id: thread.latest_turn_id.clone(),
                 messages_sha256: session_messages_sha256(checkpoint_messages)?,
                 messages_len: Some(checkpoint_messages.len()),
@@ -13289,6 +13433,7 @@ impl RuntimeThreadManager {
             if !session_messages.is_empty() || sys_prompt.is_some() {
                 engine
                     .send(Op::SyncSession {
+                        control: crate::core::ops::SessionControlId::new(),
                         // Same identity the engine was built with: a
                         // re-sync of the same conversation, never a
                         // conversation boundary.
@@ -13511,7 +13656,8 @@ impl RuntimeThreadManager {
                         permit = forward.reserve() => match permit {
                             Ok(permit) => { permit.send(event); break; },
                             Err(_) => {
-                                if let EngineEvent::SessionUpdated { checkpoint: Some(checkpoint), .. } = &event {
+                                if let EngineEvent::SessionUpdated {
+                                    source: _, checkpoint: Some(checkpoint), .. } = &event {
                                     checkpoint.fail("Runtime checkpoint event receiver closed");
                                 }
                                 break 'pump;
@@ -13519,7 +13665,8 @@ impl RuntimeThreadManager {
                         },
                         _ = &mut notified => {},
                         _ = stop.cancelled() => {
-                            if let EngineEvent::SessionUpdated { checkpoint: Some(checkpoint), .. } = &event {
+                            if let EngineEvent::SessionUpdated {
+                                source: _, checkpoint: Some(checkpoint), .. } = &event {
                                 checkpoint.fail("Runtime checkpoint event owner stopped");
                             }
                             break 'pump;
@@ -13813,6 +13960,8 @@ impl RuntimeThreadManager {
             return;
         }
         stored.saved_session_checkpoint = Some(SavedSessionCheckpoint {
+            publication_observation: None,
+
             covered_turn_id: covered
                 .checked_sub(1)
                 .and_then(|index| turns.get(index))
@@ -14518,7 +14667,7 @@ impl RuntimeThreadManager {
                     turn_id: started_turn_id,
                     created_at,
                     route,
-                    submission_id: _,
+                    ..
                 } => {
                     saw_turn_started = true;
                     engine_turn_id = Some(started_turn_id);
@@ -15174,7 +15323,9 @@ impl RuntimeThreadManager {
                         )?;
                     }
                 }
-                EngineEvent::CompactionStarted { id, auto, message } => {
+                EngineEvent::CompactionStarted {
+                    id, auto, message, ..
+                } => {
                     let item_id = runtime_record_id("item");
                     compaction_items.insert(id.clone(), item_id.clone());
                     let item = TurnItemRecord {
@@ -15660,7 +15811,8 @@ impl RuntimeThreadManager {
                                     Some(EngineEvent::UserInputClosed { id, outcome }) => {
                                         self.user_input_settlement(&thread_id).close(&id, Some(&turn_id), outcome).await?;
                                     }
-                                    Some(EngineEvent::SessionUpdated { checkpoint: Some(checkpoint), .. }) => {
+                                    Some(EngineEvent::SessionUpdated {
+                                        source: None, checkpoint: Some(checkpoint), .. }) => {
                                         checkpoint.fail("Runtime checkpoint cannot wait behind an approval");
                                     }
                                     Some(EngineEvent::ApprovalWithdrawn { id: withdrawn }) if withdrawn == id => {

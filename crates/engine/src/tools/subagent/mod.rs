@@ -2405,8 +2405,8 @@ impl PersistedSubAgentState {
             if worker.recovery_interrupted && worker.status != AgentWorkerStatus::Interrupted {
                 return Err("invalid recovered worker lifecycle".into());
             }
-            if let Some(generation) = worker.prepared_generation {
-                if generation == 0
+            if let Some(generation) = worker.prepared_generation
+                && (generation == 0
                     || !worker
                         .spec
                         .launch_manifest
@@ -2418,10 +2418,9 @@ impl PersistedSubAgentState {
                     || self
                         .agents
                         .iter()
-                        .any(|agent| agent.id == worker.spec.worker_id)
-                {
-                    return Err("invalid prepared Fleet launch generation".into());
-                }
+                        .any(|agent| agent.id == worker.spec.worker_id))
+            {
+                return Err("invalid prepared Fleet launch generation".into());
             }
         }
         match (self.schema_version, self.worker_origins.as_ref()) {
@@ -7613,14 +7612,12 @@ impl SubAgentManager {
                 if let (Some(manifest), Some(expected_manifest)) = (
                     prepared.launch_manifest.as_mut(),
                     expected.launch_manifest.as_ref(),
-                ) {
-                    if record.prepared_generation == Some(manifest.generation)
-                        && expected_manifest.generation.checked_add(1) == Some(manifest.generation)
-                    {
-                        manifest.generation = expected_manifest.generation;
-                        if &prepared == expected {
-                            return Ok(false);
-                        }
+                ) && record.prepared_generation == Some(manifest.generation)
+                    && expected_manifest.generation.checked_add(1) == Some(manifest.generation)
+                {
+                    manifest.generation = expected_manifest.generation;
+                    if &prepared == expected {
+                        return Ok(false);
                     }
                 }
                 bail!(
@@ -11168,15 +11165,14 @@ impl SubAgentManager {
         // Also queue handle-store eviction for the same fully-retired agents
         // (#3885): handles pinned in memory per-agent are freed on the next
         // async drain by callers that hold the SharedHandleStore lock.
-        if self.agents.len() != before
+        if (self.agents.len() != before
             || auto_cancelled > 0
             || self.worker_records.len() != before_workers
-            || self.resume_targets.len() != previous_links
+            || self.resume_targets.len() != previous_links)
+            && let Err(error) = self.persist_state_synchronously()
         {
-            if let Err(error) = self.persist_state_synchronously() {
-                self.agents.extend(removed_agents);
-                return Err(error);
-            }
+            self.agents.extend(removed_agents);
+            return Err(error);
         }
         let durable_ids = self
             .store_authority
@@ -11528,43 +11524,39 @@ impl SubAgentManager {
         }
         let session_closed = matches!(&result.status, SubAgentStatus::Interrupted(reason)
             if reason == SUBAGENT_SESSION_CLOSED_REASON);
-        if persist {
-            if let Some((_, mut payload)) = self.build_persist_payload()? {
-                let agent = payload
-                    .agents
+        if persist && let Some((_, mut payload)) = self.build_persist_payload()? {
+            let agent = payload
+                .agents
+                .iter_mut()
+                .find(|agent| agent.id == agent_id)
+                .ok_or_else(|| anyhow!("terminal worker is absent from persistence snapshot"))?;
+            agent.status = result.status.clone();
+            agent.assignment = result.assignment.clone();
+            agent.result = result.result.clone();
+            agent.steps_taken = result.steps_taken;
+            agent.checkpoint = result.checkpoint.clone();
+            agent.needs_input = result.needs_input.clone();
+            if let Some((record, _)) = &worker {
+                let persisted = payload
+                    .workers
                     .iter_mut()
-                    .find(|agent| agent.id == agent_id)
+                    .find(|record| record.spec.worker_id == agent_id)
                     .ok_or_else(|| {
-                        anyhow!("terminal worker is absent from persistence snapshot")
+                        anyhow!("terminal worker record is absent from persistence snapshot")
                     })?;
-                agent.status = result.status.clone();
-                agent.assignment = result.assignment.clone();
-                agent.result = result.result.clone();
-                agent.steps_taken = result.steps_taken;
-                agent.checkpoint = result.checkpoint.clone();
-                agent.needs_input = result.needs_input.clone();
-                if let Some((record, _)) = &worker {
-                    let persisted = payload
-                        .workers
-                        .iter_mut()
-                        .find(|record| record.spec.worker_id == agent_id)
-                        .ok_or_else(|| {
-                            anyhow!("terminal worker record is absent from persistence snapshot")
-                        })?;
-                    *persisted = record.clone();
-                }
-                if session_closed {
-                    payload
-                        .coordination
-                        .write_claims
-                        .retain(|record| record.claim.owner != agent_id);
-                    payload.coordination.prune_claim_scopes();
-                }
-                if let Some(record) = self.persist_terminal_candidate(agent_id, payload)? {
-                    result.usage = Some(record.usage.clone());
-                    let sequence = record.events.back().map_or(0, |event| event.seq);
-                    worker = Some((record, sequence));
-                }
+                *persisted = record.clone();
+            }
+            if session_closed {
+                payload
+                    .coordination
+                    .write_claims
+                    .retain(|record| record.claim.owner != agent_id);
+                payload.coordination.prune_claim_scopes();
+            }
+            if let Some(record) = self.persist_terminal_candidate(agent_id, payload)? {
+                result.usage = Some(record.usage.clone());
+                let sequence = record.events.back().map_or(0, |event| event.seq);
+                worker = Some((record, sequence));
             }
         }
         if let Some((record, sequence)) = &worker {

@@ -8,7 +8,7 @@ use crate::{
 };
 use anyhow::Context as _;
 use anyhow::Result;
-use codewhale_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
+use codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
 use codewhale_protocol::{
     AppRequest, PromptRequest, ThreadGoalClearParams, ThreadGoalGetParams, ThreadGoalSetParams,
     ThreadRequest, ThreadResponse,
