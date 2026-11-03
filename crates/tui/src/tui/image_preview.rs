@@ -219,8 +219,9 @@ impl ThumbnailCache {
                     }
                     None => {
                         // A failed decode still answers, so the pending entry
-                        // clears and a later `track` can retry a file that was
-                        // still being written when it was first requested.
+                        // clears instead of blocking that path forever. A
+                        // retry needs a new request: `track` only re-requests
+                        // when the attachment list changes.
                         let _ = tx.send((path, (SystemTime::UNIX_EPOCH, 0), None));
                     }
                 }

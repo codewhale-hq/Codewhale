@@ -5474,8 +5474,26 @@ fn attach_clipboard_image_leaves_a_text_clipboard_alone() {
         .attach_clipboard_image()
         .expect_err("text is not an image");
 
-    assert!(error.contains("no image"), "{error}");
+    assert!(
+        error.to_lowercase().contains("nothing"),
+        "unexpected error: {error}"
+    );
     assert_eq!(app.input, "keep this draft");
+}
+
+#[test]
+fn attach_clipboard_image_explains_the_ssh_case() {
+    let mut app = App::new(test_options(false), &Config::default());
+    // A terminal-owned SSH session has no readable remote clipboard; the
+    // command must say so rather than claim the clipboard was empty.
+    app.clipboard = ClipboardHandler::for_test(true, false);
+
+    let error = app
+        .attach_clipboard_image()
+        .expect_err("no local clipboard");
+
+    assert!(error.contains("SSH"), "unexpected error: {error}");
+    assert!(app.input.is_empty());
 }
 
 #[test]

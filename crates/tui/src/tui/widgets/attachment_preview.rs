@@ -106,8 +106,8 @@ impl Renderable for AttachmentPreviewWidget<'_> {
                 .unwrap_or("image");
             let label = format!(
                 "{name}  {}x{}",
-                cols.saturating_mul(2) * step,
-                rows.saturating_mul(2) * step
+                cols.saturating_mul(2).saturating_mul(step),
+                rows.saturating_mul(2).saturating_mul(step)
             );
             buf.set_stringn(
                 area.x,

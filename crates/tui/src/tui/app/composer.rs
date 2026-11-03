@@ -970,7 +970,7 @@ impl App {
         }
         let workspace = self.workspace.clone();
         let Some(pasted) = self.clipboard.read_image(&workspace) else {
-            return Err("The clipboard holds no image".to_string());
+            return Err(self.tr(MessageId::ClipboardNothingToPaste).into_owned());
         };
         let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
         self.insert_media_attachment("image", &pasted.path, Some(&description));
