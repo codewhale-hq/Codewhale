@@ -768,8 +768,9 @@ fn contract_nonnegative_int(input: &Value, key: &str) -> Result<Option<usize>, T
 }
 
 fn primitive_image_mime(bytes: &[u8]) -> Option<&'static str> {
-    crate::image_attach::sniff_media_type(bytes)
-        .or_else(|| bytes.starts_with(b"BM").then_some("image/bmp"))
+    crate::image_attach::sniff_media_type(bytes).or_else(|| {
+        (bytes.starts_with(b"BM") && bytes.get(6..10) == Some(&[0; 4][..])).then_some("image/bmp")
+    })
 }
 
 fn contract_format_size(bytes: usize) -> String {
