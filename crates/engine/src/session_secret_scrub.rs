@@ -525,11 +525,16 @@ mod tests {
         let output = format!("{{\"access_token\": \"{TOKEN}\"}}");
         let manager =
             crate::session_manager::SessionManager::new(dir.path().to_path_buf()).expect("manager");
-        std::fs::write(
-            dir.path().join("gone.json"),
-            session_with_tool_output("nothing").to_string(),
-        )
-        .unwrap();
+        let gone = crate::session_manager::create_saved_session_with_id_and_mode(
+            "gone".to_string(),
+            &[],
+            "test-model",
+            dir.path(),
+            0,
+            None,
+            None,
+        );
+        manager.save_session(&gone).unwrap();
         manager.delete_session("gone").expect("delete");
         let archive_dir = dir
             .path()

@@ -7210,19 +7210,19 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
         .context("missing thread id")?
         .to_string();
 
-    // A new conversation's id is generated inside the engine, so only a mock
-    // can state it. It stands in for the id the real engine stamps on every
-    // snapshot the conversation takes.
-    const CONVERSATION_ID: &str = "3f9c7b1e-58b4-4d2a-9f5a-8a1e0c6d2b70";
+    let conversation_id = thread_id.clone();
+    let snapshot_id = conversation_id.clone();
     let harness = install_mock_engine(&runtime_threads, &thread_id).await;
     let mut rx_op = harness.rx_op;
     tokio::spawn(async move {
         while let Some(op) = rx_op.recv().await {
             if let Op::GetSessionSnapshot { tx } = op {
                 let snapshot = codewhale_engine::core::ops::SessionSnapshot {
-                    source: None,
+                    source: Some(codewhale_engine::core::ops::SessionSnapshotSource::control(
+                        codewhale_engine::core::ops::SessionControlId::new(),
+                    )),
 
-                    session_id: CONVERSATION_ID.to_string(),
+                    session_id: snapshot_id.clone(),
                     messages: vec![Message {
                         role: Role::User,
                         content: vec![ContentBlock::Text {
@@ -7234,7 +7234,7 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
                     model: "deepseek-v4-pro".to_string(),
                     model_provider: "deepseek".to_string(),
                     model_provider_id: None,
-                    workspace: root.clone(),
+                    workspace: root.join("workspace"),
                     system_prompt: None,
                     instruction_assembly: None,
                     mode: "agent".to_string(),
@@ -7255,7 +7255,7 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
         .json()
         .await?;
     assert_eq!(
-        saved["session_id"], CONVERSATION_ID,
+        saved["session_id"], conversation_id,
         "a save that names no session must persist the conversation's own id"
     );
 
@@ -7267,7 +7267,7 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(detail["thread"]["session_id"], CONVERSATION_ID);
+    assert_eq!(detail["thread"]["session_id"], conversation_id);
 
     // Saving again keeps the one document instead of collecting a new one per
     // visit — the drift above was also how one conversation came to hold
@@ -7289,7 +7289,7 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(resaved["session_id"], CONVERSATION_ID);
+    assert_eq!(resaved["session_id"], conversation_id);
     assert_eq!(
         documents()?,
         before,
@@ -7297,7 +7297,7 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
     );
     assert!(
         sessions_dir
-            .join(format!("{CONVERSATION_ID}.json"))
+            .join(format!("{conversation_id}.json"))
             .exists()
     );
 

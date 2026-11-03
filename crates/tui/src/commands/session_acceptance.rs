@@ -101,14 +101,8 @@ fn persisted_workspace_with_one_user_message(world: &mut SessionCommandWorld) {
     let original_id = "original-session".to_string();
     let app = world.app.as_deref_mut().expect("app should exist");
     app.current_session_id = Some(original_id.clone());
-    app.capture_session_fixture_source();
     world.original_session_id = Some(original_id);
     persist_active_session(world);
-    world
-        .app
-        .as_deref_mut()
-        .expect("fixture app")
-        .capture_session_fixture_source();
 }
 
 #[given("a CodeWhale session workspace with stale and fresh saved sessions")]
@@ -781,7 +775,7 @@ fn remember_result(world: &mut SessionCommandWorld, result: &CommandResult) {
     world.last_action = result.action.clone();
 }
 
-fn persist_active_session(world: &SessionCommandWorld) {
+fn persist_active_session(world: &mut SessionCommandWorld) {
     let app = world.app.as_deref().expect("app should exist");
     let session_id = app
         .current_session_id
@@ -812,6 +806,11 @@ fn persist_active_session(world: &SessionCommandWorld) {
     manager
         .save_session(&session)
         .expect("persist active session");
+    world
+        .app
+        .as_deref_mut()
+        .expect("fixture app")
+        .capture_session_fixture_source();
 }
 
 fn persist_session_with_age(world: &SessionCommandWorld, session_id: &str, title: &str, days: i64) {

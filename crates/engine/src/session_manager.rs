@@ -4246,7 +4246,9 @@ impl SessionManager {
         } else {
             self.apply_late_usage_to_metadata(&mut session.metadata);
         }
-        if let Some(id) = expected_id {
+        if let Some(id) = expected_id
+            && path == self.validated_checkpoint_path(id)?
+        {
             let mut admission_entered = false;
             let mut capture = || -> io::Result<SessionObservation> {
                 admission_entered = true;
@@ -4264,10 +4266,12 @@ impl SessionManager {
             let observation = if admission_held {
                 capture()
             } else {
-                self.with_session_write_admission(id, capture)
-                    .and_then(|observation| {
-                        observation.ok_or_else(Self::retired_session_write_error)
-                    })
+                self.with_session_read_lock(id, |path| {
+                    if Self::late_usage_is_deleted(path)? {
+                        return Err(Self::retired_session_write_error());
+                    }
+                    capture()
+                })
             };
             match observation {
                 Ok(observation) => {
@@ -4817,8 +4821,12 @@ impl SessionManager {
         let observation = if admission_held {
             capture()
         } else {
-            self.with_session_write_admission(id, capture)
-                .and_then(|observation| observation.ok_or_else(Self::retired_session_write_error))
+            self.with_session_read_lock(id, |path| {
+                if Self::late_usage_is_deleted(path)? {
+                    return Err(Self::retired_session_write_error());
+                }
+                capture()
+            })
         };
         match observation {
             Ok(observation) => {
