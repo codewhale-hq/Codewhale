@@ -670,10 +670,18 @@ mod tests {
                 response.error
             );
             if depth == 0 {
+                let snapshot = bridge.usage_snapshot().await;
+                assert_eq!(snapshot.records.len(), 1);
+                assert!(snapshot.drop_records.is_empty());
+                assert_eq!(snapshot.dropped_records, 0);
                 assert_eq!(
-                    bridge.usage_snapshot().await.dropped_records,
-                    1,
+                    snapshot.records[0].settlement.as_ref().unwrap().coverage,
+                    crate::llm_client::ProviderUsageCoverage::Missing,
                     "canceled provider work has unknown usage, never priced zero"
+                );
+                assert_eq!(
+                    snapshot.records[0].settlement.as_ref().unwrap().reason,
+                    crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
                 );
             }
         }

@@ -513,17 +513,21 @@ async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_ret
             .contains("wall-clock deadline")
     );
     let snapshot = usage.snapshot().await;
-    assert_eq!(snapshot.records.len(), 0);
-    assert_eq!(snapshot.drop_records.len(), 1);
+    assert_eq!(snapshot.records.len(), 1);
+    assert!(snapshot.drop_records.is_empty());
     assert_eq!(
-        snapshot.drop_records[0].reason,
+        snapshot.records[0].settlement.as_ref().unwrap().coverage,
+        crate::llm_client::ProviderUsageCoverage::Missing
+    );
+    assert_eq!(
+        snapshot.records[0].settlement.as_ref().unwrap().reason,
         crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
     );
-    assert_eq!(snapshot.drop_records[0].route.model, "captured-model");
-    assert_eq!(snapshot.dropped_records, 1);
+    assert_eq!(snapshot.records[0].usage.route.model, "captured-model");
+    assert_eq!(snapshot.dropped_records, 0);
     assert_eq!(
-        usage.snapshot().await.drop_records,
-        snapshot.drop_records,
+        usage.snapshot().await.records,
+        snapshot.records,
         "inspection never republishes or loses the Drop receipt"
     );
     drop(caller);

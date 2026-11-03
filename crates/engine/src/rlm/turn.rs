@@ -839,7 +839,17 @@ mod tests {
         );
         assert_eq!(client.0.call_count(), 0, "no scripted response completed");
         let snapshot = usage.snapshot().await;
-        assert_eq!(snapshot.dropped_records, 1, "one pending admitted request");
+        assert_eq!(snapshot.records.len(), 1, "one pending admitted request");
+        assert!(snapshot.drop_records.is_empty());
+        assert_eq!(snapshot.dropped_records, 0);
+        assert_eq!(
+            snapshot.records[0].settlement.as_ref().unwrap().coverage,
+            crate::llm_client::ProviderUsageCoverage::Missing
+        );
+        assert_eq!(
+            snapshot.records[0].settlement.as_ref().unwrap().reason,
+            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+        );
         assert_eq!(
             snapshot
                 .nested_events
