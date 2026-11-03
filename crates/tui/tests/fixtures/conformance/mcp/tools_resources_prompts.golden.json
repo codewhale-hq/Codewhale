@@ -116,6 +116,7 @@
           "defer_loading": false,
           "description": "Always reports a tool-level error.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_fails"
@@ -127,6 +128,7 @@
           "defer_loading": false,
           "description": "Never answers until the caller goes away.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_hangs"
@@ -138,6 +140,7 @@
           "defer_loading": false,
           "description": "Returns text and an image block.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_image"
@@ -149,6 +152,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_rpc-error"
@@ -160,6 +164,7 @@
           "defer_loading": false,
           "description": "Sends progress notifications before its result.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_slow"

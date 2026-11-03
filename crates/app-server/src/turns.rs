@@ -515,10 +515,10 @@ async fn message_native_thread<W: AsyncWrite + Unpin>(
                     );
                     let status = turn_terminal_status(&payload)?;
                     claim.terminal_observed = true;
-                    if let Some(transcript) = transcript.as_deref_mut() {
-                        if let Some(model) = record.get("effective_model").and_then(Value::as_str) {
-                            transcript.model = Some(model.to_owned());
-                        }
+                    if let Some(transcript) = transcript.as_deref_mut()
+                        && let Some(model) = record.get("effective_model").and_then(Value::as_str)
+                    {
+                        transcript.model = Some(model.to_owned());
                     }
                     match status {
                         TurnTerminalStatus::Completed => return Ok(record.clone()),

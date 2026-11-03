@@ -7,7 +7,9 @@ use std::task::{Context, Poll, ready};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, Join, ReadBuf, Take};
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::handshake::server::{
+    Callback, ErrorResponse, Request, Response,
+};
 use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
 
 pub(crate) type LocalWebSocket<R, W> = WebSocketLines<Join<Take<R>, W>>;
@@ -20,6 +22,21 @@ fn configuration() -> WebSocketConfig {
         .max_frame_size(Some(MAX_RUNTIME_IMAGE_BODY_BYTES))
 }
 
+struct PrivateOwnerHandshake;
+
+impl Callback for PrivateOwnerHandshake {
+    fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+        if request.headers().contains_key("origin") {
+            let mut refusal = ErrorResponse::new(Some(
+                "Origin is not accepted on the private owner channel".to_string(),
+            ));
+            *refusal.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
+            return Err(refusal);
+        }
+        Ok(response)
+    }
+}
+
 pub(crate) async fn accept<R, W>(read: R, write: W) -> anyhow::Result<LocalWebSocket<R, W>>
 where
     R: AsyncRead + Unpin,
@@ -30,17 +47,7 @@ where
         Duration::from_secs(5),
         tokio_tungstenite::accept_hdr_async_with_config(
             stream,
-            |request: &Request, response: Response| {
-                if request.headers().contains_key("origin") {
-                    let mut refusal = tokio_tungstenite::tungstenite::http::Response::new(Some(
-                        "Origin is not accepted on the private owner channel".to_string(),
-                    ));
-                    *refusal.status_mut() =
-                        tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
-                    return Err(refusal);
-                }
-                Ok(response)
-            },
+            PrivateOwnerHandshake,
             Some(configuration()),
         ),
     )

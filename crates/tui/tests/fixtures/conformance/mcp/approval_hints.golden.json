@@ -15,6 +15,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_confused"
@@ -26,6 +27,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_deleter"
@@ -37,6 +39,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_gentle_writer"
@@ -48,6 +51,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_plain"
@@ -59,6 +63,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_reader"
