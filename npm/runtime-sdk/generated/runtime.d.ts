@@ -47,6 +47,7 @@ export type RuntimeCapabilities = {
   threads: boolean
   thread_create_idempotency: boolean
   thread_idle_precondition: boolean
+  thread_patch_undo_turn_id: boolean
   thread_shell_consent: boolean
   turns: boolean
   turn_operation_idempotency: boolean

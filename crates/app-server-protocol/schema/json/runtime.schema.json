@@ -281,6 +281,10 @@
           "type": "boolean",
           "default": false
         },
+        "thread_patch_undo_turn_id": {
+          "type": "boolean",
+          "default": false
+        },
         "thread_shell_consent": {
           "type": "boolean",
           "description": "Explicit per-thread shell opt-in is checked against loaded policy and\ncannot broaden a conversation while it has an active turn.",
@@ -444,6 +448,7 @@
         "threads",
         "thread_create_idempotency",
         "thread_idle_precondition",
+        "thread_patch_undo_turn_id",
         "thread_shell_consent",
         "turns",
         "turn_operation_idempotency",

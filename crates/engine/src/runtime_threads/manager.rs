@@ -9984,12 +9984,8 @@ impl RuntimeThreadManager {
         let dir = sessions_dir.to_path_buf();
         tokio::spawn(async move {
             let _admission = admission;
-            let turns = runtime.store.list_turns_for_thread(&id)?;
-            let items_by_turn = runtime.prepared_items_for_turns(&turns)?;
-            let (_, _, depth_from_tail) =
-                runtime.fork_cut_for_user_turn(&turns, &items_by_turn, &turn_id)?;
             let prepared = runtime
-                .prepare_fork_at_user_message_in_sessions_dir(&id, depth_from_tail, &dir)
+                .prepare_fork_dropping_user_turn_in_sessions_dir(&id, &turn_id, &dir)
                 .await?;
             runtime.publish_prepared_fork(prepared).await
         })
@@ -10124,6 +10120,20 @@ impl RuntimeThreadManager {
             Some(target_turn_idx),
             depth_from_tail,
         )
+    }
+
+    pub async fn prepare_fork_dropping_user_turn_in_sessions_dir(
+        &self,
+        id: &str,
+        turn_id: &str,
+        sessions_dir: &Path,
+    ) -> Result<PreparedThreadFork> {
+        let turns = self.store.list_turns_for_thread(id)?;
+        let items_by_turn = self.prepared_items_for_turns(&turns)?;
+        let (_, _, depth_from_tail) =
+            self.fork_cut_for_user_turn(&turns, &items_by_turn, turn_id)?;
+        self.prepare_fork_at_user_message_in_sessions_dir(id, depth_from_tail, sessions_dir)
+            .await
     }
 
     pub async fn prepare_fork_at_user_turn_in_sessions_dir(

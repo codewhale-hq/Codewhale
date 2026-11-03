@@ -39,7 +39,7 @@
 [[feature]]
 id = "undo-range"
 name = "Request range undo"
-summary = "Select a request with /undo select to restore its file changes and later requests with visible progress."
+summary = "Select a request with /undo select to restore its file changes and later requests with visible progress; Runtime clients can preview and confirm an exact named-turn range."
 status = "experimental"
 surfaces = { tui = "preview" }
 since = "unreleased"
