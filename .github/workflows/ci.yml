@@ -951,7 +951,13 @@ jobs:
       - name: Build canonical executable for acceptance tests
         if: needs.changes.outputs.heavy == 'true' && (matrix.os != 'ubuntu-latest' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request')
         shell: bash
-        run: cargo build -p codewhale-cli --bin codewhale --all-features --locked
+        run: |
+          cargo build -p codewhale-cli --bin codewhale --all-features --locked
+          binary=codewhale
+          if [ "$RUNNER_OS" = Windows ]; then binary=codewhale.exe; fi
+          mkdir -p "$RUNNER_TEMP/acceptance-bin"
+          cp "${CARGO_TARGET_DIR:-target}/debug/$binary" "$RUNNER_TEMP/acceptance-bin/$binary"
+          echo "QA_TUI_BIN=$RUNNER_TEMP/acceptance-bin/$binary" >> "$GITHUB_ENV"
         env:
           RUSTC_WRAPPER: ${{ matrix.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
       - name: Windows Terminal clipboard acceptance
