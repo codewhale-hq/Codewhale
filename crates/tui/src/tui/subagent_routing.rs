@@ -467,12 +467,7 @@ pub(super) fn handle_subagent_mailbox_for_turn(
     message: &MailboxMessage,
 ) -> bool {
     // Accumulate sub-agent token costs for the real-time footer counter (#166).
-    if let MailboxMessage::TokenUsage {
-        record,
-        agent_id: _,
-        ..
-    } = message
-    {
+    if let MailboxMessage::TokenUsage { record, .. } = message {
         if let Some(record) = record
             .as_deref()
             .filter(|record| record.settlement.is_some())

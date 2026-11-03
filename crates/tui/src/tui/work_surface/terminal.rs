@@ -611,6 +611,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let muted = Style::default()
         .fg(app.ui_theme.text_muted)
         .bg(app.ui_theme.panel_bg);
+    #[cfg(all(unix, not(target_env = "ohos")))]
     let mut lines = Vec::new();
     #[cfg(all(unix, not(target_env = "ohos")))]
     {
@@ -803,10 +804,10 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         app.work_surface.terminal.scroll = scroll;
     }
     #[cfg(any(not(unix), target_env = "ohos"))]
-    lines.push(Line::styled(
+    let lines = vec![Line::styled(
         app.tr(MessageId::TerminalDockUnsupported),
         muted,
-    ));
+    )];
     Paragraph::new(lines)
         .style(style)
         .render(area, frame.buffer_mut());

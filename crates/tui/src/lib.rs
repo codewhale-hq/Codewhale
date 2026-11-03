@@ -14681,10 +14681,6 @@ fn direct_workflow_status(content: &str) -> Option<String> {
 /// (R7). Windows workers are reaped by the host's Job Object instead, so the
 /// watcher is a Unix-only concern.
 fn spawn_parent_death_watch() {
-    #[cfg(not(unix))]
-    {
-        return;
-    }
     #[cfg(unix)]
     std::thread::Builder::new()
         .name("parent-death-watch".to_string())

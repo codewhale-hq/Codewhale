@@ -2743,16 +2743,15 @@ pub(crate) async fn run_event_loop(
                     model,
                     ..
                 } = &event
-                {
-                    if super::session_state::acknowledge_fresh_session(
+                    && super::session_state::acknowledge_fresh_session(
                         app,
                         session_id,
                         source.as_ref(),
                         workspace,
                         model,
-                    ) {
-                        super::session_state::persist_full_reset_snapshot(app);
-                    }
+                    )
+                {
+                    super::session_state::persist_full_reset_snapshot(app);
                 }
                 // Count every received event before any filter can `continue`
                 // past it (U02-02). Filtered deltas, suppressed post-cancel
@@ -5037,12 +5036,10 @@ pub(crate) async fn run_event_loop(
                     }
                     EngineEvent::TurnUsage {
                         accounting,
-                        max_output_tokens: _,
                         usage,
                         duration_ms,
                         first_token_ms,
                         request_ms,
-                        finish_reason: _,
                         ..
                     } => {
                         // Per-step usage receipt. The session metrics strip
