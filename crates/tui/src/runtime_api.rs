@@ -1,6 +1,6 @@
 //! Runtime HTTP/SSE API for local Codewhale automation.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
@@ -253,6 +253,7 @@ struct RuntimeWorkspaceScope {
     canonical: PathBuf,
     directory: Arc<std::fs::File>,
     mcp: Mutex<Option<(u64, Arc<Mutex<McpPool>>)>>,
+    dynamic_servers: codewhale_engine::mcp::SharedRuntimeMcpServers,
     mcp_policy: parking_lot::Mutex<Value>,
     lsp: std::sync::OnceLock<Arc<codewhale_lsp::LspManager>>,
     owner: SharedRuntimeThreadManager,
@@ -307,8 +308,6 @@ impl Drop for RuntimeWorkspaceScope {
 struct RuntimeWorkspaceScopes {
     scopes: parking_lot::Mutex<BTreeMap<PathBuf, Arc<RuntimeWorkspaceScope>>>,
     mcp_generation: std::sync::atomic::AtomicU64,
-    dynamic_servers:
-        Arc<parking_lot::RwLock<HashMap<String, codewhale_mcp::config::McpServerConfig>>>,
     owner: SharedRuntimeThreadManager,
     workers: SharedSubAgentManager,
     cleanup_runtime: tokio::runtime::Handle,
@@ -366,7 +365,6 @@ impl RuntimeWorkspaceScopes {
         Arc::new(Self {
             scopes: parking_lot::Mutex::new(BTreeMap::new()),
             mcp_generation: std::sync::atomic::AtomicU64::new(0),
-            dynamic_servers: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             owner,
             workers,
             cleanup_runtime: tokio::runtime::Handle::current(),
@@ -455,6 +453,7 @@ impl RuntimeWorkspaceScopes {
                 canonical,
                 directory,
                 mcp: Mutex::new(None),
+                dynamic_servers: owner.owner.mcp_runtime_servers(&lexical),
                 mcp_policy: parking_lot::Mutex::new(Value::Null),
                 lsp: std::sync::OnceLock::new(),
                 owner: owner.owner.clone(),
@@ -6994,7 +6993,7 @@ fn load_mcp_management_pool(state: &RuntimeApiState) -> Result<(McpPool, Value)>
             ),
         );
     }
-    pool.dynamic_servers = state.workspace_scopes.dynamic_servers.clone();
+    pool.dynamic_servers = state.workspace_scope.dynamic_servers.clone();
     Ok((pool, mcp_pool_policy(&config)))
 }
 
@@ -7040,6 +7039,28 @@ async fn list_mcp_servers(
             auth_required: pool
                 .as_ref()
                 .is_some_and(|pool| pool.server_needs_auth(&name)),
+            enabled: server_cfg.is_enabled(),
+            required: server_cfg.required,
+            command: server_cfg.command.clone(),
+            url: server_cfg.url.clone(),
+            connected: pool
+                .as_ref()
+                .is_some_and(|pool| pool.connected_servers().contains(&name.as_str())),
+            enabled_tools: server_cfg.enabled_tools.clone(),
+            disabled_tools: server_cfg.disabled_tools.clone(),
+        });
+    }
+    for (name, server_cfg) in state.workspace_scope.dynamic_servers.read().iter() {
+        if servers.iter().any(|entry| entry.name == *name) {
+            continue;
+        }
+        servers.push(McpServerEntry {
+            name: name.clone(),
+            origin: "runtime",
+            writable: false,
+            auth_required: pool
+                .as_ref()
+                .is_some_and(|pool| pool.server_needs_auth(name)),
             enabled: server_cfg.is_enabled(),
             required: server_cfg.required,
             command: server_cfg.command.clone(),
@@ -7166,9 +7187,16 @@ async fn get_mcp_server(
     Path(name): Path<String>,
 ) -> Result<Json<McpServerDetail>, ApiError> {
     let ((config, origins), revision) = mcp_management_snapshot(state.clone()).await?;
+    let runtime_cfg = state
+        .workspace_scope
+        .dynamic_servers
+        .read()
+        .get(&name)
+        .cloned();
     let server_cfg = config
         .servers
         .get(&name)
+        .or(runtime_cfg.as_ref())
         .ok_or_else(|| ApiError::not_found(format!("MCP server '{name}' not found")))?;
     let handle = mcp_pool_handle(&state, false).await?;
     let pool = match handle.as_ref() {
@@ -7184,7 +7212,14 @@ async fn get_mcp_server(
         .as_ref()
         .is_some_and(|pool| pool.connected_servers().contains(&name.as_str()));
     let mut detail = McpServerDetail::from_config(&name, server_cfg, connected, revision);
-    detail.origin = origins.get(&name).copied().unwrap_or("unknown");
+    detail.origin = origins
+        .get(&name)
+        .copied()
+        .unwrap_or(if runtime_cfg.is_some() {
+            "runtime"
+        } else {
+            "unknown"
+        });
     detail.writable = detail.origin == "global";
     detail.auth_required = pool
         .as_ref()
@@ -7192,7 +7227,7 @@ async fn get_mcp_server(
     Ok(Json(detail))
 }
 
-/// `POST /v1/apps/mcp/servers` — add a new server to the persistent config.
+/// `POST /v1/apps/mcp/servers` — add a server to its selected config source.
 ///
 /// Body: JSON object with all `McpServerWriteRequest` fields **plus** a
 /// required top-level `"name"` string that will be the server key.
@@ -7211,6 +7246,11 @@ async fn create_mcp_server(
         return Err(ApiError::bad_request("'name' must not be empty"));
     }
 
+    let runtime = match body.get("scope") {
+        None => false,
+        Some(value) if value.as_str() == Some("runtime") => true,
+        Some(_) => return Err(ApiError::bad_request("scope must be runtime when supplied")),
+    };
     let req: McpServerWriteRequest = serde_json::from_value(body)
         .map_err(|e| ApiError::bad_request(format!("Invalid request body: {e}")))?;
 
@@ -7228,13 +7268,42 @@ async fn create_mcp_server(
     }
 
     let new_cfg = mcp_server_config_from_write_request(req, None);
+    if runtime {
+        if state.workspace.as_path() != state.runtime_threads.workspace() {
+            return Err(ApiError::conflict(
+                "Desktop browser tools belong to their original desktop workspace",
+            ));
+        }
+        let ((effective, _), _) = mcp_management_snapshot(state.clone()).await?;
+        let handle = mcp_pool_handle(&state, true)
+            .await?
+            .ok_or_else(|| ApiError::internal("MCP pool unavailable"))?;
+        let pool = handle.lock().await;
+        state
+            .workspace_scope
+            .validate()
+            .await
+            .map_err(|_| ApiError::conflict("selected workspace identity changed"))?;
+        if !pool.config_matches(&effective) {
+            return Err(ApiError::conflict(
+                "MCP configuration changed; reload it before registering desktop tools",
+            ));
+        }
+        pool.add_desktop_browser_server_config(name.clone(), new_cfg.clone())
+            .map_err(ApiError::bad_request)?;
+        let mut detail = McpServerDetail::from_config(&name, &new_cfg, false, String::new());
+        detail.origin = "runtime";
+        detail.writable = false;
+        return Ok((StatusCode::CREATED, Json(detail)));
+    }
     let target_name = name.clone();
     let (new_cfg, revision) =
         mutate_mcp_management(state.clone(), headers, move |state, config| {
-            if mcp_management_config(state)?
-                .0
-                .servers
-                .contains_key(&target_name)
+            if config.servers.contains_key(&target_name)
+                || mcp_management_config(state)?
+                    .0
+                    .servers
+                    .contains_key(&target_name)
             {
                 return Err(ApiError {
                     status: StatusCode::CONFLICT,
@@ -7412,11 +7481,17 @@ async fn reconnect_mcp_server(
     Path(name): Path<String>,
 ) -> Result<Json<McpServerActionReceipt>, ApiError> {
     let (config, _) = mcp_management_config(&state)?;
-    if !config.servers.contains_key(&name) {
-        return Err(ApiError::not_found(format!(
-            "MCP server '{name}' not found"
-        )));
-    }
+    let runtime_cfg = state
+        .workspace_scope
+        .dynamic_servers
+        .read()
+        .get(&name)
+        .cloned();
+    let server_cfg = config
+        .servers
+        .get(&name)
+        .or(runtime_cfg.as_ref())
+        .ok_or_else(|| ApiError::not_found(format!("MCP server '{name}' not found")))?;
     let handle = mcp_pool_handle(&state, true)
         .await?
         .ok_or_else(|| ApiError::internal("MCP pool unavailable"))?;
@@ -7426,7 +7501,7 @@ async fn reconnect_mcp_server(
         .validate()
         .await
         .map_err(|_| ApiError::conflict("selected workspace identity changed"))?;
-    let error = if !config.servers[&name].is_enabled() {
+    let error = if !server_cfg.is_enabled() {
         Some(anyhow::anyhow!("MCP server '{name}' is disabled"))
     } else if !pool.config_matches(&config) {
         Some(anyhow::anyhow!(

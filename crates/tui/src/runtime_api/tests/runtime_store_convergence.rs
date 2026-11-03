@@ -1113,7 +1113,7 @@ async fn real_owner_two_workspace_services_share_scope_caches_and_settle_global_
     let original_pool = original_scope.mcp.lock().await.as_ref().unwrap().1.clone();
     let selected_pool = selected_scope.mcp.lock().await.as_ref().unwrap().1.clone();
     assert!(!Arc::ptr_eq(&original_pool, &selected_pool));
-    assert!(Arc::ptr_eq(
+    assert!(!Arc::ptr_eq(
         &original_pool.lock().await.dynamic_servers,
         &selected_pool.lock().await.dynamic_servers
     ));

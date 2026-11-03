@@ -3340,6 +3340,8 @@ pub struct RuntimeThreadManager {
     pub(super) projection_locks: Arc<parking_lot::Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     pub(super) event_tx: broadcast::Sender<RuntimeEventRecord>,
     pub(super) manager_cfg: RuntimeThreadManagerConfig,
+    runtime_mcp_servers:
+        Arc<parking_lot::Mutex<HashMap<PathBuf, crate::mcp::SharedRuntimeMcpServers>>>,
     pub(super) cancel_token: CancellationToken,
     task_manager: Arc<parking_lot::Mutex<std::sync::Weak<crate::task_manager::TaskManager>>>,
     task_execution_lease:
@@ -4256,6 +4258,7 @@ impl RuntimeThreadManager {
             projection_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             event_tx,
             manager_cfg,
+            runtime_mcp_servers: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             cancel_token: CancellationToken::new(),
             task_manager: Arc::new(parking_lot::Mutex::new(std::sync::Weak::new())),
             task_execution_lease: Arc::new(parking_lot::Mutex::new(None)),
@@ -4282,6 +4285,18 @@ impl RuntimeThreadManager {
         };
         manager.recover_interrupted_state()?;
         Ok(manager)
+    }
+
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
+    pub fn mcp_runtime_servers(&self, workspace: &Path) -> crate::mcp::SharedRuntimeMcpServers {
+        self.runtime_mcp_servers
+            .lock()
+            .entry(workspace.to_path_buf())
+            .or_default()
+            .clone()
     }
 
     pub fn mcp_auth_context(&self) -> Arc<dyn codewhale_runtime::credentials::AuthContext> {
@@ -13946,6 +13961,14 @@ source_usage_records: Default::default(),
                 record_restore_points: true,
                 lsp_config,
                 runtime_services: crate::tools::spec::RuntimeToolServices {
+                    runtime_mcp_servers: (!isolated_chat && !self.host_profile.is_acp()).then(
+                        || {
+                            (
+                                thread.workspace.clone(),
+                                self.mcp_runtime_servers(&thread.workspace),
+                            )
+                        },
+                    ),
                     accounting_origin: Some({
                         let store = self.store.clone();
                         let process_owner = self._process_owner_lock.clone();

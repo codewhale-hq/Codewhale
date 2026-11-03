@@ -14,9 +14,9 @@ workspace = true
 test-support = []
 
 [dependencies]
-codewhale-palette = { path = "../palette", version = "0.10.2" }
+codewhale-palette = { path = "../palette", version = "0.10.3" }
 codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.0" }
-codewhale-secrets = { path = "../secrets", version = "0.10.2" }
+codewhale-secrets = { path = "../secrets", version = "0.10.3" }
 crossterm = "0.29"
 ratatui = { version = "=0.30.2", features = ["unstable-rendered-line-info"] }
 similar = { version = "3", features = ["unicode"] }

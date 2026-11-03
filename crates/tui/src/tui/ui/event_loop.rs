@@ -1302,6 +1302,7 @@ pub async fn run_tui(
     }
     app.runtime_services = RuntimeToolServices {
         accounting_origin: None,
+        runtime_mcp_servers: app.runtime_services.runtime_mcp_servers.clone(),
 
         shell_manager: Some(shell_manager),
         persist_services_enabled: false,

@@ -15,9 +15,9 @@ test-support = []
 
 [dependencies]
 anyhow.workspace = true
-codewhale-net = { path = "../net", version = "0.10.2" }
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-util = { path = "../util", version = "0.10.2" }
+codewhale-net = { path = "../net", version = "0.10.3" }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-util = { path = "../util", version = "0.10.3" }
 flate2 = "1.1"
 futures-util = "0.3.31"
 reqwest = { workspace = true, features = ["stream"] }

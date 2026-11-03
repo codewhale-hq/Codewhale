@@ -98,6 +98,7 @@ pub trait DynamicToolExecutor: Send + Sync {
 #[derive(Clone)]
 pub struct RuntimeToolServices {
     pub accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
+    pub runtime_mcp_servers: Option<(PathBuf, crate::mcp::SharedRuntimeMcpServers)>,
     pub shell_manager: Option<SharedShellManager>,
     /// True only for the real headless exec host after it has established the
     /// explicit authority required to transfer `persist:true` services.
@@ -130,6 +131,7 @@ impl Default for RuntimeToolServices {
     fn default() -> Self {
         Self {
             accounting_origin: None,
+            runtime_mcp_servers: None,
             shell_manager: None,
             persist_services_enabled: false,
             task_manager: None,
@@ -151,6 +153,7 @@ impl std::fmt::Debug for RuntimeToolServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeToolServices")
             .field("accounting_origin", &self.accounting_origin.is_some())
+            .field("runtime_mcp_servers", &self.runtime_mcp_servers.is_some())
             .field("shell_manager", &self.shell_manager.is_some())
             .field("persist_services_enabled", &self.persist_services_enabled)
             .field("task_manager", &self.task_manager.is_some())

@@ -15,7 +15,7 @@ schema = ["dep:schemars"]
 test-support = []
 
 [dependencies]
-codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-protocol = { path = "../protocol", version = "0.10.3" }
 anyhow.workspace = true
 base64 = "0.23.1"
 chrono.workspace = true
@@ -23,9 +23,9 @@ ring = "0.17.14"
 rust_decimal = { version = "1.43.0", default-features = false, features = ["std"] }
 semver.workspace = true
 schemars = { version = "1.2.1", optional = true, features = ["derive", "preserve_order"] }
-codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-secrets = { path = "../secrets", version = "0.10.2" }
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-secrets = { path = "../secrets", version = "0.10.3" }
 fd-lock = "4.0.4"
 libc = "0.2"
 serde.workspace = true

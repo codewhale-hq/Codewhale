@@ -13,11 +13,11 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
-codewhale-config = { path = "../config", version = "0.10.2" }
-codewhale-release = { path = "../release", version = "0.10.2" }
-codewhale-runtime = { path = "../runtime", version = "0.10.2" }
-codewhale-tools = { path = "../tools", version = "0.10.2" }
+codewhale-command-contract = { path = "../command-contract", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.3" }
+codewhale-release = { path = "../release", version = "0.10.3" }
+codewhale-runtime = { path = "../runtime", version = "0.10.3" }
+codewhale-tools = { path = "../tools", version = "0.10.3" }
 http = "1"
 hyper-util = { version = "=0.1.21", features = ["client-proxy"] }
 reqwest.workspace = true

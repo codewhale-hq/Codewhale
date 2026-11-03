@@ -11,7 +11,7 @@ description = "Prototype command capability and dispatch shapes for the staged T
 workspace = true
 
 [dependencies]
-codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-protocol = { path = "../protocol", version = "0.10.3" }
 # FEAT-025 export projections carry JSON tool payloads. The workspace already
 # pins serde_json with `preserve_order` (crates/core and crates/tui), so this
 # adds no new external dependency to the graph.

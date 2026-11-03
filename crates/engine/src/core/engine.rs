@@ -2546,7 +2546,16 @@ impl Engine {
             None => EngineHostProfile::Normal,
         };
         let mcp_pool = host.as_ref().and_then(|host| match host {
-            EngineHostSetup::Child(child) => child.authority.runtime.mcp_pool.clone(),
+            EngineHostSetup::Child(child) => {
+                child.authority.runtime.mcp_pool.clone().filter(|_| {
+                    child.authority.runtime.context.workspace == config.workspace
+                        && config
+                            .runtime_services
+                            .runtime_mcp_servers
+                            .as_ref()
+                            .is_some_and(|(workspace, _)| workspace == &config.workspace)
+                })
+            }
             EngineHostSetup::Rlm(_) => None,
         });
         let (child_host, rlm_host) = match host {
@@ -6038,23 +6047,14 @@ impl Engine {
         let plan_state = self.config.plan_state.clone();
 
         let mut tool_context = self.build_tool_context_for_turn(input_policy, &route);
-        if wiring.is_live() {
-            if let Some(owner) = self.config.compaction.runtime_cost_owner.as_deref() {
-                tool_context.accounting_origin = crate::cost_status::NativeUsageOrigin::runtime(
-                    crate::cost_status::scope_token(),
-                    owner,
-                )
-                .ok();
-            }
-            tool_context.rlm_caller = rlm_host::CapturedRlmCaller::capture(
-                self,
-                input_policy,
-                &route,
-                &tool_context,
-                turn_id,
+        if wiring.is_live()
+            && let Some(owner) = self.config.compaction.runtime_cost_owner.as_deref()
+        {
+            tool_context.accounting_origin = crate::cost_status::NativeUsageOrigin::runtime(
+                crate::cost_status::scope_token(),
+                owner,
             )
-            .ok()
-            .map(Arc::new);
+            .ok();
         }
         // Ensure MCP pool is initialized before building the tool registry,
         // so start_mcp_server can be registered when Feature::Mcp is enabled.
@@ -6064,6 +6064,29 @@ impl Engine {
             let _ = self.ensure_mcp_pool().await;
             self.wait_for_explicit_mcp_boot(allowed_tools.as_deref())
                 .await;
+        }
+        let mcp_pool = if self.config.features.enabled(Feature::Mcp) {
+            if mcp_access.may_connect() {
+                self.ensure_mcp_pool().await.ok()
+            } else {
+                self.mcp_pool.clone()
+            }
+        } else {
+            None
+        };
+
+        tool_context.runtime.runtime_mcp_servers =
+            self.config.runtime_services.runtime_mcp_servers.clone();
+        if wiring.is_live() {
+            tool_context.rlm_caller = rlm_host::CapturedRlmCaller::capture(
+                self,
+                input_policy,
+                &route,
+                &tool_context,
+                turn_id,
+            )
+            .ok()
+            .map(Arc::new);
         }
         let builder = if let Some(child) = self.child_host.as_ref() {
             let mut runtime = child.authority.nested_runtime(
@@ -6082,6 +6105,7 @@ impl Engine {
             runtime.api_config = Some(Arc::new(*route.api_config.clone()));
             runtime.reasoning_effort = route.reasoning_effort.clone();
             runtime.reasoning_effort_auto = route.reasoning_effort_auto;
+            runtime.mcp_pool = mcp_pool.clone();
             child
                 .authority
                 .tool_registry_builder(
@@ -6191,16 +6215,6 @@ impl Engine {
             } else {
                 None
             };
-
-        let mcp_pool = if self.config.features.enabled(Feature::Mcp) {
-            if mcp_access.may_connect() {
-                self.ensure_mcp_pool().await.ok()
-            } else {
-                self.mcp_pool.clone()
-            }
-        } else {
-            None
-        };
 
         let mut subagent_runtime_model = None;
         let mut tool_registry = if self.child_host.is_some() {
@@ -8444,6 +8458,7 @@ impl Engine {
             }
             held.bind_caller_plugins(Arc::clone(&self.plugin_registry))
                 .map_err(|error| ToolError::not_available(error.to_string()))?;
+            self.config.runtime_services.runtime_mcp_servers = held.runtime_server_scope();
             drop(held);
             self.ensure_mcp_supervisor();
             return Ok(pool);
@@ -8487,6 +8502,15 @@ impl Engine {
                 )))
                 .await;
         }
+        pool.bind_caller_plugins(Arc::clone(&self.plugin_registry))
+            .map_err(|error| ToolError::not_available(error.to_string()))?;
+        if let Some((workspace, servers)) =
+            self.config.runtime_services.runtime_mcp_servers.as_ref()
+            && workspace == &self.config.workspace
+        {
+            pool.dynamic_servers = Arc::clone(servers);
+        }
+        self.config.runtime_services.runtime_mcp_servers = pool.runtime_server_scope();
         pool = pool.with_backend(self.api_config.mcp_backend());
         pool = pool.with_disallowed_tools(self.config.disallowed_tools.clone().unwrap_or_default());
         if let Some(decider) = self.current_network_decider() {

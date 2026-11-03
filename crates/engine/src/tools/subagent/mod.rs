@@ -6690,6 +6690,20 @@ impl SubAgentManager {
     }
 
     pub fn finalize_session_close_for_session(&mut self, active_session_id: &str) -> Result<usize> {
+        if !self.coordination_snapshot_read_only
+            && (self.state_path.is_none() || self.store_authority.is_some())
+            && !self.agents.values().any(|agent| {
+                self.owns_store_record(&agent.id)
+                    && self.agent_is_owned_by_session(agent, active_session_id)
+            })
+            && !self.worker_records.values().any(|record| {
+                self.owns_store_record(&record.spec.worker_id)
+                    && !active_session_id.is_empty()
+                    && record.owner_session_id == active_session_id
+            })
+        {
+            return Ok(0);
+        }
         self.with_store_transaction(|held| {
             held.finalize_session_close_inner(Some(active_session_id))
         })

@@ -348,7 +348,10 @@ impl OAuthHttpClient for RecordingOAuthHttpClient {
 }
 
 pub fn error_looks_auth_required(error: &anyhow::Error) -> bool {
-    error_text_looks_auth_required(&format!("{error:#}"))
+    error
+        .downcast_ref::<super::McpCredentialConfigurationError>()
+        .is_none()
+        && error_text_looks_auth_required(&format!("{error:#}"))
 }
 
 /// Whether the error chain carries the OAuth `invalid_grant` code: the
@@ -368,8 +371,11 @@ fn error_is_invalid_grant(error: &anyhow::Error) -> bool {
 /// authorization server has definitively rejected the stored grant — only a
 /// fresh login recovers it.
 pub fn error_text_looks_auth_required(text: &str) -> bool {
-    let status_401 = text_names_http_status(text, "401");
     let text = text.to_ascii_lowercase();
+    if text.contains(&super::MCP_CREDENTIAL_CONFIGURATION_ERROR_PREFIX.to_ascii_lowercase()) {
+        return false;
+    }
+    let status_401 = text_names_http_status(&text, "401");
     // `auth required` and `requires oauth` are anchored to the shapes this
     // product and the Codex-compatible managers actually emit (`◆ auth
     // required`, `requires OAuth login/authentication/reauthentication`) —
@@ -1698,17 +1704,14 @@ pub(super) fn build_default_headers_with_auth_context(
         insert_header(&mut headers, name, value)?;
     }
     for (name, env_var) in &server.env_headers {
-        if let Some(value) =
-            super::mcp_secret_var(server.reviewed_plugin_source(), env_var, auth_context)
-            && !value.trim().is_empty()
-        {
-            insert_header(&mut headers, name, &value)?;
-        }
+        let value =
+            super::required_mcp_secret_var(server.reviewed_plugin_source(), env_var, auth_context)?;
+        insert_header(&mut headers, name, &value)?;
     }
     Ok(headers)
 }
 
-fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<()> {
+pub(super) fn insert_header(headers: &mut HeaderMap, name: &str, value: &str) -> Result<()> {
     if !super::headers::is_safe_custom_header(name, value) {
         bail!("unsafe MCP HTTP header '{name}'");
     }

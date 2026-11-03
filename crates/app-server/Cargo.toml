@@ -13,19 +13,19 @@ autobins = false
 workspace = true
 
 [dependencies]
-codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2" }
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-codewhale-agent = { path = "../agent", version = "0.10.2" }
-codewhale-config = { path = "../config", version = "0.10.2" }
-codewhale-core = { path = "../core", version = "0.10.2" }
-codewhale-hooks = { path = "../hooks", version = "0.10.2" }
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-protocol = { path = "../protocol", version = "0.10.2" }
-codewhale-release = { path = "../release", version = "0.10.2" }
-codewhale-runtime = { path = "../runtime", version = "0.10.2" }
-codewhale-state = { path = "../state", version = "0.10.2" }
+codewhale-agent = { path = "../agent", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.3" }
+codewhale-core = { path = "../core", version = "0.10.3" }
+codewhale-hooks = { path = "../hooks", version = "0.10.3" }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-protocol = { path = "../protocol", version = "0.10.3" }
+codewhale-release = { path = "../release", version = "0.10.3" }
+codewhale-runtime = { path = "../runtime", version = "0.10.3" }
+codewhale-state = { path = "../state", version = "0.10.3" }
 serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true

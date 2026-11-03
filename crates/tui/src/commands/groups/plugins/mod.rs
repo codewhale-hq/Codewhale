@@ -192,7 +192,7 @@ pub(super) fn plugins(
         ["enable", selector] => mutate_bundle(presentation, plugin, selector, Mutation::Enable),
         ["disable", selector] => mutate_bundle(presentation, plugin, selector, Mutation::Disable),
         ["revoke", selector] => mutate_bundle(presentation, plugin, selector, Mutation::Revoke),
-        ["reload"] => reload(presentation, plugin),
+        ["reload"] => reload(workspace, presentation, plugin),
         ["doctor"] => doctor(presentation, plugin, false),
         ["doctor", "--fix"] => doctor(presentation, plugin, true),
         ["doctor", ..] => CommandResult::error(DOCTOR_USAGE),
@@ -280,6 +280,7 @@ fn translate(presentation: &mut dyn CommandPresentationContext, key: &str) -> St
 }
 
 fn reload(
+    workspace: &Path,
     presentation: &mut dyn CommandPresentationContext,
     plugin: &mut dyn CommandPluginContext,
 ) -> CommandResult {
@@ -288,7 +289,13 @@ fn reload(
             let message = presentation
                 .translate(
                     "cmd_plugin_bundle_reloaded",
-                    &[("count", &count.to_string())],
+                    &[
+                        ("count", &count.to_string()),
+                        (
+                            "workspace",
+                            &escape_review_path(workspace, ReviewTextContext::Prose),
+                        ),
+                    ],
                 )
                 .unwrap_or_default();
             CommandResult::with_message_and_action(message, AppAction::PluginRegistryChanged)

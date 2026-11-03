@@ -20,7 +20,7 @@
     ]
   },
   "sourceCandidate": {
-    "version": "0.10.2",
+    "version": "0.10.3",
     "providerCount": 50,
     "toolCount": 81,
     "sandboxBackends": [
@@ -186,7 +186,7 @@
     "localRuntime": "runtime, workspace state, and audit log stay on the user's machine",
     "hostedProviderBoundary": "the selected hosted provider receives turn context required for inference",
     "localInference": "a loopback local-model route can keep inference local",
-    "telemetry": "Codewhale 0.10.2 counts anonymous usage by default and discloses it at first launch (policy notice version 5, naming Codewhale and PostHog as processors), while the earlier 0.9.11 release asked first; turning it off is a saved choice that later versions keep, an opt-out recorded under the earlier opt-in policy stays off, and showing the notice never records any acceptance on the user's behalf; Codewhale does not collect conversations, code, prompts, files, file/repo/branch names, model content, credentials, or per-turn/per-tool timelines; while on, sessions post aggregate counts and closed enums to the first-party endpoint https://telemetry.codewhale.net/v1/telemetry, whose storage has no IP, country, or geo column and a fixed three-month retention; optional PostHog forwarding requires separate operator configuration and verified IP-safe egress, and its retention is a separate project setting; telemetry_endpoint = \"\" writes only to a local dry-run file; no mandatory hosted relay",
+    "telemetry": "Codewhale 0.10.3 counts anonymous usage by default and discloses it at first launch (policy notice version 5, naming Codewhale and PostHog as processors), while the earlier 0.9.11 release asked first; turning it off is a saved choice that later versions keep, an opt-out recorded under the earlier opt-in policy stays off, and showing the notice never records any acceptance on the user's behalf; Codewhale does not collect conversations, code, prompts, files, file/repo/branch names, model content, credentials, or per-turn/per-tool timelines; while on, sessions post aggregate counts and closed enums to the first-party endpoint https://telemetry.codewhale.net/v1/telemetry, whose storage has no IP, country, or geo column and a fixed three-month retention; optional PostHog forwarding requires separate operator configuration and verified IP-safe egress, and its retention is a separate project setting; telemetry_endpoint = \"\" writes only to a local dry-run file; no mandatory hosted relay",
     "account": "no account required for the local runtime",
     "plan": "Plan centrally refuses file mutation and shell execution; policy-allowed research may contact external services and local session state can still be persisted.",
     "sandbox": "Seatbelt is used on macOS when available; Linux bubblewrap is on by default once installed and verified working, and prefer_bwrap = false opts out; Windows currently reports no OS sandbox",

@@ -2459,13 +2459,13 @@ async fn run_async_main_inner(
     if should_arm_before_dispatch {
         arm_telemetry(&cli, command.as_ref());
     }
-    let outcome = run_async_main_dispatch(
+    let outcome = Box::pin(run_async_main_dispatch(
         cli,
         command,
         plugin_discovery,
         plugin_registry,
         pending_telemetry_notice,
-    )
+    ))
     .await;
     finish_telemetry(&outcome, surface).await;
     outcome
@@ -3033,14 +3033,14 @@ async fn run_async_main_dispatch(
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
                 let resume_id = resolve_session_id(session_id, last, &workspace)?;
-                run_interactive(
+                Box::pin(run_interactive(
                     &cli,
                     &config,
                     Some(resume_id),
                     None,
                     pending_telemetry_notice.take(),
                     std::sync::Arc::clone(&plugin_registry),
-                )
+                ))
                 .await
             }
             Commands::Fork { session_id, last } => {
@@ -3060,7 +3060,7 @@ async fn run_async_main_dispatch(
                     std::sync::Arc::clone(&plugin_registry),
                 )
                 .await?;
-                run_interactive_prepared(
+                Box::pin(run_interactive_prepared(
                     &cli,
                     prepared,
                     Some(new_session_id),
@@ -3068,7 +3068,7 @@ async fn run_async_main_dispatch(
                     None,
                     pending_telemetry_notice.take(),
                     std::sync::Arc::clone(&plugin_registry),
-                )
+                ))
                 .await
             }
         };
@@ -3081,14 +3081,14 @@ async fn run_async_main_dispatch(
     // one-shot behavior (#2370).
     let config = load_config_from_cli(&cli)?;
     if let Some(initial_input) = top_level_prompt_initial_input(&cli.prompt) {
-        return run_interactive(
+        return Box::pin(run_interactive(
             &cli,
             &config,
             None,
             Some(initial_input),
             pending_telemetry_notice.take(),
             std::sync::Arc::clone(&plugin_registry),
-        )
+        ))
         .await;
     }
 
@@ -3120,7 +3120,7 @@ async fn run_async_main_dispatch(
 
     // Default: Interactive TUI
     // --yolo starts in YOLO mode (auto-approve; shell enabled)
-    run_interactive_with_notice(
+    Box::pin(run_interactive_with_notice(
         &cli,
         &config,
         resume_session_id,
@@ -3128,7 +3128,7 @@ async fn run_async_main_dispatch(
         startup_notice,
         pending_telemetry_notice.take(),
         plugin_registry,
-    )
+    ))
     .await
 }
 
@@ -13927,7 +13927,7 @@ async fn run_interactive(
     pending_telemetry_notice: Option<codewhale_engine::telemetry_notice::PendingTelemetryNotice>,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<()> {
-    run_interactive_with_notice(
+    Box::pin(run_interactive_with_notice(
         cli,
         config,
         resume_session_id,
@@ -13935,7 +13935,7 @@ async fn run_interactive(
         None,
         pending_telemetry_notice,
         plugin_registry,
-    )
+    ))
     .await
 }
 
@@ -13967,7 +13967,7 @@ async fn run_interactive_with_notice(
     } else {
         (prepared, None)
     };
-    run_interactive_prepared(
+    Box::pin(run_interactive_prepared(
         cli,
         prepared,
         resume_session_id,
@@ -13975,7 +13975,7 @@ async fn run_interactive_with_notice(
         startup_notice,
         pending_telemetry_notice,
         plugin_registry,
-    )
+    ))
     .await
 }
 
@@ -14157,7 +14157,7 @@ async fn run_interactive_prepared(
     // env var (config.yolo), not as a CLI flag. Honour either.
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
 
-    tui::run_tui(
+    Box::pin(tui::run_tui(
         config,
         tui::TuiOptions {
             model,
@@ -14184,7 +14184,7 @@ async fn run_interactive_prepared(
         },
         plugin_registry,
         pending_telemetry_notice,
-    )
+    ))
     .await
 }
 

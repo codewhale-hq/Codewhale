@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - Unreleased candidate
+
 ### Added
 
 - Goal continuations send the objective once per live conversation window. Later passes show the current goal state, estimated conversation input and the applicable compaction setting. Full notes stay available through `get_goal`. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for measuring the repeated text and identifying the misleading token figure ([#7172](https://github.com/codewhale-hq/Codewhale/issues/7172)).
@@ -159,6 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [@luestr](https://github.com/luestr) for the report. (#7093)
 
 ### Fixed
+
+- **Interactive command confirmations keep their stack headroom:** the existing interactive startup chain heap-pins its large futures instead of embedding their debug state machines in each caller.
+
+- **Live MCP status includes runtime servers:** the existing pool snapshot now includes workspace-scoped dynamic servers, retaining static-name precedence and the same permission and connection checks.
+- **Plugin reload confirms its workspace:** the status translation receives the required workspace value instead of producing an empty acknowledgement.
+
+- **MCP credentials fail clearly:** missing or invalid required credential configuration stops before connection, stored OAuth discovery failures retain their cause, and reviewed-plugin errors redact credential details. Explicit reconnect still reloads saved credentials.
+- **Desktop browser MCP stays with its workspace:** the paired desktop host registers its authenticated loopback server at runtime, late registrations refresh the tool catalog, and another workspace cannot inherit the connection. Recognizable obsolete global browser entries are ignored without rewriting user configuration.
+- **Closing an empty delegated fleet avoids an unnecessary writer lock:** a session with no locally owned agent or worker records can close while another Codewhale process coordinates the workspace. Read-only or failed-admission state and sessions with owned records retain the existing coordination checks.
 
 - Child, review and Auto usage keeps its captured session and route through late completion and persistence retries. Unreported usage stays unknown, cache writes and reasoning remain distinct, and cost calculations use the quote captured for the request.
 - Interrupted children persist their continuation checkpoint and complete their workflow task instead of leaving it waiting on a worker whose execution already ended. Live approval waits retain their existing behavior.
@@ -13219,7 +13230,8 @@ overflow report and `/theme` picker edge-wrapping patch in #1814.
 
 Older releases (v0.8.39 and earlier) are archived in [docs/CHANGELOG_ARCHIVE.md](docs/CHANGELOG_ARCHIVE.md).
 
-[Unreleased]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...HEAD
 [0.10.2]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/codewhale-hq/CodeWhale/compare/v0.9.13...v0.10.0
