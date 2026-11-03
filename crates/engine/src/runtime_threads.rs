@@ -4447,6 +4447,8 @@ struct RuntimeTurnOperationBinding {
     turn_id: String,
     operation_key_fingerprint: String,
     request_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    watch_input_sha256: Option<String>,
     created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     preparation: Option<RuntimeTurnPreparation>,
@@ -4511,6 +4513,9 @@ impl RuntimeTurnOperationBinding {
                 &preparation.source_fingerprint,
                 "classifier source fingerprint",
             )?;
+        }
+        if let Some(digest) = &self.watch_input_sha256 {
+            validate_sha256_fingerprint(digest, "watch input fingerprint")?;
         }
         Ok(())
     }

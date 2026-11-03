@@ -4477,6 +4477,22 @@ async fn turn_endpoint_operation_key_returns_original_and_conflicts_on_mismatch(
         1
     );
 
+    let info: Value = client
+        .get(format!("http://{addr}/v1/runtime/info"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(info["capabilities"]["watch_event_turns"], false);
+    assert_eq!(
+        client
+            .post(format!("http://{addr}/v1/threads/{thread_id}/watch-turns"))
+            .json(&json!({}))
+            .send()
+            .await?
+            .status(),
+        StatusCode::CONFLICT
+    );
     handle.abort();
     Ok(())
 }
@@ -4553,6 +4569,173 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
         Op::SendMessage(TurnSpec { .. })
     ));
 
+    let mut watch_engine = install_mock_engine(&manager, &other_thread.id).await;
+    let now = chrono::Utc::now().timestamp();
+    manager
+        .save_goal(codewhale_protocol::ThreadGoal {
+            thread_id: other_thread.id.clone(),
+            goal_id: "goal_watch_human".into(),
+            objective: "Wait for the person".into(),
+            status: codewhale_protocol::ThreadGoalStatus::Paused,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            continuation_count: 0,
+            created_at: now,
+            updated_at: now,
+            last_gap_fingerprint: None,
+            repeated_gap_count: 0,
+            last_gap_pass: None,
+            pause_reason: Some(codewhale_protocol::GoalPauseReason::Yielded),
+        })
+        .await?;
+    let watch_event = json!({ "version":1,"platformAccountId":"user_fixture","projectId":"project_fixture","watchId":"wch_fixture","watchRevision":1,
+        "definitionSha256":"a".repeat(64),"sourceKind":"schedule","occurrenceSha256":"b".repeat(64),"eventSha256":"c".repeat(64),
+        "runId":"run_fixture","roomThreadRootId":"","source":{"slot":"2026-11-02T12:00:00.000Z"} });
+    let watch_key = "watch-lookup-fixture";
+    let watch_url = format!("http://{addr}/v1/threads/{}/watch-turns", other_thread.id);
+    let watch_request = json!({"operation_key":watch_key,"prompt":"watch does not answer for a person","watch_event":watch_event});
+    for slot in [
+        "2026-11-02",
+        "2026-11-02T12:00:00Z",
+        "2026-11-02T12:00:00.000+00:00",
+        "2026-02-30T12:00:00.000Z",
+        "2016-12-31T23:59:60.000Z",
+    ] {
+        let mut invalid = watch_request.clone();
+        invalid["watch_event"]["source"]["slot"] = json!(slot);
+        assert_eq!(
+            client.post(&watch_url).bearer_auth(token).json(&invalid).send().await?.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut repository = watch_request.clone();
+    repository["watch_event"]["sourceKind"] = json!("github.pull_request");
+    repository["watch_event"]["source"] = json!({"installationId":"installation_fixture","bindingId":"binding_fixture",
+        "repo":format!("{}/{}", "o".repeat(100), "r".repeat(100)),"number":1,"deliveryId":"delivery_fixture","eventName":"pull_request_review"});
+    let boundary: codewhale_app_server_protocol::runtime::watch_event::WatchEventReceipt =
+        serde_json::from_value(repository["watch_event"].clone())?;
+    assert!(boundary.validate().is_ok());
+    for repo in [
+        format!("{}/r", "o".repeat(101)),
+        format!("o/{}", "r".repeat(101)),
+        "o/r/extra".to_string(),
+        "/r".to_string(),
+        "o/".to_string(),
+    ] {
+        repository["watch_event"]["source"]["repo"] = json!(repo);
+        assert_eq!(
+            client.post(&watch_url).bearer_auth(token).json(&repository).send().await?.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert!(watch_engine.rx_op.try_recv().is_err());
+    let response = client
+        .post(&watch_url)
+        .bearer_auth(token)
+        .json(&watch_request)
+        .send()
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let watch_accepted: Value = response.json().await?;
+    let watch_turn_id = watch_accepted["turn"]["id"]
+        .as_str()
+        .context("watch turn id")?
+        .to_string();
+    let watch_op =
+        tokio::time::timeout(ci_scaled(Duration::from_secs(2)), watch_engine.rx_op.recv())
+            .await?
+            .context("watch Engine operation")?;
+    let Op::SendMessage(watch_spec) = watch_op else {
+        bail!("watch did not use the ordinary SendMessage owner");
+    };
+    assert_eq!(
+        watch_spec.provenance,
+        codewhale_engine::core::ops::UserInputProvenance::Runtime
+    );
+    assert_eq!(
+        watch_spec.goal_status,
+        codewhale_engine::tools::goal::GoalStatus::Paused
+    );
+    assert_eq!(
+        manager
+            .get_goal(&other_thread.id)
+            .await?
+            .context("retained paused goal")?
+            .status,
+        codewhale_protocol::ThreadGoalStatus::Paused
+    );
+    let replay = client
+        .post(&watch_url)
+        .bearer_auth(token)
+        .json(&watch_request)
+        .send()
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(replay.json::<Value>().await?["turn"]["id"], watch_turn_id);
+    let mut changed = watch_request.clone();
+    changed["watch_event"]["watchRevision"] = json!(2);
+    assert_eq!(
+        client
+            .post(&watch_url)
+            .bearer_auth(token)
+            .json(&changed)
+            .send()
+            .await?
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let mut grant = watch_request.clone();
+    grant["allowed_tools"] = json!([]);
+    assert_eq!(
+        client
+            .post(&watch_url)
+            .bearer_auth(token)
+            .json(&grant)
+            .send()
+            .await?
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    for field in ["watch_event", "watchEvent", "input_provenance"] {
+        let mut ordinary = json!({"prompt":"not an ordinary person input"});
+        ordinary[field] = watch_event.clone();
+        assert_eq!(
+            client
+                .post(format!(
+                    "http://{addr}/v1/threads/{}/turns",
+                    other_thread.id
+                ))
+                .bearer_auth(token)
+                .json(&ordinary)
+                .send()
+                .await?
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert!(watch_engine.rx_op.try_recv().is_err());
+    let watch_lookup = format!(
+        "http://{addr}/v1/threads/{}/turn-operations/{watch_key}",
+        other_thread.id
+    );
+    let watch_saved = manager
+        .test_store()
+        .load_item(&manager.test_store().load_turn(&watch_turn_id)?.item_ids[0])?;
+    let mut watch_changed = watch_saved.clone();
+    watch_changed.metadata.as_mut().context("watch metadata")?["watch_event"]["eventSha256"] =
+        json!("d".repeat(64));
+    manager.test_store().save_item(&watch_changed)?;
+    let changed_status = client
+        .get(&watch_lookup)
+        .bearer_auth(token)
+        .send()
+        .await?
+        .status();
+    manager.test_store().save_item(&watch_saved)?;
+    assert_eq!(changed_status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(watch_engine.rx_op.try_recv().is_err());
+
     let endpoint = format!(
         "http://{addr}/v1/threads/{}/turn-operations/{key}",
         thread.id
@@ -4568,6 +4751,32 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
     );
     assert_eq!(found["id"], accepted["turn"]["id"]);
     assert!(found.get("turn").is_none());
+    let watch_found: Value = client
+        .get(&watch_lookup)
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(watch_found["id"], watch_turn_id);
+    assert_eq!(watch_found["input_provenance"], "watch_event");
+    assert_eq!(watch_found["watch_event"], watch_event);
+    assert_eq!(
+        watch_found["input_prompt_sha256"],
+        codewhale_runtime::hashing::sha256_hex("watch does not answer for a person")
+    );
+    assert_eq!(watch_found["runtime_binding"]["thread_id"], other_thread.id);
+    let watch_item = manager
+        .test_store()
+        .load_item(&manager.test_store().load_turn(&watch_turn_id)?.item_ids[0])?;
+    assert_eq!(
+        watch_item
+            .metadata
+            .as_ref()
+            .context("durable watch metadata")?["watch_event"],
+        watch_event
+    );
     for bearer in [None, Some("wrong-lookup-token")] {
         let mut request = client.get(&endpoint);
         if let Some(bearer) = bearer {
@@ -4615,43 +4824,50 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
         "GET must not dispatch an Engine operation"
     );
 
-    for event in [
-        EngineEvent::TurnStarted {
-            previous_source: None,
-            turn_id: "lookup-fixture-engine-turn".into(),
-            created_at: chrono::Utc::now(),
-            route: None,
-            submission_id: None,
-        },
-        EngineEvent::MessageStarted { index: 0 },
-        EngineEvent::MessageDelta {
-            index: 0,
-            content: "lookup fixture completed".into(),
-        },
-        EngineEvent::MessageComplete { index: 0 },
+    for (harness, engine_turn_id, content) in [
+        (&engine, "lookup-fixture-engine-turn", "lookup fixture completed"),
+        (&watch_engine, "watch-fixture-engine-turn", "watch fixture completed"),
     ] {
-        engine.tx_event.send(event).await?;
+        for event in [
+            EngineEvent::TurnStarted {
+                previous_source: None,
+                turn_id: engine_turn_id.into(),
+                created_at: chrono::Utc::now(),
+                route: None,
+                submission_id: None,
+            },
+            EngineEvent::MessageStarted { index: 0 },
+            EngineEvent::MessageDelta {
+                index: 0,
+                content: content.into(),
+            },
+            EngineEvent::MessageComplete { index: 0 },
+        ] {
+            harness.tx_event.send(event).await?;
+        }
+        harness
+            .tx_event
+            .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+                turn_id: None,
+                submission_id: None,
+                compaction_id: None,
+                usage: Default::default(),
+                parent_route_usage: Default::default(),
+                routed_usage_dropped_records: 0,
+                status: TurnOutcomeStatus::Completed,
+                error: None,
+                tool_catalog: None,
+                base_url: None,
+            })
+            .await?;
     }
-    engine
-        .tx_event
-        .send(EngineEvent::TurnComplete {
-            source_accounting: false,
-
-            turn_id: None,
-            submission_id: None,
-            compaction_id: None,
-            usage: Default::default(),
-            parent_route_usage: Default::default(),
-            routed_usage_dropped_records: 0,
-            status: TurnOutcomeStatus::Completed,
-            error: None,
-            tool_catalog: None,
-            base_url: None,
-        })
-        .await?;
     tokio::time::timeout(ci_scaled(Duration::from_secs(10)), async {
         loop {
-            if manager.test_store().load_turn(&turn_id)?.status == RuntimeTurnStatus::Completed {
+            if manager.test_store().load_turn(&turn_id)?.status == RuntimeTurnStatus::Completed
+                && manager.test_store().load_turn(&watch_turn_id)?.status
+                    == RuntimeTurnStatus::Completed
+            {
                 return Ok::<_, anyhow::Error>(());
             }
             sleep(Duration::from_millis(10)).await;
@@ -4670,6 +4886,7 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
     let _ = server.await;
     drop(manager);
     drop(engine);
+    drop(watch_engine);
     tokio::time::timeout(ci_scaled(Duration::from_secs(10)), async {
         while released.upgrade().is_some() {
             sleep(Duration::from_millis(10)).await;
@@ -4716,6 +4933,24 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.json::<Value>().await?, settled);
+    let found: Value = client
+        .get(format!(
+            "http://{addr}/v1/threads/{}/turn-operations/{watch_key}",
+            other_thread.id
+        ))
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(found["id"], watch_turn_id);
+    assert_eq!(found["input_provenance"], "watch_event");
+    assert_eq!(found["watch_event"], watch_event);
+    assert_eq!(
+        found["input_prompt_sha256"],
+        watch_found["input_prompt_sha256"]
+    );
     assert_eq!(
         file_bytes(&store_root)?,
         before,
@@ -10449,6 +10684,7 @@ async fn watch_client_token_refuses_runtime_mutations_and_upgrades() -> Result<(
     assert_eq!(reads.status(), StatusCode::OK);
     for (method, path) in [
         (Method::POST, "/v1/threads"),
+        (Method::POST, "/v1/threads/unknown/watch-turns"),
         (Method::PUT, "/v1/workspace/files"),
         (Method::DELETE, "/v1/memory"),
         (Method::POST, "/v1/approvals/not-pending"),
@@ -10482,6 +10718,26 @@ async fn watch_client_token_refuses_runtime_mutations_and_upgrades() -> Result<(
         .send()
         .await?;
     assert_eq!(created.status(), StatusCode::CREATED);
+    assert_eq!(
+        client
+            .post(format!("{base}/v1/threads/unknown/watch-turns"))
+            .bearer_auth(drive["token"].as_str().context("drive token")?)
+            .json(&json!({}))
+            .send()
+            .await?
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/v1/threads/unknown/watch-turns"))
+            .header("x-codewhale-runtime-token", "watch-scope-fixture-master")
+            .json(&json!({}))
+            .send()
+            .await?
+            .status(),
+        StatusCode::FORBIDDEN
+    );
     let invalid = mint(json!({"device_id": "bad-device", "intent": "admin"}))
         .send()
         .await?;

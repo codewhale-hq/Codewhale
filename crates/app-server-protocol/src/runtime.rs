@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod watch_event;
+
 pub const RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION: u32 = 1;
 pub const RUNTIME_API_VERSION: &str = "1.0";
 
@@ -96,6 +98,8 @@ pub struct RuntimeCapabilities {
     /// Read-only exact accepted-turn lookup by thread and operation key.
     #[serde(default)]
     pub turn_operation_lookup: bool,
+    #[serde(default)]
+    pub watch_event_turns: bool,
     #[serde(default)]
     pub structured_review_turns: bool,
     #[serde(default)]
@@ -495,6 +499,7 @@ mod tests {
             turns: true,
             turn_operation_idempotency: true,
             turn_operation_lookup: true,
+            watch_event_turns: true,
             structured_review_turns: true,
             structured_review_version: 2,
             automation_mutation_preconditions: true,
@@ -558,6 +563,17 @@ mod tests {
         assert_eq!(obj.get("account_session").unwrap(), &json!(true));
         assert_eq!(obj.get("turn_operation_idempotency").unwrap(), &json!(true));
         assert_eq!(obj.get("turn_operation_lookup").unwrap(), &json!(true));
+        assert_eq!(obj.get("watch_event_turns").unwrap(), &json!(true));
+        let mut watch_legacy = value.clone();
+        watch_legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("watch_event_turns");
+        assert!(
+            !serde_json::from_value::<RuntimeCapabilities>(watch_legacy)
+                .unwrap()
+                .watch_event_turns
+        );
         let mut without_lookup = value.clone();
         without_lookup
             .as_object_mut()

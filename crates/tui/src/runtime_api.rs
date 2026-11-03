@@ -47,6 +47,7 @@ use tower_http::cors::CorsLayer;
 
 mod constitution;
 mod notification_delivery;
+mod whale_soul;
 
 #[cfg(test)]
 use codewhale_dependencies::ExternalTool;
@@ -75,10 +76,10 @@ use codewhale_engine::mcp::McpPool;
 use codewhale_engine::runtime_threads::{
     MAX_RUNTIME_EVENT_REPLAY_TAIL, ThreadRecord, TurnRecord, manager::CompactThreadRequest,
     manager::CreateThreadRequest, manager::ExternalApprovalDecision, manager::RuntimeThreadManager,
-    manager::RuntimeThreadManagerConfig, manager::SharedRuntimeThreadManager,
-    manager::StartTurnRequest, manager::SteerTurnRequest, manager::ThreadDetail,
-    manager::ThreadListFilter, manager::UpdateThreadRequest, manager::UsageGroupBy,
-    manager::UsageTotals,
+    manager::RuntimeThreadManagerConfig, manager::RuntimeTurnOperationReceipt,
+    manager::SharedRuntimeThreadManager, manager::StartTurnRequest, manager::StartWatchTurnRequest,
+    manager::SteerTurnRequest, manager::ThreadDetail, manager::ThreadListFilter,
+    manager::UpdateThreadRequest, manager::UsageGroupBy, manager::UsageTotals,
 };
 use codewhale_runtime::config::{Config, normalize_model_name_for_provider, validate_route};
 // `TurnItemKind` is read only by the summary tests now that the route builds
@@ -1564,6 +1565,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         turns: true,
         turn_operation_idempotency: true,
         turn_operation_lookup: true,
+        watch_event_turns: true,
         structured_review_turns: true,
         structured_review_version: 2,
         automation_mutation_preconditions: true,
@@ -1623,6 +1625,7 @@ struct McpServerEntry {
     connected: bool,
     enabled_tools: Vec<String>,
     disabled_tools: Vec<String>,
+    always_allow_tools: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1702,6 +1705,7 @@ struct McpServerWriteRequest {
     enabled_tools: Option<Vec<String>>,
     /// Denylist of tool names to hide.
     disabled_tools: Option<Vec<String>>,
+    always_allow_tools: Option<Vec<String>>,
     /// Variable names whose runtime values are injected as HTTP headers.
     /// The key in this map is the HTTP header name; the value is the
     /// environment variable whose value supplies the header value at
@@ -1754,6 +1758,7 @@ struct McpServerDetail {
     read_timeout: Option<u64>,
     enabled_tools: Vec<String>,
     disabled_tools: Vec<String>,
+    always_allow_tools: Vec<String>,
     /// HTTP header names that are read from environment variables.
     /// The corresponding environment variable values are **not** returned.
     env_header_keys: Vec<String>,
@@ -1795,6 +1800,7 @@ impl McpServerDetail {
             read_timeout: cfg.read_timeout,
             enabled_tools: cfg.enabled_tools.clone(),
             disabled_tools: cfg.disabled_tools.clone(),
+            always_allow_tools: cfg.always_allow_tools.clone(),
             env_header_keys,
             has_bearer_token_env_var: cfg.bearer_token_env_var.is_some(),
             scopes: cfg.scopes.clone(),
@@ -3045,6 +3051,17 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             post(review::start_thread_review).layer(DefaultBodyLimit::max(1024 * 1024)),
         )
         .route(
+            "/v1/threads/{id}/watch-turns",
+            post(start_thread_watch_turn)
+                .layer(DefaultBodyLimit::max(
+                    codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
+                ))
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth::require_runtime_master_bearer,
+                )),
+        )
+        .route(
             "/v1/threads/{id}/turns",
             post(start_thread_turn).layer(DefaultBodyLimit::max(
                 codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES,
@@ -3140,6 +3157,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             "/v1/apps/mcp/imports",
             get(mcp_import::preview).post(mcp_import::apply),
         )
+        .route("/v1/apps/mcp/desktop-browser", post(register_scoped_desktop_browser).layer(middleware::from_fn_with_state(state.clone(), auth::require_host_token)))
         .route(
             "/v1/apps/mcp/servers",
             get(list_mcp_servers).post(create_mcp_server),
@@ -3282,6 +3300,15 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         )
         .route("/v1/config", get(get_config).post(set_config))
         .route("/v1/config/reload", post(reload_config))
+        .route(
+            "/v1/whale/soul",
+            get(whale_soul::get)
+                .put(whale_soul::save)
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth::require_host_token,
+                )),
+        )
         .route("/v1/constitution", get(constitution::get_constitution))
         .route(
             "/v1/constitution/preview",
@@ -6635,6 +6662,7 @@ async fn runtime_info(
     );
     let session_only = state.config.read().session_provider_keys_only;
     let mut capabilities = default_runtime_capabilities();
+    capabilities.watch_event_turns = state.runtime_token.is_some();
     capabilities.session_provider_keys = session_only;
     capabilities.fleet_run_create = !session_only;
     capabilities.fleet_run_start = !session_only;
@@ -7048,9 +7076,11 @@ async fn list_mcp_servers(
                 .is_some_and(|pool| pool.connected_servers().contains(&name.as_str())),
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
+            always_allow_tools: server_cfg.always_allow_tools.clone(),
         });
     }
-    for (name, server_cfg) in state.workspace_scope.dynamic_servers.read().iter() {
+    let runtime_servers = state.workspace_scope.dynamic_servers.read().clone();
+    for (name, server_cfg) in &runtime_servers {
         if servers.iter().any(|entry| entry.name == *name) {
             continue;
         }
@@ -7070,6 +7100,7 @@ async fn list_mcp_servers(
                 .is_some_and(|pool| pool.connected_servers().contains(&name.as_str())),
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
+            always_allow_tools: server_cfg.always_allow_tools.clone(),
         });
     }
     servers.sort_by(|a, b| a.name.cmp(&b.name));
@@ -7227,6 +7258,54 @@ async fn get_mcp_server(
     Ok(Json(detail))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopBrowserRegistration {
+    url: String,
+    bearer: String,
+    signature: String,
+}
+
+async fn register_scoped_desktop_browser(
+    State(state): State<RuntimeApiState>,
+    Json(request): Json<DesktopBrowserRegistration>,
+) -> Result<StatusCode, ApiError> {
+    let config = serde_json::from_value(json!({
+        "url": request.url,
+        "bearer_token_env_var": "CODEWHALE_BROWSER_TOOLS_TOKEN",
+    })).map_err(|_| ApiError::bad_request("Invalid desktop browser registration"))?;
+    register_desktop_browser_config(
+        &state, "codewhale-browser".to_string(), config, Some((&request.bearer, &request.signature))
+    ).await?;
+    Ok(StatusCode::CREATED)
+}
+
+async fn register_desktop_browser_config(
+    state: &RuntimeApiState,
+    name: String,
+    config: codewhale_mcp::config::McpServerConfig,
+    proof: Option<(&str, &str)>,
+) -> Result<(), ApiError> {
+    let ((effective, _), _) = mcp_management_snapshot(state.clone()).await?;
+    let handle = mcp_pool_handle(state, true)
+        .await?
+        .ok_or_else(|| ApiError::internal("MCP pool unavailable"))?;
+    let mut pool = handle.lock().await;
+    state
+        .workspace_scope
+        .validate()
+        .await
+        .map_err(|_| ApiError::conflict("selected workspace identity changed"))?;
+    if !pool.config_matches(&effective) {
+        return Err(ApiError::conflict(
+            "MCP configuration changed; reload it before registering desktop tools",
+        ));
+    }
+    pool.add_desktop_browser_server_config(name, config, proof)
+        .map_err(ApiError::bad_request)?;
+    Ok(())
+}
+
 /// `POST /v1/apps/mcp/servers` — add a server to its selected config source.
 ///
 /// Body: JSON object with all `McpServerWriteRequest` fields **plus** a
@@ -7274,23 +7353,7 @@ async fn create_mcp_server(
                 "Desktop browser tools belong to their original desktop workspace",
             ));
         }
-        let ((effective, _), _) = mcp_management_snapshot(state.clone()).await?;
-        let handle = mcp_pool_handle(&state, true)
-            .await?
-            .ok_or_else(|| ApiError::internal("MCP pool unavailable"))?;
-        let pool = handle.lock().await;
-        state
-            .workspace_scope
-            .validate()
-            .await
-            .map_err(|_| ApiError::conflict("selected workspace identity changed"))?;
-        if !pool.config_matches(&effective) {
-            return Err(ApiError::conflict(
-                "MCP configuration changed; reload it before registering desktop tools",
-            ));
-        }
-        pool.add_desktop_browser_server_config(name.clone(), new_cfg.clone())
-            .map_err(ApiError::bad_request)?;
+        register_desktop_browser_config(&state, name.clone(), new_cfg.clone(), None).await?;
         let mut detail = McpServerDetail::from_config(&name, &new_cfg, false, String::new());
         detail.origin = "runtime";
         detail.writable = false;
@@ -7546,6 +7609,7 @@ fn mcp_server_config_from_write_request(
         lazy: false,
         enabled_tools: req.enabled_tools.unwrap_or_default(),
         disabled_tools: req.disabled_tools.unwrap_or_default(),
+        always_allow_tools: req.always_allow_tools.unwrap_or_default(),
         headers: std::collections::HashMap::new(),
         env_headers: req.env_headers.unwrap_or_default(),
         bearer_token_env_var: req.bearer_token_env_var.flatten(),
@@ -7575,6 +7639,15 @@ fn apply_write_request_to_config(
     req: McpServerWriteRequest,
     cfg: &mut codewhale_mcp::config::McpServerConfig,
 ) {
+    if req.command.is_some() || req.args.is_some() || req.env.is_some()
+        || req.url.is_some() || req.transport.is_some() || req.env_headers.is_some()
+        || req.bearer_token_env_var.is_some() || req.scopes.is_some() || req.oauth_resource.is_some()
+    {
+        cfg.always_allow_tools.clear();
+    }
+    if let Some(v) = req.always_allow_tools {
+        cfg.always_allow_tools = v;
+    }
     if let Some(v) = req.command {
         cfg.command = v;
     }
@@ -9572,11 +9645,69 @@ async fn retry_thread_turn(
     ))
 }
 
+async fn start_thread_watch_turn(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<StartWatchTurnRequest>,
+) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
+    let (turn, replayed) = state
+        .runtime_threads
+        .start_watch_turn(&id, req)
+        .await
+        .map_err(map_thread_err)?;
+    let thread = state
+        .runtime_threads
+        .get_thread(&id)
+        .await
+        .map_err(map_thread_err)?;
+    Ok((
+        if replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(StartTurnResponse {
+            thread,
+            turn,
+            idempotent_replay: replayed,
+        }),
+    ))
+}
+
 async fn start_thread_turn(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
-    Json(req): Json<StartTurnRequest>,
+    Json(value): Json<Value>,
 ) -> Result<(StatusCode, Json<StartTurnResponse>), ApiError> {
+    if value.as_object().is_some_and(|object| {
+        [
+            "watch_event",
+            "watchEvent",
+            "input_provenance",
+            "inputProvenance",
+        ]
+        .iter()
+        .any(|key| object.contains_key(*key))
+    }) || value
+        .get("metadata")
+        .and_then(Value::as_object)
+        .is_some_and(|metadata| {
+            [
+                "watch_event",
+                "watchEvent",
+                "input_provenance",
+                "inputProvenance",
+            ]
+            .iter()
+            .any(|key| metadata.contains_key(*key))
+        })
+    {
+        return Err(ApiError::bad_request(
+            "Watch input requires the dedicated attested watch-turn endpoint",
+        ));
+    }
+    let req: StartTurnRequest = serde_json::from_value(value)
+        .map_err(|error| ApiError::unprocessable(error.to_string()))?;
     let (turn, replayed) = state
         .runtime_threads
         .start_turn_reporting_replay(&id, req)
@@ -9609,19 +9740,21 @@ async fn start_thread_turn(
 async fn get_thread_turn_operation(
     State(state): State<RuntimeApiState>,
     Path((id, operation_key)): Path<(String, String)>,
-) -> Result<Json<TurnRecord>, ApiError> {
+) -> Result<Json<RuntimeTurnOperationReceipt>, ApiError> {
     use codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError;
-    let turn = state
-        .runtime_threads
-        .lookup_turn_operation(&id, &operation_key)
-        .map_err(|error| match error {
-            RuntimeTurnOperationLookupError::InvalidRequest => {
-                ApiError::bad_request(error.to_string())
-            }
-            RuntimeTurnOperationLookupError::Incomplete => ApiError::conflict(error.to_string()),
-            RuntimeTurnOperationLookupError::Unavailable => ApiError::internal(error.to_string()),
-        })?
-        .ok_or_else(|| ApiError::not_found("Turn operation not found"))?;
+    let manager = state.runtime_threads.clone();
+    let turn = codewhale_runtime::runtime_control::owner_work(move || {
+        Ok(manager.lookup_turn_operation_receipt(&id, &operation_key))
+    })
+    .await
+    .map_err(|_| ApiError::internal("Turn operation lookup unavailable"))?
+    .map_err(|error| match error {
+        RuntimeTurnOperationLookupError::InvalidRequest => ApiError::bad_request(error.to_string()),
+        RuntimeTurnOperationLookupError::Incomplete
+        | RuntimeTurnOperationLookupError::RequestMismatch => ApiError::conflict(error.to_string()),
+        RuntimeTurnOperationLookupError::Unavailable => ApiError::internal(error.to_string()),
+    })?
+    .ok_or_else(|| ApiError::not_found("Turn operation not found"))?;
     Ok(Json(turn))
 }
 
@@ -13958,10 +14091,11 @@ fn map_automation_err(err: anyhow::Error) -> ApiError {
 
 fn map_thread_err(err: anyhow::Error) -> ApiError {
     if let Some(error) = err.downcast_ref::<codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError>() {
+        use codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError;
         return match error {
-            codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError::InvalidRequest => ApiError::bad_request(error.to_string()),
-            codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError::Incomplete => ApiError::conflict(error.to_string()),
-            codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError::Unavailable => ApiError::internal(error.to_string()),
+            RuntimeTurnOperationLookupError::InvalidRequest => ApiError::bad_request(error.to_string()),
+            RuntimeTurnOperationLookupError::Incomplete | RuntimeTurnOperationLookupError::RequestMismatch => ApiError::conflict(error.to_string()),
+            RuntimeTurnOperationLookupError::Unavailable => ApiError::internal(error.to_string()),
         };
     }
     let message = err.to_string();

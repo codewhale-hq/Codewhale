@@ -73,4 +73,5 @@ pub mod turn_route_plan;
 pub mod usage_persistence;
 pub mod vision;
 pub mod voice;
+pub mod whale_soul;
 pub mod work_graph;

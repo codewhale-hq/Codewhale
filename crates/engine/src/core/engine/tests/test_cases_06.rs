@@ -607,6 +607,7 @@ fn make_plan_at(
         interactive,
         approval_required,
         approval_description: "desc".to_string(),
+        mcp_always_binding: None,
         approval_force_prompt: false,
         supports_parallel,
         read_only,

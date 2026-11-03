@@ -2742,3 +2742,14 @@ Engine 自行读取的资料不可用或无效时，本回合改用未登录的�
 同一文档的 GET 与预览返回相同文本，不含会话记录中的来源行或封装。
 `source` 与 `revision` 保留来源信息。两条路由遵循普通 Runtime 授权；
 旧 Runtime 必须升级后才能接收携带账号宪章的回合。
+
+
+### 经所有者证明的 watch 事件（预览）
+
+仅在专用路由及 Runtime 令牌存在时，`watch_event_turns` 才为 true。`POST /v1/threads/{id}/watch-turns` 只接受 `operation_key`、`prompt`、`watch_event`，必须使用真正的主令牌 `Authorization: Bearer ...`。设备 Watch/Drive 令牌、Cookie、令牌别名请求头及无认证模式均不能调用此路由。权限、工具、工作区及提供商仍由目标线程的现有设置决定，请求不能扩大授权。
+
+版本 1 的封闭 receipt 规范化后不得超过 4 KiB，记录 Platform 账户、项目、watch、准确修订、定义/事件/发生标识哈希和目标绑定。ASCII 引用最多 200 字节；`repo` 则为两个各 1..100 字节的 `[A-Za-z0-9_.-]` 部分，含 `/` 最多 201 字节。schedule 的 source 仅含准确的 24 字节 UTC ISO `slot`（`YYYY-MM-DDTHH:mm:ss.sssZ`），日期和时间须有效，不接受日期简写、时区偏移或闰秒；github.pull_request 的 source 仅含 installationId、bindingId、repo、number、deliveryId、eventName。未知字段、类别不符或授权字段均拒绝。此证明来自 Runtime 所有者，并非 Runtime 独立验证 webhook 签名或 watch 当前策略。
+
+输入通过原有 manager admission 使用 Runtime 来源，不能充当人的回答或恢复等待人的目标。相同操作的准确重放返回 200，新 admission 返回 201，意图冲突返回 409。UserMessage metadata 持久保存 `input_provenance: "watch_event"`、规范化 receipt、实际接收且不去除首尾空白的 UTF-8 prompt 的 `input_prompt_sha256`，以及由 Runtime 派生的 `runtime_binding`；任意 metadata 不会授予这一来源。普通 `/turns` 与本地 `/rc` 拒绝 watch 授权。
+
+现有只读 operation lookup 在原有共享 claim 下返回原 TurnRecord；watch turn 还返回来自持久输入的上述字段，不创建记录、锁文件或新 turn。缺失、不完整或不匹配的 lookup 不是未接收的证明。Platform 的 accepted ACK 早于 Native admission；恢复只能确认准确的已接收记录，不能因未知、撤销或缺失而重新 POST。此切片不保证最后检查之后的原子撤销、不宣称已取消先前工作，也不完成全部持续运行功能。

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Local whale voice (preview):** the host can edit its private, revision-checked SOUL.md through the Runtime API. The Engine captures it for the next turn within the existing instruction budget and records its source; invalid private files refuse the turn with a terminal failure.
+
+- **MCP tool approval rules (preview):** exact tool names in the global server configuration can use Always, Ask or Off across workspaces. Off wins, server edits invalidate the prior grant, and required Computer Use consent and nested-program approval remain in place.
+
+- **Attested watch-turn ingress (preview):** a configured Runtime master bearer can admit typed schedule or pull-request receipts through the existing thread and turn owner, with exact operation replay and read-only recovery lookup. This supplies the Native ingress prerequisite; it does not qualify the complete continuous-operation workflow.
+
 - Goal continuations send the objective once per live conversation window. Later passes show the current goal state, estimated conversation input and the applicable compaction setting. Full notes stay available through `get_goal`. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for measuring the repeated text and identifying the misleading token figure ([#7172](https://github.com/codewhale-hq/Codewhale/issues/7172)).
 - **Composition on the first request:** `execute_tools` accepts a bounded named batch from the current MCP catalog, with argument names from its allowed members and the same nested gate as a JavaScript program. Exact tool-name searches work with regex anchors. Stream receipts hash the executable in the background; `CODEWHALE_TIMING=1` reports phase durations. (CW-7649)
 - **The model can read what compaction replaced (#7173):** two read-only tools,
@@ -161,6 +167,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [@luestr](https://github.com/luestr) for the report. (#7093)
 
 ### Fixed
+
+- **Retained browser connections follow their desktop owner:** authenticated runtime registration binds the browser endpoint and credential to its workspace; existing Core catalogs and connections retire a replaced registration before reuse.
 
 - **`/new` waits for the Engine:** the terminal keeps the current session, transcript and draft until the exact session switch is acknowledged. A refused closure preserves them; a late acknowledgement can finish once while retaining input edited during the wait. Pending or uncertain switches pause new work and retain the existing scoped Stop controls.
 

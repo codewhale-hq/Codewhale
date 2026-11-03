@@ -1,4 +1,5 @@
 use super::*;
+use codewhale_app_server_protocol::runtime::watch_event::WatchEventReceipt;
 
 pub mod history;
 
@@ -1513,6 +1514,39 @@ pub struct StartReviewRequest {
     pub max_output_tokens: std::num::NonZeroU32,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartWatchTurnRequest {
+    pub operation_key: String,
+    pub prompt: String,
+    pub watch_event: WatchEventReceipt,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeWatchInput {
+    pub input_provenance: String,
+    pub watch_event: WatchEventReceipt,
+    pub input_prompt_sha256: String,
+    pub runtime_binding: RuntimeWatchBinding,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeWatchBinding {
+    pub store_owner_id: String,
+    pub thread_id: String,
+    pub workspace: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeTurnOperationReceipt {
+    #[serde(flatten)]
+    pub turn: TurnRecord,
+    #[serde(flatten)]
+    pub watch_input: Option<RuntimeWatchInput>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StartTurnRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1644,6 +1678,8 @@ pub enum RuntimeTurnOperationLookupError {
     Incomplete,
     #[error("Turn operation lookup unavailable")]
     Unavailable,
+    #[error("operation_key is already bound to a different turn request")]
+    RequestMismatch,
 }
 
 pub(super) fn runtime_turn_operation_key_fingerprint(
@@ -1708,6 +1744,7 @@ pub(super) fn runtime_turn_request_fingerprint(
 #[derive(Debug, Clone)]
 pub(super) enum RuntimeTurnInputSource {
     ExternalUser,
+    WatchEvent(Box<WatchEventReceipt>),
     Review(codewhale_protocol::op::ReviewOperation),
     ExtensionCommand {
         reference: crate::extension_host::command::ExtensionCommandRef,
@@ -1737,7 +1774,9 @@ impl RuntimeTurnInputSource {
             Self::ExternalUser | Self::Review(_) => {
                 crate::core::ops::UserInputProvenance::ExternalUser
             }
-            Self::ExtensionCommand { .. } => crate::core::ops::UserInputProvenance::Runtime,
+            Self::ExtensionCommand { .. } | Self::WatchEvent(_) => {
+                crate::core::ops::UserInputProvenance::Runtime
+            }
             Self::AgentMail { .. } => crate::core::ops::UserInputProvenance::AgentMail,
             Self::GoalContinuation {
                 continuation_index, ..
@@ -1750,7 +1789,10 @@ impl RuntimeTurnInputSource {
 
     pub(super) fn mail_message_id(&self) -> Option<&str> {
         match self {
-            Self::ExternalUser | Self::Review(_) | Self::ExtensionCommand { .. } => None,
+            Self::ExternalUser
+            | Self::Review(_)
+            | Self::ExtensionCommand { .. }
+            | Self::WatchEvent(_) => None,
             Self::AgentMail { message_id, .. } => Some(message_id),
             Self::GoalContinuation { .. } | Self::Scheduled { .. } => None,
         }
@@ -1759,6 +1801,7 @@ impl RuntimeTurnInputSource {
     pub(super) fn item_detail(&self, prompt: &str) -> Option<String> {
         match self {
             Self::ExternalUser
+            | Self::WatchEvent(_)
             | Self::Review(_)
             | Self::ExtensionCommand { .. }
             | Self::Scheduled { .. } => Some(prompt.to_string()),
@@ -1784,9 +1827,20 @@ impl RuntimeTurnInputSource {
         }
     }
 
-    pub(super) fn item_metadata(&self) -> Option<Value> {
+    pub(super) fn item_metadata(
+        &self,
+        store_owner_id: &str,
+        thread: &ThreadRecord,
+        prompt: &str,
+    ) -> Option<Value> {
         match self {
             Self::ExternalUser => None,
+            Self::WatchEvent(receipt) => Some(json!({
+                "input_provenance": "watch_event",
+                "watch_event": receipt,
+                "input_prompt_sha256": codewhale_runtime::hashing::sha256_hex(prompt.as_bytes()),
+                "runtime_binding": { "store_owner_id": store_owner_id, "thread_id": thread.id, "workspace": thread.workspace },
+            })),
             Self::ExtensionCommand {
                 reference,
                 operation_fingerprint,
@@ -10957,6 +11011,7 @@ impl RuntimeThreadManager {
                 turn_id,
                 operation_key_fingerprint,
                 request_fingerprint,
+                watch_input_sha256: None,
                 created_at: Utc::now(),
                 preparation: None,
             },
@@ -10979,6 +11034,7 @@ impl RuntimeThreadManager {
         if persisted.thread_id != requested.thread_id
             || persisted.operation_key_fingerprint != requested.operation_key_fingerprint
             || persisted.request_fingerprint != requested.request_fingerprint
+            || persisted.watch_input_sha256 != requested.watch_input_sha256
             || prepared
                 .requested_turn_id
                 .as_deref()
@@ -11004,6 +11060,8 @@ impl RuntimeThreadManager {
         if turn.routing_settlement {
             return Err(RuntimeTurnOperationLookupError::Incomplete.into());
         }
+        self.watch_turn_input(&turn, persisted.watch_input_sha256.as_deref())
+            .map_err(|_| anyhow!(RuntimeTurnOperationLookupError::Unavailable))?;
         Ok(Some(turn))
     }
 
@@ -11087,11 +11145,78 @@ impl RuntimeThreadManager {
         thread_id: &str,
         operation_key: &str,
     ) -> Result<Option<TurnRecord>, RuntimeTurnOperationLookupError> {
-        use RuntimeTurnOperationLookupError::{Incomplete, InvalidRequest, Unavailable};
-        validated_record_id(thread_id, "thread id").map_err(|_| InvalidRequest)?;
+        self.lookup_turn_operation_receipt(thread_id, operation_key)
+            .map(|receipt| receipt.map(|receipt| receipt.turn))
+    }
+
+    pub fn lookup_turn_operation_receipt(
+        &self,
+        thread_id: &str,
+        operation_key: &str,
+    ) -> Result<Option<RuntimeTurnOperationReceipt>, RuntimeTurnOperationLookupError> {
+        validated_record_id(thread_id, "thread id")
+            .map_err(|_| RuntimeTurnOperationLookupError::InvalidRequest)?;
         let fingerprint =
             runtime_turn_operation_key_fingerprint(&self.store.owner_id, thread_id, operation_key)
-                .map_err(|_| InvalidRequest)?;
+                .map_err(|_| RuntimeTurnOperationLookupError::InvalidRequest)?;
+        self.lookup_turn_operation_projection(thread_id, &fingerprint, None, None)
+    }
+
+    fn watch_turn_input(
+        &self,
+        turn: &TurnRecord,
+        expected_digest: Option<&str>,
+    ) -> Result<Option<RuntimeWatchInput>> {
+        let Some(expected_digest) = expected_digest else {
+            return Ok(None);
+        };
+        let item_id = turn
+            .item_ids
+            .first()
+            .context("Watch turn input item is missing")?;
+        let item = self.store.load_item(item_id)?;
+        anyhow::ensure!(
+            item.id == *item_id
+                && item.turn_id == turn.id
+                && item.kind == TurnItemKind::UserMessage,
+            "Turn operation input identity is inconsistent"
+        );
+        let metadata = item
+            .metadata
+            .context("Watch turn input metadata is missing")?;
+        let receipt: RuntimeWatchInput = serde_json::from_value(metadata)?;
+        receipt.watch_event.validate().map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            receipt.input_provenance == "watch_event"
+                && expected_digest
+                    == codewhale_runtime::hashing::sha256_hex(
+                        codewhale_runtime::hashing::canonical_json(&serde_json::to_value(
+                            &receipt
+                        )?)
+                        .as_bytes()
+                    )
+                && receipt.runtime_binding.store_owner_id == self.store.owner_id
+                && receipt.runtime_binding.thread_id == turn.thread_id
+                && receipt.runtime_binding.workspace.is_absolute()
+                && receipt.input_prompt_sha256
+                    == codewhale_runtime::hashing::sha256_hex(
+                        item.detail
+                            .context("Watch input prompt is missing")?
+                            .as_bytes()
+                    ),
+            "Watch input receipt does not match its durable turn"
+        );
+        Ok(Some(receipt))
+    }
+
+    fn lookup_turn_operation_projection(
+        &self,
+        thread_id: &str,
+        fingerprint: &str,
+        expected_request: Option<&str>,
+        expected_watch_input: Option<&Value>,
+    ) -> Result<Option<RuntimeTurnOperationReceipt>, RuntimeTurnOperationLookupError> {
+        use RuntimeTurnOperationLookupError::{Incomplete, Unavailable};
         checked_existing_runtime_store_dir(&self.store.turn_operations_dir)
             .map_err(|_| Unavailable)?;
         let lock_path = self
@@ -11143,6 +11268,9 @@ impl RuntimeThreadManager {
         if binding.thread_id != thread_id || binding.operation_key_fingerprint != fingerprint {
             return Ok(None);
         }
+        if expected_request.is_some_and(|expected| binding.request_fingerprint != expected) {
+            return Err(RuntimeTurnOperationLookupError::RequestMismatch);
+        }
         if binding
             .preparation
             .as_ref()
@@ -11180,7 +11308,16 @@ impl RuntimeThreadManager {
         if turn.routing_settlement {
             return Err(Incomplete);
         }
-        Ok(Some(turn))
+        let watch_input = self
+            .watch_turn_input(&turn, binding.watch_input_sha256.as_deref())
+            .map_err(|_| Unavailable)?;
+        if let Some(expected) = expected_watch_input {
+            let found = watch_input.as_ref().ok_or(Incomplete)?;
+            if serde_json::to_value(found).map_err(|_| Unavailable)? != *expected {
+                return Err(Unavailable);
+            }
+        }
+        Ok(Some(RuntimeTurnOperationReceipt { turn, watch_input }))
     }
 
     pub(super) fn lookup_extension_command_turn(
@@ -12384,6 +12521,31 @@ impl RuntimeThreadManager {
         Ok(result)
     }
 
+    pub async fn start_watch_turn(
+        &self,
+        thread_id: &str,
+        req: StartWatchTurnRequest,
+    ) -> Result<(TurnRecord, bool)> {
+        req.watch_event.validate().map_err(anyhow::Error::msg)?;
+        validate_runtime_turn_operation_key(&req.operation_key)?;
+        anyhow::ensure!(
+            !matches!(req.operation_key.as_str(), "." | ".."),
+            "watch operation_key must be addressable by exact lookup"
+        );
+        self.start_turn_with_source(
+            thread_id,
+            StartTurnRequest {
+                prompt: req.prompt,
+                operation_key: Some(req.operation_key),
+                ..StartTurnRequest::default()
+            },
+            RuntimeTurnInputSource::WatchEvent(Box::new(req.watch_event)),
+            None,
+            false,
+        )
+        .await
+    }
+
     pub async fn start_turn(&self, thread_id: &str, req: StartTurnRequest) -> Result<TurnRecord> {
         self.start_turn_inner(thread_id, req, None).await
     }
@@ -12561,12 +12723,17 @@ impl RuntimeThreadManager {
         } else {
             crate::image_attach::prepare_runtime_images(&req.images)?
         };
-        let prompt = req.prompt.trim().to_string();
-        if prompt.is_empty() {
+        let prompt = if matches!(&input_source, RuntimeTurnInputSource::WatchEvent(_)) {
+            req.prompt.clone()
+        } else {
+            req.prompt.trim().to_string()
+        };
+        if prompt.trim().is_empty() {
             bail!("prompt is required");
         }
 
         let thread = self.get_thread(thread_id).await?;
+        let input_metadata = input_source.item_metadata(&self.store.owner_id, &thread, &prompt);
         if req.expected_workspace.as_ref().is_some_and(|workspace| workspace != &thread.workspace) {
             bail!("Thread workspace changed from the selected frontend admission");
         }
@@ -12720,22 +12887,46 @@ impl RuntimeThreadManager {
                 codewhale_runtime::hashing::sha256_hex(codewhale_runtime::hashing::canonical_json(&json!({
                     "domain": "codewhale:extension-command-turn:v1",
                     "historical_fingerprint": request_fingerprint,
-                    "input_metadata": input_source.item_metadata(),
+                    "input_metadata": input_metadata,
                 })).as_bytes())
             } else { request_fingerprint };
-            self.prepare_runtime_turn_operation(
+            let request_fingerprint = if matches!(&input_source, RuntimeTurnInputSource::WatchEvent(_)) {
+                codewhale_runtime::hashing::sha256_hex(codewhale_runtime::hashing::canonical_json(&json!({
+                    "domain": "codewhale:watch-event-turn:v1",
+                    "historical_fingerprint": request_fingerprint,
+                    "input_metadata": input_metadata,
+                })).as_bytes())
+            } else { request_fingerprint };
+            let mut prepared = self.prepare_runtime_turn_operation(
                 thread_id,
                 Some(operation_key),
                 request_fingerprint,
                 reserved_turn_id,
-            )?
+            )?;
+            if matches!(&input_source, RuntimeTurnInputSource::WatchEvent(_))
+                && let Some(operation) = prepared.as_mut()
+            {
+                operation.binding.watch_input_sha256 = input_metadata.as_ref().map(|value| codewhale_runtime::hashing::sha256_hex(codewhale_runtime::hashing::canonical_json(value).as_bytes()));
+            }
+            prepared
         } else {
             None
         };
-        if let Some(operation) = operation.as_ref()
-            && let Some(original_turn) = self.replay_turn_for_operation(operation)?
-        {
-            return Ok((original_turn, true));
+        if let Some(operation) = operation.as_ref() {
+            let original_turn = if matches!(&input_source, RuntimeTurnInputSource::WatchEvent(_)) {
+                let manager = self.clone();
+                let thread_id = thread_id.to_string();
+                let binding = operation.binding.clone();
+                let metadata = input_metadata.clone();
+                codewhale_runtime::runtime_control::owner_work(move || Ok(manager.lookup_turn_operation_projection(&thread_id,
+                    &binding.operation_key_fingerprint, Some(&binding.request_fingerprint), metadata.as_ref())))
+                    .await.map_err(|_| anyhow!(RuntimeTurnOperationLookupError::Unavailable))??.map(|receipt| receipt.turn)
+            } else {
+                self.replay_turn_for_operation(operation)?
+            };
+            if let Some(original_turn) = original_turn {
+                return Ok((original_turn, true));
+            }
         }
         if let Some(owner) = &req.account_model_owner {
             cfg_snapshot.bind_account_model_owner(owner)?;
@@ -13006,7 +13197,7 @@ source_usage_records: Default::default(),
             status: TurnItemLifecycleStatus::Completed,
             summary: input_summary,
             detail: input_source.item_detail(&prompt),
-            metadata: input_source.item_metadata(),
+            metadata: input_metadata.clone(),
             artifact_refs: Vec::new(),
             artifacts: Vec::new(),
             started_at: Some(now),
@@ -13151,7 +13342,14 @@ source_usage_records: Default::default(),
             // persisting/sending anything.
             if let Some(operation) = operation.as_ref() {
                 if operation.preparation.is_some() { self.verify_turn_preparation(operation)?; }
-                else if let Some(original_turn) = self.replay_turn_for_operation(operation)? { return Ok((original_turn, true)); }
+                else if let Some(original_turn) = self.replay_turn_for_operation(operation)? {
+                    if matches!(&input_source, RuntimeTurnInputSource::WatchEvent(_)) {
+                        let found = self.watch_turn_input(&original_turn, operation.binding.watch_input_sha256.as_deref())
+                            .map_err(|_| anyhow!(RuntimeTurnOperationLookupError::Unavailable))?.ok_or(RuntimeTurnOperationLookupError::Incomplete)?;
+                        if Some(serde_json::to_value(found)?) != input_metadata { return Err(anyhow!(RuntimeTurnOperationLookupError::Unavailable)); }
+                    }
+                    return Ok((original_turn, true));
+                }
             }
             let Some(state) = active.engines.get_mut(thread_id) else {
                 bail!("Thread engine not loaded");

@@ -384,7 +384,36 @@ impl Engine {
                 None,
                 effective_reasoning_effort.as_deref(),
             );
+        let whale_soul = if inputs.provenance.can_authorize_work() {
+            self.capture_local_whale_voice().await
+        } else {
+            Ok(self
+                .session
+                .pinned_prompt_context
+                .as_ref()
+                .and_then(|current| current.whale_soul.clone()))
+        };
+        let whale_soul = match whale_soul {
+            Ok(voice) => voice,
+            Err(error) => {
+                let detail = format!("{error:#}");
+                let unavailable = Availability::unavailable_with(
+                    UnavailableReason::RequestPreparationFailed,
+                    detail.clone(),
+                );
+                return RequestManifest::build(ManifestDraft {
+                    session,
+                    route: unavailable,
+                    tools,
+                    body: Availability::unavailable_with(
+                        UnavailableReason::RequestPreparationFailed,
+                        detail,
+                    ),
+                });
+            }
+        };
         let prompt_context = NextTurnPromptContext {
+            whale_soul,
             mode: input_policy.mode,
             context_window: Some(route.context_window),
             planned_output_tokens: Some(planned_output_tokens),

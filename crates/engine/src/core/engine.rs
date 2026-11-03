@@ -6717,6 +6717,8 @@ impl Engine {
         // keeps no lifecycle.
         // Internal follow-ups belong to the already-admitted work. They must
         // not replace its account preferences with the host operator's profile.
+        let local_whale_turn =
+            !is_review && provenance.can_authorize_work() && profile_constitution.is_none();
         let constitution_block = if is_review
             || self.rlm_host.is_some()
             || (!provenance.can_authorize_work() && profile_constitution.is_none())
@@ -6771,6 +6773,17 @@ impl Engine {
                 }
             }
         };
+        let whale_soul = if local_whale_turn {
+            self.capture_local_whale_voice().await
+        } else if is_review || !provenance.can_authorize_work() {
+            Ok(self
+                .session
+                .pinned_prompt_context
+                .as_ref()
+                .and_then(|current| current.whale_soul.clone()))
+        } else {
+            Ok(None)
+        };
         let admission_cancel = (!self.host_managed_turns()).then_some(&self.cancel_token);
         let admission = async {
             let terminal = streaming::reserve_event_capacity(
@@ -6803,6 +6816,48 @@ impl Engine {
                         "Cannot start the turn because its event consumer is closed".to_string()
                     }),
                 };
+            }
+        };
+
+        let whale_soul = match whale_soul {
+            Ok(voice) => voice,
+            Err(error) => {
+                crate::cost_status::report_runtime_usage_batch(
+                    crate::cost_status::scope_token(),
+                    initial_usage_owner.as_deref(),
+                    &initial_routed_usage,
+                );
+                self.sync_unstarted_goal_for_terminal_projection(
+                    goal_objective.as_deref(),
+                    goal_token_budget,
+                    goal_status,
+                );
+                let detail = format!("{error:#}");
+                start_permit.send(Event::error(ErrorEnvelope::new(
+                    ErrorCategory::InvalidInput,
+                    ErrorSeverity::Error,
+                    true,
+                    "whale_soul_unavailable",
+                    detail.clone(),
+                )));
+                terminal_permit.send(Event::TurnComplete {
+                    source_accounting: true,
+                    turn_id: None,
+                    submission_id,
+                    compaction_id: None,
+                    usage: Usage::default(),
+                    parent_route_usage: Usage::default(),
+                    routed_usage_dropped_records: 0,
+                    status: TurnOutcomeStatus::Failed,
+                    error: Some(detail.clone()),
+                    tool_catalog: None,
+                    base_url: None,
+                });
+                let outcome = SendMessageOutcome::NotStarted {
+                    error: Some(detail),
+                };
+                self.reconcile_non_completed_goal_turn(&outcome).await;
+                return outcome;
             }
         };
 
@@ -6928,6 +6983,7 @@ impl Engine {
             translation_enabled,
             verbosity.clone(),
         );
+        prompt_context.whale_soul = whale_soul;
         prompt_context.context_window = self.active_context_window;
         let planned_effort = turn_loop::resolve_auto_effort(
             reasoning_effort.as_deref(),
@@ -9762,11 +9818,7 @@ impl Engine {
             Some(prompt) => (Some(prompt), None),
             None => {
                 self.record_project_trust_warning();
-                let raw = crate::project_context::capture_instruction_context(
-                    &self.config.workspace,
-                    &self.config.instructions,
-                    &self.instruction_settings,
-                );
+                let raw = self.capture_project_instructions_for(context);
                 let memory = codewhale_runtime::native_memory::native_prompt_block_traced(
                     self.config.memory_enabled,
                     &self.config.memory_path,
@@ -9857,11 +9909,7 @@ impl Engine {
         context: &NextTurnPromptContext,
         memory: Option<&str>,
     ) -> Result<context::ObservedContextUpdate, String> {
-        let raw = crate::project_context::capture_instruction_context(
-            &self.config.workspace,
-            &self.config.instructions,
-            &self.instruction_settings,
-        );
+        let raw = self.capture_project_instructions_for(context);
         let budgets = self.session.instruction_assembly.as_deref().map_or_else(
             || self.instruction_budgets(context),
             |assembly| assembly.budgets,
@@ -9960,11 +10008,7 @@ impl Engine {
         if let Some(prompt) = self.host_owned_system_prompt() {
             return (Some(prompt), None, None);
         }
-        let raw = crate::project_context::capture_instruction_context(
-            &self.config.workspace,
-            &self.config.instructions,
-            &self.instruction_settings,
-        );
+        let raw = self.capture_project_instructions_for(context);
         let memory = codewhale_runtime::native_memory::native_prompt_block(
             self.config.memory_enabled,
             &self.config.memory_path,
@@ -10167,6 +10211,35 @@ impl Engine {
         Ok(())
     }
 
+    async fn capture_local_whale_voice(
+        &self,
+    ) -> anyhow::Result<Option<std::sync::Arc<crate::whale_soul::Voice>>> {
+        if self.session.system_prompt_override
+            || self.rlm_host.is_some()
+            || self.child_host.is_some()
+            || self.api_config.runtime_chat_isolated
+        {
+            return Ok(None);
+        }
+        crate::whale_soul::capture().await
+    }
+
+    fn capture_project_instructions_for(
+        &self,
+        context: &NextTurnPromptContext,
+    ) -> crate::project_context::ProjectContext {
+        let mut raw = crate::project_context::capture_instruction_context(
+            &self.config.workspace,
+            &self.config.instructions,
+            &self.instruction_settings,
+        );
+        if let Some(voice) = &context.whale_soul {
+            raw.instruction_segments.push(voice.segment());
+            raw.rebuild_joined_instructions();
+        }
+        raw
+    }
+
     fn installed_next_turn_prompt_context(&self) -> NextTurnPromptContext {
         let mut context = NextTurnPromptContext::for_planned_turn(
             self.api_provider,
@@ -10182,6 +10255,11 @@ impl Engine {
             self.config.translation_enabled,
             self.config.verbosity.clone(),
         );
+        context.whale_soul = self
+            .session
+            .pinned_prompt_context
+            .as_ref()
+            .and_then(|current| current.whale_soul.clone());
         context.context_window = self.active_context_window;
         let effort = turn_loop::resolve_auto_effort(
             self.session.reasoning_effort.as_deref(),
@@ -10920,6 +10998,7 @@ pub struct TurnMetadataSnapshot<'a> {
 /// configuration and are documented separately as snapshot dependencies.
 #[derive(Debug, Clone)]
 pub struct NextTurnPromptContext {
+    pub(crate) whale_soul: Option<std::sync::Arc<crate::whale_soul::Voice>>,
     pub provider: ProviderKind,
     pub model: String,
     pub route_limits: Option<codewhale_config::route::RouteLimits>,
@@ -10935,6 +11014,7 @@ pub struct NextTurnPromptContext {
 impl PartialEq for NextTurnPromptContext {
     fn eq(&self, other: &Self) -> bool {
         self.provider == other.provider
+            && self.whale_soul == other.whale_soul
             && self.model == other.model
             && self.route_limits == other.route_limits
             && self.context_window == other.context_window
@@ -10955,6 +11035,9 @@ pub fn explicit_prompt_context_change_reason(
     next: &NextTurnPromptContext,
 ) -> String {
     let mut fields = Vec::new();
+    if pinned.whale_soul != next.whale_soul {
+        fields.push("whale-soul");
+    }
     if pinned.provider != next.provider {
         fields.push("provider");
     }
@@ -10999,6 +11082,7 @@ impl NextTurnPromptContext {
         verbosity: Option<String>,
     ) -> Self {
         Self {
+            whale_soul: None,
             provider,
             planned_output_tokens: Some(crate::route_budget::effective_max_output_tokens_for_turn(
                 provider,

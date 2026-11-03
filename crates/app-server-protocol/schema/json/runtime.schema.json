@@ -240,6 +240,10 @@
           "description": "Read-only exact accepted-turn lookup by thread and operation key.",
           "default": false
         },
+        "watch_event_turns": {
+          "type": "boolean",
+          "default": false
+        },
         "structured_review_turns": {
           "type": "boolean",
           "default": false
@@ -385,6 +389,7 @@
         "turns",
         "turn_operation_idempotency",
         "turn_operation_lookup",
+        "watch_event_turns",
         "structured_review_turns",
         "structured_review_version",
         "automation_mutation_preconditions",

@@ -83,6 +83,7 @@ pub enum InstructionOrigin {
     Rules,
     /// The configured `instructions = [...]` array.
     Configured,
+    WhaleSoul,
 }
 
 impl InstructionOrigin {
@@ -94,6 +95,7 @@ impl InstructionOrigin {
             Self::Instructions => "instructions",
             Self::Rules => "rules",
             Self::Configured => "configured",
+            Self::WhaleSoul => "whale_soul",
         }
     }
 }
@@ -791,6 +793,10 @@ pub struct InstructionAssembly {
     pub source_path: Option<PathBuf>,
     pub constitution_source_path: Option<PathBuf>,
     pub constitution_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whale_soul_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whale_soul_source_path: Option<PathBuf>,
     pub warnings: Vec<String>,
     #[serde(skip)]
     pub prompt_range: Option<std::ops::Range<usize>>,
@@ -805,7 +811,12 @@ pub struct InstructionAssembly {
 
 impl InstructionAssembly {
     pub fn receipt_json(&self) -> serde_json::Value {
-        serde_json::json!({ "global_tokens": self.global_tokens, "project_tokens": self.project_tokens, "budgets": self.budgets, "notices": self.notices, "source_path": self.source_path, "constitution_source_path": self.constitution_source_path, "constitution_tokens": self.constitution_tokens, "retained_block_tokens": self.block.as_deref().map_or(0, estimate_instruction_tokens), "warnings": self.warnings })
+        let mut receipt = serde_json::json!({ "global_tokens": self.global_tokens, "project_tokens": self.project_tokens, "budgets": self.budgets, "notices": self.notices, "source_path": self.source_path, "constitution_source_path": self.constitution_source_path, "constitution_tokens": self.constitution_tokens, "retained_block_tokens": self.block.as_deref().map_or(0, estimate_instruction_tokens), "warnings": self.warnings });
+        if let Some(revision) = &self.whale_soul_revision {
+            receipt["whale_soul_revision"] = serde_json::Value::String(revision.clone());
+            receipt["whale_soul_source_path"] = serde_json::json!(self.whale_soul_source_path);
+        }
+        receipt
     }
 }
 

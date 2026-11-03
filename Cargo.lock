@@ -905,6 +905,7 @@ dependencies = [
 name = "codewhale-app-server-protocol"
 version = "0.10.3"
 dependencies = [
+ "chrono",
  "schemars",
  "serde",
  "serde_json",

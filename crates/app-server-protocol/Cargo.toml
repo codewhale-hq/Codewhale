@@ -14,6 +14,7 @@ workspace = true
 schema = ["dep:schemars"]
 
 [dependencies]
+chrono.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 schemars = { version = "1.2.1", optional = true, features = ["derive", "preserve_order"] }

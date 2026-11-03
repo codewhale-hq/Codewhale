@@ -135,6 +135,8 @@ pub struct McpServerConfig {
     pub enabled_tools: Vec<String>,
     #[serde(default)]
     pub disabled_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub always_allow_tools: Vec<String>,
     /// Extra HTTP headers sent with every request to this MCP server.
     /// Only the HTTP transports (streamable HTTP today; SSE in a
     /// follow-up) honor this — `command`-based stdio servers ignore it.
@@ -247,6 +249,10 @@ impl McpServerConfig {
 
     pub fn is_enabled(&self) -> bool {
         self.enabled && !self.disabled
+    }
+
+    pub fn is_tool_always_allowed(&self, tool_name: &str) -> bool {
+        self.is_tool_enabled(tool_name) && self.always_allow_tools.iter().any(|tool| tool == tool_name)
     }
 
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {

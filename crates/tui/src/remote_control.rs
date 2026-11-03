@@ -4432,6 +4432,19 @@ fn parse_remote_command(value: &Value, expected_run_id: &str) -> Result<RemoteCo
     }
     match value.get("type").and_then(Value::as_str) {
         Some("prompt.request") => {
+            let watch_fields = [
+                "watchEvent",
+                "watch_event",
+                "inputProvenance",
+                "input_provenance",
+            ];
+            if watch_fields.iter().any(|key| value.get(*key).is_some())
+                || value.get("metadata").and_then(Value::as_object).is_some_and(|metadata| {
+                    watch_fields.iter().any(|key| metadata.contains_key(*key))
+                })
+            {
+                return Err("Automatic watch input is unsupported on this local coordinator; use the attested HTTP owner.".to_string());
+            }
             if value.get("structuredReview").is_some() && value.get("runtimeBindingId").is_none() {
                 return Err(
                     "A native review requires the authenticated Runtime binding.".to_string(),
@@ -7024,6 +7037,21 @@ mod tests {
                 prompt: "Continue".to_string(),
             }
         );
+        for field in [
+            "watchEvent",
+            "watch_event",
+            "inputProvenance",
+            "input_provenance",
+        ] {
+            let mut value =
+                json!({"type":"prompt.request","runId":"run-1","turnId":"turn-1","prompt":"watch"});
+            value[field] = json!({"version":1});
+            assert!(parse_remote_command(&value, "run-1").is_err());
+            let mut nested =
+                json!({"type":"prompt.request","runId":"run-1","turnId":"turn-1","prompt":"watch","metadata":{}});
+            nested["metadata"][field] = json!({"version":1});
+            assert!(parse_remote_command(&nested, "run-1").is_err());
+        }
         assert!(
             parse_remote_command(
                 &json!({

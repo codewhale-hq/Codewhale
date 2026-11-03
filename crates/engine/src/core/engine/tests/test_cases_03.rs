@@ -863,6 +863,22 @@ async fn user_message_resumes_a_goal_only_the_runtime_blocked() {
     let blocked = goal_state.lock().expect("goal lock").snapshot();
     assert_eq!(blocked.status, "blocked");
 
+    let Op::SendMessage(mut automatic) =
+        active_goal_message_op(&config, "watch event", objective, None)
+    else {
+        unreachable!()
+    };
+    automatic.goal_status = crate::tools::goal::GoalStatus::Blocked;
+    automatic.provenance = crate::core::ops::UserInputProvenance::Runtime;
+    handle
+        .send(Op::SendMessage(automatic))
+        .await
+        .expect("send non-person input");
+    settle().await;
+    let retained = goal_state.lock().expect("goal lock").snapshot();
+    assert_eq!(retained.status, "blocked");
+    assert_eq!(retained.goal_id, blocked.goal_id);
+
     let Op::SendMessage(mut spec) = active_goal_message_op(&config, "continue", objective, None)
     else {
         unreachable!()
@@ -873,7 +889,7 @@ async fn user_message_resumes_a_goal_only_the_runtime_blocked() {
         .await
         .expect("send continue");
     settle().await;
-    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
     let resumed = goal_state.lock().expect("goal lock").snapshot();
     assert_ne!(
         resumed.goal_id, blocked.goal_id,

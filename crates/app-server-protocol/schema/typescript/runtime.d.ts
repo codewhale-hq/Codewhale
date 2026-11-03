@@ -51,6 +51,7 @@ export type RuntimeCapabilities = {
   turns: boolean
   turn_operation_idempotency: boolean
   turn_operation_lookup: boolean
+  watch_event_turns: boolean
   structured_review_turns: boolean
   structured_review_version: number
   automation_mutation_preconditions: boolean

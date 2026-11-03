@@ -594,6 +594,7 @@ pub struct ToolExecutionState {
     pub child_host: Option<Arc<crate::tools::subagent::engine::ChildAuthority>>,
     /// Set only on the context of one call a person approved on a card.
     pub human_decision: Option<crate::core::engine::HumanDecision>,
+    pub mcp_always_binding: Option<u64>,
     /// Shared shell manager for background tasks and streaming IO.
     pub shell_manager: SharedShellManager,
     /// Per-session snapshots for files successfully observed by `read_file`.
@@ -792,6 +793,7 @@ impl ToolContext {
                 acp_host: None,
                 child_host: None,
                 human_decision: None,
+                mcp_always_binding: None,
                 shell_manager,
                 file_read_tracker: new_shared_file_read_tracker(),
                 owner_agent_id: None,

@@ -155,6 +155,7 @@ fn make_server(command: Option<&str>, args: &[&str], url: Option<&str>) -> McpSe
         lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
+        always_allow_tools: Vec::new(),
         headers: std::collections::HashMap::new(),
         env_headers: std::collections::HashMap::new(),
         bearer_token_env_var: None,

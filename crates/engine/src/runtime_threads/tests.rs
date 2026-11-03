@@ -4001,6 +4001,7 @@ mod turn_operation_lookup {
             request_fingerprint: codewhale_runtime::hashing::sha256_hex(
                 "original request configuration",
             ),
+            watch_input_sha256: None,
             created_at: turn.created_at,
         })
     }
@@ -4302,6 +4303,7 @@ async fn restart_retains_torn_operation_item_and_refuses_ambiguous_retry() -> Re
         turn_id: turn_id.to_string(),
         operation_key_fingerprint: key_fingerprint.clone(),
         request_fingerprint: codewhale_runtime::hashing::sha256_hex("torn-request"),
+        watch_input_sha256: None,
         created_at: Utc::now(),
     })?;
     let mut orphan = sample_item(
@@ -7188,6 +7190,7 @@ fn store_restart_retains_operation_bindings_without_a_proved_parent() -> Result<
         turn_id: "turn_never_persisted".to_string(),
         operation_key_fingerprint: key_fingerprint.clone(),
         request_fingerprint: codewhale_runtime::hashing::sha256_hex("request"),
+        watch_input_sha256: None,
         created_at: Utc::now(),
     };
     store.save_turn_operation_binding(&binding)?;

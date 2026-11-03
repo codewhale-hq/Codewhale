@@ -1021,7 +1021,7 @@ impl Engine {
     ) {
         // A pending ordinary connection keeps its own catalog authority. An
         // ACP turn cannot drain or import it; the next ordinary turn can.
-        if self.is_acp_turn() || !self.mcp_boot_in_flight {
+        if self.is_acp_turn() {
             return;
         }
         self.drain_mcp_boot_updates().await;
@@ -1996,6 +1996,16 @@ impl Engine {
                 )));
             }
 
+            if blocked_error.is_none()
+                && McpPool::is_mcp_tool(&tool_name)
+                && let Some(pool) = self.mcp_pool.as_ref()
+                && pool.lock().await.tool_is_disabled(&tool_name)
+            {
+                blocked_error = Some(ToolError::not_available(format!(
+                    "MCP tool '{tool_name}' is disabled by its server configuration"
+                )));
+            }
+
             if blocked_error.is_none() && !caller_allowed_for_tool(tool_caller.as_ref(), tool_def) {
                 blocked_error = Some(ToolError::permission_denied(format!(
                     "Tool '{tool_name}' does not allow caller '{}'",
@@ -2114,7 +2124,15 @@ impl Engine {
                 )));
             }
 
-            if let Some(prepared) = prepared_policy {
+            let mut mcp_always_binding = None;
+            if let Some(mut prepared) = prepared_policy {
+                if source == ToolCallSource::Model
+                    && tool_registry.is_some()
+                    && McpPool::is_mcp_tool(&tool_name)
+                    && let Some(pool) = self.mcp_pool.as_ref()
+                {
+                    mcp_always_binding = prepared.apply_mcp_always_allow(&*pool.lock().await);
+                }
                 let registered_non_bypassable =
                     call_forces_prompt(&tool_name, &prepared.call.input, prepared.call.approval);
                 approval_required = registered_tool_approval_required(
@@ -2169,6 +2187,7 @@ impl Engine {
                 };
                 emit_tool_audit(json!({
                     "event": "tool.prepared",
+                    "mcp_always_allowed": mcp_always_binding.is_some(),
                     "tool_id": tool_id.clone(),
                     "tool_name": tool_name.clone(),
                     "read_only": read_only,
@@ -2619,6 +2638,7 @@ impl Engine {
                 interactive,
                 approval_required,
                 approval_description,
+                mcp_always_binding,
                 approval_force_prompt,
                 supports_parallel,
                 read_only,
@@ -2961,7 +2981,12 @@ impl Engine {
                     let shell_permits = shell_permits.clone();
                     let workspace = self.session.workspace.clone();
                     let context_override =
-                        tool_context_for_call(batch_tool_context.clone(), &plan.id);
+                        tool_context_for_call(batch_tool_context.clone(), &plan.id).map(
+                            |mut context| {
+                                context.mcp_always_binding = plan.mcp_always_binding;
+                                context
+                            },
+                        );
                     let cancel_token = self.cancel_token.clone();
 
                     tool_tasks.push(async move {
@@ -3605,6 +3630,7 @@ impl Engine {
                     .map(|mut context| {
                         // The batch may have waited for a person. Rebase the
                         // absolute deadline from the same paused Engine clock.
+                        context.mcp_always_binding = plan.mcp_always_binding;
                         context.turn_deadline = self.nested_work_deadline();
                         context
                     });

@@ -446,6 +446,7 @@ codewhale mcp tools codewhale
 - `lazy`（布尔值，可选，默认 `false`）：在某个回合、工具调用或 `/mcp retry` 请求它之前不启动该服务器。不设置时，该服务器在会话启动时连接。插件清单没有 `lazy` 字段：已启用插件的服务器在会话启动时连接，禁用该插件即可停止它们。
 - `enabled_tools`（数组，可选）：该服务器的工具名称允许列表。
 - `disabled_tools`（数组，可选）：在 `enabled_tools` 之后应用的拒绝列表。
+- `always_allow_tools`（可选数组）：用户在本机所有工作区始终允许的工具全名，保存在全局服务器配置中。禁用优先。Computer Use 的授权与脚本仍须用户亲自批准。
 - `url`（字符串，可选）：远程 MCP 服务器的 Streamable HTTP 端点。
 - `allow_private_network`（布尔值，默认 false）：运维方为该已配置源站上的私有 DNS 地址主动选择启用的开关；对模型添加的服务器无效。
 - `transport`（字符串，可选）：对于传统 SSE 端点，设为 `"sse"`。
