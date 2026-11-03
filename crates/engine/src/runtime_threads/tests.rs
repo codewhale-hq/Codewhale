@@ -21826,6 +21826,7 @@ mod runtime_image_inputs {
         let run = tokio::spawn(engine.run());
         handle
             .send(Op::SyncSession {
+                expected: None,
                 control: crate::core::ops::SessionControlId::new(),
                 session_id: stored_thread.session_id.clone(),
                 messages: reopened.restore_thread_messages(&stored_thread)?,

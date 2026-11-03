@@ -538,6 +538,10 @@ pub enum AppAction {
     #[allow(dead_code)] // For explicit /load command
     LoadSession(PathBuf),
     RemoteControl(crate::remote_control::RemoteControlAction),
+    NewSession {
+        sync: codewhale_command_contract::facets::SessionSyncPayload,
+        force: bool,
+    },
     SyncSession {
         session_id: Option<String>,
         messages: Vec<Message>,

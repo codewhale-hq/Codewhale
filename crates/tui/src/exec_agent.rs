@@ -732,6 +732,7 @@ pub(crate) async fn run_exec_agent(
 
         engine_handle
             .send(Op::SyncSession {
+                expected: None,
                 control: codewhale_engine::core::ops::SessionControlId::new(),
                 session_id: Some(saved_id.clone()),
                 messages: saved.messages,

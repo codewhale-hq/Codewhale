@@ -631,6 +631,7 @@ async fn edit_last_turn_restores_the_exchange_when_the_replacement_never_starts(
     };
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-restore".to_string()),
             messages: vec![

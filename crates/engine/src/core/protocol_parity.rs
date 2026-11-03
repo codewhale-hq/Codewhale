@@ -1253,6 +1253,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             load_error: roster.load_error().map(str::to_string),
         },
         Op::SyncSession {
+            expected,
             session_id,
             messages,
             system_prompt,
@@ -1262,6 +1263,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             mode,
             ..
         } => wire_op::Op::SyncSession {
+            expected: expected.as_ref().map(to_value),
             engine_session_id: session_id.clone(),
             messages: messages.iter().map(to_value).collect(),
             system_prompt: system_prompt.as_ref().map(to_value),

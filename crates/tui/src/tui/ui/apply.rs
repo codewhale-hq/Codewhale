@@ -1315,6 +1315,7 @@ pub(crate) async fn apply_provider_fallback_switch(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                expected: None,
                 control: app.session_sync_control(),
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.as_ref().clone(),
@@ -1713,6 +1714,30 @@ async fn apply_command_result_inner(
     config: &mut Config,
     result: commands::CommandResult,
 ) -> Result<bool> {
+    if app.pending_fresh_session.is_some()
+        && !matches!(
+            result.action.as_ref(),
+            None | Some(
+                AppAction::Quit
+                    | AppAction::CancelSubAgent { .. }
+                    | AppAction::TaskCancel { .. }
+                    | AppAction::ShellJob(
+                        crate::tui::app::ShellJobAction::Cancel { .. }
+                            | crate::tui::app::ShellJobAction::CancelAll
+                    )
+                    | AppAction::RemoteControl(crate::remote_control::RemoteControlAction::Stop)
+                    | AppAction::Automation(crate::tui::app::AutomationAction::Pause(_))
+                    | AppAction::SetGoalStatus {
+                        status: GoalStatus::Paused,
+                        clear: false,
+                    }
+                    | AppAction::SetAdvisorEnabled { enabled: false }
+            )
+        )
+    {
+        app.status_message = Some("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string());
+        return Ok(false);
+    }
     // These two actions await participant inference inline on the UI event
     // loop. Waiting behind Runtime Chat's exclusive writer here would
     // deadlock: this same loop must drain the terminal projection/server
@@ -1823,6 +1848,7 @@ async fn apply_command_result_inner(
                 }
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        expected: None,
                         control: app.session_sync_control(),
                         session_id: app.current_session_id.clone(),
                         messages: app.api_messages.as_ref().clone(),
@@ -1857,6 +1883,11 @@ async fn apply_command_result_inner(
                 // transcript is what made those rows read as dead (#4).
                 app.launch.dismiss();
                 app.launch.status = None;
+            }
+            AppAction::NewSession { sync, force } => {
+                if let Err(error) = begin_fresh_session(app, engine_handle, sync, force) {
+                    surface_session_load_failure(app, error);
+                }
             }
             AppAction::SyncSession {
                 session_id,
@@ -1936,6 +1967,7 @@ async fn apply_command_result_inner(
                     .await;
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        expected: None,
                         control: app.session_sync_control(),
                         session_id,
                         messages,
@@ -2054,6 +2086,7 @@ async fn apply_command_result_inner(
                 if !app.api_messages.is_empty() {
                     let _ = engine_handle
                         .send(Op::SyncSession {
+                            expected: None,
                             control: app.session_sync_control(),
                             session_id: app.current_session_id.clone(),
                             messages: app.api_messages.as_ref().clone(),
@@ -3282,6 +3315,7 @@ async fn apply_command_result_inner(
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
+                                    expected: None,
                                     control: app.session_sync_control(),
                                     session_id: app.current_session_id.clone(),
                                     messages: app.api_messages.as_ref().clone(),

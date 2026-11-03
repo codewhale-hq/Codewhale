@@ -2281,6 +2281,7 @@ pub struct App {
     /// The durable desired state lives in `last_known_goal_state`; this queue
     /// preserves in-process ordering and mailbox retry state only.
     pub(crate) pending_goal_controls: VecDeque<PendingGoalControl>,
+    pub(crate) pending_fresh_session: Option<crate::tui::ui::PendingFreshSession>,
     /// Metadata for the active session, cached in memory so automatic
     /// checkpoints never synchronously reload and parse a growing JSON file on
     /// the UI thread.
@@ -4257,6 +4258,9 @@ impl App {
     #[must_use]
     pub fn session_transition_blockers(&self) -> Vec<String> {
         let mut blockers = Vec::new();
+        if self.pending_fresh_session.is_some() {
+            blockers.push("a new session is awaiting Engine confirmation".to_string());
+        }
 
         let mut tasks: Vec<&TaskPanelEntry> = self
             .task_panel

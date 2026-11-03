@@ -33947,7 +33947,7 @@ async fn flush_offline_queue_test_actor(handle: &persistence_actor::PersistActor
     assert!(report.failures.is_empty(), "{:?}", report.failures);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
     const PROBE: &str = "CODEWHALE_OFFLINE_QUEUE_LIFECYCLE_PROBE";
     if std::env::var_os(PROBE).is_none() {
@@ -34109,6 +34109,8 @@ async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
     drop(owner);
     let result = crate::commands::execute("/new --force", &mut app);
     assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(app.current_session_id.as_deref(), Some("queue-B"));
+    crate::commands::acknowledge_new_session(&mut app, &result).await;
     assert_ne!(app.current_session_id.as_deref(), Some("queue-B"));
     flush_offline_queue_test_actor(&handle).await;
     assert!(

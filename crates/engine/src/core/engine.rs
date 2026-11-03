@@ -4362,6 +4362,7 @@ impl Engine {
                             self.config.fleet_roster = roster;
                         }
                         Op::SyncSession {
+                            expected,
                             control,
                             session_id,
                             messages,
@@ -4371,6 +4372,15 @@ impl Engine {
                             workspace,
                             mode,
                         } => {
+                            if expected
+                                .as_deref()
+                                .is_some_and(|expected| self.session_snapshot() != *expected)
+                            {
+                                let _ = self.send_event(Event::error(ErrorEnvelope::transient(
+                                    "The Engine session changed before the requested session switch; session was not switched.".to_string(),
+                                ))).await;
+                                continue;
+                            }
                             let plugin_workspace_changed =
                                 self.plugin_registry.workspace() != workspace.as_path();
                             let previous_session_id = self.session.id.clone();

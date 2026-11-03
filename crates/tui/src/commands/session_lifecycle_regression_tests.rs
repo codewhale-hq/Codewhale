@@ -38,6 +38,70 @@ fn new_session(app: &mut App, arg: Option<&str>) -> CommandResult {
     dispatch_lifecycle(app, "new", arg)
 }
 
+pub(crate) async fn acknowledge_new_session(app: &mut App, result: &CommandResult) {
+    use codewhale_engine::core::engine::{Engine, EngineConfig};
+    use codewhale_engine::core::ops::Op;
+    let Some(AppAction::NewSession { sync, force }) = result.action.as_ref() else {
+        panic!("expected new-session request");
+    };
+    let config = Config::default();
+    let (engine, handle) = Engine::new(
+        EngineConfig {
+            session_id: app.current_session_id.clone(),
+            model: app.model.clone(),
+            workspace: app.workspace.clone(),
+            snapshots_enabled: false,
+            subagents_enabled: false,
+            plugin_registry: Some(std::sync::Arc::new(
+                codewhale_plugins::PluginRegistry::empty(&app.workspace),
+            )),
+            ..EngineConfig::default()
+        },
+        &config,
+    );
+    let env_ticket = crate::test_support::env_scope_ticket();
+    let runtime = tokio::runtime::Handle::current();
+    let run = tokio::task::spawn_blocking(move || {
+        let _membership = crate::test_support::join_env_scope(env_ticket);
+        runtime.block_on(engine.run())
+    });
+    let control = app.session_sync_control();
+    handle
+        .send(Op::SyncSession {
+            expected: None,
+            control,
+            session_id: app.current_session_id.clone(),
+            messages: app.api_messages.as_ref().clone(),
+            system_prompt: app.system_prompt.clone(),
+            system_prompt_override: false,
+            model: app.model.clone(),
+            workspace: app.workspace.clone(),
+            mode: app.mode,
+        })
+        .await
+        .expect("install current fixture session");
+    handle
+        .get_session_snapshot()
+        .await
+        .expect("current fixture acknowledgement");
+    crate::tui::ui::begin_fresh_session(app, &handle, sync.clone(), *force)
+        .expect("prepare fresh transition");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while app.pending_fresh_session.is_some() {
+            crate::tui::ui::poll_fresh_session(app, &handle);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("fresh Engine acknowledgement");
+    assert_eq!(app.current_session_id, sync.session_id);
+    handle
+        .send(Op::Shutdown)
+        .await
+        .expect("shutdown fixture Engine");
+    run.await.expect("fixture Engine stopped");
+}
+
 fn load(app: &mut App, path: Option<&str>) -> CommandResult {
     dispatch_lifecycle(app, "load", path)
 }
@@ -283,8 +347,8 @@ fn fork_rejects_active_runtime_without_switching_sessions() {
     assert_eq!(app.api_messages.len(), 1);
 }
 
-#[test]
-fn new_session_from_resumed_state_creates_distinct_empty_session() {
+#[tokio::test]
+async fn new_session_from_resumed_state_creates_distinct_empty_session() {
     let tmpdir = TempDir::new().unwrap();
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
@@ -310,47 +374,58 @@ fn new_session_from_resumed_state_creates_distinct_empty_session() {
     let result = new_session(&mut app, None);
 
     assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+    assert_eq!(app.api_messages.len(), 1);
+    assert_eq!(app.session.session_cost, 1.25);
+    assert!(result.message.is_none());
+    acknowledge_new_session(&mut app, &result).await;
     let new_id = app.current_session_id.clone().expect("new session id");
     assert_ne!(new_id, "old-session");
     assert_eq!(app.session_title.as_deref(), Some("New Session"));
     assert!(app.api_messages.is_empty());
-    assert!(app.history.is_empty());
+    assert_eq!(app.history.len(), 1);
+    assert!(
+        matches!(&app.history[0], HistoryCell::System { content } if content.starts_with("Started new session ") && content.contains(&new_id.chars().take(8).collect::<String>()))
+    );
     assert!(app.system_prompt.is_none());
     assert_eq!(app.session.total_tokens, 0);
     assert_eq!(app.session.session_cost, 0.0);
     assert!(
-        result
-            .message
+        app.status_message
             .as_deref()
             .unwrap_or_default()
             .contains("/resume")
     );
     match result.action {
-        Some(AppAction::SyncSession {
-            session_id,
-            messages,
-            system_prompt,
-            ..
+        Some(AppAction::NewSession {
+            sync:
+                codewhale_command_contract::facets::SessionSyncPayload {
+                    session_id,
+                    messages,
+                    system_prompt,
+                    ..
+                },
+            force: false,
         }) => {
             assert_eq!(session_id.as_deref(), Some(new_id.as_str()));
             assert!(messages.is_empty());
             assert!(system_prompt.is_none());
         }
-        other => panic!("expected SyncSession action, got {other:?}"),
+        other => panic!("expected NewSession action, got {other:?}"),
     }
 }
 
-#[test]
-fn new_session_forgets_denials_and_session_grants() {
-    conversation_reset_forgets_approvals("new");
+#[tokio::test]
+async fn new_session_forgets_denials_and_session_grants() {
+    conversation_reset_forgets_approvals("new").await;
 }
 
-#[test]
-fn clear_session_forgets_denials_and_session_grants() {
-    conversation_reset_forgets_approvals("clear");
+#[tokio::test]
+async fn clear_session_forgets_denials_and_session_grants() {
+    conversation_reset_forgets_approvals("clear").await;
 }
 
-fn conversation_reset_forgets_approvals(command: &str) {
+async fn conversation_reset_forgets_approvals(command: &str) {
     // UX-8: a Deny used to outlive `/new` for the whole process ("Restart
     // Codewhale to reconsider it"); a fresh conversation starts clean.
     let tmpdir = TempDir::new().unwrap();
@@ -393,7 +468,13 @@ fn conversation_reset_forgets_approvals(command: &str) {
 
     let result = dispatch_lifecycle(&mut app, command, None);
 
-    assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
+    if command == "new" {
+        assert!(matches!(result.action, Some(AppAction::NewSession { .. })));
+        assert!(!app.pending_child_requests.is_empty());
+        acknowledge_new_session(&mut app, &result).await;
+    } else {
+        assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
+    }
     assert!(
         app.pending_child_requests.is_empty() && app.view_stack.is_empty(),
         "an old conversation's child approval card must not follow /{command}"
@@ -432,8 +513,8 @@ fn new_session_blocks_unsent_input_without_force() {
     );
 }
 
-#[test]
-fn new_session_force_discards_unsent_input() {
+#[tokio::test]
+async fn new_session_force_discards_unsent_input() {
     let tmpdir = TempDir::new().unwrap();
     let _home = SealedHome::new();
     let mut app = create_test_app_with_tmpdir(&tmpdir);
@@ -444,9 +525,15 @@ fn new_session_force_discards_unsent_input() {
     let result = new_session(&mut app, Some("--force"));
 
     assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+    assert_eq!(app.input, "draft text");
+    acknowledge_new_session(&mut app, &result).await;
     assert_ne!(app.current_session_id.as_deref(), Some("old-session"));
     assert!(app.input.is_empty());
-    assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
+    assert!(matches!(
+        result.action,
+        Some(AppAction::NewSession { force: true, .. })
+    ));
 }
 
 #[test]

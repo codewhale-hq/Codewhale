@@ -568,6 +568,7 @@ async fn spawn_tui_engine_with_session(
         {
             handle
                 .send(Op::SyncSession {
+                    expected: None,
                     control: app.session_sync_control(),
                     session_id: app.current_session_id.clone(),
                     messages: app.api_messages.as_ref().clone(),
@@ -1031,6 +1032,10 @@ async fn execute_command_input(
     config: &mut Config,
     input: &str,
 ) -> Result<bool> {
+    if app.pending_fresh_session.is_some() && !commands::pending_session_control_command(input) {
+        app.status_message = Some("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string());
+        return Ok(false);
+    }
     let _ = app.note_manual_command_for_tip(input);
     if let Some(parsed_index) = parse_queue_send_command(input) {
         match parsed_index {

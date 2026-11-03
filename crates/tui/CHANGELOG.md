@@ -162,6 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/new` waits for the Engine:** the terminal keeps the current session, transcript and draft until the exact session switch is acknowledged. A refused closure preserves them; a late acknowledgement can finish once while retaining input edited during the wait. Pending or uncertain switches pause new work and retain the existing scoped Stop controls.
+
 - **Interactive command confirmations keep their stack headroom:** the existing interactive startup chain heap-pins its large futures instead of embedding their debug state machines in each caller.
 
 - **Live MCP status includes runtime servers:** the existing pool snapshot now includes workspace-scoped dynamic servers, retaining static-name precedence and the same permission and connection checks.

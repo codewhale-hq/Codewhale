@@ -8652,6 +8652,7 @@ impl RuntimeThreadManager {
         };
         engine
             .send(Op::SyncSession {
+                expected: None,
                 control: crate::core::ops::SessionControlId::new(),
                 session_id: Some(thread.id.clone()),
                 messages: session.messages.clone(),
@@ -14149,6 +14150,7 @@ source_usage_records: Default::default(),
             if !session_messages.is_empty() || sys_prompt.is_some() {
                 engine
                     .send(Op::SyncSession {
+                        expected: None,
                         control: crate::core::ops::SessionControlId::new(),
                         // Same identity the engine was built with: a
                         // re-sync of the same conversation, never a

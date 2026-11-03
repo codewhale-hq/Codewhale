@@ -2100,6 +2100,7 @@ pub(crate) async fn handle_view_events(
                         }
                         let _ = engine_handle
                             .send(Op::SyncSession {
+                                expected: None,
                                 control: app.session_sync_control(),
                                 session_id: app.current_session_id.clone(),
                                 messages: app.api_messages.as_ref().clone(),

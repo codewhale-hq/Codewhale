@@ -97,6 +97,10 @@ pub enum SessionAction {
     PurgeContext,
     LoadSession(std::path::PathBuf),
     SyncSession(SessionSyncPayload),
+    NewSession {
+        sync: SessionSyncPayload,
+        force: bool,
+    },
     SendMessage(String),
     RemoteControl(SessionRemoteControlAction),
     OpenExternalUrl { url: String, label: String },

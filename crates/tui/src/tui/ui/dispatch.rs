@@ -210,6 +210,9 @@ pub(crate) async fn submit_initial_input_if_ready(
     config: &Config,
     engine_handle: &EngineHandle,
 ) -> Result<()> {
+    if app.pending_fresh_session.is_some() {
+        return Ok(());
+    }
     if !app.auto_submit_initial_input {
         return Ok(());
     }
@@ -472,6 +475,12 @@ pub(crate) async fn dispatch_user_message_with_recovery(
     mut message: QueuedMessage,
     recovery: DispatchRecovery,
 ) -> Result<()> {
+    if app.pending_fresh_session.is_some() {
+        restore_queued_or_draft_message(app, recovery, message);
+        app.status_message =
+            Some("A new session is awaiting Engine confirmation; sending is paused.".to_string());
+        return Ok(());
+    }
     if message.extension_command.is_some() {
         let admitted = validate_extension_command_context(app, &message).and_then(|()| {
             anyhow::ensure!(
@@ -1648,6 +1657,12 @@ pub(crate) async fn dispatch_composer_message(
     recovery: DispatchRecovery,
     action: ComposerSubmitAction,
 ) -> Result<()> {
+    if app.pending_fresh_session.is_some() {
+        restore_queued_or_draft_message(app, recovery, message);
+        app.status_message =
+            Some("A new session is awaiting Engine confirmation; sending is paused.".to_string());
+        return Ok(());
+    }
     if message.extension_command.is_some() {
         return dispatch_user_message_with_recovery(app, config, engine_handle, message, recovery)
             .await;

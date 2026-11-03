@@ -61,6 +61,7 @@ fn sync_snapshot(
     control: codewhale_engine::core::ops::SessionControlId,
 ) -> Op {
     Op::SyncSession {
+        expected: None,
         control,
         session_id: Some(snapshot.session_id.clone()),
         messages: snapshot.messages.clone(),

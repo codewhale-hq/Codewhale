@@ -1146,6 +1146,7 @@ pub(crate) async fn switch_workspace(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                expected: None,
                 control: app.session_sync_control(),
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.as_ref().clone(),
@@ -1842,4 +1843,356 @@ mod launch_resume_tests {
             "the engine syncs the fresh session"
         );
     }
+}
+
+enum FreshSessionPhase {
+    Inspecting(tokio::sync::oneshot::Receiver<codewhale_engine::core::ops::SessionSnapshot>),
+    Syncing(tokio::sync::oneshot::Receiver<codewhale_engine::core::ops::SessionSnapshot>),
+    Acknowledged,
+    Uncertain,
+}
+
+pub(crate) struct PendingFreshSession {
+    id: String,
+    control: codewhale_engine::core::ops::SessionControlId,
+    previous_id: Option<String>,
+    ui_id: Option<String>,
+    previous_source: Option<codewhale_engine::core::ops::SessionSnapshotSource>,
+    provider_identity: codewhale_runtime::config::ProviderIdentity,
+    model: String,
+    workspace: PathBuf,
+    mode: AppMode,
+    queue_transition: Option<OfflineQueueTransition>,
+    write_receipt: codewhale_engine::session_manager::SessionWriteReceipt,
+    input: String,
+    input_cursor: usize,
+    paste_reference: Option<String>,
+    oversized_paste: Option<String>,
+    skill: Option<String>,
+    skill_provenance: Option<codewhale_skills::SkillProvenance>,
+    queued: VecDeque<QueuedMessage>,
+    queued_draft: Option<QueuedMessage>,
+    phase: FreshSessionPhase,
+    started: Instant,
+    deadline_reported: bool,
+}
+
+pub(crate) fn begin_fresh_session(
+    app: &mut App,
+    engine: &EngineHandle,
+    sync: codewhale_command_contract::facets::SessionSyncPayload,
+    force: bool,
+) -> Result<(), String> {
+    if app.session_transition_blocked() || app.remote_control.runtime_chat_blocks_local_dispatch() {
+        return Err("Cannot start a new session while the current session is busy.".to_string());
+    }
+    if !force
+        && (!app.input.trim().is_empty()
+            || !app.queued_messages.is_empty()
+            || app.queued_draft.is_some())
+    {
+        return Err(
+            "Cannot start a new session with pending input. Use /new --force to discard it."
+                .to_string(),
+        );
+    }
+    let id = sync
+        .session_id
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "The new session request has no session ID.".to_string())?;
+    if !sync.messages.is_empty()
+        || sync.system_prompt.is_some()
+        || sync.model != app.model
+        || sync.workspace != app.workspace
+        || crate::commands::from_command_mode(sync.mode) != app.mode
+    {
+        return Err("The new session request no longer matches the active route.".to_string());
+    }
+    let provider_identity = app.admitted_provider_identity()?.clone();
+    let queue_transition = prepare_offline_queue_transition(app, &id)?;
+    let write_receipt = SessionManager::default_location()
+        .and_then(|manager| manager.expect_absent_session(&id))
+        .map_err(|error| error.to_string())?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    engine
+        .try_send(Op::GetSessionSnapshot {
+            tx: Arc::new(std::sync::Mutex::new(Some(tx))),
+        })
+        .map_err(|error| format!("Could not inspect the Engine session: {error}"))?;
+    app.pending_fresh_session = Some(PendingFreshSession {
+        id,
+        control: codewhale_engine::core::ops::SessionControlId::new(),
+        previous_id: app.current_session_id.clone(),
+        ui_id: app.current_session_id.clone(),
+        previous_source: None,
+        provider_identity,
+        model: app.model.clone(),
+        workspace: app.workspace.clone(),
+        mode: app.mode,
+        queue_transition,
+        write_receipt,
+        input: app.input.clone(),
+        input_cursor: app.cursor_position,
+        paste_reference: app.pending_paste_reference.clone(),
+        oversized_paste: app.oversized_paste_full_text.clone(),
+        skill: app.active_skill.clone(),
+        skill_provenance: app.active_skill_provenance.clone(),
+        queued: app.queued_messages.clone(),
+        queued_draft: app.queued_draft.clone(),
+        phase: FreshSessionPhase::Inspecting(rx),
+        started: Instant::now(),
+        deadline_reported: false,
+    });
+    app.status_message =
+        Some("Starting a new session; waiting for Engine confirmation.".to_string());
+    app.needs_redraw = true;
+    Ok(())
+}
+
+pub(crate) fn poll_fresh_session(app: &mut App, engine: &EngineHandle) -> bool {
+    let Some(mut pending) = app.pending_fresh_session.take() else {
+        return false;
+    };
+    let result = match &mut pending.phase {
+        FreshSessionPhase::Inspecting(receiver) | FreshSessionPhase::Syncing(receiver) => {
+            receiver.try_recv()
+        }
+        FreshSessionPhase::Acknowledged => {
+            return commit_fresh_session(app, pending);
+        }
+        FreshSessionPhase::Uncertain => {
+            app.pending_fresh_session = Some(pending);
+            return false;
+        }
+    };
+    match result {
+        Ok(snapshot) if matches!(pending.phase, FreshSessionPhase::Inspecting(_)) => {
+            if app.current_session_id != pending.ui_id
+                || app.model != pending.model
+                || app.workspace != pending.workspace
+                || app.mode != pending.mode
+                || pending
+                    .previous_id
+                    .as_deref()
+                    .is_some_and(|id| id != snapshot.session_id)
+                || app.admitted_provider_identity().ok() != Some(&pending.provider_identity)
+                || snapshot.model_provider != pending.provider_identity.persisted_kind()
+                || snapshot.model_provider_id.as_deref() != pending.provider_identity.persisted_id()
+                || snapshot.model != pending.model
+                || snapshot.mode != pending.mode.as_setting()
+                || snapshot.workspace != pending.workspace
+                || (app.session_write_owner.is_some()
+                    && !app.owns_session_projection(snapshot.source.as_ref()))
+            {
+                surface_session_load_failure(
+                    app,
+                    format!(
+                        "New session was not requested: the Engine is running session {} and the current UI is not its acknowledged projection.",
+                        snapshot.session_id
+                    ),
+                );
+                return false;
+            }
+            pending.previous_id = Some(snapshot.session_id.clone());
+            pending.previous_source = snapshot.source.clone();
+            let first = engine.tx_op.clone().try_reserve_owned();
+            let second = engine.tx_op.clone().try_reserve_owned();
+            let (Ok(first), Ok(second)) = (first, second) else {
+                surface_session_load_failure(app, "New session was not requested: the Engine mailbox is unavailable; retry when it is ready.".to_string());
+                return false;
+            };
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            engine.send_reserved_op(
+                first,
+                Op::SyncSession {
+                    expected: Some(Box::new(snapshot)),
+                    control: pending.control.clone(),
+                    session_id: Some(pending.id.clone()),
+                    messages: Vec::new(),
+                    system_prompt: None,
+                    system_prompt_override: false,
+                    model: pending.model.clone(),
+                    workspace: pending.workspace.clone(),
+                    mode: pending.mode,
+                },
+            );
+            engine.send_reserved_op(
+                second,
+                Op::GetSessionSnapshot {
+                    tx: Arc::new(std::sync::Mutex::new(Some(tx))),
+                },
+            );
+            pending.phase = FreshSessionPhase::Syncing(rx);
+        }
+        Ok(snapshot) => {
+            if fresh_session_ack_matches(
+                &pending,
+                &snapshot.session_id,
+                snapshot.source.as_ref(),
+                &snapshot.workspace,
+                &snapshot.model,
+            ) {
+                pending.phase = FreshSessionPhase::Acknowledged;
+                return commit_fresh_session(app, pending);
+            }
+            if pending.previous_id.as_deref() == Some(snapshot.session_id.as_str())
+                && pending.previous_source == snapshot.source
+            {
+                surface_session_load_failure(
+                    app,
+                    format!(
+                        "Could not start new session {}: the Engine kept session {}. The current draft and transcript were preserved.",
+                        codewhale_engine::session_manager::truncate_id(&pending.id),
+                        codewhale_engine::session_manager::truncate_id(&snapshot.session_id)
+                    ),
+                );
+                return false;
+            }
+            pending.phase = FreshSessionPhase::Uncertain;
+            surface_session_load_failure(app, "New session acknowledgement did not match the requested Engine transition; input is preserved and sending remains blocked.".to_string());
+        }
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+            if matches!(pending.phase, FreshSessionPhase::Inspecting(_)) {
+                surface_session_load_failure(app, "The Engine dropped session inspection; no new session was requested and the current input is preserved.".to_string());
+                return false;
+            }
+            pending.phase = FreshSessionPhase::Uncertain;
+            surface_session_load_failure(app, "The Engine dropped the new-session acknowledgement; input is preserved and the transition remains unresolved.".to_string());
+        }
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+    }
+    if !pending.deadline_reported
+        && pending.started.elapsed() >= super::event_loop::LAUNCH_SESSION_SYNC_WAIT
+    {
+        if matches!(pending.phase, FreshSessionPhase::Inspecting(_)) {
+            surface_session_load_failure(app, "Session inspection timed out; no new session was requested and the current input is preserved.".to_string());
+            return false;
+        }
+        pending.deadline_reported = true;
+        app.status_message = Some("The new session is still awaiting Engine confirmation. The current draft and transcript are preserved; sending is paused.".to_string());
+        app.needs_redraw = true;
+    }
+    app.pending_fresh_session = Some(pending);
+    false
+}
+
+fn fresh_session_ack_matches(
+    pending: &PendingFreshSession,
+    id: &str,
+    source: Option<&codewhale_engine::core::ops::SessionSnapshotSource>,
+    workspace: &Path,
+    model: &str,
+) -> bool {
+    matches!(
+        pending.phase,
+        FreshSessionPhase::Syncing(_) | FreshSessionPhase::Acknowledged
+    ) && id == pending.id
+        && source
+            == Some(
+                &codewhale_engine::core::ops::SessionSnapshotSource::control(
+                    pending.control.clone(),
+                ),
+            )
+        && workspace == pending.workspace.as_path()
+        && model == pending.model.as_str()
+}
+
+pub(crate) fn acknowledge_fresh_session(
+    app: &mut App,
+    id: &str,
+    source: Option<&codewhale_engine::core::ops::SessionSnapshotSource>,
+    workspace: &Path,
+    model: &str,
+) -> bool {
+    if app.pending_fresh_session.as_ref().is_some_and(|pending| {
+        matches!(pending.phase, FreshSessionPhase::Acknowledged)
+            && !fresh_session_ack_matches(pending, id, source, workspace, model)
+    }) {
+        if let Some(pending) = app.pending_fresh_session.as_mut() {
+            pending.phase = FreshSessionPhase::Uncertain;
+        }
+        surface_session_load_failure(app, "Another Engine session update superseded the confirmed transition; input is preserved and sending remains blocked.".to_string());
+        return false;
+    }
+    if app
+        .pending_fresh_session
+        .as_ref()
+        .is_some_and(|pending| fresh_session_ack_matches(pending, id, source, workspace, model))
+    {
+        let mut pending = app
+            .pending_fresh_session
+            .take()
+            .expect("matched pending transition");
+        pending.phase = FreshSessionPhase::Acknowledged;
+        return commit_fresh_session(app, pending);
+    }
+    false
+}
+
+fn commit_fresh_session(app: &mut App, mut pending: PendingFreshSession) -> bool {
+    if app.current_session_id != pending.ui_id
+        || app.model != pending.model
+        || app.workspace != pending.workspace
+        || app.mode != pending.mode
+        || app.admitted_provider_identity().ok() != Some(&pending.provider_identity)
+    {
+        pending.phase = FreshSessionPhase::Uncertain;
+        surface_session_load_failure(app, "The UI changed while the Engine confirmed a new session; input is preserved and the transition remains unresolved.".to_string());
+        app.pending_fresh_session = Some(pending);
+        return false;
+    }
+    let preserve_input = app.input != pending.input
+        || app.cursor_position != pending.input_cursor
+        || app.pending_paste_reference != pending.paste_reference
+        || app.oversized_paste_full_text != pending.oversized_paste
+        || app.active_skill != pending.skill
+        || app.active_skill_provenance != pending.skill_provenance
+        || app.paste_burst.is_active();
+    let preserve_queue =
+        app.queued_messages != pending.queued || app.queued_draft != pending.queued_draft;
+    let composer = std::mem::take(&mut app.composer);
+    let queued = app.queued_messages.clone();
+    let queued_draft = app.queued_draft.take();
+    if !crate::commands::groups::core::reset_conversation_state(app) {
+        app.composer = composer;
+        app.queued_draft = queued_draft;
+        app.status_message = Some("The Engine confirmed the new session; waiting for Work state before updating the UI. Input is preserved.".to_string());
+        app.pending_fresh_session = Some(pending);
+        return false;
+    }
+    install_offline_queue_transition(app, pending.queue_transition.take());
+    app.composer = composer;
+    if !preserve_input {
+        app.clear_input();
+    }
+    if preserve_queue {
+        app.queued_messages = queued;
+        for message in &mut app.queued_messages {
+            message.history_echoed = false;
+        }
+        app.held_restored_queue = app.queued_messages.len();
+        app.queued_draft = queued_draft;
+    }
+    app.session_artifacts.clear();
+    app.session_context_references.clear();
+    app.tool_evidence.clear();
+    app.set_current_session_id(Some(pending.id.clone()));
+    app.session_write_receipt = Some(pending.write_receipt);
+    app.session_write_owner =
+        Some(codewhale_engine::session_manager::SessionWriteOwner::Control(pending.control));
+    app.current_session_metadata = None;
+    app.session_title = Some(codewhale_engine::session_manager::DEFAULT_SESSION_TITLE.to_string());
+    app.window_title = None;
+    app.composer_color = None;
+    app.scroll_to_bottom();
+    let message = format!(
+        "Started new session {} (New Session). Previous sessions remain available via /resume.",
+        codewhale_engine::session_manager::truncate_id(&pending.id)
+    );
+    app.add_message(HistoryCell::System {
+        content: message.clone(),
+    });
+    app.status_message = Some(message);
+    app.needs_redraw = true;
+    true
 }

@@ -133,6 +133,15 @@ pub(super) fn apply_engine_session_projection(
     else {
         return false;
     };
+    if super::session_state::acknowledge_fresh_session(
+        app,
+        &session_id,
+        source.as_ref(),
+        &workspace,
+        &model,
+    ) {
+        super::session_state::persist_full_reset_snapshot(app);
+    }
     if !app.owns_session_projection(source.as_ref()) {
         if let Some(request) = checkpoint.as_ref() {
             request.fail("checkpoint projection belongs to another native source");
@@ -515,26 +524,31 @@ pub(crate) fn ensure_runtime_session_id(app: &mut App) -> String {
     session_id
 }
 
-/// How long a startup-screen submit waits for the engine to install the
-/// session it just began before dispatching the input anyway.
-const LAUNCH_SESSION_SYNC_WAIT: Duration = Duration::from_secs(2);
+/// How long session confirmation may wait before the UI reports it pending.
+pub(super) const LAUNCH_SESSION_SYNC_WAIT: Duration = Duration::from_secs(2);
 
-/// Wait until the engine has processed every operation queued so far.
-///
-/// The App mints a session id and tells the engine with `Op::SyncSession`,
-/// which the engine installs later, on its own task. Until then the two
-/// disagree, and anything the App resolves by session id against engine-owned
-/// state misses: the extension host identifies this caller by the engine's
-/// session id, so a plugin command selected for the caller read as unknown.
-/// The operation channel is FIFO, so the snapshot reply proves the sync ahead
-/// of it was applied. Bounded: an engine that does not answer in time costs
-/// only the old behaviour, never a stuck composer.
-pub(crate) async fn await_engine_session_sync(engine_handle: &EngineHandle) {
-    let _ = tokio::time::timeout(
+/// Require the exact Engine identity before a startup submit consumes its draft.
+pub(crate) async fn await_engine_session_sync(
+    engine_handle: &EngineHandle,
+    session_id: Option<&str>,
+    owner: Option<&codewhale_engine::session_manager::SessionWriteOwner>,
+) -> Result<()> {
+    let snapshot = tokio::time::timeout(
         LAUNCH_SESSION_SYNC_WAIT,
         engine_handle.get_session_snapshot(),
     )
-    .await;
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("The Engine session has not been confirmed; the draft is preserved.")
+    })??;
+    anyhow::ensure!(
+        session_id == Some(snapshot.session_id.as_str())
+            && owner
+                .zip(snapshot.source.as_ref())
+                .is_some_and(|(owner, source)| owner.matches_source(source)),
+        "The Engine session acknowledgement does not match this UI; the draft is preserved."
+    );
+    Ok(())
 }
 
 fn persist_current_session_goal(app: &App) -> Result<(), String> {
@@ -1706,7 +1720,16 @@ async fn dispatch_launch_composer_submit(
     // The input below is dispatched in this same keypress. Let the engine
     // install the new session first, so a plugin command or skill typed on the
     // startup screen resolves for this session instead of reading as unknown.
-    await_engine_session_sync(engine_handle).await;
+    if let Err(error) = await_engine_session_sync(
+        engine_handle,
+        app.current_session_id.as_deref(),
+        app.session_write_owner.as_ref(),
+    )
+    .await
+    {
+        super::session_state::surface_session_load_failure(app, error.to_string());
+        return Ok(false);
+    }
     // The transition is applied; only now consume the draft it carries.
     let Some(input) = app.handle_composer_enter(protect_paste) else {
         return Ok(false);
@@ -1848,6 +1871,27 @@ async fn submit_decided_composer_input(
     action: ComposerSubmitAction,
     protect_paste: bool,
 ) -> Result<bool> {
+    if app.pending_fresh_session.is_some() {
+        if looks_like_slash_command_input(&app.input)
+            && commands::pending_session_control_command(&app.input)
+            && app.composer_enter_would_submit(protect_paste)
+        {
+            let input = app.input.clone();
+            return execute_command_input(
+                terminal,
+                app,
+                engine_handle,
+                task_manager,
+                config,
+                &input,
+            )
+            .await;
+        }
+        app.status_message = Some(
+            "A new session is awaiting Engine confirmation; the draft is preserved.".to_string(),
+        );
+        return Ok(false);
+    }
     // #573: when the user typed a slash-command prefix that the popup is
     // matching (e.g. `/mo` → `/model`), submit runs the *highlighted match*
     // rather than sending the literal `/mo` text. Only kick in when the
@@ -2606,6 +2650,9 @@ pub(crate) async fn run_event_loop(
             start_mcp_retry(app, &engine_handle, server);
         }
         poll_mcp_retries(app);
+        if super::session_state::poll_fresh_session(app, &engine_handle) {
+            super::session_state::persist_full_reset_snapshot(app);
+        }
 
         // #1830/#2317: service any already-arrived terminal keys before a
         // potentially long engine batch so composer/modal input stays live.
@@ -2673,6 +2720,24 @@ pub(crate) async fn run_event_loop(
                         break;
                     }
                 };
+                if let EngineEvent::SessionUpdated {
+                    session_id,
+                    source,
+                    workspace,
+                    model,
+                    ..
+                } = &event
+                {
+                    if super::session_state::acknowledge_fresh_session(
+                        app,
+                        session_id,
+                        source.as_ref(),
+                        workspace,
+                        model,
+                    ) {
+                        super::session_state::persist_full_reset_snapshot(app);
+                    }
+                }
                 // Count every received event before any filter can `continue`
                 // past it (U02-02). Filtered deltas, suppressed post-cancel
                 // events and stale requests used to skip the counter, so a
@@ -5106,6 +5171,7 @@ pub(crate) async fn run_event_loop(
             if !app.api_messages.is_empty() {
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        expected: None,
                         control: app.session_sync_control(),
                         session_id: app.current_session_id.clone(),
                         messages: app.api_messages.as_ref().clone(),
@@ -7464,7 +7530,21 @@ pub(crate) async fn run_event_loop(
                 // terminals encode it exactly like bare Enter.
                 _ if is_forced_submit_key(key) => {
                     let action = app.decide_composer_submit(ComposerSubmitChord::CtrlEnter);
-                    if let Some(input) = app.submit_input() {
+                    if app.pending_fresh_session.is_some() {
+                        if submit_decided_composer_input(
+                            terminal,
+                            app,
+                            &mut engine_handle,
+                            &task_manager,
+                            config,
+                            action,
+                            false,
+                        )
+                        .await?
+                        {
+                            return Ok(());
+                        }
+                    } else if let Some(input) = app.submit_input() {
                         if handle_bang_shell_input(app, &engine_handle, &input).await? {
                             continue;
                         }
@@ -8903,9 +8983,11 @@ mod launch_session_sync_tests {
             "the engine attaches under the session it was started with"
         );
 
+        let control = codewhale_engine::core::ops::SessionControlId::new();
         handle
             .send(Op::SyncSession {
-                control: codewhale_engine::core::ops::SessionControlId::new(),
+                expected: None,
+                control: control.clone(),
                 session_id: Some("launch-session".to_string()),
                 messages: Vec::new(),
                 system_prompt: None,
@@ -8921,7 +9003,13 @@ mod launch_session_sync_tests {
             "queued is not installed: the engine has not run the sync yet"
         );
 
-        await_engine_session_sync(&handle).await;
+        await_engine_session_sync(
+            &handle,
+            Some("launch-session"),
+            Some(&codewhale_engine::session_manager::SessionWriteOwner::Control(control)),
+        )
+        .await
+        .expect("exact Engine acknowledgement");
         assert!(
             caller_view(workspace.path(), Some("launch-session"), None).is_some(),
             "after the wait the new session resolves to this engine's caller"

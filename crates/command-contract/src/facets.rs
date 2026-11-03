@@ -1368,9 +1368,8 @@ pub struct SessionSaveReceipt {
     pub truncated_id: String,
 }
 
-/// `/new` success projection. The handler renders
-/// `Started new session {truncated_id} (New Session). Previous sessions
-/// remain available via /resume.`
+/// `/new` request projection; the host confirms the Engine transition before
+/// resetting the UI and reporting the new session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionNewReceipt {
     pub truncated_id: String,

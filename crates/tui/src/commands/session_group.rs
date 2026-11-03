@@ -86,6 +86,7 @@ pub(in crate::commands) fn host_result(result: SessionCommandResult) -> CommandR
                 crate::remote_control::RemoteControlAction::Stop
             }
         }),
+        SessionAction::NewSession { sync, force } => AppAction::NewSession { sync, force },
         SessionAction::SyncSession(sync) => AppAction::SyncSession {
             session_id: sync.session_id,
             messages: sync.messages,

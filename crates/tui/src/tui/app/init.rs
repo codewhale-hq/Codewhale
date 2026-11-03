@@ -1061,6 +1061,7 @@ impl App {
             last_known_work_state: None,
             last_known_goal_state: None,
             pending_goal_controls: VecDeque::new(),
+            pending_fresh_session: None,
             current_session_metadata: None,
             session_artifacts: Vec::new(),
             session_turn_outcomes: Vec::new(),
