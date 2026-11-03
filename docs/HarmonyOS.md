@@ -4,7 +4,8 @@
 
 Codewhale runs on HarmonyOS PC two ways: the Linux ARM64 build inside the Linux
 subsystem (融合开发引擎), or a native ARM64 build for OpenHarmony's own userspace.
-The TUI runs in either; the VS Code extension runs in CodeArts on the native side.
+Native HarmonyOS remains a Tier 2 cross-build target. The SDK check does not
+establish device-level TUI, editor or model-turn qualification.
 
 ## Which One To Use
 
@@ -152,12 +153,12 @@ Run it from an application's terminal — the system terminal app (HiShell, bund
 # codewhale 0.10.2 (859dc2ac7ac0)
 ```
 
-## The GUI In CodeArts
+## The VS Code Extension In CodeArts
 
 The [CodeWhale VS Code extension](https://github.com/HengQuWorld/CodeWhale-VSCode)
-runs unmodified in CodeArts Agent, Huawei's VS Code–compatible IDE. It is a thin
-webview that speaks HTTP to the engine, so `codewhale` is the only piece that has
-to be built and signed for the platform.
+uses an HTTP webview to talk to the engine. The steps below describe the
+CodeArts Agent integration route; an exact-build device run is still required
+to qualify the editor workflow.
 
 1. Put the signed engine on the `PATH` CodeArts gives its integrated terminal, or
    point `brotherwhale.enginePath` at the file.
@@ -169,14 +170,17 @@ to be built and signed for the platform.
 
 ## What Works On The Device
 
-Observed on a HarmonyOS 7.0.0.110 / API 26 2in1 device with a self-signed build.
+The existing observations are from one HarmonyOS 7.0.0.110 / API 26 2in1
+device with a self-signed build. They do not qualify later builds or the
+workflows marked unverified below.
 
 | Surface | State |
 | --- | --- |
-| `--version`, `--help`, `doctor`, `auth set` / `auth status` | Work |
-| The VS Code extension in CodeArts Agent | Works: starts the engine, edits files, runs commands, asks for approvals |
-| `exec_shell` | Works; the device provides `/bin/sh` |
-| Interactive TUI | Works from HiShell or the CodeArts integrated terminal; `hdc shell` allocates no tty |
+| `--version`, `--help`, `doctor` | Observed working |
+| `auth set` / `auth status` | Local commands start; use the store smoke below to verify a complete write/read on the chosen state directory |
+| The VS Code extension in CodeArts Agent | Integration route above; exact-build device workflow unverified |
+| `exec_shell` | The device provides `/bin/sh`; child spawning was observed by a probe, not a model turn |
+| Interactive TUI | Device validation pending; use HiShell or the CodeArts integrated terminal because `hdc shell` allocates no tty |
 | Local sandbox | Absent: commands run best-effort, and the engine says so |
 | Persistent PTY tools (`terminal/*`) | Not registered on this target |
 | Clipboard | OSC 52 (tmux `load-buffer -w`); text only, no image paste |
@@ -217,6 +221,8 @@ Where you have a choice:
 - **One driver per workspace.** An engine holds a lease per working tree, so a
   second one is refused with the holder's pid, client and age. That includes the
   terminal and the editor on the same folder: close one before opening the other.
+  If the filesystem refuses advisory locks, the engine reports that exclusivity
+  is unavailable; two drivers are not excluded on that mount.
 
 `scripts/ohos-secrets-store-smoke.sh <directory>` checks the store end to end
 against a real directory — it writes a key, reads it back through
@@ -241,6 +247,7 @@ against a real directory — it writes a key, reads it back through
   SDK and fails if a crate the target cannot carry — `portable-pty`, `nix`,
   `starlark`, `arboard`, `keyring` — re-enters the graph. The SDK check in
   `.github/workflows/ohos.yml` is the real build.
-- **Identifying a build.** `main` embeds the first 12 characters of the source
-  commit in `--version`; `0.10.2 (dev)` means no stamp was supplied. A local
-  rebuild does not replace an installed binary.
+- **Identifying a build.** The commands above supply `CODEWHALE_BUILD_SHA`,
+  which embeds the first 12 characters in `--version`. An unstamped local build
+  reports `(dev)`; checking out `main` alone does not stamp it. A local rebuild
+  does not replace an installed binary.

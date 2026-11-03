@@ -4,8 +4,8 @@
 > 最后与英文同步日期（last synced with English revision）：2026-11-02。
 
 Codewhale 在鸿蒙 PC 上有两条路：在 Linux 子系统（融合开发引擎）里跑普通的 Linux
-ARM64 版本，或者为 OpenHarmony 用户态原生构建一份 ARM64 程序。TUI 两条路都能跑；
-VS Code 插件跑在原生侧的 CodeArts 里。
+ARM64 版本，或者为 OpenHarmony 用户态原生构建一份 ARM64 程序。原生鸿蒙仍是 Tier 2
+交叉构建目标；SDK 检查不能证明设备上的 TUI、编辑器或模型回合已通过验收。
 
 ## 选哪一种
 
@@ -140,11 +140,11 @@ Codewhale 不需要权限，也不需要 JIT。
 # codewhale 0.10.2 (859dc2ac7ac0)
 ```
 
-## 在 CodeArts 里跑 GUI
+## 在 CodeArts 中使用 VS Code 扩展
 
-[CodeWhale 的 VS Code 扩展](https://github.com/HengQuWorld/CodeWhale-VSCode)在
-CodeArts Agent（华为的 VS Code 兼容 IDE）里原样可用。它只是一层通过 HTTP 跟引擎说话的
-webview，所以需要按平台构建并签名的只有 `codewhale` 本身。
+[CodeWhale 的 VS Code 扩展](https://github.com/HengQuWorld/CodeWhale-VSCode)
+通过 HTTP webview 与引擎通信。以下介绍 CodeArts Agent 的集成路径；编辑器工作流仍需
+使用确切的签名构建在设备上验收。
 
 1. 把签好名的引擎放进 CodeArts 集成终端能看到的 `PATH`，或者用
    `brotherwhale.enginePath` 指到文件。
@@ -154,14 +154,16 @@ webview，所以需要按平台构建并签名的只有 `codewhale` 本身。
 
 ## 设备上能做什么
 
-以下在一台 HarmonyOS 7.0.0.110 / API 26 的 2in1 设备上用自签名构建实测。
+既有观察来自一台 HarmonyOS 7.0.0.110 / API 26 的 2in1 设备上的自签名构建；
+不能据此认定后续构建或下表中尚未验证的工作流已通过验收。
 
 | 能力 | 现状 |
 | --- | --- |
-| `--version`、`--help`、`doctor`、`auth set` / `auth status` | 可用 |
-| CodeArts Agent 里的 VS Code 扩展 | 可用：拉起引擎、改文件、执行命令、走审批 |
-| `exec_shell` | 可用；设备提供 `/bin/sh` |
-| 交互式 TUI | 在 HiShell 或 CodeArts 集成终端里可用；`hdc shell` 不分配 tty |
+| `--version`、`--help`、`doctor` | 已观察到可用 |
+| `auth set` / `auth status` | 本地命令可启动；选定状态目录上的完整写入和读取需用下述 store smoke 验证 |
+| CodeArts Agent 里的 VS Code 扩展 | 上述集成路径；确切构建的设备工作流尚未验证 |
+| `exec_shell` | 设备提供 `/bin/sh`；子进程启动仅经探针观察，未通过模型回合验证 |
+| 交互式 TUI | 待设备验收；请用 HiShell 或 CodeArts 集成终端，`hdc shell` 不分配 tty |
 | 本地沙箱 | 不存在：命令 best-effort 执行，引擎会说明 |
 | 常驻 PTY 工具（`terminal/*`） | 在该目标上不注册 |
 | 剪贴板 | OSC 52（tmux 内 `load-buffer -w`）；只有文本，无图片粘贴 |
@@ -198,6 +200,7 @@ webview，所以需要按平台构建并签名的只有 `codewhale` 本身。
 
 - **一个工作区只有一个驱动者。** 引擎按工作树获取租约，第二个会被拒绝，并报出持有者的
   pid、客户端和时长。终端和编辑器打开同一个目录也算：先关掉一个再开另一个。
+  若文件系统拒绝咨询锁，引擎会明确报告无法提供独占保证；该挂载不能排除两个驱动者。
 
 `scripts/ohos-secrets-store-smoke.sh <目录>` 对着真实目录端到端验一遍 store：写入 key、
 用 `auth status` 读回来，并确认 `config.toml` 里没有明文副本。
@@ -220,5 +223,6 @@ webview，所以需要按平台构建并签名的只有 `codewhale` 本身。
 - **依赖守卫。** `./scripts/release/check-ohos-deps.sh` 不需要 SDK，一旦目标扛不住的
   crate（`portable-pty`、`nix`、`starlark`、`arboard`、`keyring`）重新进入依赖图就失败。
   真正的构建在 `.github/workflows/ohos.yml` 里。
-- **确认构建版本。** `main` 会把源码提交号的前 12 位写进 `--version`；`0.10.2 (dev)`
-  表示构建时没提供源码标识。本地重新构建不会替换已安装的二进制。
+- **确认构建版本。** 上述命令提供 `CODEWHALE_BUILD_SHA`，将其前 12 位写入
+  `--version`。未提供标识的本地构建显示 `(dev)`；仅检出 `main` 不会自动写入提交号。
+  本地重新构建不会替换已安装的二进制。
