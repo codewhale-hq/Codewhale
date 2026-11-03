@@ -4212,7 +4212,8 @@ pub struct SubAgentManager {
 /// than from a progress event that can be skipped under lock contention.
 #[derive(Debug)]
 pub struct ChildPendingRequest {
-    tx: tokio::sync::oneshot::Sender<ChildApprovalOutcome>,
+    tx: tokio::sync::oneshot::Sender<ChildApprovalReply>,
+    publication: Option<crate::core::engine::NativeApprovalPublication>,
     agent_id: String,
     tool_name: String,
     summary: String,
@@ -4276,6 +4277,85 @@ pub enum ChildApprovalOutcome {
     /// it belongs to a conversation that is no longer shown). Recorded as
     /// `unavailable`, never as the person's denial.
     Unavailable,
+    TimedOut,
+}
+
+#[derive(Debug)]
+pub struct ChildApprovalReply {
+    pub(crate) outcome: ChildApprovalOutcome,
+    pub(crate) publication: Option<crate::core::engine::NativeApprovalPublication>,
+    pub(crate) grant: Option<crate::core::authority::grants::GrantRef>,
+}
+
+pub struct ChildApprovalSubmission {
+    delivered: bool,
+    outcome: ChildApprovalOutcome,
+    grant: Option<crate::core::authority::grants::GrantRef>,
+    publication: Option<crate::core::engine::NativeApprovalPublication>,
+}
+
+impl ChildApprovalSubmission {
+    pub async fn wait(self) -> Result<bool> {
+        if !self.delivered {
+            return Ok(false);
+        }
+        let Some(publication) = self.publication else {
+            #[cfg(any(test, feature = "test-support"))]
+            return Ok(true);
+            #[cfg(not(any(test, feature = "test-support")))]
+            anyhow::bail!("child approval has no held Core source");
+        };
+        let actual = publication.published().await?;
+        let crate::approval_log::ApprovalReceipt::Decided {
+            ref grant_id,
+            ref matched_label,
+            ..
+        } = actual
+        else {
+            anyhow::bail!("child Core did not produce a decision receipt");
+        };
+        let expected_grant = self.grant.as_ref().map(|grant| grant.grant_id.clone());
+        let expected_label = self.grant.as_ref().map(|grant| grant.label.clone());
+        anyhow::ensure!(
+            grant_id == &expected_grant && matched_label == &expected_label,
+            "child Core decision grant changed"
+        );
+        Ok(match (&self.outcome, actual) {
+            (
+                ChildApprovalOutcome::Approved { by },
+                crate::approval_log::ApprovalReceipt::Decided {
+                    outcome: crate::approval_log::ApprovalOutcome::ApprovedOnce,
+                    decided_by: Some(actual_by),
+                    ..
+                },
+            ) => *by == actual_by,
+            (
+                ChildApprovalOutcome::Denied { by },
+                crate::approval_log::ApprovalReceipt::Decided {
+                    outcome: crate::approval_log::ApprovalOutcome::Denied,
+                    decided_by: Some(actual_by),
+                    ..
+                },
+            ) => *by == actual_by,
+            (
+                ChildApprovalOutcome::TimedOut,
+                crate::approval_log::ApprovalReceipt::Decided {
+                    outcome: crate::approval_log::ApprovalOutcome::Timeout,
+                    decided_by: None,
+                    ..
+                },
+            ) => true,
+            (
+                ChildApprovalOutcome::Unavailable,
+                crate::approval_log::ApprovalReceipt::Decided {
+                    outcome: crate::approval_log::ApprovalOutcome::Unavailable,
+                    decided_by: Some(crate::approval_log::ApprovalDecider::Host),
+                    ..
+                },
+            ) => true,
+            _ => false,
+        })
+    }
 }
 
 /// Time a child's tool call has spent waiting on a person's approval
@@ -4423,7 +4503,19 @@ impl SubAgentManager {
         tool_id: &str,
         tool_name: &str,
         reason: &str,
-    ) -> Result<(String, tokio::sync::oneshot::Receiver<ChildApprovalOutcome>)> {
+        publication: Option<crate::core::engine::NativeApprovalPublication>,
+    ) -> Result<(String, tokio::sync::oneshot::Receiver<ChildApprovalReply>)> {
+        anyhow::ensure!(
+            publication
+                .as_ref()
+                .is_none_or(|source| source.is_for(tool_id)),
+            "child approval Core identity changed"
+        );
+        #[cfg(not(any(test, feature = "test-support")))]
+        anyhow::ensure!(
+            publication.is_some(),
+            "child approval requires its held Core source"
+        );
         // The host mints this before checkpointing the call. Approval, history,
         // audit, and artifacts share it; registration never allocates another.
         let prefix = format!("agent:{agent_id}:approval:");
@@ -4441,6 +4533,7 @@ impl SubAgentManager {
         let (tx, rx) = tokio::sync::oneshot::channel();
         entry.insert(ChildPendingRequest {
             tx,
+            publication,
             agent_id: agent_id.to_string(),
             tool_name: tool_name.to_string(),
             summary: one_line_pending_summary(reason),
@@ -4542,10 +4635,26 @@ impl SubAgentManager {
         id.starts_with("agent:") && id.contains(":approval:")
     }
 
-    /// Deliver a person's decision to the waiting child. Returns `false` when
-    /// no child is waiting on that id (already answered, cancelled, or not a
-    /// child prompt).
-    pub fn resolve_child_approval(&mut self, id: &str, outcome: ChildApprovalOutcome) -> bool {
+    pub fn resolve_child_approval(
+        &mut self,
+        id: &str,
+        outcome: ChildApprovalOutcome,
+    ) -> ChildApprovalSubmission {
+        self.submit_child_approval(id, outcome, None)
+    }
+
+    pub(crate) fn submit_child_approval(
+        &mut self,
+        id: &str,
+        outcome: ChildApprovalOutcome,
+        grant: Option<crate::core::authority::grants::GrantRef>,
+    ) -> ChildApprovalSubmission {
+        let rejected = ChildApprovalSubmission {
+            delivered: false,
+            outcome,
+            grant: grant.clone(),
+            publication: None,
+        };
         if self.child_approvals.get(id).is_some_and(|request| {
             self.agents.get(&request.agent_id).is_some_and(|agent| {
                 agent.requested_stop.is_some()
@@ -4555,14 +4664,35 @@ impl SubAgentManager {
                         .is_some_and(CancellationToken::is_cancelled)
             })
         }) {
-            // Do not drop the receiver before Core's cancelled branch appends
-            // its decision. A late Allow cannot enter the cancelled inbox.
-            return false;
+            return rejected;
         }
+        if outcome == ChildApprovalOutcome::TimedOut
+            && self
+                .child_approvals
+                .get(id)
+                .and_then(|request| request.publication.as_ref())
+                .is_some_and(|source| source.timeout_seconds().is_none())
+        {
+            return rejected;
+        }
+        let Some(request) = self.child_approvals.remove(id) else {
+            return rejected;
+        };
         self.reported_pending.remove(id);
-        match self.child_approvals.remove(id) {
-            Some(request) => request.tx.send(outcome).is_ok(),
-            None => false,
+        let publication = request.publication.clone();
+        let delivered = request
+            .tx
+            .send(ChildApprovalReply {
+                outcome,
+                publication: request.publication,
+                grant: grant.clone(),
+            })
+            .is_ok();
+        ChildApprovalSubmission {
+            delivered,
+            outcome,
+            publication,
+            grant,
         }
     }
 

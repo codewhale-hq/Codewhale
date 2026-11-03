@@ -842,6 +842,53 @@ pub(super) fn append_usage_source_record(
     Ok(true)
 }
 
+fn append_owned_usage_source_record(
+    store: &RuntimeThreadStore,
+    turn: &mut TurnRecord,
+    record: &RuntimeUsageRecord,
+) -> Result<bool> {
+    let key = routed_usage_source_fingerprint(&record.source_id);
+    if record.settlement.is_none()
+        || turn.source_usage_records.contains_key(&key)
+        || turn.routed_usage_source_ids.len() < MAX_ROUTED_USAGE_RECORDS_PER_TURN
+        || turn.routing_settlement
+        || !turn.source_accounting
+        || turn.source_usage_records.len() != turn.routed_usage_source_ids.len()
+    {
+        return append_usage_source_record(turn, record);
+    }
+    anyhow::ensure!(
+        turn.source_usage_origin_turn_id.as_deref() == Some(turn.id.as_str()),
+        "inherited native usage cannot admit an original-owner partition"
+    );
+    store.load_thread(&turn.thread_id)?;
+    let partition_id = runtime_usage_partition_id(&turn.id, &record.source_id)?;
+    let mut partition = if store.turn_path(&partition_id)?.exists() {
+        let partition = store.load_turn(&partition_id)?;
+        anyhow::ensure!(
+            partition.thread_id == turn.thread_id
+                && runtime_usage_partition_parent(&partition) == Some(turn.id.as_str())
+                && partition.source_usage_origin_turn_id.as_deref() == Some(partition.id.as_str())
+                && partition
+                    .source_usage_records
+                    .keys()
+                    .all(|current| current == &key),
+            "Runtime usage partition belongs to another source or original owner"
+        );
+        partition
+    } else {
+        let mut partition = unaccepted_usage_turn(&turn.thread_id, &partition_id);
+        partition.input_summary = RUNTIME_USAGE_PARTITION_SUMMARY.to_string();
+        partition.created_at = turn.created_at;
+        partition.status = RuntimeTurnStatus::Completed;
+        partition.error = None;
+        partition
+    };
+    append_usage_source_record(&mut partition, record)?;
+    store.save_turn(&partition)?;
+    Ok(false)
+}
+
 pub(super) fn append_routed_usage_record(
     turn: &mut TurnRecord,
     source_id: &str,
@@ -3510,7 +3557,9 @@ pub enum ExternalApprovalDecision {
 pub(super) struct PendingApprovalEntry {
     pub(super) thread_id: String,
     pub(super) request: PendingApprovalRequest,
-    pub(super) sender: oneshot::Sender<ExternalApprovalDecision>,
+    pub(super) sender: Option<oneshot::Sender<ExternalApprovalDecision>>,
+    pub(super) publication: Option<crate::core::engine::NativeApprovalPublication>,
+    pub(super) proposed: Option<ExternalApprovalDecision>,
 }
 
 pub(super) struct PendingUserInputEntry {
@@ -4629,6 +4678,7 @@ impl RuntimeThreadManager {
         &self,
         thread_id: &str,
         mut request: PendingApprovalRequest,
+        publication: Option<crate::core::engine::NativeApprovalPublication>,
     ) -> (String, oneshot::Receiver<ExternalApprovalDecision>) {
         // Provider call IDs can repeat across sessions and responses. Mint the
         // external capability here so delivery and cleanup can only settle this
@@ -4642,7 +4692,9 @@ impl RuntimeThreadManager {
                 entry.insert(PendingApprovalEntry {
                     thread_id: thread_id.to_string(),
                     request,
-                    sender: tx,
+                    sender: Some(tx),
+                    publication,
+                    proposed: None,
                 });
                 return (id, rx);
             }
@@ -4917,16 +4969,63 @@ impl RuntimeThreadManager {
             .send_modify(|epoch| *epoch = epoch.saturating_add(1));
     }
 
-    pub fn deliver_external_approval(
+    pub async fn deliver_external_approval(
         &self,
         approval_id: &str,
         decision: ExternalApprovalDecision,
-    ) -> bool {
-        let entry = self.pending_approvals.lock().remove(approval_id);
-        match entry {
-            Some(entry) => entry.sender.send(decision).is_ok(),
-            None => false,
-        }
+    ) -> Result<bool> {
+        let publication = {
+            let mut pending = self.pending_approvals.lock();
+            let Some(entry) = pending.get_mut(approval_id) else {
+                return Ok(false);
+            };
+            if let Some(previous) = entry.proposed {
+                if previous != decision {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "approval already has a different proposed answer",
+                    )
+                    .into());
+                }
+            } else {
+                let Some(sender) = entry.sender.take() else {
+                    return Ok(false);
+                };
+                if sender.send(decision).is_err() {
+                    return Ok(false);
+                }
+                entry.proposed = Some(decision);
+            }
+            entry.publication.clone()
+        };
+        let Some(publication) = publication else {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                self.pending_approvals.lock().remove(approval_id);
+                return Ok(true);
+            }
+            #[cfg(not(any(test, feature = "test-support")))]
+            bail!("approval has no captured Core publication source");
+        };
+        let receipt = publication.published().await?;
+        Ok(matches!(
+            (decision, receipt),
+            (
+                ExternalApprovalDecision::Allow { .. },
+                crate::approval_log::ApprovalReceipt::Decided {
+                    outcome: crate::approval_log::ApprovalOutcome::ApprovedOnce,
+                    decided_by: Some(crate::approval_log::ApprovalDecider::User),
+                    ..
+                }
+            ) | (
+                ExternalApprovalDecision::Deny { .. },
+                crate::approval_log::ApprovalReceipt::Decided {
+                    outcome: crate::approval_log::ApprovalOutcome::Denied,
+                    decided_by: Some(crate::approval_log::ApprovalDecider::User),
+                    ..
+                }
+            )
+        ))
     }
 
     pub async fn deliver_dynamic_tool_result(
@@ -5218,6 +5317,7 @@ impl RuntimeThreadManager {
                 tool_call_id: Some(label.to_string()),
                 summary: None,
             },
+            None,
         )
     }
 
@@ -7212,6 +7312,28 @@ impl RuntimeThreadManager {
         Ok(thread)
     }
 
+    pub async fn loaded_threads(&self) -> Result<Vec<ThreadRecord>> {
+        let mut ids = self
+            .active
+            .lock()
+            .await
+            .engines
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.into_iter()
+            .map(|id| {
+                let record = self
+                    .store
+                    .load_thread(&id)
+                    .with_context(|| format!("Loaded thread not found: {id}"))?;
+                anyhow::ensure!(record.id == id, "loaded thread metadata identity changed");
+                Ok(record)
+            })
+            .collect()
+    }
+
     pub async fn list_threads(
         &self,
         filter: ThreadListFilter,
@@ -7329,9 +7451,8 @@ impl RuntimeThreadManager {
         let scanned = wanted.clone();
         let (turns_by_thread, preview_by_thread) = tokio::task::spawn_blocking(move || {
             // One turns scan, grouped by thread. `list_all_turns` sorts by
-            // `created_at`, so each group keeps ascending turn order and a
-            // group's last element is the newest turn — the same turn a
-            // per-thread detail read would have called `turns.last()`.
+            // `created_at`, so each group keeps ascending turn order and the
+            // newest visible element is the same turn as a per-thread detail read.
             let mut turns_by_thread: HashMap<String, Vec<TurnRecord>> = HashMap::new();
             for turn in store.list_all_turns()? {
                 if scanned.contains(&turn.thread_id) {
@@ -7353,7 +7474,12 @@ impl RuntimeThreadManager {
         let mut facts = HashMap::with_capacity(wanted.len());
         for thread_id in &wanted {
             let turns = turns_by_thread.get(thread_id);
-            let latest_turn = turns.and_then(|turns| turns.last());
+            let latest_turn = turns.and_then(|turns| {
+                turns
+                    .iter()
+                    .rev()
+                    .find(|turn| runtime_usage_partition_parent(turn).is_none())
+            });
             // Newest turn first, resolved by the walk inside
             // `newest_message_text_by_thread`: the first turn holding a message
             // is the message a per-thread detail read would have found.
@@ -7838,6 +7964,7 @@ impl RuntimeThreadManager {
             cost.live_pricing_unusable_defects
                 .extend(combined.live_pricing_unusable_defects);
             cost.route_receipts.extend(combined.route_receipts);
+            cost.coverage_recorded = true;
             let total = cost.total_estimate();
             cost.displayed_cost_high_water_usd = cost.displayed_cost_high_water_usd.max(total.usd);
             cost.displayed_cost_high_water_cny = cost.displayed_cost_high_water_cny.max(total.cny);
@@ -9235,7 +9362,8 @@ impl RuntimeThreadManager {
             let thread = store
                 .load_thread(&snapshot_thread_id)
                 .with_context(|| format!("Thread not found: {snapshot_thread_id}"))?;
-            let turns = store.list_turns_for_thread(&snapshot_thread_id)?;
+            let mut turns = store.list_turns_for_thread(&snapshot_thread_id)?;
+            turns.retain(|turn| runtime_usage_partition_parent(turn).is_none());
             let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
             let mut items_by_turn = store.list_items_for_turns_map(&turn_ids)?;
             let mut items = Vec::new();
@@ -9628,9 +9756,23 @@ impl RuntimeThreadManager {
             ))
         };
         let mut cloned_records = Vec::with_capacity(source_turns.len());
+        let mut cloned_turn_ids = HashMap::<String, String>::new();
         for source_turn in source_turns {
             let mut cloned_turn = source_turn.clone();
-            cloned_turn.id = runtime_record_id("turn");
+            cloned_turn.id = if let Some(parent) = runtime_usage_partition_parent(&source_turn) {
+                let cloned_parent = cloned_turn_ids
+                    .get(parent)
+                    .context("usage partition parent was not retained by the fork")?;
+                let source = source_turn
+                    .source_usage_records
+                    .keys()
+                    .next()
+                    .context("usage partition source is absent")?;
+                runtime_usage_partition_id(cloned_parent, source)?
+            } else {
+                runtime_record_id("turn")
+            };
+            cloned_turn_ids.insert(source_turn.id.clone(), cloned_turn.id.clone());
             cloned_turn.thread_id = forked.id.clone();
             cloned_turn.source_usage_origin_turn_id = Some(
                 source_turn
@@ -9858,7 +10000,7 @@ impl RuntimeThreadManager {
     /// How many turns a named anchor keeps, the first user turn it drops, and
     /// its distance from the tail.
     ///
-    /// The fork keeps the anchor turn, so the cut is one past it: the branch
+    /// The fork keeps the anchor turn and its accounting partitions: the branch
     /// point is the answer a person is looking at, not the question above it.
     /// The turn right after the anchor need not be a user turn — a manual
     /// `/compact` is a turn of its own with no prompt — so the receipt names
@@ -9878,8 +10020,15 @@ impl RuntimeThreadManager {
             .with_context(|| {
                 format!("fork_at_user_turn: turn {turn_id} is not a user turn of this thread")
             })?;
+        let mut cutoff = user_turn_indices[position] + 1;
+        while turns
+            .get(cutoff)
+            .is_some_and(|turn| runtime_usage_partition_parent(turn) == Some(turn_id))
+        {
+            cutoff += 1;
+        }
         Ok((
-            user_turn_indices[position] + 1,
+            cutoff,
             user_turn_indices.get(position + 1).copied(),
             user_turn_indices.len() - 1 - position,
         ))
@@ -10009,7 +10158,7 @@ impl RuntimeThreadManager {
     ///
     /// One body for every fork that cuts a suffix: the depth-relative path
     /// (`/undo`, retry, backtrack) passes the anchor turn's own index and drops
-    /// it, the named-anchor path passes one past its anchor and keeps it, so
+    /// it, the named-anchor path keeps its anchor and accounting partitions, so
     /// the cloning, the saved-session prefix and the receipt cannot drift apart
     /// between them.
     pub(super) fn prepare_fork_from_cutoff(
@@ -10242,9 +10391,23 @@ impl RuntimeThreadManager {
         }
 
         let mut cloned_records = Vec::with_capacity(cutoff_turn_idx);
+        let mut cloned_turn_ids = HashMap::<String, String>::new();
         for source_turn in source_turns.iter().take(cutoff_turn_idx) {
             let mut cloned_turn = source_turn.clone();
-            cloned_turn.id = runtime_record_id("turn");
+            cloned_turn.id = if let Some(parent) = runtime_usage_partition_parent(source_turn) {
+                let cloned_parent = cloned_turn_ids
+                    .get(parent)
+                    .context("usage partition parent was not retained by the fork")?;
+                let source = source_turn
+                    .source_usage_records
+                    .keys()
+                    .next()
+                    .context("usage partition source is absent")?;
+                runtime_usage_partition_id(cloned_parent, source)?
+            } else {
+                runtime_record_id("turn")
+            };
+            cloned_turn_ids.insert(source_turn.id.clone(), cloned_turn.id.clone());
             cloned_turn.thread_id = forked.id.clone();
             cloned_turn.source_usage_origin_turn_id = Some(
                 source_turn
@@ -11593,7 +11756,7 @@ impl RuntimeThreadManager {
                         append_decision_receipt(&mut turn, receipt);
                     }
                     for record in background_usage.records.iter().cloned() {
-                        match append_usage_source_record(&mut turn, &record) {
+                        match append_owned_usage_source_record(&self.store, &mut turn, &record) {
                             Ok(_) => {
                                 if record.has_native_producer() {
                                     drained_native_usage.push(record);
@@ -15064,7 +15227,7 @@ source_usage_records: Default::default(),
         }
         let _turn_mutation = self.store.turn_mutation.lock();
         let mut turn = self.store.load_turn(turn_id)?;
-        match append_usage_source_record(&mut turn, record) {
+        match append_owned_usage_source_record(&self.store, &mut turn, record) {
             Ok(changed) => {
                 if changed {
                     self.store.save_turn(&turn)?;
@@ -15159,7 +15322,7 @@ source_usage_records: Default::default(),
                 if turn.thread_id != source_thread {
                     return false;
                 }
-                match append_usage_source_record(&mut turn, &record) {
+                match append_owned_usage_source_record(&store, &mut turn, &record) {
                     Ok(_) => store.save_turn(&turn).is_ok(),
                     Err(error) => {
                         tracing::warn!(%error, "durable Runtime usage correction refused");
@@ -16500,17 +16663,26 @@ source_usage_records: Default::default(),
                     approval_grouping_key,
                     intent_summary,
                     approval_force_prompt,
+                    publication,
                     ..
                 } => {
-                    let Some(authority) = self
+                    let authority = self
                         .active_turn_authority(&thread_id, &turn_id, &engine)
-                        .await
-                    else {
-                        let _ = engine
-                            .deny_tool_call_by(&id, crate::approval_log::ApprovalDecider::Host)
-                            .await;
-                        continue;
-                    };
+                        .await;
+                    let authority_missing = authority.is_none();
+                    let authority =
+                        authority.unwrap_or(crate::core::engine::RuntimePermissionAuthority {
+                            auto_approve: false,
+                            trust_mode: false,
+                            approval_mode: ApprovalMode::Suggest,
+                        });
+                    #[cfg(any(test, feature = "test-support"))]
+                    let publication = publication.or_else(|| {
+                        engine.mock_approval_publication(&id, self.approval_decision_timeout())
+                    });
+                    let publication = publication
+                        .context("Runtime approval has no held Core publication source")?;
+                    let _publication_binding = publication.bind(&id)?;
                     let auto_approve = authority.auto_approve;
                     let trust_mode = authority.trust_mode;
                     let approval_mode = authority.approval_mode;
@@ -16602,59 +16774,6 @@ source_usage_records: Default::default(),
                         approval_key.starts_with("extcall:ext:"),
                     );
 
-                    if disposition == ApprovalRequestDisposition::AutoApprove && auto_approve {
-                        // No waiter is registered on this path, but the emitted
-                        // identity still has to obey the one contract clients
-                        // read: `approval_id` is ours, `tool_call_id` is the
-                        // provider's. Two turns holding the same raw call ID
-                        // therefore stay distinguishable in the event stream.
-                        let approval_id = Self::mint_approval_id();
-                        self.emit_event(
-                            &thread_id,
-                            Some(&turn_id),
-                            None,
-                            "approval.required",
-                            json!({
-                                "id": approval_id,
-                                "approval_id": approval_id,
-                                "tool_call_id": id,
-                                "tool_name": tool_name,
-                                "input": input,
-                                "summary": summary,
-                                "description": description,
-                                "intent_summary": intent_summary,
-                            }),
-                        )
-                        .await?;
-                        // Emit approval.decided so external clients (GUI)
-                        // know the approval was resolved automatically and
-                        // can clear any pending approval UI.  Without this
-                        // event the GUI would show a frozen approval dialog
-                        // that never receives approval.decided.
-                        self.emit_event(
-                            &thread_id,
-                            Some(&turn_id),
-                            None,
-                            "approval.decided",
-                            json!({
-                                "approval_id": approval_id,
-                                "tool_call_id": id,
-                                "decision": "allow",
-                                "remember": false,
-                                "auto": true,
-                            }),
-                        )
-                        .await
-                        .ok();
-                        let _ = engine
-                            .approve_tool_call_by(id, crate::approval_log::ApprovalDecider::Posture)
-                            .await;
-                        continue;
-                    }
-
-                    // The same typed dispositions used by TUI fail closed:
-                    // a Full Access policy hold or Never posture must not be
-                    // answered by posture or a remembered conversation grant.
                     let denied_posture = match disposition {
                         ApprovalRequestDisposition::AutoDenyFullAccessPolicyHold => {
                             Some("full_access_policy_hold")
@@ -16665,169 +16784,133 @@ source_usage_records: Default::default(),
                         ApprovalRequestDisposition::AutoApprove
                         | ApprovalRequestDisposition::Prompt => None,
                     };
-                    if let Some(posture) = denied_posture {
-                        self.emit_event(
-                            &thread_id,
-                            Some(&turn_id),
-                            None,
-                            "approval.decided",
-                            json!({
-                                "approval_id": Self::mint_approval_id(),
-                                "tool_call_id": id,
-                                "decision": "deny",
-                                "remember": false,
-                                "auto": true,
-                                "posture": posture,
-                                "grant_id": deny_grant.as_ref().map(|grant| grant.grant_id.clone()),
-                            }),
-                        )
-                        .await
-                        .ok();
-                        let _ = match deny_grant {
-                            Some(grant) => {
-                                engine
-                                    .deny_tool_call_by_grant(
-                                        id,
+                    let mut automatic =
+                        if disposition == ApprovalRequestDisposition::AutoApprove && auto_approve {
+                            Some((
+                                ExternalApprovalDecision::Allow { remember: false },
+                                crate::approval_log::ApprovalDecider::Posture,
+                                None,
+                            ))
+                        } else if denied_posture.is_some() {
+                            let by = if deny_grant.is_some() {
+                                crate::approval_log::ApprovalDecider::SessionRule
+                            } else {
+                                crate::approval_log::ApprovalDecider::Posture
+                            };
+                            Some((
+                                ExternalApprovalDecision::Deny { remember: false },
+                                by,
+                                deny_grant,
+                            ))
+                        } else if disposition == ApprovalRequestDisposition::AutoApprove {
+                            grant
+                                .filter(|grant| self.grants.record_use(&grant.grant_id).is_ok())
+                                .map(|grant| {
+                                    (
+                                        ExternalApprovalDecision::Allow { remember: false },
                                         crate::approval_log::ApprovalDecider::SessionRule,
-                                        grant,
+                                        Some(grant),
                                     )
-                                    .await
-                            }
-                            None => {
-                                engine
-                                    .deny_tool_call_by(
-                                        id,
-                                        crate::approval_log::ApprovalDecider::Posture,
-                                    )
-                                    .await
-                            }
+                                })
+                        } else {
+                            None
                         };
-                        continue;
-                    }
-
-                    // A session grant for this tool and argument class
-                    // answers the prompt without a modal and without touching
-                    // posture (E1). A forced prompt is never pre-answered.
-                    if disposition == ApprovalRequestDisposition::AutoApprove
-                        && let Some(grant) = grant
-                        && self.grants.record_use(&grant.grant_id).is_ok()
-                    {
-                        let approval_id = Self::mint_approval_id();
-                        self.emit_event(
-                            &thread_id,
-                            Some(&turn_id),
-                            None,
-                            "approval.required",
-                            json!({
-                                "id": approval_id,
-                                "approval_id": approval_id,
-                                "tool_call_id": id,
-                                "tool_name": tool_name,
-                                "input": input,
-                                "summary": summary,
-                                "description": description,
-                                "intent_summary": intent_summary,
-                            }),
-                        )
-                        .await?;
-                        self.emit_event(
-                            &thread_id,
-                            Some(&turn_id),
-                            None,
-                            "approval.decided",
-                            json!({
-                                "approval_id": approval_id,
-                                "tool_call_id": id,
-                                "decision": "allow",
-                                "remember": false,
-                                "auto": true,
-                                "grant_id": grant.grant_id,
-                            }),
-                        )
-                        .await
-                        .ok();
-                        let _ = engine
-                            .approve_tool_call_by_grant(
-                                id,
-                                crate::approval_log::ApprovalDecider::SessionRule,
-                                grant,
-                            )
-                            .await;
-                        continue;
-                    }
-
-                    // Register before sequencing the event. A snapshot racing
-                    // this branch therefore either contains the request or
-                    // subscribes from an older cursor that will replay it.
                     let projection_lock = self.projection_lock(&thread_id);
                     let projection = projection_lock.lock().await;
-                    let registration = {
-                        let active = self.active.lock().await;
-                        let accepting = active
-                            .engines
-                            .get(&thread_id)
-                            .and_then(|state| state.active_turn.as_ref())
-                            .is_some_and(|turn| {
-                                turn.turn_id == turn_id && !turn.interrupt_requested
-                            });
-                        accepting
-                            .then(|| self.register_pending_approval(&thread_id, pending_request))
-                    };
-                    let Some((approval_id, rx)) = registration else {
-                        drop(projection);
-                        let _ = engine
-                            .deny_tool_call_by(&id, crate::approval_log::ApprovalDecider::Host)
-                            .await;
-                        continue;
-                    };
-                    if let Err(err) = self
-                        .emit_event(
-                            &thread_id,
-                            Some(&turn_id),
+                    let active = self.active.lock().await;
+                    let accepting = active
+                        .engines
+                        .get(&thread_id)
+                        .and_then(|state| state.active_turn.as_ref())
+                        .is_some_and(|turn| turn.turn_id == turn_id && !turn.interrupt_requested);
+                    let publish_request = !authority_missing && accepting;
+                    if !publish_request {
+                        automatic = Some((
+                            ExternalApprovalDecision::Deny { remember: false },
+                            crate::approval_log::ApprovalDecider::Host,
                             None,
-                            "approval.required",
-                            json!({
-                                "id": approval_id,
-                                "approval_id": approval_id,
-                                "tool_call_id": id,
-                                "tool_name": tool_name,
-                                "input": input,
-                                "summary": summary,
-                                "description": description,
-                                "intent_summary": intent_summary,
-                            }),
-                        )
-                        .await
-                    {
+                        ));
+                    }
+                    let is_automatic = automatic.is_some();
+                    let (approval_id, mut answer) = if is_automatic {
+                        (Self::mint_approval_id(), None)
+                    } else {
+                        let (approval_id, receiver) = self.register_pending_approval(
+                            &thread_id,
+                            pending_request,
+                            Some(publication.clone()),
+                        );
+                        (approval_id, Some(receiver))
+                    };
+                    drop(active);
+                    if publish_request && let Err(error) = self.emit_event(&thread_id, Some(&turn_id), None,
+                        "approval.required", json!({
+                            "id": approval_id, "approval_id": approval_id, "tool_call_id": id,
+                            "tool_name": tool_name, "input": input, "summary": summary,
+                            "description": description, "intent_summary": intent_summary,
+                        })).await {
+                        let _ = publication.acknowledge(Err(format!("Runtime approval request append failed: {error}")));
                         self.cancel_pending_approval(&approval_id);
-                        drop(projection);
-                        let _ = engine
-                            .deny_tool_call_by(&id, crate::approval_log::ApprovalDecider::Host)
-                            .await;
-                        return Err(err);
+                        return Err(error);
                     }
                     drop(projection);
-                    let approval_timeout = self.approval_decision_timeout();
-                    let wait_for_decision = async {
-                        match approval_timeout {
-                            Some(wait) => tokio::time::timeout(wait, rx).await,
-                            None => Ok(rx.await),
-                        }
-                    };
-                    let mut wait_for_decision = std::pin::pin!(wait_for_decision);
-                    // Keep draining engine status while the card is open. The
-                    // engine's approval-wait heartbeat fires during this wait;
-                    // parking the pump here used to sequence it after
-                    // `approval.decided`, where it read as a live claim that
-                    // the answered call was still waiting (DESKTOP-QA-20260923).
-                    // Other events stay ordered for the main loop, but must
-                    // not hide an approval withdrawal queued behind them.
-                    let decision = loop {
+                    let mut proposed = automatic.as_ref().map(|(decision, _, _)| *decision);
+                    let mut delivery: Option<
+                        std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>,
+                    > = None;
+                    let dispatch =
+                        |decision, by, grant: Option<crate::core::authority::grants::GrantRef>| {
+                            let engine = engine.clone();
+                            let id = id.clone();
+                            Box::pin(async move {
+                                match (decision, grant) {
+                                    (ExternalApprovalDecision::Allow { .. }, Some(grant)) => {
+                                        engine.approve_tool_call_by_grant(id, by, grant).await
+                                    }
+                                    (ExternalApprovalDecision::Allow { .. }, None) => {
+                                        engine.approve_tool_call_by(id, by).await
+                                    }
+                                    (ExternalApprovalDecision::Deny { .. }, Some(grant)) => {
+                                        engine.deny_tool_call_by_grant(id, by, grant).await
+                                    }
+                                    (ExternalApprovalDecision::Deny { .. }, None) => {
+                                        engine.deny_tool_call_by(id, by).await
+                                    }
+                                }
+                            })
+                                as std::pin::Pin<
+                                    Box<dyn std::future::Future<Output = Result<()>> + Send>,
+                                >
+                        };
+                    if let Some((decision, by, grant)) = automatic {
+                        delivery = Some(dispatch(decision, by, grant));
+                    }
+                    let receipt = loop {
                         tokio::select! {
                             biased;
-                            event = async { engine.rx_event.write().await.recv().await },
-                                if !event_channel_closed =>
-                            {
+                            receipt = publication.actual() => break receipt?,
+                            result = async { delivery.as_mut().expect("active delivery").await }, if delivery.is_some() => {
+                                delivery = None;
+                                if let Err(error) = result {
+                                    let _ = publication.acknowledge(Err(format!("Core approval inbox refused its proposal: {error}")));
+                                    return Err(error);
+                                }
+                            }
+                            decision = async { answer.as_mut().expect("pending answer").await }, if answer.is_some() => {
+                                answer = None;
+                                match decision {
+                                    Ok(decision) => {
+                                        proposed = Some(decision);
+                                        delivery = Some(dispatch(decision, crate::approval_log::ApprovalDecider::User, None));
+                                    }
+                                    Err(_) => {
+                                        let engine = engine.clone();
+                                        let id = id.clone();
+                                        delivery = Some(Box::pin(async move { engine.deny_tool_call_unavailable(id).await }));
+                                    }
+                                }
+                            }
+                            event = async { engine.rx_event.write().await.recv().await }, if !event_channel_closed => {
                                 match event {
                                     Some(EngineEvent::UserInputRequired { id, request }) => {
                                         self.publish_user_input_request(&thread_id, &turn_id, &engine, id, request).await?;
@@ -16835,196 +16918,124 @@ source_usage_records: Default::default(),
                                     Some(EngineEvent::UserInputClosed { id, outcome }) => {
                                         self.user_input_settlement(&thread_id).close(&id, Some(&turn_id), outcome).await?;
                                     }
-                                    Some(EngineEvent::SessionUpdated {
-                                        source: None, checkpoint: Some(checkpoint), .. }) => {
+                                    Some(EngineEvent::SessionUpdated { source: None, checkpoint: Some(checkpoint), .. }) => {
                                         checkpoint.fail("Runtime checkpoint cannot wait behind an approval");
                                     }
                                     Some(EngineEvent::ApprovalWithdrawn { id: withdrawn }) if withdrawn == id => {
-                                        self.cancel_pending_approval(&approval_id);
-                                        break None;
+                                        #[cfg(any(test, feature = "test-support"))]
+                                        if engine.has_mock_approval_publications() {
+                                            let _ = publication.commit_mock_outcome(crate::approval_log::ApprovalReceipt::decided_with(
+                                                &id, crate::approval_log::ApprovalOutcome::Cancelled, Some(crate::approval_log::ApprovalDecider::Host),
+                                            ));
+                                        }
                                     }
                                     Some(terminal @ EngineEvent::TurnComplete { .. }) => {
+                                        #[cfg(any(test, feature = "test-support"))]
+                                        if engine.has_mock_approval_publications() {
+                                            let _ = publication.commit_mock_outcome(crate::approval_log::ApprovalReceipt::decided_with(
+                                                &id, crate::approval_log::ApprovalOutcome::Cancelled, Some(crate::approval_log::ApprovalDecider::Host),
+                                            ));
+                                        }
                                         pending_events.push_back(terminal);
-                                        self.cancel_pending_approval(&approval_id);
-                                        break None;
                                     }
                                     Some(EngineEvent::Status { message }) => {
-                                        if let Err(err) = self
-                                            .publish_status_item(
-                                                &thread_id,
-                                                &turn_id,
-                                                message,
-                                                &settled_approval_calls,
-                                            )
-                                            .await
-                                        {
-                                            tracing::warn!(
-                                                thread_id = %thread_id,
-                                                turn_id = %turn_id,
-                                                "failed to persist status during approval wait: {err:#}"
-                                            );
+                                        if let Err(error) = self.publish_status_item(&thread_id, &turn_id, message, &settled_approval_calls).await {
+                                            tracing::warn!(thread_id = %thread_id, turn_id = %turn_id, "failed to persist status during approval wait: {error:#}");
                                         }
                                     }
                                     Some(other) => pending_events.push_back(other),
                                     None => {
                                         event_channel_closed = true;
-                                        self.cancel_pending_approval(&approval_id);
-                                        break None;
+                                        #[cfg(any(test, feature = "test-support"))]
+                                        if engine.has_mock_approval_publications() {
+                                            let _ = publication.commit_mock_outcome(crate::approval_log::ApprovalReceipt::decided_with(
+                                                &id, crate::approval_log::ApprovalOutcome::Unavailable, Some(crate::approval_log::ApprovalDecider::Host),
+                                            ));
+                                        }
                                     }
                                 }
                             }
-                            decision = &mut wait_for_decision => break Some(decision),
                         }
                     };
-                    settled_approval_calls.insert(id.clone());
-                    let Some(decision) = decision else {
-                        self.emit_event(
+                    drop(delivery);
+                    let crate::approval_log::ApprovalReceipt::Decided {
+                        outcome,
+                        decided_by,
+                        grant_id,
+                        ..
+                    } = &receipt
+                    else {
+                        bail!("Core approval publication is not a decision");
+                    };
+                    anyhow::ensure!(
+                        receipt.approval_id() == id,
+                        "Core approval outcome changed its held call"
+                    );
+                    let allowed = *outcome == crate::approval_log::ApprovalOutcome::ApprovedOnce;
+                    let remember = allowed
+                        && matches!(
+                            proposed,
+                            Some(ExternalApprovalDecision::Allow { remember: true })
+                        );
+                    let mut payload = json!({
+                        "approval_id": approval_id, "tool_call_id": id,
+                        "decision": if allowed { "allow" } else { "deny" },
+                        "remember": remember, "grant_id": grant_id,
+                        "native_outcome": outcome, "decided_by": decided_by,
+                    });
+                    if is_automatic {
+                        payload["auto"] = json!(true);
+                    }
+                    if let Some(posture) = denied_posture {
+                        payload["posture"] = json!(posture);
+                    }
+                    if *outcome == crate::approval_log::ApprovalOutcome::Cancelled {
+                        payload["cancelled"] = json!(true);
+                    }
+                    if *outcome == crate::approval_log::ApprovalOutcome::Timeout {
+                        payload["timeout"] = json!(true);
+                    }
+                    let projection = projection_lock.lock().await;
+                    if *outcome == crate::approval_log::ApprovalOutcome::Timeout {
+                        if let Err(error) = self.emit_event(&thread_id, Some(&turn_id), None,
+                            "approval.timeout", json!({"approval_id": approval_id, "tool_call_id": id, "timeout_secs": publication.timeout_seconds()})).await {
+                            let _ = publication.acknowledge(Err(format!("Runtime approval timeout append failed: {error}")));
+                            return Err(error);
+                        }
+                    }
+                    if let Err(error) = self
+                        .emit_event(
                             &thread_id,
                             Some(&turn_id),
                             None,
                             "approval.decided",
-                            json!({
-                                "approval_id": approval_id,
-                                "tool_call_id": id,
-                                "decision": "deny",
-                                "remember": false,
-                                "cancelled": true,
-                            }),
-                        )
-                        .await?;
-                        // The engine has already recorded Cancelled. A stale
-                        // card cannot grant work or overwrite that receipt.
-                        continue;
-                    };
-                    // A decision may already have consumed the sender when
-                    // Stop wins. Never remember or dispatch that late allow.
-                    let cancelled = {
-                        let active = self.active.lock().await;
-                        let accepting = active
-                            .engines
-                            .get(&thread_id)
-                            .and_then(|state| state.active_turn.as_ref())
-                            .is_some_and(|turn| {
-                                turn.turn_id == turn_id && !turn.interrupt_requested
-                            });
-                        !accepting
-                    };
-                    if cancelled {
-                        self.cancel_pending_approval(&approval_id);
-                        self.emit_event(
-                            &thread_id,
-                            Some(&turn_id),
-                            None,
-                            "approval.decided",
-                            json!({
-                                "approval_id": approval_id,
-                                "tool_call_id": id,
-                                "decision": "deny",
-                                "remember": false,
-                                "cancelled": true,
-                            }),
+                            payload,
                         )
                         .await
-                        .ok();
-                        let _ = engine
-                            .deny_tool_call_by(id, crate::approval_log::ApprovalDecider::Host)
-                            .await;
-                        continue;
+                    {
+                        let _ = publication.acknowledge(Err(format!(
+                            "Runtime approval decision append failed: {error}"
+                        )));
+                        return Err(error);
                     }
-                    match decision {
-                        Ok(Ok(ExternalApprovalDecision::Allow { remember })) => {
-                            // "Allow for this conversation" records a grant
-                            // for this tool and argument class. It must not
-                            // change posture: a posture change mid-turn used
-                            // to fail the very call it approved (E1/E2).
-                            let grant = if remember {
-                                self.add_session_grant(
-                                    &thread_id,
-                                    &turn_id,
-                                    &tool_name,
-                                    &approval_grouping_key,
-                                    &summary,
-                                )
-                                .await
-                            } else {
-                                None
-                            };
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.decided",
-                                json!({
-                                    "approval_id": approval_id,
-                                    "tool_call_id": id,
-                                    "decision": "allow",
-                                    "remember": remember,
-                                    "grant_id": grant.map(|grant| grant.grant_id),
-                                }),
-                            )
-                            .await
-                            .ok();
-                            let _ = engine.approve_tool_call(id).await;
-                        }
-                        Ok(Ok(ExternalApprovalDecision::Deny { remember })) => {
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.decided",
-                                json!({
-                                    "approval_id": approval_id,
-                                    "tool_call_id": id,
-                                    "decision": "deny",
-                                    "remember": remember,
-                                }),
-                            )
-                            .await
-                            .ok();
-                            let _ = engine.deny_tool_call(id).await;
-                        }
-                        Ok(Err(_recv_err)) => {
-                            // The decision channel closed with no answer:
-                            // nobody refused the call, it was unavailable.
-                            self.cancel_pending_approval(&approval_id);
-                            let _ = engine.deny_tool_call_unavailable(id).await;
-                        }
-                        Err(_timeout) => {
-                            self.cancel_pending_approval(&approval_id);
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.timeout",
-                                json!({
-                                    "approval_id": approval_id,
-                                    "tool_call_id": id,
-                                    "timeout_secs": approval_timeout.map(|wait| wait.as_secs()),
-                                }),
-                            )
-                            .await
-                            .ok();
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.decided",
-                                json!({
-                                    "approval_id": approval_id,
-                                    "tool_call_id": id,
-                                    "decision": "deny",
-                                    "remember": false,
-                                    "timeout": true,
-                                }),
-                            )
-                            .await
-                            .ok();
-                            // Recorded and reported as a timeout, not the
-                            // operator's denial; the engine refunds the call's
-                            // tool-call budget slot.
-                            let _ = engine.deny_tool_call_timed_out(id).await;
-                        }
+                    drop(projection);
+                    if remember {
+                        self.add_session_grant(
+                            &thread_id,
+                            &turn_id,
+                            &tool_name,
+                            &approval_grouping_key,
+                            &summary,
+                        )
+                        .await;
                     }
+                    let projection = projection_lock.lock().await;
+                    self.cancel_pending_approval(&approval_id);
+                    publication.acknowledge(Ok(()))?;
+                    #[cfg(any(test, feature = "test-support"))]
+                    engine.retire_mock_approval_publication(&id, &publication);
+                    settled_approval_calls.insert(id);
+                    drop(projection);
                 }
                 EngineEvent::ApprovalWithdrawn { .. } => {}
                 EngineEvent::ElevationRequired {
@@ -17614,7 +17625,7 @@ source_usage_records: Default::default(),
             }
             let mut drained_native_usage = Vec::new();
             for record in background_usage.records {
-                match append_usage_source_record(&mut turn, &record) {
+                match append_owned_usage_source_record(&self.store, &mut turn, &record) {
                     Ok(_) => {
                         if record.has_native_producer() {
                             drained_native_usage.push(record);
@@ -18092,6 +18103,9 @@ source_usage_records: Default::default(),
         // completion append failed are reconciled too.
         for mut turn in self.store.list_all_turns()? {
             if quarantined.contains(&turn.thread_id) {
+                continue;
+            }
+            if runtime_usage_partition_parent(&turn).is_some() {
                 continue;
             }
             if !turn.routing_settlement {

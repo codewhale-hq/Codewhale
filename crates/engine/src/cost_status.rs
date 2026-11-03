@@ -1332,6 +1332,16 @@ pub struct UsageSourceRevision {
     reservation: bool,
 }
 
+impl UsageSourceRevision {
+    pub fn lineage(&self) -> &str {
+        &self.lineage
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NativeUsageProof {
     state: Arc<Mutex<NativeUsageState>>,
@@ -2208,7 +2218,7 @@ impl RuntimeUsageRecord {
         })
     }
 
-    pub(crate) fn follows_protected(&self, old: &Self) -> std::io::Result<bool> {
+    pub fn follows_protected(&self, old: &Self) -> std::io::Result<bool> {
         self.validate()?;
         let (Some(prior), Some(next)) = (old.settlement.as_ref(), self.settlement.as_ref()) else {
             return Ok(false);

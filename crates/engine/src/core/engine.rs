@@ -740,7 +740,22 @@ pub struct EngineHandle {
     /// Cleared by the engine when a fresh turn starts.
     cancel_reason: Arc<StdMutex<Option<CancelReason>>>,
     /// Send approval decisions to the engine
-    tx_approval: mpsc::Sender<ApprovalDecision>,
+    tx_approval: mpsc::Sender<SubmittedApproval>,
+    current_approval: Arc<parking_lot::Mutex<Option<NativeApprovalPublication>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    mock_approval_publications: Option<
+        Arc<
+            parking_lot::Mutex<
+                HashMap<
+                    String,
+                    (
+                        NativeApprovalPublication,
+                        approval_publication::ApprovalProducer,
+                    ),
+                >,
+            >,
+        >,
+    >,
     /// Send user input responses to the engine
     tx_user_input: mpsc::Sender<UserInputDecision>,
     /// Send steer input for an in-flight turn.
@@ -1125,7 +1140,8 @@ pub struct Engine {
     /// later successful turn can refresh it without adding a second token.
     scheduled_goal_continuation: Option<ScheduledGoalContinuation>,
     goal_continuation_schedule_seq: u64,
-    rx_approval: mpsc::Receiver<ApprovalDecision>,
+    rx_approval: mpsc::Receiver<SubmittedApproval>,
+    current_approval: Arc<parking_lot::Mutex<Option<NativeApprovalPublication>>>,
     /// Canonical per-session approval evidence. A missing/unwritable store is
     /// retained as an error so construction can stay infallible while every
     /// approval gate still fails closed.
@@ -2158,6 +2174,7 @@ impl Engine {
         let (tx_op, rx_op) = mpsc::channel(ENGINE_OP_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = mpsc::channel(4 * streaming::MAX_TOOL_CALLS_PER_RESPONSE);
         let (tx_approval, rx_approval) = mpsc::channel(64);
+        let current_approval = Arc::new(parking_lot::Mutex::new(None));
         let (tx_user_input, rx_user_input) = mpsc::channel(32);
         let (tx_steer, rx_steer) = mpsc::channel(64);
         let turn_controls = Arc::new(StdMutex::new(handle::TurnControls::default()));
@@ -2623,6 +2640,7 @@ impl Engine {
             scheduled_goal_continuation: None,
             goal_continuation_schedule_seq: 0,
             rx_approval,
+            current_approval: Arc::clone(&current_approval),
             approval_receipt_store,
             rx_user_input,
             rx_steer,
@@ -2663,6 +2681,9 @@ impl Engine {
             cancel_token: shared_cancel_token,
             cancel_reason,
             tx_approval,
+            current_approval,
+            #[cfg(any(test, feature = "test-support"))]
+            mock_approval_publications: None,
             tx_user_input,
             tx_steer,
             turn_controls,
@@ -2697,6 +2718,19 @@ impl Engine {
         engine.model_client_injected = true;
         engine.codewhale_client_error = None;
         handle.client_preflight_required = false;
+        #[cfg(any(test, feature = "test-support"))]
+        if engine.config.compaction.runtime_cost_owner.is_none()
+            && engine.config.runtime_services.accounting_origin.is_none()
+        {
+            let owner = format!("test-standalone:{}", engine.session.id);
+            crate::usage_persistence::register_persistent_interactive_runtime_usage_sink(
+                &owner,
+                crate::cost_status::scope_token(),
+                &engine.session.id,
+                "test-standalone",
+            );
+            engine.config.compaction.runtime_cost_owner = Some(owner);
+        }
         (engine, handle)
     }
 
@@ -10810,7 +10844,7 @@ pub fn spawn_engine_with_authoritative_route_config(
 pub struct MockEngineHandle {
     pub handle: EngineHandle,
     pub rx_op: mpsc::Receiver<Op>,
-    rx_approval: mpsc::Receiver<ApprovalDecision>,
+    rx_approval: mpsc::Receiver<SubmittedApproval>,
     rx_user_input: mpsc::Receiver<UserInputDecision>,
     pub rx_steer: mpsc::Receiver<handle::SteerInput>,
     pub tx_event: mpsc::Sender<Event>,
@@ -10852,7 +10886,7 @@ impl MockEngineHandle {
         MockApprovalEvent,
         Option<crate::approval_log::ApprovalDecider>,
     )> {
-        Some(match self.rx_approval.recv().await? {
+        Some(match self.rx_approval.recv().await?.decision {
             ApprovalDecision::Approved { id, by, .. } => {
                 (MockApprovalEvent::Approved { id }, Some(by))
             }
@@ -10946,6 +10980,8 @@ pub fn mock_engine_handle() -> MockEngineHandle {
         cancel_token: shared_cancel_token,
         cancel_reason,
         tx_approval,
+        current_approval: Arc::new(parking_lot::Mutex::new(None)),
+        mock_approval_publications: Some(Arc::new(parking_lot::Mutex::new(HashMap::new()))),
         tx_user_input,
         tx_steer,
         turn_controls: Arc::new(StdMutex::new(handle::TurnControls::default())),
@@ -11391,6 +11427,7 @@ impl SubAgentWiring {
 }
 
 mod approval;
+mod approval_publication;
 mod compaction;
 mod context;
 pub mod handle;
@@ -11435,6 +11472,7 @@ use codewhale_runtime::turn_budget;
 pub mod turn_heartbeat;
 pub mod turn_loop;
 pub use approval::HumanDecision;
+pub use approval_publication::NativeApprovalPublication;
 pub use dispatch::content_without_approval_note;
 pub use token_estimate_cache::TokenEstimateCache;
 
@@ -11445,7 +11483,9 @@ pub fn default_active_native_tool_names() -> &'static [&'static str] {
     tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS
 }
 
-use self::approval::{ApprovalDecision, ApprovalResult, UserInputDecision};
+#[cfg(any(test, feature = "test-support"))]
+use self::approval::ApprovalDecision;
+use self::approval::{ApprovalResult, SubmittedApproval, UserInputDecision};
 use self::dispatch::{
     ToolApprovalStamp, ToolExecGuard, ToolExecOutcome, ToolExecutionBatch, ToolExecutionPlan,
     caller_allowed_for_tool, caller_type_for_tool_use, final_tool_input,

@@ -914,6 +914,7 @@ impl Engine {
                     &plan.input,
                 );
             let event = Event::ApprovalRequired {
+                publication: None,
                 id: approval_id.to_string(),
                 tool_name: tool_name.to_string(),
                 approval_key: approval_key.0,
@@ -3398,6 +3399,7 @@ impl Engine {
                         let (approval_key, approval_grouping_key) =
                             (approval_key.0, approval_grouping_key.0);
                         let approval_event = Event::ApprovalRequired {
+                            publication: None,
                             id: tool_id.clone(),
                             tool_name: tool_name.clone(),
                             input: tool_input.clone(),
@@ -4286,6 +4288,7 @@ impl Engine {
                 None => format!("execute_tools program call: {}", plan.approval_description),
             };
             let approval_event = Event::ApprovalRequired {
+                publication: None,
                 id: nested_id.clone(),
                 tool_name: plan.name.clone(),
                 input: plan.input.clone(),
@@ -4926,6 +4929,7 @@ impl Engine {
         let mut tool_call_filter = ToolCallDeltaFilterState::default();
         let mut fake_wrapper_notice_emitted = false;
         let mut pending_message_complete = false;
+        let mut provider_response_complete = false;
         let mut last_text_index: Option<usize> = None;
         let mut stream_errors = 0u32;
         let mut any_content_received = false;
@@ -5397,7 +5401,10 @@ impl Engine {
                         merge_stream_usage(&mut usage, u);
                     }
                 }
-                StreamEvent::MessageStop | StreamEvent::Ping => {}
+                StreamEvent::MessageStop => {
+                    provider_response_complete = true;
+                }
+                StreamEvent::Ping => {}
                 StreamEvent::Error { error } => {
                     // #3014: providers surface mid-stream failures as a
                     // chunk-level `error` object (chat.rs converts the frame
@@ -5450,7 +5457,7 @@ impl Engine {
             "steered"
         } else if stream_error.is_some() || stream_errors > 0 {
             "incomplete"
-        } else if pending_message_complete {
+        } else if provider_response_complete {
             "completed"
         } else {
             "completion_unknown"

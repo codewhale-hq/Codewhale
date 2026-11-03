@@ -1595,7 +1595,8 @@ async fn approval_timeout_is_reported_as_timeout_and_refunds_the_budget() {
         canned::simple_text_turn("done"),
     ]));
     let client: crate::core::model_client::SharedModelClient = mock.clone();
-    let config = Config::default();
+    let mut config = Config::default();
+    config.approval = Some(codewhale_runtime::config::ApprovalConfig { timeout_seconds: Some(1), ..Default::default() });
     let mut engine_config = deterministic_engine_config(workspace.path());
     engine_config.exec_policy_engine = ask_rule_engine("echo first");
     engine_config.max_tool_calls = Some(1);

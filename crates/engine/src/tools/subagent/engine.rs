@@ -1908,6 +1908,9 @@ pub async fn drive_child_actor(
         joined: false,
     };
     let mut approvals = futures_util::stream::FuturesUnordered::new();
+    let mut approval_deliveries = futures_util::stream::FuturesUnordered::<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>,
+    >::new();
     let mut steers = futures_util::stream::FuturesUnordered::new();
     let mut events = handle.rx_event.write().await;
     let mut input_open = true;
@@ -1978,25 +1981,31 @@ pub async fn drive_child_actor(
                 drop(input);
             },
             Some((id, decision)) = approvals.next(), if !approvals.is_empty() => {
-                // Manager removed the slot before this exact Core inbox delivery.
                 if runtime.cancel_token.is_cancelled() || handle.is_cancelled() {
                     // Core observes the exact cancelled TurnControl before any
                     // queued Allow; do not stall its join on another inbox send.
                     handle.cancel();
                 } else {
-                    match decision {
-                        Ok(ChildApprovalOutcome::Approved { by }) => handle.approve_tool_call_by(id, by).await?,
-                        Ok(ChildApprovalOutcome::Denied { by }) => handle.deny_tool_call_by(id, by).await?,
-                        _ => handle.deny_tool_call_unavailable(id).await?,
-                    }
+                    let handle = handle.clone();
+                    approval_deliveries.push(Box::pin(async move {
+                        match decision {
+                            Ok(reply) => handle.accept_child_approval(id, reply).await,
+                            Err(_) => handle.deny_tool_call_unavailable(id).await,
+                        }
+                    }));
+                }
+            },
+            Some(delivered) = approval_deliveries.next(), if !approval_deliveries.is_empty() => {
+                if let Err(error) = delivered {
+                    tracing::warn!(%error, "child approval did not match a durable Core decision");
                 }
             },
             event = events.recv() => {
                 let Some(event) = event else { break Err(anyhow!("child Core event stream closed before join")); };
                 observe_start(&event);
                 match &event {
-                    Event::ApprovalRequired { id, tool_name, description, .. } => {
-                        let (_, answer) = runtime.manager.write().await.register_child_approval(&agent_id, id, tool_name, description)?;
+                    Event::ApprovalRequired { id, tool_name, description, publication, .. } => {
+                        let (_, answer) = runtime.manager.write().await.register_child_approval(&agent_id, id, tool_name, description, publication.clone())?;
                         let key = id.clone(); approvals.push(async move { (key, answer.await) });
                         record_agent_progress(&runtime, &agent_id, AgentProgressEventMeta::new(AgentWorkerStatus::WaitingForUser)
                             .with_tool(tool_name.clone()).with_approval_id(id.clone()), description.clone());
@@ -2013,14 +2022,22 @@ pub async fn drive_child_actor(
                                     handle.cancel();
                                 } else {
                                     runtime.manager.write().await.cancel_child_approval(id);
-                                    handle.deny_tool_call_unavailable(id).await?;
+                                    {
+                                        let handle = handle.clone();
+                                        let id = id.clone();
+                                        approval_deliveries.push(Box::pin(async move { handle.deny_tool_call_unavailable(id).await }));
+                                    }
                                 }
                             }
                         } else if runtime.cancel_token.is_cancelled() || handle.is_cancelled() {
                             handle.cancel();
                         } else {
                             runtime.manager.write().await.cancel_child_approval(id);
-                            handle.deny_tool_call_unavailable(id).await?;
+                            {
+                                        let handle = handle.clone();
+                                        let id = id.clone();
+                                        approval_deliveries.push(Box::pin(async move { handle.deny_tool_call_unavailable(id).await }));
+                                    }
                         }
                     }
                     Event::ApprovalWithdrawn { id } => {
@@ -2120,6 +2137,11 @@ pub async fn drive_child_actor(
     // Joining drops the Core receiver and every unsettled steer. Retire those
     // exact outcomes even when the join branch won before the outcome branch.
     use futures_util::StreamExt;
+    while let Some(delivered) = approval_deliveries.next().await {
+        if let Err(error) = delivered {
+            tracing::warn!(%error, "child approval did not match a durable Core decision");
+        }
+    }
     while let Some((input, _outcome)) = steers.next().await {
         drop(input);
     }

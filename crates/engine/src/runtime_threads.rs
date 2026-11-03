@@ -95,6 +95,29 @@ const RUNTIME_STORE_WORK_DIRS: [&str; 7] = [
 ];
 const TURN_OPERATION_BINDING_SCHEMA_VERSION: u32 = 2;
 pub const MAX_ROUTED_USAGE_RECORDS_PER_TURN: usize = 64;
+const RUNTIME_USAGE_PARTITION_SUMMARY: &str = "Provider usage receipt partition";
+
+pub fn runtime_usage_partition_parent(turn: &TurnRecord) -> Option<&str> {
+    if !turn.routing_settlement || turn.input_summary != RUNTIME_USAGE_PARTITION_SUMMARY {
+        return None;
+    }
+    let (parent, source) = turn.id.strip_prefix("turn_usage_")?.rsplit_once('_')?;
+    if source.len() != 64
+        || !source.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || validated_record_id(parent, "usage partition parent").is_err()
+    {
+        return None;
+    }
+    Some(parent)
+}
+
+fn runtime_usage_partition_id(parent: &str, source_id: &str) -> Result<String> {
+    validated_record_id(parent, "usage partition parent")?;
+    Ok(format!(
+        "turn_usage_{parent}_{}",
+        routed_usage_source_fingerprint(source_id)
+    ))
+}
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1103,6 +1126,43 @@ impl TurnRecord {
                     && self.routed_usage_source_ids.contains(key)),
             "native source receipts exceed their bound or identity contract"
         );
+        if self.routing_settlement && self.input_summary == RUNTIME_USAGE_PARTITION_SUMMARY {
+            let parent = runtime_usage_partition_parent(self)
+                .context("Runtime usage partition identity is invalid")?;
+            let source = self.id.rsplit_once('_').map(|(_, source)| source);
+            anyhow::ensure!(
+                parent != self.id
+                    && self.status == RuntimeTurnStatus::Completed
+                    && self.error.is_none()
+                    && self.max_output_tokens.is_none()
+                    && self.usage.is_none()
+                    && self.effective_route_usage.is_none()
+                    && self.effective_route_envelope().is_none()
+                    && self.prefix_checkpoint.is_none()
+                    && self.item_ids.is_empty()
+                    && self.decision_receipts.is_empty()
+                    && self.model_request_diagnostics.is_none()
+                    && self.operation_activity.is_none()
+                    && self.permission_posture.is_none()
+                    && self.mode.is_none()
+                    && self.steer_count == 0
+                    && self.agent_mail_message_id.is_none()
+                    && self.artifacts.is_empty()
+                    && self.workspace.is_none()
+                    && self.workspace_snapshots.is_empty()
+                    && self.source_accounting
+                    && self.source_usage_records.len() == 1
+                    && self
+                        .source_usage_records
+                        .keys()
+                        .all(|key| Some(key.as_str()) == source)
+                    && self.routed_usage_source_ids.len() == 1
+                    && self.routed_usage.is_empty()
+                    && self.routed_usage_drop_records.is_empty()
+                    && self.routed_usage_dropped_records == 0,
+                "Runtime usage partition contains unrelated turn effects or sources"
+            );
+        }
         if self.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {
             bail!(
                 "Turn schema v{} is newer than supported v{}",
@@ -1568,6 +1628,14 @@ pub struct RuntimeThreadStore {
     item_dir_files_read: Arc<std::sync::atomic::AtomicU64>,
 }
 
+#[derive(Debug)]
+pub enum RuntimeDiagnosticRecord {
+    Thread(Box<ThreadRecord>),
+    Turn(Box<TurnRecord>),
+    Item(Box<TurnItemRecord>),
+    Event(Box<RuntimeEventRecord>),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeStoreOwner {
     owner_id: String,
@@ -1695,6 +1763,203 @@ impl RuntimeThreadStore {
             #[cfg(any(test, feature = "test-support"))]
             item_dir_files_read: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }))
+    }
+
+    fn open_diagnostic_file(&self, path: &Path) -> Result<File> {
+        let root = self
+            .threads_dir
+            .parent()
+            .context("Runtime diagnostic store has no root")?;
+        let relative = path
+            .strip_prefix(root)
+            .context("Runtime diagnostic file escaped its store")?;
+        let file = codewhale_util::files::WorkspaceFile::open_resolved_root(root, relative, false)?
+            .open_file()?;
+        runtime_store_file_identity(&file)?;
+        Ok(file)
+    }
+
+    pub fn visit_diagnostic_records(
+        &self,
+        mut visit: impl FnMut(Result<RuntimeDiagnosticRecord>) -> Result<()>,
+    ) -> Result<()> {
+        let limit = crate::session_manager::SESSION_METADATA_READ_LIMIT as u64;
+        for (directory, kind) in [
+            (&self.threads_dir, RuntimeStoreRecordKind::Thread),
+            (&self.turns_dir, RuntimeStoreRecordKind::Turn),
+            (&self.items_dir, RuntimeStoreRecordKind::Item),
+        ] {
+            let entries = match checked_existing_runtime_store_dir(directory)
+                .and_then(|directory| fs::read_dir(directory).map_err(anyhow::Error::from))
+            {
+                Ok(entries) => entries,
+                Err(error) => {
+                    visit(Err(error))?;
+                    continue;
+                }
+            };
+            for entry in entries {
+                let result = (|| -> Result<Option<RuntimeDiagnosticRecord>> {
+                    let path = entry?.path();
+                    if path.extension().is_none_or(|extension| extension != "json") {
+                        return Ok(None);
+                    }
+                    let file = self.open_diagnostic_file(&path)?;
+                    let mut raw = Vec::new();
+                    file.take(limit + 1).read_to_end(&mut raw)?;
+                    if raw.len() as u64 > limit {
+                        return Err(io::Error::new(
+                            io::ErrorKind::FileTooLarge,
+                            "Runtime diagnostic record exceeds the session inspection limit",
+                        )
+                        .into());
+                    }
+                    let record = match kind {
+                        RuntimeStoreRecordKind::Thread => {
+                            let record: ThreadRecord = serde_json::from_slice(&raw)?;
+                            if path.file_stem().and_then(|name| name.to_str())
+                                != Some(record.id.as_str())
+                            {
+                                bail!("Runtime diagnostic record id does not match its file");
+                            }
+                            if record.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {
+                                bail!("unsupported Runtime diagnostic thread schema");
+                            }
+                            RuntimeDiagnosticRecord::Thread(Box::new(record))
+                        }
+                        RuntimeStoreRecordKind::Turn => {
+                            let record: TurnRecord = serde_json::from_slice(&raw)?;
+                            if path.file_stem().and_then(|name| name.to_str())
+                                != Some(record.id.as_str())
+                            {
+                                bail!("Runtime diagnostic record id does not match its file");
+                            }
+                            record.validate_output_token_limit()?;
+                            RuntimeDiagnosticRecord::Turn(Box::new(record))
+                        }
+                        RuntimeStoreRecordKind::Item => {
+                            let record: TurnItemRecord = serde_json::from_slice(&raw)?;
+                            if path.file_stem().and_then(|name| name.to_str())
+                                != Some(record.id.as_str())
+                            {
+                                bail!("Runtime diagnostic record id does not match its file");
+                            }
+                            if record.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {
+                                bail!("unsupported Runtime diagnostic item schema");
+                            }
+                            if record.kind == TurnItemKind::UserMessage {
+                                record.user_content()?;
+                            }
+                            RuntimeDiagnosticRecord::Item(Box::new(record))
+                        }
+                    };
+                    Ok(Some(record))
+                })();
+                match result {
+                    Ok(Some(record)) => visit(Ok(record))?,
+                    Ok(None) => {}
+                    Err(error) => visit(Err(error))?,
+                }
+            }
+        }
+        let directory = match checked_existing_runtime_store_dir(&self.events_dir) {
+            Ok(directory) => directory,
+            Err(error) => {
+                visit(Err(error))?;
+                return Ok(());
+            }
+        };
+        for entry in fs::read_dir(directory)? {
+            let result = (|| -> Result<Option<(RuntimeEventReader, String)>> {
+                let path = entry?.path();
+                if path
+                    .extension()
+                    .is_none_or(|extension| extension != "jsonl")
+                {
+                    return Ok(None);
+                }
+                let thread_id = path
+                    .file_stem()
+                    .and_then(|id| id.to_str())
+                    .context("Runtime diagnostic event filename is not a thread id")?
+                    .to_string();
+                validated_record_id(&thread_id, "diagnostic thread id")?;
+                let lock_file = self.open_diagnostic_file(&self.event_lock_path)?;
+                let lock = fd_lock::RwLock::new(lock_file);
+                let started = Instant::now();
+                loop {
+                    match lock.try_read() {
+                        Ok(guard) => {
+                            validate_same_runtime_store_file_handles(
+                                &guard,
+                                &self.open_diagnostic_file(&self.event_lock_path)?,
+                                &self.event_lock_path,
+                            )?;
+                            let file = self.open_diagnostic_file(&path)?;
+                            let committed = file.metadata()?.len();
+                            return Ok(Some((BufReader::new(file.take(committed)), thread_id)));
+                        }
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                            ) =>
+                        {
+                            wait_for_event_lock(started, EVENT_TRANSACTION_LOCK_TIMEOUT)?
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            })();
+            let (mut reader, thread_id) = match result {
+                Ok(Some(reader)) => reader,
+                Ok(None) => continue,
+                Err(error) => {
+                    visit(Err(error))?;
+                    continue;
+                }
+            };
+            loop {
+                let mut raw = Vec::new();
+                let count = reader
+                    .by_ref()
+                    .take(limit + 1)
+                    .read_until(b'\n', &mut raw)?;
+                if count == 0 {
+                    break;
+                }
+                if raw.len() as u64 > limit {
+                    visit(Err(io::Error::new(
+                        io::ErrorKind::FileTooLarge,
+                        "Runtime diagnostic event exceeds the session inspection limit",
+                    )
+                    .into()))?;
+                    break;
+                }
+                if !raw.ends_with(b"\n") {
+                    visit(Err(anyhow!("Runtime diagnostic event tail is incomplete")))?;
+                    break;
+                }
+                if raw.iter().all(u8::is_ascii_whitespace) {
+                    continue;
+                }
+                let event = serde_json::from_slice::<RuntimeEventRecord>(&raw).and_then(|event| {
+                    if event.schema_version > MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION {
+                        return Err(serde::de::Error::custom(
+                            "unsupported Runtime diagnostic event schema",
+                        ));
+                    }
+                    if event.thread_id != thread_id {
+                        return Err(serde::de::Error::custom(
+                            "Runtime diagnostic event thread does not match its file",
+                        ));
+                    }
+                    Ok(RuntimeDiagnosticRecord::Event(Box::new(event)))
+                });
+                visit(event.map_err(anyhow::Error::from))?;
+            }
+        }
+        Ok(())
     }
 
     fn open_event_lock(&self) -> Result<File> {
@@ -3127,7 +3392,22 @@ impl RuntimeThreadStore {
             turn.validate_output_token_limit()?;
             out.push(turn);
         }
-        out.sort_by_key(|a| a.created_at);
+        out.sort_by(|left, right| {
+            let left_parent = runtime_usage_partition_parent(left);
+            let right_parent = runtime_usage_partition_parent(right);
+            (
+                left.created_at,
+                left_parent.unwrap_or(left.id.as_str()),
+                left_parent.is_some(),
+                left.id.as_str(),
+            )
+                .cmp(&(
+                    right.created_at,
+                    right_parent.unwrap_or(right.id.as_str()),
+                    right_parent.is_some(),
+                    right.id.as_str(),
+                ))
+        });
         Ok(out)
     }
 

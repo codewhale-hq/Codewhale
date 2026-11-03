@@ -13338,6 +13338,7 @@ async fn approval_required_with_stale_active_turn_is_denied() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "test_key".to_string(),
             approval_grouping_key: "test_key".to_string(),
             id: "tool_stale".to_string(),
@@ -13504,6 +13505,7 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
         harness
             .tx_event
             .send(EngineEvent::ApprovalRequired {
+                publication: None,
                 approval_key: "key1".to_string(),
                 approval_grouping_key: "key1".to_string(),
                 id: call_id.to_string(),
@@ -13566,16 +13568,26 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
             Some("I will update the config file.")
         );
 
-        assert!(!manager.deliver_external_approval(
-            call_id,
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
+        assert!(
+            !manager
+                .deliver_external_approval(
+                    call_id,
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert_eq!(manager.pending_approvals_count(), 1);
 
-        assert!(manager.deliver_external_approval(
-            &approval_id,
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
+        assert!(
+            manager
+                .deliver_external_approval(
+                    &approval_id,
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert_eq!(
             harness.recv_approval_event().await,
             Some(MockApprovalEvent::Approved {
@@ -17008,6 +17020,7 @@ async fn engine_withdrawal_retires_approval_and_unblocks_queued_events() -> Resu
         })
         .await?;
     let request = |id: &str| EngineEvent::ApprovalRequired {
+        publication: None,
         id: id.to_string(),
         tool_name: "exec_shell".to_string(),
         description: "extension call".to_string(),
@@ -17081,10 +17094,13 @@ async fn engine_withdrawal_retires_approval_and_unblocks_queued_events() -> Resu
     let next_id = await_approval_identity(&manager, &thread.id, "ext-1.2").await?;
     assert_ne!(withdrawn_id, next_id);
     assert!(
-        !manager.deliver_external_approval(
-            &withdrawn_id,
-            ExternalApprovalDecision::Allow { remember: true },
-        ),
+        !manager
+            .deliver_external_approval(
+                &withdrawn_id,
+                ExternalApprovalDecision::Allow { remember: true },
+            )
+            .await
+            .expect("durable approval decision"),
         "withdrawal removes the capability before any late allow can create a grant"
     );
     let detail = manager.get_thread_detail(&thread.id).await?;
@@ -17092,10 +17108,10 @@ async fn engine_withdrawal_retires_approval_and_unblocks_queued_events() -> Resu
     assert_eq!(detail.pending_approvals[0].id, next_id);
     assert!(detail.approval_grants.is_empty());
     assert!(
-        manager.deliver_external_approval(
-            &next_id,
-            ExternalApprovalDecision::Deny { remember: false }
-        )
+        manager
+            .deliver_external_approval(&next_id, ExternalApprovalDecision::Deny { remember: false })
+            .await
+            .expect("durable approval decision")
     );
     assert_eq!(
         harness.recv_approval_event().await,
@@ -17170,6 +17186,7 @@ async fn approval_wait_heartbeat_is_never_sequenced_after_the_decision() -> Resu
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "wait-key".to_string(),
             approval_grouping_key: "wait-key".to_string(),
             id: call_id.to_string(),
@@ -17193,10 +17210,15 @@ async fn approval_wait_heartbeat_is_never_sequenced_after_the_decision() -> Resu
         .await?;
     sleep(Duration::from_millis(100)).await;
 
-    assert!(manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness.recv_approval_event().await,
         Some(MockApprovalEvent::Approved {
@@ -17286,6 +17308,7 @@ async fn approval_required_external_deny_is_denied() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "key2".to_string(),
             approval_grouping_key: "key2".to_string(),
             id: "tool_external_deny".to_string(),
@@ -17304,10 +17327,15 @@ async fn approval_required_external_deny_is_denied() -> Result<()> {
     assert_eq!(manager.pending_approvals_count(), 1);
 
     let approval_id = await_approval_identity(&manager, &thread.id, "tool_external_deny").await?;
-    assert!(manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Deny { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Deny { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness.recv_approval_event().await,
         Some(MockApprovalEvent::Denied {
@@ -17317,10 +17345,15 @@ async fn approval_required_external_deny_is_denied() -> Result<()> {
 
     // A settled capability is spent: replaying it neither re-decides nor
     // reaches the engine a second time.
-    assert!(!manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Allow { remember: true },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Allow { remember: true },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(manager.pending_approvals_count(), 0);
     assert!(
         !manager.store.load_thread(&thread.id)?.auto_approve,
@@ -17382,6 +17415,7 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
         harness
             .tx_event
             .send(EngineEvent::ApprovalRequired {
+                publication: None,
                 approval_key: RAW_CALL_ID.to_string(),
                 approval_grouping_key: RAW_CALL_ID.to_string(),
                 id: RAW_CALL_ID.to_string(),
@@ -17422,10 +17456,15 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
     }
 
     // The shared correlator is visible to both clients and settles neither.
-    assert!(!manager.deliver_external_approval(
-        RAW_CALL_ID,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                RAW_CALL_ID,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(manager.pending_approvals_count(), 2);
 
     let mut gated = gated.into_iter();
@@ -17434,10 +17473,15 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
 
     // Deciding the first settles the first, addressed to the engine by the raw
     // call ID it gated on.
-    assert!(manager.deliver_external_approval(
-        &approval_a,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_a,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness_a.recv_approval_event().await,
         Some(MockApprovalEvent::Approved {
@@ -17468,10 +17512,15 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
             .is_empty()
     );
 
-    assert!(manager.deliver_external_approval(
-        &approval_b,
-        ExternalApprovalDecision::Deny { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_b,
+                ExternalApprovalDecision::Deny { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness_b.recv_approval_event().await,
         Some(MockApprovalEvent::Denied {
@@ -17577,6 +17626,7 @@ async fn runtime_approval_disposition_auto_paths_obey_force_and_posture() -> Res
         harness
             .tx_event
             .send(EngineEvent::ApprovalRequired {
+                publication: None,
                 approval_key: "policy-key".to_string(),
                 approval_grouping_key: "policy-group".to_string(),
                 id: "policy-call".to_string(),
@@ -17619,13 +17669,9 @@ async fn runtime_approval_disposition_auto_paths_obey_force_and_posture() -> Res
             .events_since(&thread.id, None)?
             .into_iter()
             .find(|event| event.event == "approval.required");
-        if approved {
-            let required = required.context("automatic approval request receipt")?;
-            assert_eq!(required.payload.get("input"), Some(&input));
-            assert_eq!(required.payload["tool_call_id"], "policy-call");
-        } else {
-            assert!(required.is_none());
-        }
+        let required = required.context("automatic approval request receipt")?;
+        assert_eq!(required.payload.get("input"), Some(&input));
+        assert_eq!(required.payload["tool_call_id"], "policy-call");
         let decided = manager
             .events_since(&thread.id, None)?
             .into_iter()
@@ -17658,10 +17704,15 @@ async fn runtime_approval_disposition_auto_paths_obey_force_and_posture() -> Res
         assert!(approval_id.starts_with("approval_"));
         assert_ne!(approval_id, "policy-call");
         for id in ["policy-call", approval_id] {
-            assert!(!manager.deliver_external_approval(
-                id,
-                ExternalApprovalDecision::Allow { remember: false },
-            ));
+            assert!(
+                !manager
+                    .deliver_external_approval(
+                        id,
+                        ExternalApprovalDecision::Allow { remember: false },
+                    )
+                    .await
+                    .expect("durable approval decision")
+            );
         }
         harness
             .tx_event
@@ -17736,6 +17787,7 @@ async fn runtime_approval_disposition_forced_requests_require_human() -> Result<
         harness
             .tx_event
             .send(EngineEvent::ApprovalRequired {
+                publication: None,
                 approval_key: key.0,
                 approval_grouping_key: group.0,
                 id: "human-call".to_string(),
@@ -17761,14 +17813,24 @@ async fn runtime_approval_disposition_forced_requests_require_human() -> Result<
                 .is_err(),
             "neither Full Access nor a remembered grant may answer: {posture}/{tool_name}"
         );
-        assert!(!manager.deliver_external_approval(
-            "human-call",
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
-        assert!(manager.deliver_external_approval(
-            &approval_id,
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
+        assert!(
+            !manager
+                .deliver_external_approval(
+                    "human-call",
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
+        assert!(
+            manager
+                .deliver_external_approval(
+                    &approval_id,
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert_eq!(
             tokio::time::timeout(APPROVAL_READINESS_TIMEOUT, harness.recv_approval_decision())
                 .await?,
@@ -17780,10 +17842,15 @@ async fn runtime_approval_disposition_forced_requests_require_human() -> Result<
             )),
         );
         assert_eq!(manager.pending_approvals_count(), 0);
-        assert!(!manager.deliver_external_approval(
-            &approval_id,
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
+        assert!(
+            !manager
+                .deliver_external_approval(
+                    &approval_id,
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert_eq!(
             manager.approval_grants_for_thread(&thread.id)[0].grant_id,
             grant.grant_id
@@ -17855,6 +17922,7 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "auto_hold".to_string(),
             approval_grouping_key: "auto_hold".to_string(),
             id: "tool_auto_hold".to_string(),
@@ -17897,10 +17965,15 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
         .context("missing approval_id")?;
     assert_ne!(approval_id, "tool_auto_hold");
     assert!(approval_id.starts_with("approval_"));
-    assert!(!manager.deliver_external_approval(
-        approval_id,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                approval_id,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
 
     harness
         .tx_event
@@ -17948,6 +18021,7 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
             Some(Op::SendMessage(_))
         ));
         let event = |id: &str| EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: id.to_string(),
             approval_grouping_key: id.to_string(),
             id: id.to_string(),
@@ -17962,17 +18036,27 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
         let (other_approval, mut other_rx) =
             manager.register_pending_approval_for_thread_for_test("other-thread", "other-call");
 
-        if queued_allow {
-            assert!(manager.deliver_external_approval(
-                &approval,
-                ExternalApprovalDecision::Allow { remember: true },
-            ));
-        }
-        manager.interrupt_turn(&thread.id, &turn.id).await?;
-        assert!(!manager.deliver_external_approval(
+        let decision = manager.deliver_external_approval(
             &approval,
             ExternalApprovalDecision::Allow { remember: true },
-        ));
+        );
+        tokio::pin!(decision);
+        if queued_allow {
+            assert!(futures_util::poll!(decision.as_mut()).is_pending());
+        }
+        manager.interrupt_turn(&thread.id, &turn.id).await?;
+        if queued_allow {
+            assert!(!decision.await?);
+        }
+        assert!(
+            !manager
+                .deliver_external_approval(
+                    &approval,
+                    ExternalApprovalDecision::Allow { remember: true },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert!(
             manager
                 .get_thread_detail(&thread.id)
@@ -17989,14 +18073,23 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
             other_rx.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
         ));
-        let decision = tokio::time::timeout(Duration::from_secs(2), harness.recv_approval_event())
-            .await
-            .context("Stop must wake the approval monitor")?;
-        assert_eq!(
-            decision,
-            Some(MockApprovalEvent::Denied {
-                id: "pending_write".to_string()
-            })
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if manager.events_since(&thread.id, None)?.iter().any(|event| {
+                    event.event == "approval.decided" && event.payload["approval_id"] == approval
+                }) {
+                    break Ok::<(), anyhow::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .context("Stop must durably settle the approval monitor")??;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), harness.recv_approval_event())
+                .await
+                .is_err(),
+            "cancellation must not fabricate a host denial"
         );
         assert!(!manager.store.load_thread(&thread.id)?.auto_approve);
         assert!(
@@ -18010,14 +18103,25 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
         );
 
         harness.tx_event.send(event("queued_after_stop")).await?;
-        let decision = tokio::time::timeout(Duration::from_secs(2), harness.recv_approval_event())
-            .await
-            .context("late approval event must fail closed")?;
-        assert_eq!(
-            decision,
-            Some(MockApprovalEvent::Denied {
-                id: "queued_after_stop".to_string()
-            })
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if manager.events_since(&thread.id, None)?.iter().any(|event| {
+                    event.event == "approval.decided"
+                        && event.payload["tool_call_id"] == "queued_after_stop"
+                        && event.payload["cancelled"] == true
+                }) {
+                    break Ok::<(), anyhow::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .context("late approval event must durably fail closed")??;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), harness.recv_approval_event())
+                .await
+                .is_err(),
+            "late cancellation must not fabricate a host denial"
         );
         assert!(
             manager
@@ -18053,10 +18157,15 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
             wait_for_terminal_turn(&manager, &turn.id).await?.status,
             RuntimeTurnStatus::Interrupted
         );
-        assert!(manager.deliver_external_approval(
-            &other_approval,
-            ExternalApprovalDecision::Deny { remember: false },
-        ));
+        assert!(
+            manager
+                .deliver_external_approval(
+                    &other_approval,
+                    ExternalApprovalDecision::Deny { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert!(matches!(
             other_rx.await?,
             ExternalApprovalDecision::Deny { .. }
@@ -18121,6 +18230,7 @@ async fn approval_timeout_denies_clears_ui_and_next_turn_can_start() -> Result<(
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "timeout_key".to_string(),
             approval_grouping_key: "timeout_key".to_string(),
             id: "tool_timeout".to_string(),
@@ -18169,10 +18279,15 @@ async fn approval_timeout_denies_clears_ui_and_next_turn_can_start() -> Result<(
     );
     // A decision arriving after the timeout cancelled the waiter must not
     // resurrect it — the engine already has its denial.
-    assert!(!manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
 
     harness
         .tx_event
@@ -18337,10 +18452,15 @@ async fn thinking_delta_emits_agent_reasoning_item() -> Result<()> {
 #[tokio::test]
 async fn deliver_external_approval_for_unknown_id_returns_false() {
     let manager = test_manager(test_runtime_dir()).expect("manager");
-    assert!(!manager.deliver_external_approval(
-        "no_such_approval",
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                "no_such_approval",
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(manager.pending_approvals_count(), 0);
 }
 
@@ -18377,6 +18497,7 @@ async fn approval_remember_grants_tool_class_without_changing_posture() -> Resul
     let search = |id: &str, q: &str| {
         let input = json!({ "search_query": [{ "q": q }] });
         EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: crate::tools::approval_cache::build_approval_key("web.run", &input).0,
             approval_grouping_key: crate::tools::approval_cache::build_approval_grouping_key(
                 "web.run", &input,
@@ -18402,6 +18523,7 @@ async fn approval_remember_grants_tool_class_without_changing_posture() -> Resul
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "write-key".to_string(),
             approval_grouping_key: "write-group".to_string(),
             id: "call_write".to_string(),
@@ -18423,10 +18545,15 @@ async fn approval_remember_grants_tool_class_without_changing_posture() -> Resul
         Some("Search the web for 'espresso'"),
         "the approval carries a model-independent summary (E6)"
     );
-    assert!(manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Allow { remember: true },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Allow { remember: true },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness.recv_approval_event().await,
         Some(MockApprovalEvent::Approved {
@@ -18482,10 +18609,15 @@ async fn approval_remember_grants_tool_class_without_changing_posture() -> Resul
             && event.payload["grant_id"] == grant.grant_id
     }));
 
-    assert!(manager.deliver_external_approval(
-        &write_approval,
-        ExternalApprovalDecision::Deny { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &write_approval,
+                ExternalApprovalDecision::Deny { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     let _ = harness.recv_approval_event().await;
 
     // Revoked, the next search prompts again.

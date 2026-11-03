@@ -417,13 +417,20 @@ impl Engine {
         let (needs_auth_generation_before, result) = {
             let mut pool = pool.lock().await;
             if let Some(expected) = always_binding {
-                pool.reload_if_config_changed().await
+                pool.reload_if_config_changed()
+                    .await
                     .map_err(|error| ToolError::execution_failed(error.to_string()))?;
                 if pool.always_allow_binding(name) != Some(expected) {
-                    return Err(ToolError::permission_denied("The connector permission changed. Try the call again."));
+                    return Err(ToolError::permission_denied(
+                        "The connector permission changed. Try the call again.",
+                    ));
                 }
             }
-            (pool.needs_auth_generation(), pool.call_tool_with_disallowed(name, input, disallowed_tools, decision).await)
+            (
+                pool.needs_auth_generation(),
+                pool.call_tool_with_disallowed(name, input, disallowed_tools, decision)
+                    .await,
+            )
         };
         match result {
             Ok(result) => {
@@ -792,7 +799,9 @@ impl Engine {
                         tool_input,
                         disallowed_tools,
                         decision,
-                        context_override.as_ref().and_then(|context| context.mcp_always_binding),
+                        context_override
+                            .as_ref()
+                            .and_then(|context| context.mcp_always_binding),
                     )
                     .await
                 } else {

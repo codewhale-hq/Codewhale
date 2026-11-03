@@ -32,7 +32,9 @@ pub(super) struct PreparedToolPolicy {
 
 impl PreparedToolPolicy {
     pub(super) fn apply_mcp_always_allow(&mut self, pool: &McpPool) -> Option<u64> {
-        if self.call.approval != ApprovalRequirement::Suggest || !McpPool::is_mcp_tool(&self.call.name) {
+        if self.call.approval != ApprovalRequirement::Suggest
+            || !McpPool::is_mcp_tool(&self.call.name)
+        {
             return None;
         }
         let binding = pool.always_allow_binding(&self.call.name)?;

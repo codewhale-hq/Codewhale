@@ -71,7 +71,7 @@ const CURRENT_SESSION_GOAL_SCHEMA_VERSION: u32 = 2;
 const MAX_SESSION_GOAL_OBJECTIVE_CHARS: usize = 8_192;
 const MAX_SESSION_GOAL_FILE_BYTES: u64 = 64 * 1_024;
 pub const CURRENT_SESSION_SCHEMA_VERSION: u32 = 2;
-pub(crate) const SESSION_METADATA_READ_LIMIT: usize = 16 * 1024 * 1024;
+pub const SESSION_METADATA_READ_LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionObservation {
@@ -2534,7 +2534,7 @@ impl SessionManager {
         self.approval_receipt_store().replay(session_id)
     }
 
-    fn validated_session_id<'a>(&self, id: &'a str) -> std::io::Result<&'a str> {
+    pub fn validated_session_id<'a>(&self, id: &'a str) -> std::io::Result<&'a str> {
         let trimmed = id.trim();
         if trimmed.is_empty() {
             return Err(std::io::Error::new(
@@ -2674,6 +2674,45 @@ impl SessionManager {
             sessions_dir,
             retention_in_progress: AtomicBool::new(false),
         })
+    }
+
+    pub fn open_read_only(sessions_dir: PathBuf) -> io::Result<Option<Self>> {
+        let sessions_dir = normalize_managed_dir(sessions_dir)?;
+        match fs::metadata(&sessions_dir) {
+            Ok(metadata) if metadata.is_dir() => Ok(Some(Self {
+                sessions_dir,
+                retention_in_progress: AtomicBool::new(false),
+            })),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sessions root is not a directory",
+            )),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn load_usage_metadata(&self, id: &str) -> io::Result<SessionMetadata> {
+        let (mut metadata, ledger) = self.with_session_read_lock(id, |path| {
+            let metadata = self.load_session_metadata_by_id(id)?;
+            if metadata.id != id {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "session metadata id does not match its record",
+                ));
+            }
+            let ledger = if Self::late_usage_is_deleted(path)? {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "session accounting was deleted",
+                ))
+            } else {
+                Self::load_late_usage_unlocked(path)
+            };
+            Ok((metadata, ledger))
+        })?;
+        Self::apply_late_usage_result(&mut metadata, ledger);
+        Ok(metadata)
     }
 
     /// Create a `SessionManager` using the default location.

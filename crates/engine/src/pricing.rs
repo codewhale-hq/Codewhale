@@ -2035,7 +2035,7 @@ fn request_token_usage_for_pricing(usage: &Usage) -> TokenUsage {
     }
 }
 
-fn usage_cache_partition_is_consistent(usage: &Usage) -> bool {
+pub fn usage_cache_partition_is_consistent(usage: &Usage) -> bool {
     let reported = u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0))
         + u64::from(usage.prompt_cache_miss_tokens.unwrap_or(0))
         + u64::from(usage.prompt_cache_write_tokens.unwrap_or(0));

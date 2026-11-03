@@ -888,6 +888,8 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
         cancel_token: Arc::new(StdMutex::new(cancel_token)),
         cancel_reason: Arc::new(StdMutex::new(None)),
         tx_approval: mpsc::channel(1).0,
+        current_approval: Arc::new(parking_lot::Mutex::new(None)),
+        mock_approval_publications: None,
         tx_user_input: mpsc::channel(1).0,
         tx_steer: mpsc::channel(1).0,
         turn_controls: Arc::new(StdMutex::new(handle::TurnControls::default())),

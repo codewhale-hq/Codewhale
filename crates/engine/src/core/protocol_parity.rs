@@ -947,6 +947,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             session_id,
         },
         Event::ApprovalRequired {
+            publication: _,
             id,
             tool_name,
             description,

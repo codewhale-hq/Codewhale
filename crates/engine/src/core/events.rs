@@ -859,6 +859,7 @@ pub enum Event {
 
     /// Request user approval for a tool call
     ApprovalRequired {
+        publication: Option<crate::core::engine::NativeApprovalPublication>,
         id: String,
         tool_name: String,
         description: String,
