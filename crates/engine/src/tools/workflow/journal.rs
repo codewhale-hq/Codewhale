@@ -178,7 +178,9 @@ enum WorkflowJournalRecord {
 #[derive(Debug)]
 struct WorkflowRunJournal {
     /// State directory the ledger must stay inside; links below it are refused.
-    /// See [`WorkflowRunJournal::open`] for which root a workspace gets.
+    /// A home workspace makes this the resolved `~/.codewhale` target, while
+    /// every other workspace passes itself here with `.codewhale` still inside
+    /// the ledger path. See [`WorkflowRunJournal::open`].
     root: PathBuf,
     ledger_path: PathBuf,
 }
