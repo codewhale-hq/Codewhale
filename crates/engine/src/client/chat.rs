@@ -2531,6 +2531,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 struct PendingToolCallInfo {
     tool_name: String,
     input: Value,
+    execution_id: Option<String>,
 }
 
 struct SeenToolResult {
@@ -2874,7 +2875,8 @@ fn build_chat_messages_with_reasoning(
         let mut thinking_parts = Vec::new();
         let mut tool_calls = Vec::new();
         let mut tool_call_infos = Vec::new();
-        let mut tool_results: Vec<(String, String, String, Vec<Value>)> = Vec::new();
+        let mut tool_results: Vec<(String, String, String, Vec<Value>, Option<String>)> =
+            Vec::new();
         let mut turn_meta_budget: Option<TurnMetaBudget> = None;
 
         for block in &message.content {
@@ -2904,6 +2906,7 @@ fn build_chat_messages_with_reasoning(
                     input,
                     caller,
                     thought_signature,
+                    execution_id,
                     ..
                 } => {
                     let args = serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
@@ -2930,6 +2933,7 @@ fn build_chat_messages_with_reasoning(
                         PendingToolCallInfo {
                             tool_name: name.clone(),
                             input: input.clone(),
+                            execution_id: execution_id.clone(),
                         },
                     ));
                 }
@@ -2937,6 +2941,7 @@ fn build_chat_messages_with_reasoning(
                     tool_use_id,
                     content,
                     content_blocks,
+                    execution_id,
                     ..
                 } => {
                     let message_label = format!("Message #{message_index}");
@@ -2945,6 +2950,7 @@ fn build_chat_messages_with_reasoning(
                         content.clone(),
                         message_label,
                         content_blocks.clone().unwrap_or_default(),
+                        execution_id.clone(),
                     ));
                 }
                 ContentBlock::ServerToolUse { .. }
@@ -3109,7 +3115,8 @@ fn build_chat_messages_with_reasoning(
             if pending_tool_calls.is_empty() {
                 logging::warn("Dropping tool results without matching tool_calls");
             } else {
-                for (tool_id, content, message_label, content_blocks) in tool_results {
+                for (tool_id, content, message_label, content_blocks, execution_id) in tool_results
+                {
                     if let Some(tool_info) = pending_tool_calls.remove(&tool_id) {
                         let (image, omitted) = crate::image_attach::provider_tool_result_image_refs(
                             Some(&content_blocks),
@@ -3118,12 +3125,27 @@ fn build_chat_messages_with_reasoning(
                             codewhale_models::image_window::tool_result_text_with_omission(
                                 &content, omitted,
                             );
+                        // Native reads already bound source plus presentation. Only a
+                        // matching host execution can use that byte ceiling; footer text
+                        // never grants an exemption. Legacy/over-ceiling bodies retain
+                        // the route backstop. This changes append-only history, not prefix.
+                        let native_read_ceiling = (tool_info.tool_name == "read"
+                            && tool_info.execution_id.as_deref().is_some_and(|id| {
+                                !id.is_empty() && Some(id) == execution_id.as_deref()
+                            }))
+                        .then(|| {
+                            crate::tools::file::contract_read_result_byte_ceiling(&tool_info.input)
+                        })
+                        .flatten()
+                        .filter(|ceiling| content.len() <= *ceiling);
                         let wire_result = compact_tool_result_for_wire(
                             &tool_info.tool_name,
                             &tool_info.input,
                             &content,
                             &message_label,
-                            tool_result_budget,
+                            native_read_ceiling.map_or(tool_result_budget, |ceiling| {
+                                tool_result_budget.max(ceiling)
+                            }),
                             &mut seen_tool_results,
                         );
                         let mut tool_msg = json!({

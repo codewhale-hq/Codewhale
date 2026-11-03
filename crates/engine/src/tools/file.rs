@@ -661,6 +661,18 @@ fn effective_read_max_bytes(requested: Option<usize>) -> usize {
     }
 }
 
+/// Byte ceiling for an execution-matched native `read` on the provider wire.
+/// Paging hints (numeric bounds and a fixed-size revision) fit in 512 bytes;
+/// echolocation has its own hard cap. This is not a budget receipt for legacy
+/// results or reads made under a different historical workshop configuration.
+pub(crate) fn contract_read_result_byte_ceiling(input: &Value) -> Option<usize> {
+    let requested = contract_nonnegative_int(input, "max_bytes").ok()?;
+    Some(
+        effective_read_max_bytes(requested)
+            .saturating_add(512 + super::echolocation::POD_FOOTER_MAX_BYTES),
+    )
+}
+
 type FileMutationMutex = AsyncMutex<()>;
 
 /// File primitives can also be invoked outside the native engine's global
