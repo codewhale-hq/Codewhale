@@ -68,8 +68,6 @@ fn remove_isolated_test_state_root_at_exit() {
             let _ = std::fs::remove_dir_all(root);
         }
     }
-    // SAFETY: `atexit` only records the callback, which takes no arguments and
-    // stays valid for the life of the process.
     unsafe { atexit(remove_root) };
 }
 
