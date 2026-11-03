@@ -1566,6 +1566,16 @@ fn render_line_with_links_tagged(
     let mut current_width = 0usize;
 
     for word in words {
+        if word.text == "\n" {
+            push_inline_line(
+                &mut lines,
+                &mut current_spans,
+                &mut current_links,
+                CopyLineSeparator::Newline,
+            );
+            current_width = 0;
+            continue;
+        }
         let ww = word.text.width();
         if word.text == " " {
             // Space: emit only if we're mid-line and it fits; otherwise drop
@@ -1742,7 +1752,8 @@ impl InlineToken {
 }
 
 /// Parse an entire line into (text, style) segments, handling **bold**,
-/// *italic*, `code`, ~~strikethrough~~, `[text](url)` links, and bare URLs.
+/// *italic*, `code`, ~~strikethrough~~, `[text](url)` links, bare URLs, and
+/// `<br>`, which comes out as a token holding only a newline.
 fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<InlineToken> {
     let bold_style = base_style.add_modifier(Modifier::BOLD);
     let italic_style = base_style.add_modifier(Modifier::ITALIC);
@@ -1865,38 +1876,29 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             rest = &rest[2 + end + 2..];
             continue;
         }
-        // [text](url)
-        if rest.starts_with('[')
-            && let Some(bracket_end) = rest.find(']')
-        {
-            let text = &rest[1..bracket_end];
-            let after_bracket = &rest[bracket_end + 1..];
-            if after_bracket.starts_with('(')
-                && let Some(paren_end) = after_bracket
-                    .match_indices(')')
-                    .map(|(index, _)| index)
-                    .find(|&index| has_unmatched_closing_delimiter(&after_bracket[1..=index], ')'))
-            {
-                let url = &after_bracket[1..paren_end];
-                // The runtime toggle gates backend emission, not layout.
-                // Keeping the same visible label and metadata in both modes
-                // prevents toggling OSC 8 from reflowing the transcript.
-                out.push(InlineToken::new(
-                    text.to_string(),
-                    link_style,
-                    normalized_link_target(url),
-                ));
-                rest = &after_bracket[paren_end + 1..];
-                continue;
-            }
+        // [text](url), ![alt](src) and [![alt](src)](href)
+        let image = usize::from(rest.starts_with("!["));
+        if let Some((text, url, link_len)) = split_markdown_link(&rest[image..]) {
+            // The runtime toggle gates backend emission, not layout.
+            // Keeping the same visible label and metadata in both modes
+            // prevents toggling OSC 8 from reflowing the transcript.
+            out.push(InlineToken::new(
+                text.to_string(),
+                link_style,
+                normalized_link_target(url),
+            ));
+            rest = &rest[image + link_len..];
+            continue;
         }
-        // URL: consume until whitespace, full-width punctuation or a curly
-        // quote, then keep trailing punctuation visible but outside the
-        // hyperlink target.
+        // Keep trailing punctuation visible but outside the hyperlink target.
         if rest.starts_with("http://") || rest.starts_with("https://") {
             let token_end = rest
-                .find(|ch: char| {
-                    ch.is_whitespace() || "。，、；：！？（）「」『』【】《》〈〉“”‘’".contains(ch)
+                .char_indices()
+                .find_map(|(offset, ch)| {
+                    (ch.is_whitespace()
+                        || "。，、；：！？（）「」『』【】《》〈〉“”‘’".contains(ch)
+                        || (ch == '<' && line_break_tag_len(&rest[offset..]).is_some()))
+                    .then_some(offset)
                 })
                 .unwrap_or(rest.len());
             let token = &rest[..token_end];
@@ -1915,6 +1917,11 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
                 ));
             }
             rest = &rest[token_end..];
+            continue;
+        }
+        if let Some(len) = line_break_tag_len(rest) {
+            out.push(InlineToken::new("\n".to_string(), base_style, None));
+            rest = rest[len..].trim_start_matches(' ');
             continue;
         }
         // Plain text: consume until next marker or URL; always advance at least 1 char.
@@ -2011,6 +2018,33 @@ fn trailing_url_end(candidate: &str) -> usize {
     end
 }
 
+fn split_markdown_link(source: &str) -> Option<(&str, &str, usize)> {
+    let label = source.strip_prefix('[')?;
+    if let Some(image) = label.strip_prefix('!')
+        && let Some(alt_end) = image.strip_prefix('[').and_then(|alt| alt.find(']'))
+        && let Some((_, image_tail)) = split_link_destination(&image[1 + alt_end..])
+        && let Some((href, tail)) = split_link_destination(&image[1 + alt_end + image_tail..])
+    {
+        return Some((
+            &image[1..1 + alt_end],
+            href,
+            3 + alt_end + image_tail + tail,
+        ));
+    }
+    let label_end = label.find(']')?;
+    let (url, tail) = split_link_destination(&label[label_end..])?;
+    Some((&label[..label_end], url, 1 + label_end + tail))
+}
+
+fn split_link_destination(after_label: &str) -> Option<(&str, usize)> {
+    let destination = after_label.strip_prefix("](")?;
+    let end = destination
+        .match_indices(')')
+        .map(|(index, _)| index)
+        .find(|&index| has_unmatched_closing_delimiter(&destination[..=index], ')'))?;
+    Some((&destination[..end], end + 3))
+}
+
 fn has_unmatched_closing_delimiter(candidate: &str, closing: char) -> bool {
     let opening = match closing {
         ')' => '(',
@@ -2053,16 +2087,29 @@ fn find_next_marker(s: &str) -> usize {
             || slice.starts_with("~~")
             || slice.starts_with('`')
             || slice.starts_with('[')
+            || slice.starts_with("![")
             || (slice.starts_with('*') && !slice.starts_with("**"))
             || (slice.starts_with('_') && !slice.starts_with("__"))
             || slice.starts_with("http://")
             || slice.starts_with("https://")
+            || line_break_tag_len(slice).is_some()
         {
             return i;
         }
         i += ch_len;
     }
     s.len()
+}
+
+fn line_break_tag_len(text: &str) -> Option<usize> {
+    let rest = text.strip_prefix('<')?;
+    if !rest.get(..2)?.eq_ignore_ascii_case("br") {
+        return None;
+    }
+    let tail = rest[2..].trim_start_matches(' ');
+    let close = tail.strip_prefix('/').unwrap_or(tail);
+    close.strip_prefix('>')?;
+    Some(text.len() - close.len() + 1)
 }
 
 fn is_horizontal_rule(line: &str) -> bool {
@@ -2138,26 +2185,37 @@ fn render_table_row(
     let mut wrapped: Vec<Vec<RenderedMarkdownLine>> = (0..num_cols)
         .map(|i| {
             let cell = cells.get(i).map_or("", String::as_str);
-            let tokens = parse_inline_spans(cell, base_style, link_style());
-            if tokens.iter().map(|token| token.text.width()).sum::<usize>() > col_width {
+            let mut tokens = parse_inline_spans(cell, base_style, link_style());
+            if tokens.last().is_some_and(|token| token.text == "\n") {
+                tokens.pop();
+            }
+            let rows: Vec<&[InlineToken]> = tokens.split(|token| token.text == "\n").collect();
+            if rows
+                .iter()
+                .any(|row| row.iter().map(|token| token.text.width()).sum::<usize>() > col_width)
+            {
                 return render_line_with_links_tagged(cell, col_width, base_style, link_style());
             }
-            let mut spans = Vec::with_capacity(tokens.len());
-            let mut links = Vec::new();
-            let mut column = 0;
-            for token in tokens {
-                let token_width = token.text.width();
-                record_inline_link(&mut links, &token, column, token_width);
-                column += token_width;
-                spans.push(token.into_span());
-            }
-            vec![RenderedMarkdownLine {
-                line: Line::from(spans),
-                links,
-                is_code: false,
-                copy_prefix_width: 0,
-                copy_separator_after: CopyLineSeparator::Newline,
-            }]
+            rows.into_iter()
+                .map(|row| {
+                    let mut spans = Vec::with_capacity(row.len());
+                    let mut links = Vec::new();
+                    let mut column = 0;
+                    for token in row {
+                        let token_width = token.text.width();
+                        record_inline_link(&mut links, token, column, token_width);
+                        column += token_width;
+                        spans.push(token.span_for(token.text.clone()));
+                    }
+                    RenderedMarkdownLine {
+                        line: Line::from(spans),
+                        links,
+                        is_code: false,
+                        copy_prefix_width: 0,
+                        copy_separator_after: CopyLineSeparator::Newline,
+                    }
+                })
+                .collect()
         })
         .collect();
     let row_height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
