@@ -11,7 +11,7 @@ description = "App-server protocol frames for Codewhale runtime integrations"
 workspace = true
 
 [dependencies]
-codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2" }
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3" }
 chrono.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }

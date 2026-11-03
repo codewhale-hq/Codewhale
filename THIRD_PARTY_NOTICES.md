@@ -46,6 +46,24 @@ poll-based render loop; the file header records the change.
 
 Upstream: <https://github.com/openai/codex>
 
+The App Server request-ID, RPC envelope and initialization contracts in
+`crates/app-server-protocol/src/{rpc,lifecycle}.rs` are adapted from official
+Codex `rust-v0.166.0`, commit `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`.
+The changes and exact source paths are recorded in that crate's `UPSTREAM.md`.
+The crate retains `LICENSE-APACHE`, `LICENSE-MIT` and the upstream `NOTICE`;
+its combined license expression is `MIT AND Apache-2.0`.
+
+Upstream NOTICE, retained unchanged:
+
+```text
+OpenAI Codex
+Copyright 2025 OpenAI
+
+This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers
+```
+
 ```
 Copyright 2025 OpenAI
 

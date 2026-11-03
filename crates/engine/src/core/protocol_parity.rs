@@ -630,6 +630,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             error,
             tool_catalog,
             base_url,
+            ..
         } => wire::EventMsg::TurnComplete {
             thread_id,
             session_id,
@@ -658,6 +659,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             first_token_ms,
             request_ms,
             finish_reason: _,
+            ..
         } => wire::EventMsg::TurnUsage {
             max_output_tokens: *max_output_tokens,
             thread_id,
@@ -945,6 +947,7 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             session_id,
         },
         Event::ApprovalRequired {
+            publication: _,
             id,
             tool_name,
             description,
@@ -1251,6 +1254,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             load_error: roster.load_error().map(str::to_string),
         },
         Op::SyncSession {
+            expected,
             session_id,
             messages,
             system_prompt,
@@ -1260,6 +1264,7 @@ pub fn op_to_protocol(op: &Op) -> wire_op::Op {
             mode,
             ..
         } => wire_op::Op::SyncSession {
+            expected: expected.as_ref().map(to_value),
             engine_session_id: session_id.clone(),
             messages: messages.iter().map(to_value).collect(),
             system_prompt: system_prompt.as_ref().map(to_value),
@@ -1445,6 +1450,8 @@ mod tests {
         };
         let complete = event_to_protocol(
             &Event::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -1489,6 +1496,7 @@ mod tests {
         for (event, tag) in [
             (
                 Event::TurnUsage {
+                    accounting: None,
                     max_output_tokens: None,
                     usage: parent,
                     duration_ms: 12,
@@ -1521,6 +1529,8 @@ mod tests {
     #[test]
     fn manual_compaction_terminal_keeps_its_operation_id_in_projection() {
         let event = Event::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: Some("compact-1".into()),
@@ -1588,6 +1598,8 @@ mod tests {
                 submission_id: Some("sub-host-1".into()),
             },
             Event::TurnComplete {
+                source_accounting: false,
+
                 turn_id: Some("turn-1".into()),
                 submission_id: Some("sub-host-1".into()),
                 compaction_id: None,
@@ -1617,6 +1629,7 @@ mod tests {
                 request_ms: None,
             },
             Event::TurnUsage {
+                accounting: None,
                 max_output_tokens: None,
                 usage,
                 duration_ms: 12,

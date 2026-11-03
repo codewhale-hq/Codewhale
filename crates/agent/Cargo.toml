@@ -11,5 +11,5 @@ description = "Model/provider registry and fallback strategy for Codewhale"
 workspace = true
 
 [dependencies]
-codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-config = { path = "../config", version = "0.10.3" }
 serde.workspace = true

@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
 
-use super::approval::{ApprovalDecision, UserInputDecision};
+use super::approval::{ApprovalDecision, SubmittedApproval, UserInputDecision};
 use super::{
     CancelReason, EngineHandle, EngineRunCompletion, LiveRuntimeAuthority, Op,
     RuntimePermissionAuthority, UserInputResponse,
@@ -566,6 +566,27 @@ impl EngineHandle {
             Err(poisoned) => poisoned.into_inner().cancel(),
         }
         codewhale_runtime::retry_status::clear();
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(sources) = self.mock_approval_publications.as_ref() {
+            let pending = sources.lock().drain().collect::<Vec<_>>();
+            let runtime = tokio::runtime::Handle::try_current().ok();
+            for (id, (source, producer)) in pending {
+                let receipt = crate::approval_log::ApprovalReceipt::decided_with(
+                    id,
+                    crate::approval_log::ApprovalOutcome::Cancelled,
+                    Some(ApprovalDecider::Host),
+                );
+                let committed = source.commit_mock_outcome(receipt).unwrap_or(false);
+                if let Some(runtime) = runtime.as_ref() {
+                    runtime.spawn(async move {
+                        let _producer = producer;
+                        if committed {
+                            let _ = source.published().await;
+                        }
+                    });
+                }
+            }
+        }
     }
 
     /// Snapshot the exact existing target control for one captured transport
@@ -619,42 +640,242 @@ impl EngineHandle {
         }
     }
 
-    /// Deliver one approval answer. An agent's pending call gets it directly
-    /// — the engine may be streaming or running tools and not reading
-    /// approvals — and everything else goes to the engine's own waiting call.
     async fn send_approval(&self, decision: ApprovalDecision) -> Result<()> {
-        use crate::tools::subagent::ChildApprovalOutcome;
-        let child = match &decision {
-            ApprovalDecision::Approved { id, by, .. } => {
-                Some((id, ChildApprovalOutcome::Approved { by: *by }))
+        let current = self
+            .current_approval
+            .lock()
+            .as_ref()
+            .filter(|source| source.is_for(decision.id()))
+            .cloned();
+        if let Some(source) = current {
+            return self.deliver_source_approval(decision, source).await;
+        }
+        if crate::tools::subagent::SubAgentManager::is_child_approval_id(decision.id()) {
+            use crate::tools::subagent::ChildApprovalOutcome;
+            let (outcome, grant) = match &decision {
+                ApprovalDecision::Approved { by, grant, .. } => {
+                    (ChildApprovalOutcome::Approved { by: *by }, grant.clone())
+                }
+                ApprovalDecision::Denied { by, grant, .. } => {
+                    (ChildApprovalOutcome::Denied { by: *by }, grant.clone())
+                }
+                ApprovalDecision::TimedOut { .. } => (ChildApprovalOutcome::TimedOut, None),
+                ApprovalDecision::Unavailable { .. } => (ChildApprovalOutcome::Unavailable, None),
+                ApprovalDecision::RetryWithPolicy { .. } => {
+                    anyhow::bail!("child approval does not offer a sandbox retry")
+                }
+            };
+            let submission = self.subagent_manager.write().await.submit_child_approval(
+                decision.id(),
+                outcome,
+                grant,
+            );
+            if submission.wait().await? {
+                return Ok(());
             }
-            ApprovalDecision::Denied { id, by, .. } => {
-                Some((id, ChildApprovalOutcome::Denied { by: *by }))
+            #[cfg(any(test, feature = "test-support"))]
+            anyhow::ensure!(
+                self.mock_approval_publications.is_some(),
+                "child approval is no longer pending or resolved differently"
+            );
+            #[cfg(not(any(test, feature = "test-support")))]
+            anyhow::bail!("child approval is no longer pending or resolved differently");
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(sources) = self.mock_approval_publications.as_ref() {
+            let mock = sources
+                .lock()
+                .get(decision.id())
+                .map(|(source, _)| source.clone());
+            if let Some(source) = mock {
+                let receipt = decision.receipt();
+                if source.commit_mock_outcome(receipt)? {
+                    let actual = source.actual().await?;
+                    let observed = if decision.require_actual(&actual).is_ok() {
+                        Some(decision.clone())
+                    } else if matches!(
+                        actual,
+                        crate::approval_log::ApprovalReceipt::Decided {
+                            outcome: crate::approval_log::ApprovalOutcome::Timeout,
+                            ..
+                        }
+                    ) {
+                        Some(ApprovalDecision::TimedOut {
+                            id: decision.id().to_owned(),
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(observed) = observed {
+                        self.tx_approval
+                            .send(SubmittedApproval {
+                                decision: observed,
+                                publication: Some(source.clone()),
+                            })
+                            .await?;
+                    }
+                }
+                return decision.require_actual(&source.published().await?);
             }
-            // An agent has no timeout outcome of its own (#6101): an expired
-            // card is a deny for whichever call it was answering.
-            ApprovalDecision::TimedOut { id } => Some((
-                id,
-                ChildApprovalOutcome::Denied {
-                    by: ApprovalDecider::Host,
-                },
-            )),
-            ApprovalDecision::Unavailable { id } => Some((id, ChildApprovalOutcome::Unavailable)),
-            // A sandbox retry only exists for the parent's own tool call.
-            ApprovalDecision::RetryWithPolicy { .. } => None,
-        };
-        if let Some((id, outcome)) = child
-            && crate::tools::subagent::SubAgentManager::is_child_approval_id(id)
-            && self
-                .subagent_manager
-                .write()
-                .await
-                .resolve_child_approval(id, outcome)
-        {
+            let (source, _producer) = super::NativeApprovalPublication::new(decision.id());
+            source.set_mock_controls(self.captured_turn_cancel(), None);
+            source.commit_mock_outcome(decision.receipt())?;
+            decision.require_actual(&source.published().await?)?;
+            self.tx_approval
+                .send(SubmittedApproval {
+                    decision,
+                    publication: Some(source),
+                })
+                .await?;
             return Ok(());
         }
-        self.tx_approval.send(decision).await?;
-        Ok(())
+        anyhow::bail!("approval has no current held Core request")
+    }
+
+    async fn deliver_source_approval(
+        &self,
+        decision: ApprovalDecision,
+        publication: super::NativeApprovalPublication,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            publication.is_for(decision.id()),
+            "approval source belongs to another Core request"
+        );
+        let current = self
+            .current_approval
+            .lock()
+            .as_ref()
+            .is_some_and(|source| source.same_request(&publication));
+        if !current {
+            return decision.require_actual(&publication.published().await?);
+        }
+        if matches!(decision, ApprovalDecision::TimedOut { .. }) {
+            anyhow::ensure!(
+                publication.timeout_seconds().is_some(),
+                "Core approval has no configured deadline"
+            );
+            return decision.require_actual(&publication.published().await?);
+        }
+        let submitted = SubmittedApproval {
+            decision: decision.clone(),
+            publication: Some(publication.clone()),
+        };
+        let receipt = tokio::select! {
+            biased;
+            receipt = publication.published() => receipt?,
+            sent = self.tx_approval.send(submitted) => {
+                sent?;
+                publication.published().await?
+            }
+        };
+        decision.require_actual(&receipt)
+    }
+
+    pub(crate) async fn accept_child_approval(
+        &self,
+        id: String,
+        reply: crate::tools::subagent::ChildApprovalReply,
+    ) -> Result<()> {
+        use crate::tools::subagent::ChildApprovalOutcome;
+        let decision = match reply.outcome {
+            ChildApprovalOutcome::Approved { by } => ApprovalDecision::Approved {
+                id,
+                by,
+                grant: reply.grant,
+            },
+            ChildApprovalOutcome::Denied { by } => ApprovalDecision::Denied {
+                id,
+                by,
+                grant: reply.grant,
+            },
+            ChildApprovalOutcome::TimedOut => ApprovalDecision::TimedOut { id },
+            ChildApprovalOutcome::Unavailable => ApprovalDecision::Unavailable { id },
+        };
+        if let Some(publication) = reply.publication {
+            self.deliver_source_approval(decision, publication).await
+        } else {
+            anyhow::bail!("child approval reply has no captured Core source")
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn has_mock_approval_publications(&self) -> bool {
+        self.mock_approval_publications.is_some()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn mock_approval_publication(
+        &self,
+        tool_id: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> Option<super::NativeApprovalPublication> {
+        let sources = self.mock_approval_publications.as_ref()?.clone();
+        let (source, producer) = super::NativeApprovalPublication::new(tool_id);
+        source.set_mock_controls(self.captured_turn_cancel(), timeout);
+        {
+            let mut pending = sources.lock();
+            if pending.contains_key(tool_id) {
+                return None;
+            }
+            pending.insert(tool_id.to_owned(), (source.clone(), producer));
+        }
+        if let Some(timeout) = timeout {
+            let source = source.clone();
+            let tool_id = tool_id.to_owned();
+            let approvals = self.tx_approval.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(timeout).await;
+                let receipt = crate::approval_log::ApprovalReceipt::decided_with(
+                    &tool_id,
+                    crate::approval_log::ApprovalOutcome::Timeout,
+                    None,
+                );
+                if source.commit_mock_outcome(receipt).unwrap_or(false) {
+                    let _ = source.published().await;
+                    if matches!(
+                        source.actual().await,
+                        Ok(crate::approval_log::ApprovalReceipt::Decided {
+                            outcome: crate::approval_log::ApprovalOutcome::Timeout,
+                            ..
+                        })
+                    ) {
+                        let _ = approvals
+                            .send(SubmittedApproval {
+                                decision: ApprovalDecision::TimedOut {
+                                    id: tool_id.clone(),
+                                },
+                                publication: Some(source.clone()),
+                            })
+                            .await;
+                    }
+                    let mut pending = sources.lock();
+                    if pending
+                        .get(&tool_id)
+                        .is_some_and(|(current, _)| current.same_request(&source))
+                    {
+                        pending.remove(&tool_id);
+                    }
+                }
+            });
+        }
+        Some(source)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn retire_mock_approval_publication(
+        &self,
+        tool_id: &str,
+        source: &super::NativeApprovalPublication,
+    ) {
+        if let Some(sources) = self.mock_approval_publications.as_ref() {
+            let mut pending = sources.lock();
+            if pending
+                .get(tool_id)
+                .is_some_and(|(current, _)| current.same_request(source))
+            {
+                pending.remove(tool_id);
+            }
+        }
     }
 
     /// Approve a pending tool call because a person said yes.
@@ -761,14 +982,12 @@ impl EngineHandle {
         policy: codewhale_sandbox::SandboxPolicy,
         by: ApprovalDecider,
     ) -> Result<()> {
-        self.tx_approval
-            .send(ApprovalDecision::RetryWithPolicy {
-                id: id.into(),
-                policy,
-                by,
-            })
-            .await?;
-        Ok(())
+        self.send_approval(ApprovalDecision::RetryWithPolicy {
+            id: id.into(),
+            policy,
+            by,
+        })
+        .await
     }
 
     /// Submit a response for request_user_input. Success means Engine accepted

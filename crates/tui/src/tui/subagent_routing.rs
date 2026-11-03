@@ -6,13 +6,15 @@ use crate::tui::app::{
     AgentCurrentActivity, AgentCurrentActivityStatus, AgentProgressMeta, AgentRecentAction, App,
     MAX_AGENT_RECENT_ACTIONS, TaskPanelEntry, TaskPanelEntryKind, bound_agent_activity_text,
 };
-use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
+use crate::tui::history::HistoryCell;
+use crate::tui::history::SubAgentCell;
 use crate::tui::pager::PagerView;
 use crate::tui::tool_routing::refreshes_workspace_context_on_completion;
 use crate::tui::widgets::agent_card::{
     AgentLifecycle, DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
 };
 use crate::tui::workspace_context;
+use codewhale_app_server::exec_agent::summarize_tool_output;
 use codewhale_config::AppMode;
 use codewhale_engine::task_manager::{TaskRecord, TaskStatus, TaskSummary};
 use codewhale_engine::tools::subagent::{
@@ -460,75 +462,40 @@ pub(super) fn subagent_message_refreshes_workspace_context(message: &MailboxMess
 /// allocating a `DelegateCard` or `FanoutCard` on first sight (issue #128).
 pub(super) fn handle_subagent_mailbox_for_turn(
     app: &mut App,
-    turn_id: &str,
-    seq: u64,
+    _turn_id: &str,
+    _seq: u64,
     message: &MailboxMessage,
 ) -> bool {
     // Accumulate sub-agent token costs for the real-time footer counter (#166).
     if let MailboxMessage::TokenUsage {
+        record,
         agent_id: _,
-        source_id,
-        route,
-        usage,
+        ..
     } = message
     {
-        // The child's own route truth always wins and is never guessed from
-        // provider identity: `route` is the immutable envelope its client was
-        // frozen with at construction, so its billing mode, billing surface
-        // and endpoint fingerprint are the child's dispatch receipt. A child
-        // whose route froze as Unknown stays Unknown.
-        //
-        // Sub-agent spend joins the parent total, so it also joins the
-        // completeness counters `/cost` reports against that total.
-        let stable_source = if source_id.trim().is_empty() {
-            format!("mailbox:{turn_id}:{seq}")
-        } else {
-            source_id.clone()
-        };
-        let source_fingerprint =
-            codewhale_engine::cost_status::usage_source_fingerprint(&stable_source);
-        if codewhale_engine::cost_status::usage_source_seen(&stable_source) {
-            // The runtime sink runs synchronously before mailbox publication.
-            // Fold its identity and money into App together, before a following
-            // TurnComplete can snapshot either half. A post-seal response has
-            // no mailbox event and is swept by the event loop instead.
-            let first_live_delivery = !app
-                .session
-                .subagent_usage_sources
-                .contains(&source_fingerprint);
-            let pending_runtime_cost = codewhale_engine::cost_status::drain();
-            if !pending_runtime_cost.is_empty() {
-                app.absorb_pending_background_cost(&pending_runtime_cost);
+        if let Some(record) = record.as_ref().filter(|record| record.settlement.is_some()) {
+            let pending = codewhale_engine::cost_status::drain();
+            app.absorb_pending_background_cost(&pending);
+            if let Err(error) = app.absorb_usage_source(record) {
+                tracing::warn!(%error, "mailbox usage revision was not admitted");
+                app.mark_usage_uncertain("usage_correction_unverified");
             }
-            if first_live_delivery
-                && app
-                    .session
-                    .subagent_usage_sources
-                    .contains(&source_fingerprint)
+            let fingerprint =
+                codewhale_engine::cost_status::usage_source_fingerprint(&record.source_id);
+            if app
+                .session
+                .accounted_usage_sources
+                .get(&fingerprint)
+                .is_some_and(|contribution| contribution.record == *record)
             {
                 record_agent_current_activity(app, message);
             }
             return false;
         }
-        if app
-            .session
-            .subagent_usage_sources
-            .insert(source_fingerprint)
-        {
-            // Update the Work-row receipt under the same replay guard as
-            // cost. A mailbox replay must not make either total grow twice.
-            // Usage confirms or replaces the child's frozen spawn model; the
-            // parent's configured/default route is never child evidence.
-            record_agent_current_activity(app, message);
-            let audit = route.audit(usage);
-            app.record_turn_cost_audit(&audit);
-            app.record_turn_cost_route_receipt(route.receipt(&audit));
-            if let Some(cost) = audit.estimate {
-                app.accrue_subagent_cost_estimate(cost);
-            }
-        }
-        // No transcript card changed. The event-loop redraw still repaints
-        // the Work row and footer from the updated receipt state.
+        let pending = codewhale_engine::cost_status::drain();
+        app.absorb_pending_background_cost(&pending);
+        app.mark_usage_uncertain("legacy_usage_unverified");
+        record_agent_current_activity(app, message);
         return false;
     }
 
@@ -705,15 +672,32 @@ fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
     let agent_id = message.agent_id().to_string();
     let meta = app.agent_progress_meta.entry(agent_id).or_default();
     meta.last_progress_at = Some(Instant::now());
-    if let MailboxMessage::TokenUsage { route, usage, .. } = message {
-        // The child's own used-token tally (input + output), matching the
-        // worker budget's `usage_total_tokens`. Counting only completions made
-        // the strip look "stuck" on tiny numbers while the child was burning
-        // context. Absent until a real envelope lands, so an agent with no
-        // reported usage shows no number instead of a zero.
-        let turn_total =
-            u64::from(usage.input_tokens).saturating_add(u64::from(usage.output_tokens));
-        meta.received_tokens = Some(meta.received_tokens.unwrap_or(0).saturating_add(turn_total));
+    if let MailboxMessage::TokenUsage {
+        record,
+        route,
+        usage,
+        ..
+    } = message
+    {
+        let (route, usage) = record
+            .as_ref()
+            .filter(|record| record.settlement.is_some())
+            .map_or((route.as_ref(), usage), |record| {
+                (&record.usage.route, &record.usage.usage)
+            });
+        let total = u64::from(usage.input_tokens).saturating_add(u64::from(usage.output_tokens));
+        if let Some(record) = record.as_ref().filter(|record| record.settlement.is_some()) {
+            let key = codewhale_engine::cost_status::usage_source_fingerprint(&record.source_id);
+            let previous = meta.received_usage_sources.insert(key, total).unwrap_or(0);
+            meta.received_tokens = Some(
+                meta.received_tokens
+                    .unwrap_or(0)
+                    .saturating_sub(previous)
+                    .saturating_add(total),
+            );
+        } else {
+            meta.received_tokens = Some(meta.received_tokens.unwrap_or(0).saturating_add(total));
+        }
         meta.resolved_provider = Some(route.provider.as_str().to_string());
         meta.resolved_model = Some(bound_agent_activity_text(
             &codewhale_runtime::safe_label::sanitize_persisted_route_label(&route.model),
@@ -1352,6 +1336,7 @@ mod tests {
             &mut app,
             91,
             &MailboxMessage::TokenUsage {
+                record: None,
                 agent_id: "agent_route".to_string(),
                 source_id: "response-route".to_string(),
                 route: Box::new(test_route(
@@ -1380,6 +1365,7 @@ mod tests {
             &mut app,
             1,
             &MailboxMessage::TokenUsage {
+                record: None,
                 agent_id: "agent_spend".to_string(),
                 source_id: "response-1".to_string(),
                 route: Box::new(route.clone()),
@@ -1394,6 +1380,7 @@ mod tests {
             &mut app,
             2,
             &MailboxMessage::TokenUsage {
+                record: None,
                 agent_id: "agent_spend".to_string(),
                 source_id: "response-2".to_string(),
                 route: Box::new(route),

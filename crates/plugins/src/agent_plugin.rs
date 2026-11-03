@@ -854,6 +854,7 @@ fn standard_server_to_config(
         lazy: false,
         enabled_tools: extension.enabled_tools,
         disabled_tools: extension.disabled_tools,
+        always_allow_tools: Vec::new(),
         headers: server.headers.into_iter().collect(),
         env_headers: extension.env_headers.into_iter().collect(),
         bearer_token_env_var: extension.bearer_token_env_var,

@@ -363,6 +363,7 @@ impl Engine {
         input: serde_json::Value,
         disallowed_tools: &[String],
         decision: Option<&super::HumanDecision>,
+        always_binding: Option<u64>,
     ) -> Result<RichToolResult, ToolError> {
         McpPool::authorize_call(disallowed_tools, name, &input)
             .map_err(|error| ToolError::not_available(error.to_string()))?;
@@ -413,12 +414,24 @@ impl Engine {
             }
             return Ok(rich);
         }
-        let needs_auth_generation_before = pool.lock().await.needs_auth_generation();
-        let result = pool
-            .lock()
-            .await
-            .call_tool_with_disallowed(name, input, disallowed_tools, decision)
-            .await;
+        let (needs_auth_generation_before, result) = {
+            let mut pool = pool.lock().await;
+            if let Some(expected) = always_binding {
+                pool.reload_if_config_changed()
+                    .await
+                    .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+                if pool.always_allow_binding(name) != Some(expected) {
+                    return Err(ToolError::permission_denied(
+                        "The connector permission changed. Try the call again.",
+                    ));
+                }
+            }
+            (
+                pool.needs_auth_generation(),
+                pool.call_tool_with_disallowed(name, input, disallowed_tools, decision)
+                    .await,
+            )
+        };
         match result {
             Ok(result) => {
                 Ok(crate::tools::registry::mcp_result_to_bounded_rich_tool_result(result))
@@ -786,6 +799,9 @@ impl Engine {
                         tool_input,
                         disallowed_tools,
                         decision,
+                        context_override
+                            .as_ref()
+                            .and_then(|context| context.mcp_always_binding),
                     )
                     .await
                 } else {

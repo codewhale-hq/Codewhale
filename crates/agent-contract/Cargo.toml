@@ -14,6 +14,6 @@ workspace = true
 test-support = []
 
 [dependencies]
-codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
-codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
+codewhale-protocol = { path = "../protocol", version = "0.10.3" }
 serde = { workspace = true, features = ["derive"] }

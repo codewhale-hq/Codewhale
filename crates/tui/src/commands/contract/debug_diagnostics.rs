@@ -149,10 +149,132 @@ impl CommandDebugDiagnosticsContext for DebugDiagnosticsAdapter<'_> {
                 }
             })
             .collect();
+        let mut latest_calls = BTreeMap::new();
+        for (source, contribution) in &app.session.accounted_usage_sources {
+            latest_calls.insert(
+                (contribution.record.usage.route.dispatched_at, source),
+                contribution,
+            );
+            if latest_calls.len() > App::TURN_CACHE_HISTORY_CAP {
+                latest_calls.pop_first();
+            }
+        }
+        let wall_now = chrono::Utc::now();
+        let calls = latest_calls
+            .into_iter()
+            .map(|((quoted_at, source), contribution)| {
+                let record = &contribution.record;
+                let route = &record.usage.route;
+                let display_route = route.sanitized_for_persistence();
+                let valid = contribution.validate().is_ok()
+                    && source.as_str()
+                        == codewhale_engine::cost_status::usage_source_fingerprint(
+                            &record.source_id,
+                        );
+                let revision = record.settlement.as_ref().filter(|_| valid);
+                let coverage = revision.map_or(DebugCacheCallCoverage::Unknown, |revision| {
+                    use codewhale_engine::llm_client::ProviderUsageCoverage;
+                    match revision.coverage {
+                        ProviderUsageCoverage::Reported => DebugCacheCallCoverage::Reported,
+                        ProviderUsageCoverage::Incomplete => DebugCacheCallCoverage::Incomplete,
+                        ProviderUsageCoverage::Missing => DebugCacheCallCoverage::Missing,
+                        ProviderUsageCoverage::NotDispatched => {
+                            DebugCacheCallCoverage::NotDispatched
+                        }
+                        ProviderUsageCoverage::Rejected => DebugCacheCallCoverage::Rejected,
+                    }
+                });
+                let reported = matches!(
+                    coverage,
+                    DebugCacheCallCoverage::Reported | DebugCacheCallCoverage::Incomplete
+                );
+                let refused = matches!(
+                    coverage,
+                    DebugCacheCallCoverage::NotDispatched | DebugCacheCallCoverage::Rejected
+                );
+                let (amount, priced, unpriced) = match currency {
+                    CostCurrency::Usd => {
+                        (contribution.usd, contribution.priced, contribution.unpriced)
+                    }
+                    CostCurrency::Cny => (
+                        contribution.cny,
+                        contribution.cny_priced,
+                        contribution.cny_unpriced,
+                    ),
+                };
+                let known_amount = (revision.is_some()
+                    && (refused || reported && (priced > 0 || amount > 0.0)))
+                    .then_some(amount);
+                let usage = &record.usage.usage;
+                let cache_consistent =
+                    codewhale_engine::pricing::usage_cache_partition_is_consistent(usage);
+                let classes = token_usage_for_pricing(usage);
+                let audit = route.audit_frozen(usage);
+                DebugCacheCall {
+                    source_fingerprint: codewhale_engine::cost_status::usage_source_fingerprint(
+                        &record.source_id,
+                    ),
+                    owner: revision.map(|revision| match revision.owner {
+                        codewhale_engine::cost_status::UsageSpendOwner::Primary => {
+                            DebugCacheCallOwner::Primary
+                        }
+                        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary => {
+                            DebugCacheCallOwner::Auxiliary
+                        }
+                    }),
+                    coverage,
+                    pricing_complete: revision.is_some()
+                        && unpriced == 0
+                        && (priced > 0 || refused),
+                    row: DebugCacheTurn {
+                        provider: Some(display_route.provider.as_str().to_string()),
+                        provider_identity: Some(display_route.provider_identity.clone()),
+                        model: Some(display_route.model.clone()),
+                        auto_model: false,
+                        input_tokens: if reported { usage.input_tokens } else { 0 },
+                        output_tokens: if reported { usage.output_tokens } else { 0 },
+                        cache_hit_tokens: (reported && cache_consistent)
+                            .then_some(usage.prompt_cache_hit_tokens)
+                            .flatten(),
+                        cache_miss_tokens: (reported && cache_consistent)
+                            .then_some(usage.prompt_cache_miss_tokens)
+                            .flatten(),
+                        cache_write_tokens: (reported && cache_consistent)
+                            .then_some(usage.prompt_cache_write_tokens)
+                            .flatten(),
+                        reasoning_tokens: reported.then_some(usage.reasoning_tokens).flatten(),
+                        reasoning_replay_tokens: reported
+                            .then_some(usage.reasoning_replay_tokens)
+                            .flatten(),
+                        priced_amount: known_amount,
+                        unpriced_reason_key: audit
+                            .unpriced_reason
+                            .map(|reason| reason.label().to_string()),
+                        unpriced_reason_sort_rank: audit.unpriced_reason.map(|reason| reason as u8),
+                        unpriced_classes: audit
+                            .unpriced_classes
+                            .iter()
+                            .map(|class| class.label().to_string())
+                            .collect(),
+                        priced_cache_read: classes.cache_read,
+                        priced_cache_miss: classes.input,
+                        priced_cache_write: classes.cache_write,
+                        age_seconds: u64::try_from(
+                            wall_now.signed_duration_since(quoted_at).num_seconds(),
+                        )
+                        .unwrap_or(0),
+                    },
+                }
+            })
+            .collect();
         DebugCacheTelemetry {
             model: app.model.clone(),
             session_cache_rates: crate::tui::session_metrics::cache_rates(&app),
             history,
+            calls,
+            calls_total: app.session.accounted_usage_sources.len(),
+            calls_currency: super::to_command_currency(currency),
+            calls_legacy_coverage_unknown: app.session.cost_coverage_unknown_legacy,
             history_capacity: App::TURN_CACHE_HISTORY_CAP,
             prefix_stability_pct: app.prefix_stability_pct,
             prefix_checks_total: app.prefix_checks_total,

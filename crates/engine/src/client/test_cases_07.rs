@@ -52,8 +52,9 @@
             ProviderKind::Custom
         );
 
-        let route = crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Custom, None)
-            .expect("custom route should resolve");
+        let route =
+            crate::route_runtime::resolve_runtime_route(&config, ProviderKind::Custom, None)
+                .expect("custom route should resolve");
 
         // Provide the key the route's auth path will read.
         let client = {
@@ -99,7 +100,15 @@
 
         let client = deepseek_anthropic_client(&server);
         let response = client
-            .translate_with_usage("Hello", "deepseek-chat", "Spanish")
+            .translate_with_usage(
+                "Hello",
+                "deepseek-chat",
+                "Spanish",
+                &crate::cost_status::NativeUsageSource::capture(
+                    format!("translation-test:{}", uuid::Uuid::new_v4()),
+                    crate::cost_status::UsageSpendOwner::Auxiliary,
+                ),
+            )
             .await
             .expect("decoded provider response retains its receipt");
 
@@ -135,7 +144,15 @@
 
         let client = deepseek_request_boundary_client("https://api.deepseek.com/v1", server.uri());
         let response = client
-            .translate_with_usage("Hello", "deepseek-chat", "Spanish")
+            .translate_with_usage(
+                "Hello",
+                "deepseek-chat",
+                "Spanish",
+                &crate::cost_status::NativeUsageSource::capture(
+                    format!("translation-test:{}", uuid::Uuid::new_v4()),
+                    crate::cost_status::UsageSpendOwner::Auxiliary,
+                ),
+            )
             .await
             .expect("provider success must retain its frozen route");
         assert_eq!(
@@ -168,7 +185,15 @@
 
         let client = deepseek_request_boundary_client("https://api.deepseek.com/v1", server.uri());
         let error = match client
-            .translate_with_usage("Hello", "deepseek-chat", "Spanish")
+            .translate_with_usage(
+                "Hello",
+                "deepseek-chat",
+                "Spanish",
+                &crate::cost_status::NativeUsageSource::capture(
+                    format!("translation-test:{}", uuid::Uuid::new_v4()),
+                    crate::cost_status::UsageSpendOwner::Auxiliary,
+                ),
+            )
             .await
         {
             Ok(_) => panic!("HTTP failure must not become a provider-success receipt"),
@@ -263,5 +288,7 @@
             "a trailing slash still recognizes the host"
         );
         assert!(!client_for("baseten", "https://127.0.0.1:9/v1").catalog_endpoint_is_baseten());
-        assert!(!client_for("groq", "https://api.groq.com/openai/v1").catalog_endpoint_is_baseten());
+        assert!(
+            !client_for("groq", "https://api.groq.com/openai/v1").catalog_endpoint_is_baseten()
+        );
     }

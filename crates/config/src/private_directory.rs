@@ -2781,7 +2781,7 @@ impl PrivateDirectory {
     /// The same anchored owned-file opener used by credentials, with a bounded
     /// read and retained object for exact receipt retirement.
     pub fn read_private_receipt(&self, name: &str, max: usize) -> Result<Option<(Vec<u8>, File)>> {
-        let Some(file) = self.open_owned_file_for_read(name)? else {
+        let Some(file) = self.open_at(name, libc::O_RDONLY | libc::O_NONBLOCK, 0)? else {
             return Ok(None);
         };
         self.read_private_receipt_file(name, max, file).map(Some)

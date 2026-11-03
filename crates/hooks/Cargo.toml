@@ -11,13 +11,13 @@ description = "Hook dispatch and notifications support for Codewhale"
 workspace = true
 
 [dependencies]
-codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2" }
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-protocol = { path = "../protocol", version = "0.10.2" }
-codewhale-release = { path = "../release", version = "0.10.2" }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-protocol = { path = "../protocol", version = "0.10.3" }
+codewhale-release = { path = "../release", version = "0.10.3" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

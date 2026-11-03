@@ -97,6 +97,8 @@ pub trait DynamicToolExecutor: Send + Sync {
 /// attached.
 #[derive(Clone)]
 pub struct RuntimeToolServices {
+    pub accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
+    pub runtime_mcp_servers: Option<(PathBuf, crate::mcp::SharedRuntimeMcpServers)>,
     pub shell_manager: Option<SharedShellManager>,
     /// True only for the real headless exec host after it has established the
     /// explicit authority required to transfer `persist:true` services.
@@ -128,6 +130,8 @@ pub struct RuntimeToolServices {
 impl Default for RuntimeToolServices {
     fn default() -> Self {
         Self {
+            accounting_origin: None,
+            runtime_mcp_servers: None,
             shell_manager: None,
             persist_services_enabled: false,
             task_manager: None,
@@ -148,6 +152,8 @@ impl Default for RuntimeToolServices {
 impl std::fmt::Debug for RuntimeToolServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeToolServices")
+            .field("accounting_origin", &self.accounting_origin.is_some())
+            .field("runtime_mcp_servers", &self.runtime_mcp_servers.is_some())
             .field("shell_manager", &self.shell_manager.is_some())
             .field("persist_services_enabled", &self.persist_services_enabled)
             .field("task_manager", &self.task_manager.is_some())
@@ -579,6 +585,7 @@ pub struct ToolExecutionState {
     /// Actual Core caller admission for per-round Python RPCs. Kernels do not
     /// retain it; unattached tool contexts cannot make model calls.
     pub rlm_caller: Option<Arc<crate::core::engine::rlm_host::CapturedRlmCaller>>,
+    pub accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     /// Effective session/ancestor tool ceiling, carried to MCP dispatch and runtime registration.
     pub disallowed_tools: Vec<String>,
     /// Trusted local host narrowing; inherited by every alias/nested context.
@@ -587,6 +594,7 @@ pub struct ToolExecutionState {
     pub child_host: Option<Arc<crate::tools::subagent::engine::ChildAuthority>>,
     /// Set only on the context of one call a person approved on a card.
     pub human_decision: Option<crate::core::engine::HumanDecision>,
+    pub mcp_always_binding: Option<u64>,
     /// Shared shell manager for background tasks and streaming IO.
     pub shell_manager: SharedShellManager,
     /// Per-session snapshots for files successfully observed by `read_file`.
@@ -780,10 +788,12 @@ impl ToolContext {
             workspace,
             execution: Box::new(ToolExecutionState {
                 rlm_caller: None,
+                accounting_origin: None,
                 disallowed_tools: Vec::new(),
                 acp_host: None,
                 child_host: None,
                 human_decision: None,
+                mcp_always_binding: None,
                 shell_manager,
                 file_read_tracker: new_shared_file_read_tracker(),
                 owner_agent_id: None,

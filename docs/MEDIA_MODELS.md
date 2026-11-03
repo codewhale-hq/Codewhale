@@ -22,7 +22,7 @@ in this variable does not install a new backend.
 
 Owners: [speech tool](../crates/engine/src/tools/speech.rs),
 [synthesis client](../crates/engine/src/client.rs), [voice resolver](../crates/engine/src/voice.rs),
-[Runtime voice](../crates/tui/src/runtime_api/voice.rs). Real microphone capture,
+[Runtime voice](../crates/app-server/src/runtime_api/voice.rs). Real microphone capture,
 synthesis and a complete customer voice journey require separate acceptance.
 
 ## Index-Translate evaluation

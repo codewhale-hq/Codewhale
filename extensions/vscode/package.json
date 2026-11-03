@@ -2,7 +2,7 @@
   "name": "codewhale-vscode",
   "displayName": "Codewhale",
   "description": "Official Codewhale VS Code extension: agentic chat in the secondary sidebar over the local Engine Runtime API, with editor context, streaming turns, approvals, and terminal parity.",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "publisher": "codewhale",
   "license": "MIT",
   "preview": true,

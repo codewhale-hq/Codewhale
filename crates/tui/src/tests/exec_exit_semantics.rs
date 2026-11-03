@@ -1,4 +1,4 @@
-use super::*;
+use codewhale_engine::exec_events::exec_error_event_is_fatal;
 
 #[test]
 fn recoverable_error_events_do_not_fail_the_run_summary() {

@@ -4,7 +4,7 @@ import type { DocsRuntimeApiDict } from "../types";
  * English reference dictionary for `app/[locale]/docs/runtime-api/page.tsx`
  * ("Automate with the Runtime API"). Checked against docs/RUNTIME_API.md
  * (entrypoints, defaults, auth, endpoints) and the handlers in
- * crates/tui/src/runtime_api.rs (`POST /v1/threads` → 201 ThreadRecord).
+ * crates/app-server/src/runtime_api.rs (`POST /v1/threads` → 201 ThreadRecord).
  */
 export const docsRuntimeApi: DocsRuntimeApiDict = {
   metaTitle: "Automate with the Runtime API · Codewhale Docs",

@@ -36,7 +36,7 @@ mod subagents;
 pub mod util;
 mod workflow;
 
-pub(in crate::commands) use self::core::reset_conversation_state;
+pub(crate) use self::core::reset_conversation_state;
 pub(crate) use constitution::open_manager as open_constitution_manager;
 
 use crate::commands::CommandResult;

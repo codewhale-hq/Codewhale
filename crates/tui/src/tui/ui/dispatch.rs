@@ -210,6 +210,9 @@ pub(crate) async fn submit_initial_input_if_ready(
     config: &Config,
     engine_handle: &EngineHandle,
 ) -> Result<()> {
+    if app.pending_fresh_session.is_some() {
+        return Ok(());
+    }
     if !app.auto_submit_initial_input {
         return Ok(());
     }
@@ -472,6 +475,12 @@ pub(crate) async fn dispatch_user_message_with_recovery(
     mut message: QueuedMessage,
     recovery: DispatchRecovery,
 ) -> Result<()> {
+    if app.pending_fresh_session.is_some() {
+        restore_queued_or_draft_message(app, recovery, message);
+        app.status_message =
+            Some("A new session is awaiting Engine confirmation; sending is paused.".to_string());
+        return Ok(());
+    }
     if message.extension_command.is_some() {
         let admitted = validate_extension_command_context(app, &message).and_then(|()| {
             anyhow::ensure!(
@@ -722,6 +731,15 @@ pub(crate) fn prepare_user_dispatch(
     };
     let allowed_tools = allowed_tools_for_message(app.active_allowed_tools.clone(), &message);
 
+    let accounting_origin = app
+        .session_write_receipt
+        .as_ref()
+        .map(|source| source.usage_origin(codewhale_engine::cost_status::scope_token()))
+        .transpose()?;
+    anyhow::ensure!(
+        !should_auto_resolve || accounting_origin.is_some(),
+        "Auto routing has no admitted session accounting origin"
+    );
     Ok(UserDispatchPrepare {
         submission_id: uuid::Uuid::new_v4().to_string(),
         message,
@@ -758,6 +776,7 @@ pub(crate) fn prepare_user_dispatch(
         auto_compact_threshold_percent: app.auto_compact_threshold_percent,
         snapshot,
         cost_scope: codewhale_engine::cost_status::scope_token(),
+        accounting_origin,
         message_index,
         history_cell,
     })
@@ -944,6 +963,7 @@ pub(crate) async fn spawned_dispatch_inner(
     // Bound in its own statement: the planner borrows `prepare`, and the error
     // arm moves it into the failure closure.
     let plan_result = plan_turn_route(TurnRoutePlanRequest {
+        accounting_origin: prepare.accounting_origin.clone(),
         route_config: &prepare.route_config,
         app_route_identity: &prepare.app_route_identity,
         api_provider: prepare.api_provider,
@@ -1637,6 +1657,12 @@ pub(crate) async fn dispatch_composer_message(
     recovery: DispatchRecovery,
     action: ComposerSubmitAction,
 ) -> Result<()> {
+    if app.pending_fresh_session.is_some() {
+        restore_queued_or_draft_message(app, recovery, message);
+        app.status_message =
+            Some("A new session is awaiting Engine confirmation; sending is paused.".to_string());
+        return Ok(());
+    }
     if message.extension_command.is_some() {
         return dispatch_user_message_with_recovery(app, config, engine_handle, message, recovery)
             .await;

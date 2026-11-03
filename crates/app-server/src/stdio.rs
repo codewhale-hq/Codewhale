@@ -1,10 +1,11 @@
 use crate::config_rpc::process_app_request;
-use crate::turns::{BridgedTurn, handle_prompt_request, handle_thread_request, run_bridged_turn};
+use crate::turns::{NativeTurn, handle_prompt_request, handle_thread_request, run_native_turn};
 use crate::{
-    AppState, AppTransport, ConfigGetParams, ConfigSetParams, InFlightTurn, JsonRpcError,
-    JsonRpcRequest, RuntimeThreadHint, ShutdownAuthority, StdioDispatchResult, StdioLoopExit,
-    StdioLoopPolicy, ThreadIdParams, ThreadInterruptParams, ThreadMessageParams, daemon_socket,
-    jsonrpc_error, jsonrpc_result, legacy_deepseek_compat, params_or_object, parse_params,
+    AppState, AppTransport, ConfigGetParams, ConfigSetParams, DispatchError, InFlightTurn, RpcCall,
+    RuntimeOwnerRequest, RuntimeThreadHint, ShutdownAuthority, StdioDispatchResult, StdioLoopExit,
+    StdioLoopPolicy, ThreadIdParams, ThreadInterruptParams, ThreadMessageParams,
+    TurnExecutionOwner, TurnRegistry, daemon_socket, jsonrpc_error, jsonrpc_result,
+    legacy_deepseek_compat, params_or_object, parse_params, thread_control,
 };
 use anyhow::Context as _;
 use anyhow::Result;
@@ -19,6 +20,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncWrite};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FrameRefusal {
@@ -148,6 +150,7 @@ where
     let mut pending: VecDeque<(PendingStdioWork, usize)> = VecDeque::new();
     let mut pending_bytes = 0usize;
     let mut stdin_open = true;
+    let mut connection = crate::connection::ConnectionSession::default();
 
     loop {
         let next = pending.pop_front().map(|(work, bytes)| {
@@ -169,10 +172,7 @@ where
                 };
                 match parse_stdio_line(&line) {
                     ParsedStdioLine::Blank => continue,
-                    ParsedStdioLine::Rejected(response) => {
-                        write_stdio_line(&mut writer, &response).await?;
-                        continue;
-                    }
+                    ParsedStdioLine::Ignored | ParsedStdioLine::Response(_) => continue,
                     ParsedStdioLine::Request(request) => request,
                 }
             }
@@ -182,42 +182,86 @@ where
             drop(input_claim.take());
             return Ok(StdioLoopExit::InputClosed);
         }
-        let id = request.id.clone();
-        if request.method == "shutdown" && policy.shutdown == ShutdownAuthority::Denied {
+        let Some(id) = request.id.clone() else {
+            if request.method == "initialized" {
+                tracing::debug!("control initialized notification received");
+            }
+            continue;
+        };
+        if request.method == "initialize" {
+            let response = match connection.initialize(request.params) {
+                Ok(result) => jsonrpc_result(id, result),
+                Err(error) => jsonrpc_error(id, error),
+            };
+            write_stdio_line(&mut writer, &response).await?;
+            continue;
+        }
+        if !connection.initialized() {
             write_stdio_line(
                 &mut writer,
-                &jsonrpc_error(id, JsonRpcError::not_daemon_owner()),
+                &jsonrpc_error(id, DispatchError::invalid_request("Not initialized")),
             )
             .await?;
             continue;
         }
-        let dispatched = if request.method == "thread/message" {
+        if request.method == "shutdown" && policy.shutdown == ShutdownAuthority::Denied {
+            write_stdio_line(
+                &mut writer,
+                &jsonrpc_error(id, DispatchError::not_daemon_owner()),
+            )
+            .await?;
+            continue;
+        }
+        let mut input_error: Option<anyhow::Error> = None;
+        let native_request = matches!(
+            request.method.as_str(),
+            "thread/message" | "prompt/request" | "prompt/run"
+        ) || (request.method == "thread/request"
+            && request.params.get("kind").and_then(Value::as_str) == Some("message"));
+        let dispatched = if native_request {
             // A turn can run for minutes. Keep reading stdin while it streams
             // so an interrupt (or a shutdown) can actually reach it — with a
             // plain `await` here, nothing could be read until it finished.
+            let cancellation = CancellationToken::new();
+            let _cancel_on_drop = cancellation.clone().drop_guard();
             let dispatch = dispatch_stdio_request_with_writer(
                 state,
                 &mut writer,
                 &request.method,
                 request.params,
                 policy.transport,
+                Some(cancellation.clone()),
             );
             tokio::pin!(dispatch);
             loop {
                 tokio::select! {
                     outcome = &mut dispatch => break outcome,
                     line = reader.next_line(), if stdin_open => {
-                        match line? {
-                            None => {
+                        match line {
+                            Err(error) => {
+                                stdin_open = false;
+                                drop(input_claim.take());
+                                cancellation.cancel();
+                                input_error = Some(error.into());
+                            }
+                            Ok(None) => {
                                 stdin_open = false;
                                 // Release the claim here, not after `dispatch`
                                 // resolves.
                                 drop(input_claim.take());
+                                if policy.transport == AppTransport::Socket {
+                                    cancellation.cancel();
+                                }
                             }
-                            Some(line) => {
+                            Ok(Some(line)) => {
                                 if matches!(parse_stdio_line(&line), ParsedStdioLine::Request(ref request) if is_control_detach(request)) {
                                     stdin_open=false; drop(input_claim.take());
-                                } else {handle_line_during_turn(state, &line, &mut pending, &mut pending_bytes, policy).await?;}
+                                } else if let Err(error) = handle_line_during_turn(state, &line, &mut pending, &mut pending_bytes, policy).await {
+                                    stdin_open = false;
+                                    drop(input_claim.take());
+                                    cancellation.cancel();
+                                    input_error = Some(error);
+                                }
                             }
                         }
                     }
@@ -230,10 +274,21 @@ where
                 &request.method,
                 request.params,
                 policy.transport,
+                None,
             )
             .await
         };
 
+        if let Some(error) = input_error {
+            if let Err(dispatch_error) = &dispatched {
+                let diagnostic = error.to_string();
+                return Err(error.context(format!(
+                    "control input failed: {diagnostic}; native request cleanup: {}",
+                    dispatch_error.wire.message
+                )));
+            }
+            return Err(error);
+        }
         match dispatched {
             Ok(dispatch) => {
                 write_stdio_line(&mut writer, &jsonrpc_result(id, dispatch.result)).await?;
@@ -256,7 +311,7 @@ pub(crate) enum PendingStdioWork {
     /// Already answered (an interrupt acted immediately); just needs writing.
     Response(Value),
     /// Not started yet; runs normally once the turn is done.
-    Request(JsonRpcRequest),
+    Request(RpcCall),
 }
 
 /// Fixed retained queue limits; exhaustion is a visible connection refusal
@@ -281,40 +336,34 @@ pub(crate) fn queue_stdio_work(
 
 pub(crate) enum ParsedStdioLine {
     Blank,
-    Request(JsonRpcRequest),
-    Rejected(Value),
+    Request(RpcCall),
+    Ignored,
+    Response(Value),
 }
 
 pub(crate) fn parse_stdio_line(line: &str) -> ParsedStdioLine {
     if line.len() > MAX_RUNTIME_IMAGE_BODY_BYTES {
-        return ParsedStdioLine::Rejected(jsonrpc_error(
-            None,
-            JsonRpcError::invalid_params("request exceeds the 8 MiB transport limit"),
-        ));
+        return ParsedStdioLine::Ignored;
     }
     if line.trim().is_empty() {
         return ParsedStdioLine::Blank;
     }
-    let request: JsonRpcRequest = match serde_json::from_str(line) {
-        Ok(value) => value,
-        Err(err) => {
-            return ParsedStdioLine::Rejected(jsonrpc_error(
-                None,
-                JsonRpcError::parse_error(format!("invalid json: {err}")),
-            ));
+    let message: codewhale_app_server_protocol::rpc::RpcMessage = match serde_json::from_str(line) {
+        Ok(message) => message,
+        Err(error) => {
+            tracing::debug!(%error, "discarding malformed control RPC message");
+            return ParsedStdioLine::Ignored;
         }
     };
-    if request
-        .jsonrpc
-        .as_deref()
-        .is_some_and(|version| version != "2.0")
-    {
-        return ParsedStdioLine::Rejected(jsonrpc_error(
-            request.id,
-            JsonRpcError::invalid_request("jsonrpc version must be 2.0"),
-        ));
+    match message {
+        codewhale_app_server_protocol::rpc::RpcMessage::Response(response) => {
+            ParsedStdioLine::Response(json!(response))
+        }
+        codewhale_app_server_protocol::rpc::RpcMessage::Error(response) => {
+            ParsedStdioLine::Response(json!(response))
+        }
+        message => ParsedStdioLine::Request(message.into_call().expect("call variant")),
     }
-    ParsedStdioLine::Request(request)
 }
 
 /// Triage a request that arrived mid-turn.
@@ -334,20 +383,16 @@ pub(crate) async fn handle_line_during_turn(
 ) -> Result<()> {
     let request = match parse_stdio_line(line) {
         ParsedStdioLine::Blank => return Ok(()),
-        ParsedStdioLine::Rejected(response) => {
-            return queue_stdio_work(
-                pending,
-                pending_bytes,
-                PendingStdioWork::Response(response),
-                line.len(),
-            );
-        }
+        ParsedStdioLine::Ignored | ParsedStdioLine::Response(_) => return Ok(()),
         ParsedStdioLine::Request(request) => request,
+    };
+
+    let Some(id) = request.id.clone() else {
+        return Ok(());
     };
 
     match request.method.as_str() {
         "thread/interrupt" => {
-            let id = request.id.clone();
             let response = match parse_params::<ThreadInterruptParams>(params_or_object(
                 request.params.clone(),
             )) {
@@ -373,10 +418,7 @@ pub(crate) async fn handle_line_during_turn(
             queue_stdio_work(
                 pending,
                 pending_bytes,
-                PendingStdioWork::Response(jsonrpc_error(
-                    request.id,
-                    JsonRpcError::not_daemon_owner(),
-                )),
+                PendingStdioWork::Response(jsonrpc_error(id, DispatchError::not_daemon_owner())),
                 line.len(),
             )?;
         }
@@ -399,9 +441,8 @@ pub(crate) async fn handle_line_during_turn(
     Ok(())
 }
 
-pub(crate) fn is_control_detach(request: &JsonRpcRequest) -> bool {
-    request.jsonrpc.as_deref() == Some("2.0")
-        && request.id.is_none()
+pub(crate) fn is_control_detach(request: &RpcCall) -> bool {
+    request.id.is_none()
         && request.method == "daemon/input_closed"
         && request
             .params
@@ -501,11 +542,12 @@ pub(crate) async fn handle_stdio_thread_message<W: AsyncWrite + Unpin>(
     state: &AppState,
     writer: &mut W,
     parsed: ThreadMessageParams,
-) -> std::result::Result<Value, JsonRpcError> {
-    let mut result = run_bridged_turn(
+    cancellation: Option<CancellationToken>,
+) -> std::result::Result<Value, DispatchError> {
+    let mut result = run_native_turn(
         state,
         writer,
-        BridgedTurn {
+        NativeTurn {
             allowed_tools: parsed.allowed_tools.as_deref(),
             max_output_tokens: parsed.max_output_tokens,
             thread_key: &parsed.thread_id,
@@ -514,7 +556,7 @@ pub(crate) async fn handle_stdio_thread_message<W: AsyncWrite + Unpin>(
             model_override: None,
             interruptible: true,
             ephemeral: false,
-            require_known_thread: true,
+            cancellation,
         },
         None,
     )
@@ -531,9 +573,9 @@ pub(crate) async fn handle_stdio_thread_message<W: AsyncWrite + Unpin>(
 /// the same thread id (#5171).
 pub(crate) fn ensure_thread_found(
     response: &ThreadResponse,
-) -> std::result::Result<(), JsonRpcError> {
+) -> std::result::Result<(), DispatchError> {
     if response.status == "missing" {
-        return Err(JsonRpcError::thread_not_found(&response.thread_id));
+        return Err(DispatchError::thread_not_found(&response.thread_id));
     }
     Ok(())
 }
@@ -549,66 +591,170 @@ pub(crate) async fn record_stdio_thread_hint(state: &AppState, response: &Thread
     );
 }
 
-/// Ask the runtime to interrupt a turn that is streaming right now.
-///
-/// Everything this needs was copied out of the bridge when the turn started,
-/// so it never touches the bridge mutex the turn is holding. Returns whether
-/// a live turn was found for `thread_id`.
-/// Interrupt one in-flight turn over HTTP, from an owned snapshot.
 ///
 /// Split from [`interrupt_stdio_turn`] so teardown paths can run many
 /// concurrently (#6211 R8b) — each future owns its snapshot and never holds
 /// the turn registry across the request.
 pub(crate) async fn interrupt_turn_request(
     turn: &InFlightTurn,
-) -> std::result::Result<bool, JsonRpcError> {
-    let mut request = codewhale_release::platform_http_client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|err| JsonRpcError::internal(err.to_string()))?
-        .post(format!(
-            "{}/v1/threads/{}/turns/{}/interrupt",
-            turn.base_url, turn.runtime_thread_id, turn.turn_id
-        ));
-    if let Some(token) = turn.auth_token.as_deref() {
-        request = request.bearer_auth(token);
+) -> std::result::Result<bool, DispatchError> {
+    match &turn.owner {
+        TurnExecutionOwner::Native(owner) => {
+            let interrupted = match tokio::time::timeout(
+                Duration::from_secs(10),
+                owner.execute(RuntimeOwnerRequest::InterruptTurn {
+                    thread_id: turn.runtime_thread_id.clone(),
+                    turn_id: turn.turn_id.clone(),
+                }),
+            )
+            .await
+            {
+                Ok(result) => result
+                    .map_err(|error| DispatchError::internal(format!("interrupt failed: {error}"))),
+                Err(error) => Err(DispatchError::internal(format!(
+                    "interrupt outcome uncertain: {error}"
+                ))),
+            };
+            match interrupted {
+                Ok(_) => Ok(true),
+                Err(error) => {
+                    let detail = crate::owner_calls::execute(
+                        owner,
+                        RuntimeOwnerRequest::GetThread {
+                            thread_id: turn.runtime_thread_id.clone(),
+                        },
+                    )
+                    .await;
+                    let terminal = detail.as_ref().ok().is_some_and(|detail| {
+                        detail.pointer("/thread/id").and_then(Value::as_str)
+                            == Some(turn.runtime_thread_id.as_str())
+                            && detail
+                                .get("turns")
+                                .and_then(Value::as_array)
+                                .is_some_and(|turns| {
+                                    turns.iter().any(|record| {
+                                        record.get("id").and_then(Value::as_str)
+                                            == Some(turn.turn_id.as_str())
+                                            && record.get("thread_id").and_then(Value::as_str)
+                                                == Some(turn.runtime_thread_id.as_str())
+                                            && matches!(
+                                                record.get("status").and_then(Value::as_str),
+                                                Some(
+                                                    "completed"
+                                                        | "failed"
+                                                        | "interrupted"
+                                                        | "canceled"
+                                                )
+                                            )
+                                    })
+                                })
+                    });
+                    if terminal {
+                        Ok(false)
+                    } else {
+                        Err(DispatchError::internal(format!(
+                            "{}; exact native terminal is unconfirmed for thread {}, turn {}",
+                            error.wire.message, turn.runtime_thread_id, turn.turn_id
+                        )))
+                    }
+                }
+            }
+        }
+        #[cfg(test)]
+        TurnExecutionOwner::HistoricalHttp {
+            base_url,
+            auth_token,
+        } => {
+            let mut request = codewhale_release::platform_http_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|err| DispatchError::internal(err.to_string()))?
+                .post(format!(
+                    "{}/v1/threads/{}/turns/{}/interrupt",
+                    base_url, turn.runtime_thread_id, turn.turn_id
+                ));
+            if let Some(token) = auth_token.as_deref() {
+                request = request.bearer_auth(token);
+            }
+            request
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status)
+                .map_err(|err| DispatchError::internal(format!("interrupt failed: {err}")))?;
+            Ok(true)
+        }
     }
-    request
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(|err| JsonRpcError::internal(format!("interrupt failed: {err}")))?;
-    Ok(true)
 }
 
 pub(crate) async fn interrupt_stdio_turn(
     state: &AppState,
     thread_id: &str,
-) -> std::result::Result<bool, JsonRpcError> {
+) -> std::result::Result<bool, DispatchError> {
     let Some(turn) = state.in_flight_turns.lock().await.get(thread_id).cloned() else {
         return Ok(false);
     };
-    interrupt_turn_request(&turn).await
+    let interrupted = interrupt_turn_request(&turn).await?;
+    retire_turn_registration(&state.in_flight_turns, thread_id, &turn).await;
+    Ok(interrupted)
+}
+
+pub(crate) async fn retire_turn_registration(
+    registry: &TurnRegistry,
+    key: &str,
+    expected: &InFlightTurn,
+) {
+    let mut registered = registry.lock().await;
+    if registered.get(key).is_some_and(|current| {
+        current.runtime_thread_id == expected.runtime_thread_id
+            && current.turn_id == expected.turn_id
+            && match (&current.owner, &expected.owner) {
+                (TurnExecutionOwner::Native(current), TurnExecutionOwner::Native(expected)) => {
+                    std::sync::Arc::ptr_eq(current, expected)
+                }
+                #[cfg(test)]
+                (
+                    TurnExecutionOwner::HistoricalHttp {
+                        base_url: current,
+                        auth_token: current_auth,
+                    },
+                    TurnExecutionOwner::HistoricalHttp {
+                        base_url: expected,
+                        auth_token: expected_auth,
+                    },
+                ) => current == expected && current_auth == expected_auth,
+                #[cfg(test)]
+                _ => false,
+            }
+    }) {
+        registered.remove(key);
+    }
 }
 
 /// Interrupt every in-flight turn concurrently, reporting how many were
 /// reached (#6211 R8b).
 ///
 /// The teardown paths used to await each turn's interrupt in sequence, so
-/// their latency grew with the number of live turns — up to the 10s
-/// per-request timeout apiece. Each interrupt now owns its snapshot and runs
+/// their latency grew with the number of live turns, including each
+/// interrupt deadline and bounded readback after uncertain outcomes. Each interrupt now owns its snapshot and runs
 /// as an independent task; individual failures are ignored exactly as the
 /// sequential loop ignored them, and the registry lock is never held across
 /// the requests.
 pub(crate) async fn interrupt_all_stdio_turns(state: &AppState) -> usize {
-    let turns: Vec<InFlightTurn> = {
+    let turns: Vec<(String, InFlightTurn)> = {
         let map = state.in_flight_turns.lock().await;
-        map.values().cloned().collect()
+        map.iter()
+            .map(|(key, turn)| (key.clone(), turn.clone()))
+            .collect()
     };
     let mut set = tokio::task::JoinSet::new();
-    for turn in turns {
-        set.spawn(async move { interrupt_turn_request(&turn).await });
+    for (key, turn) in turns {
+        let registry = state.in_flight_turns.clone();
+        set.spawn(async move {
+            let interrupted = interrupt_turn_request(&turn).await?;
+            retire_turn_registration(&registry, &key, &turn).await;
+            Ok::<_, DispatchError>(interrupted)
+        });
     }
     let mut interrupted = 0usize;
     while let Some(joined) = set.join_next().await {
@@ -631,20 +777,21 @@ pub(crate) async fn dispatch_stdio_request(
     state: &AppState,
     method: &str,
     params: Value,
-) -> std::result::Result<StdioDispatchResult, JsonRpcError> {
+) -> std::result::Result<StdioDispatchResult, DispatchError> {
     let mut sink = tokio::io::sink();
-    dispatch_stdio_request_with_writer(state, &mut sink, method, params, AppTransport::Stdio).await
+    dispatch_stdio_request_with_writer(state, &mut sink, method, params, AppTransport::Stdio, None)
+        .await
 }
 
 pub(crate) async fn dispatch_stdio_app_request(
     state: &AppState,
     request: AppRequest,
     transport: AppTransport,
-) -> std::result::Result<StdioDispatchResult, JsonRpcError> {
+) -> std::result::Result<StdioDispatchResult, DispatchError> {
     let response = Box::pin(process_app_request(state, request, transport)).await;
     Ok(StdioDispatchResult {
         result: serde_json::to_value(response)
-            .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+            .map_err(|err| DispatchError::internal(err.to_string()))?,
         should_exit: false,
     })
 }
@@ -655,7 +802,8 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
     method: &str,
     params: Value,
     transport: AppTransport,
-) -> std::result::Result<StdioDispatchResult, JsonRpcError> {
+    cancellation: Option<CancellationToken>,
+) -> std::result::Result<StdioDispatchResult, DispatchError> {
     let outcome = match method {
         "healthz" | "app/healthz" => StdioDispatchResult {
             result: json!({
@@ -675,7 +823,9 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
                 "thread/resume",
                 "thread/fork",
                 "thread/list",
+                "thread/loaded/list",
                 "thread/read",
+                "thread/name/set",
                 "thread/set_name",
                 "thread/goal/set",
                 "thread/goal/get",
@@ -706,7 +856,13 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             StdioDispatchResult {
                 result: json!({
                     "transport": transport.label(),
+                    "framing": match transport {
+                        AppTransport::Stdio => "jsonl",
+                        AppTransport::Socket => "websocket-text",
+                        AppTransport::Http => "http",
+                    },
                     "families": ["thread/*", "app/*", "prompt/*"],
+                    "initialization": {"required": true, "method": "initialize", "notification": "initialized"},
                     "turn_image_inputs": true,
                     "interactive_execution": false,
                     "goal_execution": false,
@@ -731,8 +887,10 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
                     "thread/resume",
                     "thread/fork",
                     "thread/list",
+                "thread/loaded/list",
                     "thread/read",
-                    "thread/set_name",
+                    "thread/name/set",
+                "thread/set_name",
                     "thread/goal/set",
                     "thread/goal/get",
                     "thread/goal/clear",
@@ -764,6 +922,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
                         images,
                         max_output_tokens,
                     },
+                    cancellation.clone(),
                 )
                 .await?;
                 return Ok(StdioDispatchResult {
@@ -784,7 +943,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             }
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -805,7 +964,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             record_stdio_thread_hint(state, &response).await;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -815,7 +974,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             record_stdio_thread_hint(state, &response).await;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -826,7 +985,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             record_stdio_thread_hint(state, &response).await;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -837,7 +996,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             record_stdio_thread_hint(state, &response).await;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -846,7 +1005,63 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
+                should_exit: false,
+            }
+        }
+        "thread/loaded/list" => {
+            let params: codewhale_app_server_protocol::rpc::ThreadLoadedListParams =
+                parse_params(params_or_object(params))?;
+            let limit = params.limit.map(usize::try_from).transpose().map_err(|_| {
+                DispatchError::invalid_params("loaded thread limit exceeds platform size")
+            })?;
+            let cursor = params
+                .cursor
+                .as_deref()
+                .map(|cursor| {
+                    cursor
+                        .strip_prefix("loaded-v1:")
+                        .filter(|id| id.len() <= 1024 && !id.chars().any(char::is_control))
+                        .ok_or_else(|| {
+                            DispatchError::invalid_params("invalid loaded thread cursor")
+                        })
+                })
+                .transpose()?;
+            let loaded = thread_control::loaded(state)
+                .await
+                .map_err(|error| thread_control::rpc_error(error, None))?;
+            let start = cursor.filter(|id| !id.is_empty()).map_or(0, |cursor| {
+                loaded
+                    .threads
+                    .partition_point(|thread| thread.id.as_str() <= cursor)
+            });
+            let remaining = &loaded.threads[start..];
+            let count = limit.unwrap_or(remaining.len()).min(remaining.len());
+            let data = remaining[..count]
+                .iter()
+                .map(|thread| thread.id.clone())
+                .collect::<Vec<_>>();
+            let next_cursor = if count < remaining.len() {
+                Some(data.last().map_or_else(
+                    || {
+                        params
+                            .cursor
+                            .clone()
+                            .unwrap_or_else(|| "loaded-v1:".to_owned())
+                    },
+                    |id| format!("loaded-v1:{id}"),
+                ))
+            } else {
+                None
+            };
+            StdioDispatchResult {
+                result: serde_json::to_value(
+                    codewhale_app_server_protocol::rpc::ThreadLoadedListResponse {
+                        data,
+                        next_cursor,
+                    },
+                )
+                .map_err(|error| DispatchError::internal(error.to_string()))?,
                 should_exit: false,
             }
         }
@@ -855,7 +1070,26 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
+                should_exit: false,
+            }
+        }
+        "thread/name/set" => {
+            let params: codewhale_app_server_protocol::rpc::ThreadSetNameParams =
+                parse_params(params_or_object(params))?;
+            handle_thread_request(
+                state,
+                ThreadRequest::SetName(codewhale_protocol::ThreadSetNameParams {
+                    thread_id: params.thread_id,
+                    name: params.name,
+                }),
+            )
+            .await?;
+            StdioDispatchResult {
+                result: serde_json::to_value(
+                    codewhale_app_server_protocol::rpc::ThreadSetNameResponse::default(),
+                )
+                .map_err(|error| DispatchError::internal(error.to_string()))?,
                 should_exit: false,
             }
         }
@@ -864,7 +1098,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -875,7 +1109,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -886,7 +1120,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -897,7 +1131,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -913,7 +1147,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             ensure_thread_found(&response)?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -929,13 +1163,14 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             ensure_thread_found(&response)?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
         "thread/message" => {
             let parsed: ThreadMessageParams = parse_params(params_or_object(params))?;
-            let response = handle_stdio_thread_message(state, writer, parsed).await?;
+            let response =
+                handle_stdio_thread_message(state, writer, parsed, cancellation.clone()).await?;
             StdioDispatchResult {
                 result: response,
                 should_exit: false,
@@ -996,10 +1231,11 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
         },
         "prompt/request" | "prompt/run" => {
             let request: PromptRequest = parse_params(params)?;
-            let response = handle_prompt_request(state, writer, request).await?;
+            let response =
+                handle_prompt_request(state, writer, request, cancellation.clone()).await?;
             StdioDispatchResult {
                 result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
+                    .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
         }
@@ -1026,9 +1262,9 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             }
         }
         daemon_socket::ATTACH_METHOD if transport == AppTransport::Socket => {
-            return Err(JsonRpcError::already_attached());
+            return Err(DispatchError::already_attached());
         }
-        _ => return Err(JsonRpcError::method_not_found(method)),
+        _ => return Err(DispatchError::method_not_found(method)),
     };
     Ok(outcome)
 }

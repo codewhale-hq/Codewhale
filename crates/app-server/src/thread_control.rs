@@ -1,7 +1,7 @@
 //! Compatibility control projection onto the already held canonical owner.
 //! SQLite supplies immutable migration input and committed alias receipts only.
 use super::*;
-use crate::bridge::acquire_live_runtime_bridge;
+use crate::owner_calls;
 use anyhow::{Context as _, bail};
 #[cfg(test)]
 use axum::Router;
@@ -14,6 +14,7 @@ use codewhale_protocol::{
     RuntimeOwnerReceipt, SessionSource, Thread, ThreadStatus,
 };
 
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 #[error("runtime API returned {status}: {detail}")]
 struct HttpFailure {
@@ -49,17 +50,8 @@ fn owner(state: &AppState) -> Result<RuntimeOwnerReceipt> {
     )
 }
 
-fn endpoint(bridge: &RuntimeBridge, segments: &[&str]) -> Result<reqwest::Url> {
-    let mut url = reqwest::Url::parse(&bridge.base_url)?;
-    url.path_segments_mut()
-        .map_err(|_| anyhow!("invalid canonical owner URL"))?
-        .clear()
-        .extend(segments.iter().copied());
-    Ok(url)
-}
-
-/// Reused by every bridge JSON read, including full canonical history. The
 /// declared length and actual streamed bytes must both fit; nothing is cut.
+#[cfg(test)]
 pub(super) async fn read_json_response(mut response: reqwest::Response) -> Result<Value> {
     let status = response.status();
     if response
@@ -94,24 +86,24 @@ pub(super) async fn read_json_response(mut response: reqwest::Response) -> Resul
 }
 
 async fn request(
-    bridge: &RuntimeBridge,
-    method: Method,
-    segments: &[&str],
-    body: Option<&Value>,
+    owner: &Arc<dyn RuntimeOwnerFrontend>,
+    operation: RuntimeOwnerRequest,
 ) -> Result<Value> {
-    let mut request = bridge.authed(bridge.client.request(method, endpoint(bridge, segments)?));
-    if let Some(body) = body {
-        anyhow::ensure!(
-            serde_json::to_vec(body)?.len() <= MAX_CANONICAL_HISTORY_BYTES,
-            "encoded canonical control exceeds bound"
-        );
-        request = request.json(body);
-    }
-    tokio::time::timeout(Duration::from_secs(30), bridge.request_json(request))
-        .await
-        .context(
-            "canonical control deadline expired; outcome may be committed, no automatic replay",
-        )?
+    let encoded = match &operation {
+        RuntimeOwnerRequest::CreateThread(body)
+        | RuntimeOwnerRequest::UpdateThread { body, .. }
+        | RuntimeOwnerRequest::StartTurn { body, .. } => Some(serde_json::to_vec(body)?.len()),
+        RuntimeOwnerRequest::HistoryImport(body) => Some(serde_json::to_vec(body)?.len()),
+        RuntimeOwnerRequest::HistoryMutate(body) => Some(serde_json::to_vec(body)?.len()),
+        RuntimeOwnerRequest::HistoryLookup(body) => Some(serde_json::to_vec(body)?.len()),
+        RuntimeOwnerRequest::HistoryRecover(body) => Some(serde_json::to_vec(body)?.len()),
+        _ => None,
+    };
+    anyhow::ensure!(
+        encoded.is_none_or(|len| len <= MAX_CANONICAL_HISTORY_BYTES),
+        "encoded canonical control exceeds bound"
+    );
+    owner_calls::execute(owner, operation).await
 }
 
 #[cfg(any(unix, windows))]
@@ -208,7 +200,6 @@ fn check_workspace(state: &AppState, workspace: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Holds the existing bridge serialization through import and exact source
 /// CAS. A cancelled waiter does not cancel publication of a committed result.
 pub(super) async fn resolve(
     state: &AppState,
@@ -229,9 +220,7 @@ pub(super) async fn resolve(
 async fn resolve_owned(state: &AppState, key: &str, execution: bool) -> Result<(String, PathBuf)> {
     let owner = owner(state)?;
     let source = legacy_source(state, key, &owner).await?;
-    let bridge = acquire_live_runtime_bridge(state)
-        .await
-        .map_err(|e| anyhow!("{}", e.message))?;
+    let native = owner_calls::captured(state)?;
     let id = if let Some((store, source)) = source {
         if execution || source.receipt.is_none() {
             check_workspace(state, &source.metadata.cwd)?;
@@ -253,7 +242,7 @@ async fn resolve_owned(state: &AppState, key: &str, execution: bool) -> Result<(
                 model: None,
                 history: history.clone(),
             };
-            let value = request(&bridge, Method::POST, &["v1", "thread-history", "import"], Some(&serde_json::to_value(request_body)?)).await
+            let value = request(&native, RuntimeOwnerRequest::HistoryImport(request_body)).await
                 .with_context(|| format!("canonical import {operation} may have committed; inspect or retry the same operation, never remint"))?;
             let receipt: CanonicalThreadReceipt = serde_json::from_value(value)?;
             verify_receipt(&receipt, &owner, &operation)?;
@@ -267,11 +256,16 @@ async fn resolve_owned(state: &AppState, key: &str, execution: bool) -> Result<(
     } else {
         key.to_owned()
     };
-    let value = request(&bridge, Method::GET, &["v1", "threads", &id], None)
-        .await
-        .context(
-            "canonical target is unavailable; existing identity retained, no replacement thread",
-        )?;
+    let value = request(
+        &native,
+        RuntimeOwnerRequest::GetThread {
+            thread_id: id.clone(),
+        },
+    )
+    .await
+    .context(
+        "canonical target is unavailable; existing identity retained, no replacement thread",
+    )?;
     let record = value.get("thread").unwrap_or(&value);
     anyhow::ensure!(
         record.get("id").and_then(Value::as_str) == Some(id.as_str()),
@@ -281,11 +275,6 @@ async fn resolve_owned(state: &AppState, key: &str, execution: bool) -> Result<(
     if execution {
         check_workspace(state, &thread.cwd)?;
     }
-    state
-        .runtime_thread_map
-        .lock()
-        .await
-        .insert(key.to_owned(), id.clone());
     Ok((id, thread.cwd))
 }
 
@@ -355,6 +344,41 @@ fn response(id: String) -> ThreadResponse {
     }
 }
 
+pub(super) async fn loaded(state: &AppState) -> Result<ThreadResponse> {
+    let native = owner_calls::captured(state)?;
+    let rows = request(&native, RuntimeOwnerRequest::LoadedThreads).await?;
+    let rows = rows
+        .as_array()
+        .context("loaded thread snapshot is not an array")?;
+    anyhow::ensure!(
+        rows.len() <= MAX_CANONICAL_HISTORY_ENTRIES,
+        "loaded thread snapshot exceeds bound"
+    );
+    let active = running_ids(&native).await?;
+    let mut result = response("loaded".into());
+    let mut ids = std::collections::HashSet::new();
+    for row in rows {
+        let id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .context("loaded thread identity missing")?;
+        anyhow::ensure!(
+            !id.is_empty()
+                && id.len() <= 1024
+                && !id.chars().any(char::is_control)
+                && ids.insert(id.to_owned()),
+            "loaded thread identity invalid or repeated"
+        );
+        let mut thread = project_thread(row, id)?;
+        if active.contains(id) && thread.status != ThreadStatus::Archived {
+            thread.status = ThreadStatus::Running;
+        }
+        result.threads.push(thread);
+    }
+    result.threads.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(result)
+}
+
 async fn list(
     state: &AppState,
     params: codewhale_protocol::ThreadListParams,
@@ -383,16 +407,15 @@ async fn list(
         limit <= MAX_CANONICAL_HISTORY_ENTRIES,
         "thread list exceeds bound"
     );
-    let bridge = acquire_live_runtime_bridge(state)
-        .await
-        .map_err(|e| anyhow!("{}", e.message))?;
-    let mut url = endpoint(&bridge, &["v1", "threads"])?;
-    url.query_pairs_mut()
-        .append_pair("include_archived", "true")
-        .append_pair("limit", &(MAX_CANONICAL_HISTORY_ENTRIES + 1).to_string());
-    let rows = bridge
-        .request_json(bridge.authed(bridge.client.get(url)))
-        .await?;
+    let native = owner_calls::captured(state)?;
+    let rows = request(
+        &native,
+        RuntimeOwnerRequest::ListThreads {
+            include_archived: true,
+            limit: MAX_CANONICAL_HISTORY_ENTRIES + 1,
+        },
+    )
+    .await?;
     let rows = rows
         .as_array()
         .context("canonical thread list is not an array")?;
@@ -401,7 +424,7 @@ async fn list(
         "canonical thread list exceeds bound"
     );
     let mut canonical = HashMap::new();
-    let active = running_ids(&bridge).await?;
+    let active = running_ids(&native).await?;
     for row in rows {
         let id = row
             .get("id")
@@ -467,7 +490,7 @@ async fn list(
 pub(super) async fn handle(
     state: &AppState,
     request_value: ThreadRequest,
-) -> std::result::Result<ThreadResponse, JsonRpcError> {
+) -> std::result::Result<ThreadResponse, DispatchError> {
     let key = match &request_value {
         ThreadRequest::Read(p) => Some(p.thread_id.as_str()),
         ThreadRequest::SetName(p) => Some(p.thread_id.as_str()),
@@ -488,7 +511,7 @@ pub(super) async fn handle(
         .await
         .map_err(|error| rpc_error(error, key.as_deref()))?;
     if serde_json::to_vec(&result)
-        .map_err(|e| JsonRpcError::internal(e.to_string()))?
+        .map_err(|e| DispatchError::internal(e.to_string()))?
         .len()
         > MAX_CANONICAL_HISTORY_BYTES
     {
@@ -499,26 +522,28 @@ pub(super) async fn handle(
             .and_then(|value| serde_json::from_value::<CanonicalThreadReceipt>(value.clone()).ok())
             .map(|receipt| committed_failure(&receipt, anyhow!(message)))
             .unwrap_or_else(|| anyhow!(message));
-        return Err(JsonRpcError::runtime_unavailable(format!("{error:#}")));
+        return Err(DispatchError::runtime_unavailable(format!("{error:#}")));
     }
     Ok(result)
 }
 
-pub(super) fn rpc_error(error: anyhow::Error, key: Option<&str>) -> JsonRpcError {
+pub(super) fn rpc_error(error: anyhow::Error, key: Option<&str>) -> DispatchError {
     if error.downcast_ref::<CommittedControlFailure>().is_some() {
-        JsonRpcError::runtime_unavailable(format!("{error:#}"))
+        DispatchError::runtime_unavailable(format!("{error:#}"))
     } else if error
-        .downcast_ref::<HttpFailure>()
-        .is_some_and(|error| error.status == StatusCode::NOT_FOUND)
+        .downcast_ref::<RuntimeOwnerFailure>()
+        .is_some_and(|error| error.status == StatusCode::NOT_FOUND.as_u16())
     {
-        JsonRpcError::thread_not_found(key.unwrap_or("unknown"))
+        DispatchError::thread_not_found(key.unwrap_or("unknown"))
     } else {
-        JsonRpcError::runtime_unavailable(format!("{error:#}"))
+        DispatchError::runtime_unavailable(format!("{error:#}"))
     }
 }
 
-async fn running_ids(bridge: &RuntimeBridge) -> Result<std::collections::HashSet<String>> {
-    let value = request(bridge, Method::GET, &["v1", "threads", "running"], None).await?;
+async fn running_ids(
+    native: &Arc<dyn RuntimeOwnerFrontend>,
+) -> Result<std::collections::HashSet<String>> {
+    let value = request(native, RuntimeOwnerRequest::RunningThreads).await?;
     let rows = value
         .as_array()
         .context("canonical running list is not an array")?;
@@ -555,11 +580,17 @@ fn selected_workspace(state: &AppState, explicit: Option<PathBuf>) -> Result<Pat
 
 async fn full_snapshot(
     state: &AppState,
-    bridge: &RuntimeBridge,
+    native: &Arc<dyn RuntimeOwnerFrontend>,
     id: &str,
 ) -> Result<CanonicalThreadSnapshot> {
     let snapshot: CanonicalThreadSnapshot = serde_json::from_value(
-        request(bridge, Method::GET, &["v1", "threads", id, "history"], None).await?,
+        request(
+            native,
+            RuntimeOwnerRequest::HistorySnapshot {
+                thread_id: id.to_owned(),
+            },
+        )
+        .await?,
     )?;
     let selected = owner(state)?;
     anyhow::ensure!(
@@ -582,9 +613,7 @@ async fn mutate(
 ) -> Result<ThreadResponse> {
     let owner = owner(state)?;
     check_workspace(state, &workspace)?;
-    let bridge = acquire_live_runtime_bridge(state)
-        .await
-        .map_err(|error| anyhow!("{}", error.message))?;
+    let native = owner_calls::captured(state)?;
     let body = CanonicalThreadMutationRequest {
         version: 1,
         operation_key: operation.clone(),
@@ -593,12 +622,7 @@ async fn mutate(
         workspace,
         mutation,
     };
-    let value = request(
-        &bridge,
-        Method::POST,
-        &["v1", "thread-history", "mutate"],
-        Some(&serde_json::to_value(body)?),
-    )
+    let value = request(&native, RuntimeOwnerRequest::HistoryMutate(body))
     .await
     .with_context(|| format!("canonical operation {operation} may have committed; retain this key, no automatic replay or replacement"))?;
     let receipt: CanonicalThreadReceipt = serde_json::from_value(value).with_context(|| {
@@ -607,21 +631,21 @@ async fn mutate(
     verify_receipt(&receipt, &owner, &operation).with_context(|| {
         format!("canonical operation {operation} returned an unbound receipt; retain this key without replay or replacement")
     })?;
-    present_receipt(&bridge, receipt, status, public_alias).await
+    present_receipt(&native, receipt, status, public_alias).await
 }
 
 async fn present_receipt(
-    bridge: &RuntimeBridge,
+    native: &Arc<dyn RuntimeOwnerFrontend>,
     receipt: CanonicalThreadReceipt,
     status: &str,
     public_alias: Option<&str>,
 ) -> Result<ThreadResponse> {
     let public_id = public_alias.unwrap_or(&receipt.runtime_thread_id);
     let value = request(
-        bridge,
-        Method::GET,
-        &["v1", "threads", &receipt.runtime_thread_id],
-        None,
+        native,
+        RuntimeOwnerRequest::GetThread {
+            thread_id: receipt.runtime_thread_id.clone(),
+        },
     )
     .await
     .map_err(|error| committed_failure(&receipt, error.context("metadata is unavailable")))?;
@@ -674,9 +698,7 @@ async fn recover_operation(
     public_alias: Option<&str>,
 ) -> Result<Option<ThreadResponse>> {
     let selected = owner(state)?;
-    let bridge = acquire_live_runtime_bridge(state)
-        .await
-        .map_err(|error| anyhow!("{}", error.message))?;
+    let native = owner_calls::captured(state)?;
     let body = CanonicalThreadOperationLookup {
         version: 1,
         operation_key: operation.to_owned(),
@@ -685,8 +707,7 @@ async fn recover_operation(
         workspace: workspace.to_owned(),
     };
     let outcome: CanonicalThreadOperationStatus = serde_json::from_value(request(
-        &bridge, Method::POST, &["v1","thread-history","operations","lookup"],
-        Some(&serde_json::to_value(&body)?),
+        &native, RuntimeOwnerRequest::HistoryLookup(body.clone()),
     ).await.with_context(|| format!("canonical key lookup {operation} is unavailable; retain key, no absence inference or replacement"))?)
         .with_context(|| format!("canonical key lookup {operation} returned an invalid result; retain key, no absence inference or replacement"))?;
     let (receipt, association, committed) = match outcome {
@@ -721,10 +742,7 @@ async fn recover_operation(
         };
         let recovered: CanonicalThreadOperationStatus = serde_json::from_value(
             request(
-                &bridge,
-                Method::POST,
-                &["v1", "thread-history", "operations", "recover"],
-                Some(&serde_json::to_value(recovery)?),
+                &native, RuntimeOwnerRequest::HistoryRecover(recovery),
             )
             .await
             .with_context(|| format!(
@@ -768,7 +786,7 @@ async fn recover_operation(
             ),
         }
     }
-    present_receipt(&bridge, receipt, status, public_alias)
+    present_receipt(&native, receipt, status, public_alias)
         .await
         .map(Some)
 }
@@ -807,11 +825,8 @@ async fn resume_or_fork(
             "moving a history source to another workspace requires the canonical owner's explicit admission"
         );
     }
-    let bridge = acquire_live_runtime_bridge(state)
-        .await
-        .map_err(|error| anyhow!("{}", error.message))?;
-    let snapshot = full_snapshot(state, &bridge, &id).await?;
-    drop(bridge);
+    let native = owner_calls::captured(state)?;
+    let snapshot = full_snapshot(state, &native, &id).await?;
     let source = CanonicalHistorySource::Thread {
         runtime_thread_id: id,
         expected_document_digest: snapshot.document_digest,
@@ -1010,12 +1025,9 @@ async fn handle_owned(state: &AppState, request_value: ThreadRequest) -> Result<
             Some(json!({"archived":false})),
         ),
         ThreadRequest::GoalGet(p) => (p.thread_id, Method::GET, Some("goal"), None),
-        ThreadRequest::GoalSet(p) => (
-            p.thread_id,
-            Method::PUT,
-            Some("goal"),
-            Some(json!({"objective":p.objective,"token_budget":p.token_budget})),
-        ),
+        ThreadRequest::GoalSet(_) => {
+            bail!("goal execution requires the canonical Runtime interaction API")
+        }
         ThreadRequest::GoalClear(p) => (p.thread_id, Method::DELETE, Some("goal"), None),
         ThreadRequest::GoalRecordProgress(_) => bail!(
             "goal progress requires producing Engine usage/time receipts; client deltas are not accounting authority"
@@ -1030,25 +1042,41 @@ async fn handle_owned(state: &AppState, request_value: ThreadRequest) -> Result<
         ThreadRequest::List(_) => unreachable!("list handled above"),
     };
     let (id, _) = resolve(state, &key, false).await?;
-    let bridge = acquire_live_runtime_bridge(state)
-        .await
-        .map_err(|e| anyhow!("{}", e.message))?;
+    let native = owner_calls::captured(state)?;
     let mut result = response(key.clone());
-    let mut segments = vec!["v1", "threads", &id];
-    if let Some(action) = action {
-        segments.push(action)
-    }
-    let value = match request(&bridge, method.clone(), &segments, body.as_ref()).await {
+    let operation = match (method.as_str(), action) {
+        ("GET", None) => RuntimeOwnerRequest::GetThread {
+            thread_id: id.clone(),
+        },
+        ("PATCH", None) => RuntimeOwnerRequest::UpdateThread {
+            thread_id: id.clone(),
+            body: body.clone().context("missing update")?,
+        },
+        ("GET", Some("goal")) => RuntimeOwnerRequest::GetGoal {
+            thread_id: id.clone(),
+        },
+        ("DELETE", Some("goal")) => RuntimeOwnerRequest::ClearGoal {
+            thread_id: id.clone(),
+        },
+        _ => bail!("unsupported native thread operation"),
+    };
+    let value = match request(&native, operation).await {
         Ok(value) => value,
         Err(error)
             if action == Some("goal")
                 && (method == Method::GET || method == Method::DELETE)
                 && error
-                    .downcast_ref::<HttpFailure>()
-                    .is_some_and(|e| e.status == StatusCode::NOT_FOUND) =>
+                    .downcast_ref::<RuntimeOwnerFailure>()
+                    .is_some_and(|e| e.status == StatusCode::NOT_FOUND.as_u16()) =>
         {
             // Distinguish an absent goal from a concurrently removed thread.
-            request(&bridge, Method::GET, &["v1", "threads", &id], None).await?;
+            request(
+                &native,
+                RuntimeOwnerRequest::GetThread {
+                    thread_id: id.clone(),
+                },
+            )
+            .await?;
             if method == Method::DELETE {
                 result.status = "empty".into();
             }
@@ -1078,7 +1106,7 @@ async fn handle_owned(state: &AppState, request_value: ThreadRequest) -> Result<
             "canonical control returned another target identity"
         );
         let mut thread = project_thread(record, &key)?;
-        if running_ids(&bridge).await?.contains(&id) && thread.status != ThreadStatus::Archived {
+        if running_ids(&native).await?.contains(&id) && thread.status != ThreadStatus::Archived {
             thread.status = ThreadStatus::Running;
         }
         result.thread = Some(thread);
@@ -1090,7 +1118,7 @@ async fn handle_owned(state: &AppState, request_value: ThreadRequest) -> Result<
         result.cwd = result.thread.as_ref().map(|t| t.cwd.clone());
         result.data = value;
         if method == Method::GET {
-            let snapshot = full_snapshot(state, &bridge, &id).await?;
+            let snapshot = full_snapshot(state, &native, &id).await?;
             result.data["history"] = serde_json::to_value(snapshot)?;
         }
     }

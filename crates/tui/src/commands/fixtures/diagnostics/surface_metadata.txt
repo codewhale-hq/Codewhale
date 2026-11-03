@@ -28,7 +28,7 @@ show_in_empty_discovery: false
 ---
 name: cache
 aliases: []
-usage: /cache [count|inspect|stats|zones|warmup]
+usage: /cache [count|calls [count]|inspect|stats|zones|warmup]
 description_en: Show cache hit/miss stats for recent turns
 palette_en: Show cache hit/miss stats for recent turns
 requires_argument: true

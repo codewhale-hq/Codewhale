@@ -340,56 +340,58 @@ impl CodewhaleClient {
     /// Only a failure class leaves this function — provider error bodies can
     /// echo the prompt and must never reach receipts.
     ///
-    /// `dispatched` is set once both permits are held and the request is
-    /// handed to the transport, so a caller whose deadline cancels this
-    /// future can tell a possibly-billed request from one never sent.
+    /// The caller retains its isolated physical observations across cancellation,
+    /// including admission waits, HTTP refusal and response-body parsing.
     pub async fn system_one_decide(
         &self,
         body: &Value,
-        dispatched: &std::sync::atomic::AtomicBool,
+        observation: crate::llm_client::RequestRetryObservation,
     ) -> std::result::Result<SystemOneResponse, AutoRouterFailure> {
-        if serde_json::to_vec(body).map_or(true, |bytes| bytes.len() > DECISION_REQUEST_MAX_BYTES)
-            || !valid_decision_request(body)
-        {
-            return Err(AutoRouterFailure::NotRunnable);
-        }
-        let mut isolated = self.clone();
-        isolated.isolated_request_state = true;
-        isolated.retry.max_retries = 0;
-        let _inference = isolated.acquire_remote_control_inference_permit().await;
-        let _permit = isolated.acquire_provider_request_permit().await;
-        let url = if isolated.api_provider == ProviderKind::Openrouter {
-            // The OpenRouter Decisions API is a sibling of /api/v1, so keep
-            // the configured origin/proxy prefix and replace only /v1.
-            let mut url = reqwest::Url::parse(&isolated.base_url)
-                .map_err(|_| AutoRouterFailure::NotRunnable)?;
-            let prefix = url.path().trim_end_matches('/').trim_end_matches("/v1");
-            url.set_path(&format!("{prefix}/alpha/decisions"));
-            url.to_string()
-        } else {
-            api_url(&isolated.base_url, "systemone")
-        };
-        dispatched.store(true, std::sync::atomic::Ordering::Release);
-        let response = isolated
-            .send_json_with_retry(&url, body)
-            .await
-            .map_err(|error| router_failure_from_error(&error))?;
-        let text = bounded_provider_catalog_text(response, DECISION_RESPONSE_MAX_BYTES)
-            .await
-            .map_err(|error| match error {
-                CatalogRefreshError::Network => AutoRouterFailure::Transport,
-                _ => AutoRouterFailure::InvalidAnswer,
-            })?;
-        let mut response: SystemOneResponse =
-            serde_json::from_str(&text).map_err(|_| AutoRouterFailure::InvalidAnswer)?;
-        response.answers_validated = Some(valid_decision_response(body, &response));
-        response.model = response.model.map(|model| {
-            self.redact_model_bound_text(&model)
-                .chars()
-                .take(128)
-                .collect()
-        });
-        Ok(response)
+        crate::llm_client::observe_request_retries(Some(observation), async {
+            if serde_json::to_vec(body)
+                .map_or(true, |bytes| bytes.len() > DECISION_REQUEST_MAX_BYTES)
+                || !valid_decision_request(body)
+            {
+                return Err(AutoRouterFailure::NotRunnable);
+            }
+            let mut isolated = self.clone();
+            isolated.isolated_request_state = true;
+            isolated.retry.max_retries = 0;
+            let _inference = isolated.acquire_remote_control_inference_permit().await;
+            let _permit = isolated.acquire_provider_request_permit().await;
+            let url = if isolated.api_provider == ProviderKind::Openrouter {
+                // The OpenRouter Decisions API is a sibling of /api/v1, so keep
+                // the configured origin/proxy prefix and replace only /v1.
+                let mut url = reqwest::Url::parse(&isolated.base_url)
+                    .map_err(|_| AutoRouterFailure::NotRunnable)?;
+                let prefix = url.path().trim_end_matches('/').trim_end_matches("/v1");
+                url.set_path(&format!("{prefix}/alpha/decisions"));
+                url.to_string()
+            } else {
+                api_url(&isolated.base_url, "systemone")
+            };
+            let response = isolated
+                .send_json_with_retry(&url, body)
+                .await
+                .map_err(|error| router_failure_from_error(&error))?;
+            let text = bounded_provider_catalog_text(response, DECISION_RESPONSE_MAX_BYTES)
+                .await
+                .map_err(|error| match error {
+                    CatalogRefreshError::Network => AutoRouterFailure::Transport,
+                    _ => AutoRouterFailure::InvalidAnswer,
+                })?;
+            let mut response: SystemOneResponse =
+                serde_json::from_str(&text).map_err(|_| AutoRouterFailure::InvalidAnswer)?;
+            response.answers_validated = Some(valid_decision_response(body, &response));
+            response.model = response.model.map(|model| {
+                self.redact_model_bound_text(&model)
+                    .chars()
+                    .take(128)
+                    .collect()
+            });
+            Ok(response)
+        })
+        .await
     }
 }
 
@@ -670,17 +672,21 @@ mod decisions_compatibility_tests {
             .acquire_provider_request_permit()
             .await
             .expect("shared permit");
-        let dispatched = std::sync::atomic::AtomicBool::new(false);
+        let observation = crate::llm_client::RequestRetryObservation::isolated();
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(30),
-                clone.system_one_decide(&request(), &dispatched)
+                clone.system_one_decide(&request(), observation.clone())
             )
             .await
             .is_err()
         );
         assert!(
-            !dispatched.load(std::sync::atomic::Ordering::Acquire),
+            observation
+                .wire_observations
+                .drain()
+                .transmissions
+                .is_empty(),
             "a queued request has no dispatched-spend marker"
         );
         assert!(
@@ -692,10 +698,10 @@ mod decisions_compatibility_tests {
         );
         drop(held);
         let answer = client
-            .system_one_decide(&request(), &dispatched)
+            .system_one_decide(&request(), observation.clone())
             .await
             .expect("one admitted request");
-        assert!(dispatched.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(observation.wire_observations.drain().transmissions.len(), 1);
         assert_eq!(answer.answers_validated, Some(true));
         assert_eq!(
             client
@@ -718,13 +724,23 @@ mod decisions_compatibility_tests {
         let mut body = response();
         body["usage"] = json!({"inputTokens": 287, "cost": 0.000012054});
         let response: SystemOneResponse = serde_json::from_value(body).expect("partial response");
-        let batch = crate::model_routing::decision_usage_batch(&route, &response);
-        assert!(
-            batch.records.is_empty(),
-            "a partial token count cannot produce a complete priced subtotal"
+        let batch = crate::model_routing::decision_usage_batch(
+            &route,
+            &response,
+            &crate::cost_status::NativeUsageSource::capture(
+                "partial",
+                crate::cost_status::UsageSpendOwner::Auxiliary,
+            ),
+            &crate::llm_client::OutboundWireObservationBatch::default(),
         );
-        assert_eq!(batch.dropped_records, 1);
-        assert_eq!(batch.drop_records.len(), 1);
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(batch.records[0].usage.usage.input_tokens, 287);
+        assert_eq!(
+            batch.records[0].settlement.as_ref().unwrap().coverage,
+            crate::llm_client::ProviderUsageCoverage::Incomplete
+        );
+        assert_eq!(batch.dropped_records, 0);
+        assert!(batch.drop_records.is_empty());
         let mut invalid = request();
         invalid["questions"]["urgency"]["criteria"] = json!([null]);
         assert!(!valid_decision_request(&invalid));
@@ -777,13 +793,31 @@ mod decisions_compatibility_tests {
             assert!(!usage.complete);
             assert_eq!(usage.reported_cost().as_deref(), Some("0.000012054"));
             let route = crate::cost_status::decision_receipt_fixture("malformed-count").route;
-            let batch = crate::model_routing::decision_usage_batch(&route, &decoded);
-            assert!(
-                batch.records.is_empty(),
-                "invalid counters cannot fabricate priced usage"
+            let batch = crate::model_routing::decision_usage_batch(
+                &route,
+                &decoded,
+                &crate::cost_status::NativeUsageSource::capture(
+                    "malformed-count",
+                    crate::cost_status::UsageSpendOwner::Auxiliary,
+                ),
+                &crate::llm_client::OutboundWireObservationBatch::default(),
             );
-            assert_eq!(batch.dropped_records, 1);
-            assert_eq!(batch.drop_records.len(), 1);
+            assert_eq!(batch.records.len(), 1);
+            assert_eq!(
+                batch.records[0].usage.usage.input_tokens,
+                usage.input_tokens
+            );
+            assert_eq!(
+                batch.records[0].usage.usage.output_tokens,
+                usage.output_tokens
+            );
+            assert!(matches!(
+                batch.records[0].settlement.as_ref().unwrap().coverage,
+                crate::llm_client::ProviderUsageCoverage::Missing
+                    | crate::llm_client::ProviderUsageCoverage::Incomplete
+            ));
+            assert_eq!(batch.dropped_records, 0);
+            assert!(batch.drop_records.is_empty());
         }
     }
 }

@@ -5,13 +5,26 @@ use std::time::Instant;
 
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::{App, ToolDetailRecord, ToolEvidence};
-use crate::tui::history::{
-    ExecCell, ExecSource, ExecWait, ExploringCell, ExploringEntry, GenericToolCell, HistoryCell,
-    McpToolCell, PatchSummaryCell, PlanUpdateCell, ReviewCell, ToolCell, ToolStatus, ViewImageCell,
-    WebSearchCell, output_looks_like_diff, summarize_mcp_output, summarize_tool_args,
-    summarize_tool_output,
-};
+use crate::tui::history::ExecCell;
+use crate::tui::history::ExecSource;
+use crate::tui::history::ExecWait;
+use crate::tui::history::ExploringCell;
+use crate::tui::history::ExploringEntry;
+use crate::tui::history::GenericToolCell;
+use crate::tui::history::HistoryCell;
+use crate::tui::history::McpToolCell;
+use crate::tui::history::PatchSummaryCell;
+use crate::tui::history::PlanUpdateCell;
+use crate::tui::history::ReviewCell;
+use crate::tui::history::ToolCell;
+use crate::tui::history::ToolStatus;
+use crate::tui::history::ViewImageCell;
+use crate::tui::history::WebSearchCell;
+use crate::tui::history::output_looks_like_diff;
+use crate::tui::history::summarize_mcp_output;
 use crate::tui::workspace_context;
+use codewhale_app_server::exec_agent::summarize_tool_args;
+use codewhale_app_server::exec_agent::summarize_tool_output;
 use codewhale_config::hooks::HookEvent;
 use codewhale_engine::tools::ReviewOutput;
 use codewhale_engine::tools::plan::PlanSnapshot;
@@ -502,8 +515,16 @@ fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, Too
     };
     if let Some(batch) = codewhale_engine::cost_status::child_usage_records_from_metadata(metadata)
     {
+        let pending = codewhale_engine::cost_status::drain();
+        app.absorb_pending_background_cost(&pending);
         for record in &batch.records {
-            accrue_child_route_usage(app, &record.usage);
+            if record.settlement.is_some() {
+                if let Err(error) = app.absorb_usage_source(record) {
+                    tracing::warn!(%error, "tool usage revision was not admitted");
+                }
+            } else {
+                app.mark_usage_uncertain("legacy_usage_unverified");
+            }
         }
         for record in &batch.drop_records {
             let pending = codewhale_engine::cost_status::background_cost_for_runtime_drop(record);
@@ -527,42 +548,10 @@ fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, Too
         }
         return;
     }
-    let Some(route) = codewhale_engine::cost_status::child_route_envelope_from_metadata(metadata)
-    else {
-        return;
-    };
-    // Use the same parser as the runtime host. It deliberately returns a
-    // zero-valued usage record when the producer emitted the canonical child
-    // fields: a model-backed call is still an auditable/priced-zero call, and
-    // replay/server-tool telemetry must not disappear in the TUI projection.
-    let Some(usage) = codewhale_engine::cost_status::child_usage_from_metadata(metadata) else {
-        return;
-    };
-    accrue_child_route_usage(
-        app,
-        &codewhale_engine::cost_status::EffectiveRouteUsage { route, usage },
-    );
-}
-
-fn accrue_child_route_usage(
-    app: &mut App,
-    routed: &codewhale_engine::cost_status::EffectiveRouteUsage,
-) {
-    // `route` is the child's own dispatch receipt, rehydrated from the
-    // complete `child_*` metadata `attach_child_usage_metadata` emits at the
-    // child's wire boundary (review/verify/rlm are the three producers). An
-    // incomplete or legacy payload rehydrates as `RouteBillingMode::Unknown`,
-    // so a child never inherits the live `app.billing_presentation` chip and a
-    // `/provider` switch between dispatch and arrival cannot retro-bill it.
-    //
-    // Sub-agent spend lands in the same displayed total as parent turns, so it
-    // has to feed the same completeness counters — otherwise `/cost` would call
-    // a total complete while an unpriced child turn is missing from it.
-    let audit = routed.route.audit(&routed.usage);
-    app.record_turn_cost_audit(&audit);
-    app.record_turn_cost_route_receipt(routed.route.receipt(&audit));
-    if let Some(cost) = audit.estimate {
-        app.accrue_subagent_cost_estimate(cost);
+    if codewhale_engine::cost_status::child_route_envelope_from_metadata(metadata).is_some()
+        && codewhale_engine::cost_status::child_usage_from_metadata(metadata).is_some()
+    {
+        app.mark_usage_uncertain("legacy_usage_unverified");
     }
 }
 
@@ -936,7 +925,7 @@ pub(super) fn handle_tool_call_complete(
                         exec.output_summary = exec
                             .output
                             .as_deref()
-                            .map(super::history::summarize_tool_output);
+                            .map(codewhale_app_server::exec_agent::summarize_tool_output);
                         exec.live_output = None;
                     } else if status == ToolStatus::Running && exec.interaction.is_none() {
                         moved_to_jobs = !explicit_background;
@@ -945,8 +934,9 @@ pub(super) fn handle_tool_call_complete(
                     && exec.interaction.is_none()
                 {
                     exec.output = Some(err.to_string());
-                    exec.output_summary =
-                        Some(super::history::summarize_tool_output(&err.to_string()));
+                    exec.output_summary = Some(
+                        codewhale_app_server::exec_agent::summarize_tool_output(&err.to_string()),
+                    );
                 }
                 app.mark_history_updated();
             }

@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] - Unreleased candidate
+
 ### Added
+
+- **Pinned local thread controls (preview):** initialized App Server clients can list retained loaded Engines with cursor paging and rename the canonical thread through `thread/loaded/list` and `thread/name/set`. Saved but unloaded threads stay out of the loaded list; existing aliases remain available. Full-tool turns and subscription parity remain unfinished.
+
+
+- **Local whale voice (preview):** the host can edit its private, revision-checked SOUL.md through the Runtime API. The Engine captures it for the next turn within the existing instruction budget and records its source; invalid private files refuse the turn with a terminal failure.
+
+- **MCP tool approval rules (preview):** exact tool names in the global server configuration can use Always, Ask or Off across workspaces. Off wins, server edits invalidate the prior grant, and required Computer Use consent and nested-program approval remain in place.
+
+- **Attested watch-turn ingress (preview):** a configured Runtime master bearer can admit typed schedule or pull-request receipts through the existing thread and turn owner, with exact operation replay and read-only recovery lookup. This supplies the Native ingress prerequisite; it does not qualify the complete continuous-operation workflow.
 
 - Goal continuations send the objective once per live conversation window. Later passes show the current goal state, estimated conversation input and the applicable compaction setting. Full notes stay available through `get_goal`. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for measuring the repeated text and identifying the misleading token figure ([#7172](https://github.com/codewhale-hq/Codewhale/issues/7172)).
 - **Composition on the first request:** `execute_tools` accepts a bounded named batch from the current MCP catalog, with argument names from its allowed members and the same nested gate as a JavaScript program. Exact tool-name searches work with regex anchors. Stream receipts hash the executable in the background; `CODEWHALE_TIMING=1` reports phase durations. (CW-7649)
@@ -75,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Internal coarse split: shared bounded owner work and frontend selection types live in Runtime, protected socket layout lives in Paths, and Engine/terminal avatars share one Protocol data contract. Existing App Server and terminal-kit aliases remain available. Engine and Sandbox no longer depend on App Server; the host-band move and Stage B remain open (#5586).
+- Internal coarse split: Runtime owns bounded owner work, Paths owns the protected socket layout, and Protocol owns shared avatar data. App Server now owns the Runtime host and control transports previously embedded in the TUI. Engine and Sandbox do not depend on App Server; the remaining Stage B boundaries stay open (#5586).
 - **Newer DeepSeek Harness plugin compatibility:** the Native host targets
   DSH 0.2.1-rc.5 with Cordis 4.0.5 and refreshed reviewed composition
   packages. Boolean `deferLoading` hints are accepted while the Engine keeps
@@ -106,8 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fleet workers run the same Codewhale:** `codewhale fleet run` and Runtime API Fleet runs (`POST /v1/fleet/runs`) now start workers from the running `codewhale` binary instead of whichever `codewhale` is first on `PATH`, so they work with a minimal `PATH` and never pick up a stale copy. `CODEWHALE_FLEET_CODEWHALE_BINARY` still overrides it. (#7119)
 - **Switching provider lands on its current model:** `/provider stepfun` now selects Step 5 Preview instead of the older Step 3.7 Flash; a model you saved for a provider is still kept. `/model` now lists the current provider's own models (bundled and live, newest first, up to 20) instead of only the selected one. Search also matches ids typed without separators (`step5`). While you search, Shift+P and Shift+F type their letters rather than pinning or adding to Fleet, so `Step-5-Preview` can be typed in full; Ctrl+P and Ctrl+F pin or add the highlighted row at any time.
 - **First run without a key:** `/provider` now opens on the full provider list (DeepSeek and the other cloud providers) when only a keyless local runtime is set up, no longer shows a disabled Antigravity row that was never configured, and Shift+A toggles the view like `a`. A local Ollama model that is not loaded yet is loaded before the first turn, so the route uses its real context window (for example 32K for `qwen3:4b`) instead of an 8K fallback that refused the second message with "~5120 tokens usable"; the footer's context reading follows the same window. The TUI resolves an unknown Ollama default to an installed chat model on startup. If the daemon or chat model appears later, selecting `/provider ollama` retries discovery. Embedding-only tags keep the model unresolved. An installed Ollama model is listed in `/model` and `GET /v1/providers/ollama/models` once its own catalog has answered, even when another provider is active. (#7113, #7114, #7116)
-- **Computer Use is a separate plugin, not bundled:** the Computer Use plugin is no longer vendored into the binary; it is an experimental macOS plugin with its own release. Install steps go on the Computer Use page once its signed release is published (the marketplace entry is not installable until then). Its consent tools load on first use, and decisions still require a human approval card.
-- **First-party marketplace receipt:** the shipped catalog is pinned to marketplace revision `a5f1d210372ff48c9a278a0a39737956ac0f2d93`.
+- **Computer Use delivery:** the standalone Engine uses the separately released Computer Use plugin; desktop packaging owns its embedded background helper. The marketplace pins plugin 0.16.0 and its archive checksum. Consent tools load on first use, and decisions still require a human approval card.
+- **First-party marketplace receipt:** the shipped catalog is pinned to marketplace revision `6096906d57a5a27460ec46eb916460c611aa32c8`.
 - **Upgrading over older installs:** `codewhale update` writes an install receipt for a copy installed before receipts, and moves a mismatched `codew` to the recovery folder and replaces it instead of refusing the update. The `curl | sh` and archive installers upgrade an earlier Codewhale in the install directory instead of refusing, keep the old files in the recovery folder rather than as `.bak` files beside the commands, and finish with `codewhale doctor --installs --brief`; a symlink or a non-Codewhale file at the destination is still refused. The Windows archive installer keeps the replaced files in the recovery folder too.
 - **The desktop app's Engine is never self-updated:** `codewhale update` refuses to write inside `*.app/Contents/MacOS/` or the app's pinned Engine store, and the update notice for that copy says to use Codewhale > Check for Updates.
 - **GitHub Action needs an explicit provider:** the Action's `provider` input no longer defaults to the `codewhale` account relay. Name your BYOK provider (or `codewhale` for a separately verified account machine key); a missing provider stops with `configuration_missing` before any download or model call. The repository's own (disabled) review workflow now pins CLI `v0.10.2` by default instead of `v0.10.0`.
@@ -160,6 +171,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Usage on long tool turns:** physical model-call receipts remain available after the 64th response without dropping earlier sources. A completed tool-only provider response uses its terminal stream event for accounting, while incomplete streams retain unknown coverage.
+
+
+- **Retained browser connections follow their desktop owner:** authenticated runtime registration binds the browser endpoint and credential to its workspace; existing Core catalogs and connections retire a replaced registration before reuse.
+
+- **`/new` waits for the Engine:** the terminal keeps the current session, transcript and draft until the exact session switch is acknowledged. A refused closure preserves them; a late acknowledgement can finish once while retaining input edited during the wait. Pending or uncertain switches pause new work and retain the existing scoped Stop controls.
+
+- **Interactive command confirmations keep their stack headroom:** the existing interactive startup chain heap-pins its large futures instead of embedding their debug state machines in each caller.
+
+- **Live MCP status includes runtime servers:** the existing pool snapshot now includes workspace-scoped dynamic servers, retaining static-name precedence and the same permission and connection checks.
+- **Plugin reload confirms its workspace:** the status translation receives the required workspace value instead of producing an empty acknowledgement.
+
+- **MCP credentials fail clearly:** missing or invalid required credential configuration stops before connection, stored OAuth discovery failures retain their cause, and reviewed-plugin errors redact credential details. Explicit reconnect still reloads saved credentials.
+- **Desktop browser MCP stays with its workspace:** the paired desktop host registers its authenticated loopback server at runtime, late registrations refresh the tool catalog, and another workspace cannot inherit the connection. Recognizable obsolete global browser entries are ignored without rewriting user configuration.
+- **Closing an empty delegated fleet avoids an unnecessary writer lock:** a session with no locally owned agent or worker records can close while another Codewhale process coordinates the workspace. Read-only or failed-admission state and sessions with owned records retain the existing coordination checks.
+
+- Child, review and Auto usage keeps its captured session and route through late completion and persistence retries. Unreported usage stays unknown, cache writes and reasoning remain distinct, and cost calculations use the quote captured for the request.
+- Interrupted children persist their continuation checkpoint and complete their workflow task instead of leaving it waiting on a worker whose execution already ended. Live approval waits retain their existing behavior.
 - Session publication compares the document and crash checkpoint captured before work was queued. A delayed save refuses changed records without replacing newer history or clearing its checkpoint. Ordered completion retains real checkpoint acknowledgments, and native turn/control identity follows restores, undo and terminal saves. Legacy checkpoints require explicit recovery; canonical history recovery retains its original source and exact prepared generation.
 - Damaged usage sidecars keep valid recovery data readable with incomplete coverage and no publication receipt. Known retirement, changed raw records and unsafe writes still refuse.
 - Local control and ACP output serialize within the existing 8 MiB frame limit and stop a damaged or stalled output stream. Compatibility replies, events and relay stdout now share the 30-second write deadline; owner forwarding keeps its tighter 5 seconds. Standalone and attached ACP recover after complete invalid UTF-8 or oversized input frames, discard oversized tails through the real newline, and preserve cancellation, permissions and actual Core receipts.
@@ -13217,7 +13246,8 @@ overflow report and `/theme` picker edge-wrapping patch in #1814.
 
 Older releases (v0.8.39 and earlier) are archived in [docs/CHANGELOG_ARCHIVE.md](docs/CHANGELOG_ARCHIVE.md).
 
-[Unreleased]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...HEAD
 [0.10.2]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/codewhale-hq/CodeWhale/compare/v0.9.13...v0.10.0

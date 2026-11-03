@@ -66,7 +66,9 @@ async fn queued_goal_clear_refreshes_prompt_and_cancels_stale_continuation() {
                 }
                 Event::SessionUpdated {
                     source: _,
-                    system_prompt, .. } => {
+                    system_prompt,
+                    ..
+                } => {
                     let prompt = match system_prompt.expect("clear SessionUpdated prompt") {
                         SystemPrompt::Text(text) => text,
                         SystemPrompt::Blocks(blocks) => blocks
@@ -1173,6 +1175,8 @@ async fn headless_host_drains_existing_engine_completion_inbox_before_exit() {
     engine
         .tx_event
         .send(Event::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,

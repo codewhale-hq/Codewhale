@@ -1,3 +1,6 @@
+use crate::rpc::{
+    ThreadLoadedListParams, ThreadLoadedListResponse, ThreadSetNameParams, ThreadSetNameResponse,
+};
 use crate::runtime::*;
 use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
@@ -30,6 +33,8 @@ pub fn runtime_schema() -> Value {
         .for_deserialize()
         .into_generator();
     let _ = input.subschema_for::<RuntimeImageInput>();
+    let _ = input.subschema_for::<ThreadLoadedListParams>();
+    let _ = input.subschema_for::<ThreadSetNameParams>();
     let _ = input.subschema_for::<DynamicToolSpec>();
     let _ = input.subschema_for::<DynamicToolItemStatus>();
     let _ = input.subschema_for::<DynamicToolCallResult>();
@@ -39,6 +44,8 @@ pub fn runtime_schema() -> Value {
         .for_serialize()
         .into_generator();
     let _ = output.subschema_for::<RuntimeEventEnvelope>();
+    let _ = output.subschema_for::<ThreadLoadedListResponse>();
+    let _ = output.subschema_for::<ThreadSetNameResponse>();
     let _ = output.subschema_for::<RuntimeCapabilities>();
     let _ = output.subschema_for::<RuntimeExperimentalCapabilities>();
     let _ = output.subschema_for::<DynamicToolCallParams>();

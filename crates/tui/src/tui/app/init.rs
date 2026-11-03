@@ -822,7 +822,8 @@ impl App {
             completed_assistant_outputs: Vec::new(),
             pending_plan_handoff: None,
             context_token_cache: std::cell::RefCell::new(Default::default()),
-            remote_control: crate::remote_control::RemoteControlController::default(),
+            remote_control: codewhale_app_server::remote_control::RemoteControlController::default(
+            ),
             start_remote_control_on_launch: start_remote_control,
             is_loading: false,
             feedback_dispatch: None,
@@ -1061,6 +1062,7 @@ impl App {
             last_known_work_state: None,
             last_known_goal_state: None,
             pending_goal_controls: VecDeque::new(),
+            pending_fresh_session: None,
             current_session_metadata: None,
             session_artifacts: Vec::new(),
             session_turn_outcomes: Vec::new(),

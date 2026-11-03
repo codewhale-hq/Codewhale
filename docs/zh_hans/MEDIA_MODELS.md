@@ -19,7 +19,7 @@
 
 源码 owner：[语音工具](../../crates/engine/src/tools/speech.rs)、
 [合成客户端](../../crates/engine/src/client.rs)、[语音选择](../../crates/engine/src/voice.rs)、
-[Runtime 语音](../../crates/tui/src/runtime_api/voice.rs)。真实麦克风、合成请求及完整
+[Runtime 语音](../../crates/app-server/src/runtime_api/voice.rs)。真实麦克风、合成请求及完整
 用户语音旅程仍需独立验收。
 
 ## Index-Translate 核查

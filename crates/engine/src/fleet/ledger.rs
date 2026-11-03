@@ -382,6 +382,69 @@ impl FleetLedger {
         })
     }
 
+    pub fn visit_diagnostic_records(
+        workspace: &Path,
+        mut visit: impl FnMut(Result<FleetLedgerRecord>) -> Result<()>,
+    ) -> Result<()> {
+        let ledger_file = match WorkspaceFile::open_resolved_root(
+            workspace,
+            &Path::new(FLEET_DIR).join(FLEET_LEDGER_FILE),
+            false,
+        ) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        match ledger_file.open_file() {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let lock_file = WorkspaceFile::open_resolved_root(
+            workspace,
+            &Path::new(FLEET_DIR).join(FLEET_LEDGER_LOCK_FILE),
+            false,
+        )?;
+        let lock = fd_lock::RwLock::new(lock_file.open_file()?);
+        let (ledger, committed) = {
+            let guard = lock.read()?;
+            if !same_file(&guard, &lock_file.open_file()?)? {
+                bail!("Fleet diagnostic lock was replaced");
+            }
+            let ledger = ledger_file.open_file()?;
+            let committed = ledger.metadata()?.len();
+            (ledger, committed)
+        };
+        let mut reader = std::io::BufReader::new(ledger.take(committed));
+        let limit = crate::session_manager::SESSION_METADATA_READ_LIMIT as u64;
+        loop {
+            let mut raw = Vec::new();
+            let count = reader
+                .by_ref()
+                .take(limit + 1)
+                .read_until(b'\n', &mut raw)?;
+            if count == 0 {
+                return Ok(());
+            }
+            if raw.len() as u64 > limit {
+                visit(Err(std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    "Fleet diagnostic record exceeds the session inspection limit",
+                )
+                .into()))?;
+                return Ok(());
+            }
+            if !raw.ends_with(b"\n") {
+                visit(Err(anyhow::anyhow!("Fleet diagnostic tail is incomplete")))?;
+                return Ok(());
+            }
+            if raw.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            visit(serde_json::from_slice(&raw).map_err(anyhow::Error::from))?;
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.ledger_path
     }
@@ -2379,7 +2442,7 @@ fn artifact_event_key(event: &FleetWorkerEvent, artifact: &FleetArtifactRef) -> 
     )
 }
 
-fn apply_record(state: &mut FleetLedgerState, record: FleetLedgerRecord) {
+pub fn apply_record(state: &mut FleetLedgerState, record: FleetLedgerRecord) {
     match record {
         FleetLedgerRecord::ReplayEpoch { .. } => {}
         FleetLedgerRecord::RunCreated { run } => {

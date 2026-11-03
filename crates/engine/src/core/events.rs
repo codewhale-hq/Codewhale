@@ -558,6 +558,7 @@ pub enum Event {
         /// price this under the parent quote and price routed children from
         /// their own receipts, avoiding double billing without subtraction.
         parent_route_usage: Usage,
+        source_accounting: bool,
         /// Provider calls whose execution/usage could not be receipted.
         /// Non-zero makes cost coverage explicitly incomplete.
         routed_usage_dropped_records: u64,
@@ -581,6 +582,7 @@ pub enum Event {
     /// provider never reported usage for the call — absence is honest, and
     /// fields inside `usage` stay `None` when the provider omits them.
     TurnUsage {
+        accounting: Option<crate::cost_status::RuntimeUsageRecord>,
         /// Primary request allowance; not a claim of provider-reported usage.
         max_output_tokens: Option<u32>,
         usage: Usage,
@@ -857,6 +859,7 @@ pub enum Event {
 
     /// Request user approval for a tool call
     ApprovalRequired {
+        publication: Option<crate::core::engine::NativeApprovalPublication>,
         id: String,
         tool_name: String,
         description: String,

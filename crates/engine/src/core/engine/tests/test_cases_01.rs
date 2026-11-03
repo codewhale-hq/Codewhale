@@ -26,9 +26,9 @@ async fn event_capacity_cancel_before_admission_has_no_started_turn_and_keeps_cl
     };
     spec.initial_routed_usage
         .records
-        .push(crate::cost_status::RuntimeUsageRecord {
-            source_id: "event-capacity:classifier".into(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        .push(crate::cost_status::RuntimeUsageRecord::legacy(
+            "event-capacity:classifier",
+            crate::cost_status::EffectiveRouteUsage {
                 route: crate::cost_status::EffectiveRouteEnvelope::capture(
                     None,
                     ProviderKind::Openai,
@@ -43,7 +43,7 @@ async fn event_capacity_cancel_before_admission_has_no_started_turn_and_keeps_cl
                     ..Usage::default()
                 },
             },
-        });
+        ));
     let controls = Arc::clone(&engine.turn_controls);
     handle.send(op).await.unwrap();
     let task = tokio::spawn(engine.run());
@@ -214,9 +214,9 @@ async fn event_capacity_invalid_images_release_queued_control_and_keep_classifie
             });
         spec.initial_routed_usage
             .records
-            .push(crate::cost_status::RuntimeUsageRecord {
-                source_id: "event-capacity:invalid-image-classifier".into(),
-                usage: crate::cost_status::EffectiveRouteUsage {
+            .push(crate::cost_status::RuntimeUsageRecord::legacy(
+                "event-capacity:invalid-image-classifier",
+                crate::cost_status::EffectiveRouteUsage {
                     route: crate::cost_status::EffectiveRouteEnvelope::capture(
                         None,
                         ProviderKind::Openai,
@@ -231,7 +231,7 @@ async fn event_capacity_invalid_images_release_queued_control_and_keep_classifie
                         ..Usage::default()
                     },
                 },
-            });
+            ));
         handle.send(op).await.unwrap();
         let task = tokio::spawn(engine.run());
         if full {

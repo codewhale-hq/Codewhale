@@ -1725,7 +1725,7 @@ pub fn declared_or_catalog_quote(
 ) -> Option<ProviderLivePricingQuote> {
     match declared {
         Some(quote) if quote.carries_pricing_decision() => Some(quote),
-        declared => catalog()
+        Some(declared) => catalog()
             .filter(|quote| {
                 matches!(
                     quote.provenance,
@@ -1734,7 +1734,8 @@ pub fn declared_or_catalog_quote(
                         | PricingProvenance::CloudFacts
                 )
             })
-            .or(declared),
+            .or(Some(declared)),
+        None => catalog(),
     }
 }
 

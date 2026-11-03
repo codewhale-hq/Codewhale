@@ -27,6 +27,7 @@ async fn sync_session_projects_persisted_subagent_handoff_for_headless_restore()
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("headless-resume".to_string()),
             messages,
@@ -166,6 +167,7 @@ async fn edit_last_turn_preserves_current_mode() {
     ];
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-mode-test".to_string()),
             messages: seeded_messages,
@@ -323,6 +325,7 @@ async fn edit_last_turn_cuts_at_user_prompt_before_tool_results() {
     ];
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-cut-test".to_string()),
             messages: seeded_messages,
@@ -428,6 +431,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
     // must surface an error instead of silently appending the message.
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-no-user-test".to_string()),
             messages: vec![Message {
@@ -551,6 +555,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
     ];
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-unsupported-user-test".to_string()),
             messages: image_only_history.clone(),

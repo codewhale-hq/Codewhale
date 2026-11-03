@@ -3,7 +3,7 @@
 
 This is the GUI-evidence harness for the OrcaRouter provider integration. It
 serves the repository's own provider-setup page
-(`crates/tui/src/runtime_web/orca-evidence.html`) and drives it with Chromium
+(`crates/app-server/src/runtime_web/orca-evidence.html`) and drives it with Chromium
 through Python Playwright, capturing:
 
   * auth-methods.png             — the API-key and `Connect with OrcaRouter`
@@ -39,7 +39,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 REPO = Path(__file__).resolve().parents[1]
-PAGE = REPO / "crates" / "tui" / "src" / "runtime_web" / "orca-evidence.html"
+PAGE = REPO / "crates" / "app-server" / "src" / "runtime_web" / "orca-evidence.html"
 OUT = REPO / "orca-evidence"
 CHROMIUM = "/usr/bin/chromium"
 CATALOG_BASE = "https://api.orcarouter.ai/v1/models"

@@ -694,12 +694,16 @@ async fn actual_child_transport_services_approval_and_cancel_with_saturated_stee
                 } else {
                     ChildApprovalOutcome::Denied { by }
                 };
-                assert!(
-                    manager
+                assert!({
+                    let submitted = manager
                         .write()
                         .await
-                        .resolve_child_approval(&approval_id, answer)
-                );
+                        .resolve_child_approval(&approval_id, answer);
+                    submitted
+                        .wait()
+                        .await
+                        .expect("actual child approval outcome")
+                });
             }
             drop(input_tx);
             loop {

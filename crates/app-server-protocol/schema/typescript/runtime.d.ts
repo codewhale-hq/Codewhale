@@ -51,6 +51,7 @@ export type RuntimeCapabilities = {
   turns: boolean
   turn_operation_idempotency: boolean
   turn_operation_lookup: boolean
+  watch_event_turns: boolean
   structured_review_turns: boolean
   structured_review_version: number
   automation_mutation_preconditions: boolean
@@ -107,6 +108,26 @@ export type RuntimeImageInput = {
   mime: string
   dataBase64: string
 }
+
+export type ThreadLoadedListParams = {
+  cursor?: (string | null)
+  limit?: (number | null)
+  [key: string]: Json | undefined
+}
+
+export type ThreadLoadedListResponse = {
+  data: string[]
+  nextCursor: (string | null)
+  [key: string]: Json | undefined
+}
+
+export type ThreadSetNameParams = {
+  threadId: string
+  name: string
+  [key: string]: Json | undefined
+}
+
+export type ThreadSetNameResponse = Record<string, never>
 
 export type TurnEnvironmentParams = {
   environment_id: string

@@ -5,7 +5,7 @@
 // to 10 are supported for headroom.
 //
 // Rendered the same way the Rust side does it
-// (`qrcode::render::unicode::Dense1x2` in crates/tui/src/runtime_api.rs):
+// (`qrcode::render::unicode::Dense1x2` in crates/app-server/src/runtime_api.rs):
 // two QR rows per text row using half-block glyphs.
 
 // --- Galois field GF(256) tables for Reed-Solomon -------------------------

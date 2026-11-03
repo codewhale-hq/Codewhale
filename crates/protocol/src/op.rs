@@ -432,6 +432,8 @@ pub enum Op {
     /// `Message`s and `system_prompt` a `SystemPrompt`, both serialized.
     SyncSession {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         engine_session_id: Option<String>,
         messages: Vec<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -777,6 +779,7 @@ mod tests {
                 load_error: None,
             },
             Op::SyncSession {
+                expected: None,
                 engine_session_id: Some("s".into()),
                 messages: vec![json!({"role": "user", "content": []})],
                 system_prompt: None,

@@ -363,7 +363,7 @@ impl QuotaExhaustionError {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestTransmission {
     NotDispatched,
@@ -1471,7 +1471,7 @@ pub struct OutboundWireObservation {
     pub image_projection: Option<ImageProjectionReceipt>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OutboundTransmissionObservation {
     pub source_id: String,
     pub method: String,
@@ -1479,7 +1479,7 @@ pub struct OutboundTransmissionObservation {
     pub http_status: Option<u16>,
 }
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct OutboundWireObservationBatch {
     pub observations: Vec<OutboundWireObservation>,
     pub dropped: u64,
@@ -1501,6 +1501,14 @@ pub struct OutboundWireObservations {
 }
 
 impl OutboundWireObservations {
+    pub fn snapshot(&self) -> OutboundWireObservationBatch {
+        self.buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .batch
+            .clone()
+    }
+
     pub fn drain(&self) -> OutboundWireObservationBatch {
         let mut buffer = self
             .buffer
@@ -1616,6 +1624,50 @@ pub struct RequestRetryObservation {
     pub retries: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub emit: RetryStatusEmitter,
     pub wire_observations: OutboundWireObservations,
+}
+
+impl RequestRetryObservation {
+    pub fn isolated() -> Self {
+        Self::for_auxiliary_request(uuid::Uuid::new_v4().to_string())
+    }
+
+    pub fn for_auxiliary_request(request_id: impl Into<String>) -> Self {
+        Self {
+            request_id: request_id.into(),
+            retries: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            emit: std::sync::Arc::new(|_| Box::pin(async {})),
+            wire_observations: OutboundWireObservations::default(),
+        }
+    }
+}
+
+impl OutboundWireObservationBatch {
+    pub fn usage_coverage(&self, reported: bool, complete: bool) -> ProviderUsageCoverage {
+        let last = self.last_transmission.as_ref();
+        let unknown_prior = self.transmissions_dropped != 0
+            || self.transmissions.iter().any(|attempt| {
+                attempt.transmission == RequestTransmission::OutcomeUnknown
+                    && last.is_none_or(|last| last.source_id != attempt.source_id)
+            });
+        if unknown_prior {
+            return if reported {
+                ProviderUsageCoverage::Incomplete
+            } else {
+                ProviderUsageCoverage::Missing
+            };
+        }
+        match last.map(|last| last.transmission) {
+            None | Some(RequestTransmission::NotDispatched) => ProviderUsageCoverage::NotDispatched,
+            Some(RequestTransmission::Rejected) => ProviderUsageCoverage::Rejected,
+            Some(RequestTransmission::OutcomeUnknown) if reported && complete => {
+                ProviderUsageCoverage::Reported
+            }
+            Some(RequestTransmission::OutcomeUnknown) if reported => {
+                ProviderUsageCoverage::Incomplete
+            }
+            Some(RequestTransmission::OutcomeUnknown) => ProviderUsageCoverage::Missing,
+        }
+    }
 }
 
 tokio::task_local! {

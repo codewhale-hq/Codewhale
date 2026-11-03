@@ -1,7 +1,6 @@
 # Coarse split of codewhale-tui — 2026-10-31
 
-Status: stage A part 1 is implemented and locally validated (CW-7701). The Engine band now lives in `crates/engine`; the host
-band remains in `crates/tui`. This is source work, not a published release.
+Status: stage A part 1 is implemented and locally validated (CW-7701). Stage A part 2 moves the host band from `crates/tui` into the existing `crates/app-server` (CW-7764), with direct callers and no TUI module, summary or listener reexport facade. This source relocation keeps Engine as the sole turn, thread, store, event and prompt authority. Native qualification of the frozen move, Stage B and App Server v2 (CW-7704) remain separate gates; this is not a published release.
 Founder, 2026-10-31: make the top line of crates ~400–500k lines, like Codex
 and Grok Build, instead of going straight to ~10k crates. Measured with
 `scripts/split/crate_map.py`, using the same units as
@@ -38,15 +37,9 @@ depends on `codewhale-app-server`, never the reverse. The thread manager sits
 in the engine as Codex's `ThreadManager` sits in `codex-core`; app-server keeps
 only transports, which matches the App Server v2 plan.
 
-The checker now reads both Engine and TUI source roots. Its mapped bands have
-310,401 Engine, 41,829 host and 219,597 TUI production lines, with 2,146
-cross-band references and `cycles=0 upward_edges=0 upward_refs=0 oversize=0
-unassigned=0 duplicates=0`. These are the mapped bands, not all existing
-workspace dependencies. The lower Runtime owner and Paths socket-layout
-prerequisites are now implemented; neither Engine nor Sandbox reaches App Server
-through production dependencies. The host band still needs to move for part 2. A direct count of current `src/**/*.rs`, including
-tests, is 636,073 lines in Engine, 527,873 in TUI (still including the host
-band), and 14,726 in the existing App Server. What got there:
+The checker reads Engine, App Server and TUI source roots and gives each Root a distinct ownership identity. Qualified `codewhale_app_server` paths resolve to their actual host owner. Custom boundary-check fixture roots stay hermetic. The previous pre-move measurement was 310,401 Engine, 41,829 host and 219,597 TUI production lines, 2,146 cross-band references and `cycles=0 upward_edges=0 upward_refs=0 oversize=0 unassigned=0 duplicates=0`; these historical mapped-band counts are not current workspace or compiler results. Re-measure both maps after the frozen move rather than copying these counts forward.
+
+The lower Runtime owner and Paths socket layout remain the existing owners. App Server now depends on Engine and TuiKit (only the moved summaries use Kit), with no reverse Engine or Sandbox path to App Server. The move carries 48 current Rust sources, seven browser assets and one Node fixture, plus the complete Root exec helper/summary closure and existing tests. Current counts and hashes belong in the owner-run source receipt, not this planning table.
 
 1. **Checker fixes.** `PATH_RE` read `super::supervisor` as `super::super`
    plus `visor`, sending real references to the crate root; and grouped
@@ -90,11 +83,13 @@ The extraction checklist is:
 - Inherent `impl` blocks and orphan-rule trait impls checked across the new
   boundary before the move, since the checker cannot see them.
 
-Then the host band moves into `crates/app-server/src` the same way. Each move
-is proven with `cargo check --tests` on the affected crates and the existing
-guard tests; at most two native builds at once.
+### Part 2: host extraction
 
-Before part 2:
+The host modules and their children live in `crates/app-server/src`: ACP, MCP, exec, eval, runtime API, remote setup/control and runtime chat relay. CLI and TUI callers import their actual canonical owners. Listener handoff retains the same existing singleton in `runtime_api::listener`; summaries have one implementation in `exec_agent`, while preserved output, Pager and source copying stay in TUI. Existing route/history/debug entrypoints expose only the data and methods their direct callers need. Private Runtime, journal, lease and approval capabilities remain private.
+
+The default-off App Server `test-support` feature reuses Engine's existing environment owner, and the TUI enables it only for dev builds. Existing tests move or stay with the owner they actually exercise; no cross-crate path mount or copied fixture store remains. Build identity delegates to the existing build-support crate. Package assets and release ordering follow the moved source owner. Native builds, existing focused checks and ordinary local transport/summary observations must be run against one frozen input set; compiler and package proof are still required. At most two native builds run at once under the existing build lock.
+
+Preserved prerequisites and remaining gates:
 
 - Completed prerequisite: the existing `owner_work` and
   `RuntimeControlFrontend` live in `codewhale_runtime::runtime_control`, with
@@ -133,7 +128,7 @@ Map: [`crate-map-coarse-split.toml`](crate-map-coarse-split.toml).
 | `codewhale-engine` | 87,915 |
 | `codewhale-app-server` | 43,195 |
 
-Checker: `upward_edges=1 upward_refs=73`, all `engine-tools → engine`:
+Historical planning checker: `upward_edges=1 upward_refs=73`, all `engine-tools → engine`; this is not a current measured result. The Stage B map now assigns protocol parity with its defining Event/Op types, runtime API review with App Server, and both archive modules with the lower tools band. Stage B source movement and its proof remain open:
 `HumanDecision`/`LivePosture`/`LiveRuntimeAuthority` (CRATE_MAP P1 and review
 #7), the RLM caller (`RlmMode`, `CapturedRlmCaller`), `ExtensionHostManager`
 and `StockOperation` reached by tools, hooks, MCP and fleet (CRATE_MAP P3), and

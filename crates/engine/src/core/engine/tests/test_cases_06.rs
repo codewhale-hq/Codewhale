@@ -101,16 +101,15 @@ fn repeated_provider_id_ask_rejects_stale_answer_and_keeps_local_artifact_origin
                                         "agent_barrier",
                                         &format!("agent:agent_barrier:approval:{}", uuid::Uuid::new_v4()),
                                         "bash",
-                                        "approval-channel barrier",
-                                    )
+                                        "approval-channel barrier", None)
                                     .unwrap();
-                                handle.approve_tool_call(first).await.unwrap();
+                                assert!(handle.approve_tool_call(first).await.is_err());
                                 handle.approve_tool_call(&barrier_id).await.unwrap();
                                 assert_eq!(
                                     tokio::time::timeout(model_turn_event_timeout(), barrier)
                                         .await
                                         .expect("queued decisions are consumed")
-                                        .unwrap(),
+                                        .unwrap().outcome,
                                     ChildApprovalOutcome::Approved { by: crate::approval_log::ApprovalDecider::User }
                                 );
                                 let receipts = receipt_store.load(&session_id).unwrap();
@@ -607,6 +606,7 @@ fn make_plan_at(
         interactive,
         approval_required,
         approval_description: "desc".to_string(),
+        mcp_always_binding: None,
         approval_force_prompt: false,
         supports_parallel,
         read_only,

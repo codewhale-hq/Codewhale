@@ -2665,6 +2665,11 @@ fn sample_thread(thread_id: &str) -> ThreadRecord {
 fn sample_turn(thread_id: &str, turn_id: &str, status: RuntimeTurnStatus) -> TurnRecord {
     let now = Utc::now();
     TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -3770,6 +3775,8 @@ async fn caller_cancellation_after_engine_acceptance_keeps_owned_turn_lifecycle(
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -3887,6 +3894,8 @@ async fn operation_key_replays_torn_response_survives_restart_and_rejects_mismat
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -3979,6 +3988,8 @@ mod turn_operation_lookup {
         key: &str,
     ) -> Result<RuntimeTurnOperationBinding> {
         Ok(RuntimeTurnOperationBinding {
+            preparation: None,
+
             schema_version: TURN_OPERATION_BINDING_SCHEMA_VERSION,
             thread_id: thread.id.clone(),
             turn_id: turn.id.clone(),
@@ -3990,6 +4001,7 @@ mod turn_operation_lookup {
             request_fingerprint: codewhale_runtime::hashing::sha256_hex(
                 "original request configuration",
             ),
+            watch_input_sha256: None,
             created_at: turn.created_at,
         })
     }
@@ -4274,7 +4286,7 @@ mod turn_operation_lookup {
 }
 
 #[tokio::test]
-async fn restart_removes_torn_operation_item_before_reserved_turn_retry() -> Result<()> {
+async fn restart_retains_torn_operation_item_and_refuses_ambiguous_retry() -> Result<()> {
     let runtime_dir = test_runtime_dir();
     let store = RuntimeThreadStore::open(runtime_dir.clone())?;
     let thread = sample_thread("thr_torn_operation_item");
@@ -4284,11 +4296,14 @@ async fn restart_removes_torn_operation_item_before_reserved_turn_retry() -> Res
         runtime_turn_operation_key_fingerprint(&store.owner_id, &thread.id, operation_key)?;
     let turn_id = "turn_relay_reserved_retry";
     store.save_turn_operation_binding(&RuntimeTurnOperationBinding {
+        preparation: None,
+
         schema_version: TURN_OPERATION_BINDING_SCHEMA_VERSION,
         thread_id: thread.id.clone(),
         turn_id: turn_id.to_string(),
         operation_key_fingerprint: key_fingerprint.clone(),
         request_fingerprint: codewhale_runtime::hashing::sha256_hex("torn-request"),
+        watch_input_sha256: None,
         created_at: Utc::now(),
     })?;
     let mut orphan = sample_item(
@@ -4305,33 +4320,29 @@ async fn restart_removes_torn_operation_item_before_reserved_turn_retry() -> Res
         manager
             .store
             .load_turn_operation_binding(&key_fingerprint)?
-            .is_none()
+            .is_some()
     );
-    assert!(manager.store.list_items_for_turn(turn_id)?.is_empty());
-
+    assert_eq!(manager.store.list_items_for_turn(turn_id)?.len(), 1);
+    assert!(matches!(
+        manager.lookup_turn_operation(&thread.id, operation_key),
+        Err(RuntimeTurnOperationLookupError::Incomplete)
+    ));
     let mut harness = install_mock_engine(&manager, &thread.id).await;
-    let turn = manager
+    let error = manager
         .start_turn_with_reserved_id(
             &thread.id,
             StartTurnRequest {
                 prompt: "retry after the pre-submit crash".to_string(),
-                images: Vec::new(),
                 operation_key: Some(operation_key.to_string()),
                 ..StartTurnRequest::default()
             },
             turn_id,
         )
-        .await?;
-    assert_eq!(turn.id, turn_id);
-    assert!(matches!(
-        harness.rx_op.recv().await,
-        Some(Op::SendMessage(TurnSpec { .. }))
-    ));
-    assert_eq!(
-        manager.store.list_items_for_turn(turn_id)?.len(),
-        1,
-        "the retry must own exactly one user item"
-    );
+        .await
+        .expect_err("ambiguous reservation must not dispatch again");
+    assert!(error.to_string().contains("operation_key"));
+    assert!(harness.rx_op.try_recv().is_err());
+    assert_eq!(manager.store.list_items_for_turn(turn_id)?.len(), 1);
     Ok(())
 }
 
@@ -4410,6 +4421,8 @@ async fn thread_updates_while_start_waits_for_capacity_survive_latest_turn_write
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -4577,6 +4590,8 @@ async fn compact_lifecycle_outlives_caller_and_preserves_concurrent_thread_updat
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -6012,17 +6027,15 @@ async fn aggregate_usage_keeps_codex_tokens_without_api_dollar_pricing() -> Resu
     };
     let mut deepseek = sample_turn(&thread.id, "turn_deepseek", RuntimeTurnStatus::Completed);
     deepseek.usage = Some(usage.clone());
-    set_test_turn_route(
-        &mut deepseek,
+    let deepseek_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
         ProviderKind::Deepseek,
         ProviderKind::Deepseek.as_str(),
         "deepseek-v4-flash",
-        // A real dispatch persists the classified surface. Leaving it absent
-        // here would price the row at official DeepSeek rates on nothing but
-        // the provider name, which is what the route audit now refuses.
-        Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-        crate::cost_status::RouteBillingMode::Metered,
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        deepseek.created_at,
     );
+    assert!(deepseek_route.provider_live_pricing.is_some());
+    deepseek.persist_effective_route(&deepseek_route);
     manager.store.save_turn(&deepseek)?;
 
     let mut codex = sample_turn(&thread.id, "turn_codex", RuntimeTurnStatus::Completed);
@@ -6091,26 +6104,17 @@ async fn aggregate_usage_for_thread_scopes_both_currencies_to_one_thread() -> Re
         output_tokens: 1_000,
         ..Usage::default()
     });
-    set_test_turn_route(
-        &mut turn,
+    let parent_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
         ProviderKind::Deepseek,
         ProviderKind::Deepseek.as_str(),
         "deepseek-v4-flash",
-        Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-        crate::cost_status::RouteBillingMode::Metered,
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        turn.created_at,
     );
+    assert!(parent_route.provider_live_pricing.is_some());
+    turn.persist_effective_route(&parent_route);
     turn.routed_usage = vec![crate::cost_status::EffectiveRouteUsage {
-        route: crate::cost_status::EffectiveRouteEnvelope {
-            openrouter_vendor: None,
-            provider: ProviderKind::Deepseek,
-            provider_identity: ProviderKind::Deepseek.as_str().to_string(),
-            model: "deepseek-v4-flash".to_string(),
-            billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
-            endpoint_fingerprint: None,
-            provider_live_pricing: None,
-            billing_mode: crate::cost_status::RouteBillingMode::Metered,
-            dispatched_at: turn.created_at,
-        },
+        route: parent_route,
         usage: Usage {
             input_tokens: 2_000,
             output_tokens: 200,
@@ -6129,14 +6133,15 @@ async fn aggregate_usage_for_thread_scopes_both_currencies_to_one_thread() -> Re
         output_tokens: 500_000,
         ..Usage::default()
     });
-    set_test_turn_route(
-        &mut other_turn,
+    let other_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
         ProviderKind::Deepseek,
         ProviderKind::Deepseek.as_str(),
         "deepseek-v4-flash",
-        Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-        crate::cost_status::RouteBillingMode::Metered,
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        other_turn.created_at,
     );
+    assert!(other_route.provider_live_pricing.is_some());
+    other_turn.persist_effective_route(&other_route);
     manager.store.save_turn(&other_turn)?;
 
     let split = manager.aggregate_usage_for_thread(&billed.id).await?;
@@ -6295,14 +6300,15 @@ async fn aggregate_usage_marks_unknown_cost_as_subtotal_and_keeps_cache_writes()
 
     let mut priced = sample_turn(&thread.id, "turn_priced", RuntimeTurnStatus::Completed);
     priced.usage = Some(usage.clone());
-    set_test_turn_route(
-        &mut priced,
+    let priced_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
         ProviderKind::Deepseek,
         ProviderKind::Deepseek.as_str(),
         "deepseek-v4-flash",
-        Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-        crate::cost_status::RouteBillingMode::Metered,
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        priced.created_at,
     );
+    assert!(priced_route.provider_live_pricing.is_some());
+    priced.persist_effective_route(&priced_route);
     manager.store.save_turn(&priced)?;
 
     let mut unknown = sample_turn(&thread.id, "turn_unknown", RuntimeTurnStatus::Completed);
@@ -6330,7 +6336,7 @@ async fn aggregate_usage_marks_unknown_cost_as_subtotal_and_keeps_cache_writes()
         report
             .totals
             .unpriced_reasons
-            .contains("unknown_billing_basis")
+            .contains("unverified_live_pricing")
     );
     Ok(())
 }
@@ -6370,15 +6376,16 @@ async fn aggregate_usage_prices_slow_predispatch_turn_at_dispatch_boundary() -> 
         turn.created_at = created_at.parse().expect("recorded turn time");
         turn.started_at = Some(turn.created_at);
         turn.usage = Some(usage.clone());
-        set_test_turn_route(
-            &mut turn,
+        let dispatched_at = dispatched_at.parse().expect("dispatch time");
+        let route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
             ProviderKind::Deepseek,
             ProviderKind::Deepseek.as_str(),
             "deepseek-v4-flash",
-            Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-            crate::cost_status::RouteBillingMode::Metered,
+            Some(ProviderKind::Deepseek.provider().default_base_url()),
+            dispatched_at,
         );
-        turn.effective_dispatched_at = Some(dispatched_at.parse().expect("dispatch time"));
+        assert!(route.provider_live_pricing.is_some());
+        turn.persist_effective_route(&route);
         manager.store.save_turn(&turn)?;
     }
 
@@ -6423,18 +6430,46 @@ async fn aggregate_usage_prices_only_stepfun_payg_surface() -> Result<()> {
     ] {
         let mut turn = sample_turn(&thread.id, turn_id, RuntimeTurnStatus::Completed);
         turn.usage = Some(usage.clone());
-        set_test_turn_route(
-            &mut turn,
-            ProviderKind::Stepfun,
-            ProviderKind::Stepfun.as_str(),
-            "step-3.7-flash",
-            Some(surface),
-            if surface == crate::pricing::STEPFUN_PLAN_BILLING_SURFACE {
-                crate::cost_status::RouteBillingMode::Subscription
-            } else {
-                crate::cost_status::RouteBillingMode::Metered
-            },
-        );
+        if surface == crate::pricing::STEPFUN_PLAN_BILLING_SURFACE {
+            set_test_turn_route(
+                &mut turn,
+                ProviderKind::Stepfun,
+                ProviderKind::Stepfun.as_str(),
+                "step-3.7-flash",
+                Some(surface),
+                crate::cost_status::RouteBillingMode::Subscription,
+            );
+        } else {
+            let declared: codewhale_config::catalog::configured::ConfiguredModel =
+                serde_json::from_value(serde_json::json!({
+                    "provider": ProviderKind::Stepfun.as_str(),
+                    "base_url": ProviderKind::Stepfun.provider().default_base_url(),
+                    "id": "step-3.7-flash",
+                    "cost": { "input": 0.20, "output": 1.15, "cache_read": 0.04 },
+                }))?;
+            let mut route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+                ProviderKind::Stepfun,
+                ProviderKind::Stepfun.as_str(),
+                "step-3.7-flash",
+                Some(ProviderKind::Stepfun.provider().default_base_url()),
+                turn.created_at,
+            );
+            route.provider_live_pricing =
+                crate::provider_catalog_live::configured_dispatch_pricing_quote_at(
+                    &[declared],
+                    ProviderKind::Stepfun,
+                    ProviderKind::Stepfun.as_str(),
+                    "step-3.7-flash",
+                    ProviderKind::Stepfun.provider().default_base_url(),
+                    u64::try_from(turn.created_at.timestamp())?,
+                );
+            assert!(route.provider_live_pricing.is_some());
+            assert_eq!(
+                route.provider_live_pricing.as_ref().unwrap().provenance,
+                codewhale_config::pricing::PricingProvenance::UserOverride,
+            );
+            turn.persist_effective_route(&route);
+        }
         manager.store.save_turn(&turn)?;
     }
 
@@ -6462,31 +6497,26 @@ async fn aggregate_usage_includes_exclusive_child_calls_and_zero_usage_receipts(
         reasoning_tokens: Some(5),
         ..Usage::default()
     });
-    set_test_turn_route(
-        &mut turn,
+    let parent_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
         ProviderKind::Deepseek,
         "deepseek",
         "deepseek-v4-flash",
-        Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE),
-        crate::cost_status::RouteBillingMode::Metered,
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        turn.created_at,
     );
+    assert!(parent_route.provider_live_pricing.is_some());
+    turn.persist_effective_route(&parent_route);
+    let child_route = crate::cost_status::EffectiveRouteEnvelope::capture_observed(
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-pro",
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        turn.created_at,
+    );
+    assert!(child_route.provider_live_pricing.is_some());
     turn.routed_usage
         .push(crate::cost_status::EffectiveRouteUsage {
-            route: crate::cost_status::EffectiveRouteEnvelope {
-                openrouter_vendor: None,
-                provider: ProviderKind::Deepseek,
-                // A distinct actual model keeps the child's route receipt
-                // separate without treating its role as a provider identity.
-                provider_identity: "deepseek".to_string(),
-                model: "deepseek-v4-pro".to_string(),
-                // A child call carries the surface its own dispatch classified;
-                // the route audit will not price a metered route without one.
-                billing_surface: Some(crate::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string()),
-                endpoint_fingerprint: None,
-                provider_live_pricing: None,
-                billing_mode: crate::cost_status::RouteBillingMode::Metered,
-                dispatched_at: turn.created_at,
-            },
+            route: child_route,
             usage: Usage {
                 input_tokens: 30,
                 output_tokens: 7,
@@ -7105,7 +7135,7 @@ fn store_load_scenario() {
         let store = RuntimeThreadStore::open(dir.clone()).expect("open store");
 
         let mut turn = sample_turn("thr_t", "trn_future", RuntimeTurnStatus::InProgress);
-        turn.schema_version = PREFIX_CHECKPOINT_RUNTIME_SCHEMA_VERSION + 1;
+        turn.schema_version = MAX_SUPPORTED_RUNTIME_SCHEMA_VERSION + 1;
 
         let path = store.turns_dir.join(format!("{}.json", turn.id));
         std::fs::create_dir_all(path.parent().unwrap()).expect("mkdirs");
@@ -7148,16 +7178,19 @@ fn store_load_scenario() {
 }
 
 #[test]
-fn store_restart_discards_only_operation_bindings_that_never_acquired_a_turn() -> Result<()> {
+fn store_restart_retains_operation_bindings_without_a_proved_parent() -> Result<()> {
     let dir = test_runtime_dir();
     let store = RuntimeThreadStore::open(dir.clone())?;
     let key_fingerprint = codewhale_runtime::hashing::sha256_hex("scoped-key");
     let binding = RuntimeTurnOperationBinding {
+        preparation: None,
+
         schema_version: TURN_OPERATION_BINDING_SCHEMA_VERSION,
         thread_id: "thr_torn_binding".to_string(),
         turn_id: "turn_never_persisted".to_string(),
         operation_key_fingerprint: key_fingerprint.clone(),
         request_fingerprint: codewhale_runtime::hashing::sha256_hex("request"),
+        watch_input_sha256: None,
         created_at: Utc::now(),
     };
     store.save_turn_operation_binding(&binding)?;
@@ -7172,8 +7205,8 @@ fn store_restart_discards_only_operation_bindings_that_never_acquired_a_turn() -
     assert!(
         reopened
             .load_turn_operation_binding(&key_fingerprint)?
-            .is_none(),
-        "a binding written before its turn is safe to discard because engine submission is later"
+            .is_some(),
+        "a missing parent does not prove that classifier work never happened"
     );
     Ok(())
 }
@@ -8692,6 +8725,8 @@ async fn thread_lifecycle_persists_across_restart() -> Result<()> {
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -8786,13 +8821,13 @@ async fn initial_classifier_usage_is_persisted_before_terminal_and_merged_exactl
     );
     let classifier_batch = crate::cost_status::RuntimeUsageBatch {
         decisions: Vec::new(),
-        records: vec![crate::cost_status::RuntimeUsageRecord {
-            source_id: "auto-router:runtime-fixture".to_string(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        records: vec![crate::cost_status::RuntimeUsageRecord::legacy(
+            "auto-router:runtime-fixture".to_string(),
+            crate::cost_status::EffectiveRouteUsage {
                 route: classifier_route.clone(),
                 usage: classifier_usage.clone(),
             },
-        }],
+        )],
         drop_records: vec![crate::cost_status::RuntimeUsageDropRecord {
             reason: crate::cost_status::RuntimeUsageMissingReason::default(),
             source_id: "auto-router:runtime-missing-usage".to_string(),
@@ -8853,6 +8888,8 @@ async fn initial_classifier_usage_is_persisted_before_terminal_and_merged_exactl
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -8929,9 +8966,9 @@ fn classifier_settlement_batch(
     route.billing_mode = crate::cost_status::RouteBillingMode::Subscription;
     crate::cost_status::RuntimeUsageBatch {
         decisions: Vec::new(),
-        records: vec![crate::cost_status::RuntimeUsageRecord {
-            source_id: format!("auto-router:{source_prefix}-usage"),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        records: vec![crate::cost_status::RuntimeUsageRecord::legacy(
+            format!("auto-router:{source_prefix}-usage"),
+            crate::cost_status::EffectiveRouteUsage {
                 route: route.clone(),
                 usage: Usage {
                     input_tokens: 9,
@@ -8939,7 +8976,7 @@ fn classifier_settlement_batch(
                     ..Usage::default()
                 },
             },
-        }],
+        )],
         drop_records: vec![crate::cost_status::RuntimeUsageDropRecord {
             reason: crate::cost_status::RuntimeUsageMissingReason::default(),
             source_id: format!("auto-router:{source_prefix}-drop"),
@@ -9107,6 +9144,41 @@ async fn routing_settlement_preserves_latest_accepted_turn_after_restart_and_for
     let batch = classifier_settlement_batch("classifier", "classifier/model", "newer", 1);
     let settlement_id = settle_unaccepted_routed_usage(&manager.store, &thread.id, &batch)?;
     assert!(manager.store.load_turn(&settlement_id)?.routing_settlement);
+    manager.register_runtime_usage_sink(&accepted.id);
+    let native_source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        "native-fork-receipt",
+        crate::cost_status::UsageSpendOwner::Primary,
+        Some(crate::cost_status::NativeUsageOrigin::runtime(
+            crate::cost_status::scope_token(),
+            &accepted.id,
+        )?),
+    );
+    let native_route = crate::cost_status::EffectiveRouteEnvelope::capture(
+        None,
+        ProviderKind::Deepseek,
+        "deepseek",
+        "deepseek-v4-flash",
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        Utc::now(),
+    );
+    let native_record = native_source.prepare(
+        &native_route,
+        &Usage {
+            input_tokens: 17,
+            output_tokens: 3,
+            ..Usage::default()
+        },
+        crate::llm_client::ProviderUsageCoverage::Reported,
+        crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+    )?;
+    crate::cost_status::report_runtime_usage_record(
+        crate::cost_status::scope_token(),
+        Some(&accepted.id),
+        &native_record,
+    )?;
+    crate::cost_status::finish_runtime_usage_owner(&accepted.id);
+    drop(native_record);
+    drop(native_source);
     drop(manager);
 
     let reopened = test_manager(runtime_dir)?;
@@ -9119,11 +9191,30 @@ async fn routing_settlement_preserves_latest_accepted_turn_after_restart_and_for
         Some(accepted.id.as_str()),
     );
     assert_eq!(reopened.store.list_turns_for_thread(&thread.id)?.len(), 2);
+    let before_fork = reopened
+        .aggregate_usage(None, None, UsageGroupBy::Provider)
+        .await?
+        .totals;
     let forked = reopened.fork_thread(&thread.id).await?;
     let latest_id = forked
         .latest_turn_id
         .context("fork retains its accepted turn")?;
-    assert!(!reopened.store.load_turn(&latest_id)?.routing_settlement);
+    let inherited = reopened.store.load_turn(&latest_id)?;
+    assert!(!inherited.routing_settlement);
+    assert_eq!(
+        inherited.source_usage_origin_turn_id.as_deref(),
+        Some(accepted.id.as_str())
+    );
+    assert_eq!(inherited.source_usage_records.len(), 1);
+    assert_eq!(
+        serde_json::to_value(
+            reopened
+                .aggregate_usage(None, None, UsageGroupBy::Provider)
+                .await?
+                .totals
+        )?,
+        serde_json::to_value(before_fork)?
+    );
     Ok(())
 }
 
@@ -9295,6 +9386,8 @@ async fn terminal_settlement_preserves_late_sink_receipts_during_pending_request
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -9414,6 +9507,16 @@ async fn monitor_deduplicates_sink_and_metadata_and_persists_metadata_only_missi
     ));
     let mut batch =
         classifier_settlement_batch("child-route", "child/model", "sink-and-metadata", 1);
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        batch.records[0].source_id.clone(),
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        Some(crate::cost_status::NativeUsageOrigin::runtime(
+            crate::cost_status::scope_token(),
+            &turn.id,
+        )?),
+    );
+    batch.records[0] =
+        source.reported(&batch.records[0].usage.route, &batch.records[0].usage.usage)?;
     crate::cost_status::report_runtime_usage_batch(
         crate::cost_status::scope_token(),
         Some(&turn.id),
@@ -9455,6 +9558,8 @@ async fn monitor_deduplicates_sink_and_metadata_and_persists_metadata_only_missi
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -9469,7 +9574,7 @@ async fn monitor_deduplicates_sink_and_metadata_and_persists_metadata_only_missi
         .await?;
     let completed = wait_for_terminal_turn(&manager, &turn.id).await?;
     assert_eq!(
-        completed.routed_usage.len(),
+        completed.source_usage_records.len(),
         1,
         "metadata and direct sink describe one normal call"
     );
@@ -9494,7 +9599,8 @@ async fn monitor_deduplicates_sink_and_metadata_and_persists_metadata_only_missi
 }
 
 #[tokio::test]
-async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage() -> Result<()> {
+async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_unverified_child_usage()
+-> Result<()> {
     let manager = test_manager(test_runtime_dir())?;
     let thread = manager
         .create_thread(CreateThreadRequest::default())
@@ -9560,6 +9666,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage
             turn_id: "engine_route_receipt".to_string(),
             seq: 77,
             message: crate::tools::subagent::MailboxMessage::TokenUsage {
+                record: None,
                 agent_id: "agent_child".to_string(),
                 source_id: "response-child".to_string(),
                 route: Box::new(crate::cost_status::EffectiveRouteEnvelope {
@@ -9614,6 +9721,8 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -9666,9 +9775,24 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage
     );
     assert_eq!(completed.effective_dispatched_at, Some(dispatched_at));
     assert_eq!(completed.started_at, Some(started_at));
-    assert_eq!(completed.routed_usage.len(), 1);
+    assert!(completed.routed_usage.is_empty());
     assert_eq!(completed.routed_usage_dropped_records, 2);
-    assert_eq!(completed.routed_usage[0].usage.reasoning_tokens, Some(2));
+    assert_eq!(completed.routed_usage_drop_records.len(), 1);
+    assert_eq!(
+        completed.routed_usage_drop_records[0].source_id,
+        crate::cost_status::usage_source_fingerprint(&format!(
+            "unverified-wire:{}",
+            crate::cost_status::usage_source_fingerprint("response-child")
+        ))
+    );
+    assert_eq!(
+        completed.routed_usage_drop_records[0].reason,
+        crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+    );
+    assert_eq!(
+        completed.routed_usage_drop_records[0].route.billing_mode,
+        crate::cost_status::RouteBillingMode::Unknown
+    );
     let persisted_usage = completed.usage.expect("parent usage");
     assert_eq!(persisted_usage.reasoning_replay_tokens, Some(6));
     assert_eq!(
@@ -9713,6 +9837,7 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage
             turn_id: second_engine_turn.to_string(),
             seq: 77,
             message: crate::tools::subagent::MailboxMessage::TokenUsage {
+                record: None,
                 agent_id: "agent-child-second".to_string(),
                 source_id: "response-child-second".to_string(),
                 route: Box::new(crate::cost_status::EffectiveRouteEnvelope {
@@ -9739,6 +9864,8 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -9752,8 +9879,19 @@ async fn monitor_separates_lifecycle_start_from_billing_dispatch_and_child_usage
         })
         .await?;
     let second = wait_for_terminal_turn(&manager, &second.id).await?;
-    assert_eq!(second.routed_usage.len(), 1);
-    assert_eq!(second.routed_usage[0].usage.input_tokens, 5);
+    assert!(second.routed_usage.is_empty());
+    assert_eq!(second.routed_usage_drop_records.len(), 1);
+    assert_eq!(
+        second.routed_usage_drop_records[0].source_id,
+        crate::cost_status::usage_source_fingerprint(&format!(
+            "unverified-wire:{}",
+            crate::cost_status::usage_source_fingerprint("response-child-second")
+        ))
+    );
+    assert_eq!(
+        second.routed_usage_drop_records[0].reason,
+        crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+    );
     Ok(())
 }
 
@@ -9953,6 +10091,8 @@ async fn monitor_persists_request_snapshots_and_matching_terminal_diagnostics() 
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -10143,6 +10283,8 @@ async fn monitor_persists_request_snapshots_and_matching_terminal_diagnostics() 
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -10219,6 +10361,8 @@ async fn completed_turn_without_engine_output_fails() -> Result<()> {
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -10375,6 +10519,8 @@ async fn worker_lifecycle_receipts_preserve_owner_outcome_and_durable_replay() -
         }
         let _ = tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -10450,6 +10596,8 @@ async fn worker_lifecycle_receipts_preserve_owner_outcome_and_durable_replay() -
         let _ = tx_event.send(completed).await;
         let _ = tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -10698,6 +10846,8 @@ async fn preturn_control_status_does_not_make_empty_turn_succeed() -> Result<()>
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -10765,6 +10915,8 @@ async fn engine_error_remains_failed_after_nominal_turn_complete() -> Result<()>
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -11352,6 +11504,8 @@ async fn compact_interrupt_persists_canceled_item_for_the_exact_request() -> Res
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -11602,6 +11756,8 @@ async fn multi_turn_continuity_same_thread() -> Result<()> {
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -11850,6 +12006,8 @@ async fn host_goal_loop_kickoff_arms_one_continuation_and_parks_at_engine_cap() 
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -11973,6 +12131,8 @@ async fn host_goal_loop_skips_rearm_without_update_goal_and_after_failed_pass() 
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -12056,6 +12216,8 @@ async fn host_goal_loop_skips_rearm_without_update_goal_and_after_failed_pass() 
                 .await;
             let _ = failed_tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -12158,6 +12320,8 @@ async fn host_goal_loop_mirrors_terminal_snapshot_and_does_not_rearm() -> Result
                     .await;
                 let _ = tx_event
                     .send(EngineEvent::TurnComplete {
+                        source_accounting: false,
+
                         turn_id: None,
                         submission_id: None,
                         compaction_id: None,
@@ -12270,6 +12434,8 @@ async fn model_created_goal_persists_through_adopted_revision() -> Result<()> {
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -12358,6 +12524,8 @@ async fn model_created_goal_never_overwrites_concurrent_explicit_goal() -> Resul
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -12463,6 +12631,8 @@ async fn live_goal_progress_is_revision_fenced_and_settled_once() -> Result<()> 
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -13168,6 +13338,7 @@ async fn approval_required_with_stale_active_turn_is_denied() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "test_key".to_string(),
             approval_grouping_key: "test_key".to_string(),
             id: "tool_stale".to_string(),
@@ -13198,6 +13369,8 @@ async fn approval_required_with_stale_active_turn_is_denied() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -13332,6 +13505,7 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
         harness
             .tx_event
             .send(EngineEvent::ApprovalRequired {
+                publication: None,
                 approval_key: "key1".to_string(),
                 approval_grouping_key: "key1".to_string(),
                 id: call_id.to_string(),
@@ -13394,16 +13568,26 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
             Some("I will update the config file.")
         );
 
-        assert!(!manager.deliver_external_approval(
-            call_id,
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
+        assert!(
+            !manager
+                .deliver_external_approval(
+                    call_id,
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert_eq!(manager.pending_approvals_count(), 1);
 
-        assert!(manager.deliver_external_approval(
-            &approval_id,
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
+        assert!(
+            manager
+                .deliver_external_approval(
+                    &approval_id,
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert_eq!(
             harness.recv_approval_event().await,
             Some(MockApprovalEvent::Approved {
@@ -13432,6 +13616,8 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -13607,6 +13793,8 @@ async fn user_input_snapshot_survives_reload_and_clears_after_submission() -> Re
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -13858,6 +14046,8 @@ async fn user_input_tool_timeout_and_cancel_clear_snapshot_before_turn_end() -> 
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -14504,6 +14694,8 @@ async fn thread_detail_cursor_precedes_projection_reads_at_terminal_boundary() -
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -14761,6 +14953,8 @@ async fn thread_detail_materializes_stream_prefixes_before_their_delta_cursor() 
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -14865,6 +15059,8 @@ async fn superseded_reasoning_segment_closes_when_the_retried_stream_starts() ->
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -14980,6 +15176,8 @@ async fn turn_end_closes_a_tool_call_that_never_completed() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -15229,6 +15427,8 @@ async fn thread_detail_delta_boundary_is_replay_idempotent() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -15306,6 +15506,8 @@ async fn terminal_turn_cancels_pending_user_input_and_clears_snapshot() -> Resul
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -15414,6 +15616,8 @@ async fn interrupted_turn_cancels_pending_user_input_and_clears_snapshot() -> Re
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -15609,6 +15813,8 @@ async fn dynamic_tool_result_settles_snapshot_and_emits_one_safe_resolution() ->
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -15800,6 +16006,8 @@ async fn dynamic_tool_result_receipt_outlives_canceled_delivery_future() -> Resu
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -16635,6 +16843,8 @@ async fn dynamic_tool_timeout_clears_snapshot_and_emits_once() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -16727,6 +16937,8 @@ async fn terminal_turn_cancels_pending_dynamic_tool_exactly_once() -> Result<()>
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -16808,6 +17020,7 @@ async fn engine_withdrawal_retires_approval_and_unblocks_queued_events() -> Resu
         })
         .await?;
     let request = |id: &str| EngineEvent::ApprovalRequired {
+        publication: None,
         id: id.to_string(),
         tool_name: "exec_shell".to_string(),
         description: "extension call".to_string(),
@@ -16881,10 +17094,13 @@ async fn engine_withdrawal_retires_approval_and_unblocks_queued_events() -> Resu
     let next_id = await_approval_identity(&manager, &thread.id, "ext-1.2").await?;
     assert_ne!(withdrawn_id, next_id);
     assert!(
-        !manager.deliver_external_approval(
-            &withdrawn_id,
-            ExternalApprovalDecision::Allow { remember: true },
-        ),
+        !manager
+            .deliver_external_approval(
+                &withdrawn_id,
+                ExternalApprovalDecision::Allow { remember: true },
+            )
+            .await
+            .expect("durable approval decision"),
         "withdrawal removes the capability before any late allow can create a grant"
     );
     let detail = manager.get_thread_detail(&thread.id).await?;
@@ -16892,10 +17108,10 @@ async fn engine_withdrawal_retires_approval_and_unblocks_queued_events() -> Resu
     assert_eq!(detail.pending_approvals[0].id, next_id);
     assert!(detail.approval_grants.is_empty());
     assert!(
-        manager.deliver_external_approval(
-            &next_id,
-            ExternalApprovalDecision::Deny { remember: false }
-        )
+        manager
+            .deliver_external_approval(&next_id, ExternalApprovalDecision::Deny { remember: false })
+            .await
+            .expect("durable approval decision")
     );
     assert_eq!(
         harness.recv_approval_event().await,
@@ -16907,6 +17123,8 @@ async fn engine_withdrawal_retires_approval_and_unblocks_queued_events() -> Resu
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -16968,6 +17186,7 @@ async fn approval_wait_heartbeat_is_never_sequenced_after_the_decision() -> Resu
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "wait-key".to_string(),
             approval_grouping_key: "wait-key".to_string(),
             id: call_id.to_string(),
@@ -16991,10 +17210,15 @@ async fn approval_wait_heartbeat_is_never_sequenced_after_the_decision() -> Resu
         .await?;
     sleep(Duration::from_millis(100)).await;
 
-    assert!(manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness.recv_approval_event().await,
         Some(MockApprovalEvent::Approved {
@@ -17005,6 +17229,8 @@ async fn approval_wait_heartbeat_is_never_sequenced_after_the_decision() -> Resu
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -17082,6 +17308,7 @@ async fn approval_required_external_deny_is_denied() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "key2".to_string(),
             approval_grouping_key: "key2".to_string(),
             id: "tool_external_deny".to_string(),
@@ -17100,10 +17327,15 @@ async fn approval_required_external_deny_is_denied() -> Result<()> {
     assert_eq!(manager.pending_approvals_count(), 1);
 
     let approval_id = await_approval_identity(&manager, &thread.id, "tool_external_deny").await?;
-    assert!(manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Deny { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Deny { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness.recv_approval_event().await,
         Some(MockApprovalEvent::Denied {
@@ -17113,10 +17345,15 @@ async fn approval_required_external_deny_is_denied() -> Result<()> {
 
     // A settled capability is spent: replaying it neither re-decides nor
     // reaches the engine a second time.
-    assert!(!manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Allow { remember: true },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Allow { remember: true },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(manager.pending_approvals_count(), 0);
     assert!(
         !manager.store.load_thread(&thread.id)?.auto_approve,
@@ -17126,6 +17363,8 @@ async fn approval_required_external_deny_is_denied() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -17176,6 +17415,7 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
         harness
             .tx_event
             .send(EngineEvent::ApprovalRequired {
+                publication: None,
                 approval_key: RAW_CALL_ID.to_string(),
                 approval_grouping_key: RAW_CALL_ID.to_string(),
                 id: RAW_CALL_ID.to_string(),
@@ -17216,10 +17456,15 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
     }
 
     // The shared correlator is visible to both clients and settles neither.
-    assert!(!manager.deliver_external_approval(
-        RAW_CALL_ID,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                RAW_CALL_ID,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(manager.pending_approvals_count(), 2);
 
     let mut gated = gated.into_iter();
@@ -17228,10 +17473,15 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
 
     // Deciding the first settles the first, addressed to the engine by the raw
     // call ID it gated on.
-    assert!(manager.deliver_external_approval(
-        &approval_a,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_a,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness_a.recv_approval_event().await,
         Some(MockApprovalEvent::Approved {
@@ -17262,10 +17512,15 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
             .is_empty()
     );
 
-    assert!(manager.deliver_external_approval(
-        &approval_b,
-        ExternalApprovalDecision::Deny { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_b,
+                ExternalApprovalDecision::Deny { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness_b.recv_approval_event().await,
         Some(MockApprovalEvent::Denied {
@@ -17278,6 +17533,8 @@ async fn identical_raw_tool_call_ids_on_two_threads_stay_independently_gated() -
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -17369,6 +17626,7 @@ async fn runtime_approval_disposition_auto_paths_obey_force_and_posture() -> Res
         harness
             .tx_event
             .send(EngineEvent::ApprovalRequired {
+                publication: None,
                 approval_key: "policy-key".to_string(),
                 approval_grouping_key: "policy-group".to_string(),
                 id: "policy-call".to_string(),
@@ -17411,13 +17669,9 @@ async fn runtime_approval_disposition_auto_paths_obey_force_and_posture() -> Res
             .events_since(&thread.id, None)?
             .into_iter()
             .find(|event| event.event == "approval.required");
-        if approved {
-            let required = required.context("automatic approval request receipt")?;
-            assert_eq!(required.payload.get("input"), Some(&input));
-            assert_eq!(required.payload["tool_call_id"], "policy-call");
-        } else {
-            assert!(required.is_none());
-        }
+        let required = required.context("automatic approval request receipt")?;
+        assert_eq!(required.payload.get("input"), Some(&input));
+        assert_eq!(required.payload["tool_call_id"], "policy-call");
         let decided = manager
             .events_since(&thread.id, None)?
             .into_iter()
@@ -17450,14 +17704,21 @@ async fn runtime_approval_disposition_auto_paths_obey_force_and_posture() -> Res
         assert!(approval_id.starts_with("approval_"));
         assert_ne!(approval_id, "policy-call");
         for id in ["policy-call", approval_id] {
-            assert!(!manager.deliver_external_approval(
-                id,
-                ExternalApprovalDecision::Allow { remember: false },
-            ));
+            assert!(
+                !manager
+                    .deliver_external_approval(
+                        id,
+                        ExternalApprovalDecision::Allow { remember: false },
+                    )
+                    .await
+                    .expect("durable approval decision")
+            );
         }
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -17526,6 +17787,7 @@ async fn runtime_approval_disposition_forced_requests_require_human() -> Result<
         harness
             .tx_event
             .send(EngineEvent::ApprovalRequired {
+                publication: None,
                 approval_key: key.0,
                 approval_grouping_key: group.0,
                 id: "human-call".to_string(),
@@ -17551,14 +17813,24 @@ async fn runtime_approval_disposition_forced_requests_require_human() -> Result<
                 .is_err(),
             "neither Full Access nor a remembered grant may answer: {posture}/{tool_name}"
         );
-        assert!(!manager.deliver_external_approval(
-            "human-call",
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
-        assert!(manager.deliver_external_approval(
-            &approval_id,
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
+        assert!(
+            !manager
+                .deliver_external_approval(
+                    "human-call",
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
+        assert!(
+            manager
+                .deliver_external_approval(
+                    &approval_id,
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert_eq!(
             tokio::time::timeout(APPROVAL_READINESS_TIMEOUT, harness.recv_approval_decision())
                 .await?,
@@ -17570,10 +17842,15 @@ async fn runtime_approval_disposition_forced_requests_require_human() -> Result<
             )),
         );
         assert_eq!(manager.pending_approvals_count(), 0);
-        assert!(!manager.deliver_external_approval(
-            &approval_id,
-            ExternalApprovalDecision::Allow { remember: false },
-        ));
+        assert!(
+            !manager
+                .deliver_external_approval(
+                    &approval_id,
+                    ExternalApprovalDecision::Allow { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert_eq!(
             manager.approval_grants_for_thread(&thread.id)[0].grant_id,
             grant.grant_id
@@ -17593,6 +17870,8 @@ async fn runtime_approval_disposition_forced_requests_require_human() -> Result<
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -17643,6 +17922,7 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "auto_hold".to_string(),
             approval_grouping_key: "auto_hold".to_string(),
             id: "tool_auto_hold".to_string(),
@@ -17685,14 +17965,21 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
         .context("missing approval_id")?;
     assert_ne!(approval_id, "tool_auto_hold");
     assert!(approval_id.starts_with("approval_"));
-    assert!(!manager.deliver_external_approval(
-        approval_id,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                approval_id,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
 
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -17734,6 +18021,7 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
             Some(Op::SendMessage(_))
         ));
         let event = |id: &str| EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: id.to_string(),
             approval_grouping_key: id.to_string(),
             id: id.to_string(),
@@ -17748,17 +18036,27 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
         let (other_approval, mut other_rx) =
             manager.register_pending_approval_for_thread_for_test("other-thread", "other-call");
 
-        if queued_allow {
-            assert!(manager.deliver_external_approval(
-                &approval,
-                ExternalApprovalDecision::Allow { remember: true },
-            ));
-        }
-        manager.interrupt_turn(&thread.id, &turn.id).await?;
-        assert!(!manager.deliver_external_approval(
+        let decision = manager.deliver_external_approval(
             &approval,
             ExternalApprovalDecision::Allow { remember: true },
-        ));
+        );
+        tokio::pin!(decision);
+        if queued_allow {
+            assert!(futures_util::poll!(decision.as_mut()).is_pending());
+        }
+        manager.interrupt_turn(&thread.id, &turn.id).await?;
+        if queued_allow {
+            assert!(!decision.await?);
+        }
+        assert!(
+            !manager
+                .deliver_external_approval(
+                    &approval,
+                    ExternalApprovalDecision::Allow { remember: true },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert!(
             manager
                 .get_thread_detail(&thread.id)
@@ -17775,14 +18073,23 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
             other_rx.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
         ));
-        let decision = tokio::time::timeout(Duration::from_secs(2), harness.recv_approval_event())
-            .await
-            .context("Stop must wake the approval monitor")?;
-        assert_eq!(
-            decision,
-            Some(MockApprovalEvent::Denied {
-                id: "pending_write".to_string()
-            })
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if manager.events_since(&thread.id, None)?.iter().any(|event| {
+                    event.event == "approval.decided" && event.payload["approval_id"] == approval
+                }) {
+                    break Ok::<(), anyhow::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .context("Stop must durably settle the approval monitor")??;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), harness.recv_approval_event())
+                .await
+                .is_err(),
+            "cancellation must not fabricate a host denial"
         );
         assert!(!manager.store.load_thread(&thread.id)?.auto_approve);
         assert!(
@@ -17796,14 +18103,25 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
         );
 
         harness.tx_event.send(event("queued_after_stop")).await?;
-        let decision = tokio::time::timeout(Duration::from_secs(2), harness.recv_approval_event())
-            .await
-            .context("late approval event must fail closed")?;
-        assert_eq!(
-            decision,
-            Some(MockApprovalEvent::Denied {
-                id: "queued_after_stop".to_string()
-            })
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if manager.events_since(&thread.id, None)?.iter().any(|event| {
+                    event.event == "approval.decided"
+                        && event.payload["tool_call_id"] == "queued_after_stop"
+                        && event.payload["cancelled"] == true
+                }) {
+                    break Ok::<(), anyhow::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .context("late approval event must durably fail closed")??;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), harness.recv_approval_event())
+                .await
+                .is_err(),
+            "late cancellation must not fabricate a host denial"
         );
         assert!(
             manager
@@ -17821,6 +18139,8 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -17837,10 +18157,15 @@ async fn approval_interrupt_revokes_waiter_and_rejects_late_actions() -> Result<
             wait_for_terminal_turn(&manager, &turn.id).await?.status,
             RuntimeTurnStatus::Interrupted
         );
-        assert!(manager.deliver_external_approval(
-            &other_approval,
-            ExternalApprovalDecision::Deny { remember: false },
-        ));
+        assert!(
+            manager
+                .deliver_external_approval(
+                    &other_approval,
+                    ExternalApprovalDecision::Deny { remember: false },
+                )
+                .await
+                .expect("durable approval decision")
+        );
         assert!(matches!(
             other_rx.await?,
             ExternalApprovalDecision::Deny { .. }
@@ -17905,6 +18230,7 @@ async fn approval_timeout_denies_clears_ui_and_next_turn_can_start() -> Result<(
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "timeout_key".to_string(),
             approval_grouping_key: "timeout_key".to_string(),
             id: "tool_timeout".to_string(),
@@ -17953,14 +18279,21 @@ async fn approval_timeout_denies_clears_ui_and_next_turn_can_start() -> Result<(
     );
     // A decision arriving after the timeout cancelled the waiter must not
     // resurrect it — the engine already has its denial.
-    assert!(!manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
 
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -18059,6 +18392,8 @@ async fn thinking_delta_emits_agent_reasoning_item() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -18117,10 +18452,15 @@ async fn thinking_delta_emits_agent_reasoning_item() -> Result<()> {
 #[tokio::test]
 async fn deliver_external_approval_for_unknown_id_returns_false() {
     let manager = test_manager(test_runtime_dir()).expect("manager");
-    assert!(!manager.deliver_external_approval(
-        "no_such_approval",
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
+    assert!(
+        !manager
+            .deliver_external_approval(
+                "no_such_approval",
+                ExternalApprovalDecision::Allow { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(manager.pending_approvals_count(), 0);
 }
 
@@ -18157,6 +18497,7 @@ async fn approval_remember_grants_tool_class_without_changing_posture() -> Resul
     let search = |id: &str, q: &str| {
         let input = json!({ "search_query": [{ "q": q }] });
         EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: crate::tools::approval_cache::build_approval_key("web.run", &input).0,
             approval_grouping_key: crate::tools::approval_cache::build_approval_grouping_key(
                 "web.run", &input,
@@ -18182,6 +18523,7 @@ async fn approval_remember_grants_tool_class_without_changing_posture() -> Resul
     harness
         .tx_event
         .send(EngineEvent::ApprovalRequired {
+            publication: None,
             approval_key: "write-key".to_string(),
             approval_grouping_key: "write-group".to_string(),
             id: "call_write".to_string(),
@@ -18203,10 +18545,15 @@ async fn approval_remember_grants_tool_class_without_changing_posture() -> Resul
         Some("Search the web for 'espresso'"),
         "the approval carries a model-independent summary (E6)"
     );
-    assert!(manager.deliver_external_approval(
-        &approval_id,
-        ExternalApprovalDecision::Allow { remember: true },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &approval_id,
+                ExternalApprovalDecision::Allow { remember: true },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     assert_eq!(
         harness.recv_approval_event().await,
         Some(MockApprovalEvent::Approved {
@@ -18262,10 +18609,15 @@ async fn approval_remember_grants_tool_class_without_changing_posture() -> Resul
             && event.payload["grant_id"] == grant.grant_id
     }));
 
-    assert!(manager.deliver_external_approval(
-        &write_approval,
-        ExternalApprovalDecision::Deny { remember: false },
-    ));
+    assert!(
+        manager
+            .deliver_external_approval(
+                &write_approval,
+                ExternalApprovalDecision::Deny { remember: false },
+            )
+            .await
+            .expect("durable approval decision")
+    );
     let _ = harness.recv_approval_event().await;
 
     // Revoked, the next search prompts again.
@@ -18469,6 +18821,8 @@ async fn elevation_required_with_stale_active_turn_is_denied() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -18545,6 +18899,8 @@ async fn steer_turn_on_active_turn_records_item_and_event() -> Result<()> {
                 .await;
             let _ = tx_event
                 .send(EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -18741,6 +19097,8 @@ async fn steer_receipts_outlive_caller_cancellation_after_engine_acceptance() ->
         .await?;
     tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -18859,6 +19217,8 @@ async fn steer_dropped_by_the_engine_is_reported_as_undelivered() -> Result<()> 
         .await?;
     tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -18953,6 +19313,8 @@ async fn steer_rejects_a_terminal_durable_turn_without_dispatch_or_item() -> Res
         .await?;
     tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -19337,6 +19699,8 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                         .await;
                     let _ = tx_event
                         .send(EngineEvent::TurnComplete {
+                            source_accounting: false,
+
                             turn_id: None,
                             submission_id: None,
                             compaction_id: None,
@@ -19384,6 +19748,8 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
                         .await;
                     let _ = tx_event
                         .send(EngineEvent::TurnComplete {
+                            source_accounting: false,
+
                             turn_id: None,
                             submission_id: None,
                             compaction_id: None,
@@ -19587,6 +19953,11 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
     manager.store.save_item(&queued_item)?;
 
     manager.store.save_turn(&TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -19628,6 +19999,11 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         workspace_snapshots: Vec::new(),
     })?;
     manager.store.save_turn(&TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -19827,6 +20203,11 @@ fn seed_turns_with_user_messages(
             ended_at: Some(created_at),
         })?;
         manager.store.save_turn(&TurnRecord {
+            source_usage_origin_turn_id: None,
+
+            source_accounting: false,
+            source_usage_records: Default::default(),
+
             prefix_checkpoint: None,
             decision_receipts: Vec::new(),
             max_output_tokens: None,
@@ -20316,6 +20697,8 @@ async fn agent_mail_release_acceptance_two_task_matrix() -> Result<()> {
     harness_b
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -20585,6 +20968,11 @@ fn restart_rebuild_restores_tool_call_identity_from_persisted_items() -> Result<
     manager.store.save_item(&user_item)?;
     manager.store.save_item(&call_item)?;
     manager.store.save_turn(&TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -20873,6 +21261,11 @@ fn restart_rebuild_keeps_in_flight_tool_call_identity() -> Result<()> {
     };
     manager.store.save_item(&call_item)?;
     manager.store.save_turn(&TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -20976,6 +21369,11 @@ fn restart_rebuild_skips_steers_the_engine_never_delivered() -> Result<()> {
     manager.store.save_item(&dropped)?;
     manager.store.save_item(&pending)?;
     manager.store.save_turn(&TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -21080,6 +21478,11 @@ fn restart_rebuild_skips_legacy_tool_items_without_identity() -> Result<()> {
     manager.store.save_item(&user_item)?;
     manager.store.save_item(&legacy_tool_item)?;
     manager.store.save_turn(&TurnRecord {
+        source_usage_origin_turn_id: None,
+
+        source_accounting: false,
+        source_usage_records: Default::default(),
+
         prefix_checkpoint: None,
         decision_receipts: Vec::new(),
         max_output_tokens: None,
@@ -21558,6 +21961,7 @@ mod runtime_image_inputs {
         let run = tokio::spawn(engine.run());
         handle
             .send(Op::SyncSession {
+                expected: None,
                 control: crate::core::ops::SessionControlId::new(),
                 session_id: stored_thread.session_id.clone(),
                 messages: reopened.restore_thread_messages(&stored_thread)?,
@@ -21831,6 +22235,8 @@ mod runtime_image_inputs {
                 },
                 EngineEvent::MessageComplete { index: 0 },
                 EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -22135,6 +22541,8 @@ async fn notices_raise_from_engine_events_and_clear_on_settle_or_ack() -> Result
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -23137,6 +23545,8 @@ async fn engine_plumbing_items_are_tagged_internal_and_retry_hints_are_dropped()
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -23912,6 +24322,8 @@ async fn runtime_receipts_mask_configured_secrets() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -24166,6 +24578,8 @@ async fn tool_completion_items_carry_typed_artifact_refs() -> Result<()> {
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -24431,6 +24845,8 @@ async fn run_workspace_turn(
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -25024,6 +25440,8 @@ mod execution_identity {
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -25234,6 +25652,8 @@ mod execution_identity {
         harness
             .tx_event
             .send(EngineEvent::TurnComplete {
+                source_accounting: false,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id: None,
@@ -25586,6 +26006,8 @@ async fn profile_constitution_runtime_admission_binds_the_complete_snapshot_to_r
     harness
         .tx_event
         .send(EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,

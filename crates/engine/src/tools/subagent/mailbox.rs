@@ -79,6 +79,8 @@ pub enum MailboxMessage {
     /// Incremental token usage from a sub-agent's API call.
     /// Published after each turn so the parent's cost counter updates live.
     TokenUsage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        record: Option<crate::cost_status::RuntimeUsageRecord>,
         agent_id: String,
         /// Stable identity of the provider response. Runtime accounting uses
         /// this across direct durability, mailbox replay, and restart dedupe.
@@ -134,6 +136,19 @@ impl MailboxMessage {
         }
     }
 
+    pub fn usage_record(
+        agent_id: impl Into<String>,
+        record: crate::cost_status::RuntimeUsageRecord,
+    ) -> Self {
+        Self::TokenUsage {
+            agent_id: agent_id.into(),
+            source_id: record.source_id.clone(),
+            route: Box::new(record.usage.route.clone()),
+            usage: record.usage.usage.clone(),
+            record: Some(record),
+        }
+    }
+
     pub fn token_usage(
         agent_id: impl Into<String>,
         source_id: impl Into<String>,
@@ -141,6 +156,7 @@ impl MailboxMessage {
         usage: Usage,
     ) -> Self {
         Self::TokenUsage {
+            record: None,
             agent_id: agent_id.into(),
             source_id: source_id.into(),
             route: Box::new(route),
@@ -618,6 +634,7 @@ mod tests {
             ),
             (
                 MailboxMessage::TokenUsage {
+                    record: None,
                     agent_id: "a9".into(),
                     source_id: "response-a9".into(),
                     route: Box::new(test_route(ProviderKind::Deepseek, "deepseek-v4-flash")),

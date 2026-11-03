@@ -265,6 +265,7 @@ fn child_approval_ids_stay_unique_within_and_across_manager_boots() {
                 &new_child_execution_id("resumed-agent-7"),
                 "bash",
                 "fixture",
+                None,
             )
             .unwrap();
         assert!(
@@ -291,6 +292,7 @@ fn child_approval_ids_stay_unique_within_and_across_manager_boots() {
                 &new_child_execution_id("resumed-agent-7"),
                 "bash",
                 "fixture",
+                None,
             )
             .unwrap();
         assert!(SubAgentManager::is_child_approval_id(&id));
@@ -311,52 +313,70 @@ async fn child_execution_identity_cannot_replace_a_waiter_or_answer_a_later_call
     let first = new_child_execution_id("child");
     let second = new_child_execution_id("child");
     let (registered, receiver) = manager
-        .register_child_approval("child", &first, "bash", "one")
+        .register_child_approval("child", &first, "bash", "one", None)
         .unwrap();
     assert_eq!(registered, first);
     assert!(
         manager
-            .register_child_approval("child", &first, "bash", "replacement")
+            .register_child_approval("child", &first, "bash", "replacement", None)
             .is_err()
     );
     assert!(
         manager
-            .register_child_approval("other", &first, "bash", "wrong owner")
+            .register_child_approval("other", &first, "bash", "wrong owner", None)
             .is_err()
     );
-    assert!(manager.resolve_child_approval(
-        &first,
-        ChildApprovalOutcome::Denied {
-            by: crate::approval_log::ApprovalDecider::User
-        }
-    ));
+    assert!({
+        let submitted = manager.resolve_child_approval(
+            &first,
+            ChildApprovalOutcome::Denied {
+                by: crate::approval_log::ApprovalDecider::User,
+            },
+        );
+        submitted
+            .wait()
+            .await
+            .expect("actual child approval outcome")
+    });
     assert!(matches!(
-        receiver.await.unwrap(),
+        receiver.await.unwrap().outcome,
         ChildApprovalOutcome::Denied {
             by: crate::approval_log::ApprovalDecider::User
         }
     ));
     let (_, mut receiver) = manager
-        .register_child_approval("child", &second, "bash", "two")
+        .register_child_approval("child", &second, "bash", "two", None)
         .unwrap();
-    assert!(!manager.resolve_child_approval(
-        &first,
-        ChildApprovalOutcome::Approved {
-            by: crate::approval_log::ApprovalDecider::User
-        }
-    ));
+    assert!(!{
+        let submitted = manager.resolve_child_approval(
+            &first,
+            ChildApprovalOutcome::Approved {
+                by: crate::approval_log::ApprovalDecider::User,
+            },
+        );
+        submitted
+            .wait()
+            .await
+            .expect("actual child approval outcome")
+    });
     assert!(matches!(
         receiver.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
-    assert!(manager.resolve_child_approval(
-        &second,
-        ChildApprovalOutcome::Approved {
-            by: crate::approval_log::ApprovalDecider::User
-        }
-    ));
+    assert!({
+        let submitted = manager.resolve_child_approval(
+            &second,
+            ChildApprovalOutcome::Approved {
+                by: crate::approval_log::ApprovalDecider::User,
+            },
+        );
+        submitted
+            .wait()
+            .await
+            .expect("actual child approval outcome")
+    });
     assert!(matches!(
-        receiver.await.unwrap(),
+        receiver.await.unwrap().outcome,
         ChildApprovalOutcome::Approved {
             by: crate::approval_log::ApprovalDecider::User
         }
@@ -2415,10 +2435,48 @@ pub(super) async fn delayed_chat_client(
     (client, calls, bodies, config)
 }
 
+fn freeze_usage_fixture_quote(route: &mut crate::cost_status::EffectiveRouteEnvelope) {
+    let base_url = route.provider.provider().default_base_url();
+    let models = serde_json::from_value::<
+        Vec<codewhale_config::catalog::configured::ConfiguredModel>,
+    >(json!([{
+        "provider": &route.provider_identity,
+        "base_url": base_url,
+        "id": &route.model,
+        "cost": {"input": 1.0, "output": 2.0}
+    }]))
+    .expect("fixture declared rates");
+    route.provider_live_pricing = Some(
+        crate::provider_catalog_live::configured_dispatch_pricing_quote_at(
+            &models,
+            route.provider,
+            &route.provider_identity,
+            &route.model,
+            base_url,
+            u64::try_from(route.dispatched_at.timestamp()).expect("fixture dispatch time"),
+        )
+        .expect("fixture frozen quote"),
+    );
+}
+
 #[tokio::test]
 async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accounting() {
     let _cost_scope = crate::cost_status::test_scope();
     let tmp = tempdir().expect("tempdir");
+    let sessions = crate::session_manager::SessionManager::new(tmp.path().join("sessions"))
+        .expect("fixture session store");
+    let session = crate::session_manager::create_saved_session_with_id_and_mode(
+        "session-detached-usage".to_string(),
+        &[],
+        "deepseek-v4-flash",
+        tmp.path(),
+        0,
+        None,
+        Some("agent"),
+    );
+    sessions
+        .save_session(&session)
+        .expect("fixture saved origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         2,
@@ -2427,23 +2485,34 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
     let mut root = stub_runtime();
     root.manager = Arc::clone(&manager);
     root.context = ToolContext::new(tmp.path()).with_state_namespace("session-detached-usage");
+    root.accounting_origin = SubAgentAccountingOrigin::capture(&root.context);
     root.mailbox = Some(mailbox.clone());
     let runtime_owner = "interactive:session-detached-usage:turn-parent";
-    crate::cost_status::register_interactive_runtime_usage_sink(
+    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
         runtime_owner,
         crate::cost_status::scope_token(),
+        "session-detached-usage",
+        "turn-parent",
+        &sessions,
     );
     root.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
+    root.context.accounting_origin = Some(
+        crate::cost_status::NativeUsageOrigin::runtime(
+            crate::cost_status::scope_token(),
+            runtime_owner,
+        )
+        .expect("fixture captured runtime origin"),
+    );
     let detached = root.background_runtime();
 
-    let cases = [
+    let mut cases = [
         (
             "agent_deepseek",
             "subagent:agent_deepseek:step:1:response:late",
             crate::cost_status::EffectiveRouteEnvelope::capture(
                 None,
                 ProviderKind::Deepseek,
-                "deepseek-direct",
+                ProviderKind::Deepseek.as_str(),
                 "deepseek-v4-flash",
                 Some(ProviderKind::Deepseek.provider().default_base_url()),
                 chrono::Utc::now(),
@@ -2460,7 +2529,7 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
             crate::cost_status::EffectiveRouteEnvelope::capture(
                 None,
                 ProviderKind::Anthropic,
-                "anthropic-direct",
+                ProviderKind::Anthropic.as_str(),
                 "claude-sonnet-4-5",
                 Some(ProviderKind::Anthropic.provider().default_base_url()),
                 chrono::Utc::now(),
@@ -2489,6 +2558,11 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
             },
         ),
     ];
+    for (_, _, route, _) in &mut cases {
+        if route.provider != ProviderKind::Custom {
+            freeze_usage_fixture_quote(route);
+        }
+    }
     for (worker_id, ..) in &cases {
         manager.write().await.register_worker_for_session(
             make_worker_spec(worker_id, tmp.path().to_path_buf()),
@@ -2527,18 +2601,18 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
         "post-seal usage must not weaken the mailbox ordering boundary"
     );
 
-    let session_usage = crate::cost_status::drain();
+    let pending = crate::cost_status::drain();
+    assert_eq!(pending.source_records.len(), cases.len());
+    let session_usage = sessions
+        .load_session_snapshot("session-detached-usage")
+        .expect("durable detached usage")
+        .metadata
+        .cost;
     assert_eq!(session_usage.usage_source_fingerprints.len(), cases.len());
-    assert!(
-        session_usage.estimate.is_positive(),
-        "direct provider routes must reach the live money total"
-    );
+    assert!(session_usage.subagent_cost_usd > 0.0);
     assert_eq!(
-        session_usage
-            .priced_turns
-            .saturating_add(session_usage.unpriced_turns),
-        cases.len() as u32,
-        "every metered or unknown-basis route contributes exactly one coverage receipt"
+        session_usage.priced_turns + session_usage.unpriced_turns,
+        cases.len() as u32
     );
     for (worker_id, source_id, _route, usage) in cases {
         let worker = manager
@@ -2572,6 +2646,20 @@ async fn detached_interactive_usage_after_mailbox_seal_reaches_session_accountin
 async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
     let _cost_scope = crate::cost_status::test_scope();
     let tmp = tempdir().expect("tempdir");
+    let sessions = crate::session_manager::SessionManager::new(tmp.path().join("sessions"))
+        .expect("fixture session store");
+    let session = crate::session_manager::create_saved_session_with_id_and_mode(
+        "guardian-usage-session".to_string(),
+        &[],
+        "deepseek-v4-flash",
+        tmp.path(),
+        0,
+        None,
+        Some("agent"),
+    );
+    sessions
+        .save_session(&session)
+        .expect("fixture saved origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         1,
@@ -2583,13 +2671,25 @@ async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
     );
 
     let runtime_owner = "interactive:guardian-usage-session:turn-parent";
-    crate::cost_status::register_interactive_runtime_usage_sink(
+    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
         runtime_owner,
         crate::cost_status::scope_token(),
+        "guardian-usage-session",
+        "turn-parent",
+        &sessions,
     );
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
+    runtime.context = ToolContext::new(tmp.path()).with_state_namespace("guardian-usage-session");
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
+    runtime.context.accounting_origin = Some(
+        crate::cost_status::NativeUsageOrigin::runtime(
+            crate::cost_status::scope_token(),
+            runtime_owner,
+        )
+        .expect("fixture captured runtime origin"),
+    );
 
     let source_id = child_guardian_usage_source_id("agent_guardian", "tool-fixed");
     assert_eq!(
@@ -2605,14 +2705,15 @@ async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
     assert!(!source_id.contains("agent_guardian"));
     assert!(!source_id.contains("tool-fixed"));
 
-    let route = crate::cost_status::EffectiveRouteEnvelope::capture(
+    let mut route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
         ProviderKind::Deepseek,
-        "deepseek-direct",
+        ProviderKind::Deepseek.as_str(),
         "deepseek-v4-flash",
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         chrono::Utc::now(),
     );
+    freeze_usage_fixture_quote(&mut route);
     let usage = Usage {
         input_tokens: 7,
         output_tokens: 5,
@@ -2631,7 +2732,13 @@ async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
     record_provider_response_usage(&runtime, "agent_guardian", &source_id, route, &usage).await;
 
     crate::cost_status::finish_runtime_usage_owner(runtime_owner);
-    let session_usage = crate::cost_status::drain();
+    let pending = crate::cost_status::drain();
+    assert_eq!(pending.source_records.len(), 1);
+    let session_usage = sessions
+        .load_session_snapshot("guardian-usage-session")
+        .expect("durable fixture accounting")
+        .metadata
+        .cost;
     let fingerprint = crate::cost_status::usage_source_fingerprint(&source_id);
     assert_eq!(
         session_usage.usage_source_fingerprints,
@@ -2659,6 +2766,20 @@ async fn child_guardian_usage_source_is_sanitized_and_replay_idempotent() {
 async fn ownerless_no_mailbox_provider_usage_reaches_accounting_once() {
     let _cost_scope = crate::cost_status::test_scope();
     let tmp = tempdir().expect("tempdir");
+    let sessions = crate::session_manager::SessionManager::new(tmp.path().join("sessions"))
+        .expect("fixture session store");
+    let session = crate::session_manager::create_saved_session_with_id_and_mode(
+        "direct-usage-session".to_string(),
+        &[],
+        "deepseek-v4-flash",
+        tmp.path(),
+        0,
+        None,
+        Some("agent"),
+    );
+    sessions
+        .save_session(&session)
+        .expect("fixture saved origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         1,
@@ -2670,18 +2791,26 @@ async fn ownerless_no_mailbox_provider_usage_reaches_accounting_once() {
     );
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
+    runtime.context = ToolContext::new(tmp.path()).with_state_namespace("direct-usage-session");
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        runtime.accounting_origin.cost_scope,
+        sessions.sessions_dir().to_path_buf(),
+        "direct-usage-session".to_string(),
+    ));
     assert!(runtime.runtime_usage_lease.is_none());
     assert!(runtime.mailbox.is_none());
 
     let source_id = "subagent:agent_direct:step:1:response:direct";
-    let route = crate::cost_status::EffectiveRouteEnvelope::capture(
+    let mut route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
         ProviderKind::Deepseek,
-        "deepseek-direct",
+        ProviderKind::Deepseek.as_str(),
         "deepseek-v4-flash",
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         chrono::Utc::now(),
     );
+    freeze_usage_fixture_quote(&mut route);
     let usage = Usage {
         input_tokens: 19,
         output_tokens: 7,
@@ -2692,7 +2821,13 @@ async fn ownerless_no_mailbox_provider_usage_reaches_accounting_once() {
             .await;
     }
 
-    let session_usage = crate::cost_status::drain();
+    let pending = crate::cost_status::drain();
+    assert_eq!(pending.source_records.len(), 1);
+    let session_usage = sessions
+        .load_session_snapshot("direct-usage-session")
+        .expect("durable fixture accounting")
+        .metadata
+        .cost;
     let fingerprint = crate::cost_status::usage_source_fingerprint(source_id);
     assert_eq!(
         session_usage.usage_source_fingerprints,
@@ -2705,7 +2840,7 @@ async fn ownerless_no_mailbox_provider_usage_reaches_accounting_once() {
         1,
         "a replayed ownerless provider response must have one cost receipt"
     );
-    assert!(session_usage.estimate.is_positive());
+    assert!(session_usage.subagent_cost_usd > 0.0);
 
     let worker = manager
         .read()
@@ -2770,11 +2905,16 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
     root.manager = Arc::clone(&manager);
     root.context = ToolContext::new(tmp.path()).with_state_namespace(origin_session_id);
     root.accounting_origin = SubAgentAccountingOrigin::capture(&root.context);
+    root.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        root.accounting_origin.cost_scope,
+        sessions.sessions_dir().to_path_buf(),
+        origin_session_id.to_string(),
+    ));
     let child = root.background_runtime();
     assert!(child.runtime_usage_lease.is_none());
     assert!(child.mailbox.is_none());
 
-    let route = crate::cost_status::EffectiveRouteEnvelope::capture(
+    let mut route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
         ProviderKind::Deepseek,
         ProviderKind::Deepseek.as_str(),
@@ -2782,6 +2922,7 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         chrono::Utc::now(),
     );
+    freeze_usage_fixture_quote(&mut route);
     let usage = Usage {
         input_tokens: 19,
         output_tokens: 7,
@@ -2799,12 +2940,17 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
     // `/new` retires the origin scope exactly as the TUI does, while the
     // child keeps running.
     let settled_origin = crate::cost_status::close_current_scope();
+    assert_eq!(settled_origin.source_records.len(), 1);
     assert_eq!(
-        settled_origin.usage_source_fingerprints,
-        [first_fingerprint.clone()].into()
+        crate::cost_status::usage_source_fingerprint(&settled_origin.source_records[0].source_id),
+        first_fingerprint
     );
-    assert_eq!(settled_origin.priced_turns, 1);
-    assert!(settled_origin.estimate.is_positive());
+    let first_origin = sessions
+        .load_session_snapshot(origin_session_id)
+        .expect("first durable origin");
+    assert_eq!(first_origin.metadata.total_tokens, 26);
+    assert_eq!(first_origin.metadata.cost.priced_turns, 1);
+    assert!(first_origin.metadata.cost.subagent_cost_usd > 0.0);
 
     // The next response, its monitor replay, and a guardian reply without a
     // usage payload all arrive after the scope generation moved on.
@@ -2821,16 +2967,43 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
     }
 
     let replacement_live = crate::cost_status::drain();
-    assert!(
-        replacement_live.is_empty(),
-        "late origin receipts charged the replacement scope: {replacement_live:?}"
+    assert_eq!(
+        replacement_live.estimate,
+        crate::pricing::CostEstimate::default()
+    );
+    assert_eq!(
+        replacement_live.priced_turns + replacement_live.unpriced_turns,
+        0
+    );
+    let mut replacement_projection = sessions
+        .load_session_by_prefix(replacement_session_id)
+        .expect("replacement projection");
+    let receipt = replacement_projection
+        .capture_publication(crate::session_manager::SessionWriteOwner::control())
+        .expect("replacement publication");
+    let before_projection = serde_json::to_value(&replacement_projection.metadata.cost).unwrap();
+    for record in &replacement_live.source_records {
+        assert!(
+            receipt
+                .project_usage_record(
+                    crate::cost_status::scope_token(),
+                    record,
+                    &mut replacement_projection.metadata.cost,
+                )
+                .expect("foreign source projection")
+                .is_none()
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(&replacement_projection.metadata.cost).unwrap(),
+        before_projection
     );
 
     let origin = sessions
         .load_session_snapshot(origin_session_id)
         .expect("origin session");
-    assert_eq!(origin.metadata.total_tokens, 26);
-    assert_eq!(origin.metadata.cost.priced_turns, 1);
+    assert_eq!(origin.metadata.total_tokens, 52);
+    assert_eq!(origin.metadata.cost.priced_turns, 2);
     assert_eq!(origin.metadata.cost.unpriced_turns, 1);
     assert!(
         origin
@@ -2841,7 +3014,12 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
     );
     assert_eq!(
         origin.metadata.cost.usage_source_fingerprints,
-        [late_fingerprint.clone(), missing_fingerprint.clone()].into()
+        [
+            first_fingerprint.clone(),
+            late_fingerprint.clone(),
+            missing_fingerprint.clone()
+        ]
+        .into()
     );
 
     let replacement = sessions
@@ -2876,6 +3054,20 @@ async fn ownerless_child_usage_crossing_new_settles_to_its_dispatch_origin_once(
 async fn provider_success_without_usage_records_one_route_aware_gap_and_no_zero_mail() {
     let _cost_scope = crate::cost_status::test_scope();
     let tmp = tempdir().expect("tempdir");
+    let sessions = crate::session_manager::SessionManager::new(tmp.path().join("sessions"))
+        .expect("fixture session store");
+    let session = crate::session_manager::create_saved_session_with_id_and_mode(
+        "missing-usage-session".to_string(),
+        &[],
+        "deepseek-v4-flash",
+        tmp.path(),
+        0,
+        None,
+        Some("agent"),
+    );
+    sessions
+        .save_session(&session)
+        .expect("fixture saved origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         1,
@@ -2887,21 +3079,33 @@ async fn provider_success_without_usage_records_one_route_aware_gap_and_no_zero_
     );
 
     let runtime_owner = "interactive:missing-usage-session:turn-parent";
-    crate::cost_status::register_interactive_runtime_usage_sink(
+    crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
         runtime_owner,
         crate::cost_status::scope_token(),
+        "missing-usage-session",
+        "turn-parent",
+        &sessions,
     );
     let (mailbox, mut mailbox_rx) = Mailbox::new(CancellationToken::new());
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
+    runtime.context = ToolContext::new(tmp.path()).with_state_namespace("missing-usage-session");
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.mailbox = Some(mailbox);
     runtime.runtime_usage_lease = crate::cost_status::acquire_runtime_usage_lease(runtime_owner);
+    runtime.context.accounting_origin = Some(
+        crate::cost_status::NativeUsageOrigin::runtime(
+            crate::cost_status::scope_token(),
+            runtime_owner,
+        )
+        .expect("fixture captured runtime origin"),
+    );
 
     let source_id = child_guardian_usage_source_id("agent_missing_usage", "tool-fixed");
     let route = crate::cost_status::EffectiveRouteEnvelope::capture(
         None,
         ProviderKind::Deepseek,
-        "deepseek-direct",
+        ProviderKind::Deepseek.as_str(),
         "deepseek-v4-flash",
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         chrono::Utc::now(),
@@ -2922,7 +3126,13 @@ async fn provider_success_without_usage_records_one_route_aware_gap_and_no_zero_
         "missing usage must not also publish a priced-zero TokenUsage message"
     );
     crate::cost_status::finish_runtime_usage_owner(runtime_owner);
-    let session_usage = crate::cost_status::drain();
+    let pending = crate::cost_status::drain();
+    assert_eq!(pending.source_records.len(), 1);
+    let session_usage = sessions
+        .load_session_snapshot("missing-usage-session")
+        .expect("durable fixture accounting")
+        .metadata
+        .cost;
     let fingerprint = crate::cost_status::usage_source_fingerprint(&source_id);
     assert_eq!(
         session_usage.usage_source_fingerprints,
@@ -7409,7 +7619,7 @@ async fn coordination_interrupt_fans_in_once_and_preserves_checkpoint() {
         .count();
     assert_eq!(complete_events, 1);
     let worker = manager.get_worker_record(&agent_id).expect("worker record");
-    assert_eq!(worker.status, AgentWorkerStatus::WaitingForUser);
+    assert_eq!(worker.status, AgentWorkerStatus::Interrupted);
     assert_eq!(
         worker
             .events
@@ -10258,7 +10468,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
             .as_ref()
             .expect("worker record")
             .status,
-        AgentWorkerStatus::WaitingForUser
+        AgentWorkerStatus::Interrupted
     );
     assert_eq!(
         projection
@@ -19313,6 +19523,23 @@ pub(super) async fn run_incomplete_response_worker(
 ) {
     use tokio_util::sync::CancellationToken;
 
+    let accounting_home = tempdir().expect("private incomplete-response accounting home");
+    let sessions =
+        crate::session_manager::SessionManager::new(accounting_home.path().join("sessions"))
+            .expect("incomplete-response session store");
+    let session_id = "incomplete-response-session";
+    let session = crate::session_manager::create_saved_session_with_id_and_mode(
+        session_id.to_string(),
+        &[],
+        "deepseek-v4-flash",
+        workspace,
+        0,
+        None,
+        Some("agent"),
+    );
+    sessions
+        .save_session(&session)
+        .expect("saved incomplete-response origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         workspace.to_path_buf(),
         2,
@@ -19334,7 +19561,11 @@ pub(super) async fn run_incomplete_response_worker(
     {
         let mut manager = manager.write().await;
         manager.agents.insert(agent_id.clone(), agent);
-        manager.register_worker(make_worker_spec(&agent_id, workspace.to_path_buf()));
+        manager.register_worker_for_session(
+            make_worker_spec(&agent_id, workspace.to_path_buf()),
+            session_id,
+            None,
+        );
     }
 
     let (client, calls, fixture_config) = incomplete_then_complete_chat_client(stop_reason).await;
@@ -19343,7 +19574,13 @@ pub(super) async fn run_incomplete_response_worker(
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(workspace.to_path_buf());
+    runtime.context = ToolContext::new(workspace.to_path_buf()).with_state_namespace(session_id);
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        runtime.accounting_origin.cost_scope,
+        sessions.sessions_dir().to_path_buf(),
+        session_id.to_string(),
+    ));
     runtime.mailbox = Some(mailbox);
 
     run_subagent_task(SubAgentTask {
@@ -20654,6 +20891,7 @@ async fn agent_wait_returns_early_with_needs_approval() {
             &new_child_execution_id(&agent_id),
             "bash",
             "Tool bash requires approval\nand more",
+            None,
         )
         .unwrap();
     let manager = Arc::new(RwLock::new(inner));
@@ -20702,6 +20940,7 @@ async fn agent_wait_does_not_rewake_on_reported_request() {
             &new_child_execution_id(&agent_id),
             "bash",
             "held",
+            None,
         )
         .unwrap();
     let manager = Arc::new(RwLock::new(inner));
@@ -20748,6 +20987,7 @@ async fn agent_wait_does_not_rewake_on_reported_request() {
             &new_child_execution_id(&agent_id),
             "write_file",
             "held again",
+            None,
         )
         .unwrap();
     let joined = coord::dispatch_wait(
@@ -20780,6 +21020,7 @@ async fn status_waiting_is_derived_from_pending_store() {
             &new_child_execution_id(&agent_id),
             "bash",
             "held",
+            None,
         )
         .unwrap();
     // The WaitingForUser progress write was skipped under contention; the
@@ -20809,12 +21050,18 @@ async fn status_waiting_is_derived_from_pending_store() {
         None,
         Some("bash".to_string()),
     );
-    assert!(inner.resolve_child_approval(
-        &approval_id,
-        ChildApprovalOutcome::Approved {
-            by: crate::approval_log::ApprovalDecider::User
-        }
-    ));
+    assert!({
+        let submitted = inner.resolve_child_approval(
+            &approval_id,
+            ChildApprovalOutcome::Approved {
+                by: crate::approval_log::ApprovalDecider::User,
+            },
+        );
+        submitted
+            .wait()
+            .await
+            .expect("actual child approval outcome")
+    });
     let record = inner.get_worker_record(&agent_id).expect("worker record");
     assert_ne!(record.status, AgentWorkerStatus::WaitingForUser);
     assert!(record.pending_request.is_none());
@@ -25202,19 +25449,27 @@ mod child_permission_gate {
                     .replay(&session_id_for_answer)
                     .expect("the durable ask replays before the prompt is answered");
                 assert_eq!(manager_for_answer.read().await.pending_child_approvals(), 1);
-                assert!(
-                    manager_for_answer
+                assert!({
+                    let submitted = manager_for_answer
                         .write()
                         .await
-                        .resolve_child_approval(&approval_id, answer)
-                );
+                        .resolve_child_approval(&approval_id, answer);
+                    submitted
+                        .wait()
+                        .await
+                        .expect("actual child approval outcome")
+                });
                 // Answering twice finds no waiter.
-                assert!(
-                    !manager_for_answer
+                assert!(!{
+                    let submitted = manager_for_answer
                         .write()
                         .await
-                        .resolve_child_approval(&approval_id, answer)
-                );
+                        .resolve_child_approval(&approval_id, answer);
+                    submitted
+                        .wait()
+                        .await
+                        .expect("actual child approval outcome")
+                });
                 replay_before_decision
             });
             let execution = async {
@@ -25325,12 +25580,19 @@ mod child_permission_gate {
                         ..
                     } = event
                     {
-                        manager_for_answer.write().await.resolve_child_approval(
-                            &id,
-                            ChildApprovalOutcome::Denied {
-                                by: crate::approval_log::ApprovalDecider::User,
-                            },
-                        );
+                        {
+                            let submitted =
+                                manager_for_answer.write().await.resolve_child_approval(
+                                    &id,
+                                    ChildApprovalOutcome::Denied {
+                                        by: crate::approval_log::ApprovalDecider::User,
+                                    },
+                                );
+                            submitted
+                                .wait()
+                                .await
+                                .expect("actual child approval outcome")
+                        };
                         return (approval_key, approval_grouping_key);
                     }
                 }
@@ -25461,12 +25723,18 @@ mod child_permission_gate {
                     .task_handle
                     .is_some()
             );
-            assert!(!manager.resolve_child_approval(
-                &approval_id,
-                ChildApprovalOutcome::Approved {
-                    by: crate::approval_log::ApprovalDecider::User
-                }
-            ));
+            assert!(!{
+                let submitted = manager.resolve_child_approval(
+                    &approval_id,
+                    ChildApprovalOutcome::Approved {
+                        by: crate::approval_log::ApprovalDecider::User,
+                    },
+                );
+                submitted
+                    .wait()
+                    .await
+                    .expect("actual child approval outcome")
+            });
         }
         let requested = manager.read().await.get_result(&agent_id).expect("agent");
         let settled = settle_requested_child(&manager, requested).await;
@@ -25490,12 +25758,18 @@ mod child_permission_gate {
         );
         assert_completed_receipt(&receipt_store, &session_id, ApprovalOutcome::Cancelled);
         // A late answer finds nobody waiting and applies to nothing.
-        assert!(!manager.write().await.resolve_child_approval(
-            &approval_id,
-            ChildApprovalOutcome::Approved {
-                by: crate::approval_log::ApprovalDecider::User
-            }
-        ));
+        assert!(!{
+            let submitted = manager.write().await.resolve_child_approval(
+                &approval_id,
+                ChildApprovalOutcome::Approved {
+                    by: crate::approval_log::ApprovalDecider::User,
+                },
+            );
+            submitted
+                .wait()
+                .await
+                .expect("actual child approval outcome")
+        });
     }
 
     #[tokio::test]
@@ -25551,12 +25825,18 @@ mod child_permission_gate {
             let id = next_child_approval_id(&mut rx).await;
             // The person takes several tool timeouts to decide.
             tokio::time::sleep(Duration::from_secs(3)).await;
-            assert!(manager_for_answer.write().await.resolve_child_approval(
-                &id,
-                ChildApprovalOutcome::Approved {
-                    by: crate::approval_log::ApprovalDecider::User
-                }
-            ));
+            assert!({
+                let submitted = manager_for_answer.write().await.resolve_child_approval(
+                    &id,
+                    ChildApprovalOutcome::Approved {
+                        by: crate::approval_log::ApprovalDecider::User,
+                    },
+                );
+                submitted
+                    .wait()
+                    .await
+                    .expect("actual child approval outcome")
+            });
         });
         let output = run_tool_with_person_aware_timeout(
             tool_timeout,
@@ -25594,6 +25874,7 @@ mod child_permission_gate {
                 &new_child_execution_id(&agent_id),
                 "bash",
                 "held",
+                None,
             )
             .unwrap();
         assert!(
@@ -25707,12 +25988,15 @@ mod child_permission_gate {
             let approval_id = next_child_approval_id(&mut rx).await;
             std::fs::remove_file(&log_path).expect("remove log after durable ask");
             std::fs::create_dir(&log_path).expect("replace log with unwritable directory");
-            assert!(manager_for_answer.write().await.resolve_child_approval(
-                &approval_id,
-                ChildApprovalOutcome::Approved {
-                    by: crate::approval_log::ApprovalDecider::User
-                }
-            ));
+            assert!({
+                let submitted = manager_for_answer.write().await.resolve_child_approval(
+                    &approval_id,
+                    ChildApprovalOutcome::Approved {
+                        by: crate::approval_log::ApprovalDecider::User,
+                    },
+                );
+                submitted.wait().await.is_err()
+            });
         });
 
         let err = registry
@@ -26093,21 +26377,32 @@ mod child_permission_gate {
                     ApprovalReceipt::Asked { approval_id, tool_call_id, tool_name, .. }
                         if approval_id == &id && tool_call_id == &id && tool_name == "bash"
                 ));
-                let mut manager = manager.write().await;
-                assert_eq!(manager.pending_child_approvals(), 1);
-                assert!(manager.resolve_child_approval(
-                    &id,
-                    ChildApprovalOutcome::Denied {
-                        by: crate::approval_log::ApprovalDecider::User
-                    }
-                ));
-                assert!(
-                    !manager.resolve_child_approval(
+                assert_eq!(manager.read().await.pending_child_approvals(), 1);
+                assert!({
+                    let submitted = manager.write().await.resolve_child_approval(
                         &id,
-                        ChildApprovalOutcome::Approved {
-                            by: crate::approval_log::ApprovalDecider::User
-                        }
-                    ),
+                        ChildApprovalOutcome::Denied {
+                            by: crate::approval_log::ApprovalDecider::User,
+                        },
+                    );
+                    submitted
+                        .wait()
+                        .await
+                        .expect("actual child approval outcome")
+                });
+                assert!(
+                    !{
+                        let submitted = manager.write().await.resolve_child_approval(
+                            &id,
+                            ChildApprovalOutcome::Approved {
+                                by: crate::approval_log::ApprovalDecider::User,
+                            },
+                        );
+                        submitted
+                            .wait()
+                            .await
+                            .expect("actual child approval outcome")
+                    },
                     "a late allow cannot replace the same denied request"
                 );
                 id
@@ -26351,12 +26646,18 @@ mod child_permission_gate {
             };
             // The person tightens Permissions, then answers the open card.
             live.switch_for_tests(ApprovalMode::Never);
-            assert!(manager.write().await.resolve_child_approval(
-                &id,
-                ChildApprovalOutcome::Approved {
-                    by: crate::approval_log::ApprovalDecider::User
-                }
-            ));
+            assert!({
+                let submitted = manager.write().await.resolve_child_approval(
+                    &id,
+                    ChildApprovalOutcome::Approved {
+                        by: crate::approval_log::ApprovalDecider::User,
+                    },
+                );
+                submitted
+                    .wait()
+                    .await
+                    .expect("actual child approval outcome")
+            });
             id
         };
         let (result, id) = tokio::join!(call, answer);
@@ -26372,12 +26673,18 @@ mod child_permission_gate {
         );
         assert_completed_receipt(&receipt_store, &session_id, ApprovalOutcome::ApprovedOnce);
         assert!(
-            !manager.write().await.resolve_child_approval(
-                &id,
-                ChildApprovalOutcome::Approved {
-                    by: crate::approval_log::ApprovalDecider::User
-                }
-            ),
+            !{
+                let submitted = manager.write().await.resolve_child_approval(
+                    &id,
+                    ChildApprovalOutcome::Approved {
+                        by: crate::approval_log::ApprovalDecider::User,
+                    },
+                );
+                submitted
+                    .wait()
+                    .await
+                    .expect("actual child approval outcome")
+            },
             "a late allow cannot revive the already refused call"
         );
     }
@@ -27959,10 +28266,13 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
     let owner = "interactive:projection-session:origin-turn";
     let sink_lifetime = Arc::new(());
     let sink_weak = Arc::downgrade(&sink_lifetime);
+    let sink_calls = Arc::new(AtomicUsize::new(0));
+    let captured_calls = sink_calls.clone();
     crate::cost_status::register_runtime_usage_sink(
         owner,
         Arc::new(move |_| {
             let _held = &sink_lifetime;
+            captured_calls.fetch_add(1, Ordering::SeqCst);
             true
         }),
     );
@@ -27987,20 +28297,43 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
         output_tokens: 7,
         ..Usage::default()
     };
-    let held_metadata = manager.write().await;
-    projection.recover_settled(
-        &tokio::runtime::Handle::current(),
-        "settled-response".into(),
-        route,
-        usage,
-        Some(7),
-        crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+    let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+        "settled-response",
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        Some(
+            crate::cost_status::NativeUsageOrigin::runtime(
+                crate::cost_status::scope_token(),
+                owner,
+            )
+            .unwrap(),
+        ),
     );
-    tokio::task::yield_now().await;
+    let reservation = source.admit_dispatch(&route).await.unwrap().unwrap();
+    projection.project_settled(&reservation).await.unwrap();
+    drop(reservation);
+    let settled = source.reported(&route, &usage).unwrap();
+    crate::cost_status::report_runtime_usage_record(
+        crate::cost_status::scope_token(),
+        Some(owner),
+        &settled,
+    )
+    .unwrap();
+    assert!(settled.is_acknowledged());
+    let contribution = crate::cost_status::UsageSourceContribution::for_record(&settled);
+    let expected_cost = (contribution.priced > 0)
+        .then(|| priced_usd_microusd(&route.audit_frozen(&usage)))
+        .flatten();
+    drop(source);
+    assert_eq!(sink_calls.load(Ordering::SeqCst), 2);
+    let held_metadata = manager.write().await;
+    let mut waiting = Box::pin(projection.project_settled(&settled));
+    assert!(futures_util::poll!(&mut waiting).is_pending());
+    drop(waiting);
     drop(projection);
+    drop(settled);
     assert!(
-        sink_weak.upgrade().is_none(),
-        "the metadata waiter must not extend the billing lease"
+        crate::cost_status::acquire_runtime_usage_lease(owner).is_none(),
+        "the metadata waiter must not extend the registered billing lease"
     );
     assert!(
         tokio::time::timeout(Duration::from_secs(1), receiver.recv())
@@ -28009,20 +28342,39 @@ async fn settled_projection_waiter_releases_origin_lease_and_mailbox_before_meta
             .is_none(),
         "the metadata waiter must not retain the originating mailbox"
     );
+    assert_eq!(
+        sink_calls.load(Ordering::SeqCst),
+        2,
+        "metadata projection never republishes billing"
+    );
     assert!(
         crate::cost_status::take_runtime_usage(owner)
             .records
-            .is_empty(),
-        "recovery never bills"
+            .is_empty()
     );
     drop(held_metadata);
-    let manager = tokio::time::timeout(Duration::from_secs(1), manager.read())
-        .await
-        .unwrap();
-    let record = manager
-        .get_result_by_ref_for_session("projection-session", &worker)
-        .unwrap();
-    let usage = record.usage.as_ref().unwrap();
-    assert_eq!(usage.total_tokens, Some(20));
-    assert_eq!(usage.cost_microusd, Some(7));
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let manager = manager.read().await;
+            let record = manager
+                .get_result_by_ref_for_session("projection-session", &worker)
+                .unwrap();
+            if record.usage.as_ref().and_then(|usage| usage.total_tokens) == Some(20) {
+                assert_eq!(record.usage.as_ref().unwrap().cost_microusd, expected_cost);
+                break;
+            }
+            drop(manager);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while sink_weak.upgrade().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(sink_calls.load(Ordering::SeqCst), 2);
 }

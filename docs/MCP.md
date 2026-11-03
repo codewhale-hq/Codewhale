@@ -746,6 +746,7 @@ Per-server settings:
 - `lazy` (bool, optional, default `false`): keep this server unstarted until a turn, tool call or `/mcp retry` asks for it. Without it, the server connects at session start. Plugin manifests have no `lazy` field: an enabled plugin's servers connect at session start, and disabling the plugin stops them.
 - `enabled_tools` (array, optional): allowlist of tool names for this server.
 - `disabled_tools` (array, optional): denylist applied after `enabled_tools`.
+- `always_allow_tools` (optional array): Exact tool names the person allows across workspaces on this computer. Set these in the global server configuration. Off takes precedence. Computer Use consent and scripts still require the person’s approval.
 - `url` (string, optional): Streamable HTTP endpoint for a remote MCP server.
 - `allow_private_network` (boolean, default false): operator opt-in for private DNS addresses on this configured origin; ignored for model-added servers.
 - `transport` (string, optional): set to `"sse"` for legacy SSE endpoints.

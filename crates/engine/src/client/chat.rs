@@ -7984,7 +7984,10 @@ mod google_thought_signature_tests {
                     client.create_message_stream(request).await.map(|_| ())
                 } else {
                     client
-                        .create_message_without_response_cache(request)
+                        .create_message_without_response_cache(
+                            request,
+                            crate::llm_client::RequestRetryObservation::isolated(),
+                        )
                         .await
                         .map(|_| ())
                 };

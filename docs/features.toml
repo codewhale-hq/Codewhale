@@ -151,6 +151,16 @@ docs = "docs/MCP.md"
 owner = "crates/mcp"
 
 [[feature]]
+id = "mcp-tool-approval"
+name = "MCP tool approval rules"
+summary = "Global per-tool Always, Ask and Off rules stay bound to the current server and preserve required consent."
+status = "experimental"
+surfaces = { tui = "partial", api = "preview" }
+since = "unreleased"
+docs = "docs/MCP.md"
+owner = "crates/engine/src/core/engine/tool_preparation.rs"
+
+[[feature]]
 id = "exec-policy"
 name = "Execution policy"
 summary = "Decides allow, ask or deny for each tool call from layered permission rules."
@@ -560,12 +570,22 @@ summary = "Local API: replay-safe thread creation, events, approvals, project tr
 status = "stable"
 surfaces = { api = "stable" }
 docs = "docs/RUNTIME_API.md"
-owner = "crates/tui/src/runtime_api.rs"
+owner = "crates/app-server/src/runtime_api.rs"
+
+[[feature]]
+id = "runtime-watch-events"
+name = "Attested watch events"
+summary = "Master-bearer watch turns retain typed non-person provenance, exact replay and read-only operation recovery."
+status = "experimental"
+surfaces = { api = "preview" }
+since = "unreleased"
+docs = "docs/RUNTIME_API.md"
+owner = "crates/app-server/src/runtime_api.rs"
 
 [[feature]]
 id = "compatibility-tool-free-turns"
 name = "Compatibility turn admission"
-summary = "Compatibility transports require explicit tool-free turns; interactive clients use the full HTTP/SSE API."
+summary = "Initialized local controls use the held Runtime for explicit tool-free turns, loaded-thread paging and canonical names; interactive clients use HTTP/SSE."
 status = "stable"
 surfaces = { api = "stable" }
 since = "0.10.2"
@@ -580,7 +600,7 @@ status = "stable"
 surfaces = { api = "stable" }
 since = "0.10.2"
 docs = "docs/RUNTIME_API.md#put-v1providersidkey--write-only-credential"
-owner = "crates/tui/src/runtime_api/secrets.rs"
+owner = "crates/app-server/src/runtime_api/secrets.rs"
 
 [[feature]]
 id = "headless-exec"
@@ -589,7 +609,7 @@ summary = "codewhale exec runs one headless turn from a script and streams JSON.
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/RUNTIME_API.md"
-owner = "crates/tui/src/exec_agent.rs"
+owner = "crates/app-server/src/exec_agent.rs"
 
 [[feature]]
 id = "github-review"
@@ -609,7 +629,7 @@ summary = "codewhale web opens the embedded browser client on 127.0.0.1 over the
 status = "stable"
 surfaces = { web = "stable" }
 docs = "docs/WEB.md"
-owner = "crates/tui/src/runtime_web"
+owner = "crates/app-server/src/runtime_web"
 
 [[feature]]
 id = "keybindings"
@@ -859,6 +879,16 @@ docs = "web/lib/merch/README.md"
 owner = "web/components/merch-interest.tsx"
 
 [[feature]]
+id = "local-whale-voice"
+name = "Local whale voice"
+summary = "Edit SOUL.md for a local whale and inspect the personality captured for each turn."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/RUNTIME_API.md#local-whale-voice"
+owner = "crates/engine/src/whale_soul.rs"
+
+[[feature]]
 id = "profile-constitution"
 name = "Profile constitution"
 summary = "Account preferences are captured per turn and previewed by the Engine."
@@ -935,3 +965,23 @@ status = "experimental"
 since = "unreleased"
 surfaces = { tui = "preview" }
 owner = "crates/engine/src/tools/context_archive.rs"
+
+[[feature]]
+id = "usage-statistics"
+name = "Usage statistics"
+summary = "Read-only native usage subtotals and execution diagnostics; missing coverage stays explicit."
+status = "experimental"
+surfaces = { tui = "partial" }
+since = "unreleased"
+docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
+owner = "crates/cli/src/metrics.rs"
+
+[[feature]]
+id = "cache-call-receipts"
+name = "Per-call cache receipts"
+summary = "/cache calls shows bounded native source receipts with frozen prices, selected currency and explicit missing cache telemetry."
+status = "experimental"
+surfaces = { tui = "partial" }
+since = "unreleased"
+docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
+owner = "crates/tui/src/commands/contract/debug_diagnostics.rs"

@@ -1316,6 +1316,7 @@ pub(crate) async fn apply_provider_fallback_switch(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                expected: None,
                 control: app.session_sync_control(),
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.as_ref().clone(),
@@ -1714,6 +1715,32 @@ async fn apply_command_result_inner(
     config: &mut Config,
     result: commands::CommandResult,
 ) -> Result<bool> {
+    if app.pending_fresh_session.is_some()
+        && !matches!(
+            result.action.as_ref(),
+            None | Some(
+                AppAction::Quit
+                    | AppAction::CancelSubAgent { .. }
+                    | AppAction::TaskCancel { .. }
+                    | AppAction::ShellJob(
+                        crate::tui::app::ShellJobAction::Cancel { .. }
+                            | crate::tui::app::ShellJobAction::CancelAll
+                    )
+                    | AppAction::RemoteControl(
+                        codewhale_app_server::remote_control::RemoteControlAction::Stop
+                    )
+                    | AppAction::Automation(crate::tui::app::AutomationAction::Pause(_))
+                    | AppAction::SetGoalStatus {
+                        status: GoalStatus::Paused,
+                        clear: false,
+                    }
+                    | AppAction::SetAdvisorEnabled { enabled: false }
+            )
+        )
+    {
+        app.status_message = Some("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string());
+        return Ok(false);
+    }
     // These two actions await participant inference inline on the UI event
     // loop. Waiting behind Runtime Chat's exclusive writer here would
     // deadlock: this same loop must drain the terminal projection/server
@@ -1824,6 +1851,7 @@ async fn apply_command_result_inner(
                 }
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        expected: None,
                         control: app.session_sync_control(),
                         session_id: app.current_session_id.clone(),
                         messages: app.api_messages.as_ref().clone(),
@@ -1858,6 +1886,11 @@ async fn apply_command_result_inner(
                 // transcript is what made those rows read as dead (#4).
                 app.launch.dismiss();
                 app.launch.status = None;
+            }
+            AppAction::NewSession { sync, force } => {
+                if let Err(error) = begin_fresh_session(app, engine_handle, sync, force) {
+                    surface_session_load_failure(app, error);
+                }
             }
             AppAction::SyncSession {
                 session_id,
@@ -1937,6 +1970,7 @@ async fn apply_command_result_inner(
                     .await;
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        expected: None,
                         control: app.session_sync_control(),
                         session_id,
                         messages,
@@ -2055,6 +2089,7 @@ async fn apply_command_result_inner(
                 if !app.api_messages.is_empty() {
                     let _ = engine_handle
                         .send(Op::SyncSession {
+                            expected: None,
                             control: app.session_sync_control(),
                             session_id: app.current_session_id.clone(),
                             messages: app.api_messages.as_ref().clone(),
@@ -3187,10 +3222,10 @@ async fn apply_command_result_inner(
                 });
             }
             AppAction::RemoteControl(action) => match action {
-                crate::remote_control::RemoteControlAction::Start => {
+                codewhale_app_server::remote_control::RemoteControlAction::Start => {
                     start_remote_control_session(app, config);
                 }
-                crate::remote_control::RemoteControlAction::Stop => {
+                codewhale_app_server::remote_control::RemoteControlAction::Stop => {
                     app.remote_control.stop();
                     let status = app.remote_control.status_line();
                     app.sticky_status = None;
@@ -3283,6 +3318,7 @@ async fn apply_command_result_inner(
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
+                                    expected: None,
                                     control: app.session_sync_control(),
                                     session_id: app.current_session_id.clone(),
                                     messages: app.api_messages.as_ref().clone(),
@@ -3640,7 +3676,39 @@ pub(crate) async fn apply_approval_decision(
     engine_handle: &mut EngineHandle,
     config: &mut Config,
     event: ApprovalDecisionEvent,
-) {
+) -> bool {
+    let approved = matches!(
+        event.decision,
+        ReviewDecision::Approved | ReviewDecision::ApprovedForSession
+    );
+    let result = match event.decision {
+        ReviewDecision::Abort
+            if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(
+                &event.tool_id,
+            ) =>
+        {
+            return false;
+        }
+        ReviewDecision::Abort => {
+            engine_handle.cancel();
+            mark_active_turn_cancelled_locally(app);
+            app.status_message = Some(parent_stop_status(app, "Request cancelled"));
+            return false;
+        }
+        ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
+            engine_handle.approve_tool_call(event.tool_id.clone()).await
+        }
+        ReviewDecision::Denied if event.timed_out => {
+            engine_handle
+                .deny_tool_call_timed_out(event.tool_id.clone())
+                .await
+        }
+        ReviewDecision::Denied => engine_handle.deny_tool_call(event.tool_id.clone()).await,
+    };
+    if let Err(error) = result {
+        app.status_message = Some(format!("Approval was not accepted: {error}"));
+        return false;
+    }
     if event.decision == ReviewDecision::ApprovedForSession {
         // Only the lossy grouping key is stored: a session grant is scoped to
         // the command family (e.g. `shell:git status`), never to the whole
@@ -3667,63 +3735,15 @@ pub(crate) async fn apply_approval_decision(
         persist_rules_from_approval(app, config, &event.persistent_rules);
     }
 
-    // A child's card was answered here: its pending entry is done. An Abort
-    // on a child's card only hides it (the entry stays for the footer).
-    if event.decision != ReviewDecision::Abort {
-        crate::tui::pending_requests::resolve(app, &event.tool_id);
+    if event.decision == ReviewDecision::Denied && !event.timed_out {
+        app.approval_session_denied.insert(event.approval_key);
     }
-
-    match event.decision {
-        // A child's card never stops the parent's turn (approvals C1).
-        ReviewDecision::Abort
-            if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(
-                &event.tool_id,
-            ) => {}
-        ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
-            // Mirror mode: clear the shared-approval gate so a late web
-            // decision acks "no longer pending" instead of double-answering.
-            app.remote_control
-                .resolve_pending_approval(&event.tool_id, true);
-            if engine_handle
-                .approve_tool_call(event.tool_id.clone())
-                .await
-                .is_ok()
-            {
-                note_human_decision_delivered(app, &event.tool_id);
-                app.retire_action_notices(Some(&event.tool_id));
-            }
-        }
-        ReviewDecision::Denied => {
-            // Cache the denial so the model retry-loop doesn't re-prompt for
-            // the exact same approval_key (#360). Only the key (per-call
-            // unique) is stored — NOT the tool_name, which would block all
-            // future invocations of the same tool type (#1377).
-            if !event.timed_out {
-                app.approval_session_denied.insert(event.approval_key);
-            }
-            app.remote_control
-                .resolve_pending_approval(&event.tool_id, false);
-            // A bound expiry carries its own outcome (#6101) so the receipt
-            // distinguishes "no answer within the window" from an operator
-            // denial.
-            let denied = if event.timed_out {
-                engine_handle
-                    .deny_tool_call_timed_out(event.tool_id.clone())
-                    .await
-            } else {
-                engine_handle.deny_tool_call(event.tool_id.clone()).await
-            };
-            if denied.is_ok() {
-                note_human_decision_delivered(app, &event.tool_id);
-                app.retire_action_notices(Some(&event.tool_id));
-            }
-        }
-        ReviewDecision::Abort => {
-            engine_handle.cancel();
-            mark_active_turn_cancelled_locally(app);
-            app.status_message = Some(parent_stop_status(app, "Request cancelled"));
-        }
-    }
+    crate::tui::pending_requests::resolve(app, &event.tool_id);
+    app.remote_control
+        .resolve_pending_approval(&event.tool_id, approved);
+    note_human_decision_delivered(app, &event.tool_id);
+    app.retire_action_notices(Some(&event.tool_id));
+    true
 }
 
 pub(crate) fn apply_setup_runtime_preset(
@@ -4904,30 +4924,10 @@ pub(crate) fn apply_loaded_session_with_goal(
     }
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    let restored_parent = codewhale_engine::pricing::CostEstimate {
-        usd: session.metadata.cost.session_cost_usd,
-        cny: session.metadata.cost.session_cost_cny,
-    }
-    .sanitized();
-    let restored_background = codewhale_engine::pricing::CostEstimate {
-        usd: session.metadata.cost.subagent_cost_usd,
-        cny: session.metadata.cost.subagent_cost_cny,
-    }
-    .sanitized();
-    // A restored session has no live billed receipt; the estimate rules the
-    // meter until the next model call reports one.
+    app.session.displayed_cost_high_water = 0.0;
+    app.session.displayed_cost_high_water_cny = 0.0;
     app.last_billed_input_tokens = None;
-    app.session.session_cost = restored_parent.usd;
-    app.session.session_cost_cny = restored_parent.cny;
-    app.session.subagent_cost = restored_background.usd;
-    app.session.subagent_cost_cny = restored_background.cny;
-    app.session.subagent_usage_sources = session
-        .metadata
-        .cost
-        .usage_source_fingerprints
-        .iter()
-        .cloned()
-        .collect();
+    app.restore_cost_snapshot(&session.metadata.cost);
     codewhale_engine::cost_status::restore_usage_source_ledger(
         session
             .metadata
@@ -4938,44 +4938,9 @@ pub(crate) fn apply_loaded_session_with_goal(
         &session.metadata.cost.missing_usage_sources,
         session.metadata.cost.missing_usage_overflowed,
     );
-    // Coverage is restored *with* the money, and the live counters are cleared
-    // first: whatever the previous session in this process priced is not inside
-    // the total being loaded, so carrying those counters over would describe the
-    // wrong total (#4318).
-    app.reset_cost_coverage();
-    app.session.missing_usage_sources = session.metadata.cost.missing_usage_sources.clone();
-    app.session.missing_usage_overflowed = session.metadata.cost.missing_usage_overflowed;
-    app.session.cost_priced_turns = session.metadata.cost.priced_turns;
-    app.session.cost_unpriced_turns = session.metadata.cost.unpriced_turns;
-    app.session.cost_cny_priced_turns = session.metadata.cost.cny_priced_turns;
-    app.session.cost_cny_unpriced_turns = session.metadata.cost.cny_unpriced_turns;
-    app.session.cost_unpriced_reasons = session.metadata.cost.unpriced_reasons.clone();
-    app.session.cost_cny_unpriced_reasons = session.metadata.cost.cny_unpriced_reasons.clone();
-    app.session.cost_unpriced_classes = session.metadata.cost.unpriced_classes.clone();
-    app.session.cost_pricing_provenances = session.metadata.cost.pricing_provenances.clone();
-    app.session.cost_live_pricing_defects = session.metadata.cost.live_pricing_defects.clone();
-    app.session.cost_live_pricing_unusable_defects =
-        session.metadata.cost.live_pricing_unusable_defects.clone();
-    app.session.cost_route_receipts = session.metadata.cost.route_receipts.clone();
-    // A pre-coverage session deserializes its new fields from serde defaults,
-    // which are indistinguishable from "complete total, zero turns". Flag it so
-    // `/cost` says the coverage is unknown rather than claiming completeness,
-    // including for an all-zero record.
-    app.session.cost_coverage_unknown_legacy = session.metadata.cost.coverage_is_legacy_unknown();
-    // Restore the high-water marks from persisted metadata so the
-    // monotonic cost guarantee (#244) survives session restarts.
-    // Take the max with the current totals — old sessions without
-    // persisted high-water fields deserialise to 0.0 and fall back to
-    // the restored total with no regression.
-    let total_restored_usd = session.metadata.cost.total_usd();
-    let total_restored_cny = session.metadata.cost.total_cny();
-    let restored_high_water = codewhale_engine::pricing::CostEstimate {
-        usd: session.metadata.cost.displayed_cost_high_water_usd,
-        cny: session.metadata.cost.displayed_cost_high_water_cny,
-    }
-    .sanitized();
-    app.session.displayed_cost_high_water = restored_high_water.usd.max(total_restored_usd);
-    app.session.displayed_cost_high_water_cny = restored_high_water.cny.max(total_restored_cny);
+    codewhale_engine::cost_status::restore_accounted_usage_sources(
+        &session.metadata.cost.accounted_usage_sources,
+    );
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;

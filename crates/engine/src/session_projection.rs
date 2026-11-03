@@ -14,8 +14,8 @@
 //! * no provider or network call — browsing and resuming must never talk to a
 //!   model, so a projection is computed from already-read metadata only;
 //! * no session-file reads — [`SessionSummary`] is built from
-//!   [`SessionMetadata`], which the manager already extracts from a bounded
-//!   64 KB prefix. A rail that re-read every transcript on every render would
+//!   [`SessionMetadata`], which the manager already extracts with its bounded
+//!   metadata reader. A rail that re-read every transcript on every render would
 //!   be a per-keystroke I/O storm on a 50-session store.
 //!
 //! The consequence is deliberate and worth stating plainly: a summary's
@@ -154,7 +154,7 @@ impl SessionQuery {
 /// One durable session, projected for display.
 ///
 /// Field names deliberately mirror `ThreadSummary` in
-/// [`crate::runtime_api`] (`id`, `title`, `preview`, `model`, `mode`,
+/// the App Server `runtime_api` transport (`id`, `title`, `preview`, `model`, `mode`,
 /// `workspace`, `archived`, `updated_at`) so the embedded dashboard can render
 /// a saved session and a live thread with the same row code, and so a reader
 /// comparing the two payloads sees one vocabulary rather than two.

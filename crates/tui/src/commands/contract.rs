@@ -818,7 +818,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
     }
 
     fn fresh_session(&mut self, force: bool) -> Result<SessionNewReceipt, String> {
-        let mut app = self.host.app.borrow_mut();
+        let app = self.host.app.borrow();
         if !force {
             let mut blockers: Vec<&'static str> = Vec::new();
             if !app.input.trim().is_empty() {
@@ -835,29 +835,11 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             }
         }
 
+        app.work_state_snapshot().map_err(|_| {
+            "Could not start a new session because Work state is busy; retry in a moment."
+                .to_string()
+        })?;
         let new_id = uuid::Uuid::new_v4().to_string();
-        let queue_transition = crate::tui::ui::prepare_offline_queue_transition(&app, &new_id)?;
-        if !crate::commands::groups::core::reset_conversation_state(&mut app) {
-            return Err(
-                "Could not start a new session because Work state is busy; retry in a moment."
-                    .to_string(),
-            );
-        }
-        crate::tui::ui::install_offline_queue_transition(&mut app, queue_transition);
-        app.clear_input();
-        app.session_artifacts.clear();
-        app.session_context_references.clear();
-        app.tool_evidence.clear();
-        app.set_current_session_id(Some(new_id.clone()));
-        crate::tui::ui::expect_fresh_session(&mut app, &new_id)?;
-        app.current_session_metadata = None;
-        app.session_title =
-            Some(codewhale_engine::session_manager::DEFAULT_SESSION_TITLE.to_string());
-        // A new session has no tab/window title override yet; the `title`
-        // config default still applies.
-        app.window_title = None;
-        app.composer_color = None;
-        app.scroll_to_bottom();
         let mode = to_command_mode(app.mode);
         Ok(SessionNewReceipt {
             truncated_id: codewhale_engine::session_manager::truncate_id(&new_id).to_string(),
@@ -7293,9 +7275,12 @@ mod tests {
             let mut bundle = app.command_contexts();
             let mut parts = bundle.parts();
             let facet = parts.lifecycle.as_deref_mut().expect("lifecycle slot");
-            let ok = facet.fresh_session(true).expect("force discards draft");
-            assert_ne!(app.current_session_id.as_deref(), Some("old-session"));
-            assert!(app.input.is_empty());
+            let ok = facet
+                .fresh_session(true)
+                .expect("force prepares a new session");
+            assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
+            assert_eq!(app.input, "draft text");
+            assert_ne!(ok.sync.session_id.as_deref(), Some("old-session"));
             assert!(!ok.truncated_id.is_empty());
             assert!(ok.sync.messages.is_empty());
         }
@@ -8004,6 +7989,13 @@ mod tests {
         let tmpdir = TempDir::new().unwrap();
         let _lock = crate::test_support::lock_test_env();
         let mut app = control_test_app(&tmpdir);
+        app.remote_control
+            .prepare_remote_control_session_journal(
+                &tmpdir.path().join("remote-control-journal"),
+                "control-test-target",
+                "control-test-session",
+            )
+            .expect("durable remote-control journal");
         app.remote_control
             .activate_prompt("run-1", "turn-1")
             .unwrap();

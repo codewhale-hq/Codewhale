@@ -47,6 +47,62 @@ did-you-mean. Keys read by any runtime reader are not reported. The warnings do
 not fail the check, and a clean result does not validate every runtime setting's
 value (#6083, #6563).
 
+## Usage and execution statistics
+
+`codewhale stats` is an alias of `codewhale metrics`; both use the same local,
+read-only backend. Use `--json` for the structured `stats` report. For example:
+
+```sh
+codewhale stats --days 7 --models 10 --tools 20 --roles 10
+codewhale metrics --project /path/to/workspace --json
+```
+
+`--days N` accepts a positive number of days and conflicts with `--since`.
+`--since 24h` and the existing duration syntax remain available. `--models N`,
+`--tools N` and `--roles N` select the top positive N rows by known tokens,
+identified tool executions and recorded Fleet tasks respectively. These limits
+only shorten the display; they do not remove stored receipts.
+
+The report separates saved-document and Runtime views, frozen native-source
+money and token subtotals by actual model, retained tool-result history
+estimates and outcomes, completed compaction observations, and recorded Fleet
+roles. USD and CNY stay separate. A cumulative correction replaces its proven
+predecessor; copied Session/Runtime receipts and inherited Runtime fork rows
+are not added as new provider work. Conflicting source versions are shown
+separately and excluded from the subtotal. Saved legacy display totals remain
+visible as document projections without being charged again globally.
+
+Coverage is explicit. A missing quote, usage receipt, tool outcome, output
+shape or recovery link is unknown, not zero. Empty scalar usage from older
+transport records cannot prove a reported zero. Token counts describe known
+reported data; tool history tokens are estimates of retained text, not bytes
+proven to have been replayed on a provider request. Latest prepared-request
+components and source-linked compaction/role economics are unavailable where
+they were not captured. The report does not infer provider invoices or prove
+complete historical coverage.
+
+`--project WORKSPACE` filters current saved/thread/Fleet views. Original source
+workspace is not yet captured, so native money and model subtotals are
+unavailable for that filter; mutable current metadata is not used to assign a
+charge. Older receipt projections without reliable workspace scope are also
+unavailable under this filter. Without it, those legacy receipt views remain
+separate from native subtotals and may overlap one another.
+
+Inspection uses the existing session-size bound (16 MiB per record/frame and
+for each retained query index). Unreadable, linked, oversized or incomplete
+records create visible gaps; an exhausted native index refuses the query
+without evicting evidence. Use a narrower time window where possible. Reading
+statistics does not create a store, repair history, refresh pricing, start a
+model call or retire accounting receipts. Existing state-root overrides remain
+the read boundary.
+
+`/cache calls [count]` shows recent retained native source receipts in the TUI;
+it defaults to 10 and displays at most 50. A source correction updates its row.
+The view keeps frozen USD/CNY estimates and known subtotals separate from missing
+usage or prices; absent or contradictory cache classes show unknown. The header
+counts retained sources, not physical requests or complete historical calls.
+The command does not issue a model request or remove accounting receipts.
+
 ## Constitution, project instructions, and repo authority
 
 Codewhale has several instruction surfaces. They are deliberately separate so a

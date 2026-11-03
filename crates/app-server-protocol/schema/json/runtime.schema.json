@@ -18,6 +18,40 @@
       ],
       "description": "Inline bytes only: neither host paths nor remote URLs confer attachment authority."
     },
+    "ThreadLoadedListParams": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      }
+    },
+    "ThreadSetNameParams": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "name"
+      ]
+    },
     "DynamicToolSpec": {
       "type": "object",
       "properties": {
@@ -191,6 +225,31 @@
       ],
       "additionalProperties": true
     },
+    "ThreadLoadedListResponse": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "nextCursor"
+      ]
+    },
+    "ThreadSetNameResponse": {
+      "type": "object",
+      "additionalProperties": false
+    },
     "RuntimeCapabilities": {
       "type": "object",
       "properties": {
@@ -238,6 +297,10 @@
         "turn_operation_lookup": {
           "type": "boolean",
           "description": "Read-only exact accepted-turn lookup by thread and operation key.",
+          "default": false
+        },
+        "watch_event_turns": {
+          "type": "boolean",
           "default": false
         },
         "structured_review_turns": {
@@ -385,6 +448,7 @@
         "turns",
         "turn_operation_idempotency",
         "turn_operation_lookup",
+        "watch_event_turns",
         "structured_review_turns",
         "structured_review_version",
         "automation_mutation_preconditions",

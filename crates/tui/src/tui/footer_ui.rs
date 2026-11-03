@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::tui::app::App;
-use crate::tui::history::summarize_tool_output;
 use crate::tui::output_rows_cache::hash_str;
 use crate::tui::subagent_routing::{active_fanout_counts, running_agent_count};
+use codewhale_app_server::exec_agent::summarize_tool_output;
 use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 /// Seconds the current turn has gone without observable stream activity.

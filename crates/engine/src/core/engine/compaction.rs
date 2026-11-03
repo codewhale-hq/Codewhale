@@ -35,25 +35,39 @@ pub(super) enum AutoCompactionStep {
 struct EngineCompactionNoticeSink {
     tx: mpsc::Sender<Event>,
     child: Option<Arc<crate::tools::subagent::engine::ChildAuthority>>,
+    origin: Option<crate::cost_status::NativeUsageOrigin>,
 }
 
 impl crate::compaction::CompactionNoticeSink for EngineCompactionNoticeSink {
     fn notice(&self, message: String) {
         let _ = self.tx.try_send(Event::Status { message });
     }
-    fn accounting_origin(&self) -> Option<(crate::cost_status::CostScopeToken, String, String)> {
-        self.child.as_ref().map(|child| child.accounting_origin())
+    fn accounting_origin(&self) -> std::io::Result<Option<crate::cost_status::NativeUsageOrigin>> {
+        if let Some(child) = self.child.as_ref() {
+            return child
+                .runtime
+                .context
+                .accounting_origin
+                .clone()
+                .map(Some)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "child compaction has no admitted accounting origin",
+                    )
+                });
+        }
+        Ok(self.origin.clone())
     }
     fn settled_usage<'a>(
         &'a self,
-        source: &'a str,
-        route: &'a crate::cost_status::EffectiveRouteEnvelope,
-        usage: &'a Usage,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        record: &'a crate::cost_status::RuntimeUsageRecord,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             if let Some(child) = self.child.as_ref() {
-                child.project_settled_response(source, route, usage).await;
+                child.project_settled_response(record).await?;
             }
+            Ok(())
         })
     }
 }
@@ -295,6 +309,13 @@ impl Engine {
         prepared.session_id = Some(self.session.id.clone());
         prepared.notice_sink = Some(std::sync::Arc::new(EngineCompactionNoticeSink {
             tx: self.tx_event.clone(),
+            origin: self
+                .config
+                .compaction
+                .runtime_cost_owner
+                .is_none()
+                .then(|| self.config.runtime_services.accounting_origin.clone())
+                .flatten(),
             child: self
                 .child_host
                 .as_ref()
@@ -326,6 +347,8 @@ impl Engine {
             self.emit_compaction_cancelled(id, false, message).await;
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id,
@@ -364,6 +387,8 @@ impl Engine {
             // operation: hosts waiting on its lifecycle must be released.
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id,
@@ -419,6 +444,8 @@ impl Engine {
                 .await;
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id,
@@ -472,6 +499,8 @@ impl Engine {
             .await;
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id,
@@ -502,6 +531,8 @@ impl Engine {
                         .await;
                         let _ = self
                             .send_event(Event::TurnComplete {
+                                source_accounting: true,
+
                                 turn_id: None,
                                 submission_id: None,
                                 compaction_id,
@@ -589,6 +620,8 @@ impl Engine {
 
         let _ = self
             .send_event(Event::TurnComplete {
+                source_accounting: true,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id,
@@ -1238,7 +1271,11 @@ mod tests {
     #[tokio::test]
     async fn compaction_notice_sink_delivers_a_status_event() {
         let (tx, mut rx) = mpsc::channel(4);
-        let sink = EngineCompactionNoticeSink { tx, child: None };
+        let sink = EngineCompactionNoticeSink {
+            tx,
+            child: None,
+            origin: None,
+        };
         sink.notice("Making room re-encoded 2 inline image(s)".to_string());
         match rx.recv().await {
             Some(Event::Status { message }) => {

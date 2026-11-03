@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "runtimeVersion": "0.10.2",
+  "runtimeVersion": "0.10.3",
   "routes": [
     {
       "id": "anthropic",

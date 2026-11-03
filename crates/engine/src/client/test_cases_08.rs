@@ -257,7 +257,13 @@ async fn orcarouter_live_catalog_and_chat_through_the_provider_path() {
             "English",
             16,
         );
-        match client.create_message_without_response_cache(request).await {
+        match client
+            .create_message_without_response_cache(
+                request,
+                crate::llm_client::RequestRetryObservation::isolated(),
+            )
+            .await
+        {
             Ok(response) => {
                 assert!(
                     !response.content.is_empty(),

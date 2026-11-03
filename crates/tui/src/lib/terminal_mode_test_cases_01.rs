@@ -4,8 +4,8 @@ fn parse_cli(args: &[&str]) -> Cli {
 
 #[test]
 fn worker_command_policy_prompt_that_looks_like_a_flag_parses() {
-    use codewhale_engine::fleet::executor::build_worker_exec_command;
     use codewhale_config::FleetExecConfig;
+    use codewhale_engine::fleet::executor::build_worker_exec_command;
     use codewhale_protocol::fleet::FleetTaskSpec;
 
     let task: FleetTaskSpec = serde_json::from_value(serde_json::json!({
@@ -72,58 +72,6 @@ fn sessions_archive_cli_keeps_legacy_listing_and_export_options() {
 }
 
 #[test]
-fn headless_consultant_authority_overrides_network_allow_and_disables_web_search() {
-    let config = {
-        let __cw_config_init_0_0 = Some(codewhale_config::NetworkPolicyToml {
-            default: "allow".to_string(),
-            audit: false,
-            ..codewhale_config::NetworkPolicyToml::default()
-        });
-        let mut __cw_config_init_0_value: Config = Config::default();
-        __cw_config_init_0_value.network = __cw_config_init_0_0;
-        __cw_config_init_0_value
-    };
-    let authority = codewhale_engine::tools::spec::ToolAuthorityEnvelope {
-        schema_version: 1,
-        owner: "consultant-1".to_string(),
-        authority: codewhale_engine::tools::spec::ToolMutationAuthority::ReadOnly,
-        network_access: Some(false),
-        shell: codewhale_engine::tools::spec::ToolShellAuthority::None,
-        verification: codewhale_engine::tools::spec::ToolVerificationAuthority::None,
-        writable_roots: Vec::new(),
-        writable_files: Vec::new(),
-        coordination_contracts: Vec::new(),
-    }
-    .normalized()
-    .expect("Consultant authority");
-
-    let policy = exec_network_policy(&config, authority.network_access)
-        .expect("explicit network=false always installs a policy");
-    assert_eq!(
-        policy.evaluate("example.com", "web_search"),
-        codewhale_net::network_policy::Decision::Deny,
-        "the permissive user config must not widen Consultant network authority"
-    );
-    let mut features = codewhale_runtime::features::Features::default();
-    features.enable(codewhale_runtime::features::Feature::ShellTool);
-    features.enable(codewhale_runtime::features::Feature::WebSearch);
-    apply_fleet_engine_feature_caps(
-        &mut features,
-        true,
-        authority.network_access,
-        authority.shell,
-    );
-    assert!(!features.enabled(codewhale_runtime::features::Feature::WebSearch));
-    assert!(!features.enabled(codewhale_runtime::features::Feature::ShellTool));
-
-    let worker_policy = exec_network_policy(&config, Some(true)).expect("configured policy");
-    assert_eq!(
-        worker_policy.evaluate("example.com", "web_search"),
-        codewhale_net::network_policy::Decision::Allow,
-        "a network-capable role keeps the configured policy"
-    );
-}
-#[test]
 fn hidden_remote_control_flag_starts_the_interactive_handoff() {
     let cli = parse_cli(&["codewhale-tui", "--remote-control"]);
     assert!(cli.remote_control);
@@ -161,40 +109,6 @@ fn plugin_registry_discovery_is_route_independent_and_read_only() {
             !codewhale_home.join("plugins/state.json").exists(),
             "startup discovery must remain read-only"
         );
-    }
-}
-
-fn custom_exec_config(active: &str) -> Config {
-    let mut custom = std::collections::HashMap::new();
-    for (name, base_url, model) in [
-        (
-            "custom-a",
-            "http://127.0.0.1:18181/v1",
-            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
-        ),
-        ("custom-b", "http://127.0.0.1:18182/v1", "model-b"),
-    ] {
-        custom.insert(
-            name.to_string(),
-            codewhale_runtime::config::ProviderConfig {
-                kind: Some("openai-compatible".to_string()),
-                base_url: Some(base_url.to_string()),
-                model: Some(model.to_string()),
-                api_key: Some("local-test-key".to_string()),
-                ..Default::default()
-            },
-        );
-    }
-    {
-        let __cw_config_init_1_0 = Some(active.to_string());
-        let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
-            custom,
-            ..Default::default()
-        });
-        let mut __cw_config_init_1_value: Config = Default::default();
-        __cw_config_init_1_value.provider = __cw_config_init_1_0;
-        __cw_config_init_1_value.providers = __cw_config_init_1_1;
-        __cw_config_init_1_value
     }
 }
 
@@ -509,8 +423,25 @@ async fn direct_workflow_tool_runs_without_an_operator_model_turn() {
     };
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
     let plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(workspace.path()));
+    let manager = Arc::new(
+        session_manager::SessionManager::new(workspace.path().join("sessions"))
+            .expect("isolated Workflow session store"),
+    );
+    let (_, source, _lease) = admit_cli_saved_operation(
+        Some(manager),
+        uuid::Uuid::new_v4().to_string(),
+        workspace.path().to_path_buf(),
+        route.model.clone(),
+        route.provider.clone(),
+        "Run a model-free Workflow".to_string(),
+    )
+    .await
+    .expect("admitted Workflow invocation");
+    let origin = source
+        .usage_origin(codewhale_engine::cost_status::scope_token())
+        .expect("captured Workflow usage origin");
     let (tool, context) =
-        build_direct_workflow_tool(&config, &route, workspace.path(), event_tx, plugins)
+        build_direct_workflow_tool(&config, &route, workspace.path(), event_tx, plugins, origin)
             .await
             .expect("build direct workflow runtime");
 
@@ -781,190 +712,6 @@ fn selected_fleet_operator_load_error_redacts_paths_excerpts_and_opaque_name() {
     assert!(!message.contains(secret_marker));
     assert!(!message.contains("invalid TOML"));
     assert!(message.chars().count() <= 700, "{message}");
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn explicit_exec_model_routes_to_unique_authenticated_provider_candidate() {
-    let _env_lock = crate::test_support::lock_test_env();
-    let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-    let _openrouter = crate::test_support::EnvVarGuard::remove("OPENROUTER_API_KEY");
-    let config = {
-        let __cw_config_init_11_0 = Some("deepseek".to_string());
-        let __cw_config_init_11_1 =
-            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
-        let mut __cw_config_init_11_value: Config = Default::default();
-        __cw_config_init_11_value.provider = __cw_config_init_11_0;
-        __cw_config_init_11_value.default_text_model = __cw_config_init_11_1;
-        __cw_config_init_11_value
-    };
-
-    let route = resolve_cli_auto_route(
-        &config,
-        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
-        "pong",
-    )
-    .await
-    .expect("explicit GLM should route to the configured Z.ai provider");
-
-    assert_eq!(route.provider.provider, codewhale_config::ProviderKind::Zai);
-    assert_eq!(
-        route.model,
-        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
-    );
-    assert!(!route.auto_model);
-}
-
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-async fn explicit_exec_model_reports_ambiguous_authenticated_provider_candidates() {
-    let _env_lock = crate::test_support::lock_test_env();
-    let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-    let _openrouter = crate::test_support::EnvVarGuard::set("OPENROUTER_API_KEY", "or-key");
-    let config = {
-        let __cw_config_init_12_0 = Some("deepseek".to_string());
-        let __cw_config_init_12_1 =
-            Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
-        let mut __cw_config_init_12_value: Config = Default::default();
-        __cw_config_init_12_value.provider = __cw_config_init_12_0;
-        __cw_config_init_12_value.default_text_model = __cw_config_init_12_1;
-        __cw_config_init_12_value
-    };
-
-    let err = resolve_cli_auto_route(
-        &config,
-        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
-        "pong",
-    )
-    .await
-    .expect_err("ambiguous GLM route should ask for an explicit provider");
-    let message = err.to_string();
-
-    assert!(message.contains("model `GLM-5.2` is available"));
-    assert!(message.contains("openrouter"));
-    assert!(message.contains("zai"));
-    assert!(message.contains("--provider"));
-    assert!(message.contains("/provider"));
-    assert!(message.contains("/model"));
-    assert!(message.contains("/setup"));
-}
-
-#[tokio::test]
-async fn cli_auto_model_honors_a_fixed_reasoning_preference() {
-    let config = {
-        let __cw_config_init_13_0 = Some("vllm".to_string());
-        let __cw_config_init_13_1 = Some("low".to_string());
-        let __cw_config_init_13_2 = Some(codewhale_runtime::config::ProvidersConfig {
-            vllm: codewhale_runtime::config::ProviderConfig {
-                base_url: Some("http://127.0.0.1:18190/v1".to_string()),
-                model: Some("local-auto-model".to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        let mut __cw_config_init_13_value: Config = Default::default();
-        __cw_config_init_13_value.provider = __cw_config_init_13_0;
-        __cw_config_init_13_value.reasoning_effort = __cw_config_init_13_1;
-        __cw_config_init_13_value.providers = __cw_config_init_13_2;
-        __cw_config_init_13_value
-    };
-
-    let route = resolve_cli_auto_route(&config, "auto", "debug a failing test")
-        .await
-        .expect("Auto model route");
-
-    assert!(route.auto_model);
-    assert_eq!(
-        route.reasoning_effort,
-        Some(codewhale_engine::reasoning_preference::ReasoningEffort::Low)
-    );
-    assert!(
-        !route.auto_controls_reasoning,
-        "a fixed saved tier must not be replaced per prompt"
-    );
-}
-
-#[test]
-fn cli_route_execution_config_stamps_routed_model_into_provider_slot() {
-    let mut providers = codewhale_runtime::config::ProvidersConfig::default();
-    providers.deepseek.model = Some("deepseek-v4-pro".to_string());
-    let config = {
-        let __cw_config_init_14_0 = Some("deepseek".to_string());
-        let __cw_config_init_14_1 = Some(providers);
-        let mut __cw_config_init_14_value: Config = Default::default();
-        __cw_config_init_14_value.provider = __cw_config_init_14_0;
-        __cw_config_init_14_value.providers = __cw_config_init_14_1;
-        __cw_config_init_14_value
-    };
-    let route = CliAutoRoute {
-        provider: Config::default()
-            .test_identity_for_kind(codewhale_config::ProviderKind::Deepseek),
-        model: "deepseek-v4-flash".to_string(),
-        reasoning_effort: None,
-        auto_controls_reasoning: true,
-        auto_model: true,
-    };
-
-    let execution_config = config_for_cli_route(&config, &route).expect("admitted execution route");
-
-    assert_eq!(execution_config.default_model(), "deepseek-v4-flash");
-    assert_eq!(
-        execution_config
-            .provider_config_for(
-                &execution_config.test_identity_for_kind(codewhale_config::ProviderKind::Deepseek)
-            )
-            .and_then(|entry| entry.model.as_deref()),
-        Some("deepseek-v4-flash")
-    );
-}
-
-#[test]
-fn cli_route_execution_config_preserves_the_legacy_literal_custom_route() {
-    let _lock = crate::test_support::lock_test_env();
-    let _source = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
-    let _cli_key = crate::test_support::EnvVarGuard::remove("CODEWHALE_CLI_API_KEY");
-    let config = {
-        let __cw_config_init_15_0 = Some("custom".to_string());
-        let __cw_config_init_15_1 = Some("legacy-model".to_string());
-        let mut __cw_config_init_15_value: Config = Default::default();
-        __cw_config_init_15_value.provider = __cw_config_init_15_0;
-        __cw_config_init_15_value.default_text_model = __cw_config_init_15_1;
-        __cw_config_init_15_value
-    }
-    .with_legacy_root(
-        Some("legacy-root-key".to_string()),
-        Some("http://127.0.0.1:18183/v1".to_string()),
-    );
-    let route = CliAutoRoute {
-        provider: config
-            .active_provider_identity()
-            .expect("captured literal root identity"),
-        model: "routed-legacy-model".to_string(),
-        reasoning_effort: None,
-        auto_controls_reasoning: false,
-        auto_model: false,
-    };
-
-    let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
-
-    // The literal route's top-level fields live in `[providers.custom]`
-    // (#6394), and the routed model lands there too.
-    assert!(execution.selects_literal_custom_provider());
-    assert_eq!(execution.provider.as_deref(), Some("custom"));
-    assert_eq!(execution.default_model(), "routed-legacy-model");
-    assert_eq!(
-        execution.active_route_base_url(),
-        "http://127.0.0.1:18183/v1"
-    );
-    assert_eq!(execution.active_route_api_key().unwrap(), "legacy-root-key");
-    for _ in 0..2 {
-        let identity = execution
-            .resolve_provider_identity("custom")
-            .expect("legacy identity remains repeatedly resolvable");
-        assert_eq!(identity.key.as_str(), "custom");
-    }
-    let client = codewhale_engine::client::CodewhaleClient::new(&execution).expect("legacy execution client");
-    assert_eq!(client.base_url(), "http://127.0.0.1:18183/v1");
 }
 
 /// #6510: only a flag that grants tool authority opens a tool surface.
@@ -1521,31 +1268,6 @@ fn exec_model_reads_wait_for_foreign_test_env_overrides_to_restore() {
 }
 
 #[tokio::test]
-async fn forced_exec_route_keeps_custom_provider_when_model_matches_builtin_catalog() {
-    let config = custom_exec_config("custom-a");
-
-    let route = resolve_cli_exec_route(
-        &config,
-        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
-        "audit",
-        true,
-    )
-    .await
-    .expect("forced route");
-    let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
-
-    assert_eq!(
-        route.provider.provider,
-        codewhale_config::ProviderKind::Custom
-    );
-    assert_eq!(
-        route.model,
-        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
-    );
-    assert_eq!(execution.provider.as_deref(), Some("custom-a"));
-}
-
-#[tokio::test]
 async fn no_flag_exec_keeps_configured_named_custom_route_for_matching_builtin_model() {
     let mut config = custom_exec_config("custom-a");
     config
@@ -1577,7 +1299,7 @@ async fn no_flag_exec_keeps_configured_named_custom_route_for_matching_builtin_m
         Some("override-model")
     ));
 
-    let route = resolve_cli_exec_route(&config, &model, "audit", force)
+    let route = resolve_cli_exec_route(&config, &model, "audit", force, None)
         .await
         .expect("no-flag configured route");
     let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
@@ -1611,7 +1333,7 @@ async fn configured_review_default_keeps_named_custom_route_and_exact_receipt() 
         "explicit-review-model"
     );
 
-    let route = resolve_cli_exec_route(&config, &model, "review diff", true)
+    let route = resolve_cli_exec_route(&config, &model, "review diff", true, None)
         .await
         .expect("configured review route");
     let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
@@ -1709,6 +1431,8 @@ fn review_failure_payload_preserves_usage_without_complete_claim() {
     assert_eq!(payload["completed_review_passes"], 1);
     assert_eq!(payload["planned_review_passes"], 2);
     assert_eq!(payload["publication"], "not_attempted");
+    assert_eq!(payload["usage_scope"], "completed_review_passes");
+    assert_eq!(payload["usage_coverage"], "incomplete");
     assert_eq!(payload["usage"]["input_tokens"], 24);
     assert_eq!(payload["usage"]["reasoning_tokens"], 3);
     assert!(payload.get("review").is_none());

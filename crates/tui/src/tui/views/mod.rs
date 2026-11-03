@@ -14,10 +14,12 @@ use unicode_width::UnicodeWidthStr;
 use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 use crate::tui::focus_texture::FocusTextureMode;
-use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
+use crate::tui::history::HistoryCell;
+use crate::tui::history::SubAgentCell;
 use crate::tui::tideline::{SettingApplySemantics, SettingAuthority, SettingFact, UiSnapshot};
 use crate::tui::widgets::agent_card::AgentLifecycle;
 use codewhale_agent_contract::role::FleetRole;
+use codewhale_app_server::exec_agent::summarize_tool_output;
 use codewhale_config::ProviderKind;
 use codewhale_engine::tools::UserInputResponse;
 use codewhale_engine::tools::subagent::{
@@ -1290,9 +1292,9 @@ pub struct ViewTick {
 /// an unrelated approval that happens to be on top.
 fn view_is_approval_for_gate(view: &dyn ModalView, gate: &str) -> bool {
     view.kind() == ModalKind::Approval
-        && view
-            .approval_request_id()
-            .is_some_and(|tool_id| crate::remote_control::projected_approval_id(tool_id) == gate)
+        && view.approval_request_id().is_some_and(|tool_id| {
+            codewhale_app_server::remote_control::projected_approval_id(tool_id) == gate
+        })
 }
 
 impl ViewStack {
@@ -12313,5 +12315,37 @@ context_window = 131072
             dump.contains("Choose:") && dump.contains("Full Access"),
             "the choice list must stay visible at 40x12:\n{dump}"
         );
+    }
+
+    #[test]
+    fn view_gate_matching_never_confuses_two_approval_cards() {
+        use crate::tui::approval::ApprovalRequest;
+        use crate::tui::approval::ApprovalView;
+        use crate::tui::views::ViewStack;
+
+        let request = ApprovalRequest::new(
+            "tool_A",
+            "edit",
+            "Edit A",
+            &serde_json::json!({ "file": "a" }),
+            "approval_key_A",
+        );
+        let card = ApprovalView::new(request);
+        let gate_a = codewhale_app_server::remote_control::projected_approval_id("tool_A");
+        let gate_b = codewhale_app_server::remote_control::projected_approval_id("tool_B");
+
+        let mut stack = ViewStack::new();
+        stack.push(card);
+        assert!(
+            !stack.remove_approval_for_gate(&gate_b),
+            "a different gate must NEVER match this card — the whole point of identity-aware dismissal"
+        );
+        assert!(!stack.remove_approval_for_gate("local_approval_missing"));
+        assert!(!stack.is_empty());
+        assert!(
+            stack.remove_approval_for_gate(&gate_a),
+            "the matching gate must match"
+        );
+        assert!(stack.is_empty());
     }
 }

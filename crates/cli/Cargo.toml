@@ -24,23 +24,24 @@ name = "codewhale"
 path = "src/main.rs"
 
 [dependencies]
-codewhale-account-cli = { path = "../account-cli", version = "0.10.2" }
-codewhale-runtime = { path = "../runtime", version = "0.10.2" }
+codewhale-account-cli = { path = "../account-cli", version = "0.10.3" }
+codewhale-runtime = { path = "../runtime", version = "0.10.3" }
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
-codewhale-tui = { path = "../tui", version = "0.10.2", default-features = false }
-codewhale-engine = { path = "../engine", version = "0.10.2" }
-codewhale-app-server = { path = "../app-server", version = "0.10.2" }
-codewhale-config = { path = "../config", version = "0.10.2" }
-codewhale-lane = { path = "../lane", version = "0.10.2" }
-codewhale-workflow = { path = "../workflow", version = "0.10.2" }
-codewhale-execpolicy = { path = "../execpolicy", version = "0.10.2" }
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-release = { path = "../release", version = "0.10.2" }
-codewhale-secrets = { path = "../secrets", version = "0.10.2" }
-codewhale-state = { path = "../state", version = "0.10.2" }
-codewhale-telemetry = { path = "../telemetry", version = "0.10.2" }
+codewhale-tui = { path = "../tui", version = "0.10.3", default-features = false }
+codewhale-engine = { path = "../engine", version = "0.10.3" }
+codewhale-app-server = { path = "../app-server", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.3" }
+codewhale-lane = { path = "../lane", version = "0.10.3" }
+codewhale-workflow = { path = "../workflow", version = "0.10.3" }
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-release = { path = "../release", version = "0.10.3" }
+codewhale-secrets = { path = "../secrets", version = "0.10.3" }
+codewhale-state = { path = "../state", version = "0.10.3" }
+codewhale-telemetry = { path = "../telemetry", version = "0.10.3" }
+codewhale-util = { path = "../util", version = "0.10.3" }
 chrono.workspace = true
 console = "0.16.3"
 dirs.workspace = true
@@ -59,7 +60,7 @@ tracing.workspace = true
 zeroize = "1.8.2"
 
 [build-dependencies]
-codewhale-build-support = { path = "../build-support", version = "0.10.2" }
+codewhale-build-support = { path = "../build-support", version = "0.10.3" }
 
 # Parent-death cleanup for delegated server children (#3259): on Linux the
 # dispatcher sets PR_SET_PDEATHSIG so the child is signalled if the dispatcher

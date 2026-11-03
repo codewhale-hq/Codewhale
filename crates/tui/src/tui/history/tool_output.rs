@@ -1,5 +1,6 @@
 //! Preserved tool-output rendering and line selection.
 
+use codewhale_app_server::exec_agent::summarize_tool_output;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
@@ -9,9 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 
-use super::constants::{
-    TOOL_OUTPUT_HEAD_LINES, TOOL_OUTPUT_TAIL_LINES, TOOL_TEXT_LIMIT, TRANSCRIPT_RAIL,
-};
+use super::constants::{TOOL_OUTPUT_HEAD_LINES, TOOL_OUTPUT_TAIL_LINES, TRANSCRIPT_RAIL};
 use super::{
     RenderMode, details_affordance_line, looks_like_file_path, render_card_detail_line_single,
     render_card_detail_line_single_styled, tool_value_style, truncate_text,
@@ -126,201 +125,6 @@ pub(crate) fn output_looks_like_diff(output: &str) -> bool {
         }
     }
     false
-}
-
-fn summarize_string_value(text: &str, max_len: usize, count_only: bool) -> String {
-    let trimmed = text.trim();
-    let len = trimmed.chars().count();
-    if count_only || len > max_len {
-        return format!("<{len} chars>");
-    }
-    truncate_text(trimmed, max_len)
-}
-
-fn summarize_inline_value(value: &Value, max_len: usize, count_only: bool) -> String {
-    match value {
-        Value::String(s) => summarize_string_value(s, max_len, count_only),
-        Value::Array(items) => format!("<{} items>", items.len()),
-        Value::Object(map) => format!("<{} keys>", map.len()),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(num) => num.to_string(),
-        Value::Null => "null".to_string(),
-    }
-}
-
-fn is_noisy_tool_arg_key(key: &str) -> bool {
-    matches!(
-        key,
-        "limit"
-            | "max_count"
-            | "max_output_tokens"
-            | "offset"
-            | "page"
-            | "page_size"
-            | "per_page"
-            | "response_length"
-            | "timeout_ms"
-            | "yield_time_ms"
-    )
-}
-
-#[must_use]
-pub fn summarize_tool_args(input: &Value) -> Option<String> {
-    let obj = input.as_object()?;
-    if obj.is_empty() {
-        return None;
-    }
-
-    let mut parts = Vec::new();
-
-    if let Some(value) = obj.get("path") {
-        parts.push(format!(
-            "path: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("command") {
-        parts.push(format!(
-            "command: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("query") {
-        parts.push(format!(
-            "query: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("prompt") {
-        parts.push(format!(
-            "prompt: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("text") {
-        parts.push(format!(
-            "text: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("pattern") {
-        parts.push(format!(
-            "pattern: {}",
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-    if let Some(value) = obj.get("model") {
-        parts.push(format!(
-            "model: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("profile") {
-        parts.push(format!(
-            "profile: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("level") {
-        parts.push(format!(
-            "level: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("file_id") {
-        parts.push(format!(
-            "file_id: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("task_id") {
-        parts.push(format!(
-            "task_id: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("voice_id") {
-        parts.push(format!(
-            "voice_id: {}",
-            summarize_inline_value(value, 40, false)
-        ));
-    }
-    if let Some(value) = obj.get("content") {
-        parts.push(format!(
-            "content: {}",
-            summarize_inline_value(value, 0, true)
-        ));
-    }
-
-    if parts.is_empty()
-        && let Some((key, value)) = obj
-            .iter()
-            .find(|(key, _)| !is_noisy_tool_arg_key(key.as_str()))
-    {
-        return Some(format!(
-            "{}: {}",
-            key,
-            summarize_inline_value(value, 80, false)
-        ));
-    }
-
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(", "))
-    }
-}
-
-#[must_use]
-pub fn summarize_tool_output(output: &str) -> String {
-    if let Ok(json) = serde_json::from_str::<Value>(output) {
-        if let Some(obj) = json.as_object() {
-            if let Some(error) = obj.get("error").or(obj.get("status_msg")) {
-                return format!("Error: {}", summarize_inline_value(error, 120, false));
-            }
-
-            let mut parts = Vec::new();
-
-            if let Some(status) = obj.get("status").and_then(|v| v.as_str()) {
-                parts.push(format!("status: {status}"));
-            }
-            if let Some(message) = obj.get("message").and_then(|v| v.as_str()) {
-                parts.push(truncate_text(message, TOOL_TEXT_LIMIT));
-            }
-            if let Some(task_id) = obj.get("task_id").and_then(|v| v.as_str()) {
-                parts.push(format!("task_id: {task_id}"));
-            }
-            if let Some(file_id) = obj.get("file_id").and_then(|v| v.as_str()) {
-                parts.push(format!("file_id: {file_id}"));
-            }
-            if let Some(url) = obj
-                .get("file_url")
-                .or_else(|| obj.get("url"))
-                .and_then(|v| v.as_str())
-            {
-                parts.push(format!("url: {}", truncate_text(url, 120)));
-            }
-            if let Some(data) = obj.get("data") {
-                parts.push(format!("data: {}", summarize_inline_value(data, 80, true)));
-            }
-
-            if !parts.is_empty() {
-                return parts.join(" | ");
-            }
-
-            if let Some(content) = obj
-                .get("content")
-                .or(obj.get("result"))
-                .or(obj.get("output"))
-            {
-                return summarize_inline_value(content, TOOL_TEXT_LIMIT, false);
-            }
-        }
-
-        return summarize_inline_value(&json, TOOL_TEXT_LIMIT, true);
-    }
-
-    truncate_text(output, TOOL_TEXT_LIMIT)
 }
 
 /// Summary information extracted from an MCP tool output payload.

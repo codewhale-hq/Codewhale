@@ -82,17 +82,15 @@ pub trait CompactionNoticeSink: Send + Sync + std::fmt::Debug {
     /// Deliver one already-rendered, user-visible sentence.
     fn notice(&self, message: String);
     /// Captured dispatch origin for a child; ordinary engines retain the existing billing path.
-    fn accounting_origin(&self) -> Option<(crate::cost_status::CostScopeToken, String, String)> {
-        None
+    fn accounting_origin(&self) -> std::io::Result<Option<crate::cost_status::NativeUsageOrigin>> {
+        Ok(None)
     }
     /// Projection after the existing billing block has settled this exact response once.
     fn settled_usage<'a>(
         &'a self,
-        _source: &'a str,
-        _route: &'a crate::cost_status::EffectiveRouteEnvelope,
-        _usage: &'a Usage,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-        Box::pin(async {})
+        _record: &'a crate::cost_status::RuntimeUsageRecord,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -1990,11 +1988,66 @@ async fn create_summary(
 
         // Capture the session scope before awaiting so a late response cannot
         // accrue into a subsequently loaded/new session.
-        let accounting_origin = notice_sink.and_then(CompactionNoticeSink::accounting_origin);
-        let cost_scope = accounting_origin
-            .as_ref()
-            .map_or_else(crate::cost_status::scope_token, |origin| origin.0);
-        let response = match client.create_message(request).await {
+        let accounting_origin = notice_sink
+            .map(CompactionNoticeSink::accounting_origin)
+            .transpose()?
+            .flatten();
+        let cost_scope = accounting_origin.as_ref().map_or_else(
+            crate::cost_status::scope_token,
+            crate::cost_status::NativeUsageOrigin::scope,
+        );
+        let native_origin = if accounting_origin.is_some() {
+            accounting_origin
+        } else if let Some(owner) = config.runtime_cost_owner.as_deref() {
+            Some(crate::cost_status::NativeUsageOrigin::runtime(
+                cost_scope, owner,
+            )?)
+        } else if let Some(session_id) = prepared.session_id.as_ref() {
+            let session_id = session_id.clone();
+            Some(
+                codewhale_runtime::runtime_control::owner_work(move || {
+                    let manager = crate::session_manager::SessionManager::default_location()?;
+                    Ok(crate::cost_status::NativeUsageOrigin::session(
+                        cost_scope,
+                        manager.sessions_dir().to_path_buf(),
+                        session_id,
+                    ))
+                })
+                .await?,
+            )
+        } else {
+            None
+        };
+        let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            format!("compaction:{}", uuid::Uuid::new_v4()),
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+            native_origin,
+        );
+        let observation = source.observe_route(&cost_route)?;
+        if let Some(record) = source.admit_dispatch(&cost_route).await? {
+            if let Some(sink) = notice_sink {
+                sink.settled_usage(&record).await?;
+            }
+        }
+        let wire = observation.wire_observations.clone();
+        let response = crate::llm_client::observe_request_retries(
+            Some(observation),
+            client.create_message(request),
+        )
+        .await;
+        let record = source.response_record(&cost_route, &response, &wire.drain())?;
+        if record.has_captured_origin() {
+            crate::cost_status::settle_runtime_usage_record(
+                cost_scope,
+                config.runtime_cost_owner.as_deref(),
+                &record,
+            )
+            .await?;
+        }
+        if let Some(sink) = notice_sink {
+            sink.settled_usage(&record).await?;
+        }
+        let response = match response {
             Ok(response) => response,
             // A byte-side size rejection can also read like a length problem
             // (gateway HTML pages carry their own wording); the size ladder
@@ -2078,64 +2131,6 @@ async fn create_summary(
         // Keep the caller's total before any validation or subsequent await.
         // A rejected summary or canceled retry still consumed these tokens.
         crate::core::turn::add_usage_to(invocation_usage, &response.usage);
-
-        let source_id = format!(
-            "compaction:dispatch:{}:response:{}",
-            cost_route
-                .dispatched_at
-                .timestamp_nanos_opt()
-                .unwrap_or_default(),
-            response.id
-        );
-        if let Some((scope, session, agent)) = accounting_origin.as_ref() {
-            if crate::core::engine::turn_loop::usage_has_reported_data(&response.usage) {
-                if let Some(owner) = config.runtime_cost_owner.as_deref() {
-                    crate::cost_status::report_effective_route_for_runtime(
-                        *scope,
-                        Some(owner),
-                        &source_id,
-                        &cost_route,
-                        &response.usage,
-                    );
-                } else {
-                    crate::usage_persistence::report_effective_route_for_interactive_origin(
-                        *scope,
-                        session,
-                        agent,
-                        &source_id,
-                        &cost_route,
-                        &response.usage,
-                    );
-                }
-            } else if let Some(owner) = config.runtime_cost_owner.as_deref() {
-                crate::cost_status::report_unreceipted_provider_success(
-                    *scope,
-                    Some(owner),
-                    &source_id,
-                    &cost_route,
-                );
-            } else {
-                crate::usage_persistence::report_unreceipted_for_interactive_origin(
-                    *scope,
-                    session,
-                    agent,
-                    &source_id,
-                    &cost_route,
-                );
-            }
-        } else {
-            crate::cost_status::report_effective_route_for_runtime(
-                cost_scope,
-                config.runtime_cost_owner.as_deref(),
-                &source_id,
-                &cost_route,
-                &response.usage,
-            );
-        }
-        if let Some(sink) = notice_sink {
-            sink.settled_usage(&source_id, &cost_route, &response.usage)
-                .await;
-        }
 
         // Usage above is already billed; a provider-declared incomplete
         // summary must still fail rather than replace the session history

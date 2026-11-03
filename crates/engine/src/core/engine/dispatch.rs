@@ -278,6 +278,7 @@ pub(super) struct ToolExecutionPlan {
     pub(super) interactive: bool,
     pub(super) approval_required: bool,
     pub(super) approval_description: String,
+    pub(super) mcp_always_binding: Option<u64>,
     pub(super) approval_force_prompt: bool,
     pub(super) supports_parallel: bool,
     pub(super) read_only: bool,

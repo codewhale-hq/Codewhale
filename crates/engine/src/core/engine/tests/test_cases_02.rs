@@ -112,7 +112,7 @@ async fn an_agent_approval_answer_reaches_the_agent_while_the_engine_is_busy() {
         .subagent_manager
         .write()
         .await
-        .register_child_approval("agent_busy", &id, "bash", "held")
+        .register_child_approval("agent_busy", &id, "bash", "held", None)
         .expect("register");
     mock.handle.approve_tool_call(id).await.expect("send");
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
@@ -120,7 +120,7 @@ async fn an_agent_approval_answer_reaches_the_agent_while_the_engine_is_busy() {
         .expect("the waiting agent is answered without the engine")
         .expect("answer");
     assert_eq!(
-        outcome,
+        outcome.outcome,
         crate::tools::subagent::ChildApprovalOutcome::Approved {
             by: crate::approval_log::ApprovalDecider::User
         }
