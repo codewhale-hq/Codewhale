@@ -200,7 +200,7 @@ impl TerminalClipboardContext {
 
 /// Metadata captured for a pasted clipboard image. Used by the composer to
 /// render a status hint like `Pasted 1024x768 image (235KB) → <path>`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PastedImage {
     pub path: PathBuf,
     pub width: u32,
@@ -355,6 +355,10 @@ pub struct ClipboardHandler {
     written_text: Vec<String>,
     #[cfg(test)]
     fail_text_writes: bool,
+    /// A deterministic image stand-in for tests; `None` means the host
+    /// clipboard answers, which tests must never touch.
+    #[cfg(test)]
+    clipboard_image: Option<PastedImage>,
 }
 
 impl ClipboardHandler {
@@ -393,6 +397,8 @@ impl ClipboardHandler {
             written_text: Vec::new(),
             #[cfg(test)]
             fail_text_writes: false,
+            #[cfg(test)]
+            clipboard_image: None,
         }
     }
 
@@ -419,6 +425,13 @@ impl ClipboardHandler {
     }
 
     /// Construct a deterministic unavailable clipboard for command tests.
+    #[cfg(test)]
+    pub(crate) fn with_image_for_test(image: PastedImage) -> Self {
+        let mut handler = Self::for_test(false, false);
+        handler.clipboard_image = Some(image);
+        handler
+    }
+
     #[cfg(test)]
     pub(crate) fn unavailable_for_test(in_ssh_session: bool) -> Self {
         let mut handler = Self::for_test(in_ssh_session, false);
@@ -545,6 +558,44 @@ impl ClipboardHandler {
             .recv_timeout(std::time::Duration::from_millis(500))
             .ok()
             .flatten();
+    }
+
+    /// Read only the image on the clipboard, ignoring any text it also
+    /// carries.
+    ///
+    /// [`Self::read`] prefers text because an ordinary paste should paste what
+    /// the person copied. `/attach` with no path makes the opposite promise,
+    /// and reusing the text-first read there would dump an unrelated
+    /// clipboard into the draft and report success.
+    pub fn read_image(&mut self, workspace: &Path) -> Option<PastedImage> {
+        if !self.terminal_context.permits_native_read() {
+            return None;
+        }
+        // Tests inject a stand-in rather than reaching the host clipboard.
+        #[cfg(test)]
+        {
+            let _ = workspace;
+            self.clipboard_image.clone()
+        }
+        #[cfg(not(test))]
+        {
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
+            {
+                self.ensure_clipboard();
+                if let Some(clipboard) = self.clipboard.as_mut()
+                    && let Ok(image) = clipboard.get_image()
+                    && let Ok(pasted) = save_image_as_png(workspace, &image)
+                {
+                    return Some(pasted);
+                }
+            }
+            let _ = workspace;
+            None
+        }
     }
 
     /// Read the clipboard and return the parsed content.

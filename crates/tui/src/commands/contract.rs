@@ -2610,16 +2610,13 @@ impl CommandMediaContext for MediaAdapter<'_> {
 
     fn attach_clipboard_image(&mut self) -> Result<String, String> {
         let mut app = self.host.app.borrow_mut();
-        // `paste_from_clipboard` owns the whole transport decision (SSH,
-        // native clipboard, image vs text) and leaves its own receipt in the
-        // status line, so this adapter only has to report that receipt.
-        let pasted = app.paste_from_clipboard();
-        let receipt = app.status_message.clone();
-        if pasted {
-            Ok(receipt.unwrap_or_else(|| "Attached the clipboard image".to_string()))
-        } else {
-            Err(receipt.unwrap_or_else(|| "The clipboard holds no image".to_string()))
-        }
+        // Image-only by contract: a clipboard holding text is not an image
+        // and must fail, not paste the text into the draft.
+        app.attach_clipboard_image()?;
+        Ok(app
+            .status_message
+            .clone()
+            .unwrap_or_else(|| "Attached the clipboard image".to_string()))
     }
 }
 

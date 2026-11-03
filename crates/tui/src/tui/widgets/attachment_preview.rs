@@ -3,7 +3,7 @@
 //! Placed between the pending-input preview and the composer, so a pasted
 //! screenshot is visible before it is sent. The picture itself is drawn by
 //! [`crate::tui::image_preview`] as cell-sized half blocks, which every
-//! truecolor terminal can render 鈥?no kitty graphics or sixel required.
+//! truecolor terminal can render - no kitty graphics or sixel required.
 //!
 //! Zero rows while nothing is attached, while the decode is still running, or
 //! when the terminal is in ASCII-safe mode. The transcript therefore never
@@ -54,11 +54,23 @@ impl Renderable for AttachmentPreviewWidget<'_> {
         let Some(thumbnail) = self.app.attachment_preview.get(&self.path) else {
             return;
         };
-        let cols = thumbnail.cols.min(area.width);
-        let rows = thumbnail.rows.min(area.height);
+        // A split pane can be narrower than the thumbnail's natural width.
+        // Decimate the sampled grid instead of dropping the picture: the
+        // larger of the two overflow factors keeps the aspect ratio, so a
+        // narrow dock shows a smaller thumbnail rather than nothing.
+        let step = thumbnail
+            .cols
+            .div_ceil(area.width.max(1))
+            .max(thumbnail.rows.div_ceil(area.height.max(1)))
+            .max(1);
+        let cols = thumbnail.cols / step;
+        let rows = thumbnail.rows / step;
+        if cols == 0 || rows == 0 {
+            return;
+        }
         for row in 0..rows {
             for col in 0..cols {
-                let Some(cell) = thumbnail.cell(col, row) else {
+                let Some(cell) = thumbnail.cell(col * step, row * step) else {
                     continue;
                 };
                 let Some(buffer_cell) = buf.cell_mut((area.x + col, area.y + row)) else {
@@ -84,8 +96,9 @@ impl Renderable for AttachmentPreviewWidget<'_> {
             }
         }
         // The caption row names the file so several screenshots stay
-        // distinguishable when only one is drawn.
-        if area.height > thumbnail.rows {
+        // distinguishable when only one is drawn. Its size is the one on
+        // screen, not the decode grid.
+        if area.height > rows {
             let name = self
                 .path
                 .file_name()
@@ -93,12 +106,12 @@ impl Renderable for AttachmentPreviewWidget<'_> {
                 .unwrap_or("image");
             let label = format!(
                 "{name}  {}x{}",
-                thumbnail.cols.saturating_mul(2),
-                thumbnail.rows.saturating_mul(2)
+                cols.saturating_mul(2) * step,
+                rows.saturating_mul(2) * step
             );
             buf.set_stringn(
                 area.x,
-                area.y + thumbnail.rows,
+                area.y + rows,
                 label,
                 usize::from(area.width),
                 Style::default().fg(palette::TEXT_DIM),
@@ -113,11 +126,18 @@ impl Renderable for AttachmentPreviewWidget<'_> {
         let Some(thumbnail) = self.app.attachment_preview.get(&self.path) else {
             return 0;
         };
-        if thumbnail.cols == 0 || thumbnail.rows == 0 || thumbnail.cols > width {
+        if thumbnail.cols == 0 || thumbnail.rows == 0 {
+            return 0;
+        }
+        // Same decimation the render uses, so the reserved rows match what
+        // is actually painted on a narrow terminal.
+        let step = thumbnail.cols.div_ceil(width).max(1);
+        let rows = thumbnail.rows / step;
+        if rows == 0 {
             return 0;
         }
         // One caption row under the picture.
-        thumbnail.rows.saturating_add(1)
+        rows.saturating_add(1)
     }
 }
 

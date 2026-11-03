@@ -246,7 +246,11 @@ pub(crate) fn handle_bracketed_paste(app: &mut App, text: &str) {
             // paste has already proven the person pressed paste; read the
             // picture ourselves. Windows Terminal sends no event at all in
             // that case, which is why `/attach` with no path also exists.
-            app.paste_from_clipboard();
+            // A terminal-owned SSH paste has no readable clipboard, so it
+            // falls through instead of flashing a hint for an empty copy.
+            if !app.clipboard.requires_terminal_paste() {
+                app.paste_from_clipboard();
+            }
             return;
         }
         app.insert_paste_text(text);

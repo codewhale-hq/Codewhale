@@ -5439,6 +5439,46 @@ fn clipboard_image_paste_keeps_adjacent_text_and_concise_status() {
 }
 
 #[test]
+fn attach_clipboard_image_attaches_the_image_and_nothing_else() {
+    let mut app = App::new(test_options(false), &Config::default());
+    app.clipboard = ClipboardHandler::with_image_for_test(PastedImage {
+        path: PathBuf::from("/tmp/pasted.png"),
+        width: 8,
+        height: 4,
+        byte_len: 2048,
+    });
+
+    let pasted = app.attach_clipboard_image().expect("image attached");
+
+    assert_eq!(pasted.path, PathBuf::from("/tmp/pasted.png"));
+    assert_eq!(
+        app.input,
+        "[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]\n"
+    );
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Attached image: 8x4 PNG (2KB)")
+    );
+}
+
+#[test]
+fn attach_clipboard_image_leaves_a_text_clipboard_alone() {
+    let mut app = App::new(test_options(false), &Config::default());
+    app.input = "keep this draft".to_string();
+    app.cursor_position = app.input.chars().count();
+    // A native-host clipboard with no injected image stands for the case the
+    // adapter must reject: text on the clipboard is not an attachment.
+    app.clipboard = ClipboardHandler::for_test(false, false);
+
+    let error = app
+        .attach_clipboard_image()
+        .expect_err("text is not an image");
+
+    assert!(error.contains("no image"), "{error}");
+    assert_eq!(app.input, "keep this draft");
+}
+
+#[test]
 fn pasted_text_and_image_placeholders_survive_history_and_queue_paths() {
     let mut app = App::new(test_options(false), &Config::default());
     app.insert_paste_text("line 1\r\nline 2");

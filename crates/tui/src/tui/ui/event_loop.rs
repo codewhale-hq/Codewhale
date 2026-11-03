@@ -5667,6 +5667,15 @@ pub(crate) async fn run_event_loop(
 
         app.settle_stale_mcp_boot_prediction();
 
+        // An image preview decoded since the last frame needs a repaint of its
+        // own: the frame that handled the paste was already drawn when the
+        // worker finished, and an idle session may not draw again for a long
+        // time. Polling here, before the draw decision, makes the flag survive
+        // the `needs_redraw = false` that follows every paint.
+        if app.attachment_preview.poll() {
+            app.needs_redraw = true;
+        }
+
         let draw_wait = if app.needs_redraw {
             frame_rate_limiter.time_until_next_draw(now)
         } else {

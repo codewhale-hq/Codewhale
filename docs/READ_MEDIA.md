@@ -26,6 +26,8 @@
   picture is ordinary cell output (`▀` half blocks, top pixel as foreground,
   bottom as background), not a graphics protocol, so it renders on Windows
   Terminal, iTerm2, Terminal.app, GNOME Terminal, Konsole and WezTerm alike.
+  A terminal that reports only 256 or 16 colors - Terminal.app among them -
+  receives a downsampled palette.
   It is skipped in ASCII-safe mode, and it costs no rows while the decode is
   still running.
 - Temporary macOS `NSIRD_screencaptureui` paths are copied into Codewhale's

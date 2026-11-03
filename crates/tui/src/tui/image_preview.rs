@@ -1,10 +1,10 @@
 //! Terminal-cell thumbnails for attached images.
 //!
 //! The composer preview is drawn with ordinary cells, not a graphics
-//! protocol: one cell holds two vertical pixels, `鈻€` with the upper pixel as
+//! protocol: one cell holds two vertical pixels: the upper-half block
 //! foreground and the lower as background. Every truecolor terminal can do
-//! that 鈥?Windows Terminal, iTerm2, Terminal.app, GNOME Terminal, Konsole,
-//! WezTerm 鈥?while kitty graphics and sixel cannot be assumed (and are not
+//! that - Windows Terminal, iTerm2, Terminal.app, GNOME Terminal, Konsole,
+//! WezTerm - while kitty graphics and sixel cannot be assumed (and are not
 //! available at all in Windows Terminal). `pet_watch::graphics` owns the
 //! kitty path for the animation; this module is the portable one.
 //!
@@ -71,10 +71,10 @@ impl Thumbnail {
     }
 }
 
-/// The `(cols, rows)` box an image of `width 脳 height` fills.
+/// The `(cols, rows)` box an image of `width x height` fills.
 ///
 /// A cell is half as wide as it is tall, so `cols` columns and `rows` rows
-/// cover a `cols 脳 2路rows` pixel grid, and `cols / (2路rows)` must equal the
+/// cover a `cols x 2*rows` pixel grid, and `cols / (2*rows)` must equal the
 /// image's own aspect ratio. Reducing one axis and growing the other keeps
 /// that ratio without letterboxing.
 #[must_use]
@@ -104,7 +104,7 @@ pub fn thumbnail_size(width: u32, height: u32, max_cols: u16, max_rows: u16) -> 
     )
 }
 
-/// Fit `image` into `max_cols 脳 max_rows` cells and read every pixel pair.
+/// Fit `image` into `max_cols x max_rows` cells and read every pixel pair.
 #[must_use]
 pub fn thumbnail_from_image(image: &DynamicImage, max_cols: u16, max_rows: u16) -> Thumbnail {
     let (width, height) = image.dimensions();
@@ -136,7 +136,7 @@ pub fn thumbnail_from_image(image: &DynamicImage, max_cols: u16, max_rows: u16) 
 
 /// Fully transparent pixels are absent; anything else is its own RGB. A
 /// half-transparent pixel is composited over the terminal's background by
-/// simply dropping its alpha 鈥?the preview is an identification aid, not a
+/// simply dropping its alpha - the preview is an identification aid, not a
 /// colour-accurate rendition.
 fn opaque_rgb(pixel: [u8; 4]) -> Option<[u8; 3]> {
     (pixel[3] >= 8).then_some([pixel[0], pixel[1], pixel[2]])
@@ -153,7 +153,7 @@ struct Entry {
 #[derive(Debug)]
 pub struct ThumbnailCache {
     entries: HashMap<PathBuf, Entry>,
-    pending: HashMap<PathBuf, (SystemTime, u64)>,
+    pending: std::collections::HashSet<PathBuf>,
     /// The attachment list the cache was last reconciled against, so the
     /// per-frame `track` call compares vectors instead of stating files.
     live: Vec<PathBuf>,
@@ -173,7 +173,7 @@ impl ThumbnailCache {
         let (tx, rx) = channel();
         Self {
             entries: HashMap::new(),
-            pending: HashMap::new(),
+            pending: std::collections::HashSet::new(),
             live: Vec::new(),
             tx,
             rx,
@@ -186,39 +186,44 @@ impl ThumbnailCache {
         self.entries.get(path).map(|entry| &entry.thumbnail)
     }
 
-    /// Ask for `path` to be decoded, unless it is already cached or in
-    /// flight. Returns immediately; the worker holds the decode.
+    /// Ask for `path` to be decoded, unless it is already in flight.
+    ///
+    /// No filesystem call happens here: the stat that proves the file exists,
+    /// fits the budget and has not changed runs on the decode thread. That is
+    /// what keeps this callable from the paint path (#6149).
     pub fn request(&mut self, path: &Path) {
-        if self.pending.contains_key(path) {
+        if !self.pending.insert(path.to_path_buf()) {
             return;
         }
-        let Ok(metadata) = std::fs::metadata(path) else {
-            return;
-        };
-        if !metadata.is_file() || metadata.len() > PREVIEW_SOURCE_LIMIT {
-            return;
-        }
-        let Ok(modified) = metadata.modified() else {
-            return;
-        };
-        let stamp = (modified, metadata.len());
-        if self
-            .entries
-            .get(path)
-            .is_some_and(|entry| entry.stamp == stamp)
-        {
-            return;
-        }
-        self.pending.insert(path.to_path_buf(), stamp);
         let path = path.to_path_buf();
         let tx = self.tx.clone();
         // A fresh thread per decode keeps the frame loop free and dies with
-        // the request; there is never more than one per attached image.
+        // the request; there is never more than one per attached image. The
+        // stat lives inside this closure on purpose: `request` is reached from
+        // the paint path, and the blocking-calls gate only exempts calls that
+        // sit inside the dedicated thread (#6149).
         let _ = std::thread::Builder::new()
             .name("image-preview-decode".to_string())
             .spawn(move || {
-                let thumbnail = decode_thumbnail(&path, PREVIEW_MAX_COLS, PREVIEW_MAX_ROWS);
-                let _ = tx.send((path, stamp, thumbnail));
+                let published = std::fs::metadata(&path).ok().and_then(|metadata| {
+                    if !metadata.is_file() || metadata.len() > PREVIEW_SOURCE_LIMIT {
+                        return None;
+                    }
+                    let stamp = (metadata.modified().ok()?, metadata.len());
+                    let thumbnail = decode_thumbnail(&path)?;
+                    Some((stamp, thumbnail))
+                });
+                match published {
+                    Some((stamp, thumbnail)) => {
+                        let _ = tx.send((path, stamp, Some(thumbnail)));
+                    }
+                    None => {
+                        // A failed decode still answers, so the pending entry
+                        // clears and a later `track` can retry a file that was
+                        // still being written when it was first requested.
+                        let _ = tx.send((path, (SystemTime::UNIX_EPOCH, 0), None));
+                    }
+                }
             });
     }
 
@@ -240,47 +245,72 @@ impl ThumbnailCache {
     }
 
     /// Collect finished decodes. Called once per frame before painting.
-    pub fn poll(&mut self) {
+    ///
+    /// Returns whether a preview became available, so the caller can request
+    /// the repaint that draws it: the frame that handled the paste was drawn
+    /// before the decode finished, and an idle session may otherwise not draw
+    /// again for a long time.
+    pub fn poll(&mut self) -> bool {
+        let mut published = false;
         loop {
             match self.rx.try_recv() {
                 Ok((path, stamp, thumbnail)) => {
                     // A decode the draft has already dropped (the attachment
                     // was removed while it ran) must not reappear in the
                     // cache: `retain_only` cleared its pending entry.
-                    if self.pending.remove(&path).is_none() {
+                    if !self.pending.remove(&path) {
                         continue;
                     }
-                    if let Some(thumbnail) = thumbnail {
-                        self.entries.insert(path, Entry { stamp, thumbnail });
-                    } else {
-                        self.entries.remove(&path);
+                    match thumbnail {
+                        Some(thumbnail) => {
+                            if self
+                                .entries
+                                .get(&path)
+                                .is_none_or(|entry| entry.stamp != stamp)
+                            {
+                                self.entries.insert(path, Entry { stamp, thumbnail });
+                                published = true;
+                            }
+                        }
+                        None => {
+                            self.entries.remove(&path);
+                        }
                     }
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
+        published
     }
 
     /// Drop previews nothing refers to any more, so a long session does not
     /// retain every image the user ever attached.
     fn retain_only(&mut self, live: &[PathBuf]) {
         self.entries.retain(|path, _| live.contains(path));
-        self.pending.retain(|path, _| live.contains(path));
+        self.pending.retain(|path| live.contains(path));
     }
 }
 
-fn decode_thumbnail(path: &Path, max_cols: u16, max_rows: u16) -> Option<Thumbnail> {
+/// Decode one file into a thumbnail.
+///
+/// Filesystem access happens in the caller's worker closure; this only reads
+/// the bytes the stamp already proved exist.
+fn decode_thumbnail(path: &Path) -> Option<Thumbnail> {
     let reader = ImageReader::open(path).ok()?;
     let mut reader = reader.with_guessed_format().ok()?;
     // The preview never needs the full-resolution decode; bounding it keeps a
-    // huge screenshot from allocating its full pixel buffer for a 40脳16 box.
+    // huge screenshot from allocating its full pixel buffer for a 40x16 box.
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(64 * 1024 * 1024);
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
     reader.limits(limits);
     let image = reader.decode().ok()?;
-    Some(thumbnail_from_image(&image, max_cols, max_rows))
+    Some(thumbnail_from_image(
+        &image,
+        PREVIEW_MAX_COLS,
+        PREVIEW_MAX_ROWS,
+    ))
 }
 
 #[cfg(test)]
@@ -295,7 +325,7 @@ mod tests {
 
     #[test]
     fn wide_image_uses_full_height_and_keeps_its_ratio() {
-        // 1200脳848 is the manga page the feature was requested with. The row
+        // 1200x848 is the manga page the feature was requested with. The row
         // cap binds first, so the width follows from the aspect ratio.
         let (cols, rows) = thumbnail_size(1200, 848, 40, 8);
         assert_eq!(rows, 8);
@@ -386,9 +416,45 @@ mod tests {
         }
         let first = cache.get(&path).unwrap().clone();
         cache.request(&path);
-        cache.poll();
+        // The re-decode is skipped by stamp comparison once it lands, but the
+        // worker still has to finish before the cache can say so.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            cache.poll();
+            if cache.pending.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "re-decode did not settle"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert_eq!(cache.get(&path).unwrap(), &first);
-        assert!(cache.pending.is_empty());
+    }
+
+    #[test]
+    fn poll_reports_a_newly_published_preview_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        image_of(32, 16)
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        let mut cache = ThumbnailCache::new();
+        cache.request(&path);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut published = false;
+        while !published {
+            published = cache.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "decode did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // The second poll has nothing new, so the caller asks for no extra
+        // frame: a permanent `true` would repaint forever.
+        assert!(!cache.poll());
     }
 
     #[test]

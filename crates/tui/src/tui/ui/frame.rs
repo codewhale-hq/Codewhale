@@ -1568,13 +1568,14 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // transcript erased targets registered later by the composer and modals.
     crate::tui::hover_layer::begin_frame();
     app.pet_watch.prepare_frame();
-    // Image previews decode off-thread: collect whatever finished since the
-    // last frame, then reconcile the cache with the images the draft attaches
-    // right now. `track` compares the attachment list, so an unchanged draft
-    // costs one vector comparison on the paint path, not a file stat.
-    app.attachment_preview.poll();
+    // Image previews decode off-thread. `poll` runs at the top of the event
+    // loop, before the draw decision, so a preview that just finished can
+    // request its own frame; this reconciles the cache with the attachment
+    // list, which is a vector comparison when the draft has not changed.
     let attached_images = crate::tui::widgets::attachment_preview::attached_image_paths(app);
-    app.attachment_preview.track(&attached_images);
+    if !attached_images.is_empty() && !crate::tui::color_compat::ascii_safe_enabled() {
+        app.attachment_preview.track(&attached_images);
+    }
     let shell_area = session_shell_area(size);
     // Keep the view stack's focus-context texture prototype (#4823) in step
     // with the parsed setting each frame: a plain enum/theme copy, no
@@ -1767,10 +1768,12 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // up to three compact rows at the release floor.
     let preview_cap = if size.height >= 20 { 4 } else { 3 };
     // The image thumbnail sits between the queued-input preview and the
-    // composer. It only asks for rows the chat area can spare, and never
-    // more than one screen's worth of picture, so a terminal at the release
-    // floor still shows the composer and the transcript.
-    let desired_attachment_preview_height = if !pet_main && mini && !mini_cfg.keep_input {
+    // composer. It competes for the same spare rows as the queued preview,
+    // and the queued preview wins: a draft the person typed is worth more
+    // than a picture they can still see in its own window. On a short
+    // terminal the thumbnail also gives way on its own (a quarter of the
+    // body), so the transcript never collapses to make room for it.
+    let desired_attachment_preview_height = if (mini && !mini_cfg.keep_input) || pet_main {
         0
     } else {
         crate::tui::widgets::attachment_preview::AttachmentPreviewWidget::for_app(app)
@@ -1778,8 +1781,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             .unwrap_or(0)
     };
     let attachment_preview_height = desired_attachment_preview_height
-        .min(auxiliary_budget.saturating_sub(preview_cap))
-        .min(crate::tui::image_preview::PREVIEW_MAX_ROWS.saturating_add(1));
+        .min(body_height / 4)
+        .min(auxiliary_budget.saturating_sub(desired_preview_height.min(preview_cap)));
     let preview_height = desired_preview_height.min(
         auxiliary_budget
             .saturating_sub(attachment_preview_height)
@@ -1996,9 +1999,6 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     {
         let area = body_chunks[attachment_preview_slot];
         widget.render(area, f.buffer_mut());
-        app.viewport.last_attachment_preview_area = Some(area);
-    } else {
-        app.viewport.last_attachment_preview_area = None;
     }
 
     if plugin_cta_height > 0 {
