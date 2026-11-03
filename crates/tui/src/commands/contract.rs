@@ -500,7 +500,10 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         explicit_path: Option<String>,
     ) -> Result<SessionSaveReceipt, String> {
         let mut app = self.host.app.borrow_mut();
-        let explicit_save_path = explicit_path.map(PathBuf::from);
+        let explicit_save_path = explicit_path.map(|path| {
+            app.workspace
+                .join(crate::commands::config_main_host::expand_tilde(&path))
+        });
 
         // Explicit save must report contended Work state instead of falling
         // back to the last automatic snapshot. Reuse the canonical snapshot
@@ -871,11 +874,9 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
 
     fn load_session(&mut self, path: &str) -> Result<PathBuf, String> {
         let app = self.host.app.borrow();
-        let load_path = if path.contains('/') || path.contains('\\') {
-            PathBuf::from(path)
-        } else {
-            app.workspace.join(path)
-        };
+        let load_path = app
+            .workspace
+            .join(crate::commands::config_main_host::expand_tilde(path));
 
         let content = match std::fs::read_to_string(&load_path) {
             Ok(c) => c,

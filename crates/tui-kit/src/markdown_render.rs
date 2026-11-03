@@ -21,6 +21,7 @@
 //! cell and re-runs only the render step on width changes. That makes resize a
 //! re-flow operation rather than a re-parse + re-flow operation.
 
+use std::borrow::Cow;
 #[cfg(any(test, feature = "test-support"))]
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -552,6 +553,24 @@ fn stable_block_prefix_len(blocks: &[Block]) -> usize {
 ///
 /// Extracted from the original loop body unchanged so the batch and streaming
 /// paths cannot drift: both call exactly this.
+fn expand_tabs(line: &str) -> Cow<'_, str> {
+    if !line.contains('\t') {
+        return Cow::Borrowed(line);
+    }
+    let mut expanded = String::with_capacity(line.len());
+    let mut column = 0;
+    for grapheme in line.graphemes(true) {
+        let width = markdown_grapheme_width(grapheme, column);
+        if grapheme == "\t" {
+            expanded.extend(std::iter::repeat_n(' ', width));
+        } else {
+            expanded.push_str(grapheme);
+        }
+        column += width;
+    }
+    Cow::Owned(expanded)
+}
+
 fn push_parsed_line(
     raw_line: &str,
     blocks: &mut Vec<Block>,
@@ -560,6 +579,8 @@ fn push_parsed_line(
     code_block_id: &mut usize,
     in_list: &mut bool,
 ) {
+    let raw_line = expand_tabs(raw_line);
+    let raw_line = raw_line.as_ref();
     let trimmed = raw_line.trim_start();
     let fence_char = if trimmed.starts_with('~') { '~' } else { '`' };
     let fence_len = trimmed.chars().take_while(|c| *c == fence_char).count();
@@ -623,6 +644,12 @@ fn push_parsed_line(
         return;
     }
 
+    if is_horizontal_rule(trimmed) {
+        *in_list = false;
+        blocks.push(Block::HorizontalRule);
+        return;
+    }
+
     if let Some((bullet, text)) = parse_list_item(trimmed) {
         *in_list = true;
         blocks.push(Block::ListItem {
@@ -630,12 +657,6 @@ fn push_parsed_line(
             bullet,
             text: text.to_string(),
         });
-        return;
-    }
-
-    if is_horizontal_rule(trimmed) {
-        *in_list = false;
-        blocks.push(Block::HorizontalRule);
         return;
     }
 
@@ -1009,7 +1030,7 @@ pub fn render_plain_text(content: &str, width: u16, base_style: Style) -> Vec<Li
         if raw_line.is_empty() {
             lines.push(Line::from(""));
         } else {
-            lines.extend(wrap_plain_line(raw_line, width, base_style));
+            lines.extend(wrap_plain_line(&expand_tabs(raw_line), width, base_style));
         }
     }
     if lines.is_empty() {
@@ -2239,18 +2260,18 @@ fn split_table_cells(inner: &str) -> Vec<String> {
 
 fn render_table_row(
     cells: &[String],
-    num_cols: usize,
-    width: usize,
+    widths: &[usize],
     base_style: Style,
 ) -> Vec<RenderedMarkdownLine> {
-    let col_width = table_col_width(num_cols, width);
     let sep_style = Style::default().fg(palette::TEXT_DIM);
 
     // Wrap each cell into one or more visual segments. The row's visual
     // height equals the tallest column. Cells that wrap to fewer segments
     // get blank-padded continuation lines so column separators stay aligned.
-    let mut wrapped: Vec<Vec<RenderedMarkdownLine>> = (0..num_cols)
-        .map(|i| {
+    let mut wrapped: Vec<Vec<RenderedMarkdownLine>> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, &col_width)| {
             let cell = cells.get(i).map_or("", String::as_str);
             let mut tokens = parse_inline_spans(cell, base_style, link_style());
             if tokens.last().is_some_and(|token| token.text == "\n") {
@@ -2300,9 +2321,13 @@ fn render_table_row(
                 links.extend(segment.links.iter().map(|link| link.shifted(column)));
                 spans.append(&mut segment.line.spans);
             }
-            let pad = col_width.saturating_sub(cell_width);
+            let pad = widths[i].saturating_sub(cell_width);
             spans.push(Span::raw(" ".repeat(pad)));
-            let separator = if i + 1 < num_cols { " │ " } else { " │" };
+            let separator = if i + 1 < widths.len() {
+                " │ "
+            } else {
+                " │"
+            };
             column += cell_width + pad + separator.width();
             spans.push(Span::styled(separator, sep_style));
         }
@@ -2317,25 +2342,44 @@ fn render_table_row(
     lines
 }
 
-fn table_col_width(num_cols: usize, term_width: usize) -> usize {
-    let col_width = (term_width.saturating_sub(3 * num_cols + 1)) / num_cols;
-    col_width.max(4)
+fn table_col_widths(blocks: &[Block], num_cols: usize, term_width: usize) -> Vec<usize> {
+    let mut wanted = vec![0; num_cols];
+    for block in blocks {
+        if let Block::TableRow(cells) = block {
+            for (col_wanted, cell) in wanted.iter_mut().zip(cells) {
+                let tokens = parse_inline_spans(cell, Style::default(), Style::default());
+                for row in tokens.split(|token| token.text == "\n") {
+                    let row_width = row.iter().map(|token| token.text.width()).sum();
+                    *col_wanted = (*col_wanted).max(row_width);
+                }
+            }
+        }
+    }
+
+    let mut narrowest_first: Vec<usize> = (0..num_cols).collect();
+    narrowest_first.sort_by_key(|&col| wanted[col]);
+    let mut room = term_width.saturating_sub(3 * num_cols + 1);
+    let mut widths = vec![0; num_cols];
+    for (placed, &col) in narrowest_first.iter().enumerate() {
+        let share = room / (num_cols - placed);
+        widths[col] = wanted[col].min(share.max(4));
+        room = room.saturating_sub(widths[col]);
+    }
+    widths
 }
 
 fn render_table_border(
-    num_cols: usize,
-    col_width: usize,
+    widths: &[usize],
     sep_style: Style,
     left: &str,
     mid: &str,
     right: &str,
 ) -> RenderedMarkdownLine {
-    let fill = "\u{2500}".repeat(col_width);
     let mut s = String::new();
     s.push_str(left);
-    for i in 0..num_cols {
-        s.push_str(&fill);
-        if i + 1 < num_cols {
+    for (i, &col_width) in widths.iter().enumerate() {
+        s.push_str(&"\u{2500}".repeat(col_width));
+        if i + 1 < widths.len() {
             s.push_str(mid);
         } else {
             s.push_str(right);
@@ -2366,14 +2410,13 @@ fn render_table_group(
         .max()
         .unwrap_or(1);
 
-    let col_width = table_col_width(num_cols, width);
+    let widths = table_col_widths(blocks, num_cols, width);
 
     let mut lines = Vec::new();
 
     // Top border
     lines.push(render_table_border(
-        num_cols,
-        col_width,
+        &widths,
         sep_style,
         "\u{250C}\u{2500}",
         "\u{2500}\u{252C}\u{2500}",
@@ -2382,8 +2425,7 @@ fn render_table_group(
 
     let mid_border = || {
         render_table_border(
-            num_cols,
-            col_width,
+            &widths,
             sep_style,
             "\u{251C}\u{2500}",
             "\u{2500}\u{253C}\u{2500}",
@@ -2404,7 +2446,7 @@ fn render_table_group(
                 } else {
                     base_style
                 };
-                lines.extend(render_table_row(cells, num_cols, width, style));
+                lines.extend(render_table_row(cells, &widths, style));
             }
             Block::TableSeparator => {
                 lines.push(mid_border());
@@ -2415,8 +2457,7 @@ fn render_table_group(
 
     // Bottom border
     lines.push(render_table_border(
-        num_cols,
-        col_width,
+        &widths,
         sep_style,
         "\u{2514}\u{2500}",
         "\u{2500}\u{2534}\u{2500}",
