@@ -210,7 +210,18 @@ struct AgentProfilePermissionsToml {
 
 pub fn load_workspace_agent_profiles(workspace: impl AsRef<Path>) -> Result<Vec<AgentProfile>> {
     let workspace = workspace.as_ref();
-    load_agent_profiles_from_dir_in(Some(workspace), workspace.join(WORKSPACE_AGENT_PROFILE_DIR))
+    let (root, dir) = workspace_agent_profile_dir(workspace);
+    load_agent_profiles_from_dir_in(Some(&root), dir)
+}
+
+/// Confinement root and profile directory for a workspace.
+///
+/// A home workspace keeps its `.codewhale` state wherever the user put it, so
+/// the resolved state directory is the root; links below it are still refused.
+fn workspace_agent_profile_dir(workspace: &Path) -> (PathBuf, PathBuf) {
+    let root = codewhale_util::files::workspace_state_dir(workspace);
+    let dir = root.join("agents");
+    (root, dir)
 }
 
 /// Read one profile file. Under a workspace `root` a linked file or linked
@@ -240,8 +251,8 @@ pub fn load_workspace_agent_profiles_tolerant(
     workspace: impl AsRef<Path>,
 ) -> Result<(Vec<AgentProfile>, Vec<AgentProfileLoadIssue>)> {
     let workspace = workspace.as_ref();
-    let dir = workspace.join(WORKSPACE_AGENT_PROFILE_DIR);
-    load_agent_profiles_from_dir_tolerant_in(Some(workspace), dir, ProfileOrigin::Workspace)
+    let (root, dir) = workspace_agent_profile_dir(workspace);
+    load_agent_profiles_from_dir_tolerant_in(Some(&root), dir, ProfileOrigin::Workspace)
 }
 
 pub fn load_agent_profiles_from_dir_tolerant(
@@ -562,8 +573,8 @@ pub fn load_workspace_agent_profile_identities(
     workspace: impl AsRef<Path>,
 ) -> Result<Vec<AgentProfileIdentity>> {
     let workspace = workspace.as_ref();
-    let dir = workspace.join(WORKSPACE_AGENT_PROFILE_DIR);
-    load_agent_profile_identities_from_dir_in(Some(workspace), dir)
+    let (root, dir) = workspace_agent_profile_dir(workspace);
+    load_agent_profile_identities_from_dir_in(Some(&root), dir)
 }
 
 pub fn load_agent_profile_identities_from_dir(

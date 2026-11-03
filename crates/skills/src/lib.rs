@@ -1246,9 +1246,11 @@ fn merge_watched_directories(
     let mut merged = SkillRegistry::default();
     let mut watched = WatchedPaths::default();
     let mut seen_files = HashSet::new();
+    let confined_workspace =
+        workspace.filter(|workspace| !codewhale_util::files::workspace_is_user_home(workspace));
     for dir in dirs {
         watched.push((dir.clone(), watched_path_stamp(&dir)));
-        let confine_to = workspace.filter(|workspace| dir.starts_with(workspace));
+        let confine_to = confined_workspace.filter(|workspace| dir.starts_with(workspace));
         let (registry, dir_watched) = SkillRegistry::discover_watched_confined(&dir, confine_to);
         watched.extend(dir_watched);
         for mut skill in registry.skills {
