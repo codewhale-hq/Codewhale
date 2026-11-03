@@ -177,7 +177,9 @@ enum WorkflowJournalRecord {
 
 #[derive(Debug)]
 struct WorkflowRunJournal {
-    /// Workspace the ledger must stay inside; links below it are refused.
+    /// State directory the ledger must stay inside; links below it are refused.
+    /// A home workspace resolves `~/.codewhale` to its target here, because that
+    /// junction is where the user chose to keep application state.
     root: PathBuf,
     ledger_path: PathBuf,
 }
@@ -187,9 +189,10 @@ impl WorkflowRunJournal {
     /// the first appended record, and only through the confined helpers, so a
     /// linked `.codewhale` never receives an empty `state/` or ledger.
     fn open(workspace: &Path) -> Self {
+        let root = codewhale_util::files::workspace_state_dir(workspace);
         Self {
-            root: workspace.to_path_buf(),
-            ledger_path: workspace.join(CODEWHALE_DIR).join(WORKFLOW_RUNS_FILE),
+            ledger_path: root.join(WORKFLOW_RUNS_FILE),
+            root,
         }
     }
 

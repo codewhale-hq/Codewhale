@@ -12,6 +12,45 @@ pub fn path_is_confined(path: &Path) -> bool {
         })
 }
 
+/// Whether `workspace` is the user's own home directory.
+///
+/// A session rooted at home is not a repository: everything below it is the
+/// user's own global content, which the user may keep behind a link (for
+/// example a junction onto another volume). Workspace confinement exists to
+/// keep repository content from reaching outside itself, so a home workspace is
+/// exempt from it.
+#[must_use]
+pub fn workspace_is_user_home(workspace: &Path) -> bool {
+    codewhale_paths::user_home().is_some_and(|home| same_directory(&home, workspace))
+}
+
+fn same_directory(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// The `.codewhale` state directory that owns `workspace`'s application state.
+///
+/// A home workspace is resolved: `~/.codewhale` may be a junction the user made
+/// to keep state on another volume, and a confinement root must be the real
+/// directory or every path below it is refused. Any other workspace returns its
+/// literal `.codewhale`, which the callers' link walk still refuses when it is
+/// linked — repository content must not reach outside the repository.
+#[must_use]
+pub fn workspace_state_dir(workspace: &Path) -> std::path::PathBuf {
+    let state = workspace.join(".codewhale");
+    if workspace_is_user_home(workspace) {
+        state.canonicalize().unwrap_or(state)
+    } else {
+        state
+    }
+}
+
 /// Refuse `path` when any existing component below `root` is a link. The
 /// walk stops at the first component that does not exist yet, so a path that
 /// is about to be created through a real directory chain passes. This is a
