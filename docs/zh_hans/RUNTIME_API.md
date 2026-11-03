@@ -365,7 +365,8 @@ printf '%s\n' \
 `prompt/*`）以及完整的方法清单；`thread/capabilities`、
 `app/capabilities` 与 `prompt/capabilities` 则按族缩小范围。方法集合由
 `crates/app-server/src/tests.rs` 中的一个漂移测试钉住，因此 SDK 与本地集成客户端
-可以依赖它不会悄悄变化。
+可以依赖它不会悄悄变化。`goal_execution` 为 false 时，始终拒绝执行的兼容目标设置
+不会出现在方法清单中；读取和清除现有目标仍会声明。
 
 ### 兼容执行限制
 
@@ -375,13 +376,14 @@ HTTP 兼容路由、stdio 和 socket 均声明 `interactive_execution: false`、
 `thread/message`、`thread/request` 的 message、`prompt/run`、`prompt/request`
 以及 HTTP `/prompt`、`/thread` 的 message 必须显式提供 `allowed_tools: []`。
 省略、null 或非空列表返回 `interactive_execution_unsupported`，不会创建 Runtime
-线程或启动回合；错误类型的值也会被拒绝。桥在实际回合请求中继续传递空工具列表，
+线程或启动回合；错误类型的值也会被拒绝。捕获的原生 owner 在实际回合请求中继续传递空工具列表，
 只转发助手文本和最终状态；意外的审批或澄清请求会报错并中断该回合。
 工具客户端须迁移到带 bearer 认证的完整 HTTP/SSE API。
 JSON-RPC 返回 `-32602` 和 `data.error: "interactive_execution_unsupported"`；
 HTTP 返回 400，`error.code` 为 `invalid_request`，同一详情位于 `error.data`。
 兼容 `thread/goal/set` 以及 `ThreadRequest::GoalSet` 也在修改目标前拒绝，
-因为设为活动目标会启动后台工作。读取、清除现有目标仍可用；开始目标请用完整 HTTP API。
+因为设为活动目标会启动后台工作。它不会列为可用方法，但旧客户端直接调用仍得到明确拒绝。
+读取、清除现有目标仍可用；开始目标请用完整 HTTP API。
 
 `@codewhale/runtime-sdk` 当前只封装 Fleet 和线程事件读取，未封装线程创建、
 回合开始/引导/中断、审批、澄清或模型发现。完整集成请使用

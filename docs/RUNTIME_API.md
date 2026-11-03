@@ -479,7 +479,9 @@ native frontend directly; they do not make loopback HTTP requests.
 `prompt/*`) and the full method list; `thread/capabilities`,
 `app/capabilities`, and `prompt/capabilities` scope it per family. The method
 set is pinned by a drift test in `crates/app-server/src/tests.rs`, so SDK and
-local integration clients can rely on it not changing silently.
+local integration clients can rely on it not changing silently. The permanently
+refused compatibility goal setter is omitted from discovery while
+`goal_execution` is false; goal reads and clears remain advertised.
 
 ### Daemon socket: `codewhale app-server --socket`
 
@@ -561,8 +563,9 @@ HTTP reports 400 with `error.code: "invalid_request"`, `error.jsonrpc_code: -326
 and the same detail in `error.data`. Compatibility `thread/goal/set` and
 `ThreadRequest::GoalSet` also refuse before changing the goal: setting an active
 goal starts background Engine work. Reading and clearing existing goals remain
-available; starting goals uses the full Runtime HTTP API. The known method
-remains dispatchable so older clients get this actionable refusal. For example:
+available; starting goals uses the full Runtime HTTP API. The known setter
+remains recognized for older clients to get this actionable refusal, but it is
+not advertised as an available method. For example:
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"thread/message","params":{"thread_id":"thr_...","input":"Summarize this conversation","allowed_tools":[]}}
