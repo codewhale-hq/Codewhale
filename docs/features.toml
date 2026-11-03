@@ -595,7 +595,7 @@ owner = "crates/tui/src/runtime_api/secrets.rs"
 [[feature]]
 id = "headless-exec"
 name = "Headless exec"
-summary = "codewhale exec runs one headless turn from a script and streams JSON."
+summary = "codewhale exec streams JSON, warns before finite step limits and reports exhausted work as failure."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/RUNTIME_API.md"

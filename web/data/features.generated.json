@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "c33feb90f7dde2715acd805b7d356a4fa8d4878fa6a241d3e00917f4273a8ca8"
+    "sha256": "58653c698c68e06dcf56455f5207b443d91b71819040dfb7d160dd7b5c292204"
   },
   "features": [
     {
@@ -766,7 +766,7 @@
     {
       "id": "headless-exec",
       "name": "Headless exec",
-      "summary": "codewhale exec runs one headless turn from a script and streams JSON.",
+      "summary": "codewhale exec streams JSON, warns before finite step limits and reports exhausted work as failure.",
       "status": "stable",
       "surfaces": {
         "tui": "stable"

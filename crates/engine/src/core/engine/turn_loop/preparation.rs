@@ -127,6 +127,29 @@ impl Engine {
                 ));
             }
         }
+        // Append once while work is still authorized; the frozen KV prefix stays
+        // unchanged. The existing step guard, not this notice, enforces the limit.
+        if !zero_tool_turn
+            && progress.step_budget_exhaustion_is_terminal
+            && !progress.step_budget_notice_sent
+            && let Some(limit) = turn.step_limit()
+        {
+            let remaining = limit.saturating_sub(turn.step);
+            if (1..=3).contains(&remaining) {
+                progress.step_budget_notice_sent = true;
+                let notice = format!(
+                    "Model-step budget: remaining_requests={remaining}, limit={limit} ({}). Finish the requested work and essential verification within the remaining requests. Tools stop at the limit; a final report cannot continue the work. State any unfinished work plainly.",
+                    turn.budget_source.key_label(),
+                );
+                self.add_session_message(
+                    self.runtime_text_message_with_turn_metadata(
+                        notice,
+                        UserInputProvenance::Runtime,
+                    ),
+                )
+                .await;
+            }
+        }
         if turn.at_max_steps() {
             turn.stop_diagnostics.reason = Some(TurnStopReason::StepBudgetExhausted);
             if self.child_host.is_none()
