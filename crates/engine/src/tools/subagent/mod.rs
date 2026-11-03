@@ -5780,7 +5780,19 @@ impl SubAgentManager {
             execution_workspace,
             existing.isolated_worktree,
         )?;
-        self.register_claim_with_presence(claim, existing.isolated_worktree, &workspace)
+        let coordination_before = self.coordination.clone();
+        let result =
+            self.register_claim_with_presence(claim, existing.isolated_worktree, &workspace);
+        if let Err(error) = &result
+            && self.coordination != coordination_before
+            && let Err(persist_error) = self.persist_state_synchronously()
+        {
+            self.coordination = coordination_before;
+            return Err(format!(
+                "{error}; failed to persist contention receipt: {persist_error}"
+            ));
+        }
+        result
     }
 
     /// Release write claims whose owner is no longer a live claimant.
@@ -18290,14 +18302,17 @@ async fn cancelled_subagent_result(
             latest_checkpoint,
             turn_end_parking,
         );
-    record_agent_progress(
-        runtime,
+    emit_agent_progress(
+        runtime.event_tx.as_ref(),
+        &runtime.context.state_namespace,
         agent_id,
-        AgentProgressEventMeta::new(worker_status).with_step(steps),
         format!(
             "{}: {progress}{progress_suffix}",
             format_step_counter(steps, max_steps)
         ),
+        AgentProgressEventMeta::new(worker_status).with_step(steps),
+        runtime.parent_agent_id.clone(),
+        runtime.spawn_depth,
     );
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
     insert_subagent_full_transcript_handle(

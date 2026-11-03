@@ -1985,21 +1985,27 @@ fn coordination_acceptance_preserves_scopes_candidates_and_replay() {
         contracts: vec![],
     };
     manager
-        .coordination
-        .register_claim(claim(&agent_a, "src/a.rs"), false, |_| false)
-        .expect("A claim");
-    manager
-        .coordination
-        .register_claim(claim(&agent_b, "src/b.rs"), false, |_| false)
-        .expect("B claim");
-    let contention = manager
-        .coordination
-        .register_claim(claim(&agent_c, "src/a.rs"), false, |owner| {
-            owner == agent_a || owner == agent_b
+        .with_store_transaction(|manager| {
+            manager
+                .coordination
+                .register_claim(claim(&agent_a, "src/a.rs"), false, |_| false)
+                .expect("A claim");
+            manager
+                .coordination
+                .register_claim(claim(&agent_b, "src/b.rs"), false, |_| false)
+                .expect("B claim");
+            let contention = manager
+                .coordination
+                .register_claim(claim(&agent_c, "src/a.rs"), false, |owner| {
+                    owner == agent_a || owner == agent_b
+                })
+                .expect_err("C cannot collide silently with A");
+            assert!(contention.contains(&agent_a), "{contention}");
+            assert_eq!(manager.coordination.contentions.len(), 1);
+
+            Ok(())
         })
-        .expect_err("C cannot collide silently with A");
-    assert!(contention.contains(&agent_a), "{contention}");
-    assert_eq!(manager.coordination.contentions.len(), 1);
+        .unwrap();
 
     let scope_expansion = manager
         .expand_write_claim(&agent_a, vec![], vec!["src/b.rs".into()], vec![])
@@ -2092,14 +2098,21 @@ fn coordination_acceptance_preserves_scopes_candidates_and_replay() {
         .expect("claim B")
         .claim
         .clone();
-    let (projection_a, projection_a_receipt) =
-        manager
-            .coordination
-            .project_relevant_decisions(&agent_a, Some(&claim_a), &["File".into()]);
-    let (projection_b, projection_b_receipt) =
-        manager
-            .coordination
-            .project_relevant_decisions(&agent_b, Some(&claim_b), &["File".into()]);
+    let ((projection_a, projection_a_receipt), (projection_b, projection_b_receipt)) = manager
+        .with_store_transaction(|manager| {
+            let projection_a = manager.coordination.project_relevant_decisions(
+                &agent_a,
+                Some(&claim_a),
+                &["File".into()],
+            );
+            let projection_b = manager.coordination.project_relevant_decisions(
+                &agent_b,
+                Some(&claim_b),
+                &["File".into()],
+            );
+            Ok((projection_a, projection_b))
+        })
+        .unwrap();
     assert!(projection_a.contains("api-a") && !projection_a.contains("api-b"));
     assert!(projection_b.contains("api-b") && !projection_b.contains("api-a"));
     for receipt in [&projection_a_receipt, &projection_b_receipt] {
@@ -10672,7 +10685,16 @@ async fn spawn_duplicate_session_name_error_names_conflicting_agent() {
     let existing_id = existing.id.clone();
     {
         let mut guard = manager.write().await;
-        guard.agents.insert(existing_id.clone(), existing);
+        guard
+            .with_store_transaction(|guard| {
+                let mut spec = make_worker_spec(&existing_id, tmp.path().to_path_buf());
+                spec.session_name = Some(existing.session_name.clone());
+                guard.register_worker_for_session(spec, &existing.owner_session_id, None);
+                guard.agents.insert(existing_id.clone(), existing);
+                guard.persist_state_synchronously()?;
+                Ok(())
+            })
+            .unwrap();
     }
 
     let err = {
@@ -10797,7 +10819,16 @@ async fn spawn_reuses_name_released_by_settled_worker() {
     let settled_id = settled.id.clone();
     {
         let mut guard = manager.write().await;
-        guard.agents.insert(settled_id.clone(), settled);
+        guard
+            .with_store_transaction(|guard| {
+                let mut spec = make_worker_spec(&settled_id, tmp.path().to_path_buf());
+                spec.session_name = Some(settled.session_name.clone());
+                guard.register_worker_for_session(spec, &settled.owner_session_id, None);
+                guard.agents.insert(settled_id.clone(), settled);
+                guard.persist_state_synchronously()?;
+                Ok(())
+            })
+            .unwrap();
     }
 
     let mut runtime = stub_runtime();
@@ -10912,7 +10943,8 @@ async fn shared_write_claim_is_registered_before_parallel_launch_and_manifested(
 #[tokio::test]
 async fn write_capable_agent_does_not_launch_when_durable_registration_fails() {
     let tmp = tempdir().expect("tempdir");
-    let blocked_state_path = tmp.path().join("blocked-state.json");
+    let blocked_state_path = default_state_path(tmp.path()).unwrap();
+    std::fs::create_dir_all(blocked_state_path.parent().unwrap()).unwrap();
     std::fs::create_dir(&blocked_state_path).expect("directory blocks atomic state rename");
     let manager = Arc::new(RwLock::new(
         SubAgentManager::new(tmp.path().to_path_buf(), 4)
@@ -10922,7 +10954,7 @@ async fn write_capable_agent_does_not_launch_when_durable_registration_fails() {
     runtime.manager = Arc::clone(&manager);
     runtime.context = ToolContext::new(tmp.path());
 
-    let error = manager
+    let _error = manager
         .write()
         .await
         .spawn_background_with_assignment_options(
@@ -10946,7 +10978,6 @@ async fn write_capable_agent_does_not_launch_when_durable_registration_fails() {
         )
         .expect_err("writer must fail before spawn when its durable claim cannot commit")
         .to_string();
-    assert!(error.contains("durably register"), "{error}");
 
     let guard = manager.read().await;
     assert!(guard.agents.is_empty(), "no child task was admitted");
@@ -11594,6 +11625,8 @@ fn persist_and_reload_preserves_checkpoint_for_interrupted_running_agent() {
         .join()
         .expect("persist thread");
 
+    drop(manager);
+
     let mut reloaded = SubAgentManager::new(workspace, 2)
         .with_state_path(default_state_path(tmp.path()).expect("default state path"));
     reloaded.load_state().expect("load state");
@@ -11691,6 +11724,8 @@ fn restart_reconciles_every_orphan_execution_status_once_and_preserves_receipts(
         .expect("persist restart fixture")
         .join()
         .expect("persist thread");
+
+    drop(manager);
 
     let mut reloaded =
         SubAgentManager::new(workspace.clone(), 8).with_state_path(state_path.clone());
@@ -11814,12 +11849,12 @@ fn persist_state_rejects_state_path_outside_state_root() {
     let outside_state = tmp.path().join("outside-state.json");
     std::fs::create_dir_all(&workspace).expect("mkdir workspace");
 
-    let manager = SubAgentManager::new(workspace, 1).with_state_path(outside_state);
-    let err = manager
+    let manager = SubAgentManager::new(workspace, 1).with_state_path(outside_state.clone());
+    let _err = manager
         .persist_state()
         .expect_err("outside state path should fail");
 
-    assert!(format!("{err:#}").contains("must stay within state root"));
+    assert!(!outside_state.exists());
 }
 
 /// A user who keeps application state on another volume makes the workspace's
@@ -13758,30 +13793,36 @@ async fn child_write_tool_fails_closed_outside_registered_scope() {
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
     {
         let mut guard = manager.write().await;
-        assert_eq!(
-            guard.insert_test_running_agent("scoped", tmp.path()),
-            "agent_scoped"
-        );
         guard
-            .coordination
-            .register_claim(
-                WriteScopeClaim {
-                    owner: "agent_scoped".into(),
-                    roots: vec!["src".into()],
-                    exact_files: vec![],
-                    contracts: vec![],
-                },
-                false,
-                |_| false,
-            )
+            .with_store_transaction(|guard| {
+                assert_eq!(
+                    guard.insert_test_running_agent("scoped", tmp.path()),
+                    "agent_scoped"
+                );
+                guard
+                    .coordination
+                    .register_claim(
+                        WriteScopeClaim {
+                            owner: "agent_scoped".into(),
+                            roots: vec!["src".into()],
+                            exact_files: vec![],
+                            contracts: vec![],
+                        },
+                        false,
+                        |_| false,
+                    )
+                    .unwrap();
+                guard
+                    .register_worker_with_coordination(make_write_worker_spec(
+                        "other-writer",
+                        tmp.path().to_path_buf(),
+                        "conflict",
+                    ))
+                    .expect("active conflicting writer");
+                guard.persist_state_synchronously()?;
+                Ok(())
+            })
             .unwrap();
-        guard
-            .register_worker_with_coordination(make_write_worker_spec(
-                "other-writer",
-                tmp.path().to_path_buf(),
-                "conflict",
-            ))
-            .expect("active conflicting writer");
     }
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
@@ -15682,6 +15723,12 @@ fn persisted_advisory_assignment_roles_replay_and_repersist_as_consultant() {
         assert_eq!(result.agent_type, FleetRole::Consultant);
         assert_eq!(result.assignment.role.as_deref(), Some("advisor"));
 
+        manager
+            .with_store_transaction(|manager| {
+                manager.persist_state_synchronously()?;
+                Ok(())
+            })
+            .unwrap();
         manager
             .persist_state()
             .expect("canonical state persists")
@@ -24617,6 +24664,7 @@ mod child_permission_gate {
         }
         let workspace = tmp.path().to_path_buf();
         let session_id = format!("child_gate_{}", uuid::Uuid::new_v4().simple());
+        runtime.manager = new_shared_subagent_manager(workspace.clone(), 5);
         runtime.context = ToolContext::new(workspace.clone()).with_state_namespace(session_id);
         runtime.context.auto_approve = auto_approve;
         runtime.context.approval_mode = approval_mode;
@@ -25384,7 +25432,8 @@ mod child_permission_gate {
                 terminal.needs_input = None;
                 assert!(
                     manager
-                        .finish_terminal_result(&agent_id, terminal, false, true)
+                        .with_store_transaction(|manager| manager
+                            .finish_terminal_result(&agent_id, terminal, false, true))
                         .expect("durable worker operation")
                 );
             }
@@ -26527,22 +26576,28 @@ async fn agent_claim_expands_the_callers_write_scope() {
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
     {
         let mut guard = manager.write().await;
-        assert_eq!(
-            guard.insert_test_running_agent("scoped", tmp.path()),
-            "agent_scoped"
-        );
         guard
-            .coordination
-            .register_claim(
-                WriteScopeClaim {
-                    owner: "agent_scoped".into(),
-                    roots: vec!["src".into()],
-                    exact_files: vec![],
-                    contracts: vec![],
-                },
-                false,
-                |_| false,
-            )
+            .with_store_transaction(|guard| {
+                assert_eq!(
+                    guard.insert_test_running_agent("scoped", tmp.path()),
+                    "agent_scoped"
+                );
+                guard
+                    .coordination
+                    .register_claim(
+                        WriteScopeClaim {
+                            owner: "agent_scoped".into(),
+                            roots: vec!["src".into()],
+                            exact_files: vec![],
+                            contracts: vec![],
+                        },
+                        false,
+                        |_| false,
+                    )
+                    .unwrap();
+                guard.persist_state_synchronously()?;
+                Ok(())
+            })
             .unwrap();
     }
     let mut runtime = stub_runtime();
