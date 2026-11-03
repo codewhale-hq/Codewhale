@@ -1,0 +1,7 @@
+# Upstream contract provenance
+
+The request-ID, request/notification/error data shapes in src/rpc.rs and initialization data shapes in src/lifecycle.rs are adapted from official openai/codex rust-v0.166.0, immutable commit6ff1e1ca3b30fc8b914720681fcf5fe62e95f856, codex-rs/app-server-protocol/src/rpc.rs and src/protocol/v1.rs. Apache-2.0 LICENSE-APACHE and upstream NOTICE are retained with the original Codewhale MIT license in LICENSE-MIT. The crate combines MIT Codewhale implementation with Apache-2.0 contract adaptations.
+
+Changed files: these adaptations remove Codex-specific derive/export dependencies and replace the absolute-path wrapper with PathBuf on the server-created response, whose producer validates absolute scope. RpcCall normalizes existing optional jsonrpc compatibility input and requires present request IDs to be strings or i64. It preserves notification ID absence. Correlated results and errors require RequestId. The existing compatibility uncorrelated parse-error helper uses a distinct null-ID error record; that response does not satisfy the pinned correlated Codex error envelope and remains explicit phase4 closure work. No private Engine source observation, receipt or accounting producer proof appears in this protocol crate.
+
+The exact pinned wire golden fixtures under tests/pinned are unmodified members of the local stable precomputed schema export. This is a staged owner/lifecycle adoption, not complete wire/parity acceptance.

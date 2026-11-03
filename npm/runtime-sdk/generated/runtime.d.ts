@@ -109,6 +109,26 @@ export type RuntimeImageInput = {
   dataBase64: string
 }
 
+export type ThreadLoadedListParams = {
+  cursor?: (string | null)
+  limit?: (number | null)
+  [key: string]: Json | undefined
+}
+
+export type ThreadLoadedListResponse = {
+  data: string[]
+  nextCursor: (string | null)
+  [key: string]: Json | undefined
+}
+
+export type ThreadSetNameParams = {
+  threadId: string
+  name: string
+  [key: string]: Json | undefined
+}
+
+export type ThreadSetNameResponse = Record<string, never>
+
 export type TurnEnvironmentParams = {
   environment_id: string
   cwd: string

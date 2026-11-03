@@ -1,3 +1,5 @@
+pub mod lifecycle;
+pub mod rpc;
 pub mod runtime;
 
 #[cfg(feature = "schema")]

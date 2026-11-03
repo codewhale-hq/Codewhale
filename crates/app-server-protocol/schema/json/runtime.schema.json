@@ -18,6 +18,40 @@
       ],
       "description": "Inline bytes only: neither host paths nor remote URLs confer attachment authority."
     },
+    "ThreadLoadedListParams": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      }
+    },
+    "ThreadSetNameParams": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "name"
+      ]
+    },
     "DynamicToolSpec": {
       "type": "object",
       "properties": {
@@ -190,6 +224,31 @@
         "payload"
       ],
       "additionalProperties": true
+    },
+    "ThreadLoadedListResponse": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "nextCursor"
+      ]
+    },
+    "ThreadSetNameResponse": {
+      "type": "object",
+      "additionalProperties": false
     },
     "RuntimeCapabilities": {
       "type": "object",

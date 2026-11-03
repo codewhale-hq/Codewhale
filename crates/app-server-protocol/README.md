@@ -1,10 +1,11 @@
 # Codewhale App Server protocol
 
 This crate owns the existing Runtime image, event-envelope, capability and
-dynamic-tool contracts. Engine, App Server, hooks and the SDK consume that one
+dynamic-tool contracts, plus the shared RPC envelope and initialization shapes.
+Engine, App Server, hooks and the SDK consume that one
 family; the former `codewhale_protocol::runtime` module is removed.
 
-The default dependency graph is serde-only. The optional `schema` feature uses
+The runtime contracts reuse serde and the existing workspace Chrono dependency. The optional `schema` feature uses
 the existing locked schemars dependency and shared JSON Schema to TypeScript
 renderer. It selects input/output schema contracts from the actual owner. Runtime output
 fields reflect serialization while accepted input defaults stay optional.
@@ -26,8 +27,11 @@ The command writes `schema/json/runtime.schema.json`,
 generate files or enable schema machinery.
 
 The selected future Codex wire target is official `rust-v0.166.0`, commit
-`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. Its envelope, initialize lifecycle,
-dispatcher, thread/turn contracts, subscriptions and interactions are separate
-remaining adoption slices. This crate does not advertise them as implemented.
+`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. Its four-variant envelope and initialize/initialized lifecycle serve JSONL
+stdio and WebSocket text messages over the private owner channel. The private
+framing retains kernel peer and attach checks, bounded headers and messages, and
+ACP's separate JSON-RPC 2.0 envelope. TCP WebSocket listener, exact thread/turn/item
+dispatch, subscriptions, interactions and their complete generated SDK remain separate required adoption
+slices; legacy compatibility methods do not establish full Codex wire parity.
 The existing Runtime journal and native Engine receipt/store authority remain
 where they are; no serialized observation creates publication authority.
