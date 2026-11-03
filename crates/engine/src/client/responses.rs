@@ -12,7 +12,10 @@ use serde_json::{Value, json};
 
 use crate::llm_client::StreamEventBox;
 use codewhale_config::ProviderKind;
-use codewhale_models::schema_sanitize;
+use codewhale_models::tool_projection::{
+    RouteToolProjection, ToolSchemaProjection, description_with_constraint_note, forced_tool_name,
+    project_tool_schema,
+};
 use codewhale_models::{
     ContentBlock, ContentBlockStart, Delta, MessageDelta, MessageRequest, MessageResponse,
     OpaqueReasoningState, StreamEvent, Tool, Usage,
@@ -38,17 +41,28 @@ pub(super) fn build_responses_body(request: &MessageRequest) -> Value {
     build_responses_body_for_provider(request, ProviderKind::OpenaiCodex, None)
 }
 
+#[cfg(test)]
+pub(super) fn build_responses_body_for_provider(
+    request: &MessageRequest,
+    provider: ProviderKind,
+    reasoning_api: Option<&str>,
+) -> Value {
+    build_responses_wire_body(request, provider, reasoning_api)
+        .expect("responses body builds")
+        .0
+}
+
 /// Build a provider-aware Responses API request body.
 ///
 /// DeepSeek-V4-Flash-0731 implements the Responses wire shape but is stateless
 /// and exposes plain reasoning text rather than OpenAI encrypted summaries.
 /// Keep those exact-route differences here instead of leaking them into the
 /// provider-neutral message model.
-pub(super) fn build_responses_body_for_provider(
+pub(super) fn build_responses_wire_body(
     request: &MessageRequest,
     provider: ProviderKind,
     reasoning_api: Option<&str>,
-) -> Value {
+) -> Result<(Value, Vec<String>)> {
     let is_deepseek = matches!(provider, ProviderKind::Deepseek);
     // Concentrate documents `model`, `input`, `stream`, `max_output_tokens`,
     // `tools` / `tool_choice` / `parallel_tool_calls`, and `reasoning.effort`;
@@ -104,9 +118,45 @@ pub(super) fn build_responses_body_for_provider(
     }
     body["input"] = json!(input);
 
+    let mut omitted_tool_names = Vec::new();
+    let mut omitted_logical_names = Vec::new();
     // Convert tools to Responses function tools.
     if let Some(tools) = request.tools.as_ref() {
-        let responses_tools: Vec<Value> = tools.iter().map(tool_to_responses_function).collect();
+        let mut responses_tools = Vec::new();
+        for tool in tools {
+            match project_tool_schema(
+                RouteToolProjection::RelaxedNonStrict,
+                &tool.input_schema,
+                tool.strict,
+            ) {
+                ToolSchemaProjection::Exact {
+                    parameters,
+                    strict,
+                    constraint_note,
+                }
+                | ToolSchemaProjection::Relaxed {
+                    parameters,
+                    strict,
+                    constraint_note,
+                } => responses_tools.push(responses_function_envelope(
+                    tool,
+                    parameters,
+                    strict,
+                    constraint_note,
+                )),
+                ToolSchemaProjection::Omitted { .. } => {
+                    omitted_logical_names.push(tool.name.clone());
+                    omitted_tool_names.push(to_api_tool_name(&tool.name));
+                }
+            }
+        }
+        if let Some(name) = request.tool_choice.as_ref().and_then(forced_tool_name)
+            && omitted_logical_names.iter().any(|omitted| omitted == name)
+        {
+            anyhow::bail!(
+                "cannot force an omitted tool because its input schema is incompatible with this route"
+            );
+        }
         if !responses_tools.is_empty() {
             body["tools"] = if provider == ProviderKind::OpenaiCodex {
                 json!([{ "type": "namespace", "name": CHATGPT_TOOL_NAMESPACE,
@@ -153,7 +203,7 @@ pub(super) fn build_responses_body_for_provider(
         body["include"] = json!(["reasoning.encrypted_content"]);
     }
 
-    body
+    Ok((body, omitted_tool_names))
 }
 
 impl CodewhaleClient {
@@ -1040,22 +1090,44 @@ pub(super) fn convert_messages_to_responses_input(
     items
 }
 
-/// Convert a CodeWhale tool definition to a Responses API function tool.
-fn tool_to_responses_function(tool: &Tool) -> Value {
-    let mut parameters = tool.input_schema.clone();
-    let constraint_note = schema_sanitize::sanitize_for_responses(&mut parameters);
-    let description = match constraint_note {
-        Some(note) if tool.description.trim().is_empty() => note,
-        Some(note) => format!("{}\n\n{}", tool.description.trim(), note),
-        None => tool.description.clone(),
-    };
-    json!({
+fn responses_function_envelope(
+    tool: &Tool,
+    parameters: Value,
+    strict: Option<bool>,
+    constraint_note: Option<String>,
+) -> Value {
+    let mut value = json!({
         "type": "function",
         "name": to_api_tool_name(&tool.name),
-        "description": description,
+        "description": description_with_constraint_note(&tool.description, constraint_note),
         "parameters": parameters,
-        "strict": false,
-    })
+    });
+    if let Some(strict) = strict {
+        value["strict"] = json!(strict);
+    }
+    value
+}
+
+#[cfg(test)]
+fn tool_to_responses_function(tool: &Tool) -> Value {
+    let (ToolSchemaProjection::Exact {
+        parameters,
+        strict,
+        constraint_note,
+    }
+    | ToolSchemaProjection::Relaxed {
+        parameters,
+        strict,
+        constraint_note,
+    }) = project_tool_schema(
+        RouteToolProjection::RelaxedNonStrict,
+        &tool.input_schema,
+        tool.strict,
+    )
+    else {
+        panic!("responses projection never omits");
+    };
+    responses_function_envelope(tool, parameters, strict, constraint_note)
 }
 
 fn codex_responses_reasoning_effort(raw: &str) -> Option<&'static str> {

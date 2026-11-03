@@ -466,7 +466,7 @@ owner = "crates/engine/src/receipts.rs"
 [[feature]]
 id = "preview-request"
 name = "Request preview"
-summary = "/preview-request shows the redacted outbound request without sending it."
+summary = "/preview-request shows the redacted outbound request and bounded route-omission facts without sending it."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/PREVIEW_REQUEST.md"

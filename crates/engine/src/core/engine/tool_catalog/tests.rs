@@ -534,8 +534,8 @@ fn strict_mode_applies_per_tool_in_mixed_catalog() {
 
     assert!(!prepare_tools_for_strict_mode(&mut tools));
     assert_eq!(tools[0].strict, Some(true));
-    assert_eq!(tools[0].input_schema["required"], json!(["query"]));
-    assert_eq!(tools[0].input_schema["additionalProperties"], false);
+    assert_eq!(tools[0].input_schema["required"], json!([]));
+    assert!(tools[0].input_schema.get("additionalProperties").is_none());
     assert_eq!(tools[1].strict, None);
     assert!(tools[1].input_schema.get("anyOf").is_some());
     assert_eq!(tools[2].strict, None);
@@ -618,6 +618,6 @@ fn strict_mode_marks_compatible_tools_strict() {
 
     assert!(prepare_tools_for_strict_mode(&mut tools));
     assert_eq!(tools[0].strict, Some(true));
-    assert_eq!(tools[0].input_schema["required"], json!(["query"]));
-    assert_eq!(tools[0].input_schema["additionalProperties"], false);
+    assert_eq!(tools[0].input_schema["required"], json!([]));
+    assert!(tools[0].input_schema.get("additionalProperties").is_none());
 }

@@ -24,6 +24,10 @@ use codewhale_runtime::config::{
 
 use crate::llm_client::StreamEventBox;
 use codewhale_config::ProviderKind;
+use codewhale_models::tool_projection::{
+    RouteToolProjection, ToolSchemaProjection, description_with_constraint_note, forced_tool_name,
+    project_tool_schema,
+};
 use codewhale_models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, MessageResponse,
     StreamEvent, SystemPrompt, Tool, ToolCaller, Usage, is_openai_gpt_56_api_model,
@@ -1091,62 +1095,20 @@ fn mirror_minimax_reasoning_details_for_body(body: &mut Value, provider: Provide
     mirror_minimax_reasoning_details_for_messages(messages);
 }
 
-/// Sanitize every Moonshot chat tool in place, dropping only the tools whose
-/// parameters cannot pass MFJS compatibility validation.
-///
-/// Per-tool degradation: a single incompatible tool (e.g. a third-party MCP
-/// server whose schema uses keywords outside the MFJS whitelist) is excluded
-/// from this request with a warning instead of failing the whole request
-/// before transport. The tool name is safe to log — it is already visible in
-/// the UI — while the error's `Display` deliberately carries no schema values.
-///
-/// Returns the names of the dropped tools, in catalog order.
-fn sanitize_moonshot_chat_tools(chat_tools: &mut Vec<Value>) -> Vec<String> {
-    let mut dropped = Vec::new();
-    chat_tools.retain_mut(|tool| {
-        let Some(function) = tool
-            .as_object_mut()
-            .and_then(|tool| tool.get_mut("function"))
-            .and_then(Value::as_object_mut)
-        else {
-            return true;
-        };
-        let Some(parameters) = function.get_mut("parameters") else {
-            return true;
-        };
-        match codewhale_models::schema_sanitize::sanitize_for_kimi_parameters(parameters) {
-            Ok(note) => {
-                if let Some(note) = note {
-                    let description = function
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let description = if description.is_empty() {
-                        note
-                    } else {
-                        format!("{description} {note}")
-                    };
-                    function.insert("description".to_string(), json!(description));
-                }
-                true
-            }
-            Err(error) => {
-                let name = function
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("<unnamed>")
-                    .to_string();
-                tracing::warn!(
-                    tool = %name,
-                    error = %error,
-                    "dropping Moonshot tool from this request: parameters failed safe compatibility validation"
-                );
-                dropped.push(name);
-                false
-            }
-        }
-    });
-    dropped
+fn chat_route_tool_projection(
+    provider: ProviderKind,
+    base_url: &str,
+    strict_tools_disabled: bool,
+) -> RouteToolProjection {
+    let strict_honored =
+        !strict_tools_disabled && deepseek_base_url_supports_strict_tools(base_url);
+    if matches!(provider, ProviderKind::Moonshot) {
+        RouteToolProjection::Mfjs { strict_honored }
+    } else if matches!(provider, ProviderKind::Xai) {
+        RouteToolProjection::Relaxed { strict_honored }
+    } else {
+        RouteToolProjection::Exact { strict_honored }
+    }
 }
 
 /// The final Chat Completions wire payload for one request.
@@ -1189,7 +1151,15 @@ pub fn build_chat_wire_body(
     stream: bool,
     route_limits: Option<RouteLimits>,
 ) -> Result<ChatWireBody> {
-    build_chat_wire_body_with_window(request, provider, base_url, stream, route_limits, None)
+    build_chat_wire_body_with_window(
+        request,
+        provider,
+        base_url,
+        stream,
+        route_limits,
+        None,
+        false,
+    )
 }
 
 pub fn build_chat_wire_body_with_window(
@@ -1199,6 +1169,7 @@ pub fn build_chat_wire_body_with_window(
     stream: bool,
     route_limits: Option<RouteLimits>,
     effective_window: Option<u32>,
+    strict_tools_disabled: bool,
 ) -> Result<ChatWireBody> {
     let messages = PromptBuilder::for_request(request).build_for_provider_and_route(
         provider,
@@ -1238,40 +1209,29 @@ pub fn build_chat_wire_body_with_window(
     }
     let mut omitted_tool_names = Vec::new();
     if let Some(tools) = request.tools.as_ref() {
-        let mut chat_tools: Vec<_> = tools
-            .iter()
-            .map(|tool| tool_to_chat_for_base_url(tool, base_url))
-            .collect();
-        // Moonshot function parameters must end at a plain object root.
-        // Flatten root composition, preserve valid nested anyOf, and drop
-        // only the tools whose parameters cannot pass MFJS validation so one
-        // incompatible tool never sinks the whole request.
-        if matches!(provider, codewhale_config::ProviderKind::Moonshot) {
-            omitted_tool_names = sanitize_moonshot_chat_tools(&mut chat_tools);
-        }
-        // xAI rejects a parameters root that is not a plain object schema
-        // (e.g. apply_patch's root `oneOf` required-groups) with a 400.
-        if matches!(provider, codewhale_config::ProviderKind::Xai) {
-            for t in &mut chat_tools {
-                let Some(function) = t
-                    .as_object_mut()
-                    .and_then(|t| t.get_mut("function"))
-                    .and_then(|f| f.as_object_mut())
-                else {
-                    continue;
-                };
-                let note = function.get_mut("parameters").and_then(|parameters| {
-                    codewhale_models::schema_sanitize::sanitize_for_xai_parameters(parameters)
-                });
-                if let Some(note) = note
-                    && let Some(description) = function
-                        .get_mut("description")
-                        .and_then(|d| d.as_str().map(str::to_string))
-                {
-                    function.insert(
-                        "description".to_string(),
-                        json!(format!("{description} {note}")),
-                    );
+        let route_projection =
+            chat_route_tool_projection(provider, base_url, strict_tools_disabled);
+        let mut chat_tools = Vec::new();
+        for tool in tools {
+            match project_tool_schema(route_projection, &tool.input_schema, tool.strict) {
+                ToolSchemaProjection::Exact {
+                    parameters,
+                    strict,
+                    constraint_note,
+                }
+                | ToolSchemaProjection::Relaxed {
+                    parameters,
+                    strict,
+                    constraint_note,
+                } => chat_tools.push(tool_to_chat_projected(
+                    tool,
+                    parameters,
+                    strict,
+                    constraint_note,
+                )),
+                ToolSchemaProjection::Omitted { .. } => {
+                    let name = to_api_tool_name(&tool.name);
+                    omitted_tool_names.push(name);
                 }
             }
         }
@@ -1282,18 +1242,19 @@ pub fn build_chat_wire_body_with_window(
             body["tools"] = json!(chat_tools);
         }
     }
+    if let Some(name) = request.tool_choice.as_ref().and_then(forced_tool_name)
+        && omitted_tool_names
+            .iter()
+            .any(|omitted| omitted == name || *omitted == to_api_tool_name(name))
+    {
+        bail!(
+            "cannot force an omitted tool because its input schema is incompatible with this route"
+        );
+    }
     if let Some(choice) = request.tool_choice.as_ref()
         && let Some(mapped) = map_tool_choice_for_chat(choice)
         && should_send_tool_choice_for_chat(provider, request.reasoning_effort.as_deref(), &mapped)
     {
-        if matches!(provider, codewhale_config::ProviderKind::Moonshot)
-            && let Some(name) = mapped.pointer("/function/name").and_then(Value::as_str)
-            && omitted_tool_names.iter().any(|omitted| omitted == name)
-        {
-            bail!(
-                "Moonshot cannot force tool '{name}' because its input schema is incompatible with this route"
-            );
-        }
         if body.get("tools").is_some() {
             body["tool_choice"] = mapped;
         }
@@ -2209,7 +2170,7 @@ fn inspect_wire_request(tools: Option<&[Tool]>, messages: &[Value]) -> PromptIns
         }
     }
 
-    if let Some(tool_catalog) = tool_catalog_for_inspect(tools) {
+    if let Some(tool_catalog) = logical_tool_catalog_for_inspect(tools) {
         tool_catalog_hash = sha256_hex(tool_catalog.as_bytes());
         base_static_prefix_parts.push(tool_catalog.clone());
         full_request_prefix_parts.push(tool_catalog.clone());
@@ -2257,9 +2218,15 @@ fn inspect_wire_request(tools: Option<&[Tool]>, messages: &[Value]) -> PromptIns
     }
 }
 
-fn tool_catalog_for_inspect(tools: Option<&[Tool]>) -> Option<String> {
+fn logical_tool_catalog_for_inspect(tools: Option<&[Tool]>) -> Option<String> {
     let tools = tools.filter(|tools| !tools.is_empty())?;
-    serde_json::to_string(&tools.iter().map(tool_to_chat).collect::<Vec<_>>()).ok()
+    serde_json::to_string(
+        &tools
+            .iter()
+            .map(logical_tool_for_inspect)
+            .collect::<Vec<_>>(),
+    )
+    .ok()
 }
 
 fn message_content_for_inspect(message: &Value) -> String {
@@ -3231,16 +3198,21 @@ fn build_chat_messages_with_reasoning(
     out
 }
 
-pub(super) fn tool_to_chat(tool: &Tool) -> Value {
+fn chat_tool_envelope(
+    tool: &Tool,
+    description: String,
+    parameters: Value,
+    strict: Option<bool>,
+) -> Value {
     let mut value = json!({
         "type": "function",
         "function": {
             "name": to_api_tool_name(&tool.name),
-            "description": tool.description,
-            "parameters": tool.input_schema,
+            "description": description,
+            "parameters": parameters,
         }
     });
-    if let Some(strict) = tool.strict
+    if let Some(strict) = strict
         && let Some(function) = value.get_mut("function")
     {
         function["strict"] = json!(strict);
@@ -3248,15 +3220,27 @@ pub(super) fn tool_to_chat(tool: &Tool) -> Value {
     value
 }
 
-pub(super) fn tool_to_chat_for_base_url(tool: &Tool, base_url: &str) -> Value {
-    let mut value = tool_to_chat(tool);
-    if !deepseek_base_url_supports_strict_tools(base_url)
-        && let Some(function) = value.get_mut("function")
-        && let Some(obj) = function.as_object_mut()
-    {
-        obj.remove("strict");
-    }
-    value
+fn logical_tool_for_inspect(tool: &Tool) -> Value {
+    chat_tool_envelope(
+        tool,
+        tool.description.clone(),
+        tool.input_schema.clone(),
+        tool.strict,
+    )
+}
+
+fn tool_to_chat_projected(
+    tool: &Tool,
+    parameters: Value,
+    strict: Option<bool>,
+    constraint_note: Option<String>,
+) -> Value {
+    chat_tool_envelope(
+        tool,
+        description_with_constraint_note(&tool.description, constraint_note),
+        parameters,
+        strict,
+    )
 }
 
 fn deepseek_base_url_supports_strict_tools(base_url: &str) -> bool {

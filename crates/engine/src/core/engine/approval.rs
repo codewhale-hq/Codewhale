@@ -1400,11 +1400,13 @@ mod tests {
         use crate::tools::codemode::EXECUTE_TOOLS_TOOL_NAME;
 
         let tmp = tempfile::tempdir().expect("fixture directory");
-        let tool_context = options
-            .tool_context
-            .unwrap_or_else(|| {
-                ToolContext::new(tmp.path().canonicalize().expect("canonical fixture directory"))
-            });
+        let tool_context = options.tool_context.unwrap_or_else(|| {
+            ToolContext::new(
+                tmp.path()
+                    .canonicalize()
+                    .expect("canonical fixture directory"),
+            )
+        });
         let args = json!({ "code": code }).to_string();
         let mock = Arc::new(MockLlmClient::new(vec![
             canned::tool_call_turn("exec-1", EXECUTE_TOOLS_TOOL_NAME, &args),
