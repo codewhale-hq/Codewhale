@@ -90,7 +90,7 @@ pub(crate) struct RuntimeChatPrompt {
     pub runtime_thread_id: String,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<codewhale_protocol::runtime::RuntimeImageInput>,
+    pub images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     pub model: String,

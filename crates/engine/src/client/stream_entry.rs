@@ -181,77 +181,61 @@ pub fn should_retry_with_h1(policy: StreamHttpPolicy, err_text: &str) -> bool {
         || lower.contains("frame size")
 }
 
-/// Whether an error raised before response headers should retry through the
-/// HTTP/1.1 twin. Prefer typed transport errors, then retain the narrow text
-/// classifier for lower-level H2 errors that reqwest exposes only as prose.
 #[must_use]
 fn should_retry_error_with_h1(policy: StreamHttpPolicy, err: &anyhow::Error) -> bool {
-    if policy != StreamHttpPolicy::DualWithH1Fallback {
-        return false;
-    }
-
-    typed_open_transport_failure(err)
-        .unwrap_or_else(|| should_retry_with_h1(policy, &format!("{err:#}")))
+    policy == StreamHttpPolicy::DualWithH1Fallback && is_stream_open_transport_failure(err)
 }
 
-/// Classify `err` by its types alone, searching the whole context chain: an
-/// adapter's `.context("... request failed")` must not hide the transport
-/// cause (#6711). `Some(true)` for a typed `LlmError::NetworkError`/`Timeout`
-/// or a reqwest connect/timeout/request error that carries no HTTP status;
-/// `Some(false)` for any other typed `LlmError` or reqwest error; `None` when
-/// the chain holds neither type.
-fn typed_open_transport_failure(err: &anyhow::Error) -> Option<bool> {
-    err.chain().find_map(|cause| {
-        if let Some(llm_error) = cause.downcast_ref::<LlmError>() {
-            return Some(matches!(
-                llm_error,
-                LlmError::NetworkError(_) | LlmError::Timeout(_)
-            ));
-        }
-        cause.downcast_ref::<reqwest::Error>().map(|reqwest_error| {
-            reqwest_error.status().is_none()
-                && (reqwest_error.is_connect()
-                    || reqwest_error.is_timeout()
-                    || reqwest_error.is_request())
-        })
-    })
-}
-
-/// Whether a failed stream open is a real transport failure: the request
-/// never received response headers (#6699). Decided by type only: an untyped
-/// error, such as an adapter's `HTTP 500 ...` rejection whose provider body
-/// happens to mention a connection or timeout, is a provider answer and is
-/// never classified as a transport failure here.
 #[must_use]
 pub fn is_stream_open_transport_failure(err: &anyhow::Error) -> bool {
-    typed_open_transport_failure(err).unwrap_or(false)
+    err.chain()
+        .find_map(|cause| {
+            if let Some(error) = cause.downcast_ref::<LlmError>() {
+                return Some(matches!(
+                    error,
+                    LlmError::ConnectError {
+                        transient: true,
+                        ..
+                    }
+                ));
+            }
+            cause.downcast_ref::<reqwest::Error>().map(|error| {
+                matches!(
+                    LlmError::from_reqwest(error),
+                    LlmError::ConnectError {
+                        transient: true,
+                        ..
+                    }
+                )
+            })
+        })
+        .unwrap_or(false)
 }
 
-/// Preserve provider-semantic failures returned by the H1 attempt. Only a
-/// transport failure should be normalized into the shared retryable network
-/// error; otherwise an auth or invalid-request failure could be retried as if
-/// switching protocols had failed.
 fn h1_fallback_error(err: anyhow::Error) -> anyhow::Error {
-    if let Some(llm_error) = err.downcast_ref::<LlmError>()
-        && !matches!(llm_error, LlmError::NetworkError(_) | LlmError::Timeout(_))
-    {
+    if err.downcast_ref::<LlmError>().is_some() {
         return err;
     }
-
-    let detail = format!("{err:#}");
-    if let Some(unreachable) = connect_failure_summary(&err) {
-        return anyhow::Error::new(LlmError::NetworkError(format!("{unreachable}: {detail}")));
+    if let Some(error) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<reqwest::Error>())
+    {
+        let mut classified = LlmError::from_reqwest(error);
+        if let Some(unreachable) = connect_failure_summary(&err)
+            && let LlmError::ConnectError { message, .. } = &mut classified
+        {
+            *message = format!("{unreachable}: {message}");
+        }
+        if has_tls_cause(&err)
+            && let LlmError::ConnectError { message, .. } = &mut classified
+        {
+            message.push_str(" On Windows or proxy networks, try CODEWHALE_FORCE_HTTP1=1 after checking the TLS configuration.");
+        }
+        return anyhow::Error::new(classified);
     }
-    let mut message = format!("SSE stream request failed after HTTP/1.1 fallback: {detail}.");
-    // The HTTP/1.1 hint only helps when the protocol or TLS layer failed; it
-    // is noise for a refused connection or an unknown host.
-    if has_tls_cause(&err) || is_protocol_or_tls_failure(&detail) {
-        message.push_str(
-            " `codewhale doctor` can still pass when non-streaming requests work; \
-             on Windows or proxy networks, try `CODEWHALE_FORCE_HTTP1=1` and rerun `codewhale`.",
-        );
-    }
-    anyhow::Error::new(LlmError::NetworkError(message))
+    anyhow::Error::new(LlmError::NetworkError(format!(
+        "SSE stream request failed: {err:#}"
+    )))
 }
 
 /// `Cannot reach host:port (<why>)` for a failure to open the connection.
@@ -310,17 +294,7 @@ fn connect_failure_summary(err: &anyhow::Error) -> Option<String> {
 }
 
 fn has_tls_cause(err: &anyhow::Error) -> bool {
-    err.chain().any(|mut cause| {
-        // hyper-rustls wraps tokio-rustls's IO error in another IO error;
-        // Error::source skips those inners, so inspect get_ref explicitly.
-        while let Some(inner) = cause
-            .downcast_ref::<std::io::Error>()
-            .and_then(std::io::Error::get_ref)
-        {
-            cause = inner;
-        }
-        cause.is::<rustls::Error>()
-    })
+    crate::llm_client::has_tls_cause(err.as_ref())
 }
 
 fn is_protocol_or_tls_failure(detail: &str) -> bool {
@@ -338,18 +312,6 @@ const COLD_MODEL_HINT: &str = "If this model has not been used recently, the pro
      still be loading it: wait a minute and send the message again, or allow a longer wait with \
      `codewhale config set stream.open_timeout_secs 180` (up to 300).";
 
-/// Open an SSE response through the shared transport policy.
-///
-/// `attempt` builds and sends one wire-specific request on the client
-/// selected for the given policy (via [`client_for_policy`]); everything
-/// transport-shared lives here:
-///
-/// - the response-header wait is bounded by `open_req.open_timeout`;
-/// - a classified transport failure or header stall on the dual client
-///   retries exactly once on the HTTP/1.1 twin;
-/// - a failure on an already H1-pinned request never retries;
-/// - once response headers have been received the seam never retries —
-///   body/stream errors belong to the adapter's decode loop.
 pub async fn open_sse_response<F, Fut>(
     open_req: &StreamOpenRequest,
     attempt: F,
@@ -358,55 +320,28 @@ where
     F: Fn(StreamHttpPolicy) -> Fut,
     Fut: Future<Output = Result<reqwest::Response>>,
 {
-    let fallback_reason = match tokio::time::timeout(
-        open_req.open_timeout,
-        attempt(open_req.policy),
-    )
-    .await
-    {
+    match tokio::time::timeout(open_req.open_timeout, attempt(open_req.policy)).await {
         Ok(Ok(response)) => return Ok(response),
         Ok(Err(err)) => {
             if !should_retry_error_with_h1(open_req.policy, &err) {
-                return Err(err);
+                return Err(h1_fallback_error(err));
             }
-            "transport error before response headers"
         }
-        Err(_elapsed) => {
-            if open_req.policy == StreamHttpPolicy::Http1Only {
-                return Err(anyhow::Error::new(LlmError::NetworkError(format!(
-                    "SSE stream request did not receive response headers after {}s. \
-                         `codewhale doctor` can still pass when non-streaming requests work; \
-                         on Windows or proxy networks, try `CODEWHALE_FORCE_HTTP1=1` and rerun `codewhale`. \
-                         {COLD_MODEL_HINT}",
-                    open_req.open_timeout.as_secs()
-                ))));
-            }
-            "response-header timeout"
+        Err(_) => {
+            return Err(anyhow::Error::new(LlmError::NetworkError(format!(
+                "SSE stream request did not receive response headers after {}s; request outcome unknown. {COLD_MODEL_HINT}",
+                open_req.open_timeout.as_secs()
+            ))));
         }
-    };
-
-    // No response body exists yet, so switching protocols and replaying the
-    // request cannot corrupt stream state. It can still bill twice if the
-    // provider accepted the first request (see the ambiguous-replay limit on
-    // `llm_client::with_retry`). The policy guard above keeps this to exactly
-    // one retry.
+    }
     let h1_req = open_req.clone().with_h1_only();
-    codewhale_runtime::logging::warn(format!(
-        "SSE stream {fallback_reason}; retrying once with HTTP/1.1"
-    ));
+    crate::llm_client::observe_transport_attempt();
     match tokio::time::timeout(h1_req.open_timeout, attempt(h1_req.policy)).await {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(err)) => Err(h1_fallback_error(err)),
-        // Typed, not a bare string: a header stall is a transport
-        // failure, and `LlmError::NetworkError` is what the shared
-        // retry layer recognizes as retryable. As an untyped anyhow
-        // error this killed the whole turn outright.
-        Err(_elapsed) => Err(anyhow::Error::new(LlmError::NetworkError(format!(
-            "SSE stream request did not receive response headers after {}s \
-             (HTTP/2 and HTTP/1.1). `codewhale doctor` can still pass when \
-             non-streaming requests work; try `CODEWHALE_FORCE_HTTP1=1` and \
-             rerun `codewhale`. {COLD_MODEL_HINT}",
-            open_req.open_timeout.as_secs()
+        Err(_) => Err(anyhow::Error::new(LlmError::NetworkError(format!(
+            "SSE stream request did not receive response headers after {}s on HTTP/1.1; request outcome unknown. {COLD_MODEL_HINT}",
+            h1_req.open_timeout.as_secs()
         )))),
     }
 }
@@ -490,9 +425,11 @@ force_http1 = {pinned}
                             if attempt == 0 {
                                 // Only a genuinely dual-protocol request may
                                 // retry this failure on its HTTP/1.1 twin.
-                                return Err(anyhow::Error::new(LlmError::NetworkError(
-                                    "connection reset before response headers".into(),
-                                )));
+                                return Err(anyhow::Error::new(LlmError::ConnectError {
+                                    message: "connection refused before dispatch".into(),
+                                    transient: true,
+                                    timed_out: false,
+                                }));
                             }
                             assert_eq!(policy, StreamHttpPolicy::Http1Only);
                             Ok(reqwest::Response::from(
@@ -538,7 +475,7 @@ force_http1 = {pinned}
     #[tokio::test]
     async fn header_stall_on_dual_policy_retries_exactly_once_on_h1() {
         let attempts = Arc::new(AtomicUsize::new(0));
-        let response = open_sse_response(
+        let error = open_sse_response(
             &open_req(
                 StreamHttpPolicy::DualWithH1Fallback,
                 Duration::from_millis(150),
@@ -563,12 +500,12 @@ force_http1 = {pinned}
             },
         )
         .await
-        .expect("H1 fallback retry succeeds");
-        assert_eq!(response.status(), 200);
+        .expect_err("header stall must retain an unknown outcome without replay");
+        assert!(error.to_string().contains("outcome unknown"));
         assert_eq!(
             attempts.load(Ordering::SeqCst),
-            2,
-            "exactly one fallback retry"
+            1,
+            "an unknown header stall must not fall back"
         );
     }
 
@@ -587,9 +524,11 @@ force_http1 = {pinned}
                     let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                     if attempt == 0 {
                         assert_eq!(policy, StreamHttpPolicy::DualWithH1Fallback);
-                        return Err(anyhow::Error::new(LlmError::NetworkError(
-                            "connection reset before response headers".to_string(),
-                        ))
+                        return Err(anyhow::Error::new(LlmError::ConnectError {
+                            message: "connection refused before dispatch".into(),
+                            transient: true,
+                            timed_out: false,
+                        })
                         .context("Chat API request failed"));
                     }
                     assert_eq!(policy, StreamHttpPolicy::Http1Only);
@@ -626,19 +565,14 @@ force_http1 = {pinned}
         assert_eq!(attempts.load(Ordering::SeqCst), 1, "no retry when pinned");
         let text = err.to_string();
         assert!(text.contains("did not receive response headers"), "{text}");
-        // The whole point of the typed error: a header stall must reach the
-        // shared retry layer as retryable. As an untyped anyhow error it
-        // killed the turn outright, so a long root run lost all its work while
-        // a sub-agent — which text-matches the same message in its own
-        // classifier — would have retried and continued.
         let classified = err
             .downcast_ref::<crate::llm_client::LlmError>()
             .expect("header stall must be a typed LlmError");
         assert!(
-            classified.is_retryable(),
-            "header stall must be retryable: {classified:?}"
+            !classified.is_retryable(),
+            "header stall must not be replayable: {classified:?}"
         );
-        assert!(text.contains("CODEWHALE_FORCE_HTTP1=1"), "{text}");
+        assert!(text.contains("outcome unknown"), "{text}");
         // #6889: a header wait that ran out may be a model still loading.
         assert!(text.contains("may still be loading it"), "{text}");
         assert!(
@@ -742,10 +676,10 @@ force_http1 = {pinned}
             anyhow::Error::new(LlmError::NetworkError("http2 protocol error".to_string()))
                 .context("sending stream request"),
         );
-        let text = protocol.to_string();
+        let text = format!("{protocol:#}");
         assert!(text.contains("sending stream request: "), "{text}");
         assert!(text.contains("http2 protocol error"), "{text}");
-        assert!(text.contains("CODEWHALE_FORCE_HTTP1=1"), "{text}");
+        assert!(!protocol.downcast_ref::<LlmError>().unwrap().is_retryable());
 
         let other = h1_fallback_error(anyhow::Error::new(LlmError::NetworkError(
             "unexpected end of body".to_string(),
@@ -767,9 +701,11 @@ force_http1 = {pinned}
                     let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                     if attempt == 0 {
                         assert_eq!(policy, StreamHttpPolicy::DualWithH1Fallback);
-                        return Err(anyhow::Error::new(LlmError::NetworkError(
-                            "connection reset before response headers".to_string(),
-                        )));
+                        return Err(anyhow::Error::new(LlmError::ConnectError {
+                            message: "connection refused before dispatch".into(),
+                            transient: true,
+                            timed_out: false,
+                        }));
                     }
                     assert_eq!(policy, StreamHttpPolicy::Http1Only);
                     Err(anyhow::Error::new(LlmError::InvalidRequest {
@@ -833,9 +769,13 @@ force_http1 = {pinned}
         )
         .await
         .expect_err("double stall fails");
-        assert_eq!(attempts.load(Ordering::SeqCst), 2, "one fallback, no more");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "no replay after unknown stall"
+        );
         let text = err.to_string();
-        assert!(text.contains("HTTP/2 and HTTP/1.1"), "{text}");
+        assert!(!text.contains("HTTP/2 and HTTP/1.1"), "{text}");
         // #6889: a header wait that ran out may be a model still loading.
         assert!(text.contains("may still be loading it"), "{text}");
         assert!(text.contains("stream.open_timeout_secs"), "{text}");

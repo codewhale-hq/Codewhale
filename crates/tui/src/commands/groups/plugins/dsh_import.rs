@@ -7,6 +7,7 @@
 //! lands disabled and untrusted like every other install, and the existing
 //! trust and enable commands take it from there.
 
+use super::render::ReviewTextContext;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -38,7 +39,7 @@ fn list_line(output: &mut String, label: &str, items: &[String]) {
     } else {
         items
             .iter()
-            .map(|item| escape_review_text(item))
+            .map(|item| escape_review_text(item, ReviewTextContext::Prose))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -52,14 +53,17 @@ fn review(plugin: &dyn CommandPluginContext, path: &str) -> CommandResult {
     };
     let mut output = format!(
         "DeepSeek Harness package {}{} → plugin '{}'\n  Source: {}\n",
-        escape_review_text(preview.source_package.as_deref().unwrap_or("unnamed")),
+        escape_review_text(
+            preview.source_package.as_deref().unwrap_or("unnamed"),
+            ReviewTextContext::Prose
+        ),
         preview
             .source_version
             .as_deref()
-            .map(|version| format!("@{}", escape_review_text(version)))
+            .map(|version| format!("@{}", escape_review_text(version, ReviewTextContext::Prose)))
             .unwrap_or_default(),
         preview.plugin_name,
-        escape_review_path(&preview.package_path),
+        escape_review_path(&preview.package_path, ReviewTextContext::Prose),
     );
     list_line(&mut output, "Skills", &preview.skills);
     list_line(&mut output, "Remote MCP servers", &preview.remote_servers);
@@ -97,7 +101,11 @@ fn review(plugin: &dyn CommandPluginContext, path: &str) -> CommandResult {
             preview.manual_ports.len()
         );
         for line in &preview.manual_ports {
-            let _ = writeln!(output, "    - {}", escape_review_text(line));
+            let _ = writeln!(
+                output,
+                "    - {}",
+                escape_review_text(line, ReviewTextContext::Prose)
+            );
         }
     }
     let _ = writeln!(

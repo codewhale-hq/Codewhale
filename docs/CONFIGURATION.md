@@ -2649,9 +2649,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   aggregate token ceiling for each root `agent` run and its descendants; unset
   or `0` preserves unlimited legacy behavior. `[subagents] api_timeout_secs`
   controls the per-step API timeout for sub-agent model calls and is clamped to
-  `1..=3600`, with `0` or unset preserving the 600 second default; a timed-out
-  attempt is retried with exponential backoff (up to 5 retries) before the
-  step interrupts with a preserved checkpoint.
+  `1..=3600`, with `0` or unset preserving the 600 second default. A timeout
+  after possible dispatch interrupts with a preserved checkpoint and unknown
+  outcome. Only a transient connection timeout proven to precede dispatch uses
+  exponential backoff, up to 5 retries.
   `[subagents] heartbeat_timeout_secs` controls stale running agent cleanup,
   defaults to `300`, and is clamped to `30..=3600` while staying above the
   resolved API timeout. `[subagents.providers.<provider>]` accepts the same
@@ -2810,15 +2811,16 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   streaming request gets its own `stream.open_timeout_secs` response-header
   wait. Provider backoff and honored `Retry-After` waits happen between
   attempts, outside that timer, so the configured retry count remains
-  reachable. A classified transport failure or header stall on the default
-  client may switch once to HTTP/1.1 within that attempt; pinned HTTP/1.1
-  skips that protocol fallback. Both clients use the same HTTP status
-  classification and retry policy. Explicit plan-window exhaustion is a
-  terminal quota error. A transport failure after the provider accepted a
-  request remains ambiguous and a retry may bill another completion.
-  The stream-level budgets above this client — how often a turn re-issues a
-  request whose stream failed to open or died — are the `[stream]` keys
-  below; legacy `tui.stream_max_*` keys remain fallbacks.
+  reachable. Inference retries require an ordinary rate limit or a proven
+  transient connection failure before dispatch. Only that connection failure
+  can switch once to HTTP/1.1; a header stall cannot. Both inference clients
+  disable redirects and reqwest protocol retries. Explicit plan-window
+  exhaustion is a terminal quota error. Server failures, uncertain timeouts
+  and interrupted streams preserve unknown coverage and stop without
+  automatically reissuing inference. Read-only catalog GETs retain bounded
+  retries at their actual method owner. The `[stream]` keys below bound safe
+  pre-dispatch recovery and stream consumption; legacy `tui.stream_max_*`
+  keys remain configuration fallbacks.
 - `[notifications]`: notification delivery, attention, categories and audio share one
   policy. `quiet = true`, `method = "off"`, `condition = "never"` and disabled
   categories suppress both the banner and Codewhale's selected sound.
@@ -2869,10 +2871,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
 - `tui.osc8_links` (bool, optional, default on for macOS/Linux, off for Windows): emit OSC 8 escape sequences around URLs in transcript output so supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) can open them with the terminal's link gesture—usually Cmd-click on macOS and Ctrl-click on Linux/Windows. Terminals without OSC 8 support render the plain label and ignore the escape. The escapes are emitted out-of-band (not inside buffer cells), so column corruption is not a concern; set `false` only for terminals that misrender the OSC 8 terminator itself. Windows legacy consoles default off; opt in with `true`.
 - `tui.max_model_steps` (int, optional, default uncapped): optional model-step ceiling for one ordinary turn. Omission or `0` leaves model steps uncapped; explicit positive values are preserved (`4294967295` is the compatibility value for no limit). Headless `exec` and Fleet workers also have no implicit model-step ceiling; `exec --max-turns N` and positive worker budgets still apply. At exhaustion the turn ends `Failed` with `Maximum model steps reached before completion (limit: N)` after one bounded final-report response when needed. Cumulative wall-clock and per-stream limits remain independent. Active interactive goal turns use `goal.max_steps` instead (also uncapped by default); see the Goal loop section below.
 - `tui.turn_wall_clock_secs` (int, optional, default: no limit): cumulative per-turn wall-clock budget in seconds, measured across every model step of one turn (not per request). Time blocked on a human approval is excluded. Omitted or `0` means no limit; positive values are preserved without an added runtime ceiling. When exhausted the turn stops before authorizing another billable request with a message naming the limit and the key to raise.
-- `tui.stream_max_resumes` (int, optional, default `3`): how many times one turn re-issues a model request after its stream failed — the request never opened (connect failure or response-header stall), the stream died before any content, the host slept mid-stream, or the network dropped mid-stream. Every one of those paths spends this one budget, and a healthy stream resets it. `0` disables turn-level re-issues (a failed stream then fails the turn); values clamp to `0..=10`.
-- `tui.stream_max_transparent_retries` (int, optional, default `2`): in-stream re-requests while nothing has streamed yet. `0` disables them; values clamp to `0..=10`.
-- `tui.stream_max_errors` (int, optional, default `5`): recoverable errors tolerated within one stream before it ends. Unlike the two retry counts above, `0` does not switch anything off: like the other finite stream budgets it selects the default. Other values clamp to `1..=50`, so `1` ends the stream on its first recoverable error.
-- `tui.stream_open_timeout_secs` (int, optional, default `45`): wait for a streaming request's response headers (connection setup included). A header stall on HTTP/2 retries once over HTTP/1.1 with the same wait. Omitted or `0` falls back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then the default; values clamp to `5..=300`.
+- `tui.stream_max_resumes` (int, optional, default `3`): turn-level recovery after a proven transient connection failure before request dispatch. `0` disables this additional recovery; values clamp to `0..=10`. Missing response headers, empty or partial streams, sleep and network drops never authorize inference replay.
+- `tui.stream_max_transparent_retries` (int, optional, default `2`): retained for configuration compatibility, clamped to `0..=10`. Interrupted streams no longer trigger transparent inference reissues, including before visible content.
+- `tui.stream_max_errors` (int, optional, default `5`): retained for configuration compatibility; `0` selects the default and positive values clamp to `1..=50`. Core ends an uncertain stream on its first read error or error frame regardless of this value.
+- `tui.stream_open_timeout_secs` (int, optional, default `45`): wait for a streaming request's response headers (connection setup included). A header stall ends with an unknown outcome and does not replay over HTTP/1.1. Omitted or `0` falls back to `CODEWHALE_STREAM_OPEN_TIMEOUT_SECS`, then the default; values clamp to `5..=300`.
 - `tui.connect_timeout_secs` (int, optional, default `30`): TCP/TLS connect timeout for the model HTTP client. Omitted or `0` uses the default; values clamp to `1..=300`.
 - `tui.force_http1` (bool, optional, default `false`): pin the model HTTP client to HTTP/1.1, for provider edges or proxies that mishandle long-lived HTTP/2 streams. `CODEWHALE_FORCE_HTTP1=1` does the same; either one pins.
 - `tui.stream_max_content_mb` (int, optional, default `10`) and `tui.stream_max_duration_secs` (int, optional, default `1800`): per-step caps on one stream's accumulated content and wall-clock duration. `0` selects the default; values clamp to `1..=512` MB and `10..=86400` seconds.
@@ -2894,9 +2896,9 @@ not persist defaults. Set or unset individual fields with, for example,
 | --- | --- | --- | --- |
 | `open_timeout_secs` | 45 | Positive values clamp to 5–300; 0 or omission falls through to the environment/default | `stream_open_timeout_secs` |
 | `chunk_timeout_secs` | 900 | 0 selects default; positive values clamp to 1–3600 | `stream_chunk_timeout_secs` |
-| `max_resumes` | 3 | 0 disables whole-request reissues; maximum 10 | `stream_max_resumes` |
-| `max_transparent_retries` | 2 | 0 disables retries before any content; maximum 10 | `stream_max_transparent_retries` |
-| `max_stream_errors` | 5 | 0 selects default; positive values clamp to 1–50 | `stream_max_errors` |
+| `max_resumes` | 3 | Proven transient pre-dispatch recovery only; 0 disables, maximum 10 | `stream_max_resumes` |
+| `max_transparent_retries` | 2 | Compatibility value; interrupted streams never reissue inference | `stream_max_transparent_retries` |
+| `max_stream_errors` | 5 | Compatibility value; Core ends on the first uncertain stream error | `stream_max_errors` |
 | `max_duration_secs` | 1800 | Per-stream wall clock; 0 selects default, positive values clamp to 10–86400 | `stream_max_duration_secs` |
 | `max_content_mb` | 10 | Per-stream content; 0 selects default, positive values clamp to 1–512 MiB | `stream_max_content_mb` |
 | `connect_timeout_secs` | 30 | TCP/TLS setup; 0 selects default, positive values clamp to 1–300 | `connect_timeout_secs` |

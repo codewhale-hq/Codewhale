@@ -83,8 +83,8 @@ fn agent_mode_elevates_writes_without_granting_network() {
 #[test]
 fn sandbox_policy_for_turn_returns_correct_default_policy_per_mode() {
     use crate::core::authority::{SandboxNetworkAccess, sandbox_policy_for_turn};
-    use codewhale_sandbox::SandboxPolicy;
     use ApprovalMode;
+    use codewhale_sandbox::SandboxPolicy;
 
     let workspace = PathBuf::from("/tmp/example-workspace");
 
@@ -181,7 +181,9 @@ async fn session_update_preserves_reasoning_tool_only_turn() {
         let mut rx = handle.rx_event.write().await;
         rx.recv().await.expect("session update event")
     };
-    let Event::SessionUpdated { messages, .. } = event else {
+    let Event::SessionUpdated {
+        source: _,
+        messages, .. } = event else {
         panic!("expected session update event");
     };
 
@@ -342,8 +344,8 @@ async fn posture_change_status_uses_permissions_and_work() {
 
 #[tokio::test]
 async fn live_runtime_authority_applies_latest_posture_and_sandbox_before_tools() {
-    use codewhale_sandbox::SandboxPolicy;
     use ApprovalMode;
+    use codewhale_sandbox::SandboxPolicy;
 
     let tmp = tempdir().expect("tempdir");
     let config = EngineConfig {
@@ -1004,6 +1006,7 @@ async fn unchanged_compaction_config_is_acknowledged_silently() {
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("resumed-session".to_string()),
             messages: restored_messages.clone(),
             system_prompt: None,
@@ -1110,7 +1113,9 @@ async fn change_mode_op_updates_current_mode_and_emits_status() {
         .await
         .expect("session update after mode switch")
         .expect("event");
-    let Event::SessionUpdated { messages, .. } = session_updated else {
+    let Event::SessionUpdated {
+        source: _,
+        messages, .. } = session_updated else {
         panic!("should emit SessionUpdated after mode change, got: {session_updated:?}");
     };
     assert!(
@@ -1195,6 +1200,7 @@ async fn sync_session_restores_current_mode() {
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("plan-session".to_string()),
             messages: Vec::new(),
             system_prompt: None,
@@ -1275,6 +1281,7 @@ async fn sync_session_without_prompt_repins_full_system_prompt_on_next_turn() {
 
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("fresh-session".to_string()),
             messages: Vec::new(),
             system_prompt: None,
@@ -1356,6 +1363,7 @@ async fn sync_session_same_id_does_not_finalize_live_worker() {
     // construction-time UUID.
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("session-keep".to_string()),
             messages: Vec::new(),
             system_prompt: None,
@@ -1376,6 +1384,7 @@ async fn sync_session_same_id_does_not_finalize_live_worker() {
     // A same-id re-sync is a reload, not a conversation boundary.
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("session-keep".to_string()),
             messages: Vec::new(),
             system_prompt: None,
@@ -1417,6 +1426,7 @@ async fn sync_session_different_id_finalizes_live_worker() {
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("session-a".to_string()),
             messages: Vec::new(),
             system_prompt: None,
@@ -1440,6 +1450,7 @@ async fn sync_session_different_id_finalizes_live_worker() {
     // finalized with the session-closed reason.
     handle
         .send(Op::SyncSession {
+            control: crate::core::ops::SessionControlId::new(),
             session_id: Some("session-b".to_string()),
             messages: Vec::new(),
             system_prompt: None,
@@ -1496,6 +1507,7 @@ async fn sync_session_migrates_one_checkpoint_and_strips_its_system_carrier() {
     for round in 0..2 {
         handle
             .send(Op::SyncSession {
+                control: crate::core::ops::SessionControlId::new(),
                 session_id: Some("compacted-session".to_string()),
                 messages,
                 system_prompt: Some(carrier.clone()),

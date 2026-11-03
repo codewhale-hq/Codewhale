@@ -868,6 +868,7 @@ mod tests {
         observe(
             &mut app,
             &Event::TurnStarted {
+                previous_source: None,
                 turn_id: "preview-turn".into(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -953,6 +954,7 @@ mod tests {
         observe(
             &mut app,
             &Event::TurnStarted {
+                previous_source: None,
                 turn_id: "turn".into(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -1038,6 +1040,7 @@ mod tests {
         observe(
             &mut app,
             &Event::TurnStarted {
+                previous_source: None,
                 turn_id: "turn".into(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -1066,6 +1069,7 @@ mod tests {
 
         watch.observe(
             &Event::TurnStarted {
+                previous_source: None,
                 turn_id: "turn-b".into(),
                 created_at: chrono::Utc::now(),
                 route: None,

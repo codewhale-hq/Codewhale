@@ -565,9 +565,10 @@ async fn spawn_tui_engine_with_session(
 ) -> Result<EngineHandle> {
     let handle = spawn_tui_engine(app, config, mcp_handoff).await;
     let restored = async {
-        if !app.api_messages.is_empty() {
+        {
             handle
                 .send(Op::SyncSession {
+                    control: app.session_sync_control(),
                     session_id: app.current_session_id.clone(),
                     messages: app.api_messages.as_ref().clone(),
                     system_prompt: app.system_prompt.clone(),

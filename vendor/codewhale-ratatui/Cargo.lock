@@ -99,9 +99,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-app-server-protocol"
+version = "0.10.2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "codewhale-protocol"
 version = "0.10.2"
 dependencies = [
+ "codewhale-app-server-protocol",
  "chrono",
  "serde",
  "serde_json",

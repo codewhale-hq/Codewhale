@@ -1299,6 +1299,15 @@ pub(crate) fn build_session_snapshot(
         app.system_prompt.as_ref(),
         Some(app.mode.as_setting()),
     );
+    session.write_receipt = if app.current_session_id.is_none() {
+        Some(
+            manager
+                .expect_absent_session(&session.metadata.id)
+                .map_err(|error| error.to_string())?,
+        )
+    } else {
+        app.session_write_receipt.clone()
+    };
     let computed_title = session.metadata.title.clone();
     if let Some(cached) = app
         .current_session_metadata

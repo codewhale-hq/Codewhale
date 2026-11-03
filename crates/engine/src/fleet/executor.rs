@@ -553,11 +553,11 @@ pub fn classify_worker_exit(exit_code: Option<i32>, stopped: bool) -> FleetWorke
         },
         Some(code) => FleetWorkerEventPayload::Failed {
             reason: format!("worker exited with code {code}"),
-            recoverable: true,
+            recoverable: false,
         },
         None => FleetWorkerEventPayload::Failed {
             reason: "worker exited without a status code".to_string(),
-            recoverable: true,
+            recoverable: false,
         },
     }
 }
@@ -734,8 +734,8 @@ pub(crate) struct FleetPreparedTaskOutcome {
 
 #[derive(Debug, Clone)]
 enum PendingFleetTerminal {
-    Observed(FleetWorkerTerminalEvent),
-    Prepared(FleetPreparedTaskOutcome),
+    Observed(Box<FleetWorkerTerminalEvent>),
+    Prepared(Box<FleetPreparedTaskOutcome>),
 }
 
 impl FleetExecutor {
@@ -916,7 +916,7 @@ impl FleetExecutor {
         worker_id: &str,
     ) -> Option<FleetPreparedTaskOutcome> {
         match self.streams.get(worker_id)?.pending_terminal.as_ref()? {
-            PendingFleetTerminal::Prepared(outcome) => Some(outcome.clone()),
+            PendingFleetTerminal::Prepared(outcome) => Some(outcome.as_ref().clone()),
             PendingFleetTerminal::Observed(_) => None,
         }
     }
@@ -943,7 +943,7 @@ impl FleetExecutor {
                 "Fleet terminal candidate does not match its tracked attempt"
             );
         }
-        stream.pending_terminal = Some(PendingFleetTerminal::Prepared(outcome));
+        stream.pending_terminal = Some(PendingFleetTerminal::Prepared(Box::new(outcome)));
         Ok(())
     }
 
@@ -953,13 +953,13 @@ impl FleetExecutor {
     ) -> Option<FleetWorkerTerminalEvent> {
         if let Some(pending) = self.streams.get(worker_id)?.pending_terminal.as_ref() {
             return match pending {
-                PendingFleetTerminal::Observed(event) => Some(event.clone()),
+                PendingFleetTerminal::Observed(event) => Some(event.as_ref().clone()),
                 PendingFleetTerminal::Prepared(_) => None,
             };
         }
         let event = self.poll_terminal_with_status(worker_id)?;
         self.streams.get_mut(worker_id)?.pending_terminal =
-            Some(PendingFleetTerminal::Observed(event.clone()));
+            Some(PendingFleetTerminal::Observed(Box::new(event.clone())));
         Some(event)
     }
 
@@ -1956,13 +1956,15 @@ mod tests {
             classify_worker_exit(Some(0), false),
             FleetWorkerEventPayload::Completed { .. }
         ));
-        assert!(matches!(
-            classify_worker_exit(Some(1), false),
-            FleetWorkerEventPayload::Failed {
-                recoverable: true,
-                ..
-            }
-        ));
+        for exit_code in [Some(1), Some(75), None] {
+            assert!(matches!(
+                classify_worker_exit(exit_code, false),
+                FleetWorkerEventPayload::Failed {
+                    recoverable: false,
+                    ..
+                }
+            ));
+        }
         assert!(matches!(
             classify_worker_exit(Some(0), true),
             FleetWorkerEventPayload::Cancelled { .. }

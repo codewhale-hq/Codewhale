@@ -305,8 +305,13 @@ impl codewhale_engine::task_manager::TaskExecutor for MockExecutor {
 
 fn saved_session_with_blocks(blocks: Vec<codewhale_models::ContentBlock>) -> SavedSession {
     SavedSession {
+        write_receipt: None,
+
         schema_version: 1,
         metadata: SessionMetadata {
+            publication_id: None,
+            native_mutation_observation: None,
+
             id: "session-1".to_string(),
             title: "test session".to_string(),
             title_is_custom: false,
@@ -3515,6 +3520,7 @@ async fn compatibility_stream_closes_losslessly_across_replay_live_handoff() -> 
         let _ = wait_for_overlap_release.await;
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_compat_handoff".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -3722,6 +3728,7 @@ async fn compatibility_stream_exposes_and_resolves_user_input_without_answer_ech
         harness
             .tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_compat_input".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -4197,6 +4204,7 @@ async fn thread_endpoints_expose_lifecycle_contract() -> Result<()> {
                 Op::SendMessage(TurnSpec { .. }) => {
                     let _ = tx_event
                         .send(EngineEvent::TurnStarted {
+                            previous_source: None,
                             turn_id: "mock_lifecycle".to_string(),
                             created_at: chrono::Utc::now(),
                             route: None,
@@ -4593,6 +4601,7 @@ async fn turn_operation_lookup_is_authenticated_read_only_and_survives_restart()
 
     for event in [
         EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "lookup-fixture-engine-turn".into(),
             created_at: chrono::Utc::now(),
             route: None,
@@ -4728,6 +4737,7 @@ async fn events_endpoint_respects_since_seq_cursor() -> Result<()> {
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_cursor".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -5660,6 +5670,7 @@ async fn steer_and_interrupt_endpoints_work_on_active_turn() -> Result<()> {
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "engine_turn_api".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -6218,6 +6229,7 @@ async fn stream_endpoint_remains_backward_compatible() -> Result<()> {
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_stream".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -7208,6 +7220,8 @@ async fn session_save_without_an_id_keeps_the_conversation_that_owns_the_snapsho
         while let Some(op) = rx_op.recv().await {
             if let Op::GetSessionSnapshot { tx } = op {
                 let snapshot = codewhale_engine::core::ops::SessionSnapshot {
+                    source: None,
+
                     session_id: CONVERSATION_ID.to_string(),
                     messages: vec![Message {
                         role: Role::User,
@@ -8791,6 +8805,7 @@ async fn session_create_from_thread_rejects_active_turn() -> Result<()> {
         }
         let _ = tx_event
             .send(EngineEvent::TurnStarted {
+                previous_source: None,
                 turn_id: "mock_active_session_save".to_string(),
                 created_at: chrono::Utc::now(),
                 route: None,
@@ -20046,7 +20061,7 @@ async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_
         image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(768, 768, bytes).unwrap());
     let mut encoded = std::io::Cursor::new(Vec::new());
     image.write_to(&mut encoded, image::ImageFormat::Png)?;
-    let large = codewhale_protocol::runtime::RuntimeImageInput {
+    let large = codewhale_app_server_protocol::runtime::RuntimeImageInput {
         mime: "image/png".into(),
         data_base64: base64::engine::general_purpose::STANDARD.encode(encoded.into_inner()),
     };
@@ -20074,6 +20089,7 @@ async fn runtime_image_http_rejects_before_dispatch_and_accepts_large_canonical_
     harness
         .tx_event
         .send(EngineEvent::TurnStarted {
+            previous_source: None,
             turn_id: "image-http-fixture".into(),
             created_at: Utc::now(),
             route: None,

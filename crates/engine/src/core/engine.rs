@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use codewhale_app_server_protocol::runtime::DynamicToolSpec;
 use codewhale_config::route::CapabilityState;
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext};
-use codewhale_protocol::runtime::DynamicToolSpec;
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use serde_json::{Value, json};
@@ -514,11 +514,9 @@ pub struct EngineConfig {
     /// from `[tui].stream_max_duration_secs`. Pre-R1 this was the hard-coded
     /// `DEFAULT_STREAM_MAX_DURATION_SECS`.
     pub stream_max_duration: Duration,
-    /// Stream-level retry budgets (#6700): whole-request resumes (also spent
-    /// by stream-open failures, #6699), in-stream transparent retries, and
-    /// the per-stream error streak. Resolved from `[tui].stream_max_resumes`,
-    /// `[tui].stream_max_transparent_retries` and `[tui].stream_max_errors`;
-    /// the defaults are the historical compiled-in values.
+    /// Proven pre-dispatch open retries from `[tui].stream_max_resumes`.
+    /// The parsed max_transparent_retries/max_errors values are inactive
+    /// compatibility fields and cannot authorize an inference POST replay.
     pub stream_retry_limits: turn_budget::StreamRetryLimits,
     /// Bounded wait for SSE response headers (#6700). Resolved from
     /// `[tui].stream_open_timeout_secs`, then
@@ -2747,7 +2745,13 @@ impl Engine {
         self.apply_runtime_mode_policy(&authority);
         self.discard_kernels_if_narrowed(&prior).await;
 
+        let previous_source = self.session.snapshot_source.clone();
+        self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::turn(
+            turn_id.clone(),
+            None,
+        ));
         start_permit.send(Event::TurnStarted {
+            previous_source,
             turn_id: turn_id.clone(),
             created_at: chrono::Utc::now(),
             route: None,
@@ -3305,6 +3309,7 @@ impl Engine {
         system_prompt: Option<codewhale_models::SystemPrompt>,
         system_prompt_override: bool,
     ) {
+        self.session.snapshot_source = None;
         self.session.tool_activation_cache.clear();
         let compaction_checkpoint =
             compaction_checkpoint_for_restore(&messages, system_prompt.clone());
@@ -3352,6 +3357,7 @@ impl Engine {
         let total_tokens =
             self.session.total_usage.input_tokens + self.session.total_usage.output_tokens;
         SessionSnapshot {
+            source: self.session.snapshot_source.clone(),
             session_id: self.session.id.clone(),
             messages: self.session.messages.to_vec(),
             total_tokens,
@@ -4345,6 +4351,7 @@ impl Engine {
                             self.config.fleet_roster = roster;
                         }
                         Op::SyncSession {
+                            control,
                             session_id,
                             messages,
                             system_prompt,
@@ -4423,6 +4430,8 @@ impl Engine {
                                 system_prompt,
                                 system_prompt_override,
                             );
+                            self.session.snapshot_source =
+                                Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
                             self.session.model = model;
                             self.session.workspace = workspace.clone();
@@ -4472,6 +4481,7 @@ impl Engine {
                             self.emit_session_updated().await;
                         }
                         Op::RewindConversation {
+                            control,
                             expected,
                             messages,
                             tx,
@@ -4491,6 +4501,8 @@ impl Engine {
                                 self.session.system_prompt.clone(),
                                 self.session.system_prompt_override,
                             );
+                            self.session.snapshot_source =
+                                Some(crate::core::ops::SessionSnapshotSource::control(control));
                             self.session.rebuild_working_set();
                             self.reconcile_restored_work_bindings().await;
                             let _ = tx.send(Some(self.session_snapshot()));
@@ -4864,6 +4876,7 @@ impl Engine {
         }
         let _ = self
             .send_event(Event::SessionUpdated {
+                source: self.session.snapshot_source.clone(),
                 checkpoint: None,
                 session_id: self.session.id.clone(),
                 messages: self.session.messages.snapshot(),
@@ -6984,7 +6997,13 @@ impl Engine {
         // Emit turn started event IMMEDIATELY so the UI knows the turn is
         // active. The snapshot below can take 30+ seconds on slow filesystems
         // (e.g. WSL2 /mnt/c) and must not delay the TurnStarted event.
+        let previous_source = self.session.snapshot_source.clone();
+        self.session.snapshot_source = Some(crate::core::ops::SessionSnapshotSource::turn(
+            turn.id.clone(),
+            submission_id.clone(),
+        ));
         start_permit.send(Event::TurnStarted {
+            previous_source,
             turn_id: turn.id.clone(),
             created_at: turn_started_at,
             route: Some(turn_route),
@@ -9484,7 +9503,11 @@ impl Engine {
                 }
                 None => Default::default(),
             };
-        tool_catalog::configure_composition_entry(catalog, batch.as_deref(), &members);
+        if tool_catalog::configure_composition_entry(catalog, batch.as_deref(), &members) {
+            self.session
+                .pending_prefix_change_reason
+                .get_or_insert_with(|| "tool_surface".to_string());
+        }
         let previous =
             self.session.messages.iter().rev().find(|message| {
                 crate::runtime_handoff::is_mcp_server_instructions_message(message)
@@ -11198,11 +11221,9 @@ use self::streaming::TOOL_CALL_START_MARKERS;
 #[cfg(test)]
 use self::streaming::filter_tool_call_delta;
 use self::streaming::{
-    ContentBlockKind, StreamResume, StreamRetryBudget, ToolCallDeltaFilterState, ToolUseState,
+    ContentBlockKind, StreamRetryBudget, ToolCallDeltaFilterState, ToolUseState,
     contains_fake_tool_wrapper, filter_tool_call_delta_with_state, flush_tool_call_delta_state,
-    should_resume_after_network_drop, should_resume_after_sleep,
-    should_resume_interactive_after_network_drop, should_transparently_retry_stream,
-    sleep_gap_detected, stream_read_error_user_message,
+    stream_read_error_user_message,
 };
 use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, EXECUTE_TOOLS_TOOL_NAME, JS_EXECUTION_TOOL_NAME, ToolSurfacePolicy,

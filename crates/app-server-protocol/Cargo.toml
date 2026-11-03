@@ -1,0 +1,24 @@
+[package]
+name = "codewhale-app-server-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Client wire contracts and schema exports for Codewhale App Server"
+
+[lints]
+workspace = true
+
+[features]
+schema = ["dep:schemars"]
+
+[dependencies]
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+schemars = { version = "1.2.1", optional = true, features = ["derive", "preserve_order"] }
+
+[[bin]]
+name = "codewhale-app-server-schema"
+path = "src/bin/export.rs"
+required-features = ["schema"]

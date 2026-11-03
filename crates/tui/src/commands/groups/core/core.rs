@@ -39,7 +39,10 @@ pub fn clear(app: &mut App) -> CommandResult {
     // than letting the engine generate one the App only learns about from
     // `SessionUpdated`. Two ids for one conversation orphan the checkpoint.
     crate::tui::ui::install_offline_queue_transition(app, queue_transition);
-    app.current_session_id = Some(new_id.clone());
+    app.set_current_session_id(Some(new_id.clone()));
+    if let Err(error) = crate::tui::ui::expect_fresh_session(app, &new_id) {
+        return CommandResult::error(error);
+    }
     app.current_session_metadata = None;
     app.session_title = None;
     app.window_title = None;

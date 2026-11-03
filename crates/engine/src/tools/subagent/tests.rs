@@ -10178,7 +10178,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
     .expect("API timeout should publish an Interrupted mailbox lifecycle event");
     assert_eq!(interrupted_envelope.0, agent_id);
     assert!(
-        interrupted_envelope.1.contains("API call timed out"),
+        interrupted_envelope.1.contains("outcome unknown"),
         "reason should carry the timeout context: {}",
         interrupted_envelope.1
     );
@@ -10189,7 +10189,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
         .expect("sub-agent task should finish");
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        SUBAGENT_API_TIMEOUT_MAX_RETRIES.saturating_add(1) as usize,
+        1,
         "needs-input interruption must not park for continuation; the API call \
          is retried up to the timeout-retry budget, then stops"
     );
@@ -10205,7 +10205,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
         .checkpoint
         .as_ref()
         .expect("timeout should preserve checkpoint");
-    assert_eq!(checkpoint.reason, "api_timeout");
+    assert_eq!(checkpoint.reason, "request_outcome_unknown");
     assert!(checkpoint.continuable);
     assert_eq!(checkpoint.steps_taken, 1);
     assert!(
@@ -10258,7 +10258,7 @@ async fn api_timeout_preserves_checkpoint_and_returns_needs_input_without_parkin
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        SUBAGENT_API_TIMEOUT_MAX_RETRIES.saturating_add(1) as usize,
+        1,
         "projection inspection must not respawn the child implicitly"
     );
 }
@@ -10330,8 +10330,8 @@ async fn subagent_retries_api_timeout_before_succeeding() {
 
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "one timed-out API attempt should be retried exactly once"
+        1,
+        "unknown dispatched timeout must not replay"
     );
     let snapshot = {
         let manager = manager.read().await;
@@ -10339,8 +10339,13 @@ async fn subagent_retries_api_timeout_before_succeeding() {
             .get_result(&agent_id)
             .expect("agent should stay registered")
     };
-    assert_eq!(snapshot.status, SubAgentStatus::Completed);
-    assert_eq!(snapshot.result.as_deref(), Some("recovered answer"));
+    assert!(!matches!(snapshot.status, SubAgentStatus::Completed));
+    assert!(
+        !snapshot
+            .result
+            .as_deref()
+            .is_some_and(|value| value == "recovered answer")
+    );
 }
 
 #[test]
@@ -10381,7 +10386,7 @@ fn api_timeout_retry_delay_stays_within_jitter_bounds() {
 fn transient_provider_classifier_matches_sse_header_timeout() {
     let err = anyhow::anyhow!("SSE stream request did not receive response headers after 45s");
 
-    assert!(is_transient_subagent_provider_error(&err));
+    assert!(!is_transient_subagent_provider_error(&err));
 }
 
 #[test]
@@ -10392,11 +10397,11 @@ fn transient_provider_classifier_matches_body_decode_failures() {
     // issue #7, DeepSeek stream decode).
     let decode = anyhow::anyhow!("error decoding response body")
         .context("Failed to read Chat API response body");
-    assert!(is_transient_subagent_provider_error(&decode));
+    assert!(!is_transient_subagent_provider_error(&decode));
 
     let parse = anyhow::anyhow!("expected value at line 1 column 1")
         .context("Failed to parse Chat API JSON");
-    assert!(is_transient_subagent_provider_error(&parse));
+    assert!(!is_transient_subagent_provider_error(&parse));
 
     let auth = anyhow::anyhow!("401 unauthorized: invalid api key");
     assert!(
@@ -10458,8 +10463,8 @@ fn transient_provider_classifier_uses_typed_retryability_without_keywords() {
         LlmError::Timeout(Duration::from_secs(1)),
     ] {
         let error = anyhow::Error::new(error);
-        assert!(is_transient_subagent_provider_error(&error));
-        assert!(retryable_subagent_provider_failure(&error, 1).is_some());
+        assert!(!is_transient_subagent_provider_error(&error));
+        assert!(retryable_subagent_provider_failure(&error, 1).is_none());
     }
     let error = anyhow::Error::new(LlmError::RateLimited {
         message: "slow down".to_string(),
@@ -10533,8 +10538,8 @@ async fn subagent_retries_transient_provider_header_timeout_before_succeeding() 
 
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "one transient provider failure should be retried exactly once"
+        1,
+        "unknown dispatched header timeout must not replay"
     );
     let snapshot = {
         let manager = manager.read().await;
@@ -10542,8 +10547,13 @@ async fn subagent_retries_transient_provider_header_timeout_before_succeeding() 
             .get_result(&agent_id)
             .expect("agent should stay registered")
     };
-    assert_eq!(snapshot.status, SubAgentStatus::Completed);
-    assert_eq!(snapshot.result.as_deref(), Some("recovered answer"));
+    assert!(!matches!(snapshot.status, SubAgentStatus::Completed));
+    assert!(
+        !snapshot
+            .result
+            .as_deref()
+            .is_some_and(|value| value == "recovered answer")
+    );
 }
 
 #[tokio::test]

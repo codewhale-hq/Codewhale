@@ -128,10 +128,21 @@ pub(super) fn apply_engine_session_projection(
         model,
         workspace,
         checkpoint,
+        source,
     } = event
     else {
         return false;
     };
+    if !app.owns_session_projection(source.as_ref()) {
+        if let Some(request) = checkpoint.as_ref() {
+            request.fail("checkpoint projection belongs to another native source");
+        }
+        tracing::debug!(
+            ?source,
+            "session projection did not match its admitted native owner"
+        );
+        return false;
+    }
     if let Some(request) = checkpoint.as_ref() {
         if request.is_stale()
             || request.caller.agent_id.is_some()
@@ -222,10 +233,10 @@ pub(super) fn apply_engine_session_projection(
             return false;
         }
         let (reply, receiver) = tokio::sync::oneshot::channel();
-        if !crate::tui::persistence_actor::try_persist(PersistRequest::AcknowledgedCheckpoint {
-            session,
-            reply,
-        }) {
+        if !super::session_state::try_persist_session(
+            app,
+            PersistRequest::AcknowledgedCheckpoint { session, reply },
+        ) {
             request.fail("terminal persistence actor is unavailable");
             return false;
         }
@@ -259,11 +270,7 @@ pub(super) fn apply_engine_session_projection(
                     biased;
                     () = request.withdraw.cancelled() => request.fail("checkpoint withdrawn; a write already in progress may have completed"),
                     result = receiver => match result {
-                        Ok(Ok(())) => request.succeed(codewhale_engine::core::events::SessionCheckpointReceipt {
-                            persisted_sha256: request.prefix_sha256.clone(),
-                            messages_len: request.snapshot.messages.len(),
-                            projection: codewhale_engine::core::events::SessionCheckpointProjection::Exact,
-                        }),
+                        Ok(Ok(publication)) => request.succeed(publication.checkpoint_receipt),
                         Ok(Err(error)) => request.fail(error),
                         Err(_) => request.fail("terminal persistence actor dropped checkpoint acknowledgement"),
                     },
@@ -325,8 +332,8 @@ fn turn_unsettled_for_shutdown(app: &App) -> bool {
 }
 
 /// Host state can change without a model turn, including learning the Runtime
-/// binding of a resumed legacy session. Commit that state before clearing its
-/// recovery checkpoint; an unfinished turn keeps its checkpoint untouched.
+/// binding of a resumed legacy session. Save that state through its captured
+/// source; the shutdown snapshot retains its recovery checkpoint.
 pub(super) fn persist_settled_session_on_shutdown(
     app: &mut App,
     handle: &persistence_actor::PersistActorHandle,
@@ -336,7 +343,9 @@ pub(super) fn persist_settled_session_on_shutdown(
     }
     let manager = SessionManager::default_location().map_err(|error| error.to_string())?;
     let session = build_session_snapshot(app, &manager)?;
-    if !handle.try_send(PersistRequest::CompletedCommit { session }) {
+    let mut request = PersistRequest::SessionSnapshot(session);
+    super::session_state::prepare_session_publication(app, &mut request)?;
+    if !handle.try_send(request) {
         return Err("persistence actor is unavailable during shutdown".into());
     }
     Ok(true)
@@ -547,6 +556,9 @@ pub(crate) fn ensure_runtime_session_id(app: &mut App) -> String {
     }
     let session_id = uuid::Uuid::new_v4().to_string();
     app.set_current_session_id(Some(session_id.clone()));
+    if let Err(error) = super::session_state::expect_fresh_session(app, &session_id) {
+        tracing::warn!(%error, "new session publication source could not be established");
+    }
     session_id
 }
 
@@ -905,6 +917,23 @@ pub(crate) fn coalesce_resize_burst(
 /// Toast identity for a failing session save, so recovery can retire it.
 const SESSION_SAVE_FAILURE_TOAST: &str = "session-save-failure";
 
+pub(crate) fn surface_session_save_failure(app: &mut App, session_id: Option<&str>, error: &str) {
+    let text = app
+        .tr(MessageId::SessionSaveFailed)
+        .replace(
+            "{id}",
+            session_id
+                .map(codewhale_engine::session_manager::truncate_id)
+                .unwrap_or("—"),
+        )
+        .replace("{error}", error);
+    app.push_status_toast_record(StatusToast::standing(
+        text,
+        StatusToastLevel::Error,
+        SESSION_SAVE_FAILURE_TOAST,
+    ));
+}
+
 /// Keep the save-failure notice in step with the persistence actor's session
 /// save health. Saves run off the UI thread, so a full disk or an unwritable
 /// sessions directory used to reach only the log while the user kept working
@@ -921,20 +950,9 @@ pub(crate) fn surface_session_save_health(
     *seen = reading.generation;
     app.retire_event_notices(SESSION_SAVE_FAILURE_TOAST);
     if let Some((session_id, kind)) = reading.failing {
-        let text = app
-            .tr(MessageId::SessionSaveFailed)
-            .replace(
-                "{id}",
-                codewhale_engine::session_manager::truncate_id(&session_id),
-            )
-            .replace("{error}", &kind.to_string());
         // Standing, not timed: it must outlast the failure, and only the
         // recovery reading above withdraws it.
-        app.push_status_toast_record(StatusToast::standing(
-            text,
-            StatusToastLevel::Error,
-            SESSION_SAVE_FAILURE_TOAST,
-        ));
+        surface_session_save_failure(app, Some(&session_id), &kind.to_string());
     }
 }
 
@@ -2254,6 +2272,11 @@ pub(crate) async fn run_event_loop(
                     () = drain => None,
                 };
                 if let Some(snapshot) = snapshot
+                    && snapshot.source.as_ref().is_some_and(|source| {
+                        app.session_write_owner
+                            .as_ref()
+                            .is_some_and(|owner| owner.matches_source(source))
+                    })
                     && !acknowledge.is_closed()
                     && apply_recovery_messages(
                         app,
@@ -2717,7 +2740,10 @@ pub(crate) async fn run_event_loop(
                     apply_engine_session_projection(app, config, event);
                     continue;
                 }
-                capture_turn_started_metadata(app, &event);
+                if !capture_turn_started_metadata(app, &event) {
+                    tracing::debug!("ignored a start from another native source");
+                    continue;
+                }
                 observe_human_request_settlement(app, &event);
                 // Child approval bookkeeping runs before every filter: it is
                 // keyed by approval id and agent, not by the active session,
@@ -2740,8 +2766,10 @@ pub(crate) async fn run_event_loop(
                         workspace,
                         messages,
                         checkpoint: None,
+                        source,
                         ..
                     } = &event
+                        && app.owns_session_projection(source.as_ref())
                         && messages.len().checked_sub(app.api_messages.len()) == Some(1)
                         && messages
                             .last()
@@ -3356,7 +3384,9 @@ pub(crate) async fn run_event_loop(
                         }
                     }
                     EngineEvent::TurnComplete {
-                        turn_id: _,
+                        turn_id,
+                        submission_id,
+                        compaction_id,
                         usage,
                         parent_route_usage,
                         routed_usage_dropped_records,
@@ -3366,6 +3396,18 @@ pub(crate) async fn run_event_loop(
                         base_url,
                         ..
                     } => {
+                        let terminal_source =
+                            codewhale_engine::core::ops::SessionSnapshotSource::terminal(
+                                turn_id.clone(),
+                                submission_id.clone(),
+                                compaction_id.clone(),
+                            );
+                        let terminal_owner_matches =
+                            terminal_source.as_ref().is_some_and(|source| {
+                                app.session_write_owner
+                                    .as_ref()
+                                    .is_some_and(|owner| owner.matches_source(source))
+                            });
                         // A decision whose tool never reported completion
                         // still gets its receipt before the turn closes.
                         if flush_gate_receipts_for(app, None) {
@@ -3376,16 +3418,6 @@ pub(crate) async fn run_event_loop(
                         // (#6190).
                         crate::tui::ui::dispatch::settle_unaccepted_steers_at_turn_end(app);
                         let completed_turn = app.active_turn.take();
-                        // TUI dispatches carry no submission id, so
-                        // TurnComplete cannot name the dispatch it closes.
-                        // After a local cancel the UI is idle, so `is_loading` can only be
-                        // true again because a newer dispatch set it: this
-                        // terminal event belongs to the cancelled turn and
-                        // must not close the newer one's loading, dispatch,
-                        // status or unanswered-submission state, nor drain
-                        // the queue ahead of it (U02-07). The engine runs one
-                        // turn at a time, so the newer turn's own TurnStarted
-                        // and TurnComplete follow this event.
                         let newer_dispatch_owns_turn_state =
                             app.suppress_stream_events_until_turn_complete && app.is_loading;
                         if !newer_dispatch_owns_turn_state {
@@ -3621,6 +3653,7 @@ pub(crate) async fn run_event_loop(
                             .as_ref()
                             .and_then(|turn| turn.route.as_ref())
                             .and_then(codewhale_engine::core::events::TurnRoute::cost_envelope)
+                            .filter(|_| parent_route_usage != codewhale_models::Usage::default())
                             .map(|route| route.audit(&parent_route_usage));
                         app.push_turn_cache_record(crate::tui::app::TurnCacheRecord {
                             provider,
@@ -3814,7 +3847,46 @@ pub(crate) async fn run_event_loop(
                         // Auto-save completed turn and clear crash checkpoint.
                         // Offloaded to the persistence actor so the UI
                         // stays responsive.
-                        if let Ok(manager) = SessionManager::default_location()
+                        let mut snapshot_error = None;
+                        let terminal_snapshot = if terminal_owner_matches
+                            && !newer_dispatch_owns_turn_state
+                        {
+                            let snapshot = match engine_handle.get_session_snapshot().await {
+                                Ok(snapshot) => Some(snapshot),
+                                Err(error) => {
+                                    tracing::warn!(%error, "terminal session snapshot could not be read; checkpoint retained");
+                                    snapshot_error = Some(error.to_string());
+                                    None
+                                }
+                            };
+                            snapshot.filter(|snapshot| {
+                                snapshot.source.as_ref() == terminal_source.as_ref()
+                                    && app.session_write_owner.as_ref().is_some_and(|owner| {
+                                        snapshot
+                                            .source
+                                            .as_ref()
+                                            .is_some_and(|source| owner.matches_source(source))
+                                    })
+                                    && app.current_session_id.as_deref()
+                                        == Some(snapshot.session_id.as_str())
+                                    && snapshot.workspace == app.workspace
+                                    && snapshot.messages.as_slice() == app.api_messages.as_slice()
+                            })
+                        } else {
+                            None
+                        };
+                        if terminal_owner_matches && terminal_snapshot.is_none() {
+                            tracing::warn!(
+                                ?terminal_source,
+                                "terminal session source no longer matches; checkpoint retained"
+                            );
+                            let session_id = app.current_session_id.clone();
+                            let error = snapshot_error
+                                .unwrap_or_else(|| std::io::ErrorKind::ResourceBusy.to_string());
+                            surface_session_save_failure(app, session_id.as_deref(), &error);
+                        }
+                        if terminal_snapshot.is_some()
+                            && let Ok(manager) = SessionManager::default_location()
                             && let Ok(session) = build_session_snapshot(app, &manager)
                         {
                             let projection = saved_work_projection(app, &session);
@@ -3824,10 +3896,10 @@ pub(crate) async fn run_event_loop(
                             // crash checkpoint only after that write succeeds.
                             // A failed save now retains the checkpoint as the
                             // sole recovery record instead of erasing it.
-                            let queued =
-                                persistence_actor::try_persist(PersistRequest::CompletedCommit {
-                                    session,
-                                });
+                            let queued = super::session_state::try_persist_session(
+                                app,
+                                PersistRequest::CompletedCommit { session },
+                            );
                             if queued {
                                 if let Err(err) =
                                     publish_saved_work_projection(app, &projection).await
@@ -4792,6 +4864,50 @@ pub(crate) async fn run_event_loop(
                         }
                     }
                     EngineEvent::ProviderRequestReceipt { receipt } => {
+                        if receipt["primary"].as_bool() == Some(true)
+                            && receipt["session_id"].as_str() == app.current_session_id.as_deref()
+                        {
+                            let coverage = receipt.get("coverage").cloned().and_then(|value| {
+                                serde_json::from_value::<
+                                    codewhale_engine::llm_client::ProviderUsageCoverage,
+                                >(value)
+                                .ok()
+                            });
+                            if let Some(source) = receipt["source_id"].as_str() {
+                                if receipt["usage_reported"].as_bool() == Some(true) {
+                                    app.session.subagent_usage_sources.insert(
+                                        codewhale_engine::cost_status::usage_source_fingerprint(
+                                            source,
+                                        ),
+                                    );
+                                    codewhale_engine::cost_status::acknowledge_retired_usage_source(
+                                        codewhale_engine::cost_status::scope_token(),
+                                        source,
+                                    );
+                                }
+                                if matches!(coverage, Some(codewhale_engine::llm_client::ProviderUsageCoverage::Missing | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete))
+                                    && let Some(route) = receipt.get("route").cloned().and_then(|value| serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value).ok())
+                                {
+                                    let reason = if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
+                                        codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+                                    } else {
+                                        codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                                    };
+                                    let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(&codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                                        source_id: source.to_string(), route, reason,
+                                    });
+                                    app.absorb_pending_background_cost(&pool);
+                                }
+                            }
+                            let leaf = app.session_journal.leaf_id.clone();
+                            app.session_journal.append(
+                                codewhale_runtime::session_tree::SessionEntryKind::System {
+                                    content: format!("Provider request receipt: {receipt}"),
+                                },
+                            );
+                            app.session_journal.leaf_id = leaf;
+                        }
+
                         if receipt["outcome"] == "steered"
                             || receipt["outcome"] == "steered_before_stream"
                         {
@@ -4990,6 +5106,7 @@ pub(crate) async fn run_event_loop(
             if !app.api_messages.is_empty() {
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        control: app.session_sync_control(),
                         session_id: app.current_session_id.clone(),
                         messages: app.api_messages.as_ref().clone(),
                         system_prompt: app.system_prompt.clone(),
@@ -5385,7 +5502,14 @@ pub(crate) async fn run_event_loop(
                 && let Ok(session) = build_session_snapshot(app, &manager)
             {
                 app.set_current_session_id(Some(session.metadata.id.clone()));
-                persistence_actor::persist(PersistRequest::SessionSnapshot(session));
+                if !super::session_state::try_persist_session(
+                    app,
+                    PersistRequest::SessionSnapshot(session),
+                ) {
+                    tracing::warn!(
+                        "late usage snapshot was not queued; canonical usage evidence retained"
+                    );
+                }
             }
         }
         // Drain completed file-tree walks (initial build / expands) so the
@@ -8741,6 +8865,7 @@ mod launch_session_sync_tests {
 
         handle
             .send(Op::SyncSession {
+                control: codewhale_engine::core::ops::SessionControlId::new(),
                 session_id: Some("launch-session".to_string()),
                 messages: Vec::new(),
                 system_prompt: None,

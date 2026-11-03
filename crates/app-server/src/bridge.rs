@@ -615,14 +615,14 @@ impl RuntimeBridge {
         }
 
         if stream_result.is_ok() {
-            let _ = emit_stdio_event(
+            emit_stdio_event(
                 writer,
                 json!({
                     "type": "response_end",
                     "response_id": response_id,
                 }),
             )
-            .await;
+            .await?;
             if let Some(transcript) = transcript {
                 transcript.events.push(EventFrame::ResponseEnd {
                     response_id: response_id.clone(),
