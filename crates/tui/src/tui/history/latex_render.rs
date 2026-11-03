@@ -734,11 +734,7 @@ fn render_latex_to_string(latex: &str) -> String {
                             b'{' | b'}' | b'$' | b'%' | b'#' | b'&' | b'_' | b' ' => {
                                 // Consume the escape
                                 let skip = 1 + 1; // \ + char
-                                if next == b' ' {
-                                    // \  (backslash-space) is a space
-                                    out.push(' ');
-                                }
-                                // otherwise just skip (it's an escaped char)
+                                out.push(next as char);
                                 pos += skip;
                                 continue;
                             }
@@ -894,12 +890,15 @@ fn render_latex_to_string(latex: &str) -> String {
                         let after = &input[total_cmd_end..];
                         let delimiter = after.trim_start();
                         if let Some(next) = delimiter.chars().next() {
-                            if next == '.' {
-                                // \left. 闁?invisible delimiter, skip
-                            } else {
-                                out.push(next);
+                            let mut skip = after.len() - delimiter.len();
+                            if next != '\\' {
+                                if next == '.' {
+                                    // \left. 闁?invisible delimiter, skip
+                                } else {
+                                    out.push(next);
+                                }
+                                skip += next.len_utf8();
                             }
-                            let skip = after.len() - delimiter.len() + next.len_utf8();
                             pos = total_cmd_end + skip;
                         } else {
                             pos = total_cmd_end;
@@ -909,12 +908,15 @@ fn render_latex_to_string(latex: &str) -> String {
                         let after = &input[total_cmd_end..];
                         let delimiter = after.trim_start();
                         if let Some(next) = delimiter.chars().next() {
-                            if next == '.' {
-                                // \right. 闁?invisible delimiter, skip
-                            } else {
-                                out.push(next);
+                            let mut skip = after.len() - delimiter.len();
+                            if next != '\\' {
+                                if next == '.' {
+                                    // \right. 闁?invisible delimiter, skip
+                                } else {
+                                    out.push(next);
+                                }
+                                skip += next.len_utf8();
                             }
-                            let skip = after.len() - delimiter.len() + next.len_utf8();
                             pos = total_cmd_end + skip;
                         } else {
                             pos = total_cmd_end;
@@ -925,8 +927,12 @@ fn render_latex_to_string(latex: &str) -> String {
                         let after = &input[total_cmd_end..];
                         let delimiter = after.trim_start();
                         if let Some(next) = delimiter.chars().next() {
-                            out.push(next);
-                            pos = total_cmd_end + (after.len() - delimiter.len()) + next.len_utf8();
+                            let mut skip = after.len() - delimiter.len();
+                            if next != '\\' {
+                                out.push(next);
+                                skip += next.len_utf8();
+                            }
+                            pos = total_cmd_end + skip;
                         } else {
                             pos = total_cmd_end;
                         }
