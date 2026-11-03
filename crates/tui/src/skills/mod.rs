@@ -1160,24 +1160,15 @@ fn merge_watched_directories(
     let mut seen_files = HashSet::new();
     // A home workspace is not a repository, but only its own Codewhale state
     // directory is exempt: the user may keep `~/.codewhale` behind a junction,
-    // or put one of its skills directories on another volume, while every other
-    // directory under home stays workspace content and goes on refusing links
-    // that escape it. The state directory is matched by its literal spelling as
-    // well, so a linked directory *inside* the user's own state root keeps the
-    // exemption that root exists for.
-    let home = workspace
+    // while every other directory under home stays workspace content and goes
+    // on refusing links that escape it.
+    let home_state = workspace
         .filter(|workspace| codewhale_util::files::workspace_is_user_home(workspace))
-        .map(|workspace| {
-            (
-                workspace.join(codewhale_paths::CODEWHALE_APP_DIR),
-                codewhale_util::files::workspace_state_dir(workspace),
-            )
-        });
+        .map(codewhale_util::files::workspace_state_dir);
     for dir in dirs {
         watched.push((dir.clone(), watched_path_stamp(&dir)));
-        let owned_state_dir = home.as_ref().is_some_and(|(literal, resolved)| {
-            dir.starts_with(literal)
-                || fs::canonicalize(&dir).is_ok_and(|target| target.starts_with(resolved))
+        let owned_state_dir = home_state.as_ref().is_some_and(|state| {
+            fs::canonicalize(&dir).is_ok_and(|resolved| resolved.starts_with(state))
         });
         let confine_to =
             workspace.filter(|workspace| dir.starts_with(workspace) && !owned_state_dir);

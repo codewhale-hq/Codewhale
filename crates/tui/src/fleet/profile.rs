@@ -218,10 +218,10 @@ pub fn load_workspace_agent_profiles(workspace: impl AsRef<Path>) -> Result<Vec<
 ///
 /// A home workspace keeps its `.codewhale` state wherever the user put it, so
 /// the resolved state directory is the root; links below it are still refused.
+/// Any other workspace keeps the workspace as the root with `.codewhale`
+/// inside the walked path, so a repository-supplied link is still refused.
 fn workspace_agent_profile_dir(workspace: &Path) -> (PathBuf, PathBuf) {
-    let root = codewhale_util::files::workspace_state_dir(workspace);
-    let dir = root.join("agents");
-    (root, dir)
+    codewhale_util::files::workspace_state_path(workspace, Path::new("agents"))
 }
 
 /// Read one profile file. Under a workspace `root` a linked file or linked

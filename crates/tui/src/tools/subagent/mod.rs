@@ -3858,17 +3858,24 @@ pub const COORDINATION_LOCK_TIMEOUT_MARKER: &str =
 impl CoordinationProcessLock {
     fn acquire(state_root: &Path, exclusive: bool) -> Result<Self> {
         let requested_root = normalize_subagent_workspace(state_root);
-        // A home workspace may keep `.codewhale` on another volume behind a
-        // junction the user made; `workspace_state_dir` resolves that one root
-        // and the walk below still refuses links beneath it.
-        let state_dir = codewhale_util::files::workspace_state_dir(&requested_root);
-        let lock_dir = state_dir.join("state");
-        // Refuse a linked `state` before creating anything: `create_dir_all`
-        // follows links and would populate the target.
-        reject_root_relative_symlinks(&state_dir, &lock_dir.join(SUBAGENT_STATE_LOCK_FILE))?;
+        // Root and path for the lock. A non-home workspace keeps itself as the
+        // root, so a repository-supplied `.codewhale` link is walked and
+        // refused before `create_dir_all` could follow it into the target. A
+        // home workspace resolves its own junction once and still walks
+        // everything below it.
+        let (walk_root, lock_path) = codewhale_util::files::workspace_state_path(
+            &requested_root,
+            &Path::new("state").join(SUBAGENT_STATE_LOCK_FILE),
+        );
+        let lock_dir = lock_path
+            .parent()
+            .map_or_else(|| walk_root.clone(), Path::to_path_buf);
+        // Refuse a linked `.codewhale` or `state` before creating anything:
+        // `create_dir_all` follows links and would populate the target.
+        reject_root_relative_symlinks(&walk_root, &lock_path)?;
         fs::create_dir_all(&lock_dir)?;
         let ignore = lock_dir.join(".gitignore");
-        let ignored = reject_root_relative_symlinks(&state_dir, &ignore).and_then(|()| {
+        let ignored = reject_root_relative_symlinks(&walk_root, &ignore).and_then(|()| {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -3886,9 +3893,11 @@ impl CoordinationProcessLock {
         // Windows (for example by adding a `\\?\` prefix). Re-resolve both
         // sides before checking containment.
         let state_root = normalize_subagent_workspace(state_root);
-        let state_dir = codewhale_util::files::workspace_state_dir(&state_root);
-        let lock_path = state_dir.join("state").join(SUBAGENT_STATE_LOCK_FILE);
-        reject_root_relative_symlinks(&state_dir, &lock_path)?;
+        let (walk_root, lock_path) = codewhale_util::files::workspace_state_path(
+            &state_root,
+            &Path::new("state").join(SUBAGENT_STATE_LOCK_FILE),
+        );
+        reject_root_relative_symlinks(&walk_root, &lock_path)?;
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
