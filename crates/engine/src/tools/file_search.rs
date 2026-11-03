@@ -117,6 +117,7 @@ impl ToolSpec for FileSearchTool {
         let matches = search_files_async(
             query.to_string(),
             base_path,
+            context.workspace.clone(),
             extensions,
             exclude_patterns,
             limit,
@@ -133,6 +134,7 @@ impl ToolSpec for FileSearchTool {
 async fn search_files_async(
     query: String,
     base_path: PathBuf,
+    workspace: PathBuf,
     extensions: Vec<String>,
     exclude_patterns: Vec<String>,
     limit: usize,
@@ -144,6 +146,7 @@ async fn search_files_async(
         search_files(
             &query,
             &base_path,
+            &workspace,
             extensions,
             exclude_patterns,
             limit,
@@ -253,9 +256,11 @@ fn parse_exclude_patterns(input: &Value) -> Vec<String> {
     .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_files(
     query: &str,
     base_path: &Path,
+    workspace: &Path,
     extensions: Vec<String>,
     exclude_patterns: Vec<String>,
     limit: usize,
@@ -325,6 +330,7 @@ fn search_files(
     let walk_root = base_path.to_path_buf();
     let walk_cancel_token = cancel_token.cloned();
 
+    let workspace_canonical = workspace.canonicalize().ok();
     let mut builder = WalkBuilder::new(base_path);
     builder
         .hidden(false)
@@ -392,8 +398,19 @@ fn search_files(
             None => continue,
         };
 
+        let shown_path = path
+            .strip_prefix(workspace)
+            .ok()
+            .or_else(|| {
+                workspace_canonical
+                    .as_deref()
+                    .and_then(|canonical| path.strip_prefix(canonical).ok())
+            })
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
         let found = FileSearchMatch {
-            path: rel_path,
+            path: shown_path,
             name,
             score,
         };
