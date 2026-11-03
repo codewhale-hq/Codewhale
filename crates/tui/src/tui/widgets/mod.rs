@@ -1022,7 +1022,9 @@ impl ChatWidget {
             rows: &self.lines,
             pinned_rows: self.transcript_area.y.saturating_sub(self.content_area.y),
             style: background,
-            fill: true,
+            // Paragraph styles the whole viewport with this same background;
+            // a separate fill only repeats the per-cell buffer walk.
+            fill: false,
             ascii: crate::tui::color_compat::ascii_safe_enabled(),
             scrollbar: self.scrollbar,
             jump_to_latest: self.jump_to_latest_button.is_some(),

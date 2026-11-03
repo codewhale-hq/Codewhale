@@ -1606,9 +1606,11 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // alt-tabbed sessions communicate state without a second in-app spinner.
     crate::tui::underwater::sync_title_activity(app);
 
-    // Clear entire area with the configured app background.
-    let background = Block::default().style(Style::default().bg(app.ui_theme.surface_bg));
-    f.render_widget(background, size);
+    // Frame-wide ink backstop (#400), including gaps after pane toggles or resize.
+    // Frame's buffer is exactly its viewport; preserve symbols and all non-bg style.
+    for cell in &mut f.buffer_mut().content {
+        cell.set_bg(app.ui_theme.surface_bg);
+    }
 
     // Show onboarding screen if needed
     if app.onboarding != OnboardingState::None {
@@ -1873,13 +1875,8 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // rejected build still read as the old TUI under a gradient.
     let shell_ocean;
     {
-        // Defensive backstop (#400): fill the entire body area with ink
-        // background before any sub-widgets render, so cells that end up
-        // uncovered by layout splits (e.g. after file-tree toggle or
-        // resize) don't retain stale content from a previous frame.
-        Block::default()
-            .style(Style::default().bg(app.ui_theme.surface_bg))
-            .render(work_chat_area, f.buffer_mut());
+        // The frame-wide ink backstop above also covers layout gaps here
+        // after file-tree toggles and resize; do not repaint the same cells.
 
         // When the file-tree pane is visible and the terminal is wide
         // enough, reserve the left ~25% for the file tree.
