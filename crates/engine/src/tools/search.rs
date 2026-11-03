@@ -670,8 +670,30 @@ fn should_include(path: &str, patterns: &[String]) -> bool {
 }
 
 /// Simple glob pattern matching
-/// Supports: * (any chars), ** (any path), ? (single char)
+/// Supports: * (any chars), ** (any path), ? (single char), {a,b} (either)
 pub fn matches_glob(path: &str, pattern: &str) -> bool {
+    if let Some(alternatives) = expand_braces(pattern) {
+        return alternatives.iter().any(|alt| matches_glob(path, alt));
+    }
+
+    if let Some(rest) = pattern.strip_prefix("**/")
+        && rest.contains('/')
+    {
+        return std::iter::once(path)
+            .chain(path.match_indices('/').map(|(i, _)| &path[i + 1..]))
+            .any(|tail| matches_glob(tail, rest));
+    }
+
+    if let Some((head, tail)) = pattern.split_once("/**/")
+        && tail.contains('/')
+        && !head.contains(['*', '?'])
+    {
+        return path
+            .strip_prefix(head)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|rest| matches_glob(rest, &format!("**/{tail}")));
+    }
+
     // Handle ** for any path
     if pattern.contains("**") {
         let parts: Vec<&str> = pattern.split("**").collect();
@@ -717,6 +739,45 @@ pub fn matches_glob(path: &str, pattern: &str) -> bool {
     // Match against filename
     let filename = path.rsplit('/').next().unwrap_or(path);
     matches_simple_glob(filename, pattern)
+}
+
+fn expand_braces(pattern: &str) -> Option<Vec<String>> {
+    let open = pattern.find('{')?;
+    let mut depth = 0;
+    let mut bounds = vec![open];
+    let mut close = None;
+    for (i, c) in pattern.char_indices().skip_while(|(i, _)| *i < open) {
+        match c {
+            '{' => depth += 1,
+            ',' if depth == 1 => bounds.push(i),
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    if bounds.len() < 2 {
+        return None;
+    }
+    bounds.push(close);
+    Some(
+        bounds
+            .windows(2)
+            .map(|pair| {
+                format!(
+                    "{}{}{}",
+                    &pattern[..open],
+                    &pattern[pair[0] + 1..pair[1]],
+                    &pattern[close + 1..]
+                )
+            })
+            .collect(),
+    )
 }
 
 /// Simple glob matching for single path component
