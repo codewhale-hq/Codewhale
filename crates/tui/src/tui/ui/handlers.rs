@@ -241,6 +241,14 @@ pub(crate) fn handle_bracketed_paste(app: &mut App, text: &str) {
         // Main-input paste takes the same keyboard ownership as typed text.
         // Otherwise the visible composer command's Enter stays with the dock.
         crate::tui::work_surface::release_focus(app);
+        if text.is_empty() {
+            // A terminal that answers an image-only clipboard with an empty
+            // paste has already proven the person pressed paste; read the
+            // picture ourselves. Windows Terminal sends no event at all in
+            // that case, which is why `/attach` with no path also exists.
+            app.paste_from_clipboard();
+            return;
+        }
         app.insert_paste_text(text);
     }
 }

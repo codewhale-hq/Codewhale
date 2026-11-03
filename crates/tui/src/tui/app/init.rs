@@ -791,6 +791,7 @@ impl App {
                 ..ViewportState::default()
             },
             pet_watch: crate::tui::pet_watch::PetWatch::default(),
+            attachment_preview: crate::tui::image_preview::ThumbnailCache::new(),
             work_surface: {
                 let mut state = crate::tui::work_surface::WorkSurfaceState::with_layout(
                     work_surface_placement,

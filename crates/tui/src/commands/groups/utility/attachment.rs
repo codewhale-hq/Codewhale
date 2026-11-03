@@ -11,7 +11,7 @@ use crate::commands::CommandResult;
 pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
     name: "attach",
     aliases: &["image", "media", "fujian"],
-    usage: "/attach <path>",
+    usage: "/attach [path]",
     description_key: "cmd_attach_description",
 };
 
@@ -47,7 +47,13 @@ fn attach(
     arg: Option<&str>,
 ) -> CommandResult {
     let Some(raw_path) = arg.map(str::trim).filter(|value| !value.is_empty()) else {
-        return CommandResult::error("Usage: /attach <image-or-video-path>");
+        // No path: attach what the clipboard holds. This is the reachable
+        // entry when the terminal consumes Ctrl+V itself (Windows Terminal
+        // sends nothing at all for an image-only clipboard).
+        return match media.attach_clipboard_image() {
+            Ok(message) => CommandResult::message(message),
+            Err(error) => CommandResult::error(error),
+        };
     };
 
     let path = resolve_attachment_path(raw_path, &workspace);
@@ -142,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_requires_a_path() {
+    fn attach_without_a_path_asks_the_clipboard() {
         let result = attach(workspace(), &mut FakeMedia, None);
         assert!(result.is_error);
         assert!(
@@ -150,9 +156,53 @@ mod tests {
                 .message
                 .as_deref()
                 .unwrap_or_default()
-                .contains("Usage: /attach"),
+                .contains("Clipboard image paste is unavailable"),
             "{:?}",
             result.message
+        );
+    }
+
+    #[test]
+    fn attach_with_only_whitespace_reads_the_clipboard_too() {
+        let result = attach(workspace(), &mut FakeMedia, Some("   "));
+        assert!(result.is_error);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Clipboard image paste is unavailable"),
+            "{:?}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn attach_reports_the_host_receipt_when_the_clipboard_has_an_image() {
+        struct ClipboardMedia;
+        impl CommandMediaContext for ClipboardMedia {
+            fn attach_media(
+                &mut self,
+                _path: &Path,
+            ) -> Result<codewhale_command_contract::facets::MediaAttachmentReceipt, String>
+            {
+                Err("this host only pastes".to_string())
+            }
+
+            fn attach_clipboard_image(&mut self) -> Result<String, String> {
+                Ok("Attached image: 8x4 PNG (2KB)".to_string())
+            }
+        }
+
+        let result = attach(workspace(), &mut ClipboardMedia, None);
+        assert!(!result.is_error);
+        assert!(
+            result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Attached image"),
+            "{result:?}"
         );
     }
 

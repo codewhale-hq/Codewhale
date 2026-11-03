@@ -1041,6 +1041,9 @@ pub struct ViewportState {
     pub selection_copy_markdown: bool,
     pub last_transcript_area: Option<Rect>,
     pub last_composer_area: Option<Rect>,
+    /// Where the attached-image thumbnail painted, so a click can later open
+    /// the file. `None` when the draft has no image or its decode is pending.
+    pub last_attachment_preview_area: Option<Rect>,
     /// Selectable targets from the latest painted frame. Cleared before every
     /// render so resized or hidden controls can never swallow a click.
     pub interaction_targets: crate::tui::tideline::InteractionRegistry,
@@ -1108,6 +1111,7 @@ impl Default for ViewportState {
             selection_copy_markdown: true,
             last_transcript_area: None,
             last_composer_area: None,
+            last_attachment_preview_area: None,
             interaction_targets: crate::tui::tideline::InteractionRegistry::default(),
             composer_click_trace: None,
             last_prompt_area: None,
@@ -1601,6 +1605,9 @@ pub struct App {
     /// so the replacement shell can be removed or promoted as one unit.
     pub work_surface: crate::tui::work_surface::WorkSurfaceState,
     pub pet_watch: crate::tui::pet_watch::PetWatch,
+    /// Cell-rendered previews of the images attached to this draft. Decoded
+    /// off-thread; painting only ever reads a ready thumbnail.
+    pub attachment_preview: crate::tui::image_preview::ThumbnailCache,
     /// Goal sub-state.
     pub goal: HostGoalState,
     /// Session sub-state (cost, tokens, telemetry).

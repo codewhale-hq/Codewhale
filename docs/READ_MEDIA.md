@@ -14,17 +14,49 @@
 
 - Paste a clipboard image into the composer with the normal terminal paste
   shortcut, or run `/attach <path>` for an existing PNG, JPEG, GIF, or WebP.
+  `/attach` with no path attaches whatever image is on the clipboard, which is
+  the reliable entry when the terminal keeps `Ctrl+V` to itself.
 - Drag an image file onto the terminal, or paste its absolute path (plain,
   quoted, shell-escaped, or as a `file://` URL), and it attaches the same way.
   A paste becomes an attachment only when every path in it names an existing
   image; otherwise it stays text. A text-only model gets a notice instead of
   the image.
-- A visible attachment row appears above the composer before the turn is sent.
-  Temporary macOS `NSIRD_screencaptureui` paths are copied into Codewhale's
+- A truecolor cell thumbnail of the first attached image is drawn above the
+  composer, with the file name and the sampled pixel size under it. The
+  picture is ordinary cell output (`▀` half blocks, top pixel as foreground,
+  bottom as background), not a graphics protocol, so it renders on Windows
+  Terminal, iTerm2, Terminal.app, GNOME Terminal, Konsole and WezTerm alike.
+  It is skipped in ASCII-safe mode, and it costs no rows while the decode is
+  still running.
+- Temporary macOS `NSIRD_screencaptureui` paths are copied into Codewhale's
   stable attachment store when ingested.
 - Ask the agent to inspect the screenshot. The image is sent only as part of
   that explicit turn action; merely having a screenshot path or artifact does
   not trigger background analysis.
+
+### When `Ctrl+V` does nothing
+
+Most terminals own the paste chord. Windows Terminal turns `Ctrl+V` into a
+paste of the clipboard's **text**; when the clipboard holds only a picture
+there is no text to send, so Codewhale receives no event at all. That is a
+property of the terminal, not of the model route, and no TUI can see a key
+the terminal never forwards.
+
+Two reliable ways to attach the picture:
+
+- `/attach` with no path reads the clipboard directly.
+- Bind the chord to a literal `0x16` byte, which Codewhale already treats as a
+  paste chord. In Windows Terminal's `settings.json`:
+
+```json
+{ "keys": "ctrl+v", "command": { "action": "sendInput", "input": "\u0016" } }
+```
+
+  iTerm2 ("Send Hex Code" `0x16`), GNOME Terminal and Konsole can send the same
+  byte. Codewhale then reads both text and images from the clipboard itself.
+
+In an SSH session with no forwarded graphical display the remote host cannot
+read your clipboard at all; paste stays terminal-owned and delivers text only.
 
 `read_media` is the corresponding agent-side path for inspecting another
 image later in the task without requiring the operator to attach it again.
