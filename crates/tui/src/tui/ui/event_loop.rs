@@ -1460,7 +1460,7 @@ pub async fn run_tui(
     // than through it. Only this path calls it, which is what keeps the
     // cold-start bucket absent on surfaces with no event loop.
     codewhale_runtime::startup_trace::mark_cold_start();
-    let result = run_event_loop(
+    let result = Box::pin(run_event_loop(
         &mut terminal,
         &mut app,
         config,
@@ -1470,7 +1470,7 @@ pub async fn run_tui(
         translation_client,
         pending_telemetry_notice,
         dispatch_completion_rx,
-    )
+    ))
     .await;
     automation_cancel.cancel();
     automation_scheduler.abort();
@@ -1764,7 +1764,15 @@ async fn dispatch_launch_composer_submit(
     }
     if looks_like_slash_command_input(&input) {
         // Commands own their output; only model-bound prompts become user turns.
-        if execute_command_input(terminal, app, engine_handle, task_manager, config, &input).await?
+        if Box::pin(execute_command_input(
+            terminal,
+            app,
+            engine_handle,
+            task_manager,
+            config,
+            &input,
+        ))
+        .await?
         {
             return Ok(true);
         }
@@ -1942,7 +1950,15 @@ async fn submit_decided_composer_input(
     if looks_like_slash_command_input(&input) {
         // Opening a view is not a conversation turn. SendMessage actions
         // record their real prompt through dispatch_composer_message instead.
-        if execute_command_input(terminal, app, engine_handle, task_manager, config, &input).await?
+        if Box::pin(execute_command_input(
+            terminal,
+            app,
+            engine_handle,
+            task_manager,
+            config,
+            &input,
+        ))
+        .await?
         {
             return Ok(true);
         }
@@ -6158,14 +6174,14 @@ pub(crate) async fn run_event_loop(
                 if let Some(action) = action {
                     match action {
                         crate::tui::app::SidebarRowAction::Command(command) => {
-                            if execute_command_input(
+                            if Box::pin(execute_command_input(
                                 terminal,
                                 app,
                                 &mut engine_handle,
                                 &task_manager,
                                 config,
                                 &command,
-                            )
+                            ))
                             .await?
                             {
                                 return Ok(());
@@ -7469,14 +7485,14 @@ pub(crate) async fn run_event_loop(
                             continue;
                         }
                         if looks_like_slash_command_input(&input) {
-                            if execute_command_input(
+                            if Box::pin(execute_command_input(
                                 terminal,
                                 app,
                                 &mut engine_handle,
                                 &task_manager,
                                 config,
                                 &input,
-                            )
+                            ))
                             .await?
                             {
                                 return Ok(());
@@ -7766,14 +7782,14 @@ pub(crate) async fn run_event_loop(
                 // above the readline Ctrl+U arm so the shifted chord is never
                 // swallowed by clear-input.
                 _ if key_shortcuts::is_update_install_shortcut(&key) => {
-                    if execute_command_input(
+                    if Box::pin(execute_command_input(
                         terminal,
                         app,
                         &mut engine_handle,
                         &task_manager,
                         config,
                         "/update install",
-                    )
+                    ))
                     .await?
                     {
                         return Ok(());

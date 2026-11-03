@@ -15225,10 +15225,9 @@ printf '%s\n' '{"text":"after timeout"}'
     .await
     .expect("dispatch user message");
 
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("hook timed out after 1s")
-    );
+    assert!(app.status_toasts.iter().any(|toast| {
+        toast.level == StatusToastLevel::Warning && toast.text == "hook timed out after 1s"
+    }));
     match engine.rx_op.recv().await.expect("send message op") {
         codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert_eq!(content, "after timeout");
@@ -15270,10 +15269,10 @@ printf '%s\n' '{"text":"after soft failure"}'
     .await
     .expect("dispatch user message");
 
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("message_submit hook exited with code 9")
-    );
+    assert!(app.status_toasts.iter().any(|toast| {
+        toast.level == StatusToastLevel::Warning
+            && toast.text == "message_submit hook exited with code 9"
+    }));
     match engine.rx_op.recv().await.expect("send message op") {
         codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
             assert_eq!(content, "after soft failure");
@@ -24490,6 +24489,7 @@ fn renamed_title_survives_next_in_memory_automatic_snapshot() {
     app.current_session_id = Some(session.metadata.id.clone());
     app.api_messages = std::sync::Arc::new(session.messages.clone());
 
+    app.capture_session_fixture_source();
     let renamed = crate::commands::execute("/rename Renamed In Memory", &mut app);
     assert!(!renamed.is_error, "{:?}", renamed.message);
     let snapshot = build_session_snapshot(&mut app, &manager).expect("automatic snapshot");
@@ -33777,7 +33777,7 @@ async fn flush_offline_queue_test_actor(handle: &persistence_actor::PersistActor
     assert!(report.failures.is_empty(), "{:?}", report.failures);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
     const PROBE: &str = "CODEWHALE_OFFLINE_QUEUE_LIFECYCLE_PROBE";
     if std::env::var_os(PROBE).is_none() {

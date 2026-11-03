@@ -339,6 +339,7 @@ pub(crate) fn apply_message_submit_outcome(
 ) -> bool {
     if let Some(warning) = outcome.warning() {
         app.status_message = Some(warning.to_string());
+        app.push_status_toast(warning.to_string(), StatusToastLevel::Warning, Some(6_000));
     }
     match outcome {
         codewhale_engine::hooks::MessageSubmitOutcome::Unchanged { .. } => true,

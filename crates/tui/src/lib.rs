@@ -13976,7 +13976,7 @@ async fn run_interactive_prepared(
     // env var (config.yolo), not as a CLI flag. Honour either.
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
 
-    tui::run_tui(
+    Box::pin(tui::run_tui(
         config,
         tui::TuiOptions {
             model,
@@ -14003,7 +14003,7 @@ async fn run_interactive_prepared(
         },
         plugin_registry,
         pending_telemetry_notice,
-    )
+    ))
     .await
 }
 
