@@ -2260,8 +2260,10 @@ fn table_col_widths(blocks: &[Block], num_cols: usize, term_width: usize) -> Vec
         if let Block::TableRow(cells) = block {
             for (col_wanted, cell) in wanted.iter_mut().zip(cells) {
                 let tokens = parse_inline_spans(cell, Style::default(), Style::default());
-                let cell_width = tokens.iter().map(|token| token.text.width()).sum();
-                *col_wanted = (*col_wanted).max(cell_width);
+                for row in tokens.split(|token| token.text == "\n") {
+                    let row_width = row.iter().map(|token| token.text.width()).sum();
+                    *col_wanted = (*col_wanted).max(row_width);
+                }
             }
         }
     }
