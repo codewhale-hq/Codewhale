@@ -1083,7 +1083,7 @@ fn shell_command(entry: &TaskPanelEntry) -> String {
     if command.is_empty() {
         entry.id.clone()
     } else {
-        crate::tui::history::summarize_tool_output(command).replace(['\n', '\r'], " ")
+        codewhale_app_server::exec_agent::summarize_tool_output(command).replace(['\n', '\r'], " ")
     }
 }
 
@@ -2008,7 +2008,7 @@ fn agent_rows(app: &App) -> Vec<RankedWorkRow> {
 fn summarize_assignment(value: &str) -> String {
     // Flatten newlines the way the goal-title path does: a multi-line
     // objective must not break the one-line work-bar row (2026-08-04 review).
-    let summary = crate::tui::history::summarize_tool_output(value);
+    let summary = codewhale_app_server::exec_agent::summarize_tool_output(value);
     if summary.contains(['\n', '\r']) {
         summary.replace(['\n', '\r'], " ")
     } else {

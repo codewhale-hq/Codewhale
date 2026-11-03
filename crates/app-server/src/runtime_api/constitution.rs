@@ -24,11 +24,11 @@ pub(super) async fn get_constitution(
             ))
         }
         None => {
-            #[cfg(test)]
-            let env_ticket = crate::test_support::env_scope_ticket();
+            #[cfg(any(test, feature = "test-support"))]
+            let env_ticket = codewhale_engine::test_support::env_scope_ticket();
             let rendered = tokio::task::spawn_blocking(move || {
-                #[cfg(test)]
-                let _membership = crate::test_support::join_env_scope(env_ticket);
+                #[cfg(any(test, feature = "test-support"))]
+                let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
                 codewhale_engine::prompts::load_active_user_constitution()
                     .map(|document| document.render_body())
             })

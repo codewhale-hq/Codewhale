@@ -1140,7 +1140,7 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         })
         .and_then(|(text, ink)| fit_notice(&text, notice_budget).map(|fitted| (fitted, ink)))
         .or_else(|| {
-            if app.remote_control.status() == crate::remote_control::Status::Failed {
+            if app.remote_control.status() == codewhale_app_server::remote_control::Status::Failed {
                 let notice = format!("/rc status · {}", tr(app.ui_locale, MessageId::PhaseFailed));
                 fit_notice(&notice, notice_budget)
                     .or_else(|| fit_notice("/rc status", notice_budget))

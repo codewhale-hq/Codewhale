@@ -84,11 +84,11 @@ pub(crate) fn capture_frontend(
     }))
 }
 impl CapturedAcpFrontend {
-    pub(crate) fn serve(
-        &self,
+    pub(crate) fn serve<'a>(
+        &'a self,
         input: Box<dyn AsyncBufRead + Send + Unpin>,
-        mut output: Box<dyn AsyncWrite + Send + Unpin>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        mut output: Box<dyn AsyncWrite + Send + Unpin + 'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             let mut server = AcpServer::new(
                 self.config.clone(),
@@ -99,42 +99,61 @@ impl CapturedAcpFrontend {
                 self.config_path.clone(),
                 self.config_profile.clone(),
             );
-            let mut input = codewhale_app_server::stdio::BoundedLines::new(input);
+            let mut input = crate::stdio::BoundedLines::new(input);
             server.serve(&mut input, &mut output).await
         })
     }
 }
 
 #[cfg(test)]
-impl codewhale_app_server::RuntimeOwnerFrontend for CapturedAcpFrontend {
+impl crate::RuntimeOwnerFrontend for CapturedAcpFrontend {
+    fn execute(
+        &self,
+        _request: crate::RuntimeOwnerRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
+        Box::pin(async {
+            anyhow::bail!("this captured frontend admits no ordinary native service")
+        })
+    }
+    fn events(
+        &self,
+        _thread_id: String,
+        _since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = anyhow::Result<crate::RuntimeOwnerEventStream>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async {
+            anyhow::bail!("this captured frontend admits no ordinary native observation")
+        })
+    }
     fn validate_selection<'a>(
         &'a self,
-        selection: &'a codewhale_app_server::RuntimeOwnerFrontendSelection,
+        selection: &'a crate::RuntimeOwnerFrontendSelection,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             anyhow::ensure!(
-                matches!(
-                    selection,
-                    codewhale_app_server::RuntimeOwnerFrontendSelection::Acp { .. }
-                ),
+                matches!(selection, crate::RuntimeOwnerFrontendSelection::Acp { .. }),
                 "ACP fixture does not capture HTTP services"
             );
             Ok(())
         })
     }
-    fn serve(
-        &self,
-        selection: codewhale_app_server::RuntimeOwnerFrontendSelection,
-        _compatibility: codewhale_app_server::AppState,
+    fn serve<'a>(
+        &'a self,
+        selection: crate::RuntimeOwnerFrontendSelection,
+        _compatibility: crate::AppState,
         input: Box<dyn AsyncBufRead + Send + Unpin>,
-        output: Box<dyn AsyncWrite + Send + Unpin>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        output: Box<dyn AsyncWrite + Send + Unpin + 'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             anyhow::ensure!(
-                matches!(
-                    selection,
-                    codewhale_app_server::RuntimeOwnerFrontendSelection::Acp { .. }
-                ),
+                matches!(selection, crate::RuntimeOwnerFrontendSelection::Acp { .. }),
                 "ACP fixture does not capture HTTP services"
             );
             CapturedAcpFrontend::serve(self, input, output).await
@@ -200,14 +219,14 @@ impl AcpServer {
     }
     async fn serve<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
         &mut self,
-        reader: &mut codewhale_app_server::stdio::BoundedLines<R>,
+        reader: &mut crate::stdio::BoundedLines<R>,
         writer: &mut W,
     ) -> Result<()> {
         loop {
             let line = match reader.next_line().await {
                 Ok(Some(line)) => line,
                 Ok(None) => break,
-                Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                Err(error) if crate::stdio::is_frame_refusal(&error) => {
                     write_jsonrpc_error(writer, None, -32700, error.to_string()).await?;
                     continue;
                 }
@@ -224,7 +243,7 @@ impl AcpServer {
                     continue;
                 }
             };
-            if codewhale_app_server::is_control_input_closed(&message) {
+            if crate::is_control_input_closed(&message) {
                 break;
             }
             let response_id = message
@@ -257,7 +276,7 @@ impl AcpServer {
                         }
                     }
                     Err(error) => {
-                        if codewhale_app_server::stdio::is_control_write_failure(&error) {
+                        if crate::stdio::is_control_write_failure(&error) {
                             return Err(error);
                         }
                         write_jsonrpc_error(
@@ -286,7 +305,7 @@ impl AcpServer {
                         (Ok(()), Some(id)) => write_jsonrpc_result(writer, id, result).await?,
                         (Ok(()), None) => {}
                         (Err(error), id) => {
-                            if codewhale_app_server::stdio::is_control_write_failure(&error) {
+                            if crate::stdio::is_control_write_failure(&error) {
                                 return Err(error);
                             }
                             write_jsonrpc_error(writer, id, -32603, error.to_string()).await?
@@ -1264,26 +1283,23 @@ async fn write_json_line<W>(writer: &mut W, mut value: Value) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let frame = match codewhale_app_server::stdio::serialize_control_frame(&value) {
+    let frame = match crate::stdio::serialize_control_frame(&value) {
         Ok(frame) => frame,
-        Err(error)
-            if codewhale_app_server::stdio::is_frame_refusal(&error)
-                && value.get("method").is_none() =>
-        {
+        Err(error) if crate::stdio::is_frame_refusal(&error) && value.get("method").is_none() => {
             let id = value.get_mut("id").map(Value::take).unwrap_or(Value::Null);
             let mut failure = json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"ACP response exceeds the 8 MiB transport limit; inspect canonical state without replay"}});
-            match codewhale_app_server::stdio::serialize_control_frame(&failure) {
+            match crate::stdio::serialize_control_frame(&failure) {
                 Ok(frame) => frame,
-                Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                Err(error) if crate::stdio::is_frame_refusal(&error) => {
                     failure["id"] = Value::Null;
-                    codewhale_app_server::stdio::serialize_control_frame(&failure)?
+                    crate::stdio::serialize_control_frame(&failure)?
                 }
                 Err(error) => return Err(error.into()),
             }
         }
         Err(error) => return Err(error.into()),
     };
-    codewhale_app_server::stdio::write_control_line(writer, &frame).await
+    crate::stdio::write_control_line(writer, &frame).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1369,7 +1385,7 @@ mod tests {
         pub(super) server: AcpServer,
         mock: Arc<MockLlmClient>,
         pub(super) workspace: PathBuf,
-        _home: crate::test_support::SealedHome,
+        _home: codewhale_engine::test_support::SealedHome,
         _dir: tempfile::TempDir,
     }
     impl Rig {
@@ -1385,7 +1401,7 @@ mod tests {
             acp: bool,
         ) -> Result<Self> {
             let dir = tempfile::tempdir()?;
-            let home = crate::test_support::SealedHome::at(dir.path());
+            let home = codewhale_engine::test_support::SealedHome::at(dir.path());
             let workspace = dir.path().join("workspace");
             std::fs::create_dir(&workspace)?;
             let runtime_dir = dir.path().join("runtime");
@@ -1447,7 +1463,7 @@ mod tests {
         ) -> Result<(&'static str, Vec<Value>)> {
             // Keep the transport input open: an empty reader is a real EOF/cancel.
             let (client, input) = tokio::io::duplex(4096);
-            let mut reader = codewhale_app_server::stdio::BoundedLines::new(BufReader::new(input));
+            let mut reader = crate::stdio::BoundedLines::new(BufReader::new(input));
             let mut output = Vec::new();
             let result = tokio::time::timeout(
                 Duration::from_secs(if cfg!(windows) { 120 } else { 20 }),
@@ -1498,7 +1514,7 @@ mod tests {
             }
         }
         async fn correlated(
-            guest: &mut codewhale_app_server::daemon_client::OwnerClient,
+            guest: &mut crate::daemon_client::OwnerClient,
             id: Value,
         ) -> Result<Value> {
             tokio::time::timeout(Duration::from_secs(30), async {
@@ -1551,10 +1567,7 @@ mod tests {
             execution_scope: binding.execution_scope,
             lease_generation: generation,
             pid: std::process::id(),
-            process_start: codewhale_app_server::daemon_socket::capture_process_start(
-                std::process::id(),
-            )
-            .await?,
+            process_start: crate::daemon_socket::capture_process_start(std::process::id()).await?,
             principal,
             socket_path: socket_path.clone(),
             config_path: None,
@@ -1570,11 +1583,11 @@ mod tests {
         )?;
         // ACP calls the held manager directly through its captured projection;
         // this closed endpoint has no fake HTTP service and is never used.
-        let (daemon, _state) = codewhale_app_server::bind_runtime_frontends(
+        let (daemon, _state) = crate::bind_runtime_frontends(
             None,
             None,
             receipt.clone(),
-            codewhale_app_server::RuntimeOwnerRouting {
+            crate::RuntimeOwnerRouting {
                 workers: None,
                 workspace: Some(rig.workspace.clone()),
                 endpoint: "127.0.0.1:1".parse()?,
@@ -1595,12 +1608,10 @@ mod tests {
         let shutdown = daemon.shutdown_handle();
         let owner = tokio::spawn(daemon.serve());
         let _abort = AbortOnDrop(owner.abort_handle());
-        let mut guest = codewhale_app_server::daemon_client::connect_acp_if_published(
-            None,
-            Some(socket_path.clone()),
-        )
-        .await?
-        .ok_or_else(|| anyhow!("published ACP owner unavailable"))?;
+        let mut guest =
+            crate::daemon_client::connect_acp_if_published(None, Some(socket_path.clone()))
+                .await?
+                .ok_or_else(|| anyhow!("published ACP owner unavailable"))?;
         assert_eq!(guest.receipt(), &receipt);
         assert!(guest.routing().is_some_and(|routing| routing.acp));
         guest
@@ -1633,12 +1644,10 @@ mod tests {
             guest.forward(tokio::io::empty(), tokio::io::sink()),
         )
         .await??;
-        let mut shutdown_guest = codewhale_app_server::daemon_client::connect_acp_if_published(
-            None,
-            Some(socket_path.clone()),
-        )
-        .await?
-        .ok_or_else(|| anyhow!("owner ended after guest EOF"))?;
+        let mut shutdown_guest =
+            crate::daemon_client::connect_acp_if_published(None, Some(socket_path.clone()))
+                .await?
+                .ok_or_else(|| anyhow!("owner ended after guest EOF"))?;
         shutdown_guest.send(json!(4), "shutdown", json!({})).await?;
         let closed = correlated(&mut shutdown_guest, json!(4)).await?;
         assert!(closed["error"].is_null());
@@ -1721,7 +1730,7 @@ mod tests {
         shutdown.trigger();
         tokio::time::timeout(Duration::from_secs(5), owner).await???;
         assert!(
-            codewhale_app_server::daemon_client::connect_acp_if_published(None, Some(socket_path))
+            crate::daemon_client::connect_acp_if_published(None, Some(socket_path))
                 .await?
                 .is_none(),
             "shutdown withdraws the authenticated owner receipt instead of advertising a guest"
@@ -2456,9 +2465,9 @@ mod tests {
         let target = rig.workspace.join("ask.txt");
         let (client, transport) = tokio::io::duplex(65536);
         let (read, mut write) = tokio::io::split(transport);
-        let mut reader = codewhale_app_server::stdio::BoundedLines::new(BufReader::new(read));
+        let mut reader = crate::stdio::BoundedLines::new(BufReader::new(read));
         let (cr, mut cw) = tokio::io::split(client);
-        let mut cr = codewhale_app_server::stdio::BoundedLines::new(BufReader::new(cr));
+        let mut cr = crate::stdio::BoundedLines::new(BufReader::new(cr));
         let sid = id.clone();
         let target_in = target.clone();
         let client = async move {
@@ -2844,13 +2853,13 @@ mod tests {
         );
         let sentinel = rig.workspace.join("floor-sentinel.txt");
         for _ in 0..180 {
-            if crate::test_support::read_shell_sentinel(&sentinel) == "rm -rf /" {
+            if codewhale_engine::test_support::read_shell_sentinel(&sentinel) == "rm -rf /" {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
         assert_eq!(
-            crate::test_support::read_shell_sentinel(&sentinel),
+            codewhale_engine::test_support::read_shell_sentinel(&sentinel),
             "rm -rf /"
         );
         assert!(!rig.workspace.join("CHANGELOG.md").exists());
@@ -3139,8 +3148,7 @@ mod tests {
             json!({"jsonrpc":"2.0","id":5,"method":"fabricated"}),
             json!({"jsonrpc":"2.0","id":6,"method":"shutdown"})
         );
-        let mut reader =
-            codewhale_app_server::stdio::BoundedLines::new(BufReader::new(input.as_bytes()));
+        let mut reader = crate::stdio::BoundedLines::new(BufReader::new(input.as_bytes()));
         let mut output = Vec::new();
         rig.server.serve(&mut reader, &mut output).await?;
         let wire = parse_lines(output);

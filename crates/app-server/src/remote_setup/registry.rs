@@ -447,12 +447,12 @@ mod tests {
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
-    /// Repo root, resolved from this crate's manifest dir (`crates/tui`).
+    /// Repo root, resolved from this crate's manifest dir (`crates/app-server`).
     fn repo_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
-            .expect("crates/tui has a two-level parent (repo root)")
+            .expect("crates/app-server has a two-level parent (repo root)")
             .to_path_buf()
     }
 

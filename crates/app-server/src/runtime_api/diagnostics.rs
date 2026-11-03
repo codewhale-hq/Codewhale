@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn explicit_profile_never_lists_ambient_crashes() {
-        use crate::test_support::{EnvVarGuard, lock_test_env};
+        use codewhale_engine::test_support::{EnvVarGuard, lock_test_env};
         let _lock = lock_test_env();
         let tmp = tempfile::tempdir().expect("temp");
         let _home = EnvVarGuard::set("HOME", tmp.path());
@@ -424,8 +424,9 @@ mod tests {
 
     #[test]
     fn invalid_profile_does_not_fall_back_to_ambient_crashes() {
-        let _lock = crate::test_support::lock_test_env();
-        let _profile = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", "relative-profile");
+        let _lock = codewhale_engine::test_support::lock_test_env();
+        let _profile =
+            codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", "relative-profile");
         assert!(crash_dirs().is_empty());
     }
 

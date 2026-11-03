@@ -1034,156 +1034,6 @@ fn oversized_review_suggestion_degrades_to_prose() {
     );
 }
 
-#[tokio::test]
-async fn configured_workflow_default_keeps_named_custom_route() {
-    let config = custom_exec_config("custom-a");
-    let model = config.default_model();
-
-    let route = resolve_cli_exec_route(
-        &config,
-        &model,
-        "Run a checked-in Workflow through the host runtime",
-        true,
-        None,
-    )
-    .await
-    .expect("configured workflow route");
-    let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
-
-    assert_eq!(
-        route.provider.provider,
-        codewhale_config::ProviderKind::Custom
-    );
-    assert_eq!(
-        execution.active_provider_identity().unwrap().key.as_str(),
-        "custom-a"
-    );
-    assert_eq!(
-        execution.active_route_base_url(),
-        "http://127.0.0.1:18181/v1"
-    );
-    let client =
-        codewhale_engine::client::CodewhaleClient::new(&execution).expect("workflow client");
-    assert_eq!(client.base_url(), "http://127.0.0.1:18181/v1");
-}
-
-#[test]
-fn exec_json_receipts_keep_exact_named_custom_provider() {
-    let config = custom_exec_config("custom-a");
-    let identity = config.active_provider_identity().unwrap();
-    let provider = identity.key.as_str();
-    // #6510: plain exec is an Engine turn now; its `--json` receipt keeps
-    // the documented one-shot fields (docs/LIVE_SMOKE.md step 5).
-    let mut one_shot = ExecSummary {
-        mode: "one-shot".to_string(),
-        provider: provider.to_string(),
-        model: "model-a".to_string(),
-        output: "done".to_string(),
-        status: Some("completed".to_string()),
-        ..ExecSummary::default()
-    };
-    one_shot.record_one_shot_outcome(Some(codewhale_models::Usage {
-        input_tokens: 12,
-        output_tokens: 3,
-        ..Default::default()
-    }));
-    let one_shot = serde_json::to_value(&one_shot).expect("one-shot receipt");
-    assert_eq!(one_shot["mode"], "one-shot");
-    assert_eq!(one_shot["provider"], "custom-a");
-    assert_eq!(one_shot["model"], "model-a");
-    assert_eq!(one_shot["output"], "done");
-    assert_eq!(one_shot["success"], true);
-    assert_eq!(one_shot["usage"]["input_tokens"], 12);
-    assert_eq!(one_shot["usage"]["output_tokens"], 3);
-
-    let mut failed = ExecSummary {
-        mode: "one-shot".to_string(),
-        provider: provider.to_string(),
-        model: "model-a".to_string(),
-        status: Some("failed".to_string()),
-        error: Some("Model response incomplete".to_string()),
-        ..ExecSummary::default()
-    };
-    failed.record_one_shot_outcome(None);
-    let failed = serde_json::to_value(&failed).expect("failed one-shot receipt");
-    assert_eq!(failed["success"], false);
-    assert!(
-        failed.get("usage").is_none(),
-        "no usage is never zero usage"
-    );
-
-    let agent = serde_json::to_value(ExecSummary {
-        mode: "agent".to_string(),
-        provider: provider.to_string(),
-        model: "model-a".to_string(),
-        ..ExecSummary::default()
-    })
-    .expect("agent exec JSON receipt");
-    assert_eq!(agent["provider"], "custom-a");
-    assert!(
-        agent.get("success").is_none() && agent.get("usage").is_none(),
-        "agent receipts keep their pre-#6510 shape"
-    );
-    let serialized = serde_json::to_string(&agent).expect("serialize receipt");
-    assert!(!serialized.contains("127.0.0.1"));
-    assert!(!serialized.contains("local-test-key"));
-}
-
-#[test]
-fn exec_stream_provider_pair_preserves_named_literal_and_root_custom_provenance() {
-    let mut config = Config::default();
-    for key in ["lm-studio", "custom"] {
-        config
-            .providers
-            .get_or_insert_with(Default::default)
-            .custom
-            .insert(
-                key.to_string(),
-                codewhale_runtime::config::ProviderConfig {
-                    kind: Some("openai-compatible".to_string()),
-                    base_url: Some("http://localhost:1234/v1".to_string()),
-                    ..Default::default()
-                },
-            );
-    }
-    let named = config
-        .resolve_provider_identity("lm-studio")
-        .expect("exact named table");
-    let literal = config
-        .resolve_provider_identity("custom")
-        .expect("exact literal table");
-    let root_config = {
-        let __cw_config_init_1_0 = Some("custom".to_string());
-        let mut __cw_config_init_1_value: Config = Config::default();
-        __cw_config_init_1_value.provider = __cw_config_init_1_0;
-        __cw_config_init_1_value
-    }
-    .with_legacy_root(None, Some("http://localhost:1234/v1".to_string()));
-    let root = root_config
-        .active_provider_identity()
-        .expect("captured root migration");
-    let built_in = Config::default()
-        .active_provider_identity()
-        .expect("built-in fixture");
-
-    assert_eq!(
-        exec_stream_provider_route(&named),
-        ("custom".to_string(), Some("lm-studio".to_string()))
-    );
-    assert_eq!(
-        exec_stream_provider_route(&literal),
-        ("custom".to_string(), Some("custom".to_string()))
-    );
-    assert_eq!(
-        exec_stream_provider_route(&root),
-        ("custom".to_string(), None)
-    );
-    assert_eq!(
-        exec_stream_provider_route(&built_in),
-        ("deepseek".to_string(), None)
-    );
-}
-
 #[test]
 fn resumed_exec_persistence_updates_provider_and_model_as_one_route() {
     let saved_a = saved_exec_session(
@@ -1215,33 +1065,6 @@ fn resumed_exec_persistence_updates_provider_and_model_as_one_route() {
     assert_eq!(persisted.metadata.model, "model-b");
     assert_eq!(next_config.provider.as_deref(), Some("custom-b"));
     assert_eq!(resumed_model, "model-b");
-}
-
-#[test]
-fn exec_persistence_omits_id_for_legacy_root_custom_route() {
-    let mut saved = session_manager::create_saved_session_with_mode(
-        &[],
-        "legacy-root-model",
-        Path::new("/tmp/exec-root"),
-        0,
-        None,
-        Some("exec"),
-    );
-    stamp_exec_session_metadata(
-        &mut saved,
-        "legacy-root-model",
-        codewhale_config::ProviderKind::Custom.as_str(),
-        None,
-        Path::new("/tmp/exec-root"),
-    );
-
-    assert_eq!(saved.metadata.model_provider, "custom");
-    assert_eq!(saved.metadata.model_provider_id, None);
-    assert!(
-        !serde_json::to_string(&saved)
-            .expect("serialize exec session")
-            .contains("model_provider_id")
-    );
 }
 
 #[test]
@@ -1286,80 +1109,6 @@ fn cli_reasoning_effort_normalizes_aliases_and_rejects_typos() {
 }
 
 #[test]
-fn cli_auto_resolves_to_the_declared_default_before_k3_route_normalization() {
-    let config = {
-        let __cw_config_init_2_0 = Some("moonshot".to_string());
-        let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
-            moonshot: codewhale_runtime::config::ProviderConfig {
-                base_url: Some(
-                    codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL.to_string(),
-                ),
-                model: Some(
-                    codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL.to_string(),
-                ),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        let mut __cw_config_init_2_value: Config = Default::default();
-        __cw_config_init_2_value.provider = __cw_config_init_2_0;
-        __cw_config_init_2_value.providers = __cw_config_init_2_1;
-        __cw_config_init_2_value
-    };
-
-    // #6290 rework: Auto no longer classifies the prompt. Any wording
-    // resolves the declared policy tier, normalized for the K3 route.
-    assert_eq!(
-        cli_reasoning_effort_value_for_prompt(
-            &config,
-            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
-            codewhale_engine::reasoning_preference::ReasoningEffort::Auto,
-        )
-        .as_deref(),
-        Some("high"),
-        "Auto resolves the declared default, not a classification"
-    );
-
-    assert_eq!(
-        cli_reasoning_effort_value_for_prompt(
-            &config,
-            codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
-            codewhale_engine::reasoning_preference::ReasoningEffort::Off,
-        )
-        .as_deref(),
-        Some("low"),
-        "membership K3 still applies its exact-route always-thinking floor"
-    );
-}
-
-#[test]
-fn cli_route_tracks_auto_reasoning_independently_from_auto_model() {
-    use codewhale_engine::reasoning_preference::ReasoningEffort;
-
-    let fixed_model_auto_reasoning = CliAutoRoute {
-        provider: Config::default()
-            .test_identity_for_kind(codewhale_config::ProviderKind::Deepseek),
-        model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),
-        reasoning_effort: Some(ReasoningEffort::Auto),
-        auto_controls_reasoning: true,
-        auto_model: false,
-    };
-    let auto_model_fixed_reasoning = CliAutoRoute {
-        provider: Config::default()
-            .test_identity_for_kind(codewhale_config::ProviderKind::OpenaiCodex),
-        model: codewhale_config::descriptors::defaults::DEFAULT_OPENAI_CODEX_MODEL.to_string(),
-        reasoning_effort: Some(ReasoningEffort::High),
-        auto_controls_reasoning: false,
-        auto_model: true,
-    };
-
-    assert!(fixed_model_auto_reasoning.auto_controls_reasoning);
-    assert!(!fixed_model_auto_reasoning.auto_model);
-    assert!(!auto_model_fixed_reasoning.auto_controls_reasoning);
-    assert!(auto_model_fixed_reasoning.auto_model);
-}
-
-#[test]
 fn saved_reasoning_preference_overrides_config_for_non_tui_runtimes() {
     let mut config = {
         let __cw_config_init_3_0 = Some("max".to_string());
@@ -1381,34 +1130,6 @@ fn saved_reasoning_preference_overrides_config_for_non_tui_runtimes() {
 
     assert_eq!(config.reasoning_effort(), Some("low"));
     assert!(config.reasoning_effort_is_explicit());
-}
-
-/// `run_exec_agent` must hand the engine a concrete tier, never the literal
-/// `"auto"` sentinel, for a fixed-model Auto launch.
-#[test]
-fn fixed_model_exec_auto_resolves_to_a_concrete_tier_not_the_auto_sentinel() {
-    let config = {
-        let __cw_config_init_5_0 = Some("zai".to_string());
-        let mut __cw_config_init_5_value: Config = Default::default();
-        __cw_config_init_5_value.provider = __cw_config_init_5_0;
-        __cw_config_init_5_value
-    };
-
-    let resolved = cli_reasoning_effort_value_for_prompt(
-        &config,
-        codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
-        codewhale_engine::reasoning_preference::ReasoningEffort::Auto,
-    )
-    .expect("Auto must resolve to a concrete tier");
-
-    assert_ne!(
-        resolved, "auto",
-        "the literal auto sentinel must never reach a provider"
-    );
-    assert!(
-        matches!(resolved.as_str(), "off" | "low" | "medium" | "high" | "max"),
-        "unexpected resolved tier: {resolved}"
-    );
 }
 
 #[test]
@@ -1492,16 +1213,6 @@ fn exec_rejects_zero_max_tool_calls() {
 }
 
 #[test]
-fn fleet_tool_authority_cannot_cross_an_exec_resume_boundary() {
-    assert!(validate_exec_tool_authority_resume(None, true).is_ok());
-    assert!(validate_exec_tool_authority_resume(Some("{}"), false).is_ok());
-    let error = validate_exec_tool_authority_resume(Some("{}"), true)
-        .expect_err("authority must remain bound to its fresh Fleet launch")
-        .to_string();
-    assert!(error.contains("cannot be combined with exec --resume"));
-}
-
-#[test]
 fn exec_auto_does_not_authorize_sandbox_elevation() {
     let cli = parse_cli(&["codewhale", "exec", "--auto", "run it"]);
     let Some(Commands::Exec(args)) = cli.command else {
@@ -1546,21 +1257,6 @@ fn exec_explicit_sandbox_elevation_opt_ins_authorize_retry() {
         args.allow_sandbox_elevation,
         args.sandbox.as_deref()
     ));
-}
-
-#[test]
-fn exec_sandbox_denial_stream_event_is_typed() {
-    let event = ExecStreamEvent::SandboxDenied {
-        tool_id: "call_1".to_string(),
-        tool_name: "exec_shell".to_string(),
-        reason: "write blocked".to_string(),
-        outcome: "approval_required".to_string(),
-    };
-    let value: serde_json::Value =
-        serde_json::from_str(&serde_json::to_string(&event).expect("serializes"))
-            .expect("valid json");
-    assert_eq!(value["type"], "sandbox_denied");
-    assert_eq!(value["outcome"], "approval_required");
 }
 
 #[test]

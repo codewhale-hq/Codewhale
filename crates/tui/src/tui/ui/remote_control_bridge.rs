@@ -1,6 +1,6 @@
 //! Remote-control bridge: `/rc` event draining, local-turn attachment, and
 //! session start projection, extracted from the composition root
-//! (TUI_MODULARIZATION.md slice 3). The controller in `crate::remote_control`
+//! (TUI_MODULARIZATION.md slice 3). The controller in `codewhale_app_server::remote_control`
 //! owns connection state; this module only projects its events into the UI.
 
 use super::*;
@@ -18,7 +18,7 @@ pub(crate) async fn drain_remote_control_events(
     while let Some(event) = app.remote_control.try_next_event() {
         changed = true;
         match event {
-            crate::remote_control::RemoteEvent::Notice(message) => {
+            codewhale_app_server::remote_control::RemoteEvent::Notice(message) => {
                 app.add_message(HistoryCell::System {
                     content: message.clone(),
                 });
@@ -26,7 +26,7 @@ pub(crate) async fn drain_remote_control_events(
                 app.sticky_status =
                     Some(StatusToast::new(message, StatusToastLevel::Warning, None));
             }
-            crate::remote_control::RemoteEvent::Connected {
+            codewhale_app_server::remote_control::RemoteEvent::Connected {
                 account_ref,
                 runner_id,
                 attachment,
@@ -37,7 +37,7 @@ pub(crate) async fn drain_remote_control_events(
                     .upload_snapshot(&attachment.run_id, &app.api_messages);
                 let active_local_turn = local_turn_is_active(app);
                 let attached_active_turn = try_attach_active_local_turn_to_remote(app);
-                let status = crate::remote_control::remote_control_banner(
+                let status = codewhale_app_server::remote_control::remote_control_banner(
                     &account_ref,
                     &runner_id,
                     links.run_url.as_deref(),
@@ -52,46 +52,50 @@ pub(crate) async fn drain_remote_control_events(
                 });
                 if let Some(run_url) = links.run_url.as_deref() {
                     app.add_message(HistoryCell::System {
-                        content: crate::remote_control::remote_control_link_notice(run_url),
+                        content: codewhale_app_server::remote_control::remote_control_link_notice(
+                            run_url,
+                        ),
                     });
                 }
                 app.status_message = Some(status.clone());
                 app.sticky_status = Some(StatusToast::new(status, StatusToastLevel::Warning, None));
             }
-            crate::remote_control::RemoteEvent::Attachment { attachment, .. } => {
+            codewhale_app_server::remote_control::RemoteEvent::Attachment {
+                attachment, ..
+            } => {
                 // Reconnect responses carry the server's current cursor and
                 // snapshot receipt. `try_next_event` applies that truth before
                 // this handler, so this is either a no-op or one bounded retry.
                 app.remote_control
                     .upload_snapshot(&attachment.run_id, &app.api_messages);
             }
-            crate::remote_control::RemoteEvent::RuntimeCursor { .. } => {
+            codewhale_app_server::remote_control::RemoteEvent::RuntimeCursor { .. } => {
                 // The controller has already retired the acknowledged prefix.
             }
-            crate::remote_control::RemoteEvent::RuntimeChatHostReleased => {
+            codewhale_app_server::remote_control::RemoteEvent::RuntimeChatHostReleased => {
                 // Internal provider-config handoff; the controller has already
                 // reopened the isolated host and queued its fresh catalog.
             }
-            crate::remote_control::RemoteEvent::RuntimeChatProjection(_) => {
+            codewhale_app_server::remote_control::RemoteEvent::RuntimeChatProjection(_) => {
                 // The controller journaled this isolated native event before
                 // exposing it to the UI bridge. It is web-Chat output, not a
                 // mutation of the current interactive TUI transcript.
             }
-            crate::remote_control::RemoteEvent::FailedPreLease(error) => {
+            codewhale_app_server::remote_control::RemoteEvent::FailedPreLease(error) => {
                 let status = format!("WEB MIRROR · could not start · {error} · /rc to retry");
                 report_remote_control_failure(app, status);
             }
-            crate::remote_control::RemoteEvent::Failed(error) => {
+            codewhale_app_server::remote_control::RemoteEvent::Failed(error) => {
                 let status = format!(
                     "WEB MIRROR LOST · {error} · this terminal is unaffected; reconnecting waits briefly for the server lease to drain"
                 );
                 report_remote_control_failure(app, status);
             }
-            crate::remote_control::RemoteEvent::Stopped => {
+            codewhale_app_server::remote_control::RemoteEvent::Stopped => {
                 app.sticky_status = None;
                 app.status_message = Some("Web mirror stopped.".to_string());
             }
-            crate::remote_control::RemoteEvent::OwnershipRestored { approvals } => {
+            codewhale_app_server::remote_control::RemoteEvent::OwnershipRestored { approvals } => {
                 app.sticky_status = None;
                 app.status_message = Some(
                     "The web mirror lease expired; pending approvals stay actionable here."
@@ -102,7 +106,7 @@ pub(crate) async fn drain_remote_control_events(
                 // list only tells us the web can no longer answer them.
                 let _ = approvals;
             }
-            crate::remote_control::RemoteEvent::Command {
+            codewhale_app_server::remote_control::RemoteEvent::Command {
                 run_id,
                 seq,
                 command,
@@ -115,7 +119,7 @@ pub(crate) async fn drain_remote_control_events(
                         // acknowledgement: the previous provider submission
                         // may be durable even though its acknowledgement POST
                         // was lost with a worker failure.
-                        if let crate::remote_control::RemoteCommand::RuntimeChatPrompt(prompt) =
+                        if let codewhale_app_server::remote_control::RemoteCommand::RuntimeChatPrompt(prompt) =
                             &command
                         {
                             match app.remote_control.apply_runtime_chat_prompt(prompt).await {
@@ -149,7 +153,7 @@ pub(crate) async fn drain_remote_control_events(
                 }
                 if matches!(
                     &command,
-                    crate::remote_control::RemoteCommand::RuntimeChatPrompt(_)
+                    codewhale_app_server::remote_control::RemoteCommand::RuntimeChatPrompt(_)
                 ) && local_turn_is_active(app)
                 {
                     app.remote_control.acknowledge(
@@ -165,21 +169,24 @@ pub(crate) async fn drain_remote_control_events(
                     continue;
                 }
                 match command.clone() {
-                    crate::remote_control::RemoteCommand::RuntimeChatPrompt(prompt) => {
-                        match app.remote_control.apply_runtime_chat_prompt(&prompt).await {
-                            Ok(()) => app
-                                .remote_control
-                                .acknowledge(&run_id, seq, &command, "applied", None),
-                            Err(error) => app.remote_control.acknowledge(
-                                &run_id,
-                                seq,
-                                &command,
-                                "failed",
-                                Some(error),
-                            ),
-                        }
-                    }
-                    crate::remote_control::RemoteCommand::Prompt { turn_id, prompt } => {
+                    codewhale_app_server::remote_control::RemoteCommand::RuntimeChatPrompt(
+                        prompt,
+                    ) => match app.remote_control.apply_runtime_chat_prompt(&prompt).await {
+                        Ok(()) => app
+                            .remote_control
+                            .acknowledge(&run_id, seq, &command, "applied", None),
+                        Err(error) => app.remote_control.acknowledge(
+                            &run_id,
+                            seq,
+                            &command,
+                            "failed",
+                            Some(error),
+                        ),
+                    },
+                    codewhale_app_server::remote_control::RemoteCommand::Prompt {
+                        turn_id,
+                        prompt,
+                    } => {
                         if app.is_loading || app.dispatch_in_flight {
                             app.remote_control.acknowledge(
                                 &run_id,
@@ -248,7 +255,10 @@ pub(crate) async fn drain_remote_control_events(
                             }
                         }
                     }
-                    crate::remote_control::RemoteCommand::Approval { gate, approved } => {
+                    codewhale_app_server::remote_control::RemoteCommand::Approval {
+                        gate,
+                        approved,
+                    } => {
                         // Keep the gate pending until the engine takes the
                         // decision: a failed send leaves it retryable (U03-07).
                         let Some(tool_id) = app.remote_control.pending_approval_tool_id(&gate)
@@ -307,7 +317,7 @@ pub(crate) async fn drain_remote_control_events(
                             ),
                         }
                     }
-                    crate::remote_control::RemoteCommand::Control {
+                    codewhale_app_server::remote_control::RemoteCommand::Control {
                         runtime_chat: Some(scope),
                         turn_id: Some(turn_id),
                         ..
@@ -329,7 +339,10 @@ pub(crate) async fn drain_remote_control_events(
                             ),
                         }
                     }
-                    crate::remote_control::RemoteCommand::Control { turn_id, .. } => {
+                    codewhale_app_server::remote_control::RemoteCommand::Control {
+                        turn_id,
+                        ..
+                    } => {
                         let exact_active_turn = turn_id.as_deref().is_some_and(|turn_id| {
                             app.remote_control.active_turn_matches(&run_id, turn_id)
                         });
@@ -413,7 +426,7 @@ fn report_remote_control_failure(app: &mut App, error: String) {
 
 fn report_remote_control_start_failure(app: &mut App, error: String) {
     app.remote_control.record_start_failure(&error);
-    if app.remote_control.status() == crate::remote_control::Status::Failed {
+    if app.remote_control.status() == codewhale_app_server::remote_control::Status::Failed {
         report_remote_control_failure(app, error);
     } else {
         app.push_status_toast(
@@ -432,7 +445,7 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
     app.current_session_id = Some(session_id.clone());
     // The target is the folder, not the session: repeated `/rc` runs in the
     // same folder reuse one enrollment grant instead of minting a new one.
-    let target_ref = crate::remote_control::target_ref(&app.workspace);
+    let target_ref = codewhale_app_server::remote_control::target_ref(&app.workspace);
     let workspace_label = app
         .workspace
         .file_name()
@@ -477,7 +490,7 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
     }
     match app
         .remote_control
-        .start(crate::remote_control::RemoteStart {
+        .start(codewhale_app_server::remote_control::RemoteStart {
             workspace_label,
             target_ref,
             session_id,

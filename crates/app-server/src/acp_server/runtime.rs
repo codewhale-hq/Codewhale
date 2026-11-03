@@ -46,7 +46,7 @@ impl AcpServer {
     pub(super) async fn drive_prompt<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
         &mut self,
         params: Value,
-        reader: &mut codewhale_app_server::stdio::BoundedLines<R>,
+        reader: &mut crate::stdio::BoundedLines<R>,
         writer: &mut W,
     ) -> Result<&'static str> {
         let (session_id, prompt) = self
@@ -213,7 +213,7 @@ impl AcpServer {
         &self,
         projection: &mut Projection<'_>,
         receiver: &mut tokio::sync::broadcast::Receiver<RuntimeEventRecord>,
-        reader: &mut codewhale_app_server::stdio::BoundedLines<R>,
+        reader: &mut crate::stdio::BoundedLines<R>,
         writer: &mut W,
     ) -> Result<TurnRecord> {
         let session = projection.session;
@@ -235,7 +235,7 @@ impl AcpServer {
                 line = reader.next_line(), if !eof => {
                     let line = match line {
                         Ok(line) => line,
-                        Err(error) if codewhale_app_server::stdio::is_frame_refusal(&error) => {
+                        Err(error) if crate::stdio::is_frame_refusal(&error) => {
                             write_jsonrpc_error(writer, None, -32700, error.to_string()).await?;
                             continue;
                         }
@@ -250,7 +250,7 @@ impl AcpServer {
                         Ok(message) => message,
                         Err(error) => { write_jsonrpc_error(writer, None, -32700, format!("invalid json: {error}")).await?; continue; }
                     };
-                    if codewhale_app_server::is_control_input_closed(&message) {
+                    if crate::is_control_input_closed(&message) {
                         eof=true; cancelled=true; projection.permissions.clear();self.interrupt_claimed_turn(thread,turn).await?;
                         cancel_deadline.get_or_insert(tokio::time::Instant::now()+Duration::from_secs(30));continue;
                     }
@@ -313,14 +313,16 @@ impl AcpServer {
                 .pointer("/result/outcome/optionId")
                 .and_then(Value::as_str)
                 == Some("allow-once");
-        self.runtime.deliver_external_approval(
-            &permission.approval_id,
-            if allow {
-                ExternalApprovalDecision::Allow { remember: false }
-            } else {
-                ExternalApprovalDecision::Deny { remember: false }
-            },
-        );
+        self.runtime
+            .deliver_external_approval(
+                &permission.approval_id,
+                if allow {
+                    ExternalApprovalDecision::Allow { remember: false }
+                } else {
+                    ExternalApprovalDecision::Deny { remember: false }
+                },
+            )
+            .await?;
         Ok(())
     }
     async fn project_event<W: AsyncWrite + Unpin>(
@@ -537,6 +539,7 @@ mod tests {
             engine
                 .tx_event
                 .send(Event::ApprovalRequired {
+                    publication: None,
                     id: "acp-policy-call".into(),
                     tool_name: "write".into(),
                     description: "Requested by extension:claimed".into(),
@@ -681,10 +684,16 @@ mod tests {
                 .ok_or_else(|| anyhow!("opaque approval ID missing"))?;
             assert_ne!(approval, "acp-policy-call");
             for id in [approval, "acp-policy-call"] {
-                assert!(!rig.server.runtime.deliver_external_approval(
-                    id,
-                    ExternalApprovalDecision::Allow { remember: false }
-                ));
+                assert!(
+                    !rig.server
+                        .runtime
+                        .deliver_external_approval(
+                            id,
+                            ExternalApprovalDecision::Allow { remember: false }
+                        )
+                        .await
+                        .expect("durable approval decision")
+                );
             }
             if !forced || extension {
                 engine
@@ -959,7 +968,7 @@ mod tests {
         )?;
         let id = rig.new_session().await;
         let (client, input) = tokio::io::duplex(1024);
-        let mut reader = codewhale_app_server::stdio::BoundedLines::new(BufReader::new(input));
+        let mut reader = crate::stdio::BoundedLines::new(BufReader::new(input));
         let mut writer = FailedAnswerWriter(Vec::new());
         let error = tokio::time::timeout(
             Duration::from_secs(20),

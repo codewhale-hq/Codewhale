@@ -540,7 +540,7 @@ impl SetupRuntimeFacts {
             remote_command_provider: remote.command_provider,
             remote_result: remote.result,
             remote_control_result: {
-                use crate::remote_control::Status;
+                use codewhale_app_server::remote_control::Status;
                 let message = match app.remote_control.status() {
                     Status::Connected => MessageId::SetupRemoteStatusReady,
                     Status::Connecting | Status::Stopping => MessageId::SetupStatusInProgress,

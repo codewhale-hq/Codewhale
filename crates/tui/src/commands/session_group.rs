@@ -80,10 +80,10 @@ pub(in crate::commands) fn host_result(result: SessionCommandResult) -> CommandR
         SessionAction::OpenExternalUrl { url, label } => AppAction::OpenExternalUrl { url, label },
         SessionAction::RemoteControl(action) => AppAction::RemoteControl(match action {
             codewhale_command_contract::outcome::SessionRemoteControlAction::Start => {
-                crate::remote_control::RemoteControlAction::Start
+                codewhale_app_server::remote_control::RemoteControlAction::Start
             }
             codewhale_command_contract::outcome::SessionRemoteControlAction::Stop => {
-                crate::remote_control::RemoteControlAction::Stop
+                codewhale_app_server::remote_control::RemoteControlAction::Stop
             }
         }),
         SessionAction::NewSession { sync, force } => AppAction::NewSession { sync, force },

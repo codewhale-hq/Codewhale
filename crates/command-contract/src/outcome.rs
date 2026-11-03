@@ -93,7 +93,9 @@ pub type StructcopyCommandResult = CommandResult<std::convert::Infallible>;
 /// Complete session-group vocabulary. Hosts execute these requests after dispatch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionAction {
-    CompactContext { focus: Option<String> },
+    CompactContext {
+        focus: Option<String>,
+    },
     PurgeContext,
     LoadSession(std::path::PathBuf),
     SyncSession(SessionSyncPayload),
@@ -103,7 +105,10 @@ pub enum SessionAction {
     },
     SendMessage(String),
     RemoteControl(SessionRemoteControlAction),
-    OpenExternalUrl { url: String, label: String },
+    OpenExternalUrl {
+        url: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

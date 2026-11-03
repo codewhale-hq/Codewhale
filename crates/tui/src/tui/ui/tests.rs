@@ -667,16 +667,17 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
     let mut app = create_test_app();
     app.remote_control
         .force_mirror_connected_for_tests("run_fixture", "turn_current");
-    app.remote_control
-        .queue_remote_event_for_tests(crate::remote_control::RemoteEvent::Command {
+    app.remote_control.queue_remote_event_for_tests(
+        codewhale_app_server::remote_control::RemoteEvent::Command {
             run_id: "run_fixture".to_string(),
             seq: 1,
-            command: crate::remote_control::RemoteCommand::Control {
-                action: crate::remote_control::RemoteControlRequest::Interrupt,
+            command: codewhale_app_server::remote_control::RemoteCommand::Control {
+                action: codewhale_app_server::remote_control::RemoteControlRequest::Interrupt,
                 turn_id: Some("turn_stale".to_string()),
                 runtime_chat: None,
             },
-        });
+        },
+    );
     let mock = mock_engine_handle();
     drain_remote_control_events(&mut app, &Config::default(), &mock.handle)
         .await
@@ -688,14 +689,16 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
 
     for (event, previous_status, reason) in [
         (
-            crate::remote_control::RemoteEvent::FailedPreLease(
+            codewhale_app_server::remote_control::RemoteEvent::FailedPreLease(
                 "fixture enrollment rejected: accessToken = fixture_remote_secret".to_string(),
             ),
             "Remote control: connecting",
             "fixture enrollment rejected",
         ),
         (
-            crate::remote_control::RemoteEvent::Failed("fixture relay disconnected".to_string()),
+            codewhale_app_server::remote_control::RemoteEvent::Failed(
+                "fixture relay disconnected".to_string(),
+            ),
             "Remote control: connected",
             "fixture relay disconnected",
         ),
@@ -710,7 +713,10 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
             StatusToastLevel::Warning,
             None,
         ));
-        if matches!(&event, crate::remote_control::RemoteEvent::Failed(_)) {
+        if matches!(
+            &event,
+            codewhale_app_server::remote_control::RemoteEvent::Failed(_)
+        ) {
             let phase = crate::tui::underwater::ShellPhase::from_app(&app);
             assert_eq!(
                 app.active_status_toast(phase)
@@ -729,7 +735,7 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
 
         assert_eq!(
             app.remote_control.status(),
-            crate::remote_control::Status::Failed
+            codewhale_app_server::remote_control::Status::Failed
         );
         assert!(app.remote_control.status_line().contains(reason));
         assert!(app.status_message.is_none());
@@ -10569,7 +10575,7 @@ fn shell_live_output_update_finalizes_background_exec_output() {
     exec.output_summary = exec
         .output
         .as_deref()
-        .map(crate::tui::history::summarize_tool_output);
+        .map(codewhale_app_server::exec_agent::summarize_tool_output);
     exec.live_output = None;
 
     assert_eq!(exec.status, ToolStatus::Success);
@@ -28681,6 +28687,7 @@ async fn provider_switch_rollback_corrects_setup_receipt_when_persistence_fails(
 
 fn stream_drop_approval_event() -> EngineEvent {
     EngineEvent::ApprovalRequired {
+        publication: None,
         id: "stream-drop-tool".to_string(),
         tool_name: "bash".to_string(),
         description: "Fixture workspace counter".to_string(),
@@ -28782,6 +28789,7 @@ async fn withdrawn_extension_approval_retires_only_its_card_even_when_idle() {
     app.is_loading = true;
     let mut mock = mock_engine_handle();
     let request = |id: &str| EngineEvent::ApprovalRequired {
+        publication: None,
         id: id.into(),
         tool_name: "exec_shell".into(),
         description: "extension request".into(),
@@ -28849,6 +28857,7 @@ async fn recoverable_stream_error_after_local_cancel_resolves_stale_approval() {
 
 fn child_approval_event(id: &str) -> EngineEvent {
     EngineEvent::ApprovalRequired {
+        publication: None,
         id: id.to_string(),
         tool_name: "exec_shell".to_string(),
         description: "agent_a wants to run 'exec_shell': needs a decision".to_string(),
@@ -28871,6 +28880,7 @@ async fn drain_approval_event(
         return;
     }
     let EngineEvent::ApprovalRequired {
+        publication: _,
         id,
         tool_name,
         description,
@@ -28910,6 +28920,7 @@ async fn auto_answered_approvals_name_their_decider() {
     use codewhale_engine::core::engine::MockApprovalEvent;
     const GROUP: &str = "shell:exec_shell:cargo test";
     let parent = |id: &str| EngineEvent::ApprovalRequired {
+        publication: None,
         id: id.to_string(),
         tool_name: "exec_shell".to_string(),
         description: "run the tests".to_string(),
@@ -29512,15 +29523,16 @@ async fn web_decision_dismisses_buried_child_card() {
     );
     app.remote_control
         .force_mirror_connected_for_tests("run_fixture", "turn_current");
-    app.remote_control
-        .queue_remote_event_for_tests(crate::remote_control::RemoteEvent::Command {
+    app.remote_control.queue_remote_event_for_tests(
+        codewhale_app_server::remote_control::RemoteEvent::Command {
             run_id: "run_fixture".to_string(),
             seq: 1,
-            command: crate::remote_control::RemoteCommand::Approval {
+            command: codewhale_app_server::remote_control::RemoteCommand::Approval {
                 gate,
                 approved: true,
             },
-        });
+        },
+    );
     drain_remote_control_events(&mut app, &Config::default(), &mock.handle)
         .await
         .unwrap();
@@ -35504,6 +35516,7 @@ async fn full_access_extension_calls_open_human_cards_despite_remembered_grants(
             &mut app,
             &mock.handle,
             EngineEvent::ApprovalRequired {
+                publication: None,
                 id: "extension-core-call".into(),
                 tool_name: name.into(),
                 description: "Requested by extension:fixture".into(),

@@ -846,7 +846,7 @@ pub(super) async fn mutate_thread_history(
 
 /// The HTTP frontend and the inactive local mounted handoff invoke this same
 /// actual held manager. It creates no transport, guest manager or policy owner.
-pub(crate) async fn mutate_thread_history_in_runtime(
+pub async fn mutate_thread_history_in_runtime(
     runtime: &Arc<RuntimeThreadManager>,
     sessions_dir: &Path,
     config_path: Option<&Path>,
@@ -889,7 +889,7 @@ fn journal_digest(journal: &SessionJournal) -> Result<String> {
     ))
 }
 
-pub(crate) fn session_goal_digest(
+pub fn session_goal_digest(
     goal: &Option<codewhale_engine::session_manager::SessionGoalState>,
 ) -> Result<String> {
     Ok(codewhale_runtime::hashing::sha256_hex(
@@ -1846,7 +1846,7 @@ pub(super) async fn lookup_thread_history_operation(
 /// A read-only exact-key lookup never resumes an Engine, mutates a thread, or
 /// guesses absence from a damaged intent/document. It authenticates current
 /// binding separately from the historical receipt.
-pub(crate) async fn lookup_thread_history_operation_in_runtime(
+pub async fn lookup_thread_history_operation_in_runtime(
     runtime: &Arc<RuntimeThreadManager>,
     sessions_dir: &Path,
     request: codewhale_protocol::CanonicalThreadOperationLookup,
@@ -1922,7 +1922,7 @@ pub(super) async fn recover_thread_history_operation(
 
 /// Explicit exact-key recovery settles already-published preparation; it never
 /// reconstructs an intent from a changed source. Lookup remains read-only.
-pub(crate) async fn recover_thread_history_operation_in_runtime(
+pub async fn recover_thread_history_operation_in_runtime(
     runtime: &Arc<RuntimeThreadManager>,
     sessions_dir: &Path,
     request: codewhale_protocol::CanonicalThreadOperationRecovery,

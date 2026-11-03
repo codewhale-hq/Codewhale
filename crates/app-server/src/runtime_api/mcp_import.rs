@@ -27,11 +27,11 @@ fn import_error(error: anyhow::Error) -> ApiError {
 pub(super) async fn preview(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<ImportPreview>, ApiError> {
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let path = state.config.read().mcp_config_path();
         let plugins = state
             .plugin_discovery
@@ -74,11 +74,11 @@ pub(super) async fn apply(
 ) -> Result<Json<ImportReceipt>, ApiError> {
     let expected = mcp_expected_revision(&headers)?;
     request.validate()?;
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let path = state.config.read().mcp_config_path();
         let plugins = state
             .plugin_discovery

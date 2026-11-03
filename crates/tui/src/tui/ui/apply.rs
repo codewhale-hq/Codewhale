@@ -1725,7 +1725,9 @@ async fn apply_command_result_inner(
                         crate::tui::app::ShellJobAction::Cancel { .. }
                             | crate::tui::app::ShellJobAction::CancelAll
                     )
-                    | AppAction::RemoteControl(crate::remote_control::RemoteControlAction::Stop)
+                    | AppAction::RemoteControl(
+                        codewhale_app_server::remote_control::RemoteControlAction::Stop
+                    )
                     | AppAction::Automation(crate::tui::app::AutomationAction::Pause(_))
                     | AppAction::SetGoalStatus {
                         status: GoalStatus::Paused,
@@ -3219,10 +3221,10 @@ async fn apply_command_result_inner(
                 });
             }
             AppAction::RemoteControl(action) => match action {
-                crate::remote_control::RemoteControlAction::Start => {
+                codewhale_app_server::remote_control::RemoteControlAction::Start => {
                     start_remote_control_session(app, config);
                 }
-                crate::remote_control::RemoteControlAction::Stop => {
+                codewhale_app_server::remote_control::RemoteControlAction::Stop => {
                     app.remote_control.stop();
                     let status = app.remote_control.status_line();
                     app.sticky_status = None;
@@ -3673,7 +3675,39 @@ pub(crate) async fn apply_approval_decision(
     engine_handle: &mut EngineHandle,
     config: &mut Config,
     event: ApprovalDecisionEvent,
-) {
+) -> bool {
+    let approved = matches!(
+        event.decision,
+        ReviewDecision::Approved | ReviewDecision::ApprovedForSession
+    );
+    let result = match event.decision {
+        ReviewDecision::Abort
+            if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(
+                &event.tool_id,
+            ) =>
+        {
+            return false;
+        }
+        ReviewDecision::Abort => {
+            engine_handle.cancel();
+            mark_active_turn_cancelled_locally(app);
+            app.status_message = Some(parent_stop_status(app, "Request cancelled"));
+            return false;
+        }
+        ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
+            engine_handle.approve_tool_call(event.tool_id.clone()).await
+        }
+        ReviewDecision::Denied if event.timed_out => {
+            engine_handle
+                .deny_tool_call_timed_out(event.tool_id.clone())
+                .await
+        }
+        ReviewDecision::Denied => engine_handle.deny_tool_call(event.tool_id.clone()).await,
+    };
+    if let Err(error) = result {
+        app.status_message = Some(format!("Approval was not accepted: {error}"));
+        return false;
+    }
     if event.decision == ReviewDecision::ApprovedForSession {
         // Only the lossy grouping key is stored: a session grant is scoped to
         // the command family (e.g. `shell:git status`), never to the whole
@@ -3700,63 +3734,15 @@ pub(crate) async fn apply_approval_decision(
         persist_rules_from_approval(app, config, &event.persistent_rules);
     }
 
-    // A child's card was answered here: its pending entry is done. An Abort
-    // on a child's card only hides it (the entry stays for the footer).
-    if event.decision != ReviewDecision::Abort {
-        crate::tui::pending_requests::resolve(app, &event.tool_id);
+    if event.decision == ReviewDecision::Denied && !event.timed_out {
+        app.approval_session_denied.insert(event.approval_key);
     }
-
-    match event.decision {
-        // A child's card never stops the parent's turn (approvals C1).
-        ReviewDecision::Abort
-            if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(
-                &event.tool_id,
-            ) => {}
-        ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
-            // Mirror mode: clear the shared-approval gate so a late web
-            // decision acks "no longer pending" instead of double-answering.
-            app.remote_control
-                .resolve_pending_approval(&event.tool_id, true);
-            if engine_handle
-                .approve_tool_call(event.tool_id.clone())
-                .await
-                .is_ok()
-            {
-                note_human_decision_delivered(app, &event.tool_id);
-                app.retire_action_notices(Some(&event.tool_id));
-            }
-        }
-        ReviewDecision::Denied => {
-            // Cache the denial so the model retry-loop doesn't re-prompt for
-            // the exact same approval_key (#360). Only the key (per-call
-            // unique) is stored — NOT the tool_name, which would block all
-            // future invocations of the same tool type (#1377).
-            if !event.timed_out {
-                app.approval_session_denied.insert(event.approval_key);
-            }
-            app.remote_control
-                .resolve_pending_approval(&event.tool_id, false);
-            // A bound expiry carries its own outcome (#6101) so the receipt
-            // distinguishes "no answer within the window" from an operator
-            // denial.
-            let denied = if event.timed_out {
-                engine_handle
-                    .deny_tool_call_timed_out(event.tool_id.clone())
-                    .await
-            } else {
-                engine_handle.deny_tool_call(event.tool_id.clone()).await
-            };
-            if denied.is_ok() {
-                note_human_decision_delivered(app, &event.tool_id);
-                app.retire_action_notices(Some(&event.tool_id));
-            }
-        }
-        ReviewDecision::Abort => {
-            engine_handle.cancel();
-            mark_active_turn_cancelled_locally(app);
-            app.status_message = Some(parent_stop_status(app, "Request cancelled"));
-        }
-    }
+    crate::tui::pending_requests::resolve(app, &event.tool_id);
+    app.remote_control
+        .resolve_pending_approval(&event.tool_id, approved);
+    note_human_decision_delivered(app, &event.tool_id);
+    app.retire_action_notices(Some(&event.tool_id));
+    true
 }
 
 pub(crate) fn apply_setup_runtime_preset(

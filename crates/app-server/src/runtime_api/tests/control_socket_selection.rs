@@ -5,7 +5,7 @@
 //! bound. What is pinned here is which endpoint this `serve` run picks, and
 //! that it picks the same one however the store was spelled.
 use super::*;
-use crate::test_support::{EnvVarGuard, lock_test_env};
+use codewhale_engine::test_support::{EnvVarGuard, lock_test_env};
 
 fn inputs() -> codewhale_paths::daemon_socket::SocketPathInputs {
     codewhale_paths::daemon_socket::SocketPathInputs {

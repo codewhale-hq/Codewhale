@@ -140,3 +140,11 @@ pub(super) fn take(host: &str, port: u16, insecure_no_auth: bool) -> Result<Opti
     listener.set_nonblocking(true)?;
     Ok(Some(TcpListener::from_std(listener)?))
 }
+
+pub fn prepare_runtime_listener_handoff() -> Result<bool> {
+    requested()
+}
+
+pub fn discard_runtime_listener_handoff() {
+    discard();
+}

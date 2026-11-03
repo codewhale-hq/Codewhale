@@ -598,7 +598,7 @@ pub(super) fn refresh_shell_exec_live_output(app: &mut App) -> bool {
             exec.output_summary = exec
                 .output
                 .as_deref()
-                .map(crate::tui::history::summarize_tool_output);
+                .map(codewhale_app_server::exec_agent::summarize_tool_output);
             exec.live_output = None;
             exec.stale_elapsed_since_output_ms = None;
         } else {

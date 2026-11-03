@@ -306,11 +306,11 @@ pub(super) async fn set_provider_key(
     Path(id): Path<String>,
     Json(request): Json<SetProviderKeyRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let _credential_change = state.provider_switches.blocking_lock();
         if state.config.read().session_provider_keys_only
             && request.scope != ProviderKeyScope::Session
@@ -910,11 +910,11 @@ pub(super) async fn clear_provider_key(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let _credential_change = state.provider_switches.blocking_lock();
         let (identity, scope) = {
             let config = state.config.write();
@@ -1059,19 +1059,20 @@ mod tests {
 
     #[test]
     fn account_overlay_resolves_without_disk_residue_and_logout_revokes_clones() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codewhale_engine::test_support::lock_test_env();
         let tmp = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
-        let _backend = crate::test_support::EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
-        let _base = crate::test_support::EnvVarGuard::set(
+        let _home = codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let _backend =
+            codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
+        let _base = codewhale_engine::test_support::EnvVarGuard::set(
             "CODEWHALE_CLOUD_API_BASE",
             codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE,
         );
-        let _api_base = crate::test_support::EnvVarGuard::set(
+        let _api_base = codewhale_engine::test_support::EnvVarGuard::set(
             "CODEWHALE_API_BASE",
             codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL,
         );
-        let _api_key = crate::test_support::EnvVarGuard::set("CODEWHALE_API_KEY", "");
+        let _api_key = codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_API_KEY", "");
         let store = saved_account_session("fixture-session");
         let config = {
             let __cw_config_init_0_0 = Some("codewhale".into());
@@ -1193,19 +1194,20 @@ mod tests {
 
     #[test]
     fn account_overlay_refuses_endpoint_credentials_and_stale_session_ownership() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codewhale_engine::test_support::lock_test_env();
         let tmp = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
-        let _backend = crate::test_support::EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
-        let _base = crate::test_support::EnvVarGuard::set(
+        let _home = codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let _backend =
+            codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
+        let _base = codewhale_engine::test_support::EnvVarGuard::set(
             "CODEWHALE_CLOUD_API_BASE",
             codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE,
         );
-        let _api_base = crate::test_support::EnvVarGuard::set(
+        let _api_base = codewhale_engine::test_support::EnvVarGuard::set(
             "CODEWHALE_API_BASE",
             codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL,
         );
-        let _api_key = crate::test_support::EnvVarGuard::set("CODEWHALE_API_KEY", "");
+        let _api_key = codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_API_KEY", "");
         saved_account_session("fixture-session");
         let mut config = {
             let __cw_config_init_1_0 = Some("codewhale".into());
@@ -1269,7 +1271,7 @@ mod tests {
 
     #[test]
     fn account_overlay_clear_is_shared_and_preserves_manual_config() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codewhale_engine::test_support::lock_test_env();
         let mut config = Config::default();
         config
             .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Codewhale))

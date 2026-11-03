@@ -13,11 +13,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use codewhale_app_server::daemon_socket::{
     DaemonSocketError, DaemonSocketOptions, bind_daemon_socket,
 };
+use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::task::JoinHandle;
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 static NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -357,8 +357,7 @@ async fn owner_bootstrap_fresh_bind_cannot_retire_uncaptured_publication() {
 }
 
 struct Client {
-    reader: BufReader<OwnedReadHalf>,
-    writer: OwnedWriteHalf,
+    socket: WebSocketStream<UnixStream>,
 }
 
 impl Client {
@@ -367,59 +366,88 @@ impl Client {
             .await
             .expect("connect timeout")
             .expect("connect");
-        let (rx, writer) = stream.into_split();
-        Self {
-            reader: BufReader::new(rx),
-            writer,
-        }
+        let (socket, _) = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio_tungstenite::client_async("ws://localhost/", stream),
+        )
+        .await
+        .expect("WebSocket upgrade timeout")
+        .expect("WebSocket upgrade");
+        Self { socket }
     }
 
     async fn call(&mut self, id: u64, method: &str, params: Value) -> Value {
-        let line = serde_json::to_string(&json!({
-            "jsonrpc": "2.0",
+        let frame = json!({
             "id": id,
             "method": method,
             "params": params,
-        }))
-        .expect("encode");
-        self.writer
-            .write_all(format!("{line}\n").as_bytes())
+        });
+        self.socket
+            .send(Message::Text(frame.to_string().into()))
             .await
-            .expect("write");
-        let mut response = String::new();
-        let read = tokio::time::timeout(
-            Duration::from_secs(10),
-            self.reader.read_line(&mut response),
-        )
-        .await
-        .expect("response timeout")
-        .expect("read");
-        assert!(
-            read > 0,
-            "daemon closed the connection before answering `{method}`"
-        );
+            .expect("write text frame");
+        let response = tokio::time::timeout(Duration::from_secs(10), self.socket.next())
+            .await
+            .expect("response timeout")
+            .expect("daemon closed before response")
+            .expect("read text frame");
+        let Message::Text(response) = response else {
+            panic!("expected one JSON text frame, got {response:?}");
+        };
         let value: Value = serde_json::from_str(&response).expect("json response");
         assert_eq!(value["id"], json!(id), "response id mismatch: {value}");
+        assert!(value.get("jsonrpc").is_none());
         value
     }
 
     async fn attach(&mut self, id: u64, name: &str, mode: &str) -> Value {
-        self.call(
+        let response = self.call(
             id,
             "daemon/attach",
             json!({ "client": { "name": name, "version": "0.0.0-test", "pid": std::process::id() }, "mode": mode }),
         )
-        .await
+        .await;
+        if response.get("error").is_none() {
+            self.initialize().await;
+        }
+        response
     }
 
-    /// Read until EOF; proves the daemon closed the socket.
-    async fn wait_for_close(mut self) {
-        let mut sink = String::new();
-        let read = tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut sink))
+    async fn initialize(&mut self) {
+        let initialized = self
+            .call(
+                0,
+                "initialize",
+                json!({"clientInfo":{"name":"daemon-fixture","version":"1"}}),
+            )
+            .await;
+        assert!(initialized.get("error").is_none(), "{initialized}");
+        self.socket
+            .send(Message::Text("{\"method\":\"initialized\"}".into()))
             .await
-            .expect("close timeout")
-            .expect("read");
-        assert_eq!(read, 0, "expected EOF, got: {sink}");
+            .expect("initialized notification");
+    }
+
+    async fn wait_for_close(mut self) {
+        let response = tokio::time::timeout(Duration::from_secs(10), self.socket.next())
+            .await
+            .expect("close timeout");
+        match response {
+            None | Some(Ok(Message::Close(_))) => {}
+            Some(Err(tokio_tungstenite::tungstenite::Error::Protocol(
+                tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+            ))) => {}
+            Some(Err(tokio_tungstenite::tungstenite::Error::Io(error))) => assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::BrokenPipe
+                ),
+                "unexpected transport error: {error}"
+            ),
+            other => panic!("expected transport closure, got {other:?}"),
+        }
     }
 }
 
@@ -803,6 +831,7 @@ async fn captured_owner_frontend_authenticates_generation_without_publishing_bea
         .await;
     assert_eq!(attached["result"]["role"], "attached");
     assert_eq!(attached["result"]["owner_receipt"], json!(owner));
+    guest.initialize().await;
     // The display PID is deliberately false: authorization uses kernel peer credentials.
     let denied = guest.call(5, "shutdown", json!({})).await;
     assert!(denied["error"].is_object());
@@ -820,33 +849,15 @@ async fn captured_owner_frontend_authenticates_generation_without_publishing_bea
     );
 }
 
-/// Native IPC/HTTP transport proof with a fake owned Runtime; no Engine or
+/// Native IPC transport proof with a fake owned Runtime; no Engine or
 /// provider acceptance is inferred from this source fixture.
 #[tokio::test]
 async fn canonical_cli_control_uses_authenticated_owner_and_same_dispatcher() {
-    use axum::{Json, Router, routing::get};
     let harness = Harness::new("thread-control");
     let workspace = harness._config_dir.path().to_path_buf();
     let thread = serde_json::json!({"id":"canonical-transport","created_at":"2026-10-02T00:00:00Z",
         "updated_at":"2026-10-02T00:00:00Z","model":"fixture-model","model_provider":"custom",
         "model_provider_id":"fixture-owner","workspace":workspace,"archived":false});
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    let app = Router::new()
-        .route(
-            "/v1/threads",
-            get(move || {
-                let thread = thread.clone();
-                async move { Json(serde_json::json!([thread])) }
-            }),
-        )
-        .route(
-            "/v1/threads/running",
-            get(|| async { Json(serde_json::json!([])) }),
-        );
-    let fake_http = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
     let owner = codewhale_protocol::RuntimeOwnerReceipt {
         version: 1,
         data_dir: harness.root.join("runtime"),
@@ -863,14 +874,34 @@ async fn canonical_cli_control_uses_authenticated_owner_and_same_dispatcher() {
         socket_path: harness.socket_path.clone(),
         config_path: harness.options().config_path,
     };
-    let daemon = codewhale_app_server::bind_runtime_owner(
+    let frontend = std::sync::Arc::new(ScopedControlFixture {
+        workers: 0,
+        config: owner.config_path.clone().unwrap(),
+        scopes: Default::default(),
+        owner: owner.clone(),
+        target: workspace.clone(),
+        records: vec![thread],
+        calls: Default::default(),
+    });
+    let (daemon, _) = codewhale_app_server::bind_runtime_frontends(
         owner.config_path.clone(),
-        endpoint,
         Some("private-fixture-control".into()),
         owner.clone(),
+        codewhale_app_server::RuntimeOwnerRouting {
+            endpoint: "127.0.0.1:1".parse().unwrap(),
+            workspace: None,
+            workers: None,
+            mobile: false,
+            web: false,
+            acp: true,
+            acp_only: false,
+        },
+        Some(frontend),
+        None,
     )
     .await
     .unwrap();
+    let daemon = daemon.expect("a private endpoint directory is available on this host");
     let shutdown = daemon.shutdown_handle();
     let socket = tokio::spawn(daemon.serve());
     let result = codewhale_app_server::request_thread_control(
@@ -914,7 +945,6 @@ async fn canonical_cli_control_uses_authenticated_owner_and_same_dispatcher() {
         .unwrap()
         .unwrap()
         .unwrap();
-    fake_http.abort();
 }
 
 /// This only validates the adapter's captured scope transport. Actual Runtime
@@ -923,8 +953,87 @@ struct ScopedControlFixture {
     workers: usize,
     config: PathBuf,
     scopes: std::sync::Arc<tokio::sync::Mutex<Vec<codewhale_app_server::RuntimeFrontendScope>>>,
+    owner: codewhale_protocol::RuntimeOwnerReceipt,
+    target: PathBuf,
+    records: Vec<Value>,
+    calls: std::sync::Arc<tokio::sync::Mutex<Vec<(String, Value)>>>,
 }
+
+fn thread_record(id: &str, root: &Path) -> Value {
+    json!({"id":id,"created_at":"2026-10-02T00:00:00Z",
+        "updated_at":"2026-10-02T00:00:00Z","model":"fixture-model","model_provider":"custom",
+        "model_provider_id":"fixture-owner","workspace":root,"archived":false})
+}
+
 impl codewhale_app_server::RuntimeOwnerFrontend for ScopedControlFixture {
+    fn execute(
+        &self,
+        request: codewhale_app_server::RuntimeOwnerRequest,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_>,
+    > {
+        use codewhale_app_server::RuntimeOwnerRequest as Request;
+        Box::pin(async move {
+            let owner = &self.owner;
+            let (name, body) = match &request {
+                Request::HistoryLookup(body) => ("lookup", serde_json::to_value(body)?),
+                Request::HistoryMutate(body) => ("mutate", serde_json::to_value(body)?),
+                Request::HistorySnapshot { thread_id } => ("history", json!(thread_id)),
+                Request::GetThread { thread_id } => ("thread", json!(thread_id)),
+                Request::ListThreads { .. } => ("list", Value::Null),
+                Request::RunningThreads => ("running", Value::Null),
+                _ => anyhow::bail!("this captured frontend admits no ordinary native service"),
+            };
+            self.calls.lock().await.push((name.into(), body.clone()));
+            Ok(match request {
+                Request::HistoryLookup(_) => json!({"state":"absent"}),
+                Request::HistoryMutate(_) => {
+                    anyhow::ensure!(body["expected_data_dir"] == json!(owner.data_dir));
+                    anyhow::ensure!(body["expected_execution_scope"] == owner.execution_scope);
+                    anyhow::ensure!(body["workspace"] == json!(self.target));
+                    anyhow::ensure!(
+                        body["mutation"]["options"]["overrides"]
+                            == json!({"model":"explicit-model", "model_provider":"fixture-owner", "approval_policy":"on-request", "sandbox":"workspace-write"})
+                    );
+                    let fork = body["mutation"]["action"] == "fork";
+                    json!({"version":1,"data_dir":owner.data_dir,"execution_scope":owner.execution_scope,
+                        "operation_key":body["operation_key"],"request_digest":"1".repeat(64),"history_digest":"2".repeat(64),
+                        "runtime_thread_id":if fork {"canonical-scoped-fork"} else {"canonical-source"},
+                        "session_id":if fork {"session-scoped-fork"} else {"session-source"}})
+                }
+                Request::HistorySnapshot { .. } => {
+                    json!({"version":1,"data_dir":owner.data_dir,"execution_scope":owner.execution_scope,
+                        "runtime_thread_id":"canonical-source","saved_session_id":"session-source",
+                        "saved_document_digest":"a".repeat(64),"session_goal_digest":"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                        "document_digest":"b".repeat(64),"session":{"metadata":{"id":"session-source"},"messages":[],"journal":{"entries":[]}}})
+                }
+                Request::RunningThreads => json!([]),
+                Request::ListThreads { .. } => json!(self.records),
+                Request::GetThread { thread_id }
+                    if thread_id == "canonical-source" || thread_id == "canonical-scoped-fork" =>
+                {
+                    thread_record(&thread_id, &self.target)
+                }
+                _ => anyhow::bail!("fixture route missing"),
+            })
+        })
+    }
+    fn events(
+        &self,
+        _thread_id: String,
+        _since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = anyhow::Result<codewhale_app_server::RuntimeOwnerEventStream>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async {
+            anyhow::bail!("this captured frontend admits no ordinary native observation")
+        })
+    }
     fn validate_selection<'a>(
         &'a self,
         selection: &'a codewhale_app_server::RuntimeOwnerFrontendSelection,
@@ -960,13 +1069,13 @@ impl codewhale_app_server::RuntimeOwnerFrontend for ScopedControlFixture {
             Ok(())
         })
     }
-    fn serve(
-        &self,
+    fn serve<'a>(
+        &'a self,
         selection: codewhale_app_server::RuntimeOwnerFrontendSelection,
         compatibility: codewhale_app_server::AppState,
         input: Box<dyn tokio::io::AsyncBufRead + Send + Unpin>,
-        output: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + '_>> {
+        output: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             let codewhale_app_server::RuntimeOwnerFrontendSelection::Control(scope) = selection
             else {
@@ -980,7 +1089,6 @@ impl codewhale_app_server::RuntimeOwnerFrontend for ScopedControlFixture {
 
 #[tokio::test]
 async fn canonical_cli_scoped_resume_fork_keep_exact_owner_workers_and_refuse_wrong_selection() {
-    use axum::{Json, Router, response::IntoResponse as _};
     use std::sync::Arc;
     let harness = Harness::new("scoped-control");
     let workspace = harness._config_dir.path().to_path_buf();
@@ -1003,53 +1111,19 @@ async fn canonical_cli_scoped_resume_fork_keep_exact_owner_workers_and_refuse_wr
         config_path: harness.options().config_path,
     };
     let calls = Arc::new(tokio::sync::Mutex::new(Vec::<(String, Value)>::new()));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    let captured = owner.clone();
-    let http_calls = calls.clone();
-    let target = selected.clone();
-    let app = Router::new().fallback(move |request: axum::extract::Request| {
-        let owner = captured.clone(); let calls = http_calls.clone(); let target = target.clone();
-        async move {
-            let path = request.uri().path().to_string();
-            let bytes = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024).await.unwrap();
-            let body = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
-            calls.lock().await.push((path.clone(), body.clone()));
-            let record = |id: &str, root: &Path| json!({"id":id,"created_at":"2026-10-02T00:00:00Z",
-                "updated_at":"2026-10-02T00:00:00Z","model":"fixture-model","model_provider":"custom",
-                "model_provider_id":"fixture-owner","workspace":root,"archived":false});
-            let value = if path.ends_with("/operations/lookup") { json!({"state":"absent"}) }
-                else if path.ends_with("/mutate") {
-                    assert_eq!(body["expected_data_dir"], json!(owner.data_dir));
-                    assert_eq!(body["expected_execution_scope"], owner.execution_scope);
-                    assert_eq!(body["workspace"], json!(target));
-                    assert_eq!(body["mutation"]["options"]["overrides"], json!({"model":"explicit-model", "model_provider":"fixture-owner", "approval_policy":"on-request", "sandbox":"workspace-write"}));
-                    let fork = body["mutation"]["action"] == "fork";
-                    json!({"version":1,"data_dir":owner.data_dir,"execution_scope":owner.execution_scope,
-                        "operation_key":body["operation_key"],"request_digest":"1".repeat(64),"history_digest":"2".repeat(64),
-                        "runtime_thread_id":if fork {"canonical-scoped-fork"} else {"canonical-source"},
-                        "session_id":if fork {"session-scoped-fork"} else {"session-source"}})
-                } else if path.ends_with("/history") {
-                    json!({"version":1,"data_dir":owner.data_dir,"execution_scope":owner.execution_scope,
-                        "runtime_thread_id":"canonical-source","saved_session_id":"session-source",
-                        "saved_document_digest":"a".repeat(64),"session_goal_digest":"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-                        "document_digest":"b".repeat(64),"session":{"metadata":{"id":"session-source"},"messages":[],"journal":{"entries":[]}}})
-                } else if path == "/v1/threads/running" { json!([]) }
-                else if path == "/v1/threads" { json!([record("canonical-source", &target), record("other-workspace", Path::new("/recorded-other-workspace"))]) }
-                else if path == "/v1/threads/canonical-scoped-fork" { record("canonical-scoped-fork", &target) }
-                else if path == "/v1/threads/canonical-source" { record("canonical-source", &target) }
-                else { return (axum::http::StatusCode::NOT_FOUND, Json(json!({"error":"fixture route missing"}))).into_response(); };
-            Json(value).into_response()
-        }
-    });
-    let fake_http = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let endpoint: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
     let scopes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let frontend = Arc::new(ScopedControlFixture {
         workers: 7,
         config: owner.config_path.clone().unwrap(),
         scopes: scopes.clone(),
+        owner: owner.clone(),
+        target: selected.clone(),
+        records: vec![
+            thread_record("canonical-source", &selected),
+            thread_record("other-workspace", Path::new("/recorded-other-workspace")),
+        ],
+        calls: calls.clone(),
     });
     let (daemon, _) = codewhale_app_server::bind_runtime_frontends(
         owner.config_path.clone(),
@@ -1144,7 +1218,7 @@ async fn canonical_cli_scoped_resume_fork_keep_exact_owner_workers_and_refuse_wr
     assert_eq!(
         calls.lock().await.len(),
         before,
-        "selection refusal happens before HTTP effect dispatch"
+        "selection refusal happens before native effect dispatch"
     );
     shutdown.trigger();
     tokio::time::timeout(Duration::from_secs(5), socket)
@@ -1152,5 +1226,4 @@ async fn canonical_cli_scoped_resume_fork_keep_exact_owner_workers_and_refuse_wr
         .unwrap()
         .unwrap()
         .unwrap();
-    fake_http.abort();
 }

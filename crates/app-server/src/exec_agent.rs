@@ -2,20 +2,40 @@
 //! that resolves the CLI route, builds the engine configuration, spawns
 //! the engine, and drives the exec output stream to completion.
 //!
-//! Extracted verbatim from `lib.rs` (#5586, the issue's prescribed
-//! engine-config-assembly cut). The two functions were crate-private in
-//! the root and are `pub(crate)` here purely so the root's glob re-export
-//! keeps the dispatch site and tests resolving unchanged.
 
-use super::*;
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::bail;
+use clap::ValueEnum;
 use codewhale_engine::core::ops::TurnSpec;
 use codewhale_engine::exec_events::ExecAgentEvents;
+use codewhale_engine::exec_events::exec_error_event_is_fatal;
+use codewhale_engine::fleet::executor::exec_stream_final_answer_excerpt;
+use codewhale_engine::model_routing;
+use codewhale_engine::session_manager;
+use codewhale_engine::session_manager::SessionManager;
+use codewhale_engine::session_manager::truncate_id;
+use codewhale_models::ContentBlock;
+use codewhale_models::Message;
+use codewhale_models::Role;
+use codewhale_models::SystemPrompt;
+use codewhale_runtime::config::Config;
+use codewhale_runtime::config::MAX_SUBAGENTS;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::io;
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 /// Resolve the headless `exec` model-step ceiling.
 ///
 /// Omission leaves model steps uncapped. Clap rejects `--max-turns 0`;
 /// explicit positive values retain the documented finite range.
-pub(crate) fn exec_max_steps(max_turns: Option<u32>) -> u32 {
+pub fn exec_max_steps(max_turns: Option<u32>) -> u32 {
     codewhale_runtime::turn_budget::resolve_max_model_steps(max_turns)
 }
 
@@ -24,7 +44,7 @@ pub(crate) fn exec_max_steps(max_turns: Option<u32>) -> u32 {
 /// have no progress signal of their own; without this a model stuck at the
 /// output limit would be re-asked, with growing history, until the turn wall
 /// clock (#6510 review).
-pub(crate) const ONE_SHOT_DEFAULT_MAX_STEPS: u32 = 8;
+pub const ONE_SHOT_DEFAULT_MAX_STEPS: u32 = 8;
 
 /// Default-denied tools for headless `exec`, on top of the operator's own
 /// `--disallowed-tools` flag.
@@ -182,7 +202,7 @@ async fn persist_exec_checkpoint(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_exec_agent(
+pub async fn run_exec_agent(
     config: &Config,
     model: &str,
     prompt: &str,
@@ -2009,10 +2029,10 @@ mod tests {
         completed.push(serde_json::from_value(serde_json::json!({
             "role":"user","content":[{"type":"tool_result","tool_use_id":"provider-call","execution_id":"exec-call","content":"review complete"}]
         })).unwrap());
-        let publication = crate::persist_exec_session(
+        let publication = crate::exec_agent::persist_exec_session(
             &completed,
             &snapshot.model,
-            crate::PersistedProviderRoute {
+            crate::exec_agent::PersistedProviderRoute {
                 kind: "custom",
                 id: Some("review-route"),
             },
@@ -2281,7 +2301,7 @@ mod tests {
     /// the same durable store the TUI and the Runtime open.
     #[test]
     fn headless_exec_attaches_the_shared_automation_store() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codewhale_engine::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         // SAFETY: serialised by lock_test_env.
         unsafe {
@@ -2321,7 +2341,7 @@ mod tests {
     /// "not attached" at the first tool call.
     #[test]
     fn an_unopenable_store_fails_loudly() {
-        let _lock = crate::test_support::lock_test_env();
+        let _lock = codewhale_engine::test_support::lock_test_env();
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         // A regular file cannot host the store's directories.
         let blocked = tmp.path().join("automations");
@@ -2352,7 +2372,7 @@ mod tests {
             "HTTP 413 recovery: retrying once without image attachments.",
         ] {
             let event = super::exec_retry_status(message).expect("request receipt projection");
-            let value = crate::exec_stream_value(&event).unwrap();
+            let value = crate::exec_agent::exec_stream_value(&event).unwrap();
             assert_eq!(value["type"], "status");
             assert_eq!(value["message"], message);
             assert_eq!(value["schema"], "codewhale.exec-stream");
@@ -2396,5 +2416,2445 @@ mod tests {
             super::accumulate_exec_retry_count(Some(u32::MAX), Some(&retries)),
             Some(u32::MAX)
         );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExecOutputFormat {
+    Text,
+    #[value(name = "stream-json")]
+    StreamJson,
+}
+
+pub async fn admit_cli_saved_operation(
+    manager: Option<std::sync::Arc<session_manager::SessionManager>>,
+    id: String,
+    workspace: PathBuf,
+    model: String,
+    provider: codewhale_runtime::config::ProviderIdentity,
+    prompt: String,
+) -> Result<(
+    std::sync::Arc<session_manager::SessionManager>,
+    session_manager::SessionWriteReceipt,
+    session_manager::SessionLease,
+)> {
+    codewhale_runtime::runtime_control::owner_work(move || {
+        let manager = match manager {
+            Some(manager) => manager,
+            None => std::sync::Arc::new(session_manager::SessionManager::default_location()?),
+        };
+        let lease = manager.reserve_session_for_external_write(&id)?;
+        let source = manager.expect_absent_session(&id)?;
+        let messages = vec![codewhale_models::Message {
+            role: codewhale_models::Role::User,
+            content: vec![codewhale_models::ContentBlock::Text {
+                text: prompt,
+                cache_control: None,
+            }],
+        }];
+        let mut saved = session_manager::create_saved_session_with_id_and_mode(
+            id,
+            &messages,
+            &model,
+            &workspace,
+            0,
+            None,
+            Some("exec"),
+        );
+        let (kind, provider_id) = exec_stream_provider_route(&provider);
+        saved.metadata.model_provider = kind;
+        saved.metadata.model_provider_id = provider_id;
+        saved.metadata.cost.coverage_recorded = true;
+        saved.write_receipt = Some(source);
+        saved.capture_publication(session_manager::SessionWriteOwner::control())?;
+        let publication = manager.publish_session(&saved)?;
+        Ok((manager, publication.write_receipt(), lease))
+    })
+    .await
+}
+
+#[cfg(windows)]
+pub fn paths_equal_for_config(left: &Path, right: &Path) -> bool {
+    normalize_windows_config_path_for_compare(left)
+        == normalize_windows_config_path_for_compare(right)
+}
+
+#[cfg(not(windows))]
+pub fn paths_equal_for_config(left: &Path, right: &Path) -> bool {
+    left == right
+}
+
+#[cfg(windows)]
+fn normalize_windows_config_path_for_compare(path: &Path) -> String {
+    normalize_windows_config_path_str(&path.to_string_lossy())
+}
+
+#[cfg(any(windows, test))]
+fn normalize_windows_config_path_str(path: &str) -> String {
+    let mut normalized = path.replace('/', "\\");
+    if let Some(rest) = normalized.strip_prefix(r"\\?\UNC\") {
+        normalized = format!("\\\\{rest}");
+    } else if let Some(rest) = normalized.strip_prefix(r"\\?\") {
+        normalized = rest.to_string();
+    }
+    while normalized.len() > 3 && normalized.ends_with('\\') {
+        normalized.pop();
+    }
+    normalized.to_ascii_lowercase()
+}
+
+#[derive(Debug)]
+pub struct CliAutoRoute {
+    pub provider: codewhale_runtime::config::ProviderIdentity,
+    pub model: String,
+    pub reasoning_effort: Option<codewhale_engine::reasoning_preference::ReasoningEffort>,
+    /// Whether the runtime should continue resolving reasoning per prompt.
+    ///
+    /// This is independent from `auto_model`: an Auto model can carry a fixed
+    /// saved effort, while a fixed Fleet model can still request Auto effort.
+    pub auto_controls_reasoning: bool,
+    pub auto_model: bool,
+}
+
+pub fn cli_reasoning_effort_value(
+    config: &Config,
+    model: &str,
+    effort: codewhale_engine::reasoning_preference::ReasoningEffort,
+) -> Option<String> {
+    let identity = config.active_provider_identity().ok()?;
+    effort
+        .normalize_for_route_identity(
+            identity.provider,
+            identity.key.as_str(),
+            &config.base_url_for_route(&identity),
+            model,
+        )
+        .api_value_for_provider(identity.provider)
+        .map(str::to_string)
+}
+
+fn cli_reasoning_effort_value_for_prompt(
+    config: &Config,
+    model: &str,
+    effort: codewhale_engine::reasoning_preference::ReasoningEffort,
+) -> Option<String> {
+    let resolved = if effort == codewhale_engine::reasoning_preference::ReasoningEffort::Auto {
+        codewhale_engine::auto_reasoning::select()
+    } else {
+        effort
+    };
+    cli_reasoning_effort_value(config, model, resolved)
+}
+
+pub fn config_for_cli_route(config: &Config, route: &CliAutoRoute) -> Result<Config> {
+    let mut execution_config = config.clone();
+    execution_config
+        .scope_to_provider_identity(&route.provider)
+        .map_err(anyhow::Error::msg)?;
+    execution_config.set_provider_model_override(&route.provider, Some(route.model.clone()))?;
+    if route.provider.provider == codewhale_config::ProviderKind::Deepseek {
+        execution_config.default_text_model = Some(route.model.clone());
+    }
+    Ok(execution_config)
+}
+
+async fn resolve_cli_auto_route(
+    config: &Config,
+    model: &str,
+    prompt: &str,
+    accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
+) -> Result<CliAutoRoute> {
+    let active = config
+        .active_provider_identity()
+        .map_err(anyhow::Error::msg)?;
+    if model.trim().eq_ignore_ascii_case("auto") {
+        let selection =
+            model_routing::resolve_auto_route_with_inventory_for_session_and_cache_policy(
+                config,
+                prompt,
+                "",
+                "agent",
+                "auto",
+                "auto",
+                true,
+                accounting_origin.map(|origin| {
+                    codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
+                        format!("cli-auto-router:{}", uuid::Uuid::new_v4()),
+                        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+                        Some(origin),
+                    )
+                }),
+            )
+            .await?;
+        let preference = config
+            .reasoning_effort()
+            .filter(|_| config.reasoning_effort_is_explicit())
+            .map(codewhale_engine::reasoning_preference::ReasoningEffort::from_setting);
+        let (reasoning_effort, auto_controls_reasoning) =
+            model_routing::resolve_auto_model_reasoning(preference, selection.reasoning_effort);
+        Ok(CliAutoRoute {
+            provider: selection.provider,
+            model: selection.model,
+            reasoning_effort,
+            auto_controls_reasoning,
+            auto_model: true,
+        })
+    } else {
+        if let Some(selection) = model_routing::resolve_explicit_route_with_inventory(config, model)
+        {
+            let auto_controls_reasoning = matches!(
+                selection.reasoning_effort,
+                Some(codewhale_engine::reasoning_preference::ReasoningEffort::Auto)
+            );
+            return Ok(CliAutoRoute {
+                provider: selection.provider,
+                model: selection.model,
+                reasoning_effort: selection.reasoning_effort,
+                auto_controls_reasoning,
+                auto_model: false,
+            });
+        }
+
+        let candidate_providers = model_routing::explicit_route_candidate_providers(config, model);
+        if !candidate_providers.is_empty() && !candidate_providers.contains(&active) {
+            let providers = candidate_providers
+                .iter()
+                .map(|provider| provider.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "model `{model}` is available from configured provider route(s): {providers}. \
+                 Pass `--provider <provider>` with `--model {model}` to choose one explicitly. \
+                 In the TUI, use `/provider`, `/model`, or `/setup` to resolve the route before sending."
+            );
+        }
+
+        // When --model is not `auto`, fall back to the reasoning_effort
+        // declared in the user's config.toml. The previous hard-coded `None`
+        // silently dropped the user's setting on every non-auto-route exec
+        // call, which (for example) prevented vllm + Qwen3 users from
+        // disabling thinking via `reasoning_effort = "off"` and caused
+        // 30+ second SSE idle timeouts on trivial prompts.
+        let reasoning_effort = config
+            .reasoning_effort()
+            .map(codewhale_engine::reasoning_preference::ReasoningEffort::from_setting);
+        Ok(CliAutoRoute {
+            provider: active,
+            model: model.to_string(),
+            auto_controls_reasoning: matches!(
+                reasoning_effort,
+                Some(codewhale_engine::reasoning_preference::ReasoningEffort::Auto)
+            ),
+            reasoning_effort,
+            auto_model: false,
+        })
+    }
+}
+
+pub async fn resolve_cli_exec_route(
+    config: &Config,
+    model: &str,
+    prompt: &str,
+    force_configured_route: bool,
+    accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
+) -> Result<CliAutoRoute> {
+    let mut local_default = None;
+    if let Ok(identity) = config.active_provider_identity()
+        && identity.provider == codewhale_config::ProviderKind::Ollama
+    {
+        codewhale_engine::provider_lake::refresh_local_ollama_catalog(config, &identity).await;
+        if codewhale_runtime::config::is_unresolved_local_ollama_model(model)
+            || (force_configured_route && model.trim().eq_ignore_ascii_case("auto"))
+        {
+            local_default = Some(
+                codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+                    config, &identity, None,
+                )
+                .map_err(anyhow::Error::msg)?
+                .model,
+            );
+        }
+    }
+    let model = local_default.as_deref().unwrap_or(model);
+    if force_configured_route && !model.trim().eq_ignore_ascii_case("auto") {
+        let reasoning_effort = config
+            .reasoning_effort()
+            .map(codewhale_engine::reasoning_preference::ReasoningEffort::from_setting);
+        return Ok(CliAutoRoute {
+            provider: config
+                .active_provider_identity()
+                .map_err(anyhow::Error::msg)?,
+            model: model.to_string(),
+            auto_controls_reasoning: matches!(
+                reasoning_effort,
+                Some(codewhale_engine::reasoning_preference::ReasoningEffort::Auto)
+            ),
+            reasoning_effort,
+            auto_model: false,
+        });
+    }
+    resolve_cli_auto_route(config, model, prompt, accounting_origin).await
+}
+
+pub fn exec_stream_provider_route(
+    identity: &codewhale_runtime::config::ProviderIdentity,
+) -> (String, Option<String>) {
+    let provider = identity.persisted_kind().to_string();
+    let provider_id = if identity.provider == codewhale_config::ProviderKind::Custom {
+        identity.persisted_id().map(str::to_string)
+    } else {
+        None
+    };
+    (provider, provider_id)
+}
+
+#[derive(serde::Serialize)]
+pub struct ExecStreamMeta {
+    pub receipt_kind: &'static str,
+    pub provider: String,
+    /// Exact configured provider-table id, when one selected the route.
+    /// `None` deliberately distinguishes the legacy idless root custom route
+    /// from literal `[providers.custom]`, whose exact id is `"custom"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    pub model: String,
+    pub route_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_hit_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_miss_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_write_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u32>,
+    /// Resolved output ceiling the route actually requested (post-catalogue).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codewhale_max_output_tokens: Option<u32>,
+    /// Provenance of that ceiling: `documented`, `uncatalogued`, or
+    /// `route-declared`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codewhale_max_output_tokens_source: Option<&'static str>,
+    pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_count: Option<u32>,
+    pub approval_posture: String,
+    pub sandbox_posture: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_sha256: Option<String>,
+    pub prompt_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_catalog_sha256: Option<String>,
+    pub input_analysis: ExecStreamInputAnalysis,
+    /// Real character count of the visible final answer, before any bound.
+    pub visible_final_answer_chars: usize,
+    /// Bounded, secret-redacted excerpt of the visible final answer (see
+    /// [`exec_stream_final_answer_excerpt`]). Omitted when the run produced
+    /// no visible answer.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub visible_final_answer_excerpt: String,
+    pub session_id: String,
+    pub resume_command: String,
+    pub workspace: String,
+    pub message_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub termination_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct ExecStreamInputAnalysis {
+    estimated_request_tokens: usize,
+    estimated_message_content_tokens: usize,
+    estimated_system_tokens: usize,
+    estimated_framing_tokens: usize,
+    user_message_count: usize,
+    assistant_message_count: usize,
+    tool_message_count: usize,
+    tool_use_count: usize,
+    tool_result_count: usize,
+    text_chars: usize,
+    thinking_chars: usize,
+    tool_use_input_chars: usize,
+    tool_result_chars: usize,
+    text_estimated_tokens: usize,
+    thinking_estimated_tokens: usize,
+    tool_use_input_estimated_tokens: usize,
+    tool_result_estimated_tokens: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type")]
+// Keep receipts flat for stable JSONL consumers. Boxing the whole tool_result
+// payload would introduce a nested object and break the stream schema.
+#[allow(clippy::large_enum_variant)]
+pub enum ExecStreamEvent {
+    #[serde(rename = "status")]
+    Status { message: String },
+    #[serde(rename = "request_image_window")]
+    RequestImageWindow {
+        provider: String,
+        model: String,
+        total: usize,
+        elided: usize,
+        cap: usize,
+        cap_source: String,
+        message: String,
+    },
+    #[serde(rename = "content")]
+    Content { content: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        name: String,
+        id: String,
+        input: serde_json::Value,
+        started_at: String,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        id: String,
+        name: String,
+        output: String,
+        status: String,
+        started_at: String,
+        completed_at: String,
+        duration_ms: u64,
+        side_effect_status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_category: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        truncated: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        artifact: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result_metadata: Option<serde_json::Value>,
+    },
+    /// A sub-agent was launched, and the model it was launched on.
+    ///
+    /// Without this, a delegated child is invisible to anything reading the
+    /// stream: a parent turn on one route could spawn children billed on
+    /// another and the only place it surfaced was the invoice. That is not
+    /// hypothetical — the `Fast` loadout re-priced scout children onto a
+    /// cheaper sibling until it was fixed, and nothing in the output said so.
+    #[serde(rename = "agent_spawned")]
+    AgentSpawned {
+        id: String,
+        model: String,
+        spawn_depth: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_run_id: Option<String>,
+        /// Why the child got this route, when the spawn path resolved one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        route_source: Option<String>,
+    },
+    #[serde(rename = "sandbox_denied")]
+    SandboxDenied {
+        tool_id: String,
+        tool_name: String,
+        reason: String,
+        outcome: String,
+    },
+    #[serde(rename = "workflow_event")]
+    WorkflowEvent {
+        run_id: String,
+        event: serde_json::Value,
+    },
+    #[serde(rename = "session_capture")]
+    SessionCapture {
+        /// Redacted fingerprint for logs/forensics, the same value the
+        /// terminal `metadata.session_id` carries; never the recoverable id.
+        content: String,
+        /// The real saved-session id a caller can resolve via
+        /// `GET /v1/sessions/{id}` to read the worker's full transcript. This
+        /// is the only place the exec stream carries the raw id: `metadata`
+        /// stays fingerprint-only so a captured terminal receipt is safe to
+        /// log on its own.
+        saved_session_id: String,
+    },
+    #[serde(rename = "service_released")]
+    #[cfg(unix)]
+    ServiceReleased {
+        task_id: String,
+        pid: u32,
+        process_group_id: u32,
+        ownership: String,
+    },
+    #[serde(rename = "provider_request_receipt")]
+    ProviderRequestReceipt { receipt: serde_json::Value },
+    /// Per-model-call usage receipt. Field names mirror the terminal
+    /// `metadata` receipt (`prompt_cache_hit_tokens` is the provider's
+    /// cache-read count, `prompt_cache_write_tokens` the cache-creation
+    /// count). Optional fields are omitted — never emitted as null or zero —
+    /// when the provider does not report them; the whole event is skipped
+    /// for model calls whose provider reported no usage at all.
+    #[serde(rename = "turn_usage")]
+    TurnUsage {
+        /// 1-based index of the model call within this exec run.
+        turn: u32,
+        input_tokens: u32,
+        output_tokens: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_hit_tokens: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_miss_tokens: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_cache_write_tokens: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_replay_tokens: Option<u32>,
+        duration_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
+    },
+    #[serde(rename = "metadata")]
+    Metadata { meta: Box<ExecStreamMeta> },
+    #[serde(rename = "done")]
+    Done,
+    #[serde(rename = "error")]
+    Error { error: String },
+}
+
+pub fn exec_sandbox_elevation_authorized(
+    allow_sandbox_elevation: bool,
+    explicit_sandbox: Option<&str>,
+) -> bool {
+    allow_sandbox_elevation
+        || explicit_sandbox.is_some_and(|policy| policy.eq_ignore_ascii_case("danger-full-access"))
+}
+
+pub fn emit_exec_stream_event(event: &ExecStreamEvent) -> Result<()> {
+    let mut line = serde_json::to_string(&exec_stream_value(event)?)?;
+    line.push('\n');
+    write_exec_stdout(&line)
+}
+
+/// Headless `exec` ignores SIGPIPE while it runs, because it writes to pipes
+/// it does not own: a stdio MCP server, LSP, hook or shell child that exits
+/// early must fail that one write with `EPIPE`, not kill the run with no
+/// output. Under the default disposition, an MCP server whose interpreter
+/// could not start (a broken `node` on PATH for the built-in Computer Use
+/// plugin) made `exec --auto` exit 141 before printing anything.
+fn ignore_sigpipe_for_headless_exec() {
+    // SAFETY: a plain disposition change with no handler. Children still start
+    // with SIGPIPE at SIG_DFL: the standard library resets it before exec.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+}
+
+/// Write exec output to stdout. SIGPIPE is ignored during exec (see
+/// [`ignore_sigpipe_for_headless_exec`]), so a reader that closed stdout
+/// (`codewhale exec ... | head -1`) surfaces here as `BrokenPipe`. End the
+/// process the way the default disposition would have (#4030) instead of
+/// panicking inside `print!`.
+fn write_exec_stdout(text: &str) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    match stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+            // SAFETY: restores the default disposition and re-raises the
+            // signal the write would have delivered without SIG_IGN.
+            #[cfg(unix)]
+            unsafe {
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+                libc::raise(libc::SIGPIPE);
+            }
+            std::process::exit(141);
+        }
+        result => result.map_err(Into::into),
+    }
+}
+
+fn exec_stream_value(event: &ExecStreamEvent) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(event)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("schema_version".to_string(), serde_json::json!(1));
+        object.insert(
+            "schema".to_string(),
+            serde_json::json!("codewhale.exec-stream"),
+        );
+    }
+    Ok(value)
+}
+
+fn tool_error_receipt_category(error: &codewhale_engine::tools::spec::ToolError) -> &'static str {
+    use codewhale_engine::tools::spec::ToolError;
+    match error {
+        ToolError::InvalidInput { .. } => "invalid_input",
+        ToolError::MissingField { .. } => "missing_field",
+        ToolError::PathEscape { .. } => "path_escape",
+        ToolError::ExecutionFailed { .. } => "execution_failed",
+        ToolError::Timeout { .. } => "timeout",
+        ToolError::Cancelled { .. } => "cancelled",
+        ToolError::NotAvailable { .. } => "not_available",
+        ToolError::PermissionDenied { .. } => "permission_denied",
+    }
+}
+
+pub fn tool_artifact_receipt(metadata: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    let object = metadata?.as_object()?;
+    let mut artifact = serde_json::Map::new();
+    for key in [
+        "artifact_id",
+        "artifact_path",
+        "artifact_relative_path",
+        "artifact_byte_size",
+        "spillover_path",
+        "content_digest",
+        "original_byte_count",
+        "retained_head_bytes",
+        "retained_tail_bytes",
+    ] {
+        if let Some(value) = object.get(key) {
+            artifact.insert(key.to_string(), value.clone());
+        }
+    }
+    (!artifact.is_empty()).then_some(serde_json::Value::Object(artifact))
+}
+
+pub fn start_binary_sha256() -> tokio::task::JoinHandle<Option<String>> {
+    let file = std::env::current_exe().and_then(std::fs::File::open);
+    tokio::task::spawn_blocking(move || {
+        let _timing = codewhale_runtime::logging::PhaseTimer::start("binary_identity");
+        let hash = codewhale_release::installs::reader_sha256(file.ok()?).ok()?;
+        Some(format!("sha256:{hash}"))
+    })
+}
+
+fn exec_stream_input_analysis(
+    messages: &[Message],
+    system: Option<&SystemPrompt>,
+) -> ExecStreamInputAnalysis {
+    let mut analysis = ExecStreamInputAnalysis {
+        estimated_request_tokens: codewhale_engine::compaction::estimate_input_tokens_conservative(
+            messages, system,
+        ),
+        estimated_message_content_tokens: codewhale_engine::compaction::estimate_tokens(messages),
+        estimated_system_tokens: exec_stream_estimate_system_tokens(system),
+        estimated_framing_tokens: messages.len().saturating_mul(12).saturating_add(48),
+        ..ExecStreamInputAnalysis::default()
+    };
+
+    for message in messages {
+        match message.role.as_str() {
+            "user" => analysis.user_message_count += 1,
+            "assistant" => analysis.assistant_message_count += 1,
+            "tool" => analysis.tool_message_count += 1,
+            _ => {}
+        }
+
+        for block in &message.content {
+            match block {
+                ContentBlock::Text { text, .. } => {
+                    exec_stream_add_text_estimate(
+                        text,
+                        &mut analysis.text_chars,
+                        &mut analysis.text_estimated_tokens,
+                    );
+                }
+                ContentBlock::Thinking { thinking, .. } => {
+                    exec_stream_add_text_estimate(
+                        thinking,
+                        &mut analysis.thinking_chars,
+                        &mut analysis.thinking_estimated_tokens,
+                    );
+                }
+                ContentBlock::ToolUse { input, .. } | ContentBlock::ServerToolUse { input, .. } => {
+                    analysis.tool_use_count += 1;
+                    exec_stream_add_json_estimate(
+                        input,
+                        &mut analysis.tool_use_input_chars,
+                        &mut analysis.tool_use_input_estimated_tokens,
+                    );
+                }
+                ContentBlock::ToolResult {
+                    content,
+                    content_blocks,
+                    ..
+                } => {
+                    analysis.tool_result_count += 1;
+                    exec_stream_add_text_estimate(
+                        content,
+                        &mut analysis.tool_result_chars,
+                        &mut analysis.tool_result_estimated_tokens,
+                    );
+                    if let Some(blocks) = content_blocks {
+                        exec_stream_add_json_estimate(
+                            blocks,
+                            &mut analysis.tool_result_chars,
+                            &mut analysis.tool_result_estimated_tokens,
+                        );
+                    }
+                }
+                ContentBlock::ToolSearchToolResult { content, .. }
+                | ContentBlock::CodeExecutionToolResult { content, .. } => {
+                    analysis.tool_result_count += 1;
+                    exec_stream_add_json_estimate(
+                        content,
+                        &mut analysis.tool_result_chars,
+                        &mut analysis.tool_result_estimated_tokens,
+                    );
+                }
+                ContentBlock::ImageUrl { .. } => {}
+            }
+        }
+    }
+
+    analysis
+}
+
+fn exec_stream_add_text_estimate(text: &str, chars: &mut usize, tokens: &mut usize) {
+    *chars = chars.saturating_add(text.chars().count());
+    *tokens = tokens
+        .saturating_add(codewhale_engine::compaction::estimate_text_tokens_conservative(text));
+}
+
+fn exec_stream_add_json_estimate<T: serde::Serialize>(
+    value: &T,
+    chars: &mut usize,
+    tokens: &mut usize,
+) {
+    let text = serde_json::to_string(value).unwrap_or_default();
+    exec_stream_add_text_estimate(&text, chars, tokens);
+}
+
+fn exec_stream_estimate_system_tokens(system: Option<&SystemPrompt>) -> usize {
+    match system {
+        Some(SystemPrompt::Text(text)) => {
+            codewhale_engine::compaction::estimate_text_tokens_conservative(text)
+        }
+        Some(SystemPrompt::Blocks(blocks)) => blocks
+            .iter()
+            .map(|block| {
+                codewhale_engine::compaction::estimate_text_tokens_conservative(&block.text)
+            })
+            .sum(),
+        None => 0,
+    }
+}
+
+fn exec_saved_session_line(session_id: &str) -> String {
+    format!("session: {}", truncate_id(session_id))
+}
+
+fn exec_resumed_session_line(session_id: &str) -> String {
+    format!("resumed session: {}", truncate_id(session_id))
+}
+
+pub fn exec_stream_session_ref(session_id: &str) -> String {
+    codewhale_util::utils::redacted_identifier_for_log(session_id)
+}
+
+/// Resume hint for the terminal `metadata` receipt. `metadata` carries only
+/// the session fingerprint, so the hint names the `session_capture` field
+/// that holds the recoverable id instead of pretending to redact one.
+fn exec_stream_resume_hint(session_id: &str) -> String {
+    if session_id.trim().is_empty() {
+        String::new()
+    } else {
+        "codewhale exec --resume <session_capture.saved_session_id>".to_string()
+    }
+}
+
+/// The final visible assistant reply for the terminal receipt: the text
+/// blocks of the last assistant-like message after the current user prompt.
+/// Tool results also use the user role, so they must not start a new turn.
+/// A resumed session can be synchronized before its new prompt is accepted;
+/// without current output its old answer must never become a new deliverable.
+fn exec_stream_final_answer_text(
+    messages: &[Message],
+    current_turn_has_output: bool,
+) -> Option<String> {
+    if !current_turn_has_output {
+        return None;
+    }
+    let turn_start = messages.iter().rposition(|message| {
+        message.role == Role::User
+            && !codewhale_models::turn_classify::is_runtime_owned_user_message(message)
+            && !message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+    })?;
+    let text = messages
+        .iter()
+        .skip(turn_start + 1)
+        .rev()
+        .find(|message| message.role.is_assistant_like())?
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+#[derive(Clone, Copy)]
+struct PersistedProviderRoute<'a> {
+    kind: &'a str,
+    id: Option<&'a str>,
+}
+
+fn persist_exec_session(
+    messages: &[Message],
+    model: &str,
+    provider_route: PersistedProviderRoute<'_>,
+    workspace: &Path,
+    system_prompt: &Option<SystemPrompt>,
+    session_id: Option<&str>,
+    total_tokens: u64,
+    turn_failure: Option<&str>,
+    manager: &SessionManager,
+    provider_request_receipts: &[serde_json::Value],
+    checkpoint: Option<&codewhale_engine::core::events::SessionCheckpointRequest>,
+    source: &session_manager::SessionWriteReceipt,
+    owner: &codewhale_engine::core::ops::SessionSnapshotSource,
+) -> Result<session_manager::SessionPublication> {
+    let captured = source.capture(session_manager::SessionWriteOwner::Engine(owner.clone()))?;
+    if checkpoint.is_some() {
+        captured.require_checkpoint_acknowledgement();
+    }
+    let native_accounting = session_id
+        .map(|id| manager.has_native_usage_records(id))
+        .transpose()?
+        .unwrap_or(false)
+        || provider_request_receipts
+            .iter()
+            .any(|receipt| receipt["source_accounting"].as_bool() == Some(true));
+    let mut saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
+        match manager.load_session_snapshot(id) {
+            Ok(existing) => {
+                let tokens = if native_accounting {
+                    existing.metadata.total_tokens
+                } else {
+                    total_tokens
+                };
+                session_manager::update_session(existing, messages, tokens, system_prompt.as_ref())
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                session_manager::create_saved_session_with_id_and_mode(
+                    id.to_string(),
+                    messages,
+                    model,
+                    workspace,
+                    if native_accounting { 0 } else { total_tokens },
+                    system_prompt.as_ref(),
+                    Some("exec"),
+                )
+            }
+            Err(err) => return Err(err).context("could not load existing exec session"),
+        }
+    } else {
+        session_manager::create_saved_session_with_mode(
+            messages,
+            model,
+            workspace,
+            total_tokens,
+            system_prompt.as_ref(),
+            Some("exec"),
+        )
+    };
+    saved.write_receipt = Some(captured);
+    stamp_exec_session_metadata(
+        &mut saved,
+        model,
+        provider_route.kind,
+        provider_route.id,
+        workspace,
+    );
+    if let Some(error) = turn_failure {
+        session_manager::push_turn_outcome(
+            &mut saved.turn_outcomes,
+            session_manager::SavedTurnOutcome::failed(error, messages.len()),
+        );
+    }
+    if !provider_request_receipts.is_empty() {
+        saved.ensure_journal();
+        if let Some(journal) = saved.journal.as_mut() {
+            let leaf = journal.leaf_id.clone();
+            for receipt in provider_request_receipts {
+                let label = if receipt
+                    .get("wire_observations")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|values| {
+                        values
+                            .iter()
+                            .any(|value| value.get("image_projection").is_some())
+                    }) {
+                    "Provider request image projection"
+                } else {
+                    "Provider request receipt"
+                };
+                journal.append(codewhale_runtime::session_tree::SessionEntryKind::System {
+                    content: format!("{label}: {receipt}"),
+                });
+                journal.leaf_id.clone_from(&leaf);
+            }
+        }
+    }
+    for receipt in provider_request_receipts.iter().filter(|receipt| {
+        receipt["primary"].as_bool() == Some(true)
+            && receipt["source_accounting"].as_bool() != Some(true)
+    }) {
+        let Some(source) = receipt["source_id"].as_str() else {
+            continue;
+        };
+        if receipt["usage_reported"].as_bool() == Some(true) {
+            saved.metadata.cost.usage_source_fingerprints.insert(
+                codewhale_engine::cost_status::usage_source_fingerprint(source),
+            );
+        }
+        let coverage = receipt.get("coverage").cloned().and_then(|value| {
+            serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(value)
+                .ok()
+        });
+        if matches!(
+            coverage,
+            Some(
+                codewhale_engine::llm_client::ProviderUsageCoverage::Missing
+                    | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
+            )
+        ) && let Some(route) = receipt.get("route").cloned().and_then(|value| {
+            serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value)
+                .ok()
+        }) {
+            let reason =
+                if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
+                    codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+                } else {
+                    codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                };
+            let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
+                &codewhale_engine::cost_status::RuntimeUsageDropRecord {
+                    source_id: source.to_string(),
+                    route,
+                    reason,
+                },
+            );
+            let cost = &mut saved.metadata.cost;
+            let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
+                &mut cost.missing_usage_sources,
+                &mut cost.missing_usage_overflowed,
+                &mut cost.unpriced_turns,
+                &mut cost.cny_unpriced_turns,
+                &pool,
+            );
+            cost.unpriced_turns = cost.unpriced_turns.saturating_add(pool.unpriced_turns);
+            cost.cny_unpriced_turns = cost
+                .cny_unpriced_turns
+                .saturating_add(pool.cny_unpriced_turns);
+            cost.unpriced_reasons
+                .extend(pool.unpriced_reasons.into_iter().map(str::to_string));
+            cost.cny_unpriced_reasons
+                .extend(pool.cny_unpriced_reasons.into_iter().map(str::to_string));
+        }
+    }
+    saved.make_storage_compatible();
+    if let Some(checkpoint) = checkpoint {
+        checkpoint
+            .validate_prefix(
+                &saved.metadata.id,
+                &saved.metadata.workspace,
+                &saved.messages,
+            )
+            .map_err(anyhow::Error::msg)?;
+    }
+    manager
+        .publish_session(&saved)
+        .context("could not save exec session")
+}
+
+pub fn stamp_exec_session_metadata(
+    saved: &mut session_manager::SavedSession,
+    model: &str,
+    model_provider_kind: &str,
+    model_provider_id: Option<&str>,
+    workspace: &Path,
+) {
+    saved.metadata.model = model.to_string();
+    saved
+        .metadata
+        .set_model_provider_route(model_provider_kind, model_provider_id);
+    saved.metadata.workspace = workspace.to_path_buf();
+    saved.metadata.mode = Some("exec".to_string());
+}
+
+#[derive(serde::Serialize)]
+struct ExecToolEntry {
+    name: String,
+    success: bool,
+    output: String,
+}
+
+#[derive(serde::Serialize)]
+struct ExecOutcome {
+    kind: String,
+    outcome: String,
+    tool_name: String,
+    reason: String,
+}
+
+#[derive(serde::Serialize, Default)]
+struct ExecSummary {
+    mode: String,
+    provider: String,
+    model: String,
+    prompt: String,
+    output: String,
+    tools: Vec<ExecToolEntry>,
+    outcomes: Vec<ExecOutcome>,
+    status: Option<String>,
+    termination_reason: Option<String>,
+    error_category: Option<String>,
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    released_services: Vec<codewhale_engine::tools::shell::PersistentServiceReceipt>,
+    /// One-shot (`mode: "one-shot"`) receipt fields kept from the pre-#6510
+    /// direct-call path: whether the turn completed without error, and its
+    /// provider-reported usage. Absent on agent receipts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    success: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<codewhale_models::Usage>,
+}
+
+impl ExecSummary {
+    /// Fill the one-shot receipt fields from the settled turn: success means a
+    /// completed status with no error; usage is what the provider reported.
+    fn record_one_shot_outcome(&mut self, usage: Option<codewhale_models::Usage>) {
+        self.success = Some(self.error.is_none() && self.status.as_deref() == Some("completed"));
+        self.usage = usage;
+    }
+}
+
+pub fn validate_exec_tool_authority_resume(
+    tool_authority_json: Option<&str>,
+    resuming: bool,
+) -> Result<()> {
+    if tool_authority_json.is_some() && resuming {
+        bail!(
+            "Fleet tool authority cannot be combined with exec --resume, --session-id, or --continue"
+        );
+    }
+    Ok(())
+}
+
+fn exec_network_policy(
+    config: &Config,
+    outer_network_access: Option<bool>,
+) -> Option<codewhale_net::network_policy::NetworkPolicyDecider> {
+    // Fleet caps are an outer authority boundary: user configuration may
+    // narrow them further, but it may never widen an explicit network denial.
+    if outer_network_access == Some(false) {
+        // A Fleet denial is an outer authority the user's document may never
+        // widen, so mark the decider authoritative: a mid-session re-read of
+        // that document folds onto it instead of replacing it.
+        return Some(
+            codewhale_net::network_policy::NetworkPolicyDecider::new(
+                codewhale_net::network_policy::NetworkPolicy {
+                    default: codewhale_net::network_policy::DecisionToml::Deny,
+                    ..codewhale_net::network_policy::NetworkPolicy::default()
+                },
+                None,
+            )
+            .with_authoritative(),
+        );
+    }
+    config.network.clone().map(|toml_cfg| {
+        codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
+            codewhale_net::network_policy::NetworkPolicy::from(toml_cfg),
+        )
+    })
+}
+
+fn apply_fleet_engine_feature_caps(
+    features: &mut codewhale_runtime::features::Features,
+    fleet_authority_active: bool,
+    outer_network_access: Option<bool>,
+    shell_authority: codewhale_engine::tools::spec::ToolShellAuthority,
+) {
+    if fleet_authority_active {
+        features.disable(codewhale_runtime::features::Feature::Subagents);
+        features.disable(codewhale_runtime::features::Feature::Mcp);
+        if shell_authority != codewhale_engine::tools::spec::ToolShellAuthority::ReadOnly {
+            features.disable(codewhale_runtime::features::Feature::ShellTool);
+        }
+    }
+    if outer_network_access == Some(false) {
+        features.disable(codewhale_runtime::features::Feature::WebSearch);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn custom_exec_config(active: &str) -> Config {
+    let mut custom = std::collections::HashMap::new();
+    for (name, base_url, model) in [
+        (
+            "custom-a",
+            "http://127.0.0.1:18181/v1",
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+        ),
+        ("custom-b", "http://127.0.0.1:18182/v1", "model-b"),
+    ] {
+        custom.insert(
+            name.to_string(),
+            codewhale_runtime::config::ProviderConfig {
+                kind: Some("openai-compatible".to_string()),
+                base_url: Some(base_url.to_string()),
+                model: Some(model.to_string()),
+                api_key: Some("local-test-key".to_string()),
+                ..Default::default()
+            },
+        );
+    }
+    {
+        let __cw_config_init_1_0 = Some(active.to_string());
+        let __cw_config_init_1_1 = Some(codewhale_runtime::config::ProvidersConfig {
+            custom,
+            ..Default::default()
+        });
+        let mut __cw_config_init_1_value: Config = Default::default();
+        __cw_config_init_1_value.provider = __cw_config_init_1_0;
+        __cw_config_init_1_value.providers = __cw_config_init_1_1;
+        __cw_config_init_1_value
+    }
+}
+
+const TOOL_TEXT_LIMIT: usize = 300;
+
+fn summarize_string_value(text: &str, max_len: usize, count_only: bool) -> String {
+    let trimmed = text.trim();
+    let len = trimmed.chars().count();
+    if count_only || len > max_len {
+        return format!("<{len} chars>");
+    }
+    codewhale_tui_kit::ui_text::truncate_line_to_width(trimmed, max_len)
+}
+
+fn summarize_inline_value(value: &Value, max_len: usize, count_only: bool) -> String {
+    match value {
+        Value::String(s) => summarize_string_value(s, max_len, count_only),
+        Value::Array(items) => format!("<{} items>", items.len()),
+        Value::Object(map) => format!("<{} keys>", map.len()),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(num) => num.to_string(),
+        Value::Null => "null".to_string(),
+    }
+}
+
+fn is_noisy_tool_arg_key(key: &str) -> bool {
+    matches!(
+        key,
+        "limit"
+            | "max_count"
+            | "max_output_tokens"
+            | "offset"
+            | "page"
+            | "page_size"
+            | "per_page"
+            | "response_length"
+            | "timeout_ms"
+            | "yield_time_ms"
+    )
+}
+
+#[must_use]
+pub fn summarize_tool_args(input: &Value) -> Option<String> {
+    let obj = input.as_object()?;
+    if obj.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+
+    if let Some(value) = obj.get("path") {
+        parts.push(format!(
+            "path: {}",
+            summarize_inline_value(value, 80, false)
+        ));
+    }
+    if let Some(value) = obj.get("command") {
+        parts.push(format!(
+            "command: {}",
+            summarize_inline_value(value, 80, false)
+        ));
+    }
+    if let Some(value) = obj.get("query") {
+        parts.push(format!(
+            "query: {}",
+            summarize_inline_value(value, 80, false)
+        ));
+    }
+    if let Some(value) = obj.get("prompt") {
+        parts.push(format!(
+            "prompt: {}",
+            summarize_inline_value(value, 80, false)
+        ));
+    }
+    if let Some(value) = obj.get("text") {
+        parts.push(format!(
+            "text: {}",
+            summarize_inline_value(value, 80, false)
+        ));
+    }
+    if let Some(value) = obj.get("pattern") {
+        parts.push(format!(
+            "pattern: {}",
+            summarize_inline_value(value, 80, false)
+        ));
+    }
+    if let Some(value) = obj.get("model") {
+        parts.push(format!(
+            "model: {}",
+            summarize_inline_value(value, 40, false)
+        ));
+    }
+    if let Some(value) = obj.get("profile") {
+        parts.push(format!(
+            "profile: {}",
+            summarize_inline_value(value, 40, false)
+        ));
+    }
+    if let Some(value) = obj.get("level") {
+        parts.push(format!(
+            "level: {}",
+            summarize_inline_value(value, 40, false)
+        ));
+    }
+    if let Some(value) = obj.get("file_id") {
+        parts.push(format!(
+            "file_id: {}",
+            summarize_inline_value(value, 40, false)
+        ));
+    }
+    if let Some(value) = obj.get("task_id") {
+        parts.push(format!(
+            "task_id: {}",
+            summarize_inline_value(value, 40, false)
+        ));
+    }
+    if let Some(value) = obj.get("voice_id") {
+        parts.push(format!(
+            "voice_id: {}",
+            summarize_inline_value(value, 40, false)
+        ));
+    }
+    if let Some(value) = obj.get("content") {
+        parts.push(format!(
+            "content: {}",
+            summarize_inline_value(value, 0, true)
+        ));
+    }
+
+    if parts.is_empty()
+        && let Some((key, value)) = obj
+            .iter()
+            .find(|(key, _)| !is_noisy_tool_arg_key(key.as_str()))
+    {
+        return Some(format!(
+            "{}: {}",
+            key,
+            summarize_inline_value(value, 80, false)
+        ));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
+}
+
+#[must_use]
+pub fn summarize_tool_output(output: &str) -> String {
+    if let Ok(json) = serde_json::from_str::<Value>(output) {
+        if let Some(obj) = json.as_object() {
+            if let Some(error) = obj.get("error").or(obj.get("status_msg")) {
+                return format!("Error: {}", summarize_inline_value(error, 120, false));
+            }
+
+            let mut parts = Vec::new();
+
+            if let Some(status) = obj.get("status").and_then(|v| v.as_str()) {
+                parts.push(format!("status: {status}"));
+            }
+            if let Some(message) = obj.get("message").and_then(|v| v.as_str()) {
+                parts.push(codewhale_tui_kit::ui_text::truncate_line_to_width(
+                    message,
+                    TOOL_TEXT_LIMIT,
+                ));
+            }
+            if let Some(task_id) = obj.get("task_id").and_then(|v| v.as_str()) {
+                parts.push(format!("task_id: {task_id}"));
+            }
+            if let Some(file_id) = obj.get("file_id").and_then(|v| v.as_str()) {
+                parts.push(format!("file_id: {file_id}"));
+            }
+            if let Some(url) = obj
+                .get("file_url")
+                .or_else(|| obj.get("url"))
+                .and_then(|v| v.as_str())
+            {
+                parts.push(format!(
+                    "url: {}",
+                    codewhale_tui_kit::ui_text::truncate_line_to_width(url, 120)
+                ));
+            }
+            if let Some(data) = obj.get("data") {
+                parts.push(format!("data: {}", summarize_inline_value(data, 80, true)));
+            }
+
+            if !parts.is_empty() {
+                return parts.join(" | ");
+            }
+
+            if let Some(content) = obj
+                .get("content")
+                .or(obj.get("result"))
+                .or(obj.get("output"))
+            {
+                return summarize_inline_value(content, TOOL_TEXT_LIMIT, false);
+            }
+        }
+
+        return summarize_inline_value(&json, TOOL_TEXT_LIMIT, true);
+    }
+
+    codewhale_tui_kit::ui_text::truncate_line_to_width(output, TOOL_TEXT_LIMIT)
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+    #[test]
+    fn windows_config_path_compare_normalizes_mixed_separators() {
+        assert_eq!(
+            normalize_windows_config_path_str(r"C:\Users\me\repo"),
+            normalize_windows_config_path_str(r"C:/Users/me/repo/")
+        );
+    }
+
+    #[test]
+    fn windows_config_path_compare_normalizes_verbatim_and_unc_prefixes() {
+        assert_eq!(
+            normalize_windows_config_path_str(r"\\?\C:\Users\me\repo"),
+            normalize_windows_config_path_str(r"C:/Users/me/repo")
+        );
+        assert_eq!(
+            normalize_windows_config_path_str(r"\\?\UNC\server\share\repo"),
+            normalize_windows_config_path_str(r"\\server/share/repo/")
+        );
+    }
+
+    #[test]
+    fn headless_consultant_authority_overrides_network_allow_and_disables_web_search() {
+        let config = {
+            let __cw_config_init_0_0 = Some(codewhale_config::NetworkPolicyToml {
+                default: "allow".to_string(),
+                audit: false,
+                ..codewhale_config::NetworkPolicyToml::default()
+            });
+            let mut __cw_config_init_0_value: Config = Config::default();
+            __cw_config_init_0_value.network = __cw_config_init_0_0;
+            __cw_config_init_0_value
+        };
+        let authority = codewhale_engine::tools::spec::ToolAuthorityEnvelope {
+            schema_version: 1,
+            owner: "consultant-1".to_string(),
+            authority: codewhale_engine::tools::spec::ToolMutationAuthority::ReadOnly,
+            network_access: Some(false),
+            shell: codewhale_engine::tools::spec::ToolShellAuthority::None,
+            verification: codewhale_engine::tools::spec::ToolVerificationAuthority::None,
+            writable_roots: Vec::new(),
+            writable_files: Vec::new(),
+            coordination_contracts: Vec::new(),
+        }
+        .normalized()
+        .expect("Consultant authority");
+
+        let policy = exec_network_policy(&config, authority.network_access)
+            .expect("explicit network=false always installs a policy");
+        assert_eq!(
+            policy.evaluate("example.com", "web_search"),
+            codewhale_net::network_policy::Decision::Deny,
+            "the permissive user config must not widen Consultant network authority"
+        );
+        let mut features = codewhale_runtime::features::Features::default();
+        features.enable(codewhale_runtime::features::Feature::ShellTool);
+        features.enable(codewhale_runtime::features::Feature::WebSearch);
+        apply_fleet_engine_feature_caps(
+            &mut features,
+            true,
+            authority.network_access,
+            authority.shell,
+        );
+        assert!(!features.enabled(codewhale_runtime::features::Feature::WebSearch));
+        assert!(!features.enabled(codewhale_runtime::features::Feature::ShellTool));
+
+        let worker_policy = exec_network_policy(&config, Some(true)).expect("configured policy");
+        assert_eq!(
+            worker_policy.evaluate("example.com", "web_search"),
+            codewhale_net::network_policy::Decision::Allow,
+            "a network-capable role keeps the configured policy"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn explicit_exec_model_routes_to_unique_authenticated_provider_candidate() {
+        let _env_lock = codewhale_engine::test_support::lock_test_env();
+        let _zai = codewhale_engine::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
+        let _openrouter = codewhale_engine::test_support::EnvVarGuard::remove("OPENROUTER_API_KEY");
+        let config = {
+            let __cw_config_init_11_0 = Some("deepseek".to_string());
+            let __cw_config_init_11_1 =
+                Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+            let mut __cw_config_init_11_value: Config = Default::default();
+            __cw_config_init_11_value.provider = __cw_config_init_11_0;
+            __cw_config_init_11_value.default_text_model = __cw_config_init_11_1;
+            __cw_config_init_11_value
+        };
+
+        let route = resolve_cli_auto_route(
+            &config,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+            "pong",
+            None,
+        )
+        .await
+        .expect("explicit GLM should route to the configured Z.ai provider");
+
+        assert_eq!(route.provider.provider, codewhale_config::ProviderKind::Zai);
+        assert_eq!(
+            route.model,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
+        );
+        assert!(!route.auto_model);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn explicit_exec_model_reports_ambiguous_authenticated_provider_candidates() {
+        let _env_lock = codewhale_engine::test_support::lock_test_env();
+        let _zai = codewhale_engine::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
+        let _openrouter =
+            codewhale_engine::test_support::EnvVarGuard::set("OPENROUTER_API_KEY", "or-key");
+        let config = {
+            let __cw_config_init_12_0 = Some("deepseek".to_string());
+            let __cw_config_init_12_1 =
+                Some(codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string());
+            let mut __cw_config_init_12_value: Config = Default::default();
+            __cw_config_init_12_value.provider = __cw_config_init_12_0;
+            __cw_config_init_12_value.default_text_model = __cw_config_init_12_1;
+            __cw_config_init_12_value
+        };
+
+        let err = resolve_cli_auto_route(
+            &config,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+            "pong",
+            None,
+        )
+        .await
+        .expect_err("ambiguous GLM route should ask for an explicit provider");
+        let message = err.to_string();
+
+        assert!(message.contains("model `GLM-5.2` is available"));
+        assert!(message.contains("openrouter"));
+        assert!(message.contains("zai"));
+        assert!(message.contains("--provider"));
+        assert!(message.contains("/provider"));
+        assert!(message.contains("/model"));
+        assert!(message.contains("/setup"));
+    }
+
+    #[tokio::test]
+    async fn cli_auto_model_honors_a_fixed_reasoning_preference() {
+        let config = {
+            let __cw_config_init_13_0 = Some("vllm".to_string());
+            let __cw_config_init_13_1 = Some("low".to_string());
+            let __cw_config_init_13_2 = Some(codewhale_runtime::config::ProvidersConfig {
+                vllm: codewhale_runtime::config::ProviderConfig {
+                    base_url: Some("http://127.0.0.1:18190/v1".to_string()),
+                    model: Some("local-auto-model".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let mut __cw_config_init_13_value: Config = Default::default();
+            __cw_config_init_13_value.provider = __cw_config_init_13_0;
+            __cw_config_init_13_value.reasoning_effort = __cw_config_init_13_1;
+            __cw_config_init_13_value.providers = __cw_config_init_13_2;
+            __cw_config_init_13_value
+        };
+
+        let route = resolve_cli_auto_route(&config, "auto", "debug a failing test", None)
+            .await
+            .expect("Auto model route");
+
+        assert!(route.auto_model);
+        assert_eq!(
+            route.reasoning_effort,
+            Some(codewhale_engine::reasoning_preference::ReasoningEffort::Low)
+        );
+        assert!(
+            !route.auto_controls_reasoning,
+            "a fixed saved tier must not be replaced per prompt"
+        );
+    }
+
+    #[test]
+    fn cli_route_execution_config_stamps_routed_model_into_provider_slot() {
+        let mut providers = codewhale_runtime::config::ProvidersConfig::default();
+        providers.deepseek.model = Some("deepseek-v4-pro".to_string());
+        let config = {
+            let __cw_config_init_14_0 = Some("deepseek".to_string());
+            let __cw_config_init_14_1 = Some(providers);
+            let mut __cw_config_init_14_value: Config = Default::default();
+            __cw_config_init_14_value.provider = __cw_config_init_14_0;
+            __cw_config_init_14_value.providers = __cw_config_init_14_1;
+            __cw_config_init_14_value
+        };
+        let route = CliAutoRoute {
+            provider: Config::default()
+                .test_identity_for_kind(codewhale_config::ProviderKind::Deepseek),
+            model: "deepseek-v4-flash".to_string(),
+            reasoning_effort: None,
+            auto_controls_reasoning: true,
+            auto_model: true,
+        };
+
+        let execution_config =
+            config_for_cli_route(&config, &route).expect("admitted execution route");
+
+        assert_eq!(execution_config.default_model(), "deepseek-v4-flash");
+        assert_eq!(
+            execution_config
+                .provider_config_for(
+                    &execution_config
+                        .test_identity_for_kind(codewhale_config::ProviderKind::Deepseek)
+                )
+                .and_then(|entry| entry.model.as_deref()),
+            Some("deepseek-v4-flash")
+        );
+    }
+
+    #[test]
+    fn cli_route_execution_config_preserves_the_legacy_literal_custom_route() {
+        let _lock = codewhale_engine::test_support::lock_test_env();
+        let _source =
+            codewhale_engine::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY_SOURCE");
+        let _cli_key = codewhale_engine::test_support::EnvVarGuard::remove("CODEWHALE_CLI_API_KEY");
+        let config = {
+            let __cw_config_init_15_0 = Some("custom".to_string());
+            let __cw_config_init_15_1 = Some("legacy-model".to_string());
+            let mut __cw_config_init_15_value: Config = Default::default();
+            __cw_config_init_15_value.provider = __cw_config_init_15_0;
+            __cw_config_init_15_value.default_text_model = __cw_config_init_15_1;
+            __cw_config_init_15_value
+        }
+        .with_legacy_root(
+            Some("legacy-root-key".to_string()),
+            Some("http://127.0.0.1:18183/v1".to_string()),
+        );
+        let route = CliAutoRoute {
+            provider: config
+                .active_provider_identity()
+                .expect("captured literal root identity"),
+            model: "routed-legacy-model".to_string(),
+            reasoning_effort: None,
+            auto_controls_reasoning: false,
+            auto_model: false,
+        };
+
+        let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
+
+        // The literal route's top-level fields live in `[providers.custom]`
+        // (#6394), and the routed model lands there too.
+        assert!(execution.selects_literal_custom_provider());
+        assert_eq!(execution.provider.as_deref(), Some("custom"));
+        assert_eq!(execution.default_model(), "routed-legacy-model");
+        assert_eq!(
+            execution.active_route_base_url(),
+            "http://127.0.0.1:18183/v1"
+        );
+        assert_eq!(execution.active_route_api_key().unwrap(), "legacy-root-key");
+        for _ in 0..2 {
+            let identity = execution
+                .resolve_provider_identity("custom")
+                .expect("legacy identity remains repeatedly resolvable");
+            assert_eq!(identity.key.as_str(), "custom");
+        }
+        let client = codewhale_engine::client::CodewhaleClient::new(&execution)
+            .expect("legacy execution client");
+        assert_eq!(client.base_url(), "http://127.0.0.1:18183/v1");
+    }
+
+    #[tokio::test]
+    async fn forced_exec_route_keeps_custom_provider_when_model_matches_builtin_catalog() {
+        let config = custom_exec_config("custom-a");
+
+        let route = resolve_cli_exec_route(
+            &config,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+            "audit",
+            true,
+            None,
+        )
+        .await
+        .expect("forced route");
+        let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
+
+        assert_eq!(
+            route.provider.provider,
+            codewhale_config::ProviderKind::Custom
+        );
+        assert_eq!(
+            route.model,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL
+        );
+        assert_eq!(execution.provider.as_deref(), Some("custom-a"));
+    }
+
+    #[tokio::test]
+    async fn configured_workflow_default_keeps_named_custom_route() {
+        let config = custom_exec_config("custom-a");
+        let model = config.default_model();
+
+        let route = resolve_cli_exec_route(
+            &config,
+            &model,
+            "Run a checked-in Workflow through the host runtime",
+            true,
+            None,
+        )
+        .await
+        .expect("configured workflow route");
+        let execution = config_for_cli_route(&config, &route).expect("admitted execution route");
+
+        assert_eq!(
+            route.provider.provider,
+            codewhale_config::ProviderKind::Custom
+        );
+        assert_eq!(
+            execution.active_provider_identity().unwrap().key.as_str(),
+            "custom-a"
+        );
+        assert_eq!(
+            execution.active_route_base_url(),
+            "http://127.0.0.1:18181/v1"
+        );
+        let client =
+            codewhale_engine::client::CodewhaleClient::new(&execution).expect("workflow client");
+        assert_eq!(client.base_url(), "http://127.0.0.1:18181/v1");
+    }
+
+    #[test]
+    fn exec_json_receipts_keep_exact_named_custom_provider() {
+        let config = custom_exec_config("custom-a");
+        let identity = config.active_provider_identity().unwrap();
+        let provider = identity.key.as_str();
+        // #6510: plain exec is an Engine turn now; its `--json` receipt keeps
+        // the documented one-shot fields (docs/LIVE_SMOKE.md step 5).
+        let mut one_shot = ExecSummary {
+            mode: "one-shot".to_string(),
+            provider: provider.to_string(),
+            model: "model-a".to_string(),
+            output: "done".to_string(),
+            status: Some("completed".to_string()),
+            ..ExecSummary::default()
+        };
+        one_shot.record_one_shot_outcome(Some(codewhale_models::Usage {
+            input_tokens: 12,
+            output_tokens: 3,
+            ..Default::default()
+        }));
+        let one_shot = serde_json::to_value(&one_shot).expect("one-shot receipt");
+        assert_eq!(one_shot["mode"], "one-shot");
+        assert_eq!(one_shot["provider"], "custom-a");
+        assert_eq!(one_shot["model"], "model-a");
+        assert_eq!(one_shot["output"], "done");
+        assert_eq!(one_shot["success"], true);
+        assert_eq!(one_shot["usage"]["input_tokens"], 12);
+        assert_eq!(one_shot["usage"]["output_tokens"], 3);
+
+        let mut failed = ExecSummary {
+            mode: "one-shot".to_string(),
+            provider: provider.to_string(),
+            model: "model-a".to_string(),
+            status: Some("failed".to_string()),
+            error: Some("Model response incomplete".to_string()),
+            ..ExecSummary::default()
+        };
+        failed.record_one_shot_outcome(None);
+        let failed = serde_json::to_value(&failed).expect("failed one-shot receipt");
+        assert_eq!(failed["success"], false);
+        assert!(
+            failed.get("usage").is_none(),
+            "no usage is never zero usage"
+        );
+
+        let agent = serde_json::to_value(ExecSummary {
+            mode: "agent".to_string(),
+            provider: provider.to_string(),
+            model: "model-a".to_string(),
+            ..ExecSummary::default()
+        })
+        .expect("agent exec JSON receipt");
+        assert_eq!(agent["provider"], "custom-a");
+        assert!(
+            agent.get("success").is_none() && agent.get("usage").is_none(),
+            "agent receipts keep their pre-#6510 shape"
+        );
+        let serialized = serde_json::to_string(&agent).expect("serialize receipt");
+        assert!(!serialized.contains("127.0.0.1"));
+        assert!(!serialized.contains("local-test-key"));
+    }
+
+    #[test]
+    fn exec_stream_provider_pair_preserves_named_literal_and_root_custom_provenance() {
+        let mut config = Config::default();
+        for key in ["lm-studio", "custom"] {
+            config
+                .providers
+                .get_or_insert_with(Default::default)
+                .custom
+                .insert(
+                    key.to_string(),
+                    codewhale_runtime::config::ProviderConfig {
+                        kind: Some("openai-compatible".to_string()),
+                        base_url: Some("http://localhost:1234/v1".to_string()),
+                        ..Default::default()
+                    },
+                );
+        }
+        let named = config
+            .resolve_provider_identity("lm-studio")
+            .expect("exact named table");
+        let literal = config
+            .resolve_provider_identity("custom")
+            .expect("exact literal table");
+        let root_config = {
+            let __cw_config_init_1_0 = Some("custom".to_string());
+            let mut __cw_config_init_1_value: Config = Config::default();
+            __cw_config_init_1_value.provider = __cw_config_init_1_0;
+            __cw_config_init_1_value
+        }
+        .with_legacy_root(None, Some("http://localhost:1234/v1".to_string()));
+        let root = root_config
+            .active_provider_identity()
+            .expect("captured root migration");
+        let built_in = Config::default()
+            .active_provider_identity()
+            .expect("built-in fixture");
+
+        assert_eq!(
+            exec_stream_provider_route(&named),
+            ("custom".to_string(), Some("lm-studio".to_string()))
+        );
+        assert_eq!(
+            exec_stream_provider_route(&literal),
+            ("custom".to_string(), Some("custom".to_string()))
+        );
+        assert_eq!(
+            exec_stream_provider_route(&root),
+            ("custom".to_string(), None)
+        );
+        assert_eq!(
+            exec_stream_provider_route(&built_in),
+            ("deepseek".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn exec_persistence_omits_id_for_legacy_root_custom_route() {
+        let mut saved = session_manager::create_saved_session_with_mode(
+            &[],
+            "legacy-root-model",
+            Path::new("/tmp/exec-root"),
+            0,
+            None,
+            Some("exec"),
+        );
+        stamp_exec_session_metadata(
+            &mut saved,
+            "legacy-root-model",
+            codewhale_config::ProviderKind::Custom.as_str(),
+            None,
+            Path::new("/tmp/exec-root"),
+        );
+
+        assert_eq!(saved.metadata.model_provider, "custom");
+        assert_eq!(saved.metadata.model_provider_id, None);
+        assert!(
+            !serde_json::to_string(&saved)
+                .expect("serialize exec session")
+                .contains("model_provider_id")
+        );
+    }
+
+    #[test]
+    fn cli_auto_resolves_to_the_declared_default_before_k3_route_normalization() {
+        let config = {
+            let __cw_config_init_2_0 = Some("moonshot".to_string());
+            let __cw_config_init_2_1 = Some(codewhale_runtime::config::ProvidersConfig {
+                moonshot: codewhale_runtime::config::ProviderConfig {
+                    base_url: Some(
+                        codewhale_config::descriptors::defaults::DEFAULT_KIMI_CODE_BASE_URL
+                            .to_string(),
+                    ),
+                    model: Some(
+                        codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL
+                            .to_string(),
+                    ),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let mut __cw_config_init_2_value: Config = Default::default();
+            __cw_config_init_2_value.provider = __cw_config_init_2_0;
+            __cw_config_init_2_value.providers = __cw_config_init_2_1;
+            __cw_config_init_2_value
+        };
+
+        // #6290 rework: Auto no longer classifies the prompt. Any wording
+        // resolves the declared policy tier, normalized for the K3 route.
+        assert_eq!(
+            cli_reasoning_effort_value_for_prompt(
+                &config,
+                codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
+                codewhale_engine::reasoning_preference::ReasoningEffort::Auto,
+            )
+            .as_deref(),
+            Some("high"),
+            "Auto resolves the declared default, not a classification"
+        );
+
+        assert_eq!(
+            cli_reasoning_effort_value_for_prompt(
+                &config,
+                codewhale_config::catalog::reviewed::constants::KIMI_CODE_K3_MODEL,
+                codewhale_engine::reasoning_preference::ReasoningEffort::Off,
+            )
+            .as_deref(),
+            Some("low"),
+            "membership K3 still applies its exact-route always-thinking floor"
+        );
+    }
+
+    #[test]
+    fn cli_route_tracks_auto_reasoning_independently_from_auto_model() {
+        use codewhale_engine::reasoning_preference::ReasoningEffort;
+
+        let fixed_model_auto_reasoning = CliAutoRoute {
+            provider: Config::default()
+                .test_identity_for_kind(codewhale_config::ProviderKind::Deepseek),
+            model: codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL.to_string(),
+            reasoning_effort: Some(ReasoningEffort::Auto),
+            auto_controls_reasoning: true,
+            auto_model: false,
+        };
+        let auto_model_fixed_reasoning = CliAutoRoute {
+            provider: Config::default()
+                .test_identity_for_kind(codewhale_config::ProviderKind::OpenaiCodex),
+            model: codewhale_config::descriptors::defaults::DEFAULT_OPENAI_CODEX_MODEL.to_string(),
+            reasoning_effort: Some(ReasoningEffort::High),
+            auto_controls_reasoning: false,
+            auto_model: true,
+        };
+
+        assert!(fixed_model_auto_reasoning.auto_controls_reasoning);
+        assert!(!fixed_model_auto_reasoning.auto_model);
+        assert!(!auto_model_fixed_reasoning.auto_controls_reasoning);
+        assert!(auto_model_fixed_reasoning.auto_model);
+    }
+
+    /// `run_exec_agent` must hand the engine a concrete tier, never the literal
+    /// `"auto"` sentinel, for a fixed-model Auto launch.
+    #[test]
+    fn fixed_model_exec_auto_resolves_to_a_concrete_tier_not_the_auto_sentinel() {
+        let config = {
+            let __cw_config_init_5_0 = Some("zai".to_string());
+            let mut __cw_config_init_5_value: Config = Default::default();
+            __cw_config_init_5_value.provider = __cw_config_init_5_0;
+            __cw_config_init_5_value
+        };
+
+        let resolved = cli_reasoning_effort_value_for_prompt(
+            &config,
+            codewhale_config::catalog::reviewed::constants::ZAI_GLM_5_2_MODEL,
+            codewhale_engine::reasoning_preference::ReasoningEffort::Auto,
+        )
+        .expect("Auto must resolve to a concrete tier");
+
+        assert_ne!(
+            resolved, "auto",
+            "the literal auto sentinel must never reach a provider"
+        );
+        assert!(
+            matches!(resolved.as_str(), "off" | "low" | "medium" | "high" | "max"),
+            "unexpected resolved tier: {resolved}"
+        );
+    }
+
+    #[test]
+    fn fleet_tool_authority_cannot_cross_an_exec_resume_boundary() {
+        assert!(validate_exec_tool_authority_resume(None, true).is_ok());
+        assert!(validate_exec_tool_authority_resume(Some("{}"), false).is_ok());
+        let error = validate_exec_tool_authority_resume(Some("{}"), true)
+            .expect_err("authority must remain bound to its fresh Fleet launch")
+            .to_string();
+        assert!(error.contains("cannot be combined with exec --resume"));
+    }
+
+    #[test]
+    fn exec_sandbox_denial_stream_event_is_typed() {
+        let event = ExecStreamEvent::SandboxDenied {
+            tool_id: "call_1".to_string(),
+            tool_name: "exec_shell".to_string(),
+            reason: "write blocked".to_string(),
+            outcome: "approval_required".to_string(),
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&event).expect("serializes"))
+                .expect("valid json");
+        assert_eq!(value["type"], "sandbox_denied");
+        assert_eq!(value["outcome"], "approval_required");
+    }
+
+    #[test]
+    fn exec_stream_turn_usage_event_serializes_reported_fields() {
+        let event = ExecStreamEvent::TurnUsage {
+            turn: 2,
+            input_tokens: 1200,
+            output_tokens: 180,
+            reasoning_tokens: Some(90),
+            prompt_cache_hit_tokens: Some(900),
+            prompt_cache_miss_tokens: Some(300),
+            prompt_cache_write_tokens: Some(0),
+            reasoning_replay_tokens: Some(40),
+            duration_ms: 1834,
+            finish_reason: None,
+        };
+
+        let value = exec_stream_value(&event).expect("serializes");
+        let json = serde_json::to_string(&value).expect("serializes");
+        assert!(!json.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(parsed["type"], "turn_usage");
+        assert_eq!(parsed["schema"], "codewhale.exec-stream");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["turn"], 2);
+        assert_eq!(parsed["input_tokens"], 1200);
+        assert_eq!(parsed["output_tokens"], 180);
+        assert_eq!(parsed["reasoning_tokens"], 90);
+        assert_eq!(parsed["prompt_cache_hit_tokens"], 900);
+        assert_eq!(parsed["prompt_cache_miss_tokens"], 300);
+        assert_eq!(parsed["prompt_cache_write_tokens"], 0);
+        assert_eq!(parsed["reasoning_replay_tokens"], 40);
+        assert_eq!(parsed["duration_ms"], 1834);
+    }
+
+    #[test]
+    fn exec_stream_turn_usage_event_omits_unreported_fields() {
+        // Honest absence: optional token fields the provider did not report
+        // are dropped from the object entirely — never emitted as null and
+        // never backfilled with fabricated zeros.
+        let event = ExecStreamEvent::TurnUsage {
+            turn: 1,
+            input_tokens: 11,
+            output_tokens: 3,
+            reasoning_tokens: None,
+            prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
+            prompt_cache_write_tokens: None,
+            reasoning_replay_tokens: None,
+            duration_ms: 250,
+            finish_reason: None,
+        };
+
+        let value = exec_stream_value(&event).expect("serializes");
+        let parsed = value;
+        assert_eq!(parsed["type"], "turn_usage");
+        assert_eq!(parsed["input_tokens"], 11);
+        assert_eq!(parsed["output_tokens"], 3);
+        assert_eq!(parsed["duration_ms"], 250);
+        let object = parsed.as_object().expect("event object");
+        for absent in [
+            "reasoning_tokens",
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+            "prompt_cache_write_tokens",
+            "reasoning_replay_tokens",
+        ] {
+            assert!(!object.contains_key(absent), "{absent} leaked: {parsed}");
+        }
+    }
+
+    #[test]
+    fn exec_stream_pre_existing_event_type_tags_are_unchanged() {
+        // Contract guard for existing stream consumers (bench harness, fleet
+        // ledger): the pre-turn_usage event vocabulary keeps its exact tags.
+        let cases: Vec<(ExecStreamEvent, &str)> = vec![
+            (
+                ExecStreamEvent::Content {
+                    content: "hi".to_string(),
+                },
+                "content",
+            ),
+            (
+                ExecStreamEvent::ToolUse {
+                    name: "read_file".to_string(),
+                    id: "call_1".to_string(),
+                    input: serde_json::json!({}),
+                    started_at: "2026-08-03T00:00:00Z".to_string(),
+                },
+                "tool_use",
+            ),
+            (
+                ExecStreamEvent::ToolResult {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    output: "ok".to_string(),
+                    status: "success".to_string(),
+                    started_at: "2026-08-03T00:00:00Z".to_string(),
+                    completed_at: "2026-08-03T00:00:01Z".to_string(),
+                    duration_ms: 1,
+                    side_effect_status: "unknown".to_string(),
+                    error_category: None,
+                    truncated: None,
+                    artifact: None,
+                    result_metadata: None,
+                },
+                "tool_result",
+            ),
+            (
+                ExecStreamEvent::SandboxDenied {
+                    tool_id: "call_1".to_string(),
+                    tool_name: "exec_shell".to_string(),
+                    reason: "denied".to_string(),
+                    outcome: "approval_required".to_string(),
+                },
+                "sandbox_denied",
+            ),
+            (
+                ExecStreamEvent::WorkflowEvent {
+                    run_id: "workflow_1".to_string(),
+                    event: serde_json::json!({"type": "task_completed"}),
+                },
+                "workflow_event",
+            ),
+            (
+                ExecStreamEvent::SessionCapture {
+                    content: "x".to_string(),
+                    saved_session_id: "session-x".to_string(),
+                },
+                "session_capture",
+            ),
+            (
+                ExecStreamEvent::Error {
+                    error: "boom".to_string(),
+                },
+                "error",
+            ),
+            (ExecStreamEvent::Done, "done"),
+        ];
+
+        for (event, expected_type) in cases {
+            let value = exec_stream_value(&event).expect("serializes");
+            assert_eq!(value["type"], expected_type, "event tag drifted");
+            assert_eq!(value["schema"], "codewhale.exec-stream");
+            assert_eq!(value["schema_version"], 1);
+        }
+    }
+
+    #[test]
+    fn exec_stream_events_are_json_lines() {
+        let event = ExecStreamEvent::ToolResult {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            output: "line 1\nline 2".to_string(),
+            status: "success".to_string(),
+            started_at: "2026-07-13T00:00:00Z".to_string(),
+            completed_at: "2026-07-13T00:00:01Z".to_string(),
+            duration_ms: 1000,
+            side_effect_status: "not_started".to_string(),
+            error_category: None,
+            truncated: Some(false),
+            artifact: None,
+            result_metadata: None,
+        };
+
+        let value = exec_stream_value(&event).expect("serializes");
+        let json = serde_json::to_string(&value).expect("serializes");
+        assert!(!json.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(parsed["type"], "tool_result");
+        assert_eq!(parsed["schema"], "codewhale.exec-stream");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["duration_ms"], 1000);
+        assert_eq!(parsed["side_effect_status"], "not_started");
+    }
+
+    #[test]
+    fn workflow_receipt_stream_event_is_one_json_line() {
+        let event = ExecStreamEvent::WorkflowEvent {
+            run_id: "workflow_1234".to_string(),
+            event: serde_json::json!({
+                "type": "handoff_promoted",
+                "artifact_id": "workflow_1234:agent_1:review-gate:review_report",
+                "gate_id": "review-gate",
+                "kind": "review_report",
+                "from_role": "reviewer",
+                "to_role": "verifier",
+                "producer_task_id": "agent_1"
+            }),
+        };
+
+        let value = exec_stream_value(&event).expect("serializes");
+        let json = serde_json::to_string(&value).expect("serializes");
+        assert!(!json.contains('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(parsed["type"], "workflow_event");
+        assert_eq!(parsed["schema"], "codewhale.exec-stream");
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["run_id"], "workflow_1234");
+        assert_eq!(parsed["event"]["type"], "handoff_promoted");
+        assert_eq!(
+            parsed["event"]["artifact_id"],
+            "workflow_1234:agent_1:review-gate:review_report"
+        );
+        assert_eq!(parsed["event"]["gate_id"], "review-gate");
+        assert_eq!(parsed["event"]["kind"], "review_report");
+        assert_eq!(parsed["event"]["from_role"], "reviewer");
+        assert_eq!(parsed["event"]["to_role"], "verifier");
+        assert_eq!(parsed["event"]["producer_task_id"], "agent_1");
+        assert!(parsed["event"].get("payload").is_none(), "{parsed}");
+
+        let consumed = ExecStreamEvent::WorkflowEvent {
+            run_id: "workflow_1234".to_string(),
+            event: serde_json::json!({
+                "type": "handoff_consumed",
+                "artifact_id": "workflow_1234:agent_1:review-gate:review_report",
+                "kind": "review_report",
+                "from_role": "reviewer",
+                "to_role": "verifier",
+                "consumer_task_id": "agent_2"
+            }),
+        };
+        let consumed = exec_stream_value(&consumed).expect("serializes consumed receipt");
+        assert_eq!(consumed["type"], "workflow_event");
+        assert_eq!(consumed["schema"], "codewhale.exec-stream");
+        assert_eq!(consumed["schema_version"], 1);
+        assert_eq!(consumed["event"]["type"], "handoff_consumed");
+        assert_eq!(
+            consumed["event"]["artifact_id"],
+            "workflow_1234:agent_1:review-gate:review_report"
+        );
+        assert_eq!(consumed["event"]["consumer_task_id"], "agent_2");
+        assert!(consumed["event"].get("payload").is_none(), "{consumed}");
+    }
+
+    #[test]
+    fn exec_stream_metadata_redacts_resume_breadcrumbs() {
+        let raw_session_id = "abc123fullsecret";
+        let event = ExecStreamEvent::Metadata {
+            meta: Box::new(ExecStreamMeta {
+                receipt_kind: "terminal",
+                provider: "deepseek".to_string(),
+                provider_id: None,
+                model: "deepseek-v4-flash".to_string(),
+                route_source: "explicit_or_configured".to_string(),
+                input_tokens: Some(123),
+                output_tokens: Some(45),
+                prompt_cache_hit_tokens: Some(10),
+                prompt_cache_miss_tokens: None,
+                prompt_cache_write_tokens: None,
+                reasoning_tokens: Some(3),
+                codewhale_max_output_tokens: Some(384_000),
+                codewhale_max_output_tokens_source: Some("documented"),
+                duration_ms: 2500,
+                retry_count: None,
+                approval_posture: "ask".to_string(),
+                sandbox_posture: "workspace-write".to_string(),
+                binary_sha256: Some("sha256:binary".to_string()),
+                config_sha256: None,
+                prompt_sha256: "sha256:prompt".to_string(),
+                tool_catalog_sha256: Some("sha256:tools".to_string()),
+                input_analysis: ExecStreamInputAnalysis::default(),
+                visible_final_answer_chars: 17,
+                visible_final_answer_excerpt: "the visible reply".to_string(),
+                session_id: exec_stream_session_ref(raw_session_id),
+                resume_command: exec_stream_resume_hint(raw_session_id),
+                workspace: "/tmp/work".to_string(),
+                message_count: 4,
+                status: Some("completed".to_string()),
+                termination_reason: Some("resolved".to_string()),
+                error_category: None,
+                error: None,
+            }),
+        };
+
+        let json = serde_json::to_string(&event).expect("serializes");
+        assert!(!json.contains('\n'));
+        assert!(!json.contains(raw_session_id));
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(parsed["type"], "metadata");
+        assert_ne!(parsed["meta"]["session_id"], raw_session_id);
+        assert!(
+            parsed["meta"]["session_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("<redacted:")
+        );
+        assert_eq!(
+            parsed["meta"]["resume_command"],
+            "codewhale exec --resume <session_capture.saved_session_id>"
+        );
+        assert_eq!(parsed["meta"]["workspace"], "/tmp/work");
+        assert_eq!(parsed["meta"]["message_count"], 4);
+        assert_eq!(parsed["meta"]["visible_final_answer_chars"], 17);
+        assert_eq!(
+            parsed["meta"]["visible_final_answer_excerpt"],
+            "the visible reply"
+        );
+
+        // Contract (#5946): the raw saved-session id is carried by exactly one
+        // field, `session_capture.saved_session_id`. The `metadata` receipt
+        // above stays fingerprint-only, and the capture's own `content` keeps
+        // the same fingerprint so both surfaces can be correlated in a log.
+        let capture = ExecStreamEvent::SessionCapture {
+            content: exec_stream_session_ref(raw_session_id),
+            saved_session_id: raw_session_id.to_string(),
+        };
+        let capture_json = serde_json::to_string(&capture).expect("serializes");
+        let parsed_capture: serde_json::Value =
+            serde_json::from_str(&capture_json).expect("valid json");
+        assert_eq!(parsed_capture["type"], "session_capture");
+        assert_eq!(parsed_capture["content"], parsed["meta"]["session_id"]);
+        assert_ne!(parsed_capture["content"], raw_session_id);
+        assert_eq!(parsed_capture["saved_session_id"], raw_session_id);
+        assert!(parsed_capture.get("session_id").is_none(), "{capture_json}");
+    }
+
+    #[test]
+    fn exec_stream_final_answer_text_is_the_last_assistant_reply() {
+        // Multi-step turn: pre-tool commentary, a tool result, then a
+        // distinct final answer. The receipt must carry only the final
+        // reply, not the cumulative stream output.
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "write the report".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "let me check the workspace first".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    execution_id: None,
+                    tool_use_id: "call-1".to_string(),
+                    content: "listed files".to_string(),
+                    is_error: Some(false),
+                    content_blocks: None,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::thinking("final reasoning"),
+                    ContentBlock::Text {
+                        text: "the final report".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            },
+        ];
+        assert_eq!(
+            exec_stream_final_answer_text(&messages, true),
+            Some("the final report".to_string())
+        );
+    }
+
+    #[test]
+    fn exec_stream_final_answer_text_never_reuses_a_resumed_turn_reply() {
+        let mut messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "old prompt".into(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "old reply must not be delivered again".into(),
+                    cache_control: None,
+                }],
+            },
+        ];
+        // The synchronization event can precede acceptance of the new prompt.
+        assert_eq!(exec_stream_final_answer_text(&messages, false), None);
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "new prompt that fails before an answer".into(),
+                cache_control: None,
+            }],
+        });
+        assert_eq!(exec_stream_final_answer_text(&messages, true), None);
+        messages.push(Message {
+            role: Role::InterruptedAssistant,
+            content: vec![ContentBlock::Text {
+                text: "current partial reply".into(),
+                cache_control: None,
+            }],
+        });
+        assert_eq!(
+            exec_stream_final_answer_text(&messages, true).as_deref(),
+            Some("current partial reply")
+        );
+        // Tool results are user-role records inside this same turn.
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                execution_id: None,
+                tool_use_id: "call-current".into(),
+                content: "result".into(),
+                is_error: None,
+                content_blocks: None,
+            }],
+        });
+        assert_eq!(
+            exec_stream_final_answer_text(&messages, true).as_deref(),
+            Some("current partial reply")
+        );
+    }
+
+    #[test]
+    fn exec_stream_final_answer_text_requires_assistant_text() {
+        assert_eq!(exec_stream_final_answer_text(&[], true), None);
+        let user_only = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "prompt".to_string(),
+                cache_control: None,
+            }],
+        }];
+        assert_eq!(exec_stream_final_answer_text(&user_only, true), None);
+        let textless_assistant = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::thinking("reasoning only")],
+        }];
+        assert_eq!(
+            exec_stream_final_answer_text(&textless_assistant, true),
+            None
+        );
+    }
+
+    #[test]
+    fn exec_stream_input_analysis_reports_prompt_composition() {
+        let system = SystemPrompt::Text("system rules".to_string());
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "run tests".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::thinking("checking context"),
+                    ContentBlock::Text {
+                        text: "working".to_string(),
+                        cache_control: None,
+                    },
+                    ContentBlock::ToolUse {
+                        execution_id: None,
+                        id: "call-1".to_string(),
+                        name: "exec_shell".to_string(),
+                        input: serde_json::json!({"command": "cargo test"}),
+                        caller: None,
+                        thought_signature: None,
+                    },
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    execution_id: None,
+                    tool_use_id: "call-1".to_string(),
+                    content: "stdout line\nstderr line".to_string(),
+                    is_error: Some(false),
+                    content_blocks: Some(vec![serde_json::json!({
+                        "type": "text",
+                        "text": "structured output"
+                    })]),
+                }],
+            },
+        ];
+
+        let analysis = exec_stream_input_analysis(&messages, Some(&system));
+
+        assert_eq!(analysis.user_message_count, 2);
+        assert_eq!(analysis.assistant_message_count, 1);
+        assert_eq!(analysis.tool_message_count, 0);
+        assert_eq!(analysis.tool_use_count, 1);
+        assert_eq!(analysis.tool_result_count, 1);
+        assert_eq!(analysis.thinking_chars, "checking context".chars().count());
+        assert!(analysis.text_chars >= "run testsworking".chars().count());
+        assert!(analysis.tool_use_input_chars > 0);
+        assert!(analysis.tool_result_chars >= "stdout line\nstderr line".chars().count());
+        assert!(analysis.estimated_system_tokens > 0);
+        assert!(analysis.estimated_message_content_tokens > 0);
+        assert!(
+            analysis.estimated_request_tokens
+                >= analysis.estimated_system_tokens
+                    + analysis.estimated_message_content_tokens
+                    + analysis.estimated_framing_tokens
+        );
+    }
+
+    #[test]
+    fn exec_text_session_breadcrumbs_use_compact_ids() {
+        let session_id = "1234567890abcdef";
+
+        assert_eq!(exec_saved_session_line(session_id), "session: 12345678");
+        assert_eq!(
+            exec_resumed_session_line(session_id),
+            "resumed session: 12345678"
+        );
+        assert!(!exec_saved_session_line(session_id).contains(session_id));
+        assert!(!exec_resumed_session_line(session_id).contains(session_id));
     }
 }

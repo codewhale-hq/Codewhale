@@ -84,11 +84,11 @@ pub(super) async fn read_turn_artifact(
     let artifact = select_reference(&view, &artifact_id, query.revision.as_deref())?;
     let workspace = view.workspace.clone();
     let thread_workspace = view.thread_workspace.clone();
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let (source, current, read) = match artifact.kind {
             TurnArtifactKind::File => {
                 read_file_artifact(&thread_workspace, workspace.as_ref(), &artifact)?
@@ -415,11 +415,11 @@ pub(super) async fn list_call_changes(
     // The side repo lives under the sealed test home; a blocking-pool thread
     // is a foreign reader until it joins the test's env scope, and would
     // otherwise resolve the isolated root and report every span pruned.
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     let read = tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         call_span_files(
             &workspace,
             &pre,

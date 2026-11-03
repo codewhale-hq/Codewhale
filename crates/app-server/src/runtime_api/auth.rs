@@ -70,7 +70,11 @@ pub(super) async fn require_host_token(
     req: Request,
     next: Next,
 ) -> Response {
-    if state.runtime_token.as_deref().is_some_and(|master| request_has_header_runtime_token(&req, master)) {
+    if state
+        .runtime_token
+        .as_deref()
+        .is_some_and(|master| request_has_header_runtime_token(&req, master))
+    {
         next.run(req).await
     } else {
         runtime_token_required_response()

@@ -425,7 +425,7 @@ fn hidden_reasoning_never_renders_its_content_in_any_state() {
 #[test]
 fn live_cards_name_their_tool_without_echoing_control_only_arguments() {
     assert_eq!(
-        super::summarize_tool_args(&serde_json::json!({
+        codewhale_app_server::exec_agent::summarize_tool_args(&serde_json::json!({
             "max_count": 15,
             "timeout_ms": 30_000
         })),
@@ -433,7 +433,7 @@ fn live_cards_name_their_tool_without_echoing_control_only_arguments() {
         "an argument set that is entirely control defaults summarizes to nothing"
     );
     assert_eq!(
-        super::summarize_tool_args(&serde_json::json!({
+        codewhale_app_server::exec_agent::summarize_tool_args(&serde_json::json!({
             "max_count": 15,
             "branch": "main"
         }))

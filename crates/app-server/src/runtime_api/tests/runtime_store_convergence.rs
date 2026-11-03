@@ -11,10 +11,7 @@ impl Drop for AbortOnDrop {
     }
 }
 
-async fn reply(
-    guest: &mut codewhale_app_server::daemon_client::OwnerClient,
-    id: &str,
-) -> Result<Value> {
+async fn reply(guest: &mut crate::daemon_client::OwnerClient, id: &str) -> Result<Value> {
     tokio::time::timeout(ci_scaled(Duration::from_secs(60)), async {
         loop {
             let frame = guest.recv().await?.context("owner closed before reply")?;
@@ -68,11 +65,8 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     let (binding, generation) =
         codewhale_runtime::runtime_control::owner_work(move || manager.capture_control_owner())
             .await?;
-    let owner_client = codewhale_app_server::daemon_client::connect(
-        Some(config_path.clone()),
-        Some(socket_path.clone()),
-    )
-    .await?;
+    let owner_client =
+        crate::daemon_client::connect(Some(config_path.clone()), Some(socket_path.clone())).await?;
     let captured = owner_client.receipt().clone();
     assert_eq!(captured.data_dir, binding.data_dir);
     assert_eq!(captured.execution_scope, binding.execution_scope);
@@ -82,7 +76,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     assert_eq!(captured.pid, std::process::id());
     assert_eq!(
         captured.process_start,
-        codewhale_app_server::daemon_socket::capture_process_start(std::process::id()).await?
+        crate::daemon_socket::capture_process_start(std::process::id()).await?
     );
     #[cfg(unix)]
     assert_eq!(
@@ -98,7 +92,7 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
         .await?
     );
     drop(owner_client);
-    let acp = codewhale_app_server::daemon_client::connect_acp_if_published(
+    let acp = crate::daemon_client::connect_acp_if_published(
         Some(config_path.clone()),
         Some(socket_path.clone()),
     )
@@ -124,11 +118,8 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
     // Compatibility prompts address an admitted durable thread, never an
     // invented alias that could remint an existing conversation.
-    let mut creator = codewhale_app_server::daemon_client::connect(
-        Some(config_path.clone()),
-        Some(socket_path.clone()),
-    )
-    .await?;
+    let mut creator =
+        crate::daemon_client::connect(Some(config_path.clone()), Some(socket_path.clone())).await?;
     assert_eq!(creator.receipt(), &captured);
     creator
         .send(
@@ -149,11 +140,9 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
         ("second", "second owner answer"),
     ] {
         model.push_turn(canned::simple_text_turn(answer));
-        let mut guest = codewhale_app_server::daemon_client::connect(
-            Some(config_path.clone()),
-            Some(socket_path.clone()),
-        )
-        .await?;
+        let mut guest =
+            crate::daemon_client::connect(Some(config_path.clone()), Some(socket_path.clone()))
+                .await?;
         assert_eq!(guest.receipt(), &captured);
         guest
             .send(
@@ -209,12 +198,9 @@ async fn authenticated_owner_guest_runs_real_engine_and_reuses_held_store() -> R
     assert!(shutdown.drain(Duration::from_secs(5)).await);
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if codewhale_app_server::daemon_client::connect(
-                Some(config_path.clone()),
-                Some(socket_path.clone()),
-            )
-            .await
-            .is_err()
+            if crate::daemon_client::connect(Some(config_path.clone()), Some(socket_path.clone()))
+                .await
+                .is_err()
             {
                 break;
             }
@@ -263,8 +249,8 @@ fn listener_selection(
     workspace: PathBuf,
     port: u16,
     token: String,
-) -> codewhale_app_server::RuntimeListenerSelection {
-    codewhale_app_server::RuntimeListenerSelection {
+) -> crate::RuntimeListenerSelection {
+    crate::RuntimeListenerSelection {
         workers: 1,
         workspace,
         config_profile: None,
@@ -290,7 +276,7 @@ fn authenticated_http(token: &str) -> Result<reqwest::Client> {
         .build()?)
 }
 async fn frontend_ready(
-    guest: &mut codewhale_app_server::daemon_client::OwnerClient,
+    guest: &mut crate::daemon_client::OwnerClient,
 ) -> Result<RuntimeFrontendReady> {
     let frame = tokio::time::timeout(Duration::from_secs(10), guest.recv())
         .await??
@@ -348,13 +334,13 @@ async fn real_normal_owner_distinct_listener_detach_keeps_turn_compat_acp_and_su
         release: tokio::sync::Semaphore::new(0),
     });
     manager.set_test_model_client(model.clone());
-    let control = codewhale_app_server::daemon_client::connect(None, Some(socket.clone())).await?;
+    let control = crate::daemon_client::connect(None, Some(socket.clone())).await?;
     let receipt = control.receipt().clone();
     validate_selected_owner(&control, receipt.data_dir.clone()).await?;
     drop(control);
     let pending_workspace = root.join("pending-workspace");
     fs::create_dir(&pending_workspace)?;
-    let mut guest = codewhale_app_server::daemon_client::connect_listener_if_published(
+    let mut guest = crate::daemon_client::connect_listener_if_published(
         None,
         Some(socket.clone()),
         listener_selection(pending_workspace.clone(), 0, selected_token.into()),
@@ -437,10 +423,10 @@ async fn real_normal_owner_distinct_listener_detach_keeps_turn_compat_acp_and_su
     // Compatibility uses the same captured original bridge and actual Engine.
     let selected_workspace = root.join("compat-workspace");
     fs::create_dir(&selected_workspace)?;
-    let mut compat = codewhale_app_server::daemon_client::connect_scoped_control_if_published(
+    let mut compat = crate::daemon_client::connect_scoped_control_if_published(
         None,
         Some(socket.clone()),
-        codewhale_app_server::RuntimeFrontendScope {
+        crate::RuntimeFrontendScope {
             workers: 1,
             workspace: selected_workspace.clone(),
             config_profile: None,
@@ -474,10 +460,10 @@ async fn real_normal_owner_distinct_listener_detach_keeps_turn_compat_acp_and_su
     assert!(result["error"].is_null(), "{result:#}");
     assert_eq!(result["result"]["output"], "compat answer");
     drop(compat);
-    let mut acp = codewhale_app_server::daemon_client::connect_selected_acp_if_published(
+    let mut acp = crate::daemon_client::connect_selected_acp_if_published(
         None,
         Some(socket.clone()),
-        codewhale_app_server::RuntimeFrontendScope {
+        crate::RuntimeFrontendScope {
             workers: 1,
             workspace: workspace.clone(),
             config_profile: None,
@@ -603,12 +589,12 @@ async fn real_owner_exact_listener_reuse_scope_refusal_and_fresh_browser_project
         .await?
         .context("real listener required")?;
     let _abort = AbortOnDrop(server.abort_handle());
-    let control = codewhale_app_server::daemon_client::connect(None, Some(socket.clone())).await?;
+    let control = crate::daemon_client::connect(None, Some(socket.clone())).await?;
     let receipt = control.receipt().clone();
     drop(control);
     let same = listener_selection(workspace.clone(), original.port(), token.into());
     assert!(!format!("{same:?}").contains(token));
-    let mut reuse = codewhale_app_server::daemon_client::connect_listener_if_published(
+    let mut reuse = crate::daemon_client::connect_listener_if_published(
         None,
         Some(socket.clone()),
         same.clone(),
@@ -632,7 +618,7 @@ async fn real_owner_exact_listener_reuse_scope_refusal_and_fresh_browser_project
     let mut wrong = same;
     wrong.workers = 2;
     assert!(
-        codewhale_app_server::daemon_client::connect_listener_if_published(
+        crate::daemon_client::connect_listener_if_published(
             None,
             Some(socket.clone()),
             wrong,
@@ -642,10 +628,10 @@ async fn real_owner_exact_listener_reuse_scope_refusal_and_fresh_browser_project
         .is_err()
     );
     assert!(
-        codewhale_app_server::daemon_client::connect_scoped_control_if_published(
+        crate::daemon_client::connect_scoped_control_if_published(
             None,
             Some(socket.clone()),
-            codewhale_app_server::RuntimeFrontendScope {
+            crate::RuntimeFrontendScope {
                 workers: 1,
                 workspace: workspace.clone(),
                 config_profile: Some("unadmitted-profile".into()),
@@ -659,7 +645,7 @@ async fn real_owner_exact_listener_reuse_scope_refusal_and_fresh_browser_project
     let mut stale = receipt.clone();
     stale.lease_generation.push_str("-stale");
     assert!(
-        codewhale_app_server::daemon_client::connect_listener_if_published(
+        crate::daemon_client::connect_listener_if_published(
             None,
             Some(socket.clone()),
             listener_selection(workspace.clone(), 0, token.into()),
@@ -677,7 +663,7 @@ async fn real_owner_exact_listener_reuse_scope_refusal_and_fresh_browser_project
     let mut browser = listener_selection(other_workspace.clone(), port, token.into());
     browser.web = true;
     browser.mobile = true;
-    let mut guest = codewhale_app_server::daemon_client::connect_listener_if_published(
+    let mut guest = crate::daemon_client::connect_listener_if_published(
         None,
         Some(socket.clone()),
         browser,
@@ -803,10 +789,10 @@ async fn real_owner_two_workspace_services_share_scope_caches_and_settle_global_
         "workspace service admission must reuse the real owner's worker actor"
     );
 
-    let control = codewhale_app_server::daemon_client::connect(None, Some(socket.clone())).await?;
+    let control = crate::daemon_client::connect(None, Some(socket.clone())).await?;
     let receipt = control.receipt().clone();
     drop(control);
-    let mut first = codewhale_app_server::daemon_client::connect_listener_if_published(
+    let mut first = crate::daemon_client::connect_listener_if_published(
         None,
         Some(socket.clone()),
         listener_selection(selected_workspace.clone(), 0, token.into()),
@@ -815,7 +801,7 @@ async fn real_owner_two_workspace_services_share_scope_caches_and_settle_global_
     .await?
     .context("first selected listener")?;
     let first_ready = frontend_ready(&mut first).await?;
-    let mut second = codewhale_app_server::daemon_client::connect_listener_if_published(
+    let mut second = crate::daemon_client::connect_listener_if_published(
         None,
         Some(socket.clone()),
         listener_selection(selected_workspace.clone(), 0, token.into()),
@@ -1319,16 +1305,13 @@ async fn real_owner_rejects_different_operator_source_before_attach_and_accepts_
         .await?
         .context("actual config-bound owner required")?;
     let _abort = AbortOnDrop(server.abort_handle());
-    let control = codewhale_app_server::daemon_client::connect(
-        Some(config_path.clone()),
-        Some(socket.clone()),
-    )
-    .await?;
+    let control =
+        crate::daemon_client::connect(Some(config_path.clone()), Some(socket.clone())).await?;
     let receipt = control.receipt().clone();
     drop(control);
     let mut wrong = listener_selection(workspace.clone(), 0, token.into());
     wrong.config_source = Some(other_config.clone());
-    let error = codewhale_app_server::daemon_client::connect_listener_if_published(
+    let error = crate::daemon_client::connect_listener_if_published(
         Some(config_path.clone()),
         Some(socket.clone()),
         wrong,
@@ -1346,7 +1329,7 @@ async fn real_owner_rejects_different_operator_source_before_attach_and_accepts_
     assert!(!message.contains(other_config.to_str().unwrap()));
     let mut matching = listener_selection(workspace, 0, token.into());
     matching.config_source = Some(alias);
-    let mut selected = codewhale_app_server::daemon_client::connect_listener_if_published(
+    let mut selected = crate::daemon_client::connect_listener_if_published(
         Some(config_path),
         Some(socket),
         matching,
@@ -1520,9 +1503,9 @@ async fn canonical_history_import_runs_real_engine_retains_all_branches_and_refu
     );
     let directory = sessions_dir.clone();
     let session_id = receipt.session_id.clone();
-    let ticket = crate::test_support::env_scope_ticket();
+    let ticket = codewhale_engine::test_support::env_scope_ticket();
     let saved = codewhale_runtime::runtime_control::owner_work(move || {
-        let _scope = crate::test_support::join_env_scope(ticket);
+        let _scope = codewhale_engine::test_support::join_env_scope(ticket);
         Ok(SessionManager::new(directory)?.load_session_snapshot(&session_id)?)
     })
     .await?;
@@ -1668,9 +1651,9 @@ async fn canonical_history_import_runs_real_engine_retains_all_branches_and_refu
     assert!(serde_json::to_string(&full.messages)?.contains("canonical successor"));
     let directory = sessions_dir;
     let session_id = receipt.session_id.clone();
-    let ticket = crate::test_support::env_scope_ticket();
+    let ticket = codewhale_engine::test_support::env_scope_ticket();
     codewhale_runtime::runtime_control::owner_work(move || {
-        let _scope = crate::test_support::join_env_scope(ticket);
+        let _scope = codewhale_engine::test_support::join_env_scope(ticket);
         let manager = SessionManager::new(directory.clone())?;
         let _lease = manager.reserve_session_for_external_write(&session_id)?;
         fs::remove_file(directory.join(format!("{session_id}.json")))?;

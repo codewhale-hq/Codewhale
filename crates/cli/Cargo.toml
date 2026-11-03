@@ -41,6 +41,7 @@ codewhale-release = { path = "../release", version = "0.10.3" }
 codewhale-secrets = { path = "../secrets", version = "0.10.3" }
 codewhale-state = { path = "../state", version = "0.10.3" }
 codewhale-telemetry = { path = "../telemetry", version = "0.10.3" }
+codewhale-util = { path = "../util", version = "0.10.3" }
 chrono.workspace = true
 console = "0.16.3"
 dirs.workspace = true

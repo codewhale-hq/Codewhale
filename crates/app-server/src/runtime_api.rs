@@ -8,6 +8,8 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(windows)]
+use crate::daemon_socket::default_socket_path;
 use anyhow::{Context, Result, anyhow, bail};
 use async_stream::stream;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State};
@@ -22,8 +24,6 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
-#[cfg(windows)]
-use codewhale_app_server::daemon_socket::default_socket_path;
 use codewhale_app_server_protocol::runtime::{
     DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
     RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
@@ -37,6 +37,7 @@ use codewhale_protocol::agent_mail::{
 use codewhale_secrets::account::RuntimeAccountInfo;
 #[cfg(not(test))]
 use codewhale_secrets::account::{AccountSessionStore, secure_account_session_secrets};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -47,6 +48,7 @@ use tower_http::cors::CorsLayer;
 
 mod constitution;
 mod notification_delivery;
+mod owner_calls;
 mod whale_soul;
 
 #[cfg(test)]
@@ -114,7 +116,7 @@ mod context;
 mod diagnostics;
 mod git;
 mod jobs;
-pub(crate) mod listener;
+pub mod listener;
 mod lsp;
 mod mcp_import;
 mod members;
@@ -128,7 +130,7 @@ pub(crate) mod sessions;
 mod targets;
 mod terminal;
 mod thread_delete;
-pub(crate) mod thread_history;
+pub mod thread_history;
 mod turn_artifacts;
 mod voice;
 mod web;
@@ -519,7 +521,7 @@ async fn supervise_frontends<S, T, F>(
     serve: S,
     stdio: T,
     endpoint: Option<(
-        tokio::task::JoinHandle<Result<(), codewhale_app_server::daemon_socket::DaemonSocketError>>,
+        tokio::task::JoinHandle<Result<(), crate::daemon_socket::DaemonSocketError>>,
         F,
     )>,
     shutdown: &RuntimeServerShutdown,
@@ -606,9 +608,7 @@ mod supervise_frontends_tests {
                 async { Ok(()) },
                 stdio,
                 None::<(
-                    tokio::task::JoinHandle<
-                        Result<(), codewhale_app_server::daemon_socket::DaemonSocketError>,
-                    >,
+                    tokio::task::JoinHandle<Result<(), crate::daemon_socket::DaemonSocketError>>,
                     fn(),
                 )>,
                 &shutdown,
@@ -810,10 +810,7 @@ impl CapturedRuntimeFrontend {
             config_source,
         }))
     }
-    async fn validate_scope(
-        &self,
-        scope: &codewhale_app_server::RuntimeFrontendScope,
-    ) -> Result<()> {
+    async fn validate_scope(&self, scope: &crate::RuntimeFrontendScope) -> Result<()> {
         scope.validate_bounds()?;
         anyhow::ensure!(
             scope.workers == self.worker_setting,
@@ -836,21 +833,40 @@ impl CapturedRuntimeFrontend {
         Ok(())
     }
 }
-impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
+impl crate::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
+    fn execute(
+        &self,
+        request: crate::RuntimeOwnerRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + '_>> {
+        Box::pin(owner_calls::execute(self.state.clone(), request))
+    }
+    fn events(
+        &self,
+        thread_id: String,
+        since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::RuntimeOwnerEventStream>> + Send + '_>,
+    > {
+        Box::pin(owner_calls::events(
+            self.state.clone(),
+            thread_id,
+            since_seq,
+        ))
+    }
     fn validate_selection<'a>(
         &'a self,
-        selection: &'a codewhale_app_server::RuntimeOwnerFrontendSelection,
+        selection: &'a crate::RuntimeOwnerFrontendSelection,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             match selection {
-                codewhale_app_server::RuntimeOwnerFrontendSelection::Control(scope) => {
+                crate::RuntimeOwnerFrontendSelection::Control(scope) => {
                     self.validate_scope(scope).await?;
                     anyhow::ensure!(
                         !self.state.runtime_threads.is_acp_host(),
                         "immutable ACP-base owner cannot admit ordinary control turns"
                     );
                 }
-                codewhale_app_server::RuntimeOwnerFrontendSelection::Acp { scope, model } => {
+                crate::RuntimeOwnerFrontendSelection::Acp { scope, model } => {
                     if let Some(scope) = scope {
                         self.validate_scope(scope).await?;
                     }
@@ -861,9 +877,9 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                         "invalid selected ACP model"
                     );
                 }
-                codewhale_app_server::RuntimeOwnerFrontendSelection::Listener(selection) => {
+                crate::RuntimeOwnerFrontendSelection::Listener(selection) => {
                     selection.validate_bounds()?;
-                    self.validate_scope(&codewhale_app_server::RuntimeFrontendScope {
+                    self.validate_scope(&crate::RuntimeFrontendScope {
                         workers: selection.workers,
                         workspace: selection.workspace.clone(),
                         config_profile: selection.config_profile.clone(),
@@ -883,7 +899,7 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                         mobile: selection.mobile,
                         web: selection.web,
                         control_frontend: Some(
-                            codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp,
+                            codewhale_runtime::runtime_control::RuntimeControlFrontend::Http,
                         ),
                         ..Default::default()
                     })?;
@@ -892,31 +908,26 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
             Ok(())
         })
     }
-    fn serve(
-        &self,
-        selection: codewhale_app_server::RuntimeOwnerFrontendSelection,
-        compatibility: codewhale_app_server::AppState,
+    fn serve<'a>(
+        &'a self,
+        selection: crate::RuntimeOwnerFrontendSelection,
+        compatibility: crate::AppState,
         input: Box<dyn tokio::io::AsyncBufRead + Send + Unpin>,
-        mut output: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        mut output: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             self.validate_selection(&selection).await?;
             let selection = match selection {
-                codewhale_app_server::RuntimeOwnerFrontendSelection::Control(scope) => {
+                crate::RuntimeOwnerFrontendSelection::Control(scope) => {
                     self.validate_scope(&scope).await?;
                     anyhow::ensure!(
                         !self.state.runtime_threads.is_acp_host(),
                         "immutable ACP-base owner cannot admit ordinary control turns"
                     );
-                    return codewhale_app_server::run_guest_control(
-                        compatibility,
-                        scope.workspace,
-                        input,
-                        output,
-                    )
-                    .await;
+                    return crate::run_guest_control(compatibility, scope.workspace, input, output)
+                        .await;
                 }
-                codewhale_app_server::RuntimeOwnerFrontendSelection::Acp { scope, model } => {
+                crate::RuntimeOwnerFrontendSelection::Acp { scope, model } => {
                     let workspace = if let Some(scope) = scope {
                         self.validate_scope(&scope).await?;
                         scope.workspace
@@ -935,9 +946,7 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                     )?;
                     return acp.serve(input, output).await;
                 }
-                codewhale_app_server::RuntimeOwnerFrontendSelection::Listener(selection) => {
-                    selection
-                }
+                crate::RuntimeOwnerFrontendSelection::Listener(selection) => selection,
             };
             selection.validate_bounds()?;
             anyhow::ensure!(
@@ -962,7 +971,7 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 mobile: selection.mobile,
                 web: selection.web,
                 control_frontend: Some(
-                    codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp,
+                    codewhale_runtime::runtime_control::RuntimeControlFrontend::Http,
                 ),
                 ..Default::default()
             };
@@ -985,7 +994,8 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
                 (None, None) => options.insecure_no_auth,
                 _ => false,
             };
-            if selected_addr == original_addr
+            if self.state.bind_port != 0
+                && selected_addr == original_addr
                 && !options.web
                 && !options.mobile
                 && self.state.web.is_none()
@@ -1046,14 +1056,12 @@ impl codewhale_app_server::RuntimeOwnerFrontend for CapturedRuntimeFrontend {
             let shutdown = RuntimeServerShutdown::default();
             state.shutdown = shutdown.clone();
             let app = with_loopback_host_guard(
-                build_router(state).merge(
-                    codewhale_app_server::http::runtime_compatibility_router(
-                        compatibility,
-                        &options.cors_origins,
-                        resolved.token.clone(),
-                        Some(workspace),
-                    ),
-                ),
+                build_router(state).merge(crate::http::runtime_compatibility_router(
+                    compatibility,
+                    &options.cors_origins,
+                    resolved.token.clone(),
+                    Some(workspace),
+                )),
                 resolved.token.is_none(),
             );
             let ready = RuntimeFrontendReady {
@@ -1087,12 +1095,12 @@ async fn write_frontend_ready(
     output: &mut (dyn tokio::io::AsyncWrite + Send + Unpin),
     ready: RuntimeFrontendReady,
 ) -> Result<()> {
-    let frame = codewhale_app_server::stdio::serialize_control_frame(
+    let frame = crate::stdio::serialize_control_frame(
         &json!({"jsonrpc":"2.0","method":"daemon/frontend_ready","params":ready}),
     )?;
     tokio::time::timeout(
         Duration::from_secs(5),
-        codewhale_app_server::stdio::write_control_line(output, &frame),
+        crate::stdio::write_control_line(output, &frame),
     )
     .await
     .context("selected listener readiness write timed out; outcome uncertain")??;
@@ -1101,11 +1109,11 @@ async fn write_frontend_ready(
 async fn wait_frontend_input_close(
     input: Box<dyn tokio::io::AsyncBufRead + Send + Unpin>,
 ) -> Result<()> {
-    let mut input = codewhale_app_server::stdio::BoundedLines::new(input);
+    let mut input = crate::stdio::BoundedLines::new(input);
     if let Some(line) = input.next_line().await? {
         let value: Value = serde_json::from_str(&line)?;
         anyhow::ensure!(
-            codewhale_app_server::is_control_input_closed(&value),
+            crate::is_control_input_closed(&value),
             "selected listener accepts only its logical input close"
         );
     }
@@ -1145,7 +1153,7 @@ impl Drop for SignalShutdownRegistration {
 /// Called by the process signal handler before it exits: stop the serving
 /// Runtime API (if any) and give its open streams a bounded window to send
 /// their final `stream.end` frame.
-pub(crate) async fn drain_for_signal_exit() {
+pub async fn drain_for_signal_exit() {
     let shutdown = SIGNAL_SHUTDOWN.lock().ok().and_then(|slot| slot.clone());
     if let Some(shutdown) = shutdown
         && !shutdown.drain(SIGNAL_SHUTDOWN_DRAIN).await
@@ -1977,11 +1985,11 @@ pub(crate) fn open_runtime_threads_for_host(
 
 #[cfg(any(unix, windows))]
 enum RuntimeHostAdmission {
-    Attached(Box<codewhale_app_server::daemon_client::OwnerClient>),
+    Attached(Box<crate::daemon_client::OwnerClient>),
     Bootstrap {
         lock: codewhale_engine::runtime_threads::RuntimeProcessOwnerLock,
         binding: Option<codewhale_engine::runtime_threads::RuntimeStoreBinding>,
-        recovery: Option<Arc<codewhale_app_server::daemon_client::UnavailablePublication>>,
+        recovery: Option<Arc<crate::daemon_client::UnavailablePublication>>,
     },
 }
 
@@ -1993,11 +2001,11 @@ async fn admit_runtime_host(
     selected_socket: Option<PathBuf>,
     selected_store: PathBuf,
 ) -> Result<RuntimeHostAdmission> {
-    use codewhale_app_server::daemon_client::{HostOwnerProbe, PublicationChangedBeforeAttach};
+    use crate::daemon_client::{HostOwnerProbe, PublicationChangedBeforeAttach};
     use codewhale_runtime::runtime_control::owner_work;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let probe = match codewhale_app_server::daemon_client::probe_owner_for_host_startup(
+            let probe = match crate::daemon_client::probe_owner_for_host_startup(
                 config_path.clone(), selected_socket.clone(),
             ).await {
                 Err(error) if error.is::<PublicationChangedBeforeAttach>() => {
@@ -2034,7 +2042,7 @@ async fn admit_runtime_host(
             }).await?;
             let current = match recovery.as_ref() {
                 Some(publication) => publication.revalidate().await?,
-                None => codewhale_app_server::daemon_client::publication_is_absent(
+                None => crate::daemon_client::publication_is_absent(
                     config_path.clone(), selected_socket.clone(),
                 ).await?,
             };
@@ -2059,6 +2067,18 @@ pub async fn run_http_server(
     options: RuntimeApiOptions,
 ) -> Result<()> {
     let inherited_listener = listener::take(&options.host, options.port, options.insecure_no_auth)?;
+    let local_control = matches!(
+        options.control_frontend.as_ref(),
+        Some(
+            codewhale_runtime::runtime_control::RuntimeControlFrontend::Stdio
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. }
+                | codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { .. }
+        )
+    );
+    anyhow::ensure!(
+        !local_control || inherited_listener.is_none(),
+        "local control cannot consume an inherited HTTP listener"
+    );
     config.session_provider_keys_only =
         secrets::session_keys_required().map_err(|error| anyhow!(error.message))?;
     validate_runtime_listener_security(&options)?;
@@ -2118,24 +2138,23 @@ pub async fn run_http_server(
         let client = match options.control_frontend.as_ref() {
             Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Acp { model }) => {
                 drop(control);
-                let client =
-                    codewhale_app_server::daemon_client::connect_selected_acp_if_published(
-                        options.config_path.clone(),
-                        control_socket.clone(),
-                        codewhale_app_server::RuntimeFrontendScope {
-                            workers: options.workers,
-                            workspace: workspace.clone(),
-                            config_profile: options.config_profile.clone(),
-                            config_source: config
-                                .loaded_config_path
-                                .clone()
-                                .or_else(|| options.config_path.clone()),
-                        },
-                        model.clone(),
-                        observed_owner.clone(),
-                    )
-                    .await?
-                    .context("authenticated owner disappeared before ACP attachment")?;
+                let client = crate::daemon_client::connect_selected_acp_if_published(
+                    options.config_path.clone(),
+                    control_socket.clone(),
+                    crate::RuntimeFrontendScope {
+                        workers: options.workers,
+                        workspace: workspace.clone(),
+                        config_profile: options.config_profile.clone(),
+                        config_source: config
+                            .loaded_config_path
+                            .clone()
+                            .or_else(|| options.config_path.clone()),
+                    },
+                    model.clone(),
+                    observed_owner.clone(),
+                )
+                .await?
+                .context("authenticated owner disappeared before ACP attachment")?;
                 anyhow::ensure!(
                     client.receipt() == &observed_owner,
                     "selected owner changed before ACP attachment"
@@ -2147,10 +2166,10 @@ pub async fn run_http_server(
                 | codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. },
             ) => {
                 drop(control);
-                codewhale_app_server::daemon_client::connect_scoped_control_if_published(
+                crate::daemon_client::connect_scoped_control_if_published(
                     options.config_path.clone(),
                     control_socket.clone(),
-                    codewhale_app_server::RuntimeFrontendScope {
+                    crate::RuntimeFrontendScope {
                         workers: options.workers,
                         workspace: workspace.clone(),
                         config_profile: options.config_profile.clone(),
@@ -2166,7 +2185,7 @@ pub async fn run_http_server(
             }
             _ => {
                 let environment = runtime_token_environment(&|name| std::env::var(name).ok());
-                let selection = codewhale_app_server::RuntimeListenerSelection {
+                let selection = crate::RuntimeListenerSelection {
                     workers: options.workers,
                     workspace: workspace.clone(),
                     config_profile: options.config_profile.clone(),
@@ -2187,7 +2206,7 @@ pub async fn run_http_server(
                     web: options.web,
                 };
                 drop(control);
-                codewhale_app_server::daemon_client::connect_listener_if_published(
+                crate::daemon_client::connect_listener_if_published(
                     options.config_path.clone(),
                     control_socket.clone(),
                     selection,
@@ -2202,15 +2221,22 @@ pub async fn run_http_server(
     // No publication permits guessing an owner or bypassing its lease. The
     // real manager open below is still the exclusive bootstrap authority.
     let addr = runtime_bind_address(&options.host, options.port)?;
-    let listener = match inherited_listener {
-        Some(listener) => listener,
-        None => TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("Failed to bind {addr}"))?,
+    let listener = if local_control {
+        None
+    } else {
+        Some(match inherited_listener {
+            Some(listener) => listener,
+            None => TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("Failed to bind {addr}"))?,
+        })
     };
     let bound_addr = listener
-        .local_addr()
-        .context("Failed to read Runtime API listener address")?;
+        .as_ref()
+        .map(TcpListener::local_addr)
+        .transpose()
+        .context("Failed to read Runtime API listener address")?
+        .unwrap_or(SocketAddr::new(addr.ip(), 0));
     let sessions_dir = default_sessions_dir().unwrap_or_else(|_| fallback_sessions_dir());
     let mut manager_config =
         RuntimeThreadManagerConfig::from_task_data_dir(task_cfg.data_dir.clone());
@@ -2346,10 +2372,25 @@ pub async fn run_http_server(
         recovery,
     )
     .await?;
+    #[cfg(any(unix, windows))]
+    if matches!(
+        options.control_frontend.as_ref(),
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Socket { .. })
+    ) && owner_endpoint.is_none()
+    {
+        shutdown.requested.cancel();
+        scheduler_cancel.cancel();
+        scheduler_handle.abort();
+        task_manager
+            .shutdown_and_wait()
+            .await
+            .context("socket frontend publication failed; Runtime task drain also failed")?;
+        bail!("socket frontend requires a published private control endpoint; Runtime stopped");
+    }
     let listener_workspace = state.workspace.clone();
     let app = build_router(state);
     #[cfg(any(unix, windows))]
-    let app = app.merge(codewhale_app_server::http::runtime_compatibility_router(
+    let app = app.merge(crate::http::runtime_compatibility_router(
         control_state.clone(),
         &options.cors_origins,
         runtime_token.clone(),
@@ -2364,7 +2405,7 @@ pub async fn run_http_server(
         )
     );
 
-    if !owned_stdio {
+    if !local_control {
         // First stdout line, flushed: a supervising parent reads the endpoint
         // from here instead of guessing a port (stdout is block-buffered on a pipe).
         println!("{RUNTIME_LISTENING_PREFIX}{bound_addr}");
@@ -2425,17 +2466,13 @@ pub async fn run_http_server(
     let (serve_result, owner_result) = {
         let stdio = async {
             if acp_selected {
-                codewhale_app_server::run_owned_acp(control_state).await
+                crate::run_owned_acp(control_state).await
             } else if owned_stdio {
-                codewhale_app_server::run_owned_stdio(control_state).await
+                crate::run_owned_stdio(control_state).await
             } else {
                 std::future::pending::<Result<()>>().await
             }
         };
-        // `None` when this filesystem cannot hold the private endpoint
-        // directory. The Runtime API over HTTP is what clients connect to, so it
-        // runs either way; the endpoint socket is how a second client discovers
-        // this owner, and `bind_captured_owner` has already said what was lost.
         let endpoint = owner_endpoint.map(|endpoint| {
             let stop = {
                 let handle = endpoint.shutdown_handle();
@@ -2443,18 +2480,27 @@ pub async fn run_http_server(
             };
             (tokio::spawn(endpoint.serve()), stop)
         });
-        supervise_frontends(
-            serve_runtime_api(listener, app, shutdown.clone()),
-            stdio,
-            endpoint,
-            &shutdown,
-        )
-        .await
+        let serving = async {
+            match listener {
+                Some(listener) => serve_runtime_api(listener, app, shutdown.clone()).await,
+                None => {
+                    shutdown.requested.cancelled().await;
+                    shutdown.stopped.cancel();
+                    Ok(())
+                }
+            }
+        };
+        supervise_frontends(serving, stdio, endpoint, &shutdown).await
     };
     #[cfg(not(any(unix, windows)))]
-    let serve_result = serve_runtime_api(listener, app, shutdown)
-        .await
-        .map_err(|e| anyhow!("Runtime API server error: {e}"));
+    let serve_result = match listener {
+        Some(listener) => serve_runtime_api(listener, app, shutdown)
+            .await
+            .map_err(|error| anyhow!("Runtime API server error: {error}")),
+        None => Err(anyhow!(
+            "local control owner is unsupported on this platform"
+        )),
+    };
     drop(signal_registration);
     scheduler_cancel.cancel();
     scheduler_handle.abort();
@@ -2534,7 +2580,7 @@ fn store_selected_control_socket_with(
 
 #[cfg(any(unix, windows))]
 pub(crate) async fn validate_selected_owner(
-    client: &codewhale_app_server::daemon_client::OwnerClient,
+    client: &crate::daemon_client::OwnerClient,
     selected_store: PathBuf,
 ) -> Result<()> {
     validate_selected_owner_receipt(client.receipt().clone(), selected_store)
@@ -2569,11 +2615,8 @@ async fn bind_captured_runtime_frontends(
     model: String,
     worker_setting: usize,
     generated_auth: bool,
-    recovery: Option<Arc<codewhale_app_server::daemon_client::UnavailablePublication>>,
-) -> Result<(
-    Option<codewhale_app_server::daemon_socket::DaemonSocket>,
-    codewhale_app_server::AppState,
-)> {
+    recovery: Option<Arc<crate::daemon_client::UnavailablePublication>>,
+) -> Result<(Option<crate::daemon_socket::DaemonSocket>, crate::AppState)> {
     let captured_manager = state.runtime_threads.clone();
     let (binding, generation) = codewhale_runtime::runtime_control::owner_work(move || {
         captured_manager.capture_control_owner()
@@ -2586,8 +2629,7 @@ async fn bind_captured_runtime_frontends(
             None => default_socket_path().map_err(Into::into),
         })
         .await?;
-    let process_start =
-        codewhale_app_server::daemon_socket::capture_process_start(std::process::id()).await?;
+    let process_start = crate::daemon_socket::capture_process_start(std::process::id()).await?;
     #[cfg(unix)]
     let principal =
         codewhale_config::private_directory::PrivateDirectory::current_user_id().to_string();
@@ -2607,11 +2649,11 @@ async fn bind_captured_runtime_frontends(
         socket_path,
         config_path: config_path.clone(),
     };
-    codewhale_app_server::bind_runtime_frontends(
+    crate::bind_runtime_frontends(
         config_path,
         state.runtime_token.clone(),
         owner,
-        codewhale_app_server::RuntimeOwnerRouting {
+        crate::RuntimeOwnerRouting {
             workers: Some(worker_setting),
             workspace: Some(state.workspace.clone()),
             endpoint: runtime_bind_address(&state.bind_host, state.bind_port)?,
@@ -2631,7 +2673,7 @@ async fn bind_captured_runtime_frontends(
 
 #[cfg(any(unix, windows))]
 async fn run_attached_frontend(
-    mut client: codewhale_app_server::daemon_client::OwnerClient,
+    mut client: crate::daemon_client::OwnerClient,
     options: &RuntimeApiOptions,
 ) -> Result<()> {
     let routing = client
@@ -2670,7 +2712,7 @@ async fn run_attached_frontend(
     ) {
         println!(
             "Attached to the authenticated Runtime control owner at {}.",
-            routing.endpoint
+            client.receipt().socket_path.display()
         );
     } else {
         let frame = tokio::time::timeout(Duration::from_secs(10), client.recv())
@@ -2710,7 +2752,7 @@ async fn run_attached_frontend(
 fn validate_runtime_listener_security(options: &RuntimeApiOptions) -> Result<()> {
     if matches!(
         options.control_frontend.as_ref(),
-        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::LegacyHttp)
+        Some(codewhale_runtime::runtime_control::RuntimeControlFrontend::Http)
     ) && !is_loopback_bind_host(&options.host)
         && options
             .auth_token
@@ -2728,7 +2770,7 @@ fn validate_runtime_listener_security(options: &RuntimeApiOptions) -> Result<()>
         )
     ) && !is_loopback_bind_host(&options.host)
     {
-        bail!("owned local control requires a loopback private Runtime listener");
+        bail!("owned local control requires a loopback host selection");
     }
     // Port 0 asks the kernel for an ephemeral port. Only a plain loopback
     // Runtime may use it: web and mobile clients are given a fixed endpoint.
@@ -3157,7 +3199,13 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             "/v1/apps/mcp/imports",
             get(mcp_import::preview).post(mcp_import::apply),
         )
-        .route("/v1/apps/mcp/desktop-browser", post(register_scoped_desktop_browser).layer(middleware::from_fn_with_state(state.clone(), auth::require_host_token)))
+        .route(
+            "/v1/apps/mcp/desktop-browser",
+            post(register_scoped_desktop_browser).layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::require_host_token,
+            )),
+        )
         .route(
             "/v1/apps/mcp/servers",
             get(list_mcp_servers).post(create_mcp_server),
@@ -5570,11 +5618,11 @@ async fn list_commands(
             codewhale_engine::extension_host::live_commands_for(&state.workspace),
         )
     };
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     let commands = tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let mut commands = command_catalog(&catalog.builtins(), &catalog.user_commands(&workspace));
         let mut counts = std::collections::HashMap::new();
         for entry in &extensions {
@@ -5925,11 +5973,11 @@ async fn get_skill_detail(
 ) -> Result<Json<SkillDetailResponse>, ApiError> {
     // Discovery, plugin tree hashing/state locks, and skill-state refresh
     // all read disk; keep this new route's work off the async server worker.
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let (skills_dir, skills_config) = {
             let config = state.config.read();
             let skills_dir = resolve_skills_dir(&config, &state.workspace);
@@ -6565,20 +6613,45 @@ async fn decide_approval(
             )));
         }
     };
+    Ok(Json(
+        settle_approval_request(&state, approval_id, decision).await?,
+    ))
+}
+
+async fn settle_approval_request(
+    state: &RuntimeApiState,
+    approval_id: String,
+    decision: ExternalApprovalDecision,
+) -> Result<DecideApprovalResponse, ApiError> {
     let delivered = state
         .runtime_threads
-        .deliver_external_approval(&approval_id, decision);
+        .deliver_external_approval(&approval_id, decision)
+        .await
+        .map_err(|error| {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
+            {
+                ApiError::conflict(error.to_string())
+            } else {
+                ApiError::internal(format!("approval settlement failed: {error}"))
+            }
+        })?;
     if !delivered {
         return Err(ApiError::not_found(format!(
             "no pending approval with id '{approval_id}'"
         )));
     }
-    Ok(Json(DecideApprovalResponse {
+    Ok(DecideApprovalResponse {
         ok: true,
         approval_id,
-        decision: req.decision,
+        decision: match decision {
+            ExternalApprovalDecision::Allow { .. } => "allow",
+            ExternalApprovalDecision::Deny { .. } => "deny",
+        }
+        .to_owned(),
         delivered,
-    }))
+    })
 }
 
 /// `DELETE /v1/threads/{id}/approval-grants/{grant_id}` — revoke one
@@ -6831,11 +6904,11 @@ async fn mutate_mcp_management<T: Send + 'static>(
     + 'static,
 ) -> Result<(T, String), ApiError> {
     let expected = mcp_expected_revision(&headers)?;
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         state
             .workspace_scope
             .validate_sync()
@@ -6867,11 +6940,11 @@ async fn mcp_management_snapshot(
     ),
     ApiError,
 > {
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let path = state.config.read().mcp_config_path();
         codewhale_config::with_config_write_lock(&path, |path| {
             let config = mcp_management_config(&state)
@@ -6929,13 +7002,14 @@ async fn mcp_pool_handle(
             }
             let mut held = pool.clone().lock_owned().await;
             let current = state.clone();
-            #[cfg(test)]
-            let env_ticket = crate::test_support::env_scope_ticket();
+            #[cfg(any(test, feature = "test-support"))]
+            let env_ticket = codewhale_engine::test_support::env_scope_ticket();
             if policy_changed {
                 let (rebuilt, admitted_policy) =
                     codewhale_runtime::runtime_control::owner_work(move || {
-                        #[cfg(test)]
-                        let _membership = crate::test_support::join_env_scope(env_ticket);
+                        #[cfg(any(test, feature = "test-support"))]
+                        let _membership =
+                            codewhale_engine::test_support::join_env_scope(env_ticket);
                         load_mcp_management_pool(&current)
                     })
                     .await
@@ -6947,8 +7021,8 @@ async fn mcp_pool_handle(
                 *state.workspace_scope.mcp_policy.lock() = admitted_policy;
             } else {
                 codewhale_runtime::runtime_control::owner_work(move || {
-                    #[cfg(test)]
-                    let _membership = crate::test_support::join_env_scope(env_ticket);
+                    #[cfg(any(test, feature = "test-support"))]
+                    let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
                     // Keep the exact scope/owner alive through synchronous disk
                     // reload even if this request is cancelled after admission.
                     current.workspace_scope.validate_sync()?;
@@ -6964,12 +7038,12 @@ async fn mcp_pool_handle(
             slot.as_mut().expect("retained pool").0 = generation;
         } else if create {
             let current = state.clone();
-            #[cfg(test)]
-            let env_ticket = crate::test_support::env_scope_ticket();
+            #[cfg(any(test, feature = "test-support"))]
+            let env_ticket = codewhale_engine::test_support::env_scope_ticket();
             let (pool, admitted_policy) =
                 codewhale_runtime::runtime_control::owner_work(move || {
-                    #[cfg(test)]
-                    let _membership = crate::test_support::join_env_scope(env_ticket);
+                    #[cfg(any(test, feature = "test-support"))]
+                    let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
                     load_mcp_management_pool(&current)
                 })
                 .await
@@ -7273,10 +7347,15 @@ async fn register_scoped_desktop_browser(
     let config = serde_json::from_value(json!({
         "url": request.url,
         "bearer_token_env_var": "CODEWHALE_BROWSER_TOOLS_TOKEN",
-    })).map_err(|_| ApiError::bad_request("Invalid desktop browser registration"))?;
+    }))
+    .map_err(|_| ApiError::bad_request("Invalid desktop browser registration"))?;
     register_desktop_browser_config(
-        &state, "codewhale-browser".to_string(), config, Some((&request.bearer, &request.signature))
-    ).await?;
+        &state,
+        "codewhale-browser".to_string(),
+        config,
+        Some((&request.bearer, &request.signature)),
+    )
+    .await?;
     Ok(StatusCode::CREATED)
 }
 
@@ -7639,9 +7718,15 @@ fn apply_write_request_to_config(
     req: McpServerWriteRequest,
     cfg: &mut codewhale_mcp::config::McpServerConfig,
 ) {
-    if req.command.is_some() || req.args.is_some() || req.env.is_some()
-        || req.url.is_some() || req.transport.is_some() || req.env_headers.is_some()
-        || req.bearer_token_env_var.is_some() || req.scopes.is_some() || req.oauth_resource.is_some()
+    if req.command.is_some()
+        || req.args.is_some()
+        || req.env.is_some()
+        || req.url.is_some()
+        || req.transport.is_some()
+        || req.env_headers.is_some()
+        || req.bearer_token_env_var.is_some()
+        || req.scopes.is_some()
+        || req.oauth_resource.is_some()
     {
         cfg.always_allow_tools.clear();
     }
@@ -8683,12 +8768,12 @@ async fn fork_thread_at_turn(
 /// Result of the snapshot-based file rollback step of patch-undo, reported
 /// alongside the new forked thread.
 #[derive(Debug, Serialize)]
-pub(crate) struct PatchUndoResult {
+pub struct PatchUndoResult {
     /// Whether files were restored from a snapshot.
     files_restored: bool,
     /// Human-readable summary: one `<action> <path>` line per restored file,
     /// or why nothing needed restoring.
-    pub(crate) summary: Option<String>,
+    pub summary: Option<String>,
     /// Label of the pre-turn snapshot the files went back to (e.g.
     /// "pre-turn:3: fix the parser").
     snapshot_label: Option<String>,
@@ -8726,8 +8811,8 @@ async fn patch_undo_thread_turn(
     // Once admitted, own the operation even when the HTTP caller disconnects:
     // the reservation must outlive both the file mutation and the fork
     // publication, so a dropped connection cannot release it mid-Git.
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::spawn(async move {
         let reservation = reservation;
         // Validate depth/history before touching any file, so an invalid
@@ -8750,8 +8835,8 @@ async fn patch_undo_thread_turn(
         // refusal or a failed restore aborts *before* the conversation is
         // forked, so the turn never disappears while its file changes stay.
         let patch_result = tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            let _membership = crate::test_support::join_env_scope(env_ticket);
+            #[cfg(any(test, feature = "test-support"))]
+            let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
             patch_undo_workspace_files(&workspace, &dropped_turns, trusted)
         })
         .await
@@ -9029,7 +9114,7 @@ fn no_restore_point(turn_id: &str, why: &str) -> ApiError {
 ///
 /// `trusted` mirrors the gate the TUI's `patch_undo()` applies
 /// (`yolo || trust_mode`), evaluated once a real change is known.
-pub(crate) fn patch_undo_workspace_files(
+pub fn patch_undo_workspace_files(
     workspace: &FsPath,
     dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
     trusted: bool,
@@ -9407,11 +9492,11 @@ async fn revert_thread_file(
     // The worker owns the reservation: a client disconnect cannot release it
     // while Git is still changing files. Snapshot listing, diffing and
     // checkout all shell out to git; keep that off the async workers.
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     let response = tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let _reservation = reservation;
         revert_file_from_snapshot(&workspace, &owned, &req)
     })
@@ -10297,22 +10382,53 @@ async fn cancel_task(
 async fn stream_thread_events(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
-    Query(query): Query<ThreadEventsQuery>,
+    Query(mut query): Query<ThreadEventsQuery>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let _ = state
-        .runtime_threads
-        .get_thread(&id)
-        .await
-        .map_err(map_thread_err)?;
-
     // Two clients, two cursors. A browser `EventSource` can only replay through
     // the `Last-Event-ID` header it sets on reconnect (the ids now ride the
     // journal frames below); every other client passes `since_seq`. An explicit
     // query cursor wins over the header, so a deliberate replay-from-zero is
     // never silently overridden by a stale header — the header is the fallback
     // when no cursor was asked for.
-    let since_seq = query.since_seq.or_else(|| last_event_id(&headers));
+    query.since_seq = query.since_seq.or_else(|| last_event_id(&headers));
+
+    let progress = query.progress;
+    let stream = open_thread_event_frames(state, id, query)
+        .await?
+        .map(|frame| Ok::<_, Infallible>(thread_event_as_sse(frame)));
+
+    let mut response = Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response();
+    // Every server-initiated end of this stream is a `stream.end` frame. The
+    // header lets a client tell that EOF without one is transport loss, which
+    // an older Runtime cannot promise.
+    response
+        .headers_mut()
+        .insert("x-codewhale-stream-end", HeaderValue::from_static("1"));
+    if progress {
+        response
+            .headers_mut()
+            .insert("x-codewhale-event-progress", HeaderValue::from_static("1"));
+    }
+    Ok(response)
+}
+
+async fn open_thread_event_frames(
+    state: RuntimeApiState,
+    id: String,
+    query: ThreadEventsQuery,
+) -> Result<crate::RuntimeOwnerEventStream, ApiError> {
+    let _ = state
+        .runtime_threads
+        .get_thread(&id)
+        .await
+        .map_err(map_thread_err)?;
 
     // Subscribe before reading durable history. An event emitted while replay
     // is loaded is then present in both places (and deduped below) or queued
@@ -10328,7 +10444,7 @@ async fn stream_thread_events(
     }
     let replay = state
         .runtime_threads
-        .replay_events(&id, since_seq, query.replay_limit)
+        .replay_events(&id, query.since_seq, query.replay_limit)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
@@ -10341,41 +10457,30 @@ async fn stream_thread_events(
         query.progress,
         state.shutdown.requested.clone(),
     );
+    Ok(Box::pin(stream))
+}
 
-    let mut response = Sse::new(stream)
-        .keep_alive(
-            KeepAlive::new()
-                .interval(Duration::from_secs(15))
-                .text("keepalive"),
-        )
-        .into_response();
-    // Every server-initiated end of this stream is a `stream.end` frame. The
-    // header lets a client tell that EOF without one is transport loss, which
-    // an older Runtime cannot promise.
-    response
-        .headers_mut()
-        .insert("x-codewhale-stream-end", HeaderValue::from_static("1"));
-    if query.progress {
-        response
-            .headers_mut()
-            .insert("x-codewhale-event-progress", HeaderValue::from_static("1"));
+fn thread_event_as_sse(frame: crate::RuntimeOwnerEventFrame) -> SseEvent {
+    let event = sse_json(&frame.event, frame.data);
+    match frame.sequence {
+        Some(sequence) => event.id(sequence.to_string()),
+        None => event,
     }
-    Ok(response)
 }
 
 /// Opt-in transport frame at the existing journal cursor. It carries the same
 /// envelope identity (`schema_version`, `event`, `kind`, `thread_id`) as the
-/// journal and `stream.end`, but never a journal `seq` of its own.
-fn thread_stream_progress(thread_id: &str, seq: u64, live: bool) -> SseEvent {
-    sse_json(
-        "stream.progress",
-        json!({
+fn thread_stream_progress(thread_id: &str, seq: u64, live: bool) -> crate::RuntimeOwnerEventFrame {
+    crate::RuntimeOwnerEventFrame {
+        event: "stream.progress".to_owned(),
+        data: json!({
             "schema_version": RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
             "event": "stream.progress", "kind": "stream.progress",
             "thread_id": thread_id, "seq": seq,
             "state": if live { "live" } else { "replaying" },
         }),
-    )
+        sequence: None,
+    }
 }
 
 /// Why the server ended a thread event stream it had already opened. Every
@@ -10411,21 +10516,23 @@ impl ThreadStreamEnd {
     }
 }
 
-/// The final frame of a server-ended thread stream. It has no `seq` and no SSE
-/// `id:` because it is not a journal event: seq-keyed consumers skip it, and a
-/// browser `EventSource` keeps `Last-Event-ID` on the last real event.
 /// `last_seq` is exactly the `since_seq` that resumes without loss or repeats.
 /// The underlying error stays in the server log; it can carry store paths.
-fn thread_stream_end(thread_id: &str, end: ThreadStreamEnd, last_seq: u64) -> SseEvent {
-    sse_json(
-        "stream.end",
-        json!({
+fn thread_stream_end(
+    thread_id: &str,
+    end: ThreadStreamEnd,
+    last_seq: u64,
+) -> crate::RuntimeOwnerEventFrame {
+    crate::RuntimeOwnerEventFrame {
+        event: "stream.end".to_owned(),
+        data: json!({
             "schema_version": RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
             "event": "stream.end", "kind": "stream.end",
             "thread_id": thread_id, "reason": end.reason(),
             "last_seq": last_seq, "retryable": end.retryable(),
         }),
-    )
+        sequence: None,
+    }
 }
 
 /// The journal frame for `event` on this thread's stream, advancing the
@@ -10434,19 +10541,17 @@ fn thread_journal_frame(
     thread_id: &str,
     last_seq: &mut u64,
     event: codewhale_engine::runtime_threads::RuntimeEventRecord,
-) -> Option<SseEvent> {
+) -> Option<crate::RuntimeOwnerEventFrame> {
     if event.thread_id != thread_id || event.seq <= *last_seq {
         return None;
     }
     let previous_seq = std::mem::replace(last_seq, event.seq);
     let event_name = event.event.clone();
-    Some(
-        sse_json(
-            &event_name,
-            runtime_event_payload_with_previous(event, previous_seq),
-        )
-        .id(last_seq.to_string()),
-    )
+    Some(crate::RuntimeOwnerEventFrame {
+        event: event_name,
+        data: runtime_event_payload_with_previous(event, previous_seq),
+        sequence: Some(*last_seq),
+    })
 }
 
 type ThreadReplayBatches = tokio::sync::mpsc::Receiver<
@@ -10486,17 +10591,17 @@ fn replay_live_thread_events(
     >,
     progress: bool,
     shutdown: CancellationToken,
-) -> impl futures_util::Stream<Item = Result<SseEvent, Infallible>> {
+) -> impl futures_util::Stream<Item = crate::RuntimeOwnerEventFrame> {
     // Every exit below is a `stream.end` followed by `return`; the live loop
     // never breaks. An EOF this stream produces is therefore never silent.
     stream! {
-        if progress { yield Ok(thread_stream_progress(&thread_id, last_seq, false)); }
+        if progress { yield thread_stream_progress(&thread_id, last_seq, false); }
         loop {
             match next_thread_replay_step(&shutdown, &mut backlog).await {
                 ThreadReplayStep::Events(events) => {
                     for event in events {
                         if let Some(frame) = thread_journal_frame(&thread_id, &mut last_seq, event) {
-                            yield Ok(frame);
+                            yield frame;
                         }
                     }
                 }
@@ -10508,11 +10613,11 @@ fn replay_live_thread_events(
                         %error,
                         "Failed to replay Runtime web event stream from durable history"
                     );
-                    yield Ok(thread_stream_end(&thread_id, ThreadStreamEnd::ReplayFailed, last_seq));
+                    yield thread_stream_end(&thread_id, ThreadStreamEnd::ReplayFailed, last_seq);
                     return;
                 }
                 ThreadReplayStep::Shutdown => {
-                    yield Ok(thread_stream_end(&thread_id, ThreadStreamEnd::RuntimeShutdown, last_seq));
+                    yield thread_stream_end(&thread_id, ThreadStreamEnd::RuntimeShutdown, last_seq);
                     return;
                 }
             }
@@ -10525,7 +10630,7 @@ fn replay_live_thread_events(
         let mut replaying = progress;
         loop {
             if shutdown.is_cancelled() {
-                yield Ok(thread_stream_end(&thread_id, ThreadStreamEnd::RuntimeShutdown, last_seq));
+                yield thread_stream_end(&thread_id, ThreadStreamEnd::RuntimeShutdown, last_seq);
                 return;
             }
             let next = if replaying {
@@ -10533,7 +10638,7 @@ fn replay_live_thread_events(
                 match live.try_recv() {
                     Ok(event) => Ok(event),
                     Err(TryRecvError::Empty) => {
-                        yield Ok(thread_stream_progress(&thread_id, last_seq, true));
+                        yield thread_stream_progress(&thread_id, last_seq, true);
                         replaying = false;
                         continue;
                     }
@@ -10553,12 +10658,12 @@ fn replay_live_thread_events(
             match next {
                 Ok(event) => {
                     if let Some(frame) = thread_journal_frame(&thread_id, &mut last_seq, event) {
-                        yield Ok(frame);
+                        yield frame;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     if progress {
-                        yield Ok(thread_stream_progress(&thread_id, last_seq, false));
+                        yield thread_stream_progress(&thread_id, last_seq, false);
                         replaying = true;
                     }
                     // Broadcast is only a wake-up path; durable history remains
@@ -10577,7 +10682,7 @@ fn replay_live_thread_events(
                                 %error,
                                 "Failed to recover lagged Runtime web event stream from durable history"
                             );
-                            yield Ok(thread_stream_end(&thread_id, ThreadStreamEnd::CatchUpFailed, last_seq));
+                            yield thread_stream_end(&thread_id, ThreadStreamEnd::CatchUpFailed, last_seq);
                             return;
                         }
                     };
@@ -10586,7 +10691,7 @@ fn replay_live_thread_events(
                             ThreadReplayStep::Events(events) => {
                                 for event in events {
                                     if let Some(frame) = thread_journal_frame(&thread_id, &mut last_seq, event) {
-                                        yield Ok(frame);
+                                        yield frame;
                                     }
                                 }
                             }
@@ -10599,7 +10704,7 @@ fn replay_live_thread_events(
                                     %error,
                                     "Failed to recover lagged Runtime web event stream from durable history"
                                 );
-                                yield Ok(thread_stream_end(&thread_id, ThreadStreamEnd::CatchUpFailed, last_seq));
+                                yield thread_stream_end(&thread_id, ThreadStreamEnd::CatchUpFailed, last_seq);
                                 return;
                             }
                             // Answered by the check at the top of the live loop.
@@ -10612,7 +10717,7 @@ fn replay_live_thread_events(
                 // If that ever changes, the live source is gone only because
                 // the Runtime is: say so rather than end silently.
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    yield Ok(thread_stream_end(&thread_id, ThreadStreamEnd::RuntimeShutdown, last_seq));
+                    yield thread_stream_end(&thread_id, ThreadStreamEnd::RuntimeShutdown, last_seq);
                     return;
                 }
             }
@@ -12273,11 +12378,11 @@ fn provider_entry_for_api(
 async fn list_providers(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<ProvidersResponse>, ApiError> {
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let config = state.config.read().clone();
         secrets::invalidate_stale_account_catalog(&config);
         let active_identity = config.active_provider_identity().ok();
@@ -12349,11 +12454,11 @@ async fn list_provider_models(
     Path(id): Path<String>,
     Query(params): Query<ListProviderModelsParams>,
 ) -> Result<Json<ProviderModelsResponse>, ApiError> {
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let config = state.config.read().clone();
         secrets::invalidate_stale_account_catalog(&config);
         let identity = provider_models_identity(&config, &id, params.model_provider_id.as_deref())?;
@@ -12394,11 +12499,11 @@ async fn refresh_provider_models(
     Query(params): Query<RefreshProviderModelsParams>,
 ) -> Result<Json<codewhale_engine::provider_lake::CatalogUpdateReceipt>, ApiError> {
     let runtime = tokio::runtime::Handle::current();
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(env_ticket);
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let config = state.config.read().clone();
         let identity = provider_models_identity(&config, &id, params.model_provider_id.as_deref())?;
         Ok(Json(runtime.block_on(
@@ -12569,16 +12674,16 @@ async fn switch_provider(
     let task_identity = provider_identity.clone();
     let task_model = model_override.clone();
     let runtime = tokio::runtime::Handle::current();
-    #[cfg(test)]
-    let env_ticket = crate::test_support::env_scope_ticket();
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     let (active_provider, active_model) = tokio::spawn(async move {
         let state = task_state;
         let _one_switch_at_a_time = state.provider_switches.lock().await;
         // Keep the cancellation-safe owned switch, while all filesystem and
         // keyring work runs off the async worker under the same serialization.
         tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            let _membership = crate::test_support::join_env_scope(env_ticket);
+            #[cfg(any(test, feature = "test-support"))]
+            let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
             let (config_toml, undo) = codewhale_engine::route_preferences::persist_provider_selection(
                 state.config_path.as_deref(),
                 &task_identity,
@@ -14150,9 +14255,9 @@ fn map_agent_mail_err(err: anyhow::Error) -> ApiError {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ApiError {
+pub struct ApiError {
     status: StatusCode,
-    pub(crate) message: String,
+    pub message: String,
     /// Stable machine-readable reason, serialized as `error.code` when set,
     /// for refusals a client must branch on rather than show.
     code: Option<&'static str>,
@@ -14267,7 +14372,7 @@ mod tests;
 #[cfg(test)]
 mod configured_model_api_tests {
     use super::*;
-    use crate::test_support::{EnvVarGuard, lock_test_env};
+    use codewhale_engine::test_support::{EnvVarGuard, lock_test_env};
 
     fn fixture(provider: &str, model: &str) -> String {
         format!(

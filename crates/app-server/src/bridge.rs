@@ -1,21 +1,29 @@
+#[cfg(test)]
 use crate::stdio::{emit_stdio_event, interrupt_turn_request};
+#[cfg(test)]
 use crate::turns::{RuntimeTurnInput, extract_runtime_thread_id, turn_terminal_status};
+use crate::{AppState, DispatchError, RuntimeBridge, SharedRuntimeBridge, thread_control};
+#[cfg(test)]
 use crate::{
-    AppState, InFlightTurn, JsonRpcError, MAX_SSE_FRAME_BYTES, RuntimeBridge, RuntimeThreadHint,
-    SharedRuntimeBridge, TurnRegistry, TurnTerminalStatus, TurnTranscript, thread_control,
+    InFlightTurn, MAX_SSE_FRAME_BYTES, RuntimeThreadHint, TurnExecutionOwner, TurnRegistry,
+    TurnTerminalStatus, TurnTranscript,
 };
 use anyhow::Context as _;
 use anyhow::{Result, anyhow, bail};
+#[cfg(test)]
 use codewhale_protocol::{EventFrame, ResponseChannel};
 use serde_json::{Value, json};
+#[cfg(test)]
 use std::collections::HashMap;
 #[cfg(test)]
 use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 #[cfg(test)]
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(test)]
 use tokio::io::AsyncWrite;
 #[cfg(all(test, unix))]
 use tokio::sync::Mutex;
@@ -25,7 +33,7 @@ use tokio::sync::Mutex;
 pub(crate) async fn acquire_historical_runtime_bridge<F, Fut>(
     state: &AppState,
     start: F,
-) -> std::result::Result<SharedRuntimeBridge, JsonRpcError>
+) -> std::result::Result<SharedRuntimeBridge, DispatchError>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<RuntimeBridge>>,
@@ -34,13 +42,13 @@ where
         return Ok(bridge.clone());
     }
     if state.captured_owner.is_some() {
-        return Err(JsonRpcError::runtime_unavailable(
+        return Err(DispatchError::runtime_unavailable(
             "the captured Runtime owner is unavailable; refusing another owner",
         ));
     }
     let bridge =
         Arc::new(Mutex::new(start().await.map_err(|err| {
-            JsonRpcError::runtime_unavailable(err.to_string())
+            DispatchError::runtime_unavailable(err.to_string())
         })?));
     let mut slot = state.runtime_bridge.lock().await;
     // Prefer a bridge cached by a concurrent caller while we were spawning;
@@ -52,7 +60,7 @@ where
 /// store or transcript can be created when this captured connection is absent.
 pub(crate) async fn acquire_runtime_bridge(
     state: &AppState,
-) -> std::result::Result<SharedRuntimeBridge, JsonRpcError> {
+) -> std::result::Result<SharedRuntimeBridge, DispatchError> {
     state
         .runtime_bridge
         .lock()
@@ -60,225 +68,16 @@ pub(crate) async fn acquire_runtime_bridge(
         .as_ref()
         .cloned()
         .ok_or_else(|| {
-            JsonRpcError::runtime_unavailable(
+            DispatchError::runtime_unavailable(
                 "the captured Runtime owner is unavailable; refusing another owner",
             )
         })
 }
 
-pub(crate) async fn runtime_catalog_models(
-    request: reqwest::RequestBuilder,
-    provider: &str,
-    provider_id: Option<&str>,
-) -> Result<Vec<Value>> {
-    let (client, request) = request.build_split();
-    let request = request?;
-    let mut models = Vec::new();
-    let mut cursor = None;
-    let mut cursors = std::collections::HashSet::new();
-    let mut ids = std::collections::HashSet::new();
-    let mut total = None;
-    for _ in 0..40 {
-        let mut page = request
-            .try_clone()
-            .context("Runtime catalog request cannot be replayed")?;
-        if let Some(cursor) = cursor.as_deref() {
-            page.url_mut()
-                .query_pairs_mut()
-                .append_pair("cursor", cursor);
-        }
-        let catalog = thread_control::read_json_response(client.execute(page).await?).await?;
-        anyhow::ensure!(
-            catalog.get("provider").and_then(Value::as_str) == Some(provider)
-                && catalog.get("model_provider_id").unwrap_or(&Value::Null) == &json!(provider_id),
-            "Runtime model catalog changed provider identity"
-        );
-        let count = catalog
-            .get("total")
-            .and_then(Value::as_u64)
-            .context("Runtime model catalog omitted its total")?;
-        anyhow::ensure!(
-            count <= 10_000 && total.is_none_or(|total| total == count),
-            "Runtime model catalog size changed or exceeds its limit"
-        );
-        total = Some(count);
-        let entries = catalog
-            .get("models")
-            .and_then(Value::as_array)
-            .context("Runtime model catalog omitted its models")?;
-        anyhow::ensure!(
-            entries.len() <= 250,
-            "Runtime model catalog page exceeds its limit"
-        );
-        for entry in entries {
-            let id = entry
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .context("Runtime model catalog contains an invalid model")?;
-            anyhow::ensure!(
-                ids.insert(id.to_string()),
-                "Runtime model catalog repeated a model"
-            );
-            models.push(entry.clone());
-        }
-        anyhow::ensure!(
-            models.len() as u64 <= count,
-            "Runtime model catalog exceeds its total"
-        );
-        match catalog.get("nextCursor") {
-            None | Some(Value::Null) => {
-                anyhow::ensure!(
-                    models.len() as u64 == count,
-                    "Runtime model catalog is incomplete"
-                );
-                return Ok(models);
-            }
-            Some(Value::String(next)) if !next.is_empty() && next.len() <= 1_368 => {
-                anyhow::ensure!(
-                    !entries.is_empty() && models.len() < count as usize,
-                    "Runtime model catalog continuation is invalid"
-                );
-                anyhow::ensure!(
-                    cursors.insert(next.clone()),
-                    "Runtime model catalog cursor repeated"
-                );
-                cursor = Some(next.clone());
-            }
-            _ => bail!("Runtime model catalog cursor is invalid"),
-        }
-    }
-    bail!("Runtime model catalog exceeded its page limit")
-}
-
-pub(crate) async fn runtime_app_models(state: &AppState) -> Result<Vec<Value>> {
-    let shared = acquire_runtime_bridge(state)
-        .await
-        .map_err(|error| anyhow!(error.message))?;
-    let transport = state
-        .runtime_catalog_transport
-        .as_ref()
-        .context("the captured Runtime catalog transport is unavailable")?;
-    let captured = transport
-        .bridge
-        .upgrade()
-        .context("the captured Runtime catalog owner is unavailable")?;
-    anyhow::ensure!(
-        Arc::ptr_eq(&shared, &captured),
-        "the captured Runtime catalog owner changed; refusing another owner"
-    );
-    let base_url = &transport.base_url;
-    let client = &transport.client;
-    let authed = |request: reqwest::RequestBuilder| match transport.auth_token.as_deref() {
-        Some(token) => request.bearer_auth(token),
-        None => request,
-    };
-    let providers = thread_control::read_json_response(
-        authed(client.get(format!("{base_url}/v1/providers")))
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await?,
-    )
-    .await?;
-    let providers = providers
-        .get("providers")
-        .and_then(Value::as_array)
-        .context("Runtime provider catalog is invalid")?;
-    anyhow::ensure!(
-        providers.len() <= 256,
-        "Runtime provider catalog exceeds its limit"
-    );
-    let aliases = state.registry.list();
-    let mut models = Vec::new();
-    let mut routes = std::collections::HashSet::new();
-    for provider in providers {
-        if !provider
-            .get("has_model_catalog")
-            .and_then(Value::as_bool)
-            .context("Runtime provider omitted its catalog availability")?
-        {
-            continue;
-        }
-        let kind = provider
-            .get("id")
-            .and_then(Value::as_str)
-            .context("Runtime provider omitted its identity")?;
-        let parsed: codewhale_config::ProviderKind =
-            serde_json::from_value(json!(kind)).context("Runtime provider kind is unsupported")?;
-        anyhow::ensure!(
-            kind == parsed.as_str()
-                || codewhale_config::descriptors::compatibility_for_id(kind)
-                    .is_some_and(|compatibility| compatibility.kind == parsed),
-            "Runtime provider kind is not a recognized wire identity"
-        );
-        let provider_id = match provider.get("model_provider_id") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(id)) if !id.is_empty() => Some(id.as_str()),
-            _ => bail!("Runtime configured provider identity is invalid"),
-        };
-        if !routes.insert((kind.to_string(), provider_id.map(str::to_string))) {
-            continue;
-        }
-        let mut url = reqwest::Url::parse(&format!("{base_url}/v1/providers/{kind}/models"))?;
-        url.query_pairs_mut().append_pair("limit", "250");
-        if let Some(id) = provider_id {
-            url.query_pairs_mut().append_pair("model_provider_id", id);
-        }
-        let request = authed(client.get(url)).timeout(Duration::from_secs(10));
-        for mut model in runtime_catalog_models(request, kind, provider_id).await? {
-            let id = model
-                .get("id")
-                .and_then(Value::as_str)
-                .context("Runtime model identity is invalid")?;
-            let compatibility_aliases = aliases
-                .iter()
-                .find(|entry| {
-                    parsed != codewhale_config::ProviderKind::Custom
-                        && provider_id.is_none_or(|identity| identity == kind)
-                        && entry.provider == parsed
-                        && entry.id == id
-                })
-                .map(|entry| entry.aliases.clone())
-                .unwrap_or_default();
-            let capabilities: codewhale_config::route::RouteCapabilities =
-                match model.pointer("/facts/capabilities") {
-                    None | Some(Value::Null) => Default::default(),
-                    Some(value) => serde_json::from_value(value.clone())
-                        .context("Runtime model capabilities are invalid")?,
-                };
-            let row = model
-                .as_object_mut()
-                .context("Runtime model entry is invalid")?;
-            row.insert("provider".into(), serde_json::to_value(parsed)?);
-            row.insert("model_provider_id".into(), json!(provider_id));
-            row.insert("aliases".into(), json!(compatibility_aliases));
-            row.insert(
-                "supports_tools".into(),
-                json!(
-                    capabilities.native_tool_calls
-                        == codewhale_config::route::CapabilityState::Supported
-                ),
-            );
-            row.insert(
-                "supports_reasoning".into(),
-                json!(
-                    capabilities.reasoning == codewhale_config::route::CapabilityState::Supported
-                ),
-            );
-            row.insert("capabilities".into(), serde_json::to_value(capabilities)?);
-            models.push(model);
-            anyhow::ensure!(
-                models.len() <= 100_000,
-                "Runtime model catalog exceeds the response limit"
-            );
-        }
-    }
-    Ok(models)
-}
-
+#[cfg(test)]
 pub(crate) async fn acquire_live_runtime_bridge(
     state: &AppState,
-) -> std::result::Result<tokio::sync::OwnedMutexGuard<RuntimeBridge>, JsonRpcError> {
+) -> std::result::Result<tokio::sync::OwnedMutexGuard<RuntimeBridge>, DispatchError> {
     Ok(acquire_runtime_bridge(state).await?.lock_owned().await)
 }
 
@@ -287,7 +86,7 @@ pub(crate) async fn acquire_live_runtime_bridge(
 pub(crate) async fn acquire_live_runtime_bridge_with<F, Fut>(
     state: &AppState,
     start: F,
-) -> std::result::Result<tokio::sync::OwnedMutexGuard<RuntimeBridge>, JsonRpcError>
+) -> std::result::Result<tokio::sync::OwnedMutexGuard<RuntimeBridge>, DispatchError>
 where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<RuntimeBridge>>,
@@ -309,7 +108,7 @@ where
             *slot = None;
         }
     }
-    Err(JsonRpcError::runtime_unavailable(
+    Err(DispatchError::runtime_unavailable(
         "runtime API bridge exited immediately after starting",
     ))
 }
@@ -368,71 +167,11 @@ impl RuntimeBridge {
         thread_control::read_json_response(builder.send().await?).await
     }
 
-    /// Read the existing Runtime catalog before a one-shot prompt can create
-    /// its thread. Existing threads are checked by canonical turn admission.
-    pub(crate) async fn require_output_limited_model(
-        &self,
-        requested_model: Option<&str>,
-    ) -> Result<()> {
-        let providers = self
-            .request_json(self.authed(self.client.get(format!("{}/v1/providers", self.base_url))))
-            .await?;
-        let current = providers
-            .get("current")
-            .and_then(Value::as_str)
-            .context("Runtime provider is unavailable")?;
-        let current_id = match providers.get("current_provider_id") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(id)) if !id.is_empty() => Some(id.as_str()),
-            _ => bail!("Runtime configured provider identity is invalid"),
-        };
-        let provider = providers
-            .get("providers")
-            .and_then(Value::as_array)
-            .and_then(|providers| {
-                providers.iter().find(|provider| {
-                    provider.get("id").and_then(Value::as_str) == Some(current)
-                        && provider.get("model_provider_id").and_then(Value::as_str) == current_id
-                })
-            })
-            .context("Runtime provider is unavailable")?;
-        let model = requested_model
-            .or_else(|| provider.get("default_model").and_then(Value::as_str))
-            .context("maxOutputTokens requires an exact model")?;
-        if model.trim().is_empty() || model.eq_ignore_ascii_case("auto") {
-            bail!("maxOutputTokens requires an exact model");
-        }
-        if !current
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        {
-            bail!("Runtime provider identity is invalid");
-        }
-        let mut url =
-            reqwest::Url::parse(&format!("{}/v1/providers/{current}/models", self.base_url))?;
-        url.query_pairs_mut().append_pair("limit", "250");
-        if let Some(id) = current_id {
-            url.query_pairs_mut().append_pair("model_provider_id", id);
-        }
-        let request = self
-            .authed(self.client.get(url))
-            .timeout(Duration::from_secs(10));
-        let catalog = runtime_catalog_models(request, current, current_id).await?;
-        let entry = catalog
-            .iter()
-            .find(|entry| entry.get("id").and_then(Value::as_str) == Some(model))
-            .context("Output-limit support is unknown for the selected Runtime model")?;
-        anyhow::ensure!(
-            entry.get("output_token_limit").and_then(Value::as_str) == Some("supported"),
-            "The selected Runtime model does not support maxOutputTokens"
-        );
-        Ok(())
-    }
-
     /// Resolve `stdio_thread_id` to a runtime thread, minting one only when
     /// `thread_map` has no entry. The map lives on [`AppState`] and outlives
     /// this bridge, so a thread created under a previous child keeps its id
     /// here as long as the store it was persisted to is shared (#6246).
+    #[cfg(test)]
     pub(crate) async fn ensure_runtime_thread(
         &mut self,
         thread_map: &mut HashMap<String, String>,
@@ -450,18 +189,7 @@ impl RuntimeBridge {
         Ok(runtime_thread_id)
     }
 
-    /// Drop a thread mapping (and its seq cursor) once no caller can name
-    /// the client-facing key again.
-    pub(crate) fn forget_thread(
-        &mut self,
-        thread_map: &mut HashMap<String, String>,
-        stdio_thread_id: &str,
-    ) {
-        if let Some(runtime_thread_id) = thread_map.remove(stdio_thread_id) {
-            self.last_seq_by_thread.remove(&runtime_thread_id);
-        }
-    }
-
+    #[cfg(test)]
     async fn create_runtime_thread(
         &mut self,
         model: Option<String>,
@@ -490,6 +218,7 @@ impl RuntimeBridge {
     /// `registration` is `Some` on the stdio path: it publishes the live turn
     /// so an `thread/interrupt` arriving mid-stream can reach the runtime
     /// without waiting on the bridge mutex this call holds.
+    #[cfg(test)]
     pub(crate) async fn message_thread<W: AsyncWrite + Unpin>(
         &mut self,
         thread_id: &str,
@@ -503,6 +232,7 @@ impl RuntimeBridge {
             images,
             max_output_tokens,
             expected_workspace,
+            cancellation: _,
         } = input;
         let mut request = json!({ "prompt": input, "allowed_tools": [] });
         if let Some(workspace) = expected_workspace {
@@ -567,8 +297,10 @@ impl RuntimeBridge {
         .await
         {
             let orphan = InFlightTurn {
-                base_url: self.base_url.clone(),
-                auth_token: self.auth_token.clone(),
+                owner: TurnExecutionOwner::HistoricalHttp {
+                    base_url: self.base_url.clone(),
+                    auth_token: self.auth_token.clone(),
+                },
                 runtime_thread_id: thread_id.to_string(),
                 turn_id: turn_id.clone(),
             };
@@ -577,7 +309,7 @@ impl RuntimeBridge {
                     thread_id,
                     turn_id = %turn_id,
                     "failed to interrupt a turn whose response_start could not be written: {}",
-                    interrupt.message
+                    interrupt.wire.message
                 );
             }
             return Err(error);
@@ -590,8 +322,10 @@ impl RuntimeBridge {
             registry.lock().await.insert(
                 key.clone(),
                 InFlightTurn {
-                    base_url: self.base_url.clone(),
-                    auth_token: self.auth_token.clone(),
+                    owner: TurnExecutionOwner::HistoricalHttp {
+                        base_url: self.base_url.clone(),
+                        auth_token: self.auth_token.clone(),
+                    },
                     runtime_thread_id: thread_id.to_string(),
                     turn_id: turn_id.clone(),
                 },
@@ -637,8 +371,10 @@ impl RuntimeBridge {
             // message until the orphan finished. Stop it, best effort, and
             // let the error below be the only outcome the client sees.
             let orphan = InFlightTurn {
-                base_url: self.base_url.clone(),
-                auth_token: self.auth_token.clone(),
+                owner: TurnExecutionOwner::HistoricalHttp {
+                    base_url: self.base_url.clone(),
+                    auth_token: self.auth_token.clone(),
+                },
                 runtime_thread_id: thread_id.to_string(),
                 turn_id: turn_id.clone(),
             };
@@ -647,7 +383,7 @@ impl RuntimeBridge {
                     thread_id,
                     turn_id = %turn_id,
                     "failed to interrupt a turn whose event stream broke: {}",
-                    error.message
+                    error.wire.message
                 );
             }
         }
@@ -685,6 +421,7 @@ impl RuntimeBridge {
         }
     }
 
+    #[cfg(test)]
     async fn stream_turn_events<W: AsyncWrite + Unpin>(
         &self,
         thread_id: &str,
@@ -761,7 +498,7 @@ impl RuntimeBridge {
                         }
                     }
                     "turn.completed" => {
-                        let status = turn_terminal_status(&payload);
+                        let status = turn_terminal_status(&payload)?;
                         let error = payload
                             .pointer("/turn/error")
                             .and_then(Value::as_str)
@@ -876,6 +613,7 @@ pub(crate) fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+#[cfg(test)]
 pub(crate) fn take_sse_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
     if let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
         return Some(buffer.drain(..pos + 4).collect());
@@ -886,6 +624,7 @@ pub(crate) fn take_sse_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
         .map(|pos| buffer.drain(..pos + 2).collect())
 }
 
+#[cfg(test)]
 pub(crate) fn parse_sse_frame(frame_bytes: &[u8]) -> Option<(String, String)> {
     let text = String::from_utf8(frame_bytes.to_vec()).ok()?;
     let mut event_name = None;

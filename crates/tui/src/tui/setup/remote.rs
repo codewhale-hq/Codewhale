@@ -21,8 +21,9 @@
 //!    rendered in memory through the existing `remote_setup::bundle` contract
 //!    with redacted placeholders.
 
-use crate::remote_setup::{bundle, registry};
 use crate::tui::app::App;
+use codewhale_app_server::remote_setup::bundle;
+use codewhale_app_server::remote_setup::registry;
 use codewhale_localization::{Locale, MessageId, tr};
 
 /// Env var carrying the runtime API bearer token, plus the legacy alias the

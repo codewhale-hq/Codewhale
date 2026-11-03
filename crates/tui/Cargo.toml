@@ -36,8 +36,6 @@ exclude = [
   "src/commands/fixtures/*_baseline.md",
   "src/commands/fixtures/*_baseline.json",
   "src/pricing/default_coverage_unpriced.json",
-  "src/runtime_web/app.test.mjs",
-  "src/runtime_web/orca-evidence.html",
   "src/tui/golden_harness.rs",
   "src/tui/goldens/**",
   "src/tui/pet_watch/worker.rs",
@@ -240,6 +238,7 @@ rio-vt = "0.5.1"
 rusqlite.workspace = true
 schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
 tokio-tungstenite = "0.30"
+codewhale-app-server = { path = "../app-server", version = "0.10.3", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

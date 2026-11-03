@@ -1,15 +1,14 @@
 #[cfg(test)]
 use crate::bridge::invalidate_runtime_bridge;
-use crate::bridge::{acquire_runtime_bridge, runtime_app_models};
 use crate::http::ADVERTISED_ROUTES;
-use crate::turns::handle_thread_request;
+use crate::owner_calls::runtime_app_models;
 use crate::{AppState, AppTransport};
 use anyhow::Context as _;
 #[cfg(not(test))]
 use anyhow::bail;
 use anyhow::{Result, anyhow};
 use codewhale_config::ConfigStore;
-use codewhale_protocol::{AppRequest, AppResponse, ThreadListParams, ThreadRequest};
+use codewhale_protocol::{AppRequest, AppResponse};
 use serde_json::json;
 use std::time::Duration;
 
@@ -138,14 +137,7 @@ pub(crate) async fn process_app_request(
             }
         }
         AppRequest::ThreadLoadedList => {
-            let response = handle_thread_request(
-                state,
-                ThreadRequest::List(ThreadListParams {
-                    include_archived: false,
-                    limit: Some(50),
-                }),
-            )
-            .await;
+            let response = crate::thread_control::loaded(state).await;
             match response {
                 Ok(thread_resp) => AppResponse {
                     ok: true,
@@ -154,7 +146,7 @@ pub(crate) async fn process_app_request(
                 },
                 Err(err) => AppResponse {
                     ok: false,
-                    data: json!({ "error": err.message }),
+                    data: json!({ "error": err.to_string() }),
                     events: Vec::new(),
                 },
             }
@@ -201,28 +193,15 @@ pub(crate) async fn propagate_config(state: &AppState) -> Result<()> {
         runtime.update_config(snapshot);
     }
     if state.captured_owner.is_some() {
-        let shared = acquire_runtime_bridge(state)
-            .await
-            .map_err(|_| anyhow!("config saved but captured Runtime owner is unavailable"))?;
-        let request = {
-            let bridge = shared.lock().await;
-            bridge
-                .authed(
-                    bridge
-                        .client
-                        .post(format!("{}/v1/config/reload", bridge.base_url)),
-                )
-                .timeout(Duration::from_secs(10))
-        };
-        let response = request
-            .send()
-            .await
-            .context("config saved; captured owner reload outcome is uncertain, not replayed")?;
-        anyhow::ensure!(
-            response.status().is_success(),
-            "config saved but captured owner rejected reload (status {})",
-            response.status()
-        );
+        let owner = crate::owner_calls::captured(state)
+            .context("config saved but captured Runtime owner is unavailable")?;
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            crate::owner_calls::execute(&owner, crate::RuntimeOwnerRequest::ReloadConfig),
+        )
+        .await
+        .context("config saved; captured owner reload outcome is uncertain, not replayed")?
+        .context("config saved but captured owner rejected reload")?;
     } else {
         #[cfg(test)]
         invalidate_runtime_bridge(state).await;

@@ -77,10 +77,7 @@ impl Rig {
             execution_scope: binding.execution_scope,
             lease_generation: generation,
             pid: std::process::id(),
-            process_start: codewhale_app_server::daemon_socket::capture_process_start(
-                std::process::id(),
-            )
-            .await?,
+            process_start: crate::daemon_socket::capture_process_start(std::process::id()).await?,
             principal: PrivateDirectory::current_user_id().to_string(),
             socket_path: self.socket.clone(),
             config_path: Some(self.config_path.clone()),
@@ -119,8 +116,7 @@ impl Rig {
                 .spawn()?,
         );
         owner.pid = child.0.id();
-        owner.process_start =
-            codewhale_app_server::daemon_socket::capture_process_start(owner.pid).await?;
+        owner.process_start = crate::daemon_socket::capture_process_start(owner.pid).await?;
         child.0.kill()?;
         child.0.wait()?;
         self.publish(&owner)?;
@@ -203,11 +199,11 @@ async fn two_crash_reentries_converge_on_one_owner_and_preserve_saved_draft() ->
     let owner = rig.receipt(&manager).await?;
     assert_ne!(owner.lease_generation, old.lease_generation);
     assert_eq!(owner.execution_scope, old.execution_scope);
-    let (daemon, _) = codewhale_app_server::bind_runtime_frontends(
+    let (daemon, _) = crate::bind_runtime_frontends(
         Some(rig.config_path.clone()),
         None,
         owner.clone(),
-        codewhale_app_server::RuntimeOwnerRouting {
+        crate::RuntimeOwnerRouting {
             endpoint: "127.0.0.1:1".parse()?,
             workspace: None,
             workers: None,
@@ -271,7 +267,7 @@ async fn dead_publication_with_missing_existing_lease_refuses_without_recreation
 
 #[tokio::test]
 async fn owner_bootstrap_attach_response_loss_never_falls_back_or_changes_store() -> Result<()> {
-    use tokio::io::AsyncBufReadExt as _;
+    use tokio::io::AsyncWriteExt as _;
     let _env = lock_test_env();
     let rig = Rig::new()?;
     let manager = rig.manager(None, None)?;
@@ -287,16 +283,21 @@ async fn owner_bootstrap_attach_response_loss_never_falls_back_or_changes_store(
     parent.write_owned_file("daemon.sock.owner.json", &bytes, false)?;
     let peer = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
-        let mut line = String::new();
-        tokio::io::BufReader::new(stream)
-            .read_line(&mut line)
-            .await?;
+        let (read, write) = tokio::io::split(stream);
+        let transport = crate::websocket::accept(read, write).await?;
+        let (read, mut write) = tokio::io::split(transport);
+        let mut lines = crate::stdio::BoundedLines::new(tokio::io::BufReader::new(read));
+        let line = lines
+            .next_line()
+            .await?
+            .context("one complete attach frame")?;
         let request: Value = serde_json::from_str(&line)?;
         anyhow::ensure!(
             request["method"] == "daemon/attach",
             "one real attach write"
         );
         // Simulate lost acknowledgement after the valid peer saw attach.
+        write.shutdown().await?;
         Ok::<_, anyhow::Error>(())
     });
     let error = rig.admit().await.err().context("lost attach must refuse")?;

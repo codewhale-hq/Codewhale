@@ -1932,7 +1932,7 @@ pub(crate) async fn handle_view_events(
                 approval_grouping_key,
                 persistent_rules,
             } => {
-                apply_approval_decision(
+                let accepted = apply_approval_decision(
                     app,
                     engine_handle,
                     config,
@@ -1948,7 +1948,7 @@ pub(crate) async fn handle_view_events(
                 )
                 .await;
 
-                if timed_out {
+                if timed_out && accepted {
                     app.add_message(HistoryCell::System {
                         content: app.tr(MessageId::ApprovalTimedOutDenied).into_owned(),
                     });
@@ -1960,35 +1960,33 @@ pub(crate) async fn handle_view_events(
                 option,
             } => {
                 use crate::tui::approval::ElevationOption;
-                let result = match option {
-                    ElevationOption::Abort => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Sandbox elevation aborted for {tool_name}"),
-                        });
-                        engine_handle.deny_tool_call(tool_id.clone()).await
-                    }
+                let receipt = match &option {
+                    ElevationOption::Abort => format!("Sandbox elevation aborted for {tool_name}"),
                     ElevationOption::WithNetwork => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Retrying {tool_name} with network access enabled"),
-                        });
+                        format!("Retrying {tool_name} with network access enabled")
+                    }
+                    ElevationOption::WithWriteAccess(_) => {
+                        format!("Retrying {tool_name} with write access enabled")
+                    }
+                    ElevationOption::FullAccess => {
+                        format!("Retrying {tool_name} with full access (no sandbox)")
+                    }
+                };
+                let result = match option {
+                    ElevationOption::Abort => engine_handle.deny_tool_call(tool_id.clone()).await,
+                    ElevationOption::WithNetwork => {
                         let policy = option.to_policy(&app.workspace);
                         engine_handle
                             .retry_tool_with_policy(tool_id.clone(), policy)
                             .await
                     }
                     ElevationOption::WithWriteAccess(_) => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Retrying {tool_name} with write access enabled"),
-                        });
                         let policy = option.to_policy(&app.workspace);
                         engine_handle
                             .retry_tool_with_policy(tool_id.clone(), policy)
                             .await
                     }
                     ElevationOption::FullAccess => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Retrying {tool_name} with full access (no sandbox)"),
-                        });
                         let policy = option.to_policy(&app.workspace);
                         engine_handle
                             .retry_tool_with_policy(tool_id.clone(), policy)
@@ -1996,8 +1994,11 @@ pub(crate) async fn handle_view_events(
                     }
                 };
                 if result.is_ok() {
+                    app.add_message(HistoryCell::System { content: receipt });
                     note_human_decision_delivered(app, &tool_id);
                     app.retire_action_notices(Some(&tool_id));
+                } else if let Err(error) = result {
+                    app.status_message = Some(format!("Approval was not accepted: {error}"));
                 }
             }
             ViewEvent::UserInputSubmitted { tool_id, response }

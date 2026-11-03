@@ -3,7 +3,7 @@
 pub enum RuntimeControlFrontend {
     Stdio,
     Socket { path: Option<std::path::PathBuf> },
-    LegacyHttp,
+    Http,
     Acp { model: String },
 }
 

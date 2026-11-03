@@ -353,6 +353,31 @@ pub struct DebugCacheTurn {
     pub age_seconds: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugCacheCallOwner {
+    Primary,
+    Auxiliary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugCacheCallCoverage {
+    Reported,
+    Incomplete,
+    Missing,
+    NotDispatched,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugCacheCall {
+    pub source_fingerprint: String,
+    pub owner: Option<DebugCacheCallOwner>,
+    pub coverage: DebugCacheCallCoverage,
+    pub pricing_complete: bool,
+    pub row: DebugCacheTurn,
+}
+
 /// Prompt-cache hit rates, each labelled by whose requests it covers (#6565).
 ///
 /// `parent` is this conversation's own requests: the footer `cache N%` and it
@@ -389,14 +414,18 @@ impl DebugCacheRates {
     }
 }
 
-/// Shared source for `/cache [count|stats|zones]` branches. One host read
-/// preserves ring order, optional telemetry and prefix stability evidence.
+/// Shared source for `/cache [count|calls|stats|zones]` branches. One host read
+/// preserves turn order, bounded call projection, optional telemetry and prefix evidence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DebugCacheTelemetry {
     pub model: String,
     /// Parent/agent/combined percentages computed once by the host.
     pub session_cache_rates: DebugCacheRates,
     pub history: Vec<DebugCacheTurn>,
+    pub calls: Vec<DebugCacheCall>,
+    pub calls_total: usize,
+    pub calls_currency: CommandCurrency,
+    pub calls_legacy_coverage_unknown: bool,
     pub history_capacity: usize,
     pub prefix_stability_pct: Option<u32>,
     pub prefix_checks_total: u64,

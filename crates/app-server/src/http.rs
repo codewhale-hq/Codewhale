@@ -1,7 +1,7 @@
 use crate::config_rpc::{CONFIG_LOAD_ERROR, CONFIG_SAVE_ERROR, process_app_request};
 use crate::turns::{handle_thread_request, run_http_thread_message, run_prompt_turn};
 use crate::{
-    AppServerOptions, AppState, AppTransport, DEFAULT_CORS_ORIGINS, JsonRpcError,
+    AppServerOptions, AppState, AppTransport, DEFAULT_CORS_ORIGINS, DispatchError,
     MAX_HTTP_BODY_BYTES, RUNTIME_UNAVAILABLE_CODE, THREAD_NOT_FOUND_CODE, chat_completions,
     legacy_deepseek_compat,
 };
@@ -91,8 +91,8 @@ pub(crate) async fn healthz() -> Json<Value> {
 /// Deliberately *not* a success-shaped payload with the error stuffed into a
 /// content field: a client must be able to tell "the model said this" from
 /// "nothing ran".
-pub(crate) fn http_error_from_jsonrpc(err: JsonRpcError) -> (StatusCode, Json<Value>) {
-    let (status, code) = match err.code {
+pub(crate) fn http_error_from_jsonrpc(err: DispatchError) -> (StatusCode, Json<Value>) {
+    let (status, code) = match err.wire.code {
         -32600 | -32602 => (StatusCode::BAD_REQUEST, "invalid_request"),
         THREAD_NOT_FOUND_CODE => (StatusCode::NOT_FOUND, "thread_not_found"),
         RUNTIME_UNAVAILABLE_CODE => (StatusCode::SERVICE_UNAVAILABLE, "runtime_unavailable"),
@@ -103,9 +103,9 @@ pub(crate) fn http_error_from_jsonrpc(err: JsonRpcError) -> (StatusCode, Json<Va
         Json(json!({
             "error": {
                 "code": code,
-                "jsonrpc_code": err.code,
-                "message": err.message,
-                "data": err.data,
+                "jsonrpc_code": err.wire.code,
+                "message": err.wire.message,
+                "data": err.wire.data,
             }
         })),
     )
@@ -156,7 +156,7 @@ pub(crate) async fn prompt_handler(
     Json(req): Json<PromptRequest>,
 ) -> Response {
     let mut sink = tokio::io::sink();
-    match run_prompt_turn(&state, &mut sink, req).await {
+    match run_prompt_turn(&state, &mut sink, req, None).await {
         Ok(res) => (StatusCode::OK, Json(res)).into_response(),
         Err(err) => http_error_from_jsonrpc(err).into_response(),
     }

@@ -6,13 +6,15 @@ use crate::tui::app::{
     AgentCurrentActivity, AgentCurrentActivityStatus, AgentProgressMeta, AgentRecentAction, App,
     MAX_AGENT_RECENT_ACTIONS, TaskPanelEntry, TaskPanelEntryKind, bound_agent_activity_text,
 };
-use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
+use crate::tui::history::HistoryCell;
+use crate::tui::history::SubAgentCell;
 use crate::tui::pager::PagerView;
 use crate::tui::tool_routing::refreshes_workspace_context_on_completion;
 use crate::tui::widgets::agent_card::{
     AgentLifecycle, DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
 };
 use crate::tui::workspace_context;
+use codewhale_app_server::exec_agent::summarize_tool_output;
 use codewhale_config::AppMode;
 use codewhale_engine::task_manager::{TaskRecord, TaskStatus, TaskSummary};
 use codewhale_engine::tools::subagent::{

@@ -240,11 +240,11 @@ impl McpServer {
         let workspace = self.workspace.clone();
         let skills_dir = self.skills_dir.clone();
         let skills_config = self.skills_config.clone();
-        #[cfg(test)]
-        let env_ticket = crate::test_support::env_scope_ticket();
+        #[cfg(any(test, feature = "test-support"))]
+        let env_ticket = codewhale_engine::test_support::env_scope_ticket();
         let discovery = tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            let _membership = crate::test_support::join_env_scope(env_ticket);
+            #[cfg(any(test, feature = "test-support"))]
+            let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
             let registry = codewhale_skills::discover_for_workspace(
                 &workspace,
                 Some(&skills_dir),
@@ -795,7 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_responses_omit_null_next_cursor() {
-        let _home = crate::test_support::SealedHome::new();
+        let _home = codewhale_engine::test_support::SealedHome::new();
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
         let skills_dir = root.path().join("skills");

@@ -405,7 +405,7 @@ Transports:
   codewhale app-server --http              Full HTTP/SSE runtime API (/v1/*) on 127.0.0.1:7878
   codewhale app-server --mobile            Runtime API + phone control page (127.0.0.1 only)
   codewhale app-server --stdio             Compatibility JSON-RPC controls and tool-free turns
-  codewhale app-server                     Compatibility HTTP routes on the canonical owner at 127.0.0.1:8787
+  codewhale app-server                     Initialized JSONL control over stdio on the canonical owner
 
 `--http` and `--mobile` serve the same mature runtime API as `codewhale serve
 --http`/`--mobile`, which remain as compatibility aliases. The runtime API token
@@ -457,7 +457,8 @@ The command prints the completion script to stdout; redirect it to a path your s
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Print a usage rollup from the audit log and session store.
+    /// Print persisted usage, cache, tool and Fleet diagnostics.
+    #[command(visible_alias = "stats")]
     Metrics(MetricsArgs),
     /// Update this release binary from GitHub (package-managed installs get migration instructions).
     #[command(
@@ -545,6 +546,7 @@ const ADVANCED_COMMANDS: &[&str] = &[
     "scorecard",
     "session-diagnostics",
     "metrics",
+    "stats",
     "providers",
     "completion",
 ];
@@ -553,8 +555,9 @@ fn user_facing_command() -> clap::Command {
     let mut cmd = Cli::command();
     let mut listed = Vec::new();
     for name in ADVANCED_COMMANDS {
-        if cmd.find_subcommand(name).is_some() {
-            cmd = cmd.mut_subcommand(name, |sub| sub.hide(true));
+        if let Some(subcommand) = cmd.find_subcommand(name) {
+            let canonical_name = subcommand.get_name().to_owned();
+            cmd = cmd.mut_subcommand(canonical_name, |sub| sub.hide(true));
             listed.push(*name);
         }
     }
@@ -718,8 +721,39 @@ struct MetricsArgs {
     #[arg(long)]
     json: bool,
     /// Restrict to events newer than this duration (e.g. 7d, 24h, 30m, now-2h).
-    #[arg(long, value_name = "DURATION")]
+    #[arg(long, value_name = "DURATION", conflicts_with = "days")]
     since: Option<String>,
+    #[arg(
+        long,
+        value_name = "N",
+        conflicts_with = "since",
+        help = "Inspect the last N days (positive)"
+    )]
+    days: Option<u32>,
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Show the top N identified model rows by known tokens"
+    )]
+    models: Option<usize>,
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Show the top N tools by identified executions"
+    )]
+    tools: Option<usize>,
+    #[arg(
+        long,
+        value_name = "WORKSPACE",
+        help = "Filter current workspace views; original-source money attribution may be unavailable"
+    )]
+    project: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Show the top N recorded Fleet roles by task count"
+    )]
+    roles: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -2083,7 +2117,7 @@ struct AppServerArgs {
     /// Equivalent to the legacy `codewhale serve --mobile`.
     #[arg(long, conflicts_with = "stdio")]
     mobile: bool,
-    /// Run the smaller compatibility JSON-RPC control transport over stdio.
+    /// Run initialized compatibility control over stdio (also the bare default).
     /// Tool-free turns require allowed_tools: []; use --http for interactive work.
     #[arg(long, default_value_t = false)]
     stdio: bool,
@@ -2106,8 +2140,7 @@ struct AppServerArgs {
     /// not widen the bind, and a non-loopback mobile bind is rejected.
     #[arg(long)]
     host: Option<String>,
-    /// Bind port. Defaults to 7878 for --http/--mobile (the runtime API) and
-    /// 8787 for the legacy in-process app-server HTTP transport.
+    /// Bind port for --http/--mobile. Defaults to 7878.
     #[arg(long)]
     port: Option<u16>,
     /// Background task worker count (1-8). Only used with --http/--mobile.
@@ -2133,7 +2166,7 @@ pub fn run_cli() -> std::process::ExitCode {
     install_rustls_crypto_provider();
 
     let outcome = run();
-    codewhale_tui::discard_runtime_listener_handoff();
+    codewhale_app_server::runtime_api::listener::discard_runtime_listener_handoff();
     // A config write may have moved legacy top-level `base_url` / `api_key`
     // into their provider tables (#6394); say so once, off stdout.
     for notice in codewhale_config::legacy_root::take_notices() {
@@ -2351,7 +2384,8 @@ fn argv_secret_warning(cli: &Cli, command: Option<&Commands>) -> Option<&'static
 }
 
 fn run() -> Result<()> {
-    let inherited_listener = codewhale_tui::prepare_runtime_listener_handoff()?;
+    let inherited_listener =
+        codewhale_app_server::runtime_api::listener::prepare_runtime_listener_handoff()?;
     let argv: Vec<_> = std::env::args_os().collect();
     let matches = user_facing_command().get_matches_from(&argv);
     let project_bundle_scope = config_command_targets_project(&matches);
@@ -6521,21 +6555,16 @@ fn run_app_server_command(
             path: args.socket_path.clone(),
         })
     } else if !args.http && !args.mobile {
-        eprintln!(
-            "note: bare app-server selects the compatibility API on port 8787 by default; use codewhale app-server --http for the full /v1/* API, approvals and SSE events"
-        );
-        Some(RuntimeControlFrontend::LegacyHttp)
+        Some(RuntimeControlFrontend::Stdio)
     } else {
         None
     };
     let mut launch = args;
     if launch.port.is_none() {
-        launch.port = Some(if launch.stdio || launch.socket {
-            0
-        } else if launch.http || launch.mobile {
+        launch.port = Some(if launch.http || launch.mobile {
             7878
         } else {
-            8787
+            0
         });
     }
     if !launch.http && !launch.mobile {
@@ -6821,11 +6850,25 @@ fn run_metrics_command(args: MetricsArgs) -> Result<()> {
         Some(s) => {
             Some(metrics::parse_since(s).with_context(|| format!("invalid --since value: {s:?}"))?)
         }
-        None => None,
+        None => args
+            .days
+            .map(|days| {
+                if days == 0 {
+                    bail!("--days must be positive");
+                }
+                chrono::Utc::now()
+                    .checked_sub_signed(chrono::Duration::days(i64::from(days)))
+                    .ok_or_else(|| anyhow!("--days reaches before the supported time range"))
+            })
+            .transpose()?,
     };
     metrics::run(metrics::MetricsArgs {
         json: args.json,
         since,
+        models: args.models,
+        tools: args.tools,
+        project: args.project,
+        roles: args.roles,
     })
 }
 
@@ -13667,7 +13710,18 @@ verbosity = "concise"
                     "codewhale completion elvish >> ~/.config/elvish/rc.elv",
                 ],
             ),
-            ("metrics", vec!["--json", "--since"]),
+            (
+                "metrics",
+                vec![
+                    "--json",
+                    "--since",
+                    "--days",
+                    "--models",
+                    "--tools",
+                    "--project",
+                    "--roles",
+                ],
+            ),
         ];
 
         for (subcommand, expected_tokens) in cases {

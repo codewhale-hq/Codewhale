@@ -7275,7 +7275,9 @@ mod tests {
             let mut bundle = app.command_contexts();
             let mut parts = bundle.parts();
             let facet = parts.lifecycle.as_deref_mut().expect("lifecycle slot");
-            let ok = facet.fresh_session(true).expect("force prepares a new session");
+            let ok = facet
+                .fresh_session(true)
+                .expect("force prepares a new session");
             assert_eq!(app.current_session_id.as_deref(), Some("old-session"));
             assert_eq!(app.input, "draft text");
             assert_ne!(ok.sync.session_id.as_deref(), Some("old-session"));
@@ -7987,6 +7989,13 @@ mod tests {
         let tmpdir = TempDir::new().unwrap();
         let _lock = crate::test_support::lock_test_env();
         let mut app = control_test_app(&tmpdir);
+        app.remote_control
+            .prepare_remote_control_session_journal(
+                &tmpdir.path().join("remote-control-journal"),
+                "control-test-target",
+                "control-test-session",
+            )
+            .expect("durable remote-control journal");
         app.remote_control
             .activate_prompt("run-1", "turn-1")
             .unwrap();

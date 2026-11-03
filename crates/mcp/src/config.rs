@@ -252,7 +252,8 @@ impl McpServerConfig {
     }
 
     pub fn is_tool_always_allowed(&self, tool_name: &str) -> bool {
-        self.is_tool_enabled(tool_name) && self.always_allow_tools.iter().any(|tool| tool == tool_name)
+        self.is_tool_enabled(tool_name)
+            && self.always_allow_tools.iter().any(|tool| tool == tool_name)
     }
 
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {

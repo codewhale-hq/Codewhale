@@ -71,7 +71,7 @@ fn take_state_persist_failure(path: &Path) -> bool {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct RuntimeChatPrompt {
+pub struct RuntimeChatPrompt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_review: Option<codewhale_protocol::op::ReviewOperation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,19 +106,19 @@ pub(crate) struct RuntimeChatPrompt {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct RuntimeChatWorkspace {
+pub struct RuntimeChatWorkspace {
     pub id: String,
     pub target_ref: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RuntimeChatControlScope {
+pub struct RuntimeChatControlScope {
     pub(crate) runtime_binding_id: String,
     pub(crate) runtime_thread_id: String,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RuntimeChatProjection {
+pub struct RuntimeChatProjection {
     pub run_id: String,
     pub native_thread_id: String,
     pub native_seq: u64,

@@ -8,13 +8,6 @@
 #[path = "../support/binary.rs"]
 mod binary;
 
-// Production modules that are `#[path]`-included by the test files below and
-// that themselves use `crate::`. They must exist at the harness crate root so
-// `crate::config`, etc. resolve when the same
-// files are compiled as `crate::integration::<test>::<module>`.
-
-#[path = "../../src/eval.rs"]
-mod eval;
 #[path = "../support/llm_client.rs"]
 mod llm_client;
 // The legacy text tool-call parser lives in codewhale-core now; keep the

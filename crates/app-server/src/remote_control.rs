@@ -788,7 +788,7 @@ pub struct PendingRemoteApproval {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Status {
+pub enum Status {
     #[default]
     Off,
     Connecting,
@@ -894,7 +894,7 @@ impl RemoteControlController {
     /// fixes the lock order across processes: a competing workspace cannot
     /// make us release an existing Runtime store owner and only later discover
     /// that the saved session is permanently bound elsewhere.
-    pub(crate) fn prepare_remote_control_session_journal(
+    pub fn prepare_remote_control_session_journal(
         &mut self,
         dir: &Path,
         target_ref: &str,
@@ -938,7 +938,7 @@ impl RemoteControlController {
         }
     }
 
-    pub(crate) fn configure_runtime_chat(
+    pub fn configure_runtime_chat(
         &mut self,
         config: codewhale_runtime::config::Config,
         plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
@@ -1098,7 +1098,7 @@ impl RemoteControlController {
         result
     }
 
-    pub(crate) fn record_start_failure(&mut self, error: &str) {
+    pub fn record_start_failure(&mut self, error: &str) {
         if matches!(self.status, Status::Off | Status::Failed)
             && !self
                 .ownership_blocked_until
@@ -1308,7 +1308,7 @@ impl RemoteControlController {
             .any(|entry| entry.integrity)
     }
 
-    pub(crate) fn runtime_chat_blocks_local_dispatch(&self) -> bool {
+    pub fn runtime_chat_blocks_local_dispatch(&self) -> bool {
         self.has_durable_classic_lease()
             || self.pending_runtime_chat_configuration.is_some()
             || self.runtime_chat.as_ref().is_some_and(|host| {
@@ -1316,7 +1316,7 @@ impl RemoteControlController {
             })
     }
 
-    pub(crate) async fn workspace_restore_guard(
+    pub async fn workspace_restore_guard(
         &self,
         workspace: &Path,
     ) -> Result<Option<tokio::sync::OwnedRwLockWriteGuard<()>>, String> {
@@ -1326,8 +1326,8 @@ impl RemoteControlController {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn block_runtime_chat_dispatch_for_tests(&mut self) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn block_runtime_chat_dispatch_for_tests(&mut self) {
         self.pending_runtime_chat_configuration = Some(PendingRuntimeChatConfiguration {
             config: codewhale_runtime::config::Config::default(),
             plugin_registry: std::sync::Arc::new(codewhale_plugins::PluginRegistry::empty(
@@ -1665,7 +1665,7 @@ impl RemoteControlController {
     }
 
     #[must_use]
-    pub(crate) fn status(&self) -> Status {
+    pub fn status(&self) -> Status {
         self.status
     }
 
@@ -1673,8 +1673,8 @@ impl RemoteControlController {
     /// plane. Mirrors the shape the runner-lease parser installs (`Connected`
     /// plus validated links) so `/rc link`/`/rc open` routing can be exercised
     /// deterministically offline.
-    #[cfg(test)]
-    pub(crate) fn install_live_link_for_test(&mut self, run_url: &str, computer_url: Option<&str>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_live_link_for_test(&mut self, run_url: &str, computer_url: Option<&str>) {
         self.status = Status::Connected;
         self.status_detail = "test link".to_string();
         self.links = RemoteLinks {
@@ -1788,8 +1788,8 @@ impl RemoteControlController {
 
     /// Test-only: put the controller into the exact state a live connected
     /// mirror with an attached run would be in, without a relay worker.
-    #[cfg(test)]
-    pub(crate) fn force_mirror_connected_for_tests(&mut self, run_id: &str, turn_id: &str) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn force_mirror_connected_for_tests(&mut self, run_id: &str, turn_id: &str) {
         self.status = Status::Connected;
         self.status_detail = "web mirror connected".to_string();
         self.attached_run_id = Some(run_id.to_string());
@@ -1799,8 +1799,8 @@ impl RemoteControlController {
         });
     }
 
-    #[cfg(test)]
-    pub(crate) fn queue_remote_event_for_tests(&mut self, event: RemoteEvent) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn queue_remote_event_for_tests(&mut self, event: RemoteEvent) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         event_tx.send(event).expect("test event receiver");
         self.event_rx = Some(event_rx);
@@ -2243,7 +2243,7 @@ impl RemoteControlController {
         });
     }
 
-    pub(crate) async fn apply_runtime_chat_prompt(
+    pub async fn apply_runtime_chat_prompt(
         &self,
         command: &RuntimeChatPrompt,
     ) -> Result<(), String> {
@@ -2266,7 +2266,7 @@ impl RemoteControlController {
         host.apply_prompt(command).await
     }
 
-    pub(crate) async fn interrupt_runtime_chat(
+    pub async fn interrupt_runtime_chat(
         &self,
         run_id: &str,
         scope: &RuntimeChatControlScope,
@@ -3214,7 +3214,7 @@ fn unicode_prefix(value: &str, chars: usize) -> String {
     value.chars().take(chars).collect()
 }
 
-pub(crate) fn projected_approval_id(raw: &str) -> String {
+pub fn projected_approval_id(raw: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"local-runtime:approval\0");
     hasher.update(raw.as_bytes());
@@ -4439,9 +4439,12 @@ fn parse_remote_command(value: &Value, expected_run_id: &str) -> Result<RemoteCo
                 "input_provenance",
             ];
             if watch_fields.iter().any(|key| value.get(*key).is_some())
-                || value.get("metadata").and_then(Value::as_object).is_some_and(|metadata| {
-                    watch_fields.iter().any(|key| metadata.contains_key(*key))
-                })
+                || value
+                    .get("metadata")
+                    .and_then(Value::as_object)
+                    .is_some_and(|metadata| {
+                        watch_fields.iter().any(|key| metadata.contains_key(*key))
+                    })
             {
                 return Err("Automatic watch input is unsupported on this local coordinator; use the attested HTTP owner.".to_string());
             }
@@ -5815,19 +5818,21 @@ mod tests {
         if !cfg!(debug_assertions) {
             return;
         }
-        let _env = crate::test_support::lock_test_env();
+        let _env = codewhale_engine::test_support::lock_test_env();
         let secrets_root = tempfile::tempdir().expect("isolated remote-control secrets");
         let _codewhale_home =
-            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", secrets_root.path());
+            codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", secrets_root.path());
         let server = MockServer::start().await;
         let plane = format!("{}/", server.uri().trim_end_matches('/'));
-        let _control_plane =
-            crate::test_support::EnvVarGuard::set("CWC_RUNNER_CONTROL_PLANE_BASE", &plane);
+        let _control_plane = codewhale_engine::test_support::EnvVarGuard::set(
+            "CWC_RUNNER_CONTROL_PLANE_BASE",
+            &plane,
+        );
         let base = runner_control_plane_base().expect("loopback control plane");
         save_persisted_enrollment(&fixture_enrollment(&base).persisted)
             .expect("persist matching enrollment");
 
-        let access_token = crate::test_support::future_test_jwt(&"a".repeat(40));
+        let access_token = codewhale_engine::test_support::future_test_jwt(&"a".repeat(40));
         Mock::given(method("POST"))
             .and(path("/api/runner/enrollments/token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -7047,8 +7052,7 @@ mod tests {
                 json!({"type":"prompt.request","runId":"run-1","turnId":"turn-1","prompt":"watch"});
             value[field] = json!({"version":1});
             assert!(parse_remote_command(&value, "run-1").is_err());
-            let mut nested =
-                json!({"type":"prompt.request","runId":"run-1","turnId":"turn-1","prompt":"watch","metadata":{}});
+            let mut nested = json!({"type":"prompt.request","runId":"run-1","turnId":"turn-1","prompt":"watch","metadata":{}});
             nested["metadata"][field] = json!({"version":1});
             assert!(parse_remote_command(&nested, "run-1").is_err());
         }
@@ -7508,38 +7512,6 @@ mod tests {
             sanitized_rejection_excerpt(long.as_bytes(), StatusCode::BAD_REQUEST),
             None
         );
-    }
-
-    #[test]
-    fn view_gate_matching_never_confuses_two_approval_cards() {
-        use crate::tui::approval::ApprovalRequest;
-        use crate::tui::approval::ApprovalView;
-        use crate::tui::views::ViewStack;
-
-        let request = ApprovalRequest::new(
-            "tool_A",
-            "edit",
-            "Edit A",
-            &serde_json::json!({ "file": "a" }),
-            "approval_key_A",
-        );
-        let card = ApprovalView::new(request);
-        let gate_a = projected_approval_id("tool_A");
-        let gate_b = projected_approval_id("tool_B");
-
-        let mut stack = ViewStack::new();
-        stack.push(card);
-        assert!(
-            !stack.remove_approval_for_gate(&gate_b),
-            "a different gate must NEVER match this card — the whole point of identity-aware dismissal"
-        );
-        assert!(!stack.remove_approval_for_gate("local_approval_missing"));
-        assert!(!stack.is_empty());
-        assert!(
-            stack.remove_approval_for_gate(&gate_a),
-            "the matching gate must match"
-        );
-        assert!(stack.is_empty());
     }
 
     #[tokio::test]
@@ -8028,10 +8000,10 @@ mod tests {
 
     #[tokio::test]
     async fn stop_drain_stops_when_a_fresh_credential_is_refused_again() {
-        let _env = crate::test_support::lock_test_env();
+        let _env = codewhale_engine::test_support::lock_test_env();
         let secrets_root = tempfile::tempdir().expect("isolated remote-control secrets");
         let _codewhale_home =
-            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", secrets_root.path());
+            codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", secrets_root.path());
         let server = MockServer::start().await;
         // A terminal refusal: the runner may not write this run, and a new
         // access token does not change that.
@@ -8043,7 +8015,7 @@ mod tests {
             .expect(2)
             .mount(&server)
             .await;
-        let access_token = crate::test_support::future_test_jwt(&"a".repeat(40));
+        let access_token = codewhale_engine::test_support::future_test_jwt(&"a".repeat(40));
         Mock::given(method("POST"))
             .and(path("/api/runner/enrollments/token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({

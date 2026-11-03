@@ -530,7 +530,7 @@ pub(crate) fn bound_agent_activity_text(value: &str) -> String {
     let mut visible = String::with_capacity(value.len());
     codewhale_tui_kit::osc8::strip_ansi_into(value, &mut visible);
     let redacted = codewhale_config::persistence::redact_secrets(&visible);
-    crate::tui::history::summarize_tool_output(&redacted)
+    codewhale_app_server::exec_agent::summarize_tool_output(&redacted)
 }
 
 /// One bounded, structured tool outcome for the Agent Details projection.
@@ -1658,7 +1658,7 @@ pub struct App {
     pub(crate) pending_plan_handoff: Option<crate::tui::plan_handoff::PendingPlanHandoff>,
     pub(crate) context_token_cache: RefCell<ContextTokenCache>,
     /// Typed account-owned browser relay for this exact TUI session.
-    pub remote_control: crate::remote_control::RemoteControlController,
+    pub remote_control: codewhale_app_server::remote_control::RemoteControlController,
     pub start_remote_control_on_launch: bool,
     pub is_loading: bool,
     /// One local report edit awaiting the ordinary composer dispatch.

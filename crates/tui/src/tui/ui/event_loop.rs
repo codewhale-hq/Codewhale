@@ -4774,6 +4774,7 @@ pub(crate) async fn run_event_loop(
                         }
                     }
                     EngineEvent::ApprovalRequired {
+                        publication: _,
                         id,
                         tool_name,
                         description,
@@ -9237,12 +9238,16 @@ pub(super) async fn handle_approval_required_event(
                     "mode": app.mode.label(),
                 }),
             );
-            let _ = engine_handle
+            if let Err(error) = engine_handle
                 .deny_tool_call_by(
                     id.clone(),
                     codewhale_engine::approval_log::ApprovalDecider::Posture,
                 )
-                .await;
+                .await
+            {
+                app.status_message = Some(format!("Approval was not accepted: {error}"));
+                return;
+            }
             let notice = app
                 .tr(MessageId::ApprovalFullAccessPolicyBlocked)
                 .replace("{tool}", &tool_name);
@@ -9259,7 +9264,9 @@ pub(super) async fn handle_approval_required_event(
                 }),
             );
             let by = auto_approval_decider(app, approval_force_prompt);
-            let _ = engine_handle.approve_tool_call_by(id.clone(), by).await;
+            if let Err(error) = engine_handle.approve_tool_call_by(id.clone(), by).await {
+                app.status_message = Some(format!("Approval was not accepted: {error}"));
+            }
         }
         ApprovalRequestDisposition::AutoDenyAutoReview => {
             log_sensitive_event(
@@ -9270,12 +9277,16 @@ pub(super) async fn handle_approval_required_event(
                     "mode": app.mode.label(),
                 }),
             );
-            let _ = engine_handle
+            if let Err(error) = engine_handle
                 .deny_tool_call_by(
                     id.clone(),
                     codewhale_engine::approval_log::ApprovalDecider::Posture,
                 )
-                .await;
+                .await
+            {
+                app.status_message = Some(format!("Approval was not accepted: {error}"));
+                return;
+            }
             let held =
                 crate::tui::gate_receipts::auto_review_held_receipt(app.ui_locale, &tool_name);
             app.add_message(HistoryCell::System {
@@ -9295,12 +9306,16 @@ pub(super) async fn handle_approval_required_event(
                     "mode": app.mode.label(),
                 }),
             );
-            let _ = engine_handle
+            if let Err(error) = engine_handle
                 .deny_tool_call_by(
                     id.clone(),
                     codewhale_engine::approval_log::ApprovalDecider::Posture,
                 )
-                .await;
+                .await
+            {
+                app.status_message = Some(format!("Approval was not accepted: {error}"));
+                return;
+            }
             app.push_status_toast_record(
                 StatusToast::new(
                     app.tr(MessageId::ApprovalNeverPostureBlocked)

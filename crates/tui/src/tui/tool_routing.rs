@@ -5,13 +5,26 @@ use std::time::Instant;
 
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::{App, ToolDetailRecord, ToolEvidence};
-use crate::tui::history::{
-    ExecCell, ExecSource, ExecWait, ExploringCell, ExploringEntry, GenericToolCell, HistoryCell,
-    McpToolCell, PatchSummaryCell, PlanUpdateCell, ReviewCell, ToolCell, ToolStatus, ViewImageCell,
-    WebSearchCell, output_looks_like_diff, summarize_mcp_output, summarize_tool_args,
-    summarize_tool_output,
-};
+use crate::tui::history::ExecCell;
+use crate::tui::history::ExecSource;
+use crate::tui::history::ExecWait;
+use crate::tui::history::ExploringCell;
+use crate::tui::history::ExploringEntry;
+use crate::tui::history::GenericToolCell;
+use crate::tui::history::HistoryCell;
+use crate::tui::history::McpToolCell;
+use crate::tui::history::PatchSummaryCell;
+use crate::tui::history::PlanUpdateCell;
+use crate::tui::history::ReviewCell;
+use crate::tui::history::ToolCell;
+use crate::tui::history::ToolStatus;
+use crate::tui::history::ViewImageCell;
+use crate::tui::history::WebSearchCell;
+use crate::tui::history::output_looks_like_diff;
+use crate::tui::history::summarize_mcp_output;
 use crate::tui::workspace_context;
+use codewhale_app_server::exec_agent::summarize_tool_args;
+use codewhale_app_server::exec_agent::summarize_tool_output;
 use codewhale_config::hooks::HookEvent;
 use codewhale_engine::tools::ReviewOutput;
 use codewhale_engine::tools::plan::PlanSnapshot;
@@ -912,7 +925,7 @@ pub(super) fn handle_tool_call_complete(
                         exec.output_summary = exec
                             .output
                             .as_deref()
-                            .map(super::history::summarize_tool_output);
+                            .map(codewhale_app_server::exec_agent::summarize_tool_output);
                         exec.live_output = None;
                     } else if status == ToolStatus::Running && exec.interaction.is_none() {
                         moved_to_jobs = !explicit_background;
@@ -921,8 +934,9 @@ pub(super) fn handle_tool_call_complete(
                     && exec.interaction.is_none()
                 {
                     exec.output = Some(err.to_string());
-                    exec.output_summary =
-                        Some(super::history::summarize_tool_output(&err.to_string()));
+                    exec.output_summary = Some(
+                        codewhale_app_server::exec_agent::summarize_tool_output(&err.to_string()),
+                    );
                 }
                 app.mark_history_updated();
             }
