@@ -19,14 +19,35 @@ use codewhale_execpolicy::ApprovalMode;
 
 use super::approval::{ApprovalDecision, UserInputDecision};
 use super::{
-    CancelReason, EngineHandle, LiveRuntimeAuthority, Op, RuntimePermissionAuthority,
-    UserInputResponse,
+    CancelReason, EngineHandle, EngineRunCompletion, LiveRuntimeAuthority, Op,
+    RuntimePermissionAuthority, UserInputResponse,
 };
 use crate::approval_log::ApprovalDecider;
 
 // This bounds host delivery/acknowledgement, never the person's time to
 // answer. No active waiter may consume a reply after its caller abandoned it.
 const USER_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl EngineHandle {
+    /// Wait for this exact background run to return or terminate abnormally.
+    /// Cancelling a wait does not stop the engine or consume another waiter's result.
+    /// Directly constructed handles return `NotObserved`; completion does not prove
+    /// persistence succeeded or detached children and blocking writers stopped.
+    pub async fn wait_run_completion(&self) -> EngineRunCompletion {
+        let Some(mut completion) = self.run_completion.clone() else {
+            return EngineRunCompletion::NotObserved;
+        };
+        loop {
+            let outcome = *completion.borrow_and_update();
+            if let Some(outcome) = outcome {
+                return outcome;
+            }
+            if completion.changed().await.is_err() {
+                return EngineRunCompletion::AbnormalTermination;
+            }
+        }
+    }
+}
 
 async fn await_user_input_acceptance(
     sender: &mpsc::Sender<UserInputDecision>,
