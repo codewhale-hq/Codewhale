@@ -847,10 +847,12 @@
     }
 
     #[test]
-    fn interrupted_session_deletion_keeps_recovery_incomplete_and_can_finish() {
+    fn interrupted_session_deletion_keeps_recovery_retired_and_can_finish() {
         let tmp = tempdir().expect("tempdir");
         let manager = SessionManager::new(tmp.path().join("sessions")).expect("manager");
         let saved = save_late_usage_test_session(&manager, "interrupted-delete");
+        let snapshot = manager.validated_session_path("interrupted-delete").unwrap();
+        let snapshot_before = fs::read(&snapshot).unwrap();
         manager
             .save_checkpoint(&saved)
             .expect("checkpoint before deletion");
@@ -868,16 +870,14 @@
             .expect("paths");
         write_atomic(&ledger.with_extension("deleted"), LATE_USAGE_DELETED)
             .expect("crash after tombstone");
-        let recovered = manager
-            .load_session_snapshot("interrupted-delete")
-            .expect("transcript remains recoverable");
-        assert!(
-            recovered
-                .metadata
-                .cost
-                .unpriced_reasons
-                .contains(LATE_USAGE_UNAVAILABLE_REASON)
+        assert_eq!(
+            manager
+                .load_session_snapshot("interrupted-delete")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
         );
+        assert_eq!(fs::read(&snapshot).unwrap(), snapshot_before);
         assert!(
             manager
                 .load_session_checkpoint("interrupted-delete")
@@ -894,6 +894,7 @@
         manager
             .delete_session("interrupted-delete")
             .expect("finish deletion");
+        assert!(!snapshot.exists());
         assert!(manager.list_sessions().expect("list").is_empty());
         assert_eq!(fs::read(&legacy).expect("legacy preserved"), legacy_before);
         assert!(manager.load_legacy_checkpoint().expect("legacy read").is_none());
