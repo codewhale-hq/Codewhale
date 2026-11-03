@@ -19,7 +19,6 @@ pub fn path_is_confined(path: &Path) -> bool {
 /// example a junction onto another volume). Workspace confinement exists to
 /// keep repository content from reaching outside itself, so a home workspace is
 /// exempt from it.
-#[must_use]
 pub fn workspace_is_user_home(workspace: &Path) -> bool {
     codewhale_paths::user_home().is_some_and(|home| same_directory(&home, workspace))
 }
@@ -37,17 +36,54 @@ fn same_directory(left: &Path, right: &Path) -> bool {
 /// The `.codewhale` state directory that owns `workspace`'s application state.
 ///
 /// A home workspace is resolved: `~/.codewhale` may be a junction the user made
-/// to keep state on another volume, and a confinement root must be the real
-/// directory or every path below it is refused. Any other workspace returns its
-/// literal `.codewhale`, which the callers' link walk still refuses when it is
-/// linked — repository content must not reach outside the repository.
+/// to keep state on another volume. Any other workspace returns its literal
+/// `.codewhale`, which is still repository content. When a home state directory
+/// exists but cannot be resolved, the literal path comes back and the caller
+/// treats it as workspace content again — that fails closed instead of creating
+/// a second state tree beside the one that cannot be reached.
 #[must_use]
 pub fn workspace_state_dir(workspace: &Path) -> std::path::PathBuf {
-    let state = workspace.join(".codewhale");
+    let state = workspace.join(codewhale_paths::CODEWHALE_APP_DIR);
     if workspace_is_user_home(workspace) {
         state.canonicalize().unwrap_or(state)
     } else {
         state
+    }
+}
+
+/// Confinement root and state path for `relative` beneath the workspace's
+/// Codewhale state directory.
+///
+/// The root is the boundary a link walk starts from, and
+/// [`reject_linked_path`] never examines the root itself — only what is below
+/// it. So the root decides whether `.codewhale` is inspected:
+///
+/// - A home workspace resolves `~/.codewhale` once and uses its target as the
+///   root: the user's own junction is the place they chose for state, and a
+///   path below it is still walked.
+/// - Every other workspace keeps itself as the root with `.codewhale` still
+///   inside the path, so a repository-supplied link is refused exactly as it
+///   was before this helper existed.
+#[must_use]
+pub fn workspace_state_path(
+    workspace: &Path,
+    relative: &Path,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let state = workspace.join(codewhale_paths::CODEWHALE_APP_DIR);
+    let within_workspace = || (workspace.to_path_buf(), state.join(relative));
+    if !workspace_is_user_home(workspace) {
+        return within_workspace();
+    }
+    match state.canonicalize() {
+        Ok(resolved) => {
+            let path = resolved.join(relative);
+            (resolved, path)
+        }
+        // A missing directory is the first run, created inside the home
+        // workspace itself. A directory that exists but cannot be resolved fails
+        // closed against the strict root rather than writing a second state
+        // tree beside the one that cannot be reached.
+        Err(_) => within_workspace(),
     }
 }
 
