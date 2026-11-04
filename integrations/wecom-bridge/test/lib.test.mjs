@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse } from "../src/lib.mjs";
+import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse, formatPublicError } from "../src/lib.mjs";
 
 // ─── ThreadStore ─────────────────────────────────────────────────
 
@@ -163,4 +163,21 @@ test("WeCom accepted turn origin survives reload and cannot transfer to a later 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ─── formatPublicError ───────────────────────────────────────────
+
+test("formatPublicError renders WeCom error objects", () => {
+  assert.equal(
+    formatPublicError({ errcode: 846608, errmsg: "stream message update expired (>10 minutes)" }),
+    "errcode=846608: stream message update expired (>10 minutes)"
+  );
+  assert.equal(formatPublicError({ errcode: 40011 }), "errcode=40011:");
+});
+
+test("formatPublicError keeps messages and plain strings", () => {
+  assert.equal(formatPublicError(new Error("boom")), "boom");
+  assert.equal(formatPublicError("boom"), "boom");
+  assert.equal(formatPublicError(undefined), "unknown error");
+  assert.match(formatPublicError({ no: "msg" }), /no.*msg|unknown/);
 });

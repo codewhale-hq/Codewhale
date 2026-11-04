@@ -79,6 +79,21 @@ export function stripGroupPrefix(text, { chatType, requirePrefix, prefix }) {
   });
 }
 
+/**
+ * Render an error for a chat reply. WeCom SDK rejections arrive as plain
+ * objects ({errcode, errmsg}); String() on those yields "[object Object]".
+ */
+export function formatPublicError(error) {
+  if (error && typeof error === "object") {
+    if (error.errmsg != null || error.errcode != null) {
+      return `errcode=${error.errcode}: ${error.errmsg || ""}`.trim();
+    }
+    if (error.message) return String(error.message);
+    try { return JSON.stringify(error).slice(0, 300); } catch { return "unknown error"; }
+  }
+  return String(error || "unknown error");
+}
+
 /** Check if text is a natural-language approval response (Chinese or English). */
 export function isApprovalResponse(text) {
   const t = String(text || "").trim().toLowerCase();

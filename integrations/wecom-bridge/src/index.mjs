@@ -4,6 +4,7 @@ import {
   activeTurnBlock,
   commandAction,
   compactRuntimeError,
+  formatPublicError,
   helpText,
   incomingIdentity,
   isAllowed,
@@ -114,7 +115,7 @@ async function reportHandlerError(frame, context, error) {
 }
 
 function publicBridgeError(error) {
-  const message = String(error?.message || error || "unknown error");
+  const message = formatPublicError(error);
   return message.replaceAll(config.runtimeToken, "<redacted>").slice(0, 500);
 }
 
