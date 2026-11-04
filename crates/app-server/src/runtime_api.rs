@@ -2924,7 +2924,9 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         )
         .route(
             "/v1/fleet/runs",
-            get(list_fleet_runs).post(create_fleet_run),
+            get(list_fleet_runs)
+                .post(create_fleet_run)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route("/v1/fleet/runs/{run_id}", get(get_fleet_run))
         .route(
@@ -4483,6 +4485,11 @@ fn prepare_managed_fleet_run(
     if request.roles.len() > 128 {
         return Err(ApiError::bad_request(
             "roles cannot contain more than 128 entries",
+        ));
+    }
+    if request.workflow.tasks.len() > 64 {
+        return Err(ApiError::bad_request(
+            "workflow.tasks cannot contain more than 64 entries",
         ));
     }
     let workflow_id = managed_fleet_token("workflow.id", &request.workflow.id)?;

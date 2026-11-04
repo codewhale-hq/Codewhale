@@ -317,6 +317,10 @@ pub fn validate_task_spec_document(doc: &FleetTaskSpecDocument) -> Result<()> {
     if doc.tasks.is_empty() {
         bail!("fleet task spec must include at least one task");
     }
+    ensure!(
+        doc.tasks.len() <= 64,
+        "fleet task spec cannot declare more than 64 tasks"
+    );
     let mut ids = BTreeSet::new();
     for task in &doc.tasks {
         validate_fleet_identity("task id", &task.id)?;
