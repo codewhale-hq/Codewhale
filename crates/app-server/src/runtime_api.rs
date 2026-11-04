@@ -25,8 +25,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use codewhale_app_server_protocol::runtime::{
-    DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
-    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
+    DynamicToolCallResult, FleetProfileDocument, FleetProfileDocumentKind, RUNTIME_API_VERSION,
+    RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeCapabilities, RuntimeEventEnvelope,
+    RuntimeExperimentalCapabilities,
 };
 #[cfg(unix)]
 use codewhale_paths::daemon_socket::default_socket_path;
@@ -2918,6 +2919,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/agent-runs/{run_id}/cancel", post(cancel_agent_run))
         .route("/v1/fleet/profiles", get(list_fleet_profiles))
         .route(
+            "/v1/fleet/profiles/{id}/document",
+            get(get_fleet_profile_document),
+        )
+        .route(
             "/v1/fleet/runs",
             get(list_fleet_runs).post(create_fleet_run),
         )
@@ -4284,30 +4289,140 @@ async fn cancel_agent_run(
     }
 }
 
+async fn read_fleet_profiles<T: Send + 'static>(
+    state: RuntimeApiState,
+    read: impl FnOnce(
+        &RuntimeApiState,
+        &codewhale_engine::fleet::roster::FleetRoster,
+    ) -> Result<T, ApiError>
+    + Send
+    + 'static,
+) -> Result<T, ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        state
+            .workspace_scope
+            .validate_sync()
+            .map_err(|_| ApiError::conflict("selected workspace identity changed"))?;
+        let plugins = state
+            .plugin_discovery
+            .registry_for_workspace(&state.workspace);
+        let roster = codewhale_engine::fleet::identity::load_effective_roster(
+            &state.config.read().fleet_config(),
+            &state.workspace,
+            Some(plugins.as_ref()),
+        );
+        let result = read(&state, &roster);
+        state
+            .workspace_scope
+            .validate_sync()
+            .map_err(|_| ApiError::conflict("selected workspace identity changed"))?;
+        result
+    })
+    .await
+    .map_err(|_| ApiError::internal("Fleet profiles could not be read"))?
+}
+
 async fn list_fleet_profiles(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<Value>, ApiError> {
-    let manager = open_fleet_manager(&state)?;
-    // Same roster path the manager uses to validate `agent_profile` ids on
-    // run creation, so GUI pickers can never offer a profile the runtime
-    // would reject.
-    let roster = manager.agent_roster();
-    let profiles = roster
-        .members()
-        .iter()
-        .map(|member| {
-            json!({
-                "id": member.id.clone(),
-                "display_name": member.display_name.clone(),
-                "description": member.description.clone(),
-                "origin": member.origin.to_string(),
+    read_fleet_profiles(state, |_, roster| {
+        let profiles = roster
+            .members()
+            .iter()
+            .map(|member| {
+                json!({
+                    "id": member.id,
+                    "display_name": member.display_name,
+                    "description": member.description,
+                    "origin": member.origin.to_string(),
+                })
             })
-        })
-        .collect::<Vec<_>>();
-    Ok(Json(json!({
-        "profiles": profiles,
-        "load_error": roster.load_error().map(str::to_string),
-    })))
+            .collect::<Vec<_>>();
+        Ok(Json(
+            json!({"profiles": profiles, "load_error": roster.load_error()}),
+        ))
+    })
+    .await
+}
+
+async fn get_fleet_profile_document(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<FleetProfileDocument>, ApiError> {
+    if id.len() > 160 {
+        return Err(ApiError::bad_request("Profile identity is too long"));
+    }
+    read_fleet_profiles(state, move |state, roster| {
+        use codewhale_engine::fleet::profile::{
+            FleetProfileScope, MAX_PROFILE_DOCUMENT_BYTES, agent_profile_dir_for_scope,
+            parse_agent_profile_text, read_agent_profile_source_document,
+        };
+        use codewhale_engine::fleet::roster::ProfileOrigin;
+        if let Some(error) = roster.load_error() {
+            return Err(ApiError::conflict(error));
+        }
+        let member = roster.get(&id).filter(|member| member.id == id)
+            .ok_or_else(|| ApiError::not_found("Profile is not in the effective roster"))?;
+        let (kind, path, text, reason) = if matches!(member.origin, ProfileOrigin::Workspace | ProfileOrigin::Personal) {
+            let scope = if member.origin == ProfileOrigin::Workspace { FleetProfileScope::Project } else { FleetProfileScope::Personal };
+            let text = read_agent_profile_source_document(scope, &state.workspace, &member.source)
+                .map_err(|error| ApiError::conflict(error.to_string()))?
+                .ok_or_else(|| ApiError::conflict("Profile source disappeared; read the roster again"))?;
+            let path = member.source.to_str().ok_or_else(|| ApiError::conflict("Profile source path is not UTF-8"))?.to_owned();
+            let directory = agent_profile_dir_for_scope(scope, &state.workspace)
+                .map_err(|error| ApiError::conflict(error.to_string()))?;
+            let kind = if member.source.parent() == Some(directory.as_path()) {
+                let parsed = parse_agent_profile_text(&member.source, &text)
+                    .map_err(|error| ApiError::conflict(error.to_string()))?;
+                if parsed.id != id {
+                    return Err(ApiError::conflict("Profile identity changed; read the roster again"));
+                }
+                FleetProfileDocumentKind::Profile
+            } else {
+                let fleet = codewhale_engine::fleet::store::FleetFile::parse(&text)
+                    .map_err(|error| ApiError::conflict(error.to_string()))?;
+                if fleet.member(&id).is_none() {
+                    return Err(ApiError::conflict("Fleet member changed; read the roster again"));
+                }
+                FleetProfileDocumentKind::Fleet
+            };
+            (kind, Some(path), text, "Edit this profile or Fleet in the terminal.".to_owned())
+        } else {
+            if let Some(authority) = &member.plugin_authority {
+                codewhale_plugins::registry::verify_plugin_authority(authority)
+                    .map_err(ApiError::conflict)?;
+            }
+            if member.profile.role.instructions.as_ref().map_or(0, String::len)
+                .saturating_add(member.profile.role.description.as_ref().map_or(0, String::len))
+                > MAX_PROFILE_DOCUMENT_BYTES
+            {
+                return Err(ApiError::payload_too_large("Effective profile exceeds the one MiB reading limit"));
+            }
+            let text = toml::to_string_pretty(&member.profile)
+                .map_err(|_| ApiError::internal("Effective profile could not be rendered"))?;
+            let reason = match member.origin {
+                ProfileOrigin::BuiltIn => "Effective built-in profile; save a personal profile in the terminal to customize this role.",
+                ProfileOrigin::Config => "Effective configuration profile; edit its defining configuration.",
+                ProfileOrigin::Plugin => "Effective plugin profile; edit its reviewed plugin source.",
+                ProfileOrigin::ClaudeCode => "Effective Codewhale profile from Claude Code; edit its original agent file.",
+                _ => return Err(ApiError::internal("Profile origin changed while reading")),
+            };
+            (FleetProfileDocumentKind::Profile, None, text, reason.to_owned())
+        };
+        if text.len() > MAX_PROFILE_DOCUMENT_BYTES {
+            return Err(ApiError::payload_too_large("Profile document exceeds the one MiB editing limit"));
+        }
+        let origin = member.origin.to_string();
+        let revision_bytes = serde_json::to_vec(&(&id, kind, &origin, &path, &text))
+            .map_err(|_| ApiError::internal("Profile revision could not be rendered"))?;
+        let revision = format!("profile-document-v1-{}", codewhale_runtime::hashing::sha256_hex(revision_bytes));
+        Ok(Json(FleetProfileDocument { id, kind, origin, path, text, revision,
+            writable: false, refusal_reason: Some(reason) }))
+    }).await
 }
 
 async fn create_fleet_run(

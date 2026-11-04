@@ -3206,6 +3206,23 @@ allowed. Added in v0.8.10 (#561), tightened in v0.9.1 (#4454).
 
 ## Managed Fleet Runtime and SDK helpers
 
+`GET /v1/fleet/profiles` reads the captured workspace's effective roster,
+including its selected Fleet and admitted plugins, without opening a run ledger.
+`GET /v1/fleet/profiles/{id}/document` addresses an exact effective member ID.
+Its shared `FleetProfileDocument` contract returns `id`, `kind` (`profile` or
+`fleet`), `origin`, nullable `path`, `text`, opaque source-bound `revision`,
+`writable` and nullable `refusal_reason`. Personal/project profile documents and
+selected Fleet files return exact UTF-8 bytes through a bounded, pinned reader
+(one MiB maximum). Changed identity, missing source or linked paths are refused.
+Built-in, config-backed and foreign-managed members instead return an explicitly
+read-only effective profile projection with no file path; sentinel paths and
+native preset entry identifiers are never opened as documents.
+
+All documents currently advertise `writable: false`. No document PUT is exposed;
+use the terminal or the defining source to edit. A revision is not write
+permission or a live-roster adoption receipt. Watch clients may read these
+resources under the existing workspace and authentication boundaries.
+
 The Runtime SDK lives in `npm/runtime-sdk` and is exposed as
 the `@codewhale/runtime-sdk` workspace package. It is deliberately thin: every
 helper calls the local Rust Runtime API and therefore cannot bypass Codewhale's

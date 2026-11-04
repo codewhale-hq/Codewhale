@@ -2565,6 +2565,20 @@ Fleet 流（`/v1/fleet/runs/{run_id}/events`）保留自己的结束帧，
 
 ## 托管 Fleet 运行时与 SDK 助手
 
+`GET /v1/fleet/profiles` 从已捕获的工作区读取实际生效的成员列表，包含选中的
+Fleet 和已获准的插件，不会为此打开运行账本。
+`GET /v1/fleet/profiles/{id}/document` 使用精确的生效成员 ID。共享的
+`FleetProfileDocument` 契约返回 `id`、`kind`（`profile` 或 `fleet`）、`origin`、
+可空的 `path`、`text`、绑定源身份的不透明 `revision`、`writable` 和可空的
+`refusal_reason`。个人/项目配置及选中的 Fleet 文件通过固定目录句柄读取原始
+UTF-8 字节，上限为一 MiB。身份改变、源文件消失或链接路径会被拒绝。
+内置、配置文件和外部管理的成员只返回明确只读的生效配置视图，不提供文件路径；
+不会把占位路径或原生预设入口标识当作配置文件打开。
+
+所有文档目前均返回 `writable: false`，尚未提供文档 PUT。请在终端或定义该成员的
+源中编辑。修订号不代表写入权限，也不代表运行中的成员列表已采用更改。只读客户端
+可在现有工作区和身份验证边界内读取这些资源。
+
 运行时 SDK 位于 `npm/runtime-sdk`，并作为
 `@codewhale/runtime-sdk` 工作区包对外暴露。它有意保持轻薄：每个
 助手都只是调用本地 Rust 运行时 API，因此无法绕过 Codewhale 的

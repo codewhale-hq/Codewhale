@@ -2856,6 +2856,34 @@ async fn fleet_status_runtime_api_exposes_state_and_actions() -> Result<()> {
             .all(|member| member["origin"].is_string()),
         "every profile must carry its roster origin"
     );
+    let document: serde_json::Value = client
+        .get(format!("http://{addr}/v1/fleet/profiles/manager/document"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(document["id"], "manager");
+    assert_eq!(document["kind"], "profile");
+    assert_eq!(document["writable"], false);
+    assert!(document["path"].is_null());
+    assert!(document["text"].as_str().unwrap().contains("[role]"));
+    assert!(
+        document["revision"]
+            .as_str()
+            .unwrap()
+            .starts_with("profile-document-v1-")
+    );
+    assert_eq!(
+        client
+            .get(format!(
+                "http://{addr}/v1/fleet/profiles/not-a-member/document"
+            ))
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
 
     let worker: serde_json::Value = client
         .get(format!("http://{addr}/v1/fleet/workers/{worker_id}"))

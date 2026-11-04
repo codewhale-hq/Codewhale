@@ -1,5 +1,5 @@
 import type { RuntimeEventEnvelope, DynamicToolCallParams, DynamicToolCallResult } from "./generated/runtime.js";
-export type { ThreadLoadedListParams, ThreadLoadedListResponse, ThreadSetNameParams, ThreadSetNameResponse, RuntimeImageInput, RuntimeEventEnvelope, RuntimeCapabilities, RuntimeExperimentalCapabilities, DynamicToolSpec, DynamicToolSpecOutput, DynamicToolItemStatus, DynamicToolCallParams, DynamicToolCallResult, DynamicToolCallContent, TurnEnvironmentParams } from "./generated/runtime.js";
+export type { FleetProfileDocument, FleetProfileDocumentKind, ThreadLoadedListParams, ThreadLoadedListResponse, ThreadSetNameParams, ThreadSetNameResponse, RuntimeImageInput, RuntimeEventEnvelope, RuntimeCapabilities, RuntimeExperimentalCapabilities, DynamicToolSpec, DynamicToolSpecOutput, DynamicToolItemStatus, DynamicToolCallParams, DynamicToolCallResult, DynamicToolCallContent, TurnEnvironmentParams } from "./generated/runtime.js";
 
 export type FleetRunId = string;
 export type FleetRunStatus =

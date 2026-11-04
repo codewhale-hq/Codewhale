@@ -487,6 +487,59 @@
       ],
       "description": "Fixed capability map advertised by `GET /v1/runtime/info`.\n\nAll fields are required on serialization so clients can rely on the shape."
     },
+    "FleetProfileDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/FleetProfileDocumentKind"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "writable": {
+          "type": "boolean"
+        },
+        "refusal_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "origin",
+        "path",
+        "text",
+        "revision",
+        "writable",
+        "refusal_reason"
+      ]
+    },
+    "FleetProfileDocumentKind": {
+      "type": "string",
+      "enum": [
+        "profile",
+        "fleet"
+      ]
+    },
     "RuntimeExperimentalCapabilities": {
       "type": "object",
       "properties": {

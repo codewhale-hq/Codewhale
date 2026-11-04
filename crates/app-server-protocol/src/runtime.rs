@@ -9,6 +9,28 @@ pub mod watch_event;
 pub const RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION: u32 = 1;
 pub const RUNTIME_API_VERSION: &str = "1.0";
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FleetProfileDocumentKind {
+    Profile,
+    Fleet,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FleetProfileDocument {
+    pub id: String,
+    pub kind: FleetProfileDocumentKind,
+    pub origin: String,
+    pub path: Option<String>,
+    pub text: String,
+    pub revision: String,
+    pub writable: bool,
+    pub refusal_reason: Option<String>,
+}
+
 /// Maximum JSON input (including base64 expansion) for an image turn.
 pub const MAX_RUNTIME_IMAGE_BODY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_RUNTIME_IMAGES: usize = 10;
