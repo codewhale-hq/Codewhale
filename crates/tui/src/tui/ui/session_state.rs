@@ -961,6 +961,7 @@ pub(crate) fn restore_queued_or_draft_message(
     }
     match recovery {
         DispatchRecovery::Draft => {
+            app.stash_typed_draft_before_restore();
             app.input.clone_from(&message.display);
             app.cursor_position = app.input.chars().count();
             app.active_skill = message.skill_instruction.clone();
@@ -1272,6 +1273,7 @@ pub(crate) fn restore_failed_immediate_submit(
         error = %error,
         "immediate user message dispatch failed; restored composer"
     );
+    app.stash_typed_draft_before_restore();
     app.input = message.display;
     app.cursor_position = app.input.chars().count();
     app.active_skill = message.skill_instruction;
