@@ -676,6 +676,7 @@ fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
         record,
         route,
         usage,
+        source_id,
         ..
     } = message
     {
@@ -695,8 +696,14 @@ fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
                     .saturating_sub(previous)
                     .saturating_add(total),
             );
-        } else {
+        } else if source_id.is_empty() {
             meta.received_tokens = Some(meta.received_tokens.unwrap_or(0).saturating_add(total));
+        } else {
+            let key = codewhale_engine::cost_status::usage_source_fingerprint(source_id);
+            if meta.received_usage_sources.insert(key, total).is_none() {
+                meta.received_tokens =
+                    Some(meta.received_tokens.unwrap_or(0).saturating_add(total));
+            }
         }
         meta.resolved_provider = Some(route.provider.as_str().to_string());
         meta.resolved_model = Some(bound_agent_activity_text(
