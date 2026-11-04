@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse, sanitizeFilename } from "../src/lib.mjs";
+import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse, sanitizeFilename, formatPublicError } from "../src/lib.mjs";
 
 // ─── ThreadStore ─────────────────────────────────────────────────
 
@@ -176,4 +176,21 @@ test("sanitizeFilename strips path components and keeps the name", () => {
   assert.equal(sanitizeFilename("", "fallback.bin"), "fallback.bin");
   const long = "a".repeat(500) + ".mp4";
   assert.ok(sanitizeFilename(long).length <= 120);
+});
+
+// ─── formatPublicError ───────────────────────────────────────────
+
+test("formatPublicError renders WeCom error objects", () => {
+  assert.equal(
+    formatPublicError({ errcode: 846608, errmsg: "stream message update expired (>10 minutes)" }),
+    "errcode=846608: stream message update expired (>10 minutes)"
+  );
+  assert.equal(formatPublicError({ errcode: 40011 }), "errcode=40011:");
+});
+
+test("formatPublicError keeps messages and plain strings", () => {
+  assert.equal(formatPublicError(new Error("boom")), "boom");
+  assert.equal(formatPublicError("boom"), "boom");
+  assert.equal(formatPublicError(undefined), "unknown error");
+  assert.match(formatPublicError({ no: "msg" }), /no.*msg|unknown/);
 });
