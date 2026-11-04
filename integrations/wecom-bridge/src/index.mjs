@@ -1,4 +1,6 @@
 import { WSClient, generateReqId } from "@wecom/aibot-node-sdk";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import {
   activeTurnBlock,
@@ -12,6 +14,7 @@ import {
   parseBool,
   parseCommand,
   parseList,
+  sanitizeFilename,
   parseApprovalDecisionArgs,
   isApprovalResponse,
   isDenyResponse,
@@ -45,6 +48,7 @@ const config = {
   runtimeUrl: (process.env.CODEWHALE_RUNTIME_URL || "http://127.0.0.1:7878").replace(/\/+$/, ""),
   runtimeToken: requiredEnv("CODEWHALE_RUNTIME_TOKEN"),
   workspace: process.env.CODEWHALE_WORKSPACE || process.cwd(),
+  mediaDir: process.env.WECOM_MEDIA_DIR || "",
   model: process.env.CODEWHALE_MODEL || "auto",
   mode: process.env.CODEWHALE_MODE || "agent",
   allowShell: parseBool(process.env.CODEWHALE_ALLOW_SHELL, true),
@@ -104,6 +108,45 @@ function replyText(frame, text) {
   );
 }
 
+function isMediaMessage(msgtype) {
+  return msgtype === "video" || msgtype === "file" || msgtype === "image";
+}
+
+function mediaStorageDir() {
+  return config.mediaDir || path.join(config.workspace, "media");
+}
+
+async function handleMediaMessage(frame, body, identity) {
+  const kind = body.msgtype;
+  const content = body.video || body.file || body.image || {};
+  if (!content.url) {
+    await replyText(frame, "The media message carried no downloadable URL.");
+    return;
+  }
+  const zh = kind === "video" ? "video" : kind === "image" ? "image" : "file";
+  // Download URLs stay valid for ~5 minutes; tell the user before starting.
+  await replyText(frame, `Received ${zh}, downloading (the link is valid for ~5 minutes)…`);
+  try {
+    const { buffer, filename } = await client.downloadFile(content.url, content.aeskey);
+    const dir = mediaStorageDir();
+    mkdirSync(dir, { recursive: true });
+    const fallbackExt = kind === "image" ? "jpg" : kind === "video" ? "mp4" : "bin";
+    const name = sanitizeFilename(filename, `upload-${Date.now()}.${fallbackExt}`);
+    const target = path.join(dir, name);
+    writeFileSync(target, buffer);
+    await replyText(
+      frame,
+      `Saved ${name} (${(buffer.length / 1048576).toFixed(1)} MB) to ${target}\n` +
+        `Send follow-up instructions in chat to use it.`
+    );
+  } catch (error) {
+    await replyText(
+      frame,
+      `Download failed (links expire after ~5 minutes; large files should be re-sent promptly): ${error?.errmsg || error?.message || error}`
+    );
+  }
+}
+
 async function reportHandlerError(frame, context, error) {
   console.error(context, error);
   try {
@@ -124,21 +167,31 @@ async function handleIncomingMessage(frame) {
   console.log(`Incoming message: chatId=${identity.chatId} userId=${identity.userId} chatType=${identity.chatType}`);
   if (!identity.chatId || !identity.messageId) return;
 
-  if (body.msgtype && body.msgtype !== "text") {
-    await replyText(frame, "目前仅支持文本消息。");
+  if (body.msgtype && body.msgtype !== "text" && body.msgtype !== "voice" &&
+      !isMediaMessage(body.msgtype)) {
+    await replyText(frame, `Only text, voice, image, video and file messages are supported (got ${body.msgtype}).`);
     return;
   }
 
-  const textContent = body.text?.content || "";
-  const scoped = stripGroupPrefix(textContent, {
-    chatType: identity.chatType,
-    requirePrefix: identity.chatType === "group",
-    prefix: "/ds"
-  });
+  const textContent = body.msgtype === "voice" ? (body.voice?.content || "") : (body.text?.content || "");
+  // Media frames carry no text and must not go through the group-prefix
+  // filter, which rejects empty text and would drop them silently.
+  const scoped = isMediaMessage(body.msgtype)
+    ? { accepted: true, text: "" }
+    : stripGroupPrefix(textContent, {
+        chatType: identity.chatType,
+        requirePrefix: identity.chatType === "group",
+        prefix: "/ds"
+      });
   if (!scoped.accepted) return;
 
   if (!isAllowed(identity, config.allowlist, config.allowUnlisted)) {
     await replyText(frame, pairingRefusalText(identity));
+    return;
+  }
+
+  if (isMediaMessage(body.msgtype)) {
+    await handleMediaMessage(frame, body, identity);
     return;
   }
 
