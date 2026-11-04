@@ -115,6 +115,58 @@ pub struct ThreadLoadedListResponse {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadListResponse {
+    pub data: Vec<ThreadListItem>,
+    pub next_cursor: Option<String>,
+    pub backwards_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadListItem {
+    pub id: String,
+    pub session_id: String,
+    pub preview: String,
+    pub ephemeral: bool,
+    pub model_provider: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub status: ThreadListStatus,
+    pub cwd: String,
+    pub cli_version: String,
+    pub source: ThreadListSource,
+    pub project_id: Option<String>,
+    pub turns: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ThreadListStatus {
+    NotLoaded,
+    Idle,
+    SystemError,
+    Active {
+        #[serde(rename = "activeFlags")]
+        active_flags: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum ThreadListSource {
+    Cli,
+    AppServer,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]

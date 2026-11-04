@@ -379,6 +379,53 @@ pub(super) async fn loaded(state: &AppState) -> Result<ThreadResponse> {
     Ok(result)
 }
 
+pub(super) fn list_wire(
+    response: ThreadResponse,
+) -> codewhale_app_server_protocol::rpc::ThreadListResponse {
+    use codewhale_app_server_protocol::rpc::{
+        ThreadListItem, ThreadListResponse, ThreadListSource, ThreadListStatus,
+    };
+    ThreadListResponse {
+        data: response
+            .threads
+            .into_iter()
+            .map(|thread| ThreadListItem {
+                session_id: thread.id.clone(),
+                id: thread.id,
+                preview: thread.preview,
+                ephemeral: thread.ephemeral,
+                model_provider: thread.model_provider,
+                created_at: thread.created_at,
+                updated_at: thread.updated_at,
+                status: match thread.status {
+                    ThreadStatus::Running => ThreadListStatus::Active {
+                        active_flags: Vec::new(),
+                    },
+                    ThreadStatus::Idle | ThreadStatus::Completed | ThreadStatus::Paused => {
+                        ThreadListStatus::Idle
+                    }
+                    ThreadStatus::Archived => ThreadListStatus::NotLoaded,
+                    ThreadStatus::Failed => ThreadListStatus::SystemError,
+                },
+                cwd: thread.cwd.to_string_lossy().into_owned(),
+                cli_version: thread.cli_version,
+                source: match thread.source {
+                    SessionSource::Interactive => ThreadListSource::Cli,
+                    SessionSource::Api => ThreadListSource::AppServer,
+                    SessionSource::Resume | SessionSource::Fork | SessionSource::Unknown => {
+                        ThreadListSource::Unknown
+                    }
+                },
+                project_id: None,
+                turns: Vec::new(),
+                name: thread.name,
+            })
+            .collect(),
+        next_cursor: None,
+        backwards_cursor: None,
+    }
+}
+
 async fn list(
     state: &AppState,
     params: codewhale_protocol::ThreadListParams,

@@ -1002,7 +1002,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             let request = ThreadRequest::List(parse_params(params_or_object(params))?);
             let response = handle_thread_request(state, request).await?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
+                result: serde_json::to_value(thread_control::list_wire(response))
                     .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }
