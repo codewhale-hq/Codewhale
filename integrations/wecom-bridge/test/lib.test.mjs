@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse } from "../src/lib.mjs";
+import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse, createStreamReply } from "../src/lib.mjs";
 
 // ─── ThreadStore ─────────────────────────────────────────────────
 
@@ -163,4 +163,38 @@ test("WeCom accepted turn origin survives reload and cannot transfer to a later 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ─── createStreamReply ───────────────────────────────────────────
+
+test("createStreamReply rotates the stream after rotateMs", async () => {
+  const calls = [];
+  const client = { replyStream: async (frame, id, text, finish) => calls.push({ id, text, finish }) };
+  let clock = 1_000_000;
+  const ids = ["s1", "s2", "s3"];
+  const streamer = createStreamReply(client, {}, { rotateMs: 60_000, now: () => clock, genId: () => ids.shift() });
+  await streamer.update("part-1", false);
+  clock += 61_000; // past the rotation window
+  await streamer.update("part-2", false);
+  const finished = calls.filter((c) => c.finish);
+  assert.equal(calls[0].id, "s1");
+  assert.equal(calls.length, 3); // finalize s1 + update s2
+  assert.ok(finished[0].text.includes("part-2")); // finalize carries the accumulated text
+  assert.equal(calls[2].id, "s2");
+});
+
+test("createStreamReply reopens once when an update is rejected", async () => {
+  let rejectFirst = true;
+  const calls = [];
+  const client = {
+    replyStream: async (frame, id, text, finish) => {
+      if (rejectFirst) { rejectFirst = false; throw { errcode: 846608, errmsg: "expired" }; }
+      calls.push({ id, text, finish });
+    }
+  };
+  const ids = ["s1", "s2"];
+  const streamer = createStreamReply(client, {}, { genId: () => ids.shift() });
+  await streamer.update("hello", false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].id, "s2");
 });

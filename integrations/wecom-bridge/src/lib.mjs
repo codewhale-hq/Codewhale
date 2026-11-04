@@ -79,6 +79,39 @@ export function stripGroupPrefix(text, { chatType, requirePrefix, prefix }) {
   });
 }
 
+/**
+ * Wrap client.replyStream with a WeCom stream lifetime policy. WeCom stream
+ * messages stop accepting updates after ~10 minutes (errcode 846608), so a
+ * long-running turn outlives its stream and every later update fails. This
+ * helper finalizes the current stream and opens a fresh one when it nears
+ * the cap, and reopens once on a rejected update.
+ */
+export function createStreamReply(client, frame, { rotateMs = 8 * 60_000, now = Date.now, genId } = {}) {
+  let streamId = genId ? genId() : `stream-${Math.random().toString(36).slice(2)}`;
+  let openedAt = now();
+  async function send(id, text, finish) {
+    await client.replyStream(frame, id, text, finish);
+  }
+  return {
+    get streamId() { return streamId; },
+    async update(text, finish = false) {
+      if (!finish && now() - openedAt > rotateMs) {
+        try { await send(streamId, `${text}\n…(continued)`, true); } catch { /* expired already */ }
+        streamId = genId ? genId() : `stream-${Math.random().toString(36).slice(2)}`;
+        openedAt = now();
+      }
+      try {
+        await send(streamId, text, finish);
+      } catch {
+        streamId = genId ? genId() : `stream-${Math.random().toString(36).slice(2)}`;
+        openedAt = now();
+        try { await send(streamId, text, finish); }
+        catch (e) { console.error("stream update failed twice", e?.errmsg || e?.message || e); }
+      }
+    }
+  };
+}
+
 /** Check if text is a natural-language approval response (Chinese or English). */
 export function isApprovalResponse(text) {
   const t = String(text || "").trim().toLowerCase();
