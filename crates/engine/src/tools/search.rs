@@ -669,6 +669,8 @@ fn should_include(path: &str, patterns: &[String]) -> bool {
     false
 }
 
+const MAX_BRACE_COMBINATIONS: usize = 64;
+
 /// Simple glob pattern matching
 /// Supports: * (any chars), ** (any path), ? (single char), {a,b} (either)
 pub fn matches_glob(path: &str, pattern: &str) -> bool {
@@ -716,6 +718,10 @@ pub fn matches_glob(path: &str, pattern: &str) -> bool {
                 return false;
             }
             if !suffix.is_empty() {
+                if suffix.contains(['*', '?']) {
+                    let filename = path.rsplit('/').next().unwrap_or(path);
+                    return matches_simple_glob(filename, suffix);
+                }
                 return path.ends_with(suffix)
                     || path
                         .split('/')
@@ -743,6 +749,19 @@ pub fn matches_glob(path: &str, pattern: &str) -> bool {
 
 fn expand_braces(pattern: &str) -> Option<Vec<String>> {
     let open = pattern.find('{')?;
+    let combinations = pattern.split('{').skip(1).fold(1_usize, |total, group| {
+        let alternatives = group
+            .split('}')
+            .next()
+            .unwrap_or(group)
+            .matches(',')
+            .count()
+            + 1;
+        total.saturating_mul(alternatives)
+    });
+    if combinations > MAX_BRACE_COMBINATIONS {
+        return None;
+    }
     let mut depth = 0;
     let mut bounds = vec![open];
     let mut close = None;
