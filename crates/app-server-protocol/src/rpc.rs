@@ -167,6 +167,48 @@ pub enum ThreadListSource {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadStartParams {
+    pub operation_key: Option<String>,
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub cwd: Option<String>,
+    pub ephemeral: Option<bool>,
+    pub approval_policy: Option<Value>,
+    pub approvals_reviewer: Option<Value>,
+    pub sandbox: Option<Value>,
+    pub config: Option<Value>,
+    pub base_instructions: Option<String>,
+    pub developer_instructions: Option<String>,
+    pub service_name: Option<String>,
+    pub service_tier: Option<String>,
+    pub session_start_source: Option<Value>,
+    pub personality: Option<Value>,
+    pub thread_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadStartResponse {
+    pub thread: ThreadListItem,
+    pub model: String,
+    pub model_provider: String,
+    pub cwd: String,
+    pub approval_policy: String,
+    pub approvals_reviewer: String,
+    pub sandbox: ThreadSandboxPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ThreadSandboxPolicy {
+    ReadOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -967,11 +967,15 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             }
         }
         "thread/start" => {
-            let request = ThreadRequest::Start(parse_params(params_or_object(params))?);
+            let params: codewhale_app_server_protocol::rpc::ThreadStartParams =
+                parse_params(params_or_object(params))?;
+            let request = ThreadRequest::Start(thread_control::start_params(params)?);
             let response = handle_thread_request(state, request).await?;
             record_stdio_thread_hint(state, &response).await;
+            let wire = thread_control::start_wire(response)
+                .map_err(|err| DispatchError::internal(format!("{err:#}")))?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
+                result: serde_json::to_value(wire)
                     .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }

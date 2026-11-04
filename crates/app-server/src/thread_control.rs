@@ -521,6 +521,77 @@ fn wire_turns(data: &Value) -> Result<Vec<codewhale_app_server_protocol::rpc::Th
         .collect()
 }
 
+pub(super) fn start_params(
+    params: codewhale_app_server_protocol::rpc::ThreadStartParams,
+) -> std::result::Result<codewhale_protocol::ThreadStartParams, DispatchError> {
+    let refused: Vec<&str> = [
+        ("ephemeral", params.ephemeral == Some(true)),
+        ("approvalPolicy", params.approval_policy.is_some()),
+        ("approvalsReviewer", params.approvals_reviewer.is_some()),
+        ("sandbox", params.sandbox.is_some()),
+        ("config", params.config.is_some()),
+        ("baseInstructions", params.base_instructions.is_some()),
+        (
+            "developerInstructions",
+            params.developer_instructions.is_some(),
+        ),
+        ("serviceName", params.service_name.is_some()),
+        ("serviceTier", params.service_tier.is_some()),
+        ("sessionStartSource", params.session_start_source.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(name, set)| set.then_some(name))
+    .collect();
+    if !refused.is_empty() {
+        return Err(DispatchError {
+            wire: RpcErrorDetails {
+                code: -32602,
+                message: format!(
+                    "thread/start cannot honor {}: threads are durable and tool-free with a fixed read-only sandbox, and these settings are not applied",
+                    refused.join(", ")
+                ),
+                data: Some(json!({
+                    "error": "unsupported_thread_start_parameter",
+                    "parameters": refused,
+                })),
+            },
+            transport_error: None,
+        });
+    }
+    Ok(codewhale_protocol::ThreadStartParams {
+        operation_key: Some(
+            params
+                .operation_key
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        ),
+        model: params.model,
+        model_provider: params.model_provider,
+        cwd: params.cwd.map(PathBuf::from),
+        persist_extended_history: false,
+    })
+}
+
+pub(super) fn start_wire(
+    response: ThreadResponse,
+) -> Result<codewhale_app_server_protocol::rpc::ThreadStartResponse> {
+    let thread = wire_thread(
+        response
+            .thread
+            .context("canonical start returned no thread")?,
+    );
+    Ok(codewhale_app_server_protocol::rpc::ThreadStartResponse {
+        model: response
+            .model
+            .context("canonical start returned no model")?,
+        model_provider: thread.model_provider.clone(),
+        cwd: thread.cwd.clone(),
+        approval_policy: "never".to_owned(),
+        approvals_reviewer: "user".to_owned(),
+        sandbox: codewhale_app_server_protocol::rpc::ThreadSandboxPolicy::ReadOnly,
+        thread,
+    })
+}
+
 pub(super) fn read_wire(
     response: ThreadResponse,
     include_turns: bool,

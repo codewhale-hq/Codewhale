@@ -1785,11 +1785,11 @@ async fn stdio_thread_goal_methods_refuse_execution_and_read_existing_goal() {
     let started = dispatch_stdio_request(
         &state,
         "thread/start",
-        json!({"operation_key":"goal-start"}),
+        json!({"operationKey":"goal-start"}),
     )
     .await
     .unwrap();
-    let id = started.result["thread_id"].as_str().unwrap();
+    let id = started.result["thread"]["id"].as_str().unwrap();
     let set = dispatch_stdio_request(
         &state,
         "thread/goal/set",
