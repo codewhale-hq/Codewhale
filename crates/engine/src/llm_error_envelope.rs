@@ -33,13 +33,15 @@ pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> 
 impl From<LlmError> for ErrorEnvelope {
     fn from(value: LlmError) -> Self {
         match value {
-            LlmError::RateLimited { message, .. } => Self::new(
-                ErrorCategory::RateLimit,
-                ErrorSeverity::Warning,
-                true,
-                "llm_rate_limited",
-                message,
-            ),
+            LlmError::RateLimited { message, .. } | LlmError::QuotaWindow { message, .. } => {
+                Self::new(
+                    ErrorCategory::RateLimit,
+                    ErrorSeverity::Warning,
+                    true,
+                    "llm_rate_limited",
+                    message,
+                )
+            }
             // Keep the broad wire-compatible category while making the typed
             // code and recovery contract distinct from an ordinary 429.
             LlmError::QuotaExhausted(error) => Self::new(

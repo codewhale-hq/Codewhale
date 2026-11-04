@@ -85,6 +85,7 @@ fn test_codex_config(server: &MockServer) -> Config {
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let __cw_config_init_0_2 = Some(ProvidersConfig {
             openai_codex: ProviderConfig {

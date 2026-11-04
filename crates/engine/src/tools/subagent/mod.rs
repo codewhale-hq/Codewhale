@@ -22091,7 +22091,7 @@ fn build_allowed_tools(
 /// failures at a glance.
 fn subagent_failure_message(err: &anyhow::Error) -> String {
     let class = match err.downcast_ref::<LlmError>() {
-        Some(LlmError::RateLimited { .. }) => Some("rate_limited"),
+        Some(LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }) => Some("rate_limited"),
         Some(LlmError::QuotaExhausted(_)) => Some("quota_exhausted"),
         Some(LlmError::ServerError { .. }) => Some("server"),
         Some(LlmError::NetworkError(_))

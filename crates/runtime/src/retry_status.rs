@@ -35,7 +35,9 @@ use std::time::{Duration, Instant};
 /// Rate-limit pause deadlines, one per provider scope (see
 /// [`note_rate_limit`]). A 429 from one provider must not stall requests to
 /// another provider, a local runtime, or a sub-agent on a different route.
-type RateLimitPauses = HashMap<String, Instant>;
+// Keep a duration relative to its observation time: even a valid u64-second
+// server minimum may be outside the representable Instant range.
+type RateLimitPauses = HashMap<String, (Instant, Duration)>;
 
 /// One in-flight retry attempt. `deadline` is the wall-clock time the
 /// next request will fire — the UI subtracts `Instant::now()` from it
@@ -174,13 +176,20 @@ pub fn snapshot() -> RetryState {
 /// pauses requests to another. Expired scopes are dropped here, so the map
 /// holds at most the providers currently rate limited.
 pub fn note_rate_limit(scope: &str, delay: Duration) {
-    let now = Instant::now();
-    let deadline = now + delay;
     with_rate_limit(|pauses| {
-        pauses.retain(|_, existing| *existing > now);
-        let current = pauses.entry(scope.to_string()).or_insert(deadline);
-        if *current < deadline {
-            *current = deadline;
+        let now = Instant::now();
+        pauses.retain(|_, (observed, delay)| {
+            !delay
+                .saturating_sub(now.saturating_duration_since(*observed))
+                .is_zero()
+        });
+        let current = pauses.entry(scope.to_string()).or_insert((now, delay));
+        if current
+            .1
+            .saturating_sub(now.saturating_duration_since(current.0))
+            < delay
+        {
+            *current = (now, delay);
         }
     });
 }
@@ -189,13 +198,15 @@ pub fn note_rate_limit(scope: &str, delay: Duration) {
 #[must_use]
 pub fn rate_limit_remaining(scope: &str) -> Option<Duration> {
     let now = Instant::now();
-    with_rate_limit(|pauses| match pauses.get(scope).copied() {
-        Some(deadline) if deadline > now => Some(deadline.duration_since(now)),
-        Some(_) => {
+    with_rate_limit(|pauses| {
+        let (observed, delay) = pauses.get(scope).copied()?;
+        let remaining = delay.saturating_sub(now.saturating_duration_since(observed));
+        if remaining.is_zero() {
             pauses.remove(scope);
             None
+        } else {
+            Some(remaining)
         }
-        None => None,
     })
 }
 
@@ -321,6 +332,15 @@ mod tests {
             rate_limit_remaining("provider-a").is_some(),
             "provider rate limit pause must not be cleared by an unrelated success"
         );
+        clear_rate_limit();
+    }
+
+    #[test]
+    fn rate_limit_preserves_unrepresentable_instant_minimum() {
+        let _g = setup();
+        note_rate_limit("extreme-minimum", Duration::from_secs(u64::MAX));
+        note_rate_limit("extreme-minimum", Duration::from_secs(1));
+        assert!(rate_limit_remaining("extreme-minimum").unwrap().as_secs() > u64::MAX - 2);
         clear_rate_limit();
     }
 

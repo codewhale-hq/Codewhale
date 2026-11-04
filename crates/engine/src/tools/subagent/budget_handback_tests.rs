@@ -119,6 +119,7 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_0_value: codewhale_runtime::config::Config = Default::default();
         __cw_config_init_0_value.retry = __cw_config_init_0_0;

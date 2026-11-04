@@ -3391,6 +3391,7 @@ async fn always_rate_limited_chat_client() -> (
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_3_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
@@ -3453,6 +3454,7 @@ async fn always_invalid_request_chat_client() -> (
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_4_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
@@ -10766,91 +10768,107 @@ async fn subagent_retries_transient_provider_header_timeout_before_succeeding() 
     );
 }
 
-#[tokio::test]
-async fn subagent_rate_limit_exhaustion_interrupts_with_checkpoint() {
-    let tmp = tempdir().expect("tempdir");
-    let manager = Arc::new(RwLock::new(SubAgentManager::new(
-        tmp.path().to_path_buf(),
-        2,
-    )));
-    let agent_id = "agent_rate_limited_checkpoint".to_string();
-    let (task_input_tx, task_input_rx) = mpsc::unbounded_channel();
-    let agent = SubAgent::new(
-        agent_id.clone(),
-        FleetRole::Worker,
-        "Inspect rate-limit recovery".to_string(),
-        make_assignment(),
-        "deepseek-v4-flash".to_string(),
-        Some("Blue".to_string()),
-        Some(vec![]),
-        task_input_tx,
-        tmp.path().to_path_buf(),
-        "boot_test".to_string(),
-    );
-    {
-        let mut manager = manager.write().await;
-        manager.agents.insert(agent_id.clone(), agent);
-        manager.register_worker(make_worker_spec(&agent_id, tmp.path().to_path_buf()));
-    }
+#[test]
+fn subagent_rate_limit_exhaustion_interrupts_with_checkpoint() {
+    // This complete Engine fixture uses the actual product worker stack.
+    // Keep the runtime's independent default-small-stack probes unchanged.
+    std::thread::Builder::new()
+        .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let tmp = tempdir().expect("tempdir");
+                    let manager = Arc::new(RwLock::new(SubAgentManager::new(
+                        tmp.path().to_path_buf(),
+                        2,
+                    )));
+                    let agent_id = "agent_rate_limited_checkpoint".to_string();
+                    let (task_input_tx, task_input_rx) = mpsc::unbounded_channel();
+                    let agent = SubAgent::new(
+                        agent_id.clone(),
+                        FleetRole::Worker,
+                        "Inspect rate-limit recovery".to_string(),
+                        make_assignment(),
+                        "deepseek-v4-flash".to_string(),
+                        Some("Blue".to_string()),
+                        Some(vec![]),
+                        task_input_tx,
+                        tmp.path().to_path_buf(),
+                        "boot_test".to_string(),
+                    );
+                    {
+                        let mut manager = manager.write().await;
+                        manager.agents.insert(agent_id.clone(), agent);
+                        manager
+                            .register_worker(make_worker_spec(&agent_id, tmp.path().to_path_buf()));
+                    }
 
-    let (client, calls, fixture_config) = always_rate_limited_chat_client().await;
-    let mut runtime = stub_runtime().with_step_api_timeout(Duration::from_secs(5));
-    runtime.client = client;
-    runtime.api_config = Some(Arc::new(fixture_config));
-    runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(tmp.path());
+                    let (client, calls, fixture_config) = always_rate_limited_chat_client().await;
+                    let mut runtime = stub_runtime().with_step_api_timeout(Duration::from_secs(5));
+                    runtime.client = client;
+                    runtime.api_config = Some(Arc::new(fixture_config));
+                    runtime.manager = Arc::clone(&manager);
+                    runtime.context = ToolContext::new(tmp.path());
 
-    let task = SubAgentTask {
-        manager_handle: Arc::clone(&manager),
-        runtime,
-        agent_id: agent_id.clone(),
-        agent_type: FleetRole::Worker,
-        prompt: "Inspect rate-limit recovery".to_string(),
-        assignment: make_assignment(),
-        allowed_tools: Some(vec![]),
-        fork_context: false,
-        started_at: Instant::now(),
-        max_steps: 3,
-        wall_time: None,
-        wall_ceiling_ms: None,
-        input_rx: task_input_rx,
-        launch_gate: None,
-        _foreground_child_registration: None,
-    };
+                    let task = SubAgentTask {
+                        manager_handle: Arc::clone(&manager),
+                        runtime,
+                        agent_id: agent_id.clone(),
+                        agent_type: FleetRole::Worker,
+                        prompt: "Inspect rate-limit recovery".to_string(),
+                        assignment: make_assignment(),
+                        allowed_tools: Some(vec![]),
+                        fork_context: false,
+                        started_at: Instant::now(),
+                        max_steps: 3,
+                        wall_time: None,
+                        wall_ceiling_ms: None,
+                        input_rx: task_input_rx,
+                        launch_gate: None,
+                        _foreground_child_registration: None,
+                    };
 
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::spawn(run_subagent_task(task)),
-    )
-    .await
-    .expect("sub-agent task should finish")
-    .expect("sub-agent join should succeed");
+                    tokio::time::timeout(
+                        Duration::from_secs(10),
+                        tokio::spawn(run_subagent_task(task)),
+                    )
+                    .await
+                    .expect("sub-agent task should finish")
+                    .expect("sub-agent join should succeed");
 
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        SUBAGENT_TRANSIENT_PROVIDER_MAX_RETRIES.saturating_add(1) as usize,
-        "rate-limit retries should be owned by the sub-agent retry loop"
-    );
-    let snapshot = {
-        let manager = manager.read().await;
-        manager
-            .get_result(&agent_id)
-            .expect("agent should stay registered")
-    };
-    let SubAgentStatus::Interrupted(reason) = &snapshot.status else {
-        panic!("expected interrupted sub-agent, got {:?}", snapshot.status);
-    };
-    assert!(
-        reason.contains("rate-limited provider response"),
-        "reason should name the provider rate limit: {reason}"
-    );
-    let checkpoint = snapshot
-        .checkpoint
-        .as_ref()
-        .expect("rate-limit interruption should preserve checkpoint");
-    assert_eq!(checkpoint.reason, "api_rate_limited");
-    assert!(checkpoint.continuable);
-    assert!(snapshot.needs_input.is_some());
+                    assert_eq!(
+                        calls.load(Ordering::SeqCst),
+                        SUBAGENT_TRANSIENT_PROVIDER_MAX_RETRIES.saturating_add(1) as usize,
+                        "rate-limit retries should be owned by the sub-agent retry loop"
+                    );
+                    let snapshot = {
+                        let manager = manager.read().await;
+                        manager
+                            .get_result(&agent_id)
+                            .expect("agent should stay registered")
+                    };
+                    let SubAgentStatus::Interrupted(reason) = &snapshot.status else {
+                        panic!("expected interrupted sub-agent, got {:?}", snapshot.status);
+                    };
+                    assert!(
+                        reason.contains("rate-limited provider response"),
+                        "reason should name the provider rate limit: {reason}"
+                    );
+                    let checkpoint = snapshot
+                        .checkpoint
+                        .as_ref()
+                        .expect("rate-limit interruption should preserve checkpoint");
+                    assert_eq!(checkpoint.reason, "api_rate_limited");
+                    assert!(checkpoint.continuable);
+                    assert!(snapshot.needs_input.is_some());
+                })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -17663,6 +17681,7 @@ async fn tool_call_then_invalid_request_chat_client() -> (
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_13_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
@@ -17944,6 +17963,7 @@ async fn denied_call_then_report_chat_client() -> (
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_14_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
@@ -19726,6 +19746,24 @@ async fn spawn_budget_capped_worker_with_pause(
     Arc<AtomicUsize>,
     tokio::task::JoinHandle<()>,
 ) {
+    // A successful billed child response requires a real durable parent
+    // usage origin. Keep the fixture store inside its caller-owned workspace.
+    let sessions =
+        crate::session_manager::SessionManager::new(workspace.join(".budget-usage/sessions"))
+            .expect("budget fixture session store");
+    let session_id = "budget-worker-fixture-session";
+    let session = crate::session_manager::create_saved_session_with_id_and_mode(
+        session_id.to_string(),
+        &[],
+        "deepseek-v4-flash",
+        workspace,
+        0,
+        None,
+        Some("agent"),
+    );
+    sessions
+        .save_session(&session)
+        .expect("budget fixture durable origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         workspace.to_path_buf(),
         2,
@@ -19747,7 +19785,11 @@ async fn spawn_budget_capped_worker_with_pause(
     {
         let mut manager = manager.write().await;
         manager.agents.insert(agent_id.clone(), agent);
-        manager.register_worker(make_worker_spec(&agent_id, workspace.to_path_buf()));
+        manager.register_worker_for_session(
+            make_worker_spec(&agent_id, workspace.to_path_buf()),
+            session_id,
+            None,
+        );
     }
 
     let (client, calls, fixture_config) =
@@ -19756,7 +19798,13 @@ async fn spawn_budget_capped_worker_with_pause(
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(workspace.to_path_buf());
+    runtime.context = ToolContext::new(workspace.to_path_buf()).with_state_namespace(session_id);
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        runtime.accounting_origin.cost_scope,
+        sessions.sessions_dir().to_path_buf(),
+        session_id.to_string(),
+    ));
 
     let task = SubAgentTask {
         manager_handle: Arc::clone(&manager),
@@ -19782,33 +19830,53 @@ async fn spawn_budget_capped_worker_with_pause(
     (manager, agent_id, calls, task_handle)
 }
 
-#[tokio::test]
-async fn worker_stops_with_typed_wall_time_reason() {
-    let tmp = tempdir().expect("tempdir");
-    let (manager, agent_id, _calls, task_handle) =
-        spawn_budget_capped_worker(tmp.path(), 60, 40, 120, Duration::from_millis(1)).await;
+#[test]
+fn worker_stops_with_typed_wall_time_reason() {
+    // Construct and poll this heavy Engine fixture on the real product stack.
+    std::thread::Builder::new()
+        .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let tmp = tempdir().expect("tempdir");
+                    let (manager, agent_id, _calls, task_handle) = spawn_budget_capped_worker(
+                        tmp.path(),
+                        60,
+                        40,
+                        120,
+                        Duration::from_millis(1),
+                    )
+                    .await;
 
-    tokio::time::timeout(Duration::from_secs(5), task_handle)
-        .await
-        .expect("wall-time-capped worker must terminate")
-        .expect("task should finish");
+                    tokio::time::timeout(Duration::from_secs(5), task_handle)
+                        .await
+                        .expect("wall-time-capped worker must terminate")
+                        .expect("task should finish");
 
-    let result = manager
-        .read()
-        .await
-        .get_result(&agent_id)
-        .expect("agent registered");
-    assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
-    let reason = &result
-        .checkpoint
-        .as_ref()
-        .expect("wall-budget checkpoint")
-        .reason;
-    assert_eq!(reason, "child wall-time work budget exhausted");
-    assert_eq!(
-        subagent_failure_class(&result.status, reason),
-        "wall_time_budget"
-    );
+                    let result = manager
+                        .read()
+                        .await
+                        .get_result(&agent_id)
+                        .expect("agent registered");
+                    assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
+                    let reason = &result
+                        .checkpoint
+                        .as_ref()
+                        .expect("wall-budget checkpoint")
+                        .reason;
+                    assert_eq!(reason, "child wall-time work budget exhausted");
+                    assert_eq!(
+                        subagent_failure_class(&result.status, reason),
+                        "wall_time_budget"
+                    );
+                })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 /// Scripted provider for the child-compaction test. Task steps call
@@ -20072,51 +20140,68 @@ impl Drop for ClearRateLimitOnDrop {
     }
 }
 
-#[tokio::test]
+#[test]
 #[allow(clippy::await_holding_lock)]
-async fn worker_is_not_stranded_by_transient_global_rate_limit_window() {
-    // Regression for a parallel-suite flake: `rate_limit_pause_blocks_subagent_spawn`
-    // opens a 30s process-wide rate-limit window and closes it milliseconds
-    // later. A worker whose request reached `send_with_retry` inside that
-    // window used to commit to sleeping the FULL remaining window without
-    // re-checking, blowing the 5s timeouts in the budget tests above. The
-    // pause must be re-polled so an already-cleared window releases
-    // in-flight requests promptly.
-    let _guard = codewhale_runtime::retry_status::test_guard();
-    let _clear = ClearRateLimitOnDrop;
+fn worker_is_not_stranded_by_transient_global_rate_limit_window() {
+    // Construct the complete worker future on the actual product worker stack.
+    std::thread::Builder::new()
+        .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    // Regression for a parallel-suite flake: `rate_limit_pause_blocks_subagent_spawn`
+                    // opens a 30s process-wide rate-limit window and closes it milliseconds
+                    // later. A worker whose request reached `send_with_retry` inside that
+                    // window used to commit to sleeping the FULL remaining window without
+                    // re-checking, blowing the 5s timeouts in the budget tests above. The
+                    // pause must be re-polled so an already-cleared window releases
+                    // in-flight requests promptly.
+                    let _guard = codewhale_runtime::retry_status::test_guard();
+                    let _clear = ClearRateLimitOnDrop;
 
-    let tmp = tempdir().expect("tempdir");
-    let (manager, agent_id, _calls, task_handle) = spawn_budget_capped_worker_with_pause(
-        tmp.path(),
-        60,
-        40,
-        4,
-        Duration::from_secs(30),
-        Some(Duration::from_secs(30)),
-    )
-    .await;
+                    let tmp = tempdir().expect("tempdir");
+                    let (manager, agent_id, _calls, task_handle) =
+                        spawn_budget_capped_worker_with_pause(
+                            tmp.path(),
+                            60,
+                            40,
+                            4,
+                            Duration::from_secs(30),
+                            Some(Duration::from_secs(30)),
+                        )
+                        .await;
 
-    // Simulate the concurrent test finishing: the window closes shortly
-    // after the worker's first request has already observed it.
-    tokio::spawn(async {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        codewhale_runtime::retry_status::clear_rate_limit();
-    });
+                    // Simulate the concurrent test finishing: the window closes shortly
+                    // after the worker's first request has already observed it.
+                    tokio::spawn(async {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        codewhale_runtime::retry_status::clear_rate_limit();
+                    });
 
-    tokio::time::timeout(Duration::from_secs(5), task_handle)
-        .await
-        .expect("worker must not be stranded by an already-cleared rate-limit window")
-        .expect("task should finish");
+                    tokio::time::timeout(Duration::from_secs(5), task_handle)
+                        .await
+                        .expect(
+                            "worker must not be stranded by an already-cleared rate-limit window",
+                        )
+                        .expect("task should finish");
 
-    let result = {
-        let manager = manager.read().await;
-        manager.get_result(&agent_id).expect("agent registered")
-    };
-    // Token budgets are tracked, never enforced (#6298 slice 5), so a
-    // worker that used to stop at its token ceiling now runs to
-    // completion. The regression under test is only that an already-cleared
-    // rate-limit window cannot strand the worker past the 5s timeout.
-    assert_eq!(result.status, SubAgentStatus::Completed);
+                    let result = {
+                        let manager = manager.read().await;
+                        manager.get_result(&agent_id).expect("agent registered")
+                    };
+                    // Token budgets are tracked, never enforced (#6298 slice 5), so a
+                    // worker that used to stop at its token ceiling now runs to
+                    // completion. The regression under test is only that an already-cleared
+                    // rate-limit window cannot strand the worker past the 5s timeout.
+                    assert_eq!(result.status, SubAgentStatus::Completed);
+                })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 /// #4217: terminal worker records must age out of the persisted ledger so
@@ -27541,6 +27626,7 @@ mod readonly_shell_6015 {
                 jitter: None,
                 jitter_factor: None,
                 respect_retry_after: None,
+                rate_limit: Default::default(),
             });
             let mut __cw_config_init_22_value: codewhale_runtime::config::Config =
                 codewhale_runtime::config::Config::default();
@@ -28004,6 +28090,7 @@ async fn late_launch_permit_still_gets_the_full_work_budget() {
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_23_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
