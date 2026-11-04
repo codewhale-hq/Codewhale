@@ -54,6 +54,7 @@ const config = {
   allowUnlisted: parseBool(process.env.WECOM_ALLOW_UNLISTED, false),
   threadMapPath: process.env.WECOM_THREAD_MAP_PATH || "/var/lib/codewhale-wecom-bridge/thread-map.json",
   maxReplyChars: Number(process.env.WECOM_MAX_REPLY_CHARS || 3500),
+  maxReplyBytes: Number(process.env.WECOM_MAX_REPLY_BYTES || 3800),
   turnTimeoutMs: Number(process.env.CODEWHALE_TURN_TIMEOUT_MS || 900000),
   approvalTimeoutMs: Number(process.env.CODEWHALE_APPROVAL_TIMEOUT_MS || 300000)
 };
@@ -97,7 +98,9 @@ if (!config.allowlist.length && !config.allowUnlisted) {
 client.connect();
 
 function replyText(frame, text) {
-  const chunks = splitMessage(text, config.maxReplyChars);
+  // WeCom caps one message at 4096 UTF-8 bytes; without the byte cap a
+  // char-split chunk of CJK text is truncated silently.
+  const chunks = splitMessage(text, config.maxReplyChars, config.maxReplyBytes);
   return chunks.reduce(
     (chain, chunk) => chain.then(() => client.replyStream(frame, generateReqId("stream"), chunk, true)),
     Promise.resolve()
