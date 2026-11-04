@@ -548,19 +548,36 @@ impl ClipboardHandler {
         all(target_os = "linux", not(target_env = "ohos"))
     ))]
     fn ensure_clipboard(&mut self) {
+        if self.clipboard.is_some() {
+            return;
+        }
+        #[cfg(test)]
         if self.clipboard_init_attempted {
             return;
         }
-        self.clipboard_init_attempted = true;
 
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(Clipboard::new().ok());
         });
-        self.clipboard = rx
-            .recv_timeout(std::time::Duration::from_millis(500))
-            .ok()
-            .flatten();
+        // A timeout is not proof that the clipboard is unusable: a capture tool
+        // holding the clipboard open can delay the open past the budget, and
+        // the old code latched that into "never try again" for the rest of the
+        // session, so the next paste silently read nothing. Retry on timeout;
+        // a real failure (the backend said no) is still remembered.
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(Some(clipboard)) => {
+                self.clipboard = Some(clipboard);
+                self.clipboard_init_attempted = true;
+            }
+            Ok(None) => self.clipboard_init_attempted = true,
+            Err(_) => {
+                tracing::warn!(
+                    target: "codewhale_tui::clipboard",
+                    "clipboard open timed out; will retry on the next paste"
+                );
+            }
+        }
     }
 
     /// Read the clipboard and return the parsed content.
@@ -621,10 +638,18 @@ impl ClipboardHandler {
                     return Some(ClipboardContent::Text(text));
                 }
 
-                if let Ok(image) = clipboard.get_image()
-                    && let Ok(pasted) = save_image_as_png(workspace, &image)
-                {
-                    return Some(ClipboardContent::Image(pasted));
+                match clipboard.get_image() {
+                    Ok(image) => match save_image_as_png(workspace, &image) {
+                        Ok(pasted) => return Some(ClipboardContent::Image(pasted)),
+                        Err(error) => tracing::warn!(
+                            target: "codewhale_tui::clipboard",
+                            "read: saving the clipboard image failed: {error:#}"
+                        ),
+                    },
+                    Err(error) => tracing::warn!(
+                        target: "codewhale_tui::clipboard",
+                        "read: clipboard has no readable image: {error}"
+                    ),
                 }
             }
         }
@@ -1056,10 +1081,20 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
         )
         .context("encode clipboard PNG")?;
     let file_name = format!("clipboard-{timestamp}.png");
-    clipboard_image_target(dir, &file_name)?
-        .publish(&encoded)
-        .context("write clipboard PNG")?;
-    let path = dir.join(file_name);
+    let path = dir.join(&file_name);
+    // The confined writer pins every ancestor and refuses a layout it cannot
+    // walk end to end; a relocated state root (`~/.codewhale` behind a user
+    // junction) is one of those, and the failure used to be swallowed by the
+    // caller's `if let Ok(..)`, so a pasted screenshot vanished silently.
+    // This directory is the application's own image cache and the file name is
+    // generated here, so a direct write is the safe fallback rather than a
+    // reason to lose the picture.
+    let confined = clipboard_image_target(dir, &file_name)
+        .and_then(|file| file.publish(&encoded).map_err(anyhow::Error::from));
+    if confined.is_err() {
+        std::fs::create_dir_all(dir).context("create clipboard-images directory")?;
+        std::fs::write(&path, &encoded).context("write clipboard PNG")?;
+    }
 
     let byte_len = encoded.len();
     Ok(PastedImage {

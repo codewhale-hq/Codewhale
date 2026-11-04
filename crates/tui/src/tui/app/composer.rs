@@ -787,6 +787,12 @@ impl App {
     }
 
     pub fn insert_media_attachment(&mut self, kind: &str, path: &Path, description: Option<&str>) {
+        // An attachment is user input: the launch card dissolves on the first
+        // typed character, and a pasted picture has to leave it too, or an
+        // empty composer keeps the card up and the attachment row behind it.
+        if self.launch.visible && !self.launch.return_to_session {
+            self.launch.dissolve_card(self.ambient_clock_ms);
+        }
         let reference = media_attachment_reference(kind, path, description);
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -944,11 +950,24 @@ impl App {
     /// clipboard shortcuts surface the local terminal-paste instruction while
     /// `Event::Paste` remains the data path.
     pub fn paste_from_clipboard(&mut self) -> bool {
+        let now = Instant::now();
+        // A terminal that forwards both edges of Ctrl+V would otherwise paste
+        // twice; Windows Terminal forwards only the release (it consumes the
+        // press for its own paste action), so a short window is the right
+        // de-duplicator rather than assuming one edge.
+        if self
+            .last_clipboard_paste
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(600))
+        {
+            return false;
+        }
+        self.last_clipboard_paste = Some(now);
         if self.clipboard.requires_terminal_paste() {
             self.status_message = Some(self.tr(MessageId::ClipboardSshPasteHint).into_owned());
             return false;
         }
-        if let Some(content) = self.clipboard.read_markdown(self.workspace.as_path()) {
+        let content = self.clipboard.read_markdown(self.workspace.as_path());
+        if let Some(content) = content {
             self.apply_clipboard_content(content);
             return true;
         }

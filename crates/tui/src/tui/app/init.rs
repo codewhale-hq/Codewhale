@@ -832,6 +832,7 @@ impl App {
             dispatch_in_flight: false,
             dispatch_cancel: None,
             last_enter_instant: None,
+            last_clipboard_paste: None,
             provider_wait_incident_logged: false,
             prompt_suggestion: None,
             notification_settings: config.notifications_config(),

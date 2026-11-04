@@ -6062,7 +6062,18 @@ pub(crate) async fn run_event_loop(
             };
 
             if key.kind != KeyEventKind::Press {
-                continue;
+                // Windows Terminal consumes the key-down of any chord it handles
+                // itself (its own paste action, and any global hotkey) and
+                // forwards only the key-up. A Press-only gate therefore makes
+                // Ctrl+V unreachable in the one terminal where that chord is
+                // most used. Paste is a clipboard read, so acting on the release
+                // is safe; `paste_from_clipboard` de-duplicates the terminals
+                // that do send both edges.
+                let paste_release =
+                    key.kind == KeyEventKind::Release && key_shortcuts::is_paste_shortcut(&key);
+                if !paste_release {
+                    continue;
+                }
             }
 
             // Normalize macOS modifiers: map SUPER (Cmd) to CONTROL so that
