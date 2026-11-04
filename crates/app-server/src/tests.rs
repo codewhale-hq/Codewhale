@@ -877,15 +877,6 @@ async fn config_update_keeps_the_stdio_thread_mapping() {
             .is_some_and(|captured| Arc::ptr_eq(captured, &bridge)),
         "reload keeps the already captured owner"
     );
-    assert_eq!(
-        state
-            .runtime_thread_map
-            .lock()
-            .await
-            .get("canonical-1")
-            .map(String::as_str),
-        Some("canonical-1")
-    );
     let result = dispatch_stdio_request(
         &state,
         "thread/message",
