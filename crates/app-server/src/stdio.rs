@@ -1064,10 +1064,17 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
             }
         }
         "thread/read" => {
-            let request = ThreadRequest::Read(parse_params(params_or_object(params))?);
+            let params: codewhale_app_server_protocol::rpc::ThreadReadParams =
+                parse_params(params_or_object(params))?;
+            let include_turns = params.include_turns;
+            let request = ThreadRequest::Read(codewhale_protocol::ThreadReadParams {
+                thread_id: params.thread_id,
+            });
             let response = handle_thread_request(state, request).await?;
+            let wire = thread_control::read_wire(response, include_turns)
+                .map_err(|err| DispatchError::internal(format!("{err:#}")))?;
             StdioDispatchResult {
-                result: serde_json::to_value(response)
+                result: serde_json::to_value(wire)
                     .map_err(|err| DispatchError::internal(err.to_string()))?,
                 should_exit: false,
             }

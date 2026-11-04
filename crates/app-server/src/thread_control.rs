@@ -379,51 +379,163 @@ pub(super) async fn loaded(state: &AppState) -> Result<ThreadResponse> {
     Ok(result)
 }
 
+fn wire_thread(thread: Thread) -> codewhale_app_server_protocol::rpc::ThreadListItem {
+    use codewhale_app_server_protocol::rpc::{ThreadListItem, ThreadListSource, ThreadListStatus};
+    ThreadListItem {
+        session_id: thread.id.clone(),
+        id: thread.id,
+        preview: thread.preview,
+        ephemeral: thread.ephemeral,
+        model_provider: thread.model_provider,
+        created_at: thread.created_at,
+        updated_at: thread.updated_at,
+        status: match thread.status {
+            ThreadStatus::Running => ThreadListStatus::Active {
+                active_flags: Vec::new(),
+            },
+            ThreadStatus::Idle | ThreadStatus::Completed | ThreadStatus::Paused => {
+                ThreadListStatus::Idle
+            }
+            ThreadStatus::Archived => ThreadListStatus::NotLoaded,
+            ThreadStatus::Failed => ThreadListStatus::SystemError,
+        },
+        cwd: thread.cwd.to_string_lossy().into_owned(),
+        cli_version: thread.cli_version,
+        source: match thread.source {
+            SessionSource::Interactive => ThreadListSource::Cli,
+            SessionSource::Api => ThreadListSource::AppServer,
+            SessionSource::Resume | SessionSource::Fork | SessionSource::Unknown => {
+                ThreadListSource::Unknown
+            }
+        },
+        project_id: None,
+        turns: Vec::new(),
+        name: thread.name,
+    }
+}
+
 pub(super) fn list_wire(
     response: ThreadResponse,
 ) -> codewhale_app_server_protocol::rpc::ThreadListResponse {
-    use codewhale_app_server_protocol::rpc::{
-        ThreadListItem, ThreadListResponse, ThreadListSource, ThreadListStatus,
-    };
-    ThreadListResponse {
-        data: response
-            .threads
-            .into_iter()
-            .map(|thread| ThreadListItem {
-                session_id: thread.id.clone(),
-                id: thread.id,
-                preview: thread.preview,
-                ephemeral: thread.ephemeral,
-                model_provider: thread.model_provider,
-                created_at: thread.created_at,
-                updated_at: thread.updated_at,
-                status: match thread.status {
-                    ThreadStatus::Running => ThreadListStatus::Active {
-                        active_flags: Vec::new(),
-                    },
-                    ThreadStatus::Idle | ThreadStatus::Completed | ThreadStatus::Paused => {
-                        ThreadListStatus::Idle
-                    }
-                    ThreadStatus::Archived => ThreadListStatus::NotLoaded,
-                    ThreadStatus::Failed => ThreadListStatus::SystemError,
-                },
-                cwd: thread.cwd.to_string_lossy().into_owned(),
-                cli_version: thread.cli_version,
-                source: match thread.source {
-                    SessionSource::Interactive => ThreadListSource::Cli,
-                    SessionSource::Api => ThreadListSource::AppServer,
-                    SessionSource::Resume | SessionSource::Fork | SessionSource::Unknown => {
-                        ThreadListSource::Unknown
-                    }
-                },
-                project_id: None,
-                turns: Vec::new(),
-                name: thread.name,
-            })
-            .collect(),
+    codewhale_app_server_protocol::rpc::ThreadListResponse {
+        data: response.threads.into_iter().map(wire_thread).collect(),
         next_cursor: None,
         backwards_cursor: None,
     }
+}
+
+#[derive(serde::Deserialize)]
+struct WireTurnRow {
+    id: String,
+    status: String,
+    started_at: Option<chrono::DateTime<chrono::Utc>>,
+    ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    duration_ms: Option<u64>,
+    error: Option<String>,
+    #[serde(default)]
+    item_ids: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct WireItemRow {
+    id: String,
+    turn_id: String,
+    kind: String,
+    summary: String,
+    detail: Option<String>,
+}
+
+fn wire_turns(data: &Value) -> Result<Vec<codewhale_app_server_protocol::rpc::ThreadTurn>> {
+    use codewhale_app_server_protocol::rpc::{
+        ThreadTurn, ThreadTurnError, ThreadTurnItem, ThreadTurnItemsView, ThreadTurnStatus,
+        ThreadUserInput,
+    };
+    let turns: Vec<WireTurnRow> =
+        serde_json::from_value(data.get("turns").cloned().unwrap_or(Value::Null))
+            .context("canonical turn records are malformed")?;
+    let items: Vec<WireItemRow> =
+        serde_json::from_value(data.get("items").cloned().unwrap_or(Value::Null))
+            .context("canonical item records are malformed")?;
+    anyhow::ensure!(
+        turns.len() <= MAX_CANONICAL_HISTORY_ENTRIES
+            && items.len() <= MAX_CANONICAL_HISTORY_ENTRIES,
+        "canonical turn history exceeds bound"
+    );
+    turns
+        .into_iter()
+        .map(|turn| {
+            let mut own: Vec<&WireItemRow> = items
+                .iter()
+                .filter(|item| item.turn_id == turn.id)
+                .collect();
+            own.sort_by_key(|item| {
+                turn.item_ids
+                    .iter()
+                    .position(|id| *id == item.id)
+                    .unwrap_or(usize::MAX)
+            });
+            let mut complete = true;
+            let mut mapped = Vec::with_capacity(own.len());
+            for item in own {
+                let text = item.detail.clone().unwrap_or_else(|| item.summary.clone());
+                let id = item.id.clone();
+                match item.kind.as_str() {
+                    "user_message" => mapped.push(ThreadTurnItem::UserMessage {
+                        id,
+                        content: if text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![ThreadUserInput::Text { text }]
+                        },
+                    }),
+                    "agent_message" => mapped.push(ThreadTurnItem::AgentMessage { id, text }),
+                    "agent_reasoning" => mapped.push(ThreadTurnItem::Reasoning {
+                        id,
+                        content: item.detail.iter().cloned().collect(),
+                    }),
+                    "context_compaction" => mapped.push(ThreadTurnItem::ContextCompaction { id }),
+                    _ => complete = false,
+                }
+            }
+            Ok(ThreadTurn {
+                id: turn.id,
+                items: mapped,
+                items_view: if complete {
+                    ThreadTurnItemsView::Full
+                } else {
+                    ThreadTurnItemsView::Summary
+                },
+                status: match turn.status.as_str() {
+                    "completed" => ThreadTurnStatus::Completed,
+                    "failed" => ThreadTurnStatus::Failed,
+                    "interrupted" | "canceled" => ThreadTurnStatus::Interrupted,
+                    "queued" | "in_progress" => ThreadTurnStatus::InProgress,
+                    other => bail!("unknown canonical turn status {other}"),
+                },
+                error: turn.error.map(|message| ThreadTurnError { message }),
+                started_at: turn.started_at.map(|at| at.timestamp()),
+                completed_at: turn.ended_at.map(|at| at.timestamp()),
+                duration_ms: turn.duration_ms.and_then(|ms| i64::try_from(ms).ok()),
+            })
+        })
+        .collect()
+}
+
+pub(super) fn read_wire(
+    response: ThreadResponse,
+    include_turns: bool,
+) -> Result<codewhale_app_server_protocol::rpc::ThreadReadResponse> {
+    let thread = response
+        .thread
+        .context("canonical read returned no thread")?;
+    let mut thread = wire_thread(thread);
+    if include_turns {
+        thread.turns = wire_turns(&response.data)?
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<_, _>>()?;
+    }
+    Ok(codewhale_app_server_protocol::rpc::ThreadReadResponse { thread })
 }
 
 async fn list(

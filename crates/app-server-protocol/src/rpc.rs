@@ -169,6 +169,89 @@ pub enum ThreadListSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadReadParams {
+    pub thread_id: String,
+    #[serde(default)]
+    pub include_turns: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadReadResponse {
+    pub thread: ThreadListItem,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTurn {
+    pub id: String,
+    pub items: Vec<ThreadTurnItem>,
+    pub items_view: ThreadTurnItemsView,
+    pub status: ThreadTurnStatus,
+    pub error: Option<ThreadTurnError>,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum ThreadTurnItemsView {
+    Summary,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum ThreadTurnStatus {
+    Completed,
+    Interrupted,
+    Failed,
+    InProgress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTurnError {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ThreadTurnItem {
+    UserMessage {
+        id: String,
+        content: Vec<ThreadUserInput>,
+    },
+    AgentMessage {
+        id: String,
+        text: String,
+    },
+    Reasoning {
+        id: String,
+        content: Vec<String>,
+    },
+    ContextCompaction {
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ThreadUserInput {
+    Text { text: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSetNameParams {
     pub thread_id: String,
