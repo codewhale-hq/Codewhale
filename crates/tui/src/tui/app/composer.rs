@@ -958,26 +958,6 @@ impl App {
         false
     }
 
-    /// Attach the image on the clipboard, and only an image.
-    ///
-    /// `/attach` with no path goes through here: the command promises an
-    /// image, so a clipboard that holds text must fail rather than paste that
-    /// text into the draft. The SSH terminal-owned path has no readable
-    /// clipboard and says so instead of reporting an empty one.
-    pub fn attach_clipboard_image(&mut self) -> Result<crate::tui::clipboard::PastedImage, String> {
-        if self.clipboard.requires_terminal_paste() {
-            return Err(self.tr(MessageId::ClipboardSshPasteHint).into_owned());
-        }
-        let workspace = self.workspace.clone();
-        let Some(pasted) = self.clipboard.read_image(&workspace) else {
-            return Err(self.tr(MessageId::ClipboardNothingToPaste).into_owned());
-        };
-        let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
-        self.insert_media_attachment("image", &pasted.path, Some(&description));
-        self.status_message = Some(format!("Attached image: {description}"));
-        Ok(pasted)
-    }
-
     pub fn apply_clipboard_content(&mut self, content: ClipboardContent) {
         match content {
             ClipboardContent::Text(text) => {

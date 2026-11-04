@@ -160,18 +160,6 @@ pub struct MediaAttachmentReceipt {
 pub trait CommandMediaContext {
     /// Validate and insert a resolved media path atomically.
     fn attach_media(&mut self, resolved_path: &Path) -> Result<MediaAttachmentReceipt, String>;
-
-    /// Attach the image currently on the system clipboard.
-    ///
-    /// Exists because no terminal can be relied on to deliver a paste of
-    /// image bytes: Windows Terminal and most others consume their paste
-    /// chord locally and send nothing at all when the clipboard holds only a
-    /// picture. `/attach` with no path is the reachable fallback, and a host
-    /// without a readable clipboard leaves this default rather than
-    /// pretending the clipboard was empty.
-    fn attach_clipboard_image(&mut self) -> Result<String, String> {
-        Err("Clipboard image paste is unavailable on this surface".to_string())
-    }
 }
 
 // ---------------------------------------------------------------------------

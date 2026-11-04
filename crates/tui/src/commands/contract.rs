@@ -2607,17 +2607,6 @@ impl CommandMediaContext for MediaAdapter<'_> {
             path,
         })
     }
-
-    fn attach_clipboard_image(&mut self) -> Result<String, String> {
-        let mut app = self.host.app.borrow_mut();
-        // Image-only by contract: a clipboard holding text is not an image
-        // and must fail, not paste the text into the draft.
-        app.attach_clipboard_image()?;
-        Ok(app
-            .status_message
-            .clone()
-            .unwrap_or_else(|| "Attached the clipboard image".to_string()))
-    }
 }
 
 /// Classify a media path by extension (image or video).

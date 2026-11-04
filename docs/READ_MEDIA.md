@@ -12,10 +12,8 @@
 
 ### Show the agent a screenshot
 
-- Paste a clipboard image into the composer with the normal terminal paste
-  shortcut, or run `/attach <path>` for an existing PNG, JPEG, GIF, or WebP.
-  `/attach` with no path attaches whatever image is on the clipboard, which is
-  the reliable entry when the terminal keeps `Ctrl+V` to itself.
+- Paste a clipboard image into the composer with `Ctrl+V`, or run
+  `/attach <path>` for an existing PNG, JPEG, GIF, or WebP.
 - Drag an image file onto the terminal, or paste its absolute path (plain,
   quoted, shell-escaped, or as a `file://` URL), and it attaches the same way.
   A paste becomes an attachment only when every path in it names an existing
@@ -36,29 +34,23 @@
   that explicit turn action; merely having a screenshot path or artifact does
   not trigger background analysis.
 
-### When `Ctrl+V` does nothing
+### How `Ctrl+V` reaches Codewhale
 
-Most terminals own the paste chord. Windows Terminal turns `Ctrl+V` into a
-paste of the clipboard's **text**; when the clipboard holds only a picture
-there is no text to send, so Codewhale receives no event at all. That is a
-property of the terminal, not of the model route, and no TUI can see a key
-the terminal never forwards.
+Most terminals own the paste chord, and Windows Terminal turns `Ctrl+V` into a
+paste of the clipboard's *text*. When the clipboard holds only a picture there
+is no text — but Windows Terminal still sends an **empty** bracketed paste.
+That is deliberate (`// LOAD BEARING: Send an empty bracketed paste even if the
+clipboard was empty` in its paste handler): it is how an application learns
+that the person pasted even when the clipboard carried nothing the terminal
+could read. Codewhale treats an empty paste as "ask the clipboard yourself"
+and attaches the picture.
 
-Two reliable ways to attach the picture:
+If a paste does nothing at all:
 
-- `/attach` with no path reads the clipboard directly.
-- Bind the chord to a literal `0x16` byte, which Codewhale already treats as a
-  paste chord. In Windows Terminal's `settings.json`:
-
-```json
-{ "keys": "ctrl+v", "command": { "action": "sendInput", "input": "\u0016" } }
-```
-
-  iTerm2 ("Send Hex Code" `0x16`), GNOME Terminal and Konsole can send the same
-  byte. Codewhale then reads both text and images from the clipboard itself.
-
-In an SSH session with no forwarded graphical display the remote host cannot
-read your clipboard at all; paste stays terminal-owned and delivers text only.
+- The terminal may not honor bracketed paste. Codewhale enables it at startup,
+  but a terminal that ignores the request never sends the event.
+- In an SSH session with no forwarded graphical display the remote host cannot
+  read your clipboard; paste stays terminal-owned and delivers text only.
 
 `read_media` is the corresponding agent-side path for inspecting another
 image later in the task without requiring the operator to attach it again.

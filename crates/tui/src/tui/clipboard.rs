@@ -233,6 +233,7 @@ impl PastedImage {
     ),
     allow(dead_code)
 )]
+#[derive(Clone)]
 pub enum ClipboardContent {
     Text(String),
     Image(PastedImage),
@@ -355,10 +356,10 @@ pub struct ClipboardHandler {
     written_text: Vec<String>,
     #[cfg(test)]
     fail_text_writes: bool,
-    /// A deterministic image stand-in for tests; `None` means the host
+    /// A deterministic clipboard answer for tests; `None` means the host
     /// clipboard answers, which tests must never touch.
     #[cfg(test)]
-    clipboard_image: Option<PastedImage>,
+    clipboard_content: Option<ClipboardContent>,
 }
 
 impl ClipboardHandler {
@@ -398,7 +399,7 @@ impl ClipboardHandler {
             #[cfg(test)]
             fail_text_writes: false,
             #[cfg(test)]
-            clipboard_image: None,
+            clipboard_content: None,
         }
     }
 
@@ -425,10 +426,12 @@ impl ClipboardHandler {
     }
 
     /// Construct a deterministic unavailable clipboard for command tests.
+    /// A clipboard whose read answers `content` exactly, for tests that must
+    /// not touch the host clipboard.
     #[cfg(test)]
-    pub(crate) fn with_image_for_test(image: PastedImage) -> Self {
+    pub(crate) fn with_content_for_test(content: ClipboardContent) -> Self {
         let mut handler = Self::for_test(false, false);
-        handler.clipboard_image = Some(image);
+        handler.clipboard_content = Some(content);
         handler
     }
 
@@ -560,49 +563,15 @@ impl ClipboardHandler {
             .flatten();
     }
 
-    /// Read only the image on the clipboard, ignoring any text it also
-    /// carries.
-    ///
-    /// [`Self::read`] prefers text because an ordinary paste should paste what
-    /// the person copied. `/attach` with no path makes the opposite promise,
-    /// and reusing the text-first read there would dump an unrelated
-    /// clipboard into the draft and report success.
-    pub fn read_image(&mut self, workspace: &Path) -> Option<PastedImage> {
-        if !self.terminal_context.permits_native_read() {
-            return None;
-        }
-        // Tests inject a stand-in rather than reaching the host clipboard.
-        #[cfg(test)]
-        {
-            let _ = workspace;
-            self.clipboard_image.clone()
-        }
-        #[cfg(not(test))]
-        {
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "windows",
-                all(target_os = "linux", not(target_env = "ohos"))
-            ))]
-            {
-                self.ensure_clipboard();
-                if let Some(clipboard) = self.clipboard.as_mut()
-                    && let Ok(image) = clipboard.get_image()
-                    && let Ok(pasted) = save_image_as_png(workspace, &image)
-                {
-                    return Some(pasted);
-                }
-            }
-            let _ = workspace;
-            None
-        }
-    }
-
     /// Read the clipboard and return the parsed content.
     ///
     /// `workspace` is used as a fallback location when `~/.codewhale/` cannot
     /// be resolved (e.g. running with a stripped HOME in CI sandboxes).
     pub fn read(&mut self, workspace: &Path) -> Option<ClipboardContent> {
+        #[cfg(test)]
+        if let Some(content) = self.clipboard_content.clone() {
+            return Some(content);
+        }
         self.read_content(workspace, false)
     }
 
@@ -610,6 +579,10 @@ impl ClipboardHandler {
     /// rich applications. Credentials and configuration fields use `read` so
     /// their literal text is never interpreted as Markdown.
     pub fn read_markdown(&mut self, workspace: &Path) -> Option<ClipboardContent> {
+        #[cfg(test)]
+        if let Some(content) = self.clipboard_content.clone() {
+            return Some(content);
+        }
         self.read_content(workspace, true)
     }
 
