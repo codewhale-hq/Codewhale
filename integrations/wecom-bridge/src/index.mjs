@@ -267,7 +267,18 @@ async function runPrompt(chatId, prompt, frame) {
       activeTurnId: activeBlock.turnId,
       updatedAt: new Date().toISOString()
     });
-    await replyText(frame, activeBlock.message);
+    // The turn is still running: forward the message as steering guidance
+    // instead of dropping it. The steer may be dropped by the engine if the
+    // turn moved on first; the Runtime reports that verdict.
+    try {
+      await runtimeJson(
+        `/v1/threads/${encodeURIComponent(state.threadId)}/turns/${encodeURIComponent(activeBlock.turnId)}/steer`,
+        { method: "POST", body: { prompt } }
+      );
+      await replyText(frame, `[running] forwarded to the active turn: ${prompt.slice(0, 80)}`);
+    } catch {
+      await replyText(frame, activeBlock.message);
+    }
     return;
   }
   if (state.activeTurnId) {
