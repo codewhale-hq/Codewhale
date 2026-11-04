@@ -602,6 +602,18 @@ impl ClipboardHandler {
                 {
                     return Some(ClipboardContent::Image(pasted));
                 }
+                // arboard reads the Win32 clipboard through CF_DIB/CF_DIBV5.
+                // Some capture tools publish the bitmap under a format that
+                // path misses, or leave it delay-rendered in a way that only
+                // resolves once another application asks: QQ's screenshot is
+                // the reported case, where the picture becomes readable only
+                // after it has been pasted somewhere else first. .NET's
+                // Clipboard.GetImage() handles those, so ask it before
+                // deciding the clipboard holds no image.
+                #[cfg(all(target_os = "windows", not(test)))]
+                if let Some(pasted) = read_image_via_powershell(workspace) {
+                    return Some(ClipboardContent::Image(pasted));
+                }
             }
         }
 
@@ -1043,6 +1055,73 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
         width,
         height,
         byte_len,
+    })
+}
+
+/// Read the clipboard image through .NET instead of the Win32 clipboard API.
+///
+/// Windows only, where arboard's `CF_DIB`/`CF_DIBV5` path misses pictures some
+/// capture tools publish under another format or leave delay-rendered. QQ's
+/// screenshot is the reported case: the image only becomes readable after it
+/// has been pasted into another application first, which is exactly what a
+/// second reader that asks .NET for the bitmap can bridge.
+///
+/// Known costs: one PowerShell start, paid only after arboard already failed,
+/// and the PNG crosses the child's stdout as base64, so a multi-megabyte
+/// screenshot moves a few megabytes through the pipe.
+#[cfg(all(target_os = "windows", not(test)))]
+fn read_image_via_powershell(workspace: &Path) -> Option<PastedImage> {
+    use base64::Engine as _;
+    use std::io::Read as _;
+
+    const SCRIPT: &str = concat!(
+        "Add-Type -AssemblyName System.Windows.Forms; ",
+        "Add-Type -AssemblyName System.Drawing; ",
+        "$img = [System.Windows.Forms.Clipboard]::GetImage(); ",
+        "if ($img -ne $null) { ",
+        "$ms = New-Object System.IO.MemoryStream; ",
+        "$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); ",
+        "[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray())) }"
+    );
+
+    let mut child = Command::new("powershell.exe")
+        .args(["-NoProfile", "-STA", "-Command", SCRIPT])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut encoded = String::new();
+    child.stdout.take()?.read_to_string(&mut encoded).ok()?;
+    if !child.wait().ok()?.success() || encoded.trim().is_empty() {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let (width, height) = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    let dir = codewhale_runtime::config::clipboard_images_dir(workspace);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = format!("clipboard-{timestamp}.png");
+    clipboard_image_target(&dir, &file_name)
+        .ok()?
+        .publish(&bytes)
+        .ok()?;
+    Some(PastedImage {
+        path: dir.join(file_name),
+        width,
+        height,
+        byte_len: bytes.len(),
     })
 }
 
