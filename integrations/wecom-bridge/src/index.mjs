@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   activeTurnBlock,
   commandAction,
+  createStreamReply,
   compactRuntimeError,
   formatPublicError,
   helpText,
@@ -380,7 +381,7 @@ async function runPrompt(chatId, prompt, frame) {
 async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.turnTimeoutMs);
-  const streamId = generateReqId("stream");
+  const streamer = createStreamReply(client, frame, { genId: () => generateReqId("stream") });
   let responseText = "";
   let latestSeq = sinceSeq;
 
@@ -406,7 +407,7 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
 
       if (record.event === "item.delta" && record.payload?.kind === "agent_message") {
         responseText += record.payload.delta || "";
-        await client.replyStream(frame, streamId, responseText, false);
+        await streamer.update(responseText, false);
       }
 
       if (record.event === "approval.required") {
@@ -443,7 +444,7 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
         const status = turn.status || "completed";
         const errorText = turn.error ? `\n${turn.error}` : "";
         const fallback = status === "completed" ? "Turn completed." : `Turn ${status}.${errorText}`;
-        await client.replyStream(frame, streamId, responseText.trim() || fallback, true);
+        await streamer.update(responseText.trim() || fallback, true);
         return true;
       }
 
@@ -452,7 +453,7 @@ async function streamTurnEvents(chatId, frame, threadId, turnId, sinceSeq) {
         const status = turn.status || record.payload?.status;
         if (["failed", "canceled", "interrupted"].includes(status)) {
           const errorText = turn.error || record.payload?.error;
-          await client.replyStream(frame, streamId, `Turn ${status}.${errorText ? `\n${errorText}` : ""}`, true);
+          await streamer.update(`Turn ${status}.${errorText ? `\n${errorText}` : ""}`, true);
           return true;
         }
       }
