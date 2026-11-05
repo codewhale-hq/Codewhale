@@ -55,8 +55,8 @@ use sha2::{Digest, Sha256};
 use codewhale_dependencies::{ExternalTool as _, Git};
 
 use super::workspace::{
-    FILE_SERVE_MAX_BYTES, canonical_workspace, collect_workspace_status, content_revision,
-    relative_request_path,
+    FILE_SERVE_MAX_BYTES, ThreadScopeQuery, canonical_workspace, collect_workspace_status,
+    content_revision, relative_request_path, scoped_workspace,
 };
 use super::{ApiError, RuntimeApiState};
 
@@ -174,6 +174,19 @@ fn output_tail(run: &GitRun) -> String {
     text
 }
 
+async fn resolve_workspace(workspace: &FsPath, check_repo: bool) -> Result<PathBuf, ApiError> {
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let workspace = canonical_workspace(&workspace)?;
+        if check_repo {
+            require_repo(&workspace)?;
+        }
+        Ok(workspace)
+    })
+    .await
+    .map_err(|_| ApiError::internal("workspace resolution failed"))?
+}
+
 /// A non-repo workspace is a 404, not a 500: `rev-parse --is-inside-work-tree`
 /// exits 128 there, so probe directly rather than through the erroring helper.
 fn require_repo(workspace: &FsPath) -> Result<(), ApiError> {
@@ -193,6 +206,22 @@ fn require_repo(workspace: &FsPath) -> Result<(), ApiError> {
 /// the workspace counts and operator writes.
 fn run_git_sync(workspace: &FsPath, args: &[&str]) -> Result<String, ApiError> {
     let output = Git::output(args, workspace)
+        .map_err(|error| ApiError::internal(format!("failed to run git: {error}")))?;
+    if !output.status.success() {
+        return Err(ApiError::internal(format!(
+            "git {} failed: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn status_sync(workspace: &FsPath, args: &[&str]) -> Result<String, ApiError> {
+    let output = Git::status_command(workspace)
+        .map_err(|error| ApiError::internal(format!("git is unavailable: {error}")))?
+        .args(args)
+        .output()
         .map_err(|error| ApiError::internal(format!("failed to run git: {error}")))?;
     if !output.status.success() {
         return Err(ApiError::internal(format!(
@@ -239,6 +268,8 @@ pub(super) struct GitStatusDetailResponse {
     head: Option<String>,
     /// Full HEAD commit id; null on an unborn branch.
     head_oid: Option<String>,
+    /// True when `git status` could not be read: the counts are unknown.
+    status_unavailable: bool,
     /// Opaque token for the whole index (every stage entry, repository-wide).
     index_token: Option<String>,
     /// Opaque token for the whole tree: HEAD, the index and every row.
@@ -258,8 +289,9 @@ pub(super) struct GitStatusDetailResponse {
 
 pub(super) async fn git_status_detail(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
 ) -> Result<Json<GitStatusDetailResponse>, ApiError> {
-    let workspace = state.workspace.clone();
+    let workspace = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     tokio::task::spawn_blocking(move || collect_git_status_detail(&workspace))
         .await
         .map_err(|_| ApiError::internal("git status failed"))?
@@ -275,6 +307,7 @@ fn collect_git_status_detail(workspace: &FsPath) -> Result<GitStatusDetailRespon
         detached: false,
         head: status.head,
         head_oid: None,
+        status_unavailable: status.status_unavailable,
         index_token: None,
         revision: None,
         ahead: status.ahead,
@@ -374,13 +407,13 @@ fn status_rows(
     frame: &RepoFrame,
 ) -> Result<(Vec<GitFileEntry>, bool), ApiError> {
     let mut complete = true;
-    let mut rows = match run_git_sync(workspace, &["status", "--porcelain=v1", "-z"]) {
+    let mut rows = match status_sync(workspace, &["status", "--porcelain=v1", "-z"]) {
         Ok(porcelain) => parse_porcelain(&porcelain),
         Err(_) => {
             // One broken submodule can abort all of Git's porcelain output.
             // Recover ordinary rows, then inspect gitlinks individually so
             // only the unreadable submodule is shown as unknown/unguardable.
-            let porcelain = run_git_sync(
+            let porcelain = status_sync(
                 workspace,
                 &["status", "--porcelain=v1", "-z", "--ignore-submodules=all"],
             )?;
@@ -393,7 +426,7 @@ fn status_rows(
                     continue;
                 }
                 rows.retain(|row| normalized_row_path(&row.path) != path);
-                match run_git_sync(
+                match status_sync(
                     &frame.toplevel,
                     &[
                         "--literal-pathspecs",
@@ -1084,8 +1117,9 @@ fn porcelain_status(index: char, worktree: char) -> &'static str {
 /// client that loaded both cannot see them disagree.
 pub(super) async fn git_changes(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let workspace = state.workspace.clone();
+    let workspace = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     let detail = tokio::task::spawn_blocking(move || collect_git_status_detail(&workspace))
         .await
         .map_err(|_| ApiError::internal("git status failed"))??;
@@ -1182,6 +1216,7 @@ pub(super) struct GitDiffQuery {
     base: Option<String>,
     context: Option<usize>,
     ignore_whitespace: Option<bool>,
+    thread_id: Option<String>,
 }
 
 /// `GET /v1/diff?path=` — one file's unified diff against HEAD (or the empty
@@ -1193,8 +1228,8 @@ pub(super) async fn git_diff(
     Query(query): Query<GitDiffQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let path = relative_request_path(&query.path, false)?;
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let scoped = scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    let workspace = resolve_workspace(&scoped, true).await?;
     let base = selected_diff_base(&workspace, query.base.as_deref()).await?;
     let context = diff_context(query.context)?;
     let path_arg = path.to_string_lossy().into_owned();
@@ -1260,6 +1295,7 @@ pub(super) struct WorkspaceDiffQuery {
     base: Option<String>,
     context: Option<usize>,
     ignore_whitespace: Option<bool>,
+    thread_id: Option<String>,
 }
 
 /// `GET /v1/workspace/diff?limit=` — the whole tree's diff against HEAD plus
@@ -1275,8 +1311,8 @@ pub(super) async fn workspace_diff(
             "limit must be between 1024 and {WORKSPACE_DIFF_MAX_BYTES} bytes"
         )));
     }
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let scoped = scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    let workspace = resolve_workspace(&scoped, true).await?;
     let base = selected_diff_base(&workspace, query.base.as_deref()).await?;
     let context = diff_context(query.context)?;
 
@@ -1343,6 +1379,7 @@ pub(super) async fn workspace_diff(
 #[serde(deny_unknown_fields)]
 pub(super) struct GitGraphQuery {
     limit: Option<usize>,
+    thread_id: Option<String>,
 }
 
 const GRAPH_FIELD: char = '\u{1f}';
@@ -1358,8 +1395,8 @@ pub(super) async fn git_graph(
             "limit must be between 1 and {GRAPH_LIMIT_MAX}"
         )));
     }
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let scoped = scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    let workspace = resolve_workspace(&scoped, true).await?;
     let limit_arg = format!("-n{limit}");
     let format = format!(
         "%H{GRAPH_FIELD}%h{GRAPH_FIELD}%P{GRAPH_FIELD}%an{GRAPH_FIELD}%ae{GRAPH_FIELD}%aI{GRAPH_FIELD}%D{GRAPH_FIELD}%s{GRAPH_RECORD}"
@@ -1831,8 +1868,7 @@ async fn guarded_write(
     args: Vec<String>,
 ) -> Result<Json<Value>, GitWriteError> {
     let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     if !expect.is_empty() {
         let root = workspace.clone();
         tokio::task::spawn_blocking(move || check_preconditions(&root, &expect))
@@ -1989,7 +2025,7 @@ async fn patch_write(
     .await
     .map_err(|_| ApiError::internal("patch staging failed"))?
     .map_err(|error| ApiError::internal(format!("patch staging failed: {error}")))?;
-    let workspace = canonical_workspace(&state.workspace)?;
+    let workspace = resolve_workspace(&state.workspace, false).await?;
     let place = git_read_ok(&workspace, &["rev-parse", "--show-cdup", "--show-prefix"]).await?;
     let mut place = place.lines();
     let (cdup, prefix) = (
@@ -2155,8 +2191,7 @@ pub(super) async fn git_push(
     State(state): State<RuntimeApiState>,
     Json(request): Json<GitPushRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     let args = push_args(&workspace, request.remote.as_deref(), request.set_upstream).await?;
     // Push stays outside the write lock: it crosses the network under a
     // 120 s bound and only moves a remote ref, never the index or worktree.
@@ -2176,8 +2211,7 @@ pub(super) async fn git_branch(
     // Switching rewrites the worktree and index, so it shares the lock with
     // stage/discard/commit.
     let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     state
         .runtime_threads
         .reject_active_turns_in_workspace(&workspace)
@@ -2214,6 +2248,8 @@ pub(super) async fn git_branch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use codewhale_engine::test_support::{EnvVarGuard, lock_test_env};
     use std::fs;
 
     thread_local! {
@@ -2796,9 +2832,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn status_and_guards_respect_clean_filters() {
+        let _env_lock = lock_test_env();
         let tmp = repo();
         let ws = tmp.path();
-        git(ws, &["config", "filter.up.clean", "tr a-z A-Z"]);
+        let global = tempfile::tempdir().unwrap();
+        let global_config = global.path().join("gitconfig");
+        git(
+            ws,
+            &[
+                "config",
+                "--file",
+                global_config.to_str().unwrap(),
+                "filter.up.clean",
+                "tr a-z A-Z",
+            ],
+        );
+        let _global = EnvVarGuard::set("GIT_CONFIG_GLOBAL", &global_config);
         fs::write(ws.join(".gitattributes"), "*.txt filter=up\n").unwrap();
         git(ws, &["add", ".gitattributes"]);
         // The tracked file is unchanged since the initial commit. Apply the
