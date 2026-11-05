@@ -318,7 +318,8 @@ elevated reasoning and tries to REFUTE it, returning structured findings (issue,
 suggested fix). Call this when it is worth spending extra thinking: before claiming a non-trivial \
 change complete, after a risky or subtle edit, or when you are unsure the change fully satisfies \
 the requirement and handles edge cases. Skip it for trivial or mechanical changes. This is not a \
-test runner (use run_verifiers) or a code review of an arbitrary target (use review) — it is a \
+test runner (use the Run tool with action=\"verifiers\") or a code review of an arbitrary \
+target (use review) — it is a \
 self-check of whether what you just did is actually correct and complete."
     }
 
