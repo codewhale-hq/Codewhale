@@ -1254,10 +1254,9 @@ pub fn build_chat_wire_body_with_window(
     if let Some(choice) = request.tool_choice.as_ref()
         && let Some(mapped) = map_tool_choice_for_chat(choice)
         && should_send_tool_choice_for_chat(provider, request.reasoning_effort.as_deref(), &mapped)
+        && body.get("tools").is_some()
     {
-        if body.get("tools").is_some() {
-            body["tool_choice"] = mapped;
-        }
+        body["tool_choice"] = mapped;
     }
     apply_route_reasoning_controls(
         &mut body,

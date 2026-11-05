@@ -1414,13 +1414,13 @@ impl SessionCostSnapshot {
             record.permits_replacement(previous.map(|previous| &previous.record))?;
         } else {
             record.validate()?;
-            if let Some(previous) = previous {
-                if !record.follows_protected(&previous.record)? {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "protected usage projection changed route or spend owner",
-                    ));
-                }
+            if let Some(previous) = previous
+                && !record.follows_protected(&previous.record)?
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "protected usage projection changed route or spend owner",
+                ));
             }
         }
         let next = crate::cost_status::UsageSourceContribution::for_record(record);
@@ -3112,6 +3112,19 @@ impl SessionManager {
         write().map(Some)
     }
 
+    fn with_session_observation<T>(
+        &self,
+        session_id: &str,
+        observe: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        self.with_session_read_lock(session_id, |path| {
+            if Self::late_usage_is_deleted(path)? {
+                return Ok(None);
+            }
+            observe().map(Some)
+        })
+    }
+
     /// Run an out-of-band rewrite of a session's files (`scrub-secrets`)
     /// under the same per-session lock every save takes, so it cannot
     /// interleave with a save, and while holding the session's live lease, so
@@ -3223,7 +3236,7 @@ impl SessionManager {
                 changed = true;
             }
             if changed {
-                Self::write_late_usage_candidate(&path, &original, &ledger)?;
+                Self::write_late_usage_candidate(path, &original, &ledger)?;
             }
             return Ok(true);
         }
@@ -3238,12 +3251,12 @@ impl SessionManager {
         {
             if !ledger.overflowed {
                 ledger.overflowed = true;
-                Self::write_late_usage_ledger(&path, &ledger)?;
+                Self::write_late_usage_ledger(path, &ledger)?;
             }
             return Ok(true);
         }
         ledger.records.push(incoming);
-        Self::write_late_usage_candidate(&path, &original, &ledger)?;
+        Self::write_late_usage_candidate(path, &original, &ledger)?;
         Ok(true)
     }
 
@@ -3611,17 +3624,17 @@ impl SessionManager {
             }
         };
         for mut record in ledger.records {
+            if let Some(receipt) = record
+                .decision
+                .as_ref()
+                .filter(|receipt| receipt.is_bounded())
+            {
+                metadata
+                    .cost
+                    .route_receipts
+                    .insert(receipt.diagnostic_receipt());
+            }
             if record.diagnostic_only {
-                if let Some(receipt) = record
-                    .decision
-                    .as_ref()
-                    .filter(|receipt| receipt.is_bounded())
-                {
-                    metadata
-                        .cost
-                        .route_receipts
-                        .insert(receipt.diagnostic_receipt());
-                }
                 continue;
             }
             if record.settlement.is_some() {
@@ -4900,7 +4913,7 @@ impl SessionManager {
             let observation = if admission_held {
                 capture()
             } else {
-                self.with_session_write_admission(id, capture)
+                self.with_session_observation(id, capture)
                     .and_then(|observation| {
                         observation.ok_or_else(Self::retired_session_write_error)
                     })
@@ -4971,7 +4984,7 @@ impl SessionManager {
             Ok(Some(origin)) if origin == session_id => self
                 .read_checkpoint_file(
                     &self.checkpoints_dir().join(LEGACY_CHECKPOINT_FILE),
-                    Some(session_id),
+                    None,
                     admission_held,
                 )
                 .unwrap_or_else(|error| {
@@ -5453,7 +5466,7 @@ impl SessionManager {
         let observation = if admission_held {
             capture()
         } else {
-            self.with_session_write_admission(id, capture)
+            self.with_session_observation(id, capture)
                 .and_then(|observation| observation.ok_or_else(Self::retired_session_write_error))
         };
         match observation {

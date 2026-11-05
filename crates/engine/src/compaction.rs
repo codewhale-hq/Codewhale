@@ -2033,10 +2033,10 @@ async fn create_summary(
             native_origin,
         );
         let observation = source.observe_route(&cost_route)?;
-        if let Some(record) = source.admit_dispatch(&cost_route).await? {
-            if let Some(sink) = notice_sink {
-                sink.settled_usage(&record).await?;
-            }
+        if let Some(record) = source.admit_dispatch(&cost_route).await?
+            && let Some(sink) = notice_sink
+        {
+            sink.settled_usage(&record).await?;
         }
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
