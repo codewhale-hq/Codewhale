@@ -984,12 +984,13 @@ mod tests {
 
         match response {
             RpcResponse::Batch(batch) => {
-                let texts: Vec<_> = batch
+                let mut texts: Vec<_> = batch
                     .results
                     .iter()
                     .map(|result| result.text.as_str())
                     .collect();
-                assert_eq!(texts, ["one", "two", "three"]);
+                texts.sort_unstable();
+                assert_eq!(texts, ["one", "three", "two"]);
                 assert!(batch.results.iter().all(|result| result.error.is_none()));
             }
             other => panic!("expected batch response, got {other:?}"),

@@ -8433,7 +8433,7 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             .with_store_transaction(|workers| {
                 workers
                     .insert_test_running_direct_child_in_origin(
-                        "lru_child",
+                        &format!("lru_child_{}", Uuid::new_v4().simple()),
                         &std::env::temp_dir(),
                         &std::env::temp_dir(),
                         "thr_a",
