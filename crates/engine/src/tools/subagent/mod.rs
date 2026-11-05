@@ -5841,11 +5841,10 @@ impl SubAgentManager {
         {
             return self
                 .with_store_transaction(|manager| {
-                    manager
-                        .expand_write_claim(owner, roots, exact_files, contracts)
-                        .map_err(anyhow::Error::msg)
+                    Ok(manager.expand_write_claim(owner, roots, exact_files, contracts))
                 })
-                .map_err(|error| error.to_string());
+                .map_err(|error| error.to_string())
+                .and_then(|outcome| outcome);
         }
 
         self.ensure_coordination_process_lock()?;
@@ -14172,6 +14171,17 @@ impl SubAgentStoreAuthority {
                 && existing.status.is_terminal()
                 && !incoming.status.is_terminal()
                 && generation(incoming) <= generation(existing)
+            {
+                continue;
+            }
+            if terminal != Some(id.as_str())
+                && let (Some(existing), Some(incoming)) = (existing, incoming)
+                && !existing.status.is_terminal()
+                && incoming.status.is_terminal()
+                && value
+                    .agents
+                    .iter()
+                    .any(|agent| agent.id == id && agent.status == SubAgentStatus::Running)
             {
                 continue;
             }

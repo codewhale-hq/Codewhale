@@ -2117,14 +2117,21 @@ fn coordination_acceptance_preserves_scopes_candidates_and_replay() {
         .expect("claim B")
         .claim
         .clone();
-    let (projection_a, projection_a_receipt) =
-        manager
-            .coordination
-            .project_relevant_decisions(&agent_a, Some(&claim_a), &["File".into()]);
-    let (projection_b, projection_b_receipt) =
-        manager
-            .coordination
-            .project_relevant_decisions(&agent_b, Some(&claim_b), &["File".into()]);
+    let ((projection_a, projection_a_receipt), (projection_b, projection_b_receipt)) = manager
+        .with_store_transaction(|manager| {
+            let a = manager.coordination.project_relevant_decisions(
+                &agent_a,
+                Some(&claim_a),
+                &["File".into()],
+            );
+            let b = manager.coordination.project_relevant_decisions(
+                &agent_b,
+                Some(&claim_b),
+                &["File".into()],
+            );
+            Ok((a, b))
+        })
+        .expect("projection receipts persist");
     assert!(projection_a.contains("api-a") && !projection_a.contains("api-b"));
     assert!(projection_b.contains("api-b") && !projection_b.contains("api-a"));
     for receipt in [&projection_a_receipt, &projection_b_receipt] {
@@ -13960,6 +13967,8 @@ fn subagent_registry_with_mcp_action(auto_approve: bool) -> (ChildCoreProbe, tem
         crate::approval_log::ApprovalReceiptStore::new(home.path().join("sessions")),
     ));
     runtime.context.auto_approve = auto_approve;
+    runtime.context.runtime.runtime_mcp_servers =
+        Some((home.path().to_path_buf(), Default::default()));
     // Core dispatches MCP through the captured pool; the registry facade supplies its schema.
     runtime = runtime.with_mcp_pool(Some(Arc::new(tokio::sync::Mutex::new(
         crate::mcp::McpPool::new(codewhale_mcp::config::McpConfig::default()),
@@ -15920,10 +15929,8 @@ fn persisted_advisory_assignment_roles_replay_and_repersist_as_consultant() {
         assert_eq!(result.assignment.role.as_deref(), Some("advisor"));
 
         manager
-            .persist_state()
-            .expect("canonical state persists")
-            .join()
-            .expect("persist thread");
+            .with_store_transaction(|manager| manager.persist_state_synchronously())
+            .expect("canonical state persists");
         let repersisted: Value = serde_json::from_str(
             &std::fs::read_to_string(&state_path).expect("read canonical state"),
         )
@@ -18902,10 +18909,31 @@ async fn launch_gate_queues_extra_direct_children() {
     use tokio_util::sync::CancellationToken;
 
     let tmp = tempdir().expect("tempdir");
+    let sessions = crate::session_manager::SessionManager::new(tmp.path().join("sessions"))
+        .expect("launch gate session store");
+    let session_id = "launch-gate-session";
+    sessions
+        .save_session(
+            &crate::session_manager::create_saved_session_with_id_and_mode(
+                session_id.to_string(),
+                &[],
+                "deepseek-v4-flash",
+                tmp.path(),
+                0,
+                None,
+                Some("agent"),
+            ),
+        )
+        .expect("launch gate saved origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         4,
     )));
+    manager.write().await.register_worker_for_session(
+        make_worker_spec("agent_gate_b", tmp.path().to_path_buf()),
+        session_id,
+        None,
+    );
 
     let (client, _calls, _bodies, fixture_config) =
         delayed_chat_client(Duration::from_millis(150), "done").await;
@@ -18914,7 +18942,13 @@ async fn launch_gate_queues_extra_direct_children() {
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(tmp.path());
+    runtime.context = ToolContext::new(tmp.path()).with_state_namespace(session_id);
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        runtime.accounting_origin.cost_scope,
+        sessions.sessions_dir().to_path_buf(),
+        session_id.to_string(),
+    ));
     runtime.mailbox = Some(mailbox);
 
     runtime.spawn_depth = 1;
@@ -24890,13 +24924,33 @@ mod child_permission_gate {
             runtime.api_config = Some(Arc::new(config));
         }
         let workspace = tmp.path().to_path_buf();
+        runtime.manager = new_shared_subagent_manager(workspace.clone(), 5);
         let session_id = format!("child_gate_{}", uuid::Uuid::new_v4().simple());
         runtime.context = ToolContext::new(workspace.clone()).with_state_namespace(session_id);
         runtime.context.auto_approve = auto_approve;
         runtime.context.approval_mode = approval_mode;
         runtime.context.live_posture = live_posture;
         runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
-        runtime.context.accounting_origin = runtime.accounting_origin.test_session_origin();
+        let sessions = crate::session_manager::SessionManager::new(tmp.path().join("accounting"))
+            .expect("guardian accounting session store");
+        sessions
+            .save_session(
+                &crate::session_manager::create_saved_session_with_id_and_mode(
+                    runtime.accounting_origin.session_id.clone(),
+                    &[],
+                    "deepseek-v4-flash",
+                    &workspace,
+                    0,
+                    None,
+                    Some("agent"),
+                ),
+            )
+            .expect("guardian accounting saved origin");
+        runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            runtime.accounting_origin.cost_scope,
+            sessions.sessions_dir().to_path_buf(),
+            runtime.accounting_origin.session_id.clone(),
+        ));
         runtime.allow_shell = true;
         runtime.event_tx = Some(tx);
         runtime = runtime.with_approval_receipt_store(Ok(
@@ -25638,13 +25692,18 @@ mod child_permission_gate {
         name: &str,
     ) -> String {
         let mut manager = manager.write().await;
-        let agent_id = insert_running_agent(&mut manager, name);
-        manager.register_worker_for_session(
-            make_worker_spec(&agent_id, registry.gate_runtime.context.workspace.clone()),
-            "guardian-test-session",
-            None,
-        );
-        agent_id
+        manager
+            .with_store_transaction(|manager| {
+                let agent_id = insert_running_agent(manager, name);
+                manager.register_worker_for_session(
+                    make_worker_spec(&agent_id, registry.gate_runtime.context.workspace.clone()),
+                    "guardian-test-session",
+                    None,
+                );
+                manager.persist_state_synchronously()?;
+                Ok(agent_id)
+            })
+            .expect("durable worker operation")
     }
 
     #[tokio::test]
@@ -25850,6 +25909,7 @@ mod child_permission_gate {
         let (registry, _rx, manager) = worker_registry(ApprovalMode::Suggest, false, true, None);
         let agent_id = running_gate_agent(&registry, &manager, "old_session_child").await;
         let mut manager = manager.write().await;
+        manager.assign_test_session_owner(&agent_id, "workspace");
         let (_id, receiver) = manager
             .register_child_approval(
                 &agent_id,
@@ -26169,14 +26229,17 @@ mod child_permission_gate {
         assert!(output.contains("guardian-missing-usage"), "{output}");
 
         let pending = crate::cost_status::drain();
-        assert_eq!(pending.priced_turns, 0);
-        assert_eq!(pending.unpriced_turns, 1);
+        let mut cost = crate::session_manager::SessionCostSnapshot::default();
+        for record in &pending.source_records {
+            cost.project_usage_record(record).unwrap();
+        }
+        assert_eq!(cost.priced_turns, 0);
+        assert_eq!(cost.unpriced_turns, 1);
         assert!(
-            pending
-                .unpriced_reasons
+            cost.unpriced_reasons
                 .contains("provider_success_missing_usage")
         );
-        assert_eq!(pending.usage_source_fingerprints.len(), 1);
+        assert_eq!(cost.usage_source_fingerprints.len(), 1);
 
         let worker = manager
             .read()

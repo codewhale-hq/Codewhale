@@ -328,6 +328,7 @@ async fn lifecycle_addressed_status_follows_lineage_and_detail_is_bounded() {
                 let latest = guard.insert_test_running_agent("latest", dir.path());
                 guard.resume_targets.insert(old.clone(), latest.clone());
                 guard.agents.get_mut(&latest).unwrap().result = Some("🐋".repeat(100_000));
+                guard.persist_state_synchronously()?;
                 Ok((old, latest))
             })
             .unwrap()

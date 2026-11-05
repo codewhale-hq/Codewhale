@@ -729,6 +729,19 @@ impl CancelReason {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+type MockApprovalPublications = Arc<
+    parking_lot::Mutex<
+        HashMap<
+            String,
+            (
+                NativeApprovalPublication,
+                approval_publication::ApprovalProducer,
+            ),
+        >,
+    >,
+>;
+
 /// Handle to communicate with the engine
 #[derive(Clone)]
 pub struct EngineHandle {
@@ -750,19 +763,7 @@ pub struct EngineHandle {
     tx_approval: mpsc::Sender<SubmittedApproval>,
     current_approval: Arc<parking_lot::Mutex<Option<NativeApprovalPublication>>>,
     #[cfg(any(test, feature = "test-support"))]
-    mock_approval_publications: Option<
-        Arc<
-            parking_lot::Mutex<
-                HashMap<
-                    String,
-                    (
-                        NativeApprovalPublication,
-                        approval_publication::ApprovalProducer,
-                    ),
-                >,
-            >,
-        >,
-    >,
+    mock_approval_publications: Option<MockApprovalPublications>,
     /// Send user input responses to the engine
     tx_user_input: mpsc::Sender<UserInputDecision>,
     /// Send steer input for an in-flight turn.

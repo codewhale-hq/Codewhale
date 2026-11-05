@@ -313,6 +313,35 @@ pub(super) fn runtime_token_required_response() -> Response {
         .into_response()
 }
 
+pub(super) async fn require_runtime_master_bearer(
+    State(state): State<RuntimeApiState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = state.runtime_token.as_deref() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Watch turns require configured Runtime bearer authentication"})),
+        )
+            .into_response();
+    };
+    let authorized = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|presented| constant_time_eq(presented.as_bytes(), expected.as_bytes()));
+    if authorized {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Watch turns require the master Authorization bearer"})),
+        )
+            .into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::runtime_http_origin_for_bind;
@@ -411,34 +440,5 @@ mod tests {
             "http://[::1]:7878"
         );
         assert_eq!(runtime_http_origin_for_bind("::1", 80), "http://[::1]");
-    }
-}
-
-pub(super) async fn require_runtime_master_bearer(
-    State(state): State<RuntimeApiState>,
-    req: Request,
-    next: Next,
-) -> Response {
-    let Some(expected) = state.runtime_token.as_deref() else {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": "Watch turns require configured Runtime bearer authentication"})),
-        )
-            .into_response();
-    };
-    let authorized = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|presented| constant_time_eq(presented.as_bytes(), expected.as_bytes()));
-    if authorized {
-        next.run(req).await
-    } else {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Watch turns require the master Authorization bearer"})),
-        )
-            .into_response()
     }
 }
