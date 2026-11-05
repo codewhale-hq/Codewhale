@@ -204,6 +204,7 @@ async fn full_control_queue_keeps_interrupt_priority_and_guest_shutdown_refusal(
         },
         runtime_thread_id: "runtime".into(),
         turn_id: "turn".into(),
+        connection: None,
     };
     state
         .in_flight_turns
@@ -231,7 +232,8 @@ async fn full_control_queue_keeps_interrupt_priority_and_guest_shutdown_refusal(
             r#"{"id":1,"method":"shutdown","params":{}}"#,
             &mut pending,
             &mut bytes,
-            guest
+            guest,
+            None
         )
         .await
         .is_err()
@@ -247,7 +249,8 @@ async fn full_control_queue_keeps_interrupt_priority_and_guest_shutdown_refusal(
             r#"{"id":2,"method":"thread/interrupt","params":{"thread_id":"client"}}"#,
             &mut pending,
             &mut bytes,
-            guest
+            guest,
+            None
         )
         .await
         .is_err()
@@ -276,7 +279,8 @@ async fn full_control_queue_keeps_interrupt_priority_and_guest_shutdown_refusal(
             r#"{"id":3,"method":"shutdown","params":{}}"#,
             &mut pending,
             &mut bytes,
-            owner
+            owner,
+            None
         )
         .await
         .is_err()
@@ -2145,7 +2149,7 @@ async fn interrupt_stops_a_turn_that_would_otherwise_stream_forever() {
                         "turn_runaway"
                     );
                     assert!(
-                        interrupt_stdio_turn(&state, "thr_a")
+                        interrupt_stdio_turn(&state, "thr_a", None)
                             .await
                             .expect("explicit recovery interrupt")
                     );
@@ -2759,6 +2763,7 @@ async fn prompt_request_executes_a_genuine_model_turn() {
         json!({ "allowed_tools": [], "prompt": "what is 2+2" }),
         AppTransport::Stdio,
         None,
+        None,
     )
     .await
     .expect("prompt/request dispatch");
@@ -3147,6 +3152,7 @@ async fn socket_transport_advertises_daemon_attach() {
         "capabilities",
         json!({}),
         AppTransport::Socket,
+        None,
         None,
     )
     .await

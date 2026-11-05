@@ -303,6 +303,7 @@ impl RuntimeBridge {
                 },
                 runtime_thread_id: thread_id.to_string(),
                 turn_id: turn_id.clone(),
+                connection: None,
             };
             if let Err(interrupt) = interrupt_turn_request(&orphan).await {
                 tracing::warn!(
@@ -328,6 +329,7 @@ impl RuntimeBridge {
                     },
                     runtime_thread_id: thread_id.to_string(),
                     turn_id: turn_id.clone(),
+                    connection: None,
                 },
             );
         }
@@ -377,6 +379,7 @@ impl RuntimeBridge {
                 },
                 runtime_thread_id: thread_id.to_string(),
                 turn_id: turn_id.clone(),
+                connection: None,
             };
             if let Err(error) = interrupt_turn_request(&orphan).await {
                 tracing::warn!(

@@ -1,5 +1,5 @@
 use crate::config_rpc::process_app_request;
-use crate::turns::{NativeTurn, handle_prompt_request, handle_thread_request, run_native_turn};
+use crate::turns::{NativeTurn, handle_prompt_request, handle_thread_request, run_native_turn_for};
 use crate::{
     AppState, AppTransport, ConfigGetParams, ConfigSetParams, DispatchError, InFlightTurn, RpcCall,
     RuntimeOwnerRequest, RuntimeThreadHint, ShutdownAuthority, StdioDispatchResult, StdioLoopExit,
@@ -190,7 +190,10 @@ where
         };
         if request.method == "initialize" {
             let response = match connection.initialize(request.params) {
-                Ok(result) => jsonrpc_result(id, result),
+                Ok(result) => {
+                    tracing::debug!(connection = %connection.id(), "control connection initialized");
+                    jsonrpc_result(id, result)
+                }
                 Err(error) => jsonrpc_error(id, error),
             };
             write_stdio_line(&mut writer, &response).await?;
@@ -231,6 +234,7 @@ where
                 request.params,
                 policy.transport,
                 Some(cancellation.clone()),
+                Some(connection.id()),
             );
             tokio::pin!(dispatch);
             loop {
@@ -256,7 +260,7 @@ where
                             Ok(Some(line)) => {
                                 if matches!(parse_stdio_line(&line), ParsedStdioLine::Request(ref request) if is_control_detach(request)) {
                                     stdin_open=false; drop(input_claim.take());
-                                } else if let Err(error) = handle_line_during_turn(state, &line, &mut pending, &mut pending_bytes, policy).await {
+                                } else if let Err(error) = handle_line_during_turn(state, &line, &mut pending, &mut pending_bytes, policy, Some(connection.id())).await {
                                     stdin_open = false;
                                     drop(input_claim.take());
                                     cancellation.cancel();
@@ -275,6 +279,7 @@ where
                 request.params,
                 policy.transport,
                 None,
+                Some(connection.id()),
             )
             .await
         };
@@ -380,6 +385,7 @@ pub(crate) async fn handle_line_during_turn(
     pending: &mut VecDeque<(PendingStdioWork, usize)>,
     pending_bytes: &mut usize,
     policy: StdioLoopPolicy,
+    connection: Option<crate::connection::ConnectionId>,
 ) -> Result<()> {
     let request = match parse_stdio_line(line) {
         ParsedStdioLine::Blank => return Ok(()),
@@ -396,13 +402,15 @@ pub(crate) async fn handle_line_during_turn(
             let response = match parse_params::<ThreadInterruptParams>(params_or_object(
                 request.params.clone(),
             )) {
-                Ok(parsed) => match interrupt_stdio_turn(state, &parsed.thread_id).await {
-                    Ok(interrupted) => jsonrpc_result(
-                        id,
-                        json!({ "thread_id": parsed.thread_id, "interrupted": interrupted }),
-                    ),
-                    Err(err) => jsonrpc_error(id, err),
-                },
+                Ok(parsed) => {
+                    match interrupt_stdio_turn(state, &parsed.thread_id, connection).await {
+                        Ok(interrupted) => jsonrpc_result(
+                            id,
+                            json!({ "thread_id": parsed.thread_id, "interrupted": interrupted }),
+                        ),
+                        Err(err) => jsonrpc_error(id, err),
+                    }
+                }
                 Err(err) => jsonrpc_error(id, err),
             };
             queue_stdio_work(
@@ -543,8 +551,9 @@ pub(crate) async fn handle_stdio_thread_message<W: AsyncWrite + Unpin>(
     writer: &mut W,
     parsed: ThreadMessageParams,
     cancellation: Option<CancellationToken>,
+    connection: Option<crate::connection::ConnectionId>,
 ) -> std::result::Result<Value, DispatchError> {
-    let mut result = run_native_turn(
+    let mut result = run_native_turn_for(
         state,
         writer,
         NativeTurn {
@@ -559,6 +568,7 @@ pub(crate) async fn handle_stdio_thread_message<W: AsyncWrite + Unpin>(
             cancellation,
         },
         None,
+        connection,
     )
     .await?;
     if let Some(object) = result.as_object_mut() {
@@ -690,10 +700,16 @@ pub(crate) async fn interrupt_turn_request(
 pub(crate) async fn interrupt_stdio_turn(
     state: &AppState,
     thread_id: &str,
+    requester: Option<crate::connection::ConnectionId>,
 ) -> std::result::Result<bool, DispatchError> {
     let Some(turn) = state.in_flight_turns.lock().await.get(thread_id).cloned() else {
         return Ok(false);
     };
+    if let (Some(owner), Some(requester)) = (turn.connection, requester)
+        && owner != requester
+    {
+        return Err(DispatchError::not_turn_owner());
+    }
     let interrupted = interrupt_turn_request(&turn).await?;
     retire_turn_registration(&state.in_flight_turns, thread_id, &turn).await;
     Ok(interrupted)
@@ -779,8 +795,16 @@ pub(crate) async fn dispatch_stdio_request(
     params: Value,
 ) -> std::result::Result<StdioDispatchResult, DispatchError> {
     let mut sink = tokio::io::sink();
-    dispatch_stdio_request_with_writer(state, &mut sink, method, params, AppTransport::Stdio, None)
-        .await
+    dispatch_stdio_request_with_writer(
+        state,
+        &mut sink,
+        method,
+        params,
+        AppTransport::Stdio,
+        None,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn dispatch_stdio_app_request(
@@ -803,6 +827,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
     params: Value,
     transport: AppTransport,
     cancellation: Option<CancellationToken>,
+    connection: Option<crate::connection::ConnectionId>,
 ) -> std::result::Result<StdioDispatchResult, DispatchError> {
     let outcome = match method {
         "healthz" | "app/healthz" => StdioDispatchResult {
@@ -921,6 +946,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
                         max_output_tokens,
                     },
                     cancellation.clone(),
+                    connection,
                 )
                 .await?;
                 return Ok(StdioDispatchResult {
@@ -1178,8 +1204,14 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
         }
         "thread/message" => {
             let parsed: ThreadMessageParams = parse_params(params_or_object(params))?;
-            let response =
-                handle_stdio_thread_message(state, writer, parsed, cancellation.clone()).await?;
+            let response = handle_stdio_thread_message(
+                state,
+                writer,
+                parsed,
+                cancellation.clone(),
+                connection,
+            )
+            .await?;
             StdioDispatchResult {
                 result: response,
                 should_exit: false,
@@ -1250,7 +1282,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
         }
         "thread/interrupt" => {
             let parsed: ThreadInterruptParams = parse_params(params_or_object(params))?;
-            let interrupted = interrupt_stdio_turn(state, &parsed.thread_id).await?;
+            let interrupted = interrupt_stdio_turn(state, &parsed.thread_id, connection).await?;
             StdioDispatchResult {
                 result: json!({
                     "thread_id": parsed.thread_id,
