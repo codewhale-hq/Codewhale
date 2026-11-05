@@ -2080,7 +2080,10 @@ mod recovery {
         let second = wait_for_terminal_turn(&manager, &second.id).await?;
         assert_eq!(second.status, RuntimeTurnStatus::Completed);
         assert_eq!(second.max_output_tokens, None);
-        assert_eq!(second.schema_version, CURRENT_RUNTIME_SCHEMA_VERSION);
+        assert_eq!(
+            second.schema_version,
+            SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION
+        );
         assert!(
             mock.last_request().unwrap().max_tokens > 1500,
             "cap cannot leak to the next turn"
@@ -8426,9 +8429,13 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
     let authority = active.engines["thr_a"].engine.subagent_manager();
     let child = {
         let mut workers = authority.try_write().unwrap();
-        let child = workers.insert_test_running_agent("lru_child", &PathBuf::from("."));
-        workers.assign_test_session_owner(&child, "thr_a");
-        child
+        workers
+            .with_store_transaction(|workers| {
+                let child = workers.insert_test_running_agent("lru_child", &PathBuf::from("."));
+                workers.assign_test_session_owner(&child, "thr_a");
+                Ok(child)
+            })
+            .unwrap()
     };
     assert!(enforce_lru_capacity(&mut active, 2, &pending_commands).is_empty());
     let _ = authority
@@ -21924,7 +21931,7 @@ mod runtime_image_inputs {
         let forked_turns = reopened.store.list_turns_for_thread(&fork.id)?;
         assert_eq!(forked_turns.len(), 1);
         assert_eq!(forked_turns[0].max_output_tokens, max_output_tokens);
-        assert_eq!(forked_turns[0].schema_version, turn.schema_version);
+        assert_eq!(forked_turns[0].schema_version, terminal.schema_version);
         let messages = reopened.restore_thread_messages(&fork)?;
         assert_eq!(
             crate::image_attach::runtime_images_from_blocks(

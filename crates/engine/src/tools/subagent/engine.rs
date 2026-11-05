@@ -161,6 +161,12 @@ impl ChildAuthority {
     pub fn accounting_projection(&self) -> ChildAccountingProjection {
         ChildAccountingProjection::capture(&self.runtime, &self.owner_agent_id)
     }
+    pub fn usage_origin(&self) -> Option<crate::cost_status::NativeUsageOrigin> {
+        let origin = self.runtime.context.accounting_origin.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let origin = origin.or_else(|| self.runtime.accounting_origin.test_session_origin());
+        origin
+    }
     pub fn accounting_origin(&self) -> (crate::cost_status::CostScopeToken, String, String) {
         (
             self.runtime.accounting_origin.cost_scope,
@@ -1165,14 +1171,7 @@ impl ChildJob {
             .fetch_max(logical_step, std::sync::atomic::Ordering::Relaxed);
         self.requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let origin = self.authority.runtime.context.accounting_origin.clone();
-        #[cfg(any(test, feature = "test-support"))]
-        let origin = origin.or_else(|| {
-            self.authority
-                .runtime
-                .accounting_origin
-                .test_session_origin()
-        });
+        let origin = self.authority.usage_origin();
         ChildDispatchedRequest {
             accounting_source: crate::cost_status::NativeUsageSource::capture_with_origin(
                 source,

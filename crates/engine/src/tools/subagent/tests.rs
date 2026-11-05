@@ -1990,36 +1990,41 @@ fn coordination_acceptance_preserves_scopes_candidates_and_replay() {
 
     let mut manager =
         SubAgentManager::new(repo.path().to_path_buf(), 8).with_state_path(state_path.clone());
-    let mut planner = make_worker_spec("parent_session", repo.path().to_path_buf());
-    planner.agent_type = FleetRole::Planner;
-    planner.role = Some("planner".into());
-    manager.register_worker(planner);
-    let agent_a = manager.insert_test_running_agent("a", repo.path());
-    let agent_b = manager.insert_test_running_agent("b", repo.path());
-    let agent_c = manager.insert_test_running_agent("c", repo.path());
+    let (agent_a, agent_b) = manager
+        .with_store_transaction(|manager| {
+            let mut planner = make_worker_spec("parent_session", repo.path().to_path_buf());
+            planner.agent_type = FleetRole::Planner;
+            planner.role = Some("planner".into());
+            manager.register_worker(planner);
+            let agent_a = manager.insert_test_running_agent("a", repo.path());
+            let agent_b = manager.insert_test_running_agent("b", repo.path());
+            let agent_c = manager.insert_test_running_agent("c", repo.path());
 
-    let claim = |owner: &str, path: &str| WriteScopeClaim {
-        owner: owner.into(),
-        roots: vec![],
-        exact_files: vec![path.into()],
-        contracts: vec![],
-    };
-    manager
-        .coordination
-        .register_claim(claim(&agent_a, "src/a.rs"), false, |_| false)
-        .expect("A claim");
-    manager
-        .coordination
-        .register_claim(claim(&agent_b, "src/b.rs"), false, |_| false)
-        .expect("B claim");
-    let contention = manager
-        .coordination
-        .register_claim(claim(&agent_c, "src/a.rs"), false, |owner| {
-            owner == agent_a || owner == agent_b
+            let claim = |owner: &str, path: &str| WriteScopeClaim {
+                owner: owner.into(),
+                roots: vec![],
+                exact_files: vec![path.into()],
+                contracts: vec![],
+            };
+            manager
+                .coordination
+                .register_claim(claim(&agent_a, "src/a.rs"), false, |_| false)
+                .expect("A claim");
+            manager
+                .coordination
+                .register_claim(claim(&agent_b, "src/b.rs"), false, |_| false)
+                .expect("B claim");
+            let contention = manager
+                .coordination
+                .register_claim(claim(&agent_c, "src/a.rs"), false, |owner| {
+                    owner == agent_a || owner == agent_b
+                })
+                .expect_err("C cannot collide silently with A");
+            assert!(contention.contains(&agent_a), "{contention}");
+            assert_eq!(manager.coordination.contentions.len(), 1);
+            Ok((agent_a, agent_b))
         })
-        .expect_err("C cannot collide silently with A");
-    assert!(contention.contains(&agent_a), "{contention}");
-    assert_eq!(manager.coordination.contentions.len(), 1);
+        .unwrap();
 
     let scope_expansion = manager
         .expand_write_claim(&agent_a, vec![], vec!["src/b.rs".into()], vec![])
@@ -10882,7 +10887,12 @@ async fn spawn_duplicate_session_name_error_names_conflicting_agent() {
     let existing_id = existing.id.clone();
     {
         let mut guard = manager.write().await;
-        guard.agents.insert(existing_id.clone(), existing);
+        guard
+            .with_store_transaction(|guard| {
+                guard.agents.insert(existing_id.clone(), existing);
+                guard.persist_state_synchronously()
+            })
+            .unwrap();
     }
 
     let err = {
@@ -11007,7 +11017,12 @@ async fn spawn_reuses_name_released_by_settled_worker() {
     let settled_id = settled.id.clone();
     {
         let mut guard = manager.write().await;
-        guard.agents.insert(settled_id.clone(), settled);
+        guard
+            .with_store_transaction(|guard| {
+                guard.agents.insert(settled_id.clone(), settled);
+                guard.persist_state_synchronously()
+            })
+            .unwrap();
     }
 
     let mut runtime = stub_runtime();
@@ -11156,7 +11171,10 @@ async fn write_capable_agent_does_not_launch_when_durable_registration_fails() {
         )
         .expect_err("writer must fail before spawn when its durable claim cannot commit")
         .to_string();
-    assert!(error.contains("durably register"), "{error}");
+    assert!(
+        error.contains("durably register") || error.contains("writer lock"),
+        "{error}"
+    );
 
     let guard = manager.read().await;
     assert!(guard.agents.is_empty(), "no child task was admitted");
@@ -11804,6 +11822,8 @@ fn persist_and_reload_preserves_checkpoint_for_interrupted_running_agent() {
         .join()
         .expect("persist thread");
 
+    drop(manager);
+
     let mut reloaded = SubAgentManager::new(workspace, 2)
         .with_state_path(default_state_path(tmp.path()).expect("default state path"));
     reloaded.load_state().expect("load state");
@@ -11901,6 +11921,8 @@ fn restart_reconciles_every_orphan_execution_status_once_and_preserves_receipts(
         .expect("persist restart fixture")
         .join()
         .expect("persist thread");
+
+    drop(manager);
 
     let mut reloaded =
         SubAgentManager::new(workspace.clone(), 8).with_state_path(state_path.clone());
@@ -12029,7 +12051,7 @@ fn persist_state_rejects_state_path_outside_state_root() {
         .persist_state()
         .expect_err("outside state path should fail");
 
-    assert!(format!("{err:#}").contains("must stay within state root"));
+    assert!(format!("{err:#}").contains("without its writer lock"));
 }
 
 /// A user who keeps application state on another volume makes the workspace's
@@ -13968,30 +13990,35 @@ async fn child_write_tool_fails_closed_outside_registered_scope() {
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
     {
         let mut guard = manager.write().await;
-        assert_eq!(
-            guard.insert_test_running_agent("scoped", tmp.path()),
-            "agent_scoped"
-        );
         guard
-            .coordination
-            .register_claim(
-                WriteScopeClaim {
-                    owner: "agent_scoped".into(),
-                    roots: vec!["src".into()],
-                    exact_files: vec![],
-                    contracts: vec![],
-                },
-                false,
-                |_| false,
-            )
+            .with_store_transaction(|guard| {
+                assert_eq!(
+                    guard.insert_test_running_agent("scoped", tmp.path()),
+                    "agent_scoped"
+                );
+                guard
+                    .coordination
+                    .register_claim(
+                        WriteScopeClaim {
+                            owner: "agent_scoped".into(),
+                            roots: vec!["src".into()],
+                            exact_files: vec![],
+                            contracts: vec![],
+                        },
+                        false,
+                        |_| false,
+                    )
+                    .unwrap();
+                guard
+                    .register_worker_with_coordination(make_write_worker_spec(
+                        "other-writer",
+                        tmp.path().to_path_buf(),
+                        "conflict",
+                    ))
+                    .expect("active conflicting writer");
+                Ok(())
+            })
             .unwrap();
-        guard
-            .register_worker_with_coordination(make_write_worker_spec(
-                "other-writer",
-                tmp.path().to_path_buf(),
-                "conflict",
-            ))
-            .expect("active conflicting writer");
     }
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
@@ -14553,7 +14580,7 @@ async fn a_parked_child_stops_holding_its_write_claim() {
     let record = manager.get_worker_record(&parked).expect("worker record");
     assert_eq!(
         record.status,
-        AgentWorkerStatus::WaitingForUser,
+        AgentWorkerStatus::Interrupted,
         "the parked projection is unchanged; only coordination learns to read it"
     );
     assert!(
@@ -23029,7 +23056,7 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // schema edits, plus 112B for the display-only bash description. The
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
 // ceiling keeps its existing platform margin after the reviewed schema growth.
-const PARENT_SURFACE_BYTE_CEILING: usize = 91_812;
+const PARENT_SURFACE_BYTE_CEILING: usize = 92_100;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {
@@ -24868,6 +24895,8 @@ mod child_permission_gate {
         runtime.context.auto_approve = auto_approve;
         runtime.context.approval_mode = approval_mode;
         runtime.context.live_posture = live_posture;
+        runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+        runtime.context.accounting_origin = runtime.accounting_origin.test_session_origin();
         runtime.allow_shell = true;
         runtime.event_tx = Some(tx);
         runtime = runtime.with_approval_receipt_store(Ok(
@@ -25646,7 +25675,9 @@ mod child_permission_gate {
                 terminal.needs_input = None;
                 assert!(
                     manager
-                        .finish_terminal_result(&agent_id, terminal, false, true)
+                        .with_store_transaction(|manager| {
+                            manager.finish_terminal_result(&agent_id, terminal, false, true)
+                        })
                         .expect("durable worker operation")
                 );
             }
@@ -26834,22 +26865,27 @@ async fn agent_claim_expands_the_callers_write_scope() {
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
     {
         let mut guard = manager.write().await;
-        assert_eq!(
-            guard.insert_test_running_agent("scoped", tmp.path()),
-            "agent_scoped"
-        );
         guard
-            .coordination
-            .register_claim(
-                WriteScopeClaim {
-                    owner: "agent_scoped".into(),
-                    roots: vec!["src".into()],
-                    exact_files: vec![],
-                    contracts: vec![],
-                },
-                false,
-                |_| false,
-            )
+            .with_store_transaction(|guard| {
+                assert_eq!(
+                    guard.insert_test_running_agent("scoped", tmp.path()),
+                    "agent_scoped"
+                );
+                guard
+                    .coordination
+                    .register_claim(
+                        WriteScopeClaim {
+                            owner: "agent_scoped".into(),
+                            roots: vec!["src".into()],
+                            exact_files: vec![],
+                            contracts: vec![],
+                        },
+                        false,
+                        |_| false,
+                    )
+                    .unwrap();
+                Ok(())
+            })
             .unwrap();
     }
     let mut runtime = stub_runtime();

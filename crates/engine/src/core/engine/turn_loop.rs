@@ -1385,7 +1385,7 @@ impl Engine {
             });
         let review_route = client.effective_route_envelope(client.model(), chrono::Utc::now());
         let origin = if let Some(child) = child_accounting.as_ref() {
-            child.runtime.context.accounting_origin.clone()
+            child.usage_origin()
         } else {
             self.config
                 .compaction
