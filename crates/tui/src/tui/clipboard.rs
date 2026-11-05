@@ -1069,10 +1069,39 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
 /// Known costs: one PowerShell start, paid only after arboard already failed,
 /// and the PNG crosses the child's stdout as base64, so a multi-megabyte
 /// screenshot moves a few megabytes through the pipe.
+///
+/// Bounds: the child is killed after [`POWERSHELL_TIMEOUT`], its stdout is cut
+/// at [`MAX_ENCODED_BYTES`], and reads happen on a helper thread so a child
+/// that fills the pipe cannot deadlock the wait. The UI thread can still block
+/// for that timeout; a clipboard owner that never renders the format is the
+/// case this guards against, and failing closed after ten seconds beats
+/// freezing the TUI.
+#[cfg(all(target_os = "windows", not(test)))]
+fn powershell_path() -> std::path::PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("powershell.exe"))
+}
+
 #[cfg(all(target_os = "windows", not(test)))]
 fn read_image_via_powershell(workspace: &Path) -> Option<PastedImage> {
     use base64::Engine as _;
     use std::io::Read as _;
+    use std::time::Duration;
+    use wait_timeout::ChildExt as _;
+
+    /// The script prints the PNG as base64; anything past this is beyond the
+    /// attach limit anyway, so the read stops instead of buffering an
+    /// unbounded stream.
+    const MAX_ENCODED_BYTES: u64 = 16 * 1024 * 1024;
+    /// A clipboard owner that never renders the format must not hold the UI.
+    const POWERSHELL_TIMEOUT: Duration = Duration::from_secs(10);
 
     const SCRIPT: &str = concat!(
         "Add-Type -AssemblyName System.Windows.Forms; ",
@@ -1084,16 +1113,37 @@ fn read_image_via_powershell(workspace: &Path) -> Option<PastedImage> {
         "[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray())) }"
     );
 
-    let mut child = Command::new("powershell.exe")
+    let mut child = Command::new(powershell_path())
         .args(["-NoProfile", "-STA", "-Command", SCRIPT])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let mut encoded = String::new();
-    child.stdout.take()?.read_to_string(&mut encoded).ok()?;
-    if !child.wait().ok()?.success() || encoded.trim().is_empty() {
+
+    // Read on a helper thread: a child that fills the pipe would otherwise
+    // block forever while the main thread waits for it to exit.
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::Builder::new()
+        .name("clipboard-powershell".to_string())
+        .spawn(move || {
+            let mut buffer = String::new();
+            let _ = stdout.take(MAX_ENCODED_BYTES).read_to_string(&mut buffer);
+            buffer
+        })
+        .ok()?;
+
+    let status = match child.wait_timeout(POWERSHELL_TIMEOUT) {
+        Ok(Some(status)) => status,
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return None;
+        }
+    };
+    let encoded = reader.join().ok()?;
+    if !status.success() || encoded.trim().is_empty() {
         return None;
     }
     let bytes = base64::engine::general_purpose::STANDARD
