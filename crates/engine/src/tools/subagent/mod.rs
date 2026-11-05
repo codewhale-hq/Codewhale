@@ -73,7 +73,6 @@ use codewhale_agent_contract::worker_profile::{
     narrow_model_steps, narrow_optional_limit,
 };
 use codewhale_config::AppMode;
-use codewhale_dependencies::{ExternalTool, Git};
 #[cfg(test)]
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_execpolicy::canonical_action::{
@@ -1776,26 +1775,20 @@ fn is_false(b: &bool) -> bool {
 }
 
 fn current_git_branch(workspace: &Path) -> Option<String> {
-    let branch = run_git(workspace, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let branch = branch.trim();
-    if branch.is_empty() {
-        return None;
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let head = match codewhale_util::git_metadata::read_head(workspace, &cancel) {
+        Ok(head) => head,
+        Err(codewhale_util::git_metadata::GitReadError::NotRepository) => return None,
+        Err(error) => {
+            tracing::warn!(%error, "sub-agent git branch read failed");
+            return None;
+        }
+    };
+    head.id.as_ref()?;
+    match head.branch {
+        Some(branch) => Some(branch),
+        None => head.short_id().map(|short| format!("detached:{short}")),
     }
-    if branch != "HEAD" {
-        return Some(branch.to_string());
-    }
-
-    let short_hash = run_git(workspace, &["rev-parse", "--short", "HEAD"])?;
-    let short_hash = short_hash.trim();
-    (!short_hash.is_empty()).then(|| format!("detached:{short_hash}"))
-}
-
-fn run_git(workspace: &Path, args: &[&str]) -> Option<String> {
-    let output = Git::output(args, workspace).ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 struct ChildActivationState {

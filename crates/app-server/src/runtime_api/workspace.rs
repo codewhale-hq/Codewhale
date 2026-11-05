@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use codewhale_dependencies::Git;
-use codewhale_util::git_metadata::is_git_metadata_name;
+use codewhale_util::git_metadata::{GitHead, GitReadError, is_git_metadata_name, read_head};
 
 use super::{ApiError, RuntimeApiState};
 
@@ -209,15 +209,12 @@ pub(super) fn collect_workspace_status(workspace: &FsPath) -> WorkspaceStatusRes
         workspace_trusted: codewhale_runtime::config::is_workspace_trusted(workspace),
     };
 
-    let Some(repo_check) = run_git(workspace, &["rev-parse", "--is-inside-work-tree"]) else {
+    let Some(head) = read_workspace_head(workspace) else {
         return status;
     };
-    if repo_check.trim() != "true" {
-        return status;
-    }
 
     status.git_repo = true;
-    let metadata = collect_workspace_git_metadata(workspace);
+    let metadata = workspace_git_metadata(workspace, &head);
     status.branch = metadata.branch;
     status.head = metadata.head;
     status.dirty = metadata.dirty;
@@ -255,18 +252,40 @@ pub(super) fn collect_workspace_status(workspace: &FsPath) -> WorkspaceStatusRes
 }
 
 pub(super) fn collect_workspace_git_metadata(workspace: &FsPath) -> WorkspaceGitMetadata {
-    let Some(repo_check) = run_git(workspace, &["rev-parse", "--is-inside-work-tree"]) else {
-        return WorkspaceGitMetadata::default();
-    };
-    if repo_check.trim() != "true" {
-        return WorkspaceGitMetadata::default();
+    match read_workspace_head(workspace) {
+        Some(head) => workspace_git_metadata(workspace, &head),
+        None => WorkspaceGitMetadata::default(),
     }
+}
 
+fn workspace_git_metadata(workspace: &FsPath, head: &GitHead) -> WorkspaceGitMetadata {
+    let (branch, short_id) = match head.id {
+        Some(_) => (
+            head.branch.clone().or_else(|| {
+                head.short_id()
+                    .map(|short_id| format!("detached@{short_id}"))
+            }),
+            head.short_id().map(str::to_string),
+        ),
+        None => (None, None),
+    };
     WorkspaceGitMetadata {
-        branch: current_git_branch(workspace),
-        head: current_git_head(workspace),
+        branch,
+        head: short_id,
         dirty: run_git(workspace, &["status", "--porcelain=v1"])
             .is_some_and(|porcelain| !porcelain.trim().is_empty()),
+    }
+}
+
+fn read_workspace_head(workspace: &FsPath) -> Option<GitHead> {
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    match read_head(workspace, &cancel) {
+        Ok(head) => Some(head),
+        Err(GitReadError::NotRepository) => None,
+        Err(error) => {
+            tracing::warn!(%error, "workspace git head read failed");
+            None
+        }
     }
 }
 
@@ -280,30 +299,6 @@ fn run_git(workspace: &FsPath, args: &[&str]) -> Option<String> {
         return None;
     }
     String::from_utf8(output.stdout).ok()
-}
-
-fn current_git_branch(workspace: &FsPath) -> Option<String> {
-    let repo_check = run_git(workspace, &["rev-parse", "--is-inside-work-tree"])?;
-    if repo_check.trim() != "true" {
-        return None;
-    }
-    let branch = run_git(workspace, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let branch = branch.trim();
-    if branch.is_empty() {
-        return None;
-    }
-    if branch != "HEAD" {
-        return Some(branch.to_string());
-    }
-    let short_hash = run_git(workspace, &["rev-parse", "--short", "HEAD"])?;
-    let short_hash = short_hash.trim();
-    (!short_hash.is_empty()).then(|| format!("detached@{short_hash}"))
-}
-
-fn current_git_head(workspace: &FsPath) -> Option<String> {
-    let head = run_git(workspace, &["rev-parse", "--short", "HEAD"])?;
-    let head = head.trim();
-    (!head.is_empty()).then(|| head.to_string())
 }
 
 // ---------------------------------------------------------------------------
