@@ -55,8 +55,8 @@ use sha2::{Digest, Sha256};
 use codewhale_dependencies::{ExternalTool as _, Git};
 
 use super::workspace::{
-    FILE_SERVE_MAX_BYTES, canonical_workspace, collect_workspace_status, content_revision,
-    relative_request_path,
+    FILE_SERVE_MAX_BYTES, ThreadScopeQuery, canonical_workspace, collect_workspace_status,
+    content_revision, relative_request_path, scoped_workspace,
 };
 use super::{ApiError, RuntimeApiState};
 
@@ -271,8 +271,9 @@ pub(super) struct GitStatusDetailResponse {
 
 pub(super) async fn git_status_detail(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
 ) -> Result<Json<GitStatusDetailResponse>, ApiError> {
-    let workspace = state.workspace.clone();
+    let workspace = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     tokio::task::spawn_blocking(move || collect_git_status_detail(&workspace))
         .await
         .map_err(|_| ApiError::internal("git status failed"))?
@@ -1097,8 +1098,9 @@ fn porcelain_status(index: char, worktree: char) -> &'static str {
 /// client that loaded both cannot see them disagree.
 pub(super) async fn git_changes(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let workspace = state.workspace.clone();
+    let workspace = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     let detail = tokio::task::spawn_blocking(move || collect_git_status_detail(&workspace))
         .await
         .map_err(|_| ApiError::internal("git status failed"))??;
@@ -1195,6 +1197,7 @@ pub(super) struct GitDiffQuery {
     base: Option<String>,
     context: Option<usize>,
     ignore_whitespace: Option<bool>,
+    thread_id: Option<String>,
 }
 
 /// `GET /v1/diff?path=` — one file's unified diff against HEAD (or the empty
@@ -1206,7 +1209,8 @@ pub(super) async fn git_diff(
     Query(query): Query<GitDiffQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let path = relative_request_path(&query.path, false)?;
-    let workspace = resolve_workspace(&state.workspace, true).await?;
+    let scoped = scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    let workspace = resolve_workspace(&scoped, true).await?;
     let base = selected_diff_base(&workspace, query.base.as_deref()).await?;
     let context = diff_context(query.context)?;
     let path_arg = path.to_string_lossy().into_owned();
@@ -1272,6 +1276,7 @@ pub(super) struct WorkspaceDiffQuery {
     base: Option<String>,
     context: Option<usize>,
     ignore_whitespace: Option<bool>,
+    thread_id: Option<String>,
 }
 
 /// `GET /v1/workspace/diff?limit=` — the whole tree's diff against HEAD plus
@@ -1287,7 +1292,8 @@ pub(super) async fn workspace_diff(
             "limit must be between 1024 and {WORKSPACE_DIFF_MAX_BYTES} bytes"
         )));
     }
-    let workspace = resolve_workspace(&state.workspace, true).await?;
+    let scoped = scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    let workspace = resolve_workspace(&scoped, true).await?;
     let base = selected_diff_base(&workspace, query.base.as_deref()).await?;
     let context = diff_context(query.context)?;
 
@@ -1354,6 +1360,7 @@ pub(super) async fn workspace_diff(
 #[serde(deny_unknown_fields)]
 pub(super) struct GitGraphQuery {
     limit: Option<usize>,
+    thread_id: Option<String>,
 }
 
 const GRAPH_FIELD: char = '\u{1f}';
@@ -1369,7 +1376,8 @@ pub(super) async fn git_graph(
             "limit must be between 1 and {GRAPH_LIMIT_MAX}"
         )));
     }
-    let workspace = resolve_workspace(&state.workspace, true).await?;
+    let scoped = scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    let workspace = resolve_workspace(&scoped, true).await?;
     let limit_arg = format!("-n{limit}");
     let format = format!(
         "%H{GRAPH_FIELD}%h{GRAPH_FIELD}%P{GRAPH_FIELD}%an{GRAPH_FIELD}%ae{GRAPH_FIELD}%aI{GRAPH_FIELD}%D{GRAPH_FIELD}%s{GRAPH_RECORD}"

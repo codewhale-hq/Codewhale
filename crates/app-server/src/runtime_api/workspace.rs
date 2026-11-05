@@ -11,7 +11,47 @@ use sha2::{Digest, Sha256};
 use codewhale_dependencies::Git;
 use codewhale_util::git_metadata::{GitHead, GitReadError, is_git_metadata_name, read_head};
 
-use super::{ApiError, RuntimeApiState};
+use super::{ApiError, RuntimeApiState, map_thread_err};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ThreadScopeQuery {
+    pub(super) thread_id: Option<String>,
+}
+
+pub(super) async fn scoped_workspace(
+    state: &RuntimeApiState,
+    thread_id: Option<&str>,
+) -> Result<PathBuf, ApiError> {
+    let Some(thread_id) = thread_id else {
+        return Ok(state.workspace.clone());
+    };
+    if thread_id.trim().is_empty() {
+        return Err(ApiError::bad_request("thread_id must not be empty"));
+    }
+    let thread = state
+        .runtime_threads
+        .get_thread(thread_id)
+        .await
+        .map_err(map_thread_err)?;
+    let recorded = thread.workspace;
+    if !recorded.is_absolute() {
+        return Err(
+            ApiError::conflict("thread workspace is not an absolute path")
+                .with_code("thread_workspace_unavailable"),
+        );
+    }
+    tokio::task::spawn_blocking(move || {
+        codewhale_util::workspace_dir::open_workspace_directory(&recorded)
+            .map(|(canonical, _directory)| canonical)
+            .map_err(|_| {
+                ApiError::conflict("thread workspace is unavailable or changed")
+                    .with_code("thread_workspace_unavailable")
+            })
+    })
+    .await
+    .map_err(|_| ApiError::internal("thread workspace resolution failed"))?
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -330,6 +370,7 @@ pub(super) struct WorkspaceFilesListQuery {
     #[serde(default)]
     path: String,
     limit: Option<usize>,
+    thread_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -357,6 +398,7 @@ pub(super) struct WorkspaceFileReadQuery {
     path: String,
     offset: Option<usize>,
     limit: Option<usize>,
+    thread_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -557,7 +599,7 @@ pub(super) async fn workspace_files_list(
             "limit must be between 1 and {FILE_LIST_LIMIT_MAX}"
         )));
     }
-    let workspace = state.workspace.clone();
+    let workspace = scoped_workspace(&state, query.thread_id.as_deref()).await?;
     tokio::task::spawn_blocking(move || list_workspace_directory(&workspace, &relative, limit))
         .await
         .map_err(|_| ApiError::internal("workspace listing failed"))?
@@ -727,7 +769,7 @@ pub(super) async fn workspace_file_read(
 ) -> Result<Json<WorkspaceFileReadResponse>, ApiError> {
     let relative = relative_request_path(&query.path, false)?;
     let (offset, limit) = parse_read_window(query.offset, query.limit)?;
-    let workspace = state.workspace.clone();
+    let workspace = scoped_workspace(&state, query.thread_id.as_deref()).await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_workspace(&workspace)?;
         if precheck_file_target(&root, &relative)?.is_none() {

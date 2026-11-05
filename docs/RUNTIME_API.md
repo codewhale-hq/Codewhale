@@ -2300,6 +2300,17 @@ also how a client sees model-spawned work.
   could not be loaded and only the store-recorded route's static window
   resolved.
 
+**Thread-scoped reads.** `GET /v1/git`, `/v1/changes`, `/v1/diff`,
+`/v1/workspace/diff`, `/v1/git/graph`, `/v1/workspace/files` and
+`/v1/workspace/files/read` accept an optional `thread_id`. With it, the route
+reads the workspace recorded on that thread (the runtime store's thread record
+is the only source) instead of the server's workspace, through the same
+confined paths. Without it the route behaves exactly as before. An unknown
+thread is 404; a recorded workspace that is not an absolute path, or that is
+missing, replaced by a link or changed during resolution is 409 with
+`error.code` `thread_workspace_unavailable`. Mutating git routes, file
+writes, `/v1/workspace/status` and file search stay on the server workspace.
+
 **Git** (workspace repository operations, APPS-106)
 - `GET /v1/git` — status detail: `git_repo`, `branch`, `head`
   (abbreviated, for display), `head_oid`, `index_token`, `revision`,
