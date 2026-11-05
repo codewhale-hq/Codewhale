@@ -526,15 +526,17 @@ mod tests {
         let manager =
             crate::session_manager::SessionManager::new(dir.path().to_path_buf()).expect("manager");
         manager
-            .save_session(&crate::session_manager::create_saved_session_with_id_and_mode(
-                "gone".to_string(),
-                &[],
-                "test-model",
-                dir.path(),
-                0,
-                None,
-                None,
-            ))
+            .save_session(
+                &crate::session_manager::create_saved_session_with_id_and_mode(
+                    "gone".to_string(),
+                    &[],
+                    "test-model",
+                    dir.path(),
+                    0,
+                    None,
+                    None,
+                ),
+            )
             .expect("save");
         manager.delete_session("gone").expect("delete");
         let archive_dir = dir

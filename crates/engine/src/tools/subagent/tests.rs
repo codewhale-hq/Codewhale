@@ -18913,15 +18913,17 @@ async fn launch_gate_queues_extra_direct_children() {
         .expect("launch gate session store");
     let session_id = "launch-gate-session";
     sessions
-        .save_session(&crate::session_manager::create_saved_session_with_id_and_mode(
-            session_id.to_string(),
-            &[],
-            "deepseek-v4-flash",
-            tmp.path(),
-            0,
-            None,
-            Some("agent"),
-        ))
+        .save_session(
+            &crate::session_manager::create_saved_session_with_id_and_mode(
+                session_id.to_string(),
+                &[],
+                "deepseek-v4-flash",
+                tmp.path(),
+                0,
+                None,
+                Some("agent"),
+            ),
+        )
         .expect("launch gate saved origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),

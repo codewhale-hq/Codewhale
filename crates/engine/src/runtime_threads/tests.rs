@@ -8453,7 +8453,10 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
     assert!(enforce_lru_capacity(&mut active, 2, &pending_commands).is_empty());
     assert!(active.engines.contains_key("thr_a"));
     pending_commands.clear();
-    let live_after_cancel = authority.try_read().unwrap().live_count_for_session("thr_a");
+    let live_after_cancel = authority
+        .try_read()
+        .unwrap()
+        .live_count_for_session("thr_a");
     let evicted = enforce_lru_capacity(&mut active, 2, &pending_commands);
     assert_eq!(
         evicted.len(),
