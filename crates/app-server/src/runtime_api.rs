@@ -1571,6 +1571,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         thread_create_idempotency: true,
         thread_idle_precondition: true,
         thread_patch_undo_turn_id: true,
+        thread_scoped_reads: true,
         thread_shell_consent: true,
         turns: true,
         turn_operation_idempotency: true,
