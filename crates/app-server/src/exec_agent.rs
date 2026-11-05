@@ -619,6 +619,8 @@ pub async fn run_exec_agent(
         todos: new_shared_todo_list(),
         plan_state: new_shared_plan_state(),
         goal_state: codewhale_engine::tools::goal::new_shared_goal_state(),
+        goal_complete_judge: execution_config.goal_complete_judge(),
+        goal_blocked_judge: execution_config.goal_blocked_judge(),
         max_spawn_depth: if fleet_authority_active {
             0
         } else {

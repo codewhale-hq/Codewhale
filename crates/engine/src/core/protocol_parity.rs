@@ -658,7 +658,6 @@ pub fn event_to_protocol(event: &Event, ids: &ProtocolIds) -> wire::EventMsg {
             duration_ms,
             first_token_ms,
             request_ms,
-            finish_reason: _,
             ..
         } => wire::EventMsg::TurnUsage {
             max_output_tokens: *max_output_tokens,

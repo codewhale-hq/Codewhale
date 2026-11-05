@@ -504,18 +504,26 @@ async fn dropping_an_actual_dispatched_core_call_keeps_unknown_usage_without_ret
             .contains("wall-clock deadline")
     );
     let snapshot = usage.snapshot().await;
-    assert_eq!(snapshot.records.len(), 0);
-    assert_eq!(snapshot.drop_records.len(), 1);
+    assert_eq!(snapshot.records.len(), 1);
+    let revision = snapshot.records[0]
+        .settlement
+        .as_ref()
+        .expect("dropped dispatch keeps a settled receipt");
     assert_eq!(
-        snapshot.drop_records[0].reason,
+        revision.coverage,
+        crate::llm_client::ProviderUsageCoverage::Missing
+    );
+    assert_eq!(
+        revision.reason,
         crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
     );
-    assert_eq!(snapshot.drop_records[0].route.model, "captured-model");
-    assert_eq!(snapshot.dropped_records, 1);
+    assert_eq!(snapshot.records[0].usage.route.model, "captured-model");
+    assert!(snapshot.drop_records.is_empty());
+    assert_eq!(snapshot.dropped_records, 0);
     assert_eq!(
-        usage.snapshot().await.drop_records,
-        snapshot.drop_records,
-        "inspection never republishes or loses the Drop receipt"
+        usage.snapshot().await.records,
+        snapshot.records,
+        "inspection never republishes or loses the settled receipt"
     );
     drop(caller);
     assert!(
@@ -613,12 +621,20 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
     assert_eq!(result.iterations, 2);
     assert_eq!(result.usage.input_tokens, 7);
     assert_eq!(result.usage.output_tokens, 11);
-    assert_eq!(result.routed_usage.len(), 1);
-    assert_eq!(result.routed_usage_drop_records.len(), 1);
+    assert_eq!(result.routed_usage.len(), 2);
+    let revision = result.routed_usage[1]
+        .settlement
+        .as_ref()
+        .expect("cancelled request keeps a settled receipt");
     assert_eq!(
-        result.routed_usage_drop_records[0].reason,
+        revision.coverage,
+        crate::llm_client::ProviderUsageCoverage::Missing
+    );
+    assert_eq!(
+        revision.reason,
         crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
     );
+    assert!(result.routed_usage_drop_records.is_empty());
     let context_path = PathBuf::from(
         result
             .trace
@@ -632,7 +648,7 @@ async fn full_caller_channel_never_delays_original_cancel_or_loses_usage_and_ker
         !context_path.exists(),
         "cancelled nested Engine releases its owned kernel/context file"
     );
-    assert_eq!(usage.snapshot().await.dropped_records, 1);
+    assert_eq!(usage.snapshot().await.dropped_records, 0);
 }
 
 #[tokio::test]

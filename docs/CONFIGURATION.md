@@ -3057,6 +3057,13 @@ continuation_delay_seconds = 300
 # Default: uncapped (0 or absent). Positive values are preserved.
 # This bounds each provider turn, never the number of continuation passes.
 max_steps = 0
+
+# Optional independent judges (#6013). Default: false (the model's own
+# update_goal call is final). When true, one adversarial critique of the claim
+# runs before `update_goal` completes (complete_judge) or blocks (blocked_judge)
+# the goal. Each judged call is billed as auxiliary usage.
+complete_judge = false
+blocked_judge = false
 ```
 
 The effective delay is capped at 86,400 seconds (24 hours); use an automation
@@ -3073,6 +3080,17 @@ it gets one bounded final report and the turn classifies as budget-exhausted. An
 unfinished goal then pauses with the BudgetLimit reason instead of re-arming
 another goal turn — resume it explicitly after reviewing the report. Wall-clock
 and stream protections are separate and still apply.
+
+With `[goal] complete_judge = true`, a refuted completion claim keeps the goal
+active and records the judge's findings as critical gaps. A missing,
+unparseable, uncertain or failed verdict never completes the goal; it records
+one fixed gap, so a persistent judge outage ends in the existing no-progress
+pause rather than a silent pass. With `[goal] blocked_judge = true`, a refuted
+blocker keeps the goal active, and an unverifiable one hands the goal back as a
+yield that your next message resumes. The judge reads only the objective, the
+evidence and the verification receipt, not the transcript or the diff. The
+operator `POST /v1/threads/{id}/goal/complete|block` routes and `/goal`
+commands stay ungated.
 
 The delay starts only after a successful turn while an explicitly created goal
 is still active. `/goal pause`, `/goal done`, `/goal blocked`, `/goal clear`,

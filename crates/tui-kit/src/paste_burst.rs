@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 const PASTE_BURST_MIN_CHARS: u16 = 3;
+const PASTE_BURST_MAX_BYTES: usize = 64 * 1024;
 const PASTE_BURST_CHAR_INTERVAL: Duration = Duration::from_millis(8);
 const PASTE_ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(120);
 #[cfg(not(windows))]
@@ -46,6 +47,12 @@ impl PasteBurst {
         PASTE_BURST_ACTIVE_IDLE_TIMEOUT + Duration::from_millis(1)
     }
 
+    fn push_bounded(&mut self, ch: char) {
+        if self.buffer.len() + ch.len_utf8() <= PASTE_BURST_MAX_BYTES {
+            self.buffer.push(ch);
+        }
+    }
+
     pub fn on_plain_char(&mut self, ch: char, now: Instant) -> CharDecision {
         self.note_plain_char(now);
 
@@ -59,7 +66,7 @@ impl PasteBurst {
         {
             self.active = true;
             let _ = self.pending_first_char.take();
-            self.buffer.push(held);
+            self.push_bounded(held);
             self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
             return CharDecision::BeginBufferFromPending;
         }
@@ -149,10 +156,10 @@ impl PasteBurst {
             // it into the burst first or it would land after the newline
             // ("a\nb" became "\nab").
             if let Some((held, _)) = self.pending_first_char.take() {
-                self.buffer.push(held);
+                self.push_bounded(held);
                 self.active = true;
             }
-            self.buffer.push('\n');
+            self.push_bounded('\n');
             self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
             true
         } else {
@@ -173,7 +180,7 @@ impl PasteBurst {
     /// untouched. The burst never rewrites the composer (Y-7): chars before
     /// the burst stay exactly as the user typed them.
     pub fn begin_buffer_from_now(&mut self, ch: char, now: Instant) {
-        self.buffer.push(ch);
+        self.push_bounded(ch);
         self.active = true;
         self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
     }
@@ -192,7 +199,7 @@ impl PasteBurst {
     }
 
     pub fn append_char_to_buffer(&mut self, ch: char, now: Instant) {
-        self.buffer.push(ch);
+        self.push_bounded(ch);
         self.burst_window_until = Some(now + PASTE_ENTER_SUPPRESS_WINDOW);
     }
 
