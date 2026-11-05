@@ -24929,7 +24929,26 @@ mod child_permission_gate {
         runtime.context.approval_mode = approval_mode;
         runtime.context.live_posture = live_posture;
         runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
-        runtime.context.accounting_origin = runtime.accounting_origin.test_session_origin();
+        let sessions = crate::session_manager::SessionManager::new(tmp.path().join("accounting"))
+            .expect("guardian accounting session store");
+        sessions
+            .save_session(
+                &crate::session_manager::create_saved_session_with_id_and_mode(
+                    runtime.accounting_origin.session_id.clone(),
+                    &[],
+                    "deepseek-v4-flash",
+                    &workspace,
+                    0,
+                    None,
+                    Some("agent"),
+                ),
+            )
+            .expect("guardian accounting saved origin");
+        runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            runtime.accounting_origin.cost_scope,
+            sessions.sessions_dir().to_path_buf(),
+            runtime.accounting_origin.session_id.clone(),
+        ));
         runtime.allow_shell = true;
         runtime.event_tx = Some(tx);
         runtime = runtime.with_approval_receipt_store(Ok(
@@ -26208,14 +26227,17 @@ mod child_permission_gate {
         assert!(output.contains("guardian-missing-usage"), "{output}");
 
         let pending = crate::cost_status::drain();
-        assert_eq!(pending.priced_turns, 0);
-        assert_eq!(pending.unpriced_turns, 1);
+        let mut cost = crate::session_manager::SessionCostSnapshot::default();
+        for record in &pending.source_records {
+            cost.project_usage_record(record).unwrap();
+        }
+        assert_eq!(cost.priced_turns, 0);
+        assert_eq!(cost.unpriced_turns, 1);
         assert!(
-            pending
-                .unpriced_reasons
+            cost.unpriced_reasons
                 .contains("provider_success_missing_usage")
         );
-        assert_eq!(pending.usage_source_fingerprints.len(), 1);
+        assert_eq!(cost.usage_source_fingerprints.len(), 1);
 
         let worker = manager
             .read()

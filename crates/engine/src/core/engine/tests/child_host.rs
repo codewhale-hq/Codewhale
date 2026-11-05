@@ -411,6 +411,23 @@ async fn future_control_lookahead_stays_bounded_and_never_retargets_input() {
     assert!(engine.session.messages.is_empty());
 }
 
+fn save_origin_session(workspace: &Path) {
+    let sessions = crate::session_manager::SessionManager::default_location().unwrap();
+    sessions
+        .save_session(
+            &crate::session_manager::create_saved_session_with_id_and_mode(
+                "origin-session".to_string(),
+                &[],
+                DEFAULT_TEXT_MODEL,
+                workspace,
+                0,
+                None,
+                Some("agent"),
+            ),
+        )
+        .unwrap();
+}
+
 async fn actor_fixture(
     workspace: &Path,
     scripts: Vec<Vec<StreamEvent>>,
@@ -861,6 +878,7 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
     for (body, tool_use) in [(false, false), (true, false), (true, true)] {
         let dir = tempdir().unwrap();
         let _home = crate::test_support::SealedHome::at(dir.path());
+        save_origin_session(dir.path());
         let (_old, _old_handle, captured, _) = fixture(dir.path(), Some(Vec::new()));
         let mut authority = captured.as_ref().clone();
         authority.runtime.step_api_timeout = Duration::from_millis(25);
@@ -931,8 +949,27 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("the child's usage receipt settles");
+        .await;
+        let record = match record {
+            Ok(record) => record,
+            Err(_) => {
+                let last = job
+                    .authority
+                    .runtime
+                    .manager
+                    .read()
+                    .await
+                    .get_worker_record(&job.authority.owner_agent_id)
+                    .unwrap();
+                panic!(
+                    "the child's usage receipt settles (body={body} tool_use={tool_use}): fingerprints={} missing={} input={:?} output={:?}",
+                    last.usage_source_fingerprints.len(),
+                    last.missing_usage_sources.len(),
+                    last.usage.input_tokens,
+                    last.usage.output_tokens
+                );
+            }
+        };
         if body {
             assert_eq!(
                 record.usage_source_fingerprints.len(),
@@ -1038,6 +1075,7 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
     use crate::llm_client::mock::canned;
     let dir = tempdir().unwrap();
     let _home = crate::test_support::SealedHome::at(dir.path());
+    save_origin_session(dir.path());
     let _cost = crate::cost_status::test_scope();
     let (_old, _handle, captured, _) = fixture(dir.path(), Some(Vec::new()));
     let (mut core, handle, job, successful) = actor_fixture_from_authority(
@@ -1104,9 +1142,14 @@ async fn child_cancelled_dispatched_open_keeps_unknown_origin_while_queued_cance
     assert!(record.usage.total_tokens.is_none());
     assert!(record.has_unreported_usage);
     let pending = crate::cost_status::drain();
-    assert_eq!(pending.priced_turns, 0);
-    assert_eq!(pending.unpriced_turns, 1);
-    assert!(pending.unpriced_reasons.contains("request_outcome_unknown"));
+    let mut cost = crate::session_manager::SessionCostSnapshot::default();
+    for record in &pending.source_records {
+        cost.project_usage_record(record).unwrap();
+    }
+    assert_eq!(cost.priced_turns, 0);
+    assert_eq!(cost.unpriced_turns, 1);
+    assert_eq!(cost.usage_source_fingerprints.len(), 1);
+    assert!(cost.unpriced_reasons.contains("request_outcome_unknown"));
     // The separate queued-cancellation case above asserts zero dispatches.
     // This case requires the actual model invocation to begin before cancel.
 }
