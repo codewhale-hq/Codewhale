@@ -4947,7 +4947,7 @@ impl Engine {
         let max_content_bytes = self.config.stream_max_content_bytes;
         let child_request_deadline = self
             .child_job()
-            .map(|job| request_dispatched_at + job.authority.runtime.step_api_timeout);
+            .map(|job| Instant::now() + job.authority.runtime.step_api_timeout);
 
         // Process stream events
         loop {
