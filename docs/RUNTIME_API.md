@@ -2310,6 +2310,18 @@ thread is 404; a recorded workspace that is not an absolute path, or that is
 missing, replaced by a link or changed during resolution is 409 with
 `error.code` `thread_workspace_unavailable`. Mutating git routes, file
 writes, `/v1/workspace/status` and file search stay on the server workspace.
+Clients must require the `thread_scoped_reads` capability on
+`GET /v1/runtime/info` before sending `thread_id`: older Engines reject the
+unknown query parameter.
+
+**Status unavailable.** `GET /v1/workspace/status` and `GET /v1/git` report
+`status_unavailable: true` when `git status` could not be read (git failed to
+start or exited non-zero, or the repository's filter configuration could not be
+inspected). `dirty` and the change counts are then unknown, not zero, and clients
+must not present them as clean. Status reads neutralize clean/process filter
+drivers defined in the repository's own configuration (local or worktree scope);
+drivers defined only in the user's global or system configuration, such as Git
+LFS, keep working.
 
 **Git** (workspace repository operations, APPS-106)
 - `GET /v1/git` — status detail: `git_repo`, `branch`, `head`

@@ -21,6 +21,7 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(test)]
 use std::process::{Command, Stdio};
+#[cfg(all(test, unix))]
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]

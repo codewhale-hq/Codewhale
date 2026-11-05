@@ -8431,23 +8431,38 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
         let mut workers = authority.try_write().unwrap();
         workers
             .with_store_transaction(|workers| {
-                let child = workers.insert_test_running_agent("lru_child", &PathBuf::from("."));
-                workers.assign_test_session_owner(&child, "thr_a");
-                Ok(child)
+                workers
+                    .insert_test_running_direct_child_in_origin(
+                        &format!("lru_child_{}", Uuid::new_v4().simple()),
+                        &std::env::temp_dir(),
+                        &std::env::temp_dir(),
+                        "thr_a",
+                    )
+                    .map_err(anyhow::Error::msg)
             })
             .unwrap()
     };
     assert!(enforce_lru_capacity(&mut active, 2, &pending_commands).is_empty());
-    let _ = authority
+    let cancelled = authority
         .try_write()
         .unwrap()
-        .cancel_agent_for_session("thr_a", &child);
+        .cancel_agent_for_session("thr_a", &child)
+        .map(|result| result.status)
+        .map_err(|error| error.to_string());
     pending_commands.insert("thr_a".to_string());
     assert!(enforce_lru_capacity(&mut active, 2, &pending_commands).is_empty());
     assert!(active.engines.contains_key("thr_a"));
     pending_commands.clear();
+    let live_after_cancel = authority
+        .try_read()
+        .unwrap()
+        .live_count_for_session("thr_a");
     let evicted = enforce_lru_capacity(&mut active, 2, &pending_commands);
-    assert_eq!(evicted.len(), 1);
+    assert_eq!(
+        evicted.len(),
+        1,
+        "cancel result {cancelled:?}, live children after cancel {live_after_cancel}"
+    );
     assert!(!active.engines.contains_key("thr_a"));
     assert!(active.engines.contains_key("thr_b"));
 }
