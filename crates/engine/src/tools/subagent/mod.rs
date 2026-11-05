@@ -8927,13 +8927,14 @@ impl SubAgentManager {
         agent_ref: &str,
         followup_text: &str,
     ) -> Result<SubAgentResult> {
-        self.resume_from_checkpoint_with_policy(
+        let receipt = self.resume_from_checkpoint_with_policy(
             manager_handle,
             runtime,
             agent_ref,
             followup_text,
             ResumePolicy::InterruptedOnly,
-        )
+        )?;
+        self.get_result(&receipt.agent_id)
     }
 
     pub fn resume_from_checkpoint_for_session(
@@ -8975,7 +8976,7 @@ impl SubAgentManager {
                 Ok(UserFollowUpOutcome {
                     agent_id: agent_id.clone(),
                     target_agent_id: agent_id,
-                    delivered: receipt.woke,
+                    delivered: receipt.woke && receipt.queue_depth == 0,
                     resumed: false,
                     note: receipt.note,
                 })
@@ -8994,11 +8995,29 @@ impl SubAgentManager {
                     ResumePolicy::InterruptedOrCompleted,
                 )?;
                 let target = resumed.agent_id.clone();
+                // Report the documented field semantics truthfully instead of
+                // an unconditional "resumed" ack. The resume receipt has three
+                // shapes, and the flags derive from it as follows:
+                // - a fresh re-dispatch from the checkpoint sets
+                //   `continued_from_checkpoint` (resumed = true) and carries
+                //   the text in the new loop (delivered = true);
+                // - a follow-up queued to the already-running successor keeps
+                //   `continued_from_checkpoint` false (no new loop started),
+                //   and `woke && queue_depth == 0` mirrors `followup_child`'s
+                //   own delivery criterion: the new text is last in the FIFO
+                //   batch, so only an empty queue after a successful wake
+                //   means this message was actually sent;
+                // - a settled Completed successor cannot be woken and nothing
+                //   is re-dispatched, but its existing terminal result carries
+                //   the conversation, so its synthesized receipt reports
+                //   delivered = true with the successor as the target; a
+                //   settled Failed/Cancelled/BudgetExhausted successor reports
+                //   delivered = false with a note naming its status.
                 Ok(UserFollowUpOutcome {
                     agent_id,
-                    delivered: true,
-                    resumed: true,
-                    note: format!("continued from checkpoint as {target}"),
+                    delivered: resumed.woke && resumed.queue_depth == 0,
+                    resumed: resumed.continued_from_checkpoint,
+                    note: resumed.note,
                     target_agent_id: target,
                 })
             }
@@ -9021,6 +9040,10 @@ impl SubAgentManager {
         self.continue_child_from_user(manager_handle, runtime, &agent_id, text)
     }
 
+    /// Resume the continuation target of `agent_ref`, reporting what actually
+    /// happened as a [`ParentMailReceipt`] so callers can distinguish a fresh
+    /// re-dispatch (`continued_from_checkpoint`) from a follow-up handed to an
+    /// existing successor (`woke`/`queue_depth` carry the delivery truth).
     fn resume_from_checkpoint_with_policy(
         &mut self,
         manager_handle: SharedSubAgentManager,
@@ -9028,14 +9051,20 @@ impl SubAgentManager {
         agent_ref: &str,
         followup_text: &str,
         policy: ResumePolicy,
-    ) -> Result<SubAgentResult> {
+    ) -> Result<ParentMailReceipt> {
         let agent_id = self.resolve_agent_ref(agent_ref)?;
         let target = self.continuation_target(&agent_id)?;
         if target != agent_id {
             match self.agents.get(&target).map(|agent| &agent.status) {
                 Some(SubAgentStatus::Running) => {
-                    self.followup_child(&target, followup_text.to_string())?;
-                    return self.get_result(&target);
+                    // The follow-up lands on the already-running successor:
+                    // no new loop is re-dispatched, so return the live
+                    // delivery receipt instead of acknowledging a resume that
+                    // did not happen.
+                    let mut receipt = self.followup_child(&target, followup_text.to_string())?;
+                    receipt.note =
+                        format!("existing checkpoint target {target}; {}", receipt.note);
+                    return Ok(receipt);
                 }
                 Some(SubAgentStatus::Interrupted(_)) => {
                     return self.resume_from_checkpoint_with_policy(
@@ -9057,7 +9086,37 @@ impl SubAgentManager {
                         policy,
                     );
                 }
-                _ => return self.get_result(&target),
+                // A settled successor cannot be woken and nothing is
+                // re-dispatched, so it stays the target. Only a Completed
+                // result actually carries the conversation, so the receipt is
+                // synthesized with `woke` and an empty queue just then and
+                // `continued_from_checkpoint` stays false: the follow-up is
+                // answered by the result that already exists, not by a new
+                // loop. A Failed/Cancelled/BudgetExhausted successor reports
+                // `woke` false and names its status so callers never present
+                // an unanswered follow-up as delivered.
+                _ => {
+                    let settled = self.get_result(&target)?;
+                    let status_name = subagent_status_name(&settled.status);
+                    let completed = matches!(settled.status, SubAgentStatus::Completed);
+                    return Ok(ParentMailReceipt {
+                        agent_id: settled.agent_id.clone(),
+                        status: status_name.to_string(),
+                        queue_depth: 0,
+                        woke: completed,
+                        continued_from_checkpoint: false,
+                        continuation_handle: None,
+                        note: if completed {
+                            format!(
+                                "existing checkpoint target {target} has settled; its existing result carries this follow-up"
+                            )
+                        } else {
+                            format!(
+                                "existing checkpoint target {target} finished with status {status_name}; the follow-up was not delivered"
+                            )
+                        },
+                    });
+                }
             }
         }
         let saved_identity = self.worker_records.get(&agent_id).map(|record| {
@@ -9257,7 +9316,15 @@ impl SubAgentManager {
             // captures inline there, as before (#6210).
             None,
         )?;
-        Ok(resumed)
+        Ok(ParentMailReceipt {
+            agent_id: resumed.agent_id.clone(),
+            status: subagent_status_name(&resumed.status).to_string(),
+            queue_depth: 0,
+            woke: true,
+            continued_from_checkpoint: true,
+            continuation_handle: None,
+            note: format!("continued from checkpoint as {}", resumed.agent_id),
+        })
     }
 
     /// Interrupt a child, preserve checkpoint, fail closed on root/self.

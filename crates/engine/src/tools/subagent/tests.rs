@@ -24525,6 +24525,115 @@ fn user_follow_up_to_running_child_counts_queued_until_the_loop_takes_it() {
     );
 }
 
+/// A retried follow-up on the original interrupted id reuses the existing
+/// continuation: the outcome must name the already-running successor as the
+/// target and report a real delivery without claiming a checkpoint resume.
+#[test]
+fn user_follow_up_to_running_existing_successor_reports_delivery_without_resume() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 2);
+    let (original_id, _checkpoint_handle) = manager.insert_test_interrupted_continuable_agent(
+        "paused_original",
+        tmp.path(),
+        vec![text_message("user", "prior work")],
+    );
+    let (successor_id, mut successor_input) =
+        manager.insert_test_running_agent_with_input("live_successor", tmp.path());
+    // The earlier follow-up already re-dispatched once: the continuation edge
+    // links the interrupted original to its live successor.
+    manager
+        .resume_targets
+        .insert(original_id.clone(), successor_id.clone());
+    let handle = Arc::new(RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        2,
+    )));
+    let mut runtime = stub_runtime();
+    runtime.manager = Arc::clone(&handle);
+
+    let outcome = manager
+        .continue_child_from_user(handle, Some(runtime), &original_id, "one more thing")
+        .expect("the running successor accepts the retried follow-up");
+    assert_eq!(outcome.agent_id, original_id);
+    assert_eq!(
+        outcome.target_agent_id, successor_id,
+        "the receipt must name the successor that carries the conversation"
+    );
+    assert!(
+        outcome.delivered,
+        "the text reached the successor's live input channel"
+    );
+    assert!(
+        !outcome.resumed,
+        "no fresh loop is re-dispatched when the continuation successor is already running"
+    );
+    // The message went to the live successor, not to the interrupted original.
+    let taken = successor_input.try_recv().expect("delivered live");
+    assert_eq!(taken.text, "one more thing");
+    taken.mark_taken();
+}
+
+/// A retried follow-up whose continuation successor already settled as failed
+/// must be reported as undelivered with the status named: nothing will ever
+/// answer the text, so the outcome may not claim delivery.
+#[test]
+fn user_follow_up_to_failed_existing_successor_reports_undelivered_with_status_note() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 2);
+    let (original_id, _checkpoint_handle) = manager.insert_test_interrupted_continuable_agent(
+        "paused_original",
+        tmp.path(),
+        vec![text_message("user", "prior work")],
+    );
+    let successor_id = manager.insert_test_running_agent("dead_successor", tmp.path());
+    // Drive the successor to a failed terminal state through the durable path.
+    let mut terminal = manager.get_result(&successor_id).expect("snapshot");
+    terminal.status = SubAgentStatus::Failed("boom".to_string());
+    terminal.result = Some("partial output".to_string());
+    assert!(
+        manager
+            .finish_terminal_result(&successor_id, terminal, true, false)
+            .expect("durable worker operation")
+    );
+    // The continuation edge links the interrupted original to the failed
+    // successor, so a retry lands on the settled-successor shortcut.
+    manager
+        .resume_targets
+        .insert(original_id.clone(), successor_id.clone());
+    let handle = Arc::new(RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        2,
+    )));
+    let mut runtime = stub_runtime();
+    runtime.manager = Arc::clone(&handle);
+
+    let outcome = manager
+        .continue_child_from_user(handle, Some(runtime), &original_id, "one more thing")
+        .expect("the settled-successor shortcut answers without an error");
+    assert_eq!(outcome.agent_id, original_id);
+    assert_eq!(
+        outcome.target_agent_id, successor_id,
+        "the receipt still names the successor that owns the conversation"
+    );
+    assert!(
+        !outcome.delivered,
+        "a failed successor cannot deliver the follow-up"
+    );
+    assert!(
+        !outcome.resumed,
+        "no fresh loop is re-dispatched onto a settled successor"
+    );
+    assert!(
+        outcome.note.contains("failed") && outcome.note.contains("not delivered"),
+        "the note must name the failed status honestly: {}",
+        outcome.note
+    );
+    assert!(
+        manager.queued_follow_up_counts().is_empty(),
+        "the follow-up must not be parked as pending on any agent"
+    );
+}
+
 #[test]
 fn user_follow_up_to_cancelled_child_fails_closed_with_the_reason() {
     let tmp = tempdir().expect("tempdir");
