@@ -1084,6 +1084,21 @@ pub struct GoalConfig {
     /// stay unbounded either way.
     #[serde(default)]
     pub enforce_token_budget: Option<bool>,
+
+    /// Gate `update_goal status=complete` behind one independent adversarial
+    /// critique of the completion claim. Upheld completes; refuted or any
+    /// unusable verdict keeps the goal active with the gaps recorded, so a
+    /// persistent outage ends in the `NoProgress` pause. `false`/`None` keeps
+    /// the ungated behavior.
+    #[serde(default)]
+    pub complete_judge: Option<bool>,
+
+    /// Gate `update_goal status=blocked` behind one independent critique of
+    /// the blocker. Upheld blocks; refuted keeps the goal active; an
+    /// unusable verdict hands the goal back as a yield (needs input).
+    /// `false`/`None` keeps the ungated behavior.
+    #[serde(default)]
+    pub blocked_judge: Option<bool>,
 }
 
 /// Reasoning-only recovery controls (`[reasoning_only]` table in config.toml).
@@ -6745,6 +6760,24 @@ impl Config {
         self.goal
             .as_ref()
             .and_then(|goal| goal.enforce_token_budget)
+            .unwrap_or(false)
+    }
+
+    /// Whether `update_goal complete` is gated by an independent judge (#6013).
+    #[must_use]
+    pub fn goal_complete_judge(&self) -> bool {
+        self.goal
+            .as_ref()
+            .and_then(|goal| goal.complete_judge)
+            .unwrap_or(false)
+    }
+
+    /// Whether `update_goal blocked` is gated by an independent judge (#6013).
+    #[must_use]
+    pub fn goal_blocked_judge(&self) -> bool {
+        self.goal
+            .as_ref()
+            .and_then(|goal| goal.blocked_judge)
             .unwrap_or(false)
     }
 

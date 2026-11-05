@@ -107,7 +107,7 @@ impl ToolSpec for FetchUrlTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch a known URL directly (HTTP GET) and return its content with a session-scoped citation ref_id. Use this instead of `curl` in `exec_shell` — sandboxed, network-policy aware, and properly decoded. Plain-text endpoints (`.md`, `.txt`, `.json`, `.yaml`, `raw.githubusercontent.com`, public APIs) prefer this over the browser/automation stack. For unknown queries, use `web_search` first. If a login or authorization wall is returned, treat the wall as the result; do not claim the protected page was read."
+        "Fetch a known URL directly (HTTP GET) and return its content with a session-scoped citation ref_id. Use this instead of `curl` in `exec_shell` (whose sandbox policy may deny outbound network) — network-policy aware and properly decoded. Plain-text endpoints (`.md`, `.txt`, `.json`, `.yaml`, `raw.githubusercontent.com`, public APIs) prefer this over the browser/automation stack. For unknown queries, use `web_search` first. If a login or authorization wall is returned, treat the wall as the result; do not claim the protected page was read."
     }
 
     fn input_schema(&self) -> Value {

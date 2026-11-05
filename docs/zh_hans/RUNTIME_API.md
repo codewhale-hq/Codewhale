@@ -1839,6 +1839,14 @@ Engine 并不知道的终端。输入可按路由归因：
   而 `live: false` 标记那些引擎无法被加载、只有存储中记录的该路由的静态窗口
   被解析出来的响应。
 
+**线程范围的读取。** `GET /v1/git`、`/v1/changes`、`/v1/diff`、
+`/v1/workspace/diff`、`/v1/git/graph`、`/v1/workspace/files` 与
+`/v1/workspace/files/read` 接受可选的 `thread_id`。提供时，路由读取该线程记录的工作区
+（唯一来源是运行时存储中的线程记录），而不是服务器的工作区，并走同样的受限路径。
+不提供时行为与之前完全一致。未知线程返回 404；记录的工作区不是绝对路径、已不存在、被替换为链接或在解析期间发生变化时，
+返回 409，`error.code` 为 `thread_workspace_unavailable`。会修改内容的 git 路由、文件写入、
+`/v1/workspace/status` 与文件搜索仍使用服务器工作区。
+
 **Git**（工作区仓库操作，APPS-106）
 - `GET /v1/git` — 状态详情：`git_repo`、`branch`、`head`
   （缩写，仅供展示）、`head_oid`、`index_token`、`revision`、
@@ -2564,6 +2572,20 @@ Fleet 流（`/v1/fleet/runs/{run_id}/events`）保留自己的结束帧，
 允许。于 v0.8.10 加入（#561），于 v0.9.1 收紧（#4454）。
 
 ## 托管 Fleet 运行时与 SDK 助手
+
+`GET /v1/fleet/profiles` 从已捕获的工作区读取实际生效的成员列表，包含选中的
+Fleet 和已获准的插件，不会为此打开运行账本。
+`GET /v1/fleet/profiles/{id}/document` 使用精确的生效成员 ID。共享的
+`FleetProfileDocument` 契约返回 `id`、`kind`（`profile` 或 `fleet`）、`origin`、
+可空的 `path`、`text`、绑定源身份的不透明 `revision`、`writable` 和可空的
+`refusal_reason`。个人/项目配置及选中的 Fleet 文件通过固定目录句柄读取原始
+UTF-8 字节，上限为一 MiB。身份改变、源文件消失或链接路径会被拒绝。
+内置、配置文件和外部管理的成员只返回明确只读的生效配置视图，不提供文件路径；
+不会把占位路径或原生预设入口标识当作配置文件打开。
+
+所有文档目前均返回 `writable: false`，尚未提供文档 PUT。请在终端或定义该成员的
+源中编辑。修订号不代表写入权限，也不代表运行中的成员列表已采用更改。只读客户端
+可在现有工作区和身份验证边界内读取这些资源。
 
 运行时 SDK 位于 `npm/runtime-sdk`，并作为
 `@codewhale/runtime-sdk` 工作区包对外暴露。它有意保持轻薄：每个
