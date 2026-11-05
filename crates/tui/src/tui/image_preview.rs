@@ -149,6 +149,10 @@ struct Entry {
     thumbnail: Thumbnail,
 }
 
+/// Concurrent preview decodes. A draft rarely holds more than a few pictures;
+/// the cap keeps a many-file paste from spawning a thread per file.
+const MAX_CONCURRENT_DECODES: usize = 4;
+
 /// Decoded previews plus the worker that produces them.
 #[derive(Debug)]
 pub struct ThumbnailCache {
@@ -192,6 +196,13 @@ impl ThumbnailCache {
     /// fits the budget and has not changed runs on the decode thread. That is
     /// what keeps this callable from the paint path (#6149).
     pub fn request(&mut self, path: &Path) {
+        // Bound the decode pool: a draft can hold many attachments, and one
+        // OS thread per picture would spike both memory and CPU on a small
+        // host. Anything over the pool is retried when `track` next sees the
+        // list change.
+        if self.pending.len() >= MAX_CONCURRENT_DECODES {
+            return;
+        }
         if !self.pending.insert(path.to_path_buf()) {
             return;
         }

@@ -943,6 +943,22 @@ impl App {
         }
     }
 
+    /// True when this paste is the other edge of the key press that just
+    /// pasted. Shared by the composer and the modal paste route so one key
+    /// press cannot paste twice across the two.
+    pub(crate) fn clipboard_paste_within_dedupe_window(&self) -> bool {
+        self.last_clipboard_paste
+            .is_some_and(|last| last.elapsed() < Duration::from_millis(600))
+    }
+
+    /// Stamp a finished clipboard paste. Measured after the read, not before
+    /// it: `ensure_clipboard` can block for up to two seconds, and a stamp
+    /// taken before the read would let the second edge of the same key press
+    /// fall outside the window and paste again.
+    pub(crate) fn note_clipboard_paste(&mut self) {
+        self.last_clipboard_paste = Some(Instant::now());
+    }
+
     /// Paste from clipboard into input.
     ///
     /// Returns whether content was inserted. In SSH sessions without a
@@ -950,23 +966,21 @@ impl App {
     /// clipboard shortcuts surface the local terminal-paste instruction while
     /// `Event::Paste` remains the data path.
     pub fn paste_from_clipboard(&mut self) -> bool {
-        let now = Instant::now();
-        // A terminal that forwards both edges of Ctrl+V would otherwise paste
-        // twice; Windows Terminal forwards only the release (it consumes the
-        // press for its own paste action), so a short window is the right
-        // de-duplicator rather than assuming one edge.
-        if self
-            .last_clipboard_paste
-            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(600))
-        {
+        // A terminal may forward both edges of Ctrl+V: Windows Terminal
+        // consumes the press for its own paste action and forwards only the
+        // release, while a terminal that does not own the chord forwards both.
+        // The window is measured from the end of the previous read (see
+        // `note_clipboard_paste`), so a slow clipboard open cannot push the
+        // second edge outside it.
+        if self.clipboard_paste_within_dedupe_window() {
             return false;
         }
-        self.last_clipboard_paste = Some(now);
         if self.clipboard.requires_terminal_paste() {
             self.status_message = Some(self.tr(MessageId::ClipboardSshPasteHint).into_owned());
             return false;
         }
         let content = self.clipboard.read_markdown(self.workspace.as_path());
+        self.note_clipboard_paste();
         if let Some(content) = content {
             self.apply_clipboard_content(content);
             return true;

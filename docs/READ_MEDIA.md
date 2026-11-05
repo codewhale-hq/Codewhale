@@ -19,8 +19,9 @@
   A paste becomes an attachment only when every path in it names an existing
   image; otherwise it stays text. A text-only model gets a notice instead of
   the image.
-- A truecolor cell thumbnail of the first attached image is drawn above the
-  composer, with the file name and the sampled pixel size under it. The
+- Every attached image is drawn above the composer as a truecolor cell
+  thumbnail, laid out left to right and sharing the row, with the file name
+  (one image) or the count (several) under it. The
   picture is ordinary cell output (`▀` half blocks, top pixel as foreground,
   bottom as background), not a graphics protocol, so it renders on Windows
   Terminal, iTerm2, Terminal.app, GNOME Terminal, Konsole and WezTerm alike.

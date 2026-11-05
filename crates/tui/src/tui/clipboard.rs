@@ -548,11 +548,10 @@ impl ClipboardHandler {
         all(target_os = "linux", not(target_env = "ohos"))
     ))]
     fn ensure_clipboard(&mut self) {
-        if self.clipboard.is_some() {
-            return;
-        }
-        #[cfg(test)]
-        if self.clipboard_init_attempted {
+        // `clipboard_init_attempted` means the backend answered for good:
+        // either it opened, or it refused. A timeout does not set it, so the
+        // next paste retries instead of staying dead for the session.
+        if self.clipboard.is_some() || self.clipboard_init_attempted {
             return;
         }
 
@@ -1055,6 +1054,13 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
         .as_nanos();
     let width = u32::try_from(image.width).context("clipboard image width too large")?;
     let height = u32::try_from(image.height).context("clipboard image height too large")?;
+    // Bound the copy and the encode before they allocate: a capture tool can
+    // publish a huge bitmap, and the RGBA copy plus the PNG encoder peak at
+    // several times that size. The same ceiling `read_media` enforces.
+    const MAX_CLIPBOARD_PIXELS: u64 = 33_554_432;
+    if u64::from(width) * u64::from(height) > MAX_CLIPBOARD_PIXELS {
+        bail!("clipboard image is too large: {width}x{height} pixels");
+    }
 
     // arboard hands us RGBA8 row-major. Copy into an ImageBuffer so we can
     // run it through the `image` crate's PNG encoder. We pad / truncate any
@@ -1092,8 +1098,31 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
     let confined = clipboard_image_target(dir, &file_name)
         .and_then(|file| file.publish(&encoded).map_err(anyhow::Error::from));
     if confined.is_err() {
+        // The confined writer pins every ancestor and refuses a layout it
+        // cannot walk end to end; a relocated state root (`~/.codewhale`
+        // behind a user junction) is one of those. This directory is the
+        // application's own image cache and the file name is generated here,
+        // so a direct write is the fallback - but it still refuses a linked
+        // directory and creates the file exclusively, so it cannot write
+        // through a link or replace one.
         std::fs::create_dir_all(dir).context("create clipboard-images directory")?;
-        std::fs::write(&path, &encoded).context("write clipboard PNG")?;
+        if std::fs::symlink_metadata(dir)
+            .context("inspect clipboard-images directory")?
+            .file_type()
+            .is_symlink()
+        {
+            bail!("clipboard image directory is a link");
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).context("create clipboard PNG")?;
+        use std::io::Write as _;
+        file.write_all(&encoded).context("write clipboard PNG")?;
     }
 
     let byte_len = encoded.len();
