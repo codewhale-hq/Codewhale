@@ -8431,9 +8431,14 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
         let mut workers = authority.try_write().unwrap();
         workers
             .with_store_transaction(|workers| {
-                let child = workers.insert_test_running_agent("lru_child", &PathBuf::from("."));
-                workers.assign_test_session_owner(&child, "thr_a");
-                Ok(child)
+                workers
+                    .insert_test_running_direct_child_in_origin(
+                        "lru_child",
+                        &std::env::temp_dir(),
+                        &std::env::temp_dir(),
+                        "thr_a",
+                    )
+                    .map_err(anyhow::Error::msg)
             })
             .unwrap()
     };

@@ -15920,10 +15920,8 @@ fn persisted_advisory_assignment_roles_replay_and_repersist_as_consultant() {
         assert_eq!(result.assignment.role.as_deref(), Some("advisor"));
 
         manager
-            .persist_state()
-            .expect("canonical state persists")
-            .join()
-            .expect("persist thread");
+            .with_store_transaction(|manager| manager.persist_state_synchronously())
+            .expect("canonical state persists");
         let repersisted: Value = serde_json::from_str(
             &std::fs::read_to_string(&state_path).expect("read canonical state"),
         )
@@ -18915,6 +18913,7 @@ async fn launch_gate_queues_extra_direct_children() {
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
     runtime.context = ToolContext::new(tmp.path());
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
     runtime.mailbox = Some(mailbox);
 
     runtime.spawn_depth = 1;
@@ -25638,13 +25637,18 @@ mod child_permission_gate {
         name: &str,
     ) -> String {
         let mut manager = manager.write().await;
-        let agent_id = insert_running_agent(&mut manager, name);
-        manager.register_worker_for_session(
-            make_worker_spec(&agent_id, registry.gate_runtime.context.workspace.clone()),
-            "guardian-test-session",
-            None,
-        );
-        agent_id
+        manager
+            .with_store_transaction(|manager| {
+                let agent_id = insert_running_agent(manager, name);
+                manager.register_worker_for_session(
+                    make_worker_spec(&agent_id, registry.gate_runtime.context.workspace.clone()),
+                    "guardian-test-session",
+                    None,
+                );
+                manager.persist_state_synchronously()?;
+                Ok(agent_id)
+            })
+            .expect("durable worker operation")
     }
 
     #[tokio::test]
@@ -25850,6 +25854,7 @@ mod child_permission_gate {
         let (registry, _rx, manager) = worker_registry(ApprovalMode::Suggest, false, true, None);
         let agent_id = running_gate_agent(&registry, &manager, "old_session_child").await;
         let mut manager = manager.write().await;
+        manager.assign_test_session_owner(&agent_id, "workspace");
         let (_id, receiver) = manager
             .register_child_approval(
                 &agent_id,
