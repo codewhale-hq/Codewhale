@@ -3611,17 +3611,17 @@ impl SessionManager {
             }
         };
         for mut record in ledger.records {
+            if let Some(receipt) = record
+                .decision
+                .as_ref()
+                .filter(|receipt| receipt.is_bounded())
+            {
+                metadata
+                    .cost
+                    .route_receipts
+                    .insert(receipt.diagnostic_receipt());
+            }
             if record.diagnostic_only {
-                if let Some(receipt) = record
-                    .decision
-                    .as_ref()
-                    .filter(|receipt| receipt.is_bounded())
-                {
-                    metadata
-                        .cost
-                        .route_receipts
-                        .insert(receipt.diagnostic_receipt());
-                }
                 continue;
             }
             if record.settlement.is_some() {
@@ -4971,7 +4971,7 @@ impl SessionManager {
             Ok(Some(origin)) if origin == session_id => self
                 .read_checkpoint_file(
                     &self.checkpoints_dir().join(LEGACY_CHECKPOINT_FILE),
-                    Some(session_id),
+                    None,
                     admission_held,
                 )
                 .unwrap_or_else(|error| {
