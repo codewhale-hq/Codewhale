@@ -41,6 +41,11 @@ const TASK_EVENT_CHANNEL_CAPACITY: usize = 256;
 const EVENT_CURSOR_BATCH: usize = 256;
 const DESTINATION_BUSY_RETRY: Duration = Duration::from_secs(2);
 const EVENT_CATCHUP_POLL: Duration = Duration::from_millis(200);
+/// Ceiling for the park-poll backoff: while a prompt waits on a human the
+/// turn loop backs its journal poll off from the catch-up cadence up to
+/// this bound; an arriving decision wakes it through the event
+/// subscription, so this only bounds the empty polls.
+const PARKED_POLL_CAP: Duration = Duration::from_secs(2);
 // v4 binds execution to a trusted Runtime scope. Older executors must not
 // ignore its eligibility or generation fence.
 const CURRENT_TASK_SCHEMA_VERSION: u32 = 4;
@@ -128,6 +133,7 @@ pub enum TaskTerminalReason {
     CancelTimeout,
     Shutdown,
     WallTimeout,
+    HumanWaitTimeout,
     IdleTimeout,
     Failed,
 }
@@ -141,6 +147,7 @@ impl TaskTerminalReason {
             Self::CancelTimeout => "cancel_timeout",
             Self::Shutdown => "shutdown",
             Self::WallTimeout => "wall_timeout",
+            Self::HumanWaitTimeout => "human_wait_timeout",
             Self::IdleTimeout => "idle_timeout",
             Self::Failed => "failed",
         }
@@ -151,7 +158,9 @@ impl TaskTerminalReason {
         match self {
             Self::Completed => TaskStatus::Completed,
             Self::Canceled | Self::CancelTimeout | Self::Shutdown => TaskStatus::Canceled,
-            Self::WallTimeout | Self::IdleTimeout | Self::Failed => TaskStatus::Failed,
+            Self::WallTimeout | Self::HumanWaitTimeout | Self::IdleTimeout | Self::Failed => {
+                TaskStatus::Failed
+            }
         }
     }
 
@@ -166,6 +175,9 @@ impl TaskTerminalReason {
             Self::Shutdown => "Task canceled because the task manager shut down".to_string(),
             Self::WallTimeout => {
                 "Task exceeded its wall-time deadline without completing".to_string()
+            }
+            Self::HumanWaitTimeout => {
+                "Task stayed parked on a human answer past the fail-safe cap".to_string()
             }
             Self::IdleTimeout => {
                 "Task made no model or tool progress before the idle deadline".to_string()
@@ -530,6 +542,22 @@ pub struct TaskManagerConfig {
     pub allow_shell: bool,
     pub trust_mode: bool,
     pub execution_limits: TaskExecutionLimits,
+    /// Whether a host is attached that can actually deliver an approval or
+    /// user-input decision to tasks run by this manager — today only the
+    /// runtime API server, whose HTTP `POST /v1/approvals/{id}` and
+    /// user-input endpoints reach a task thread's engine turn. A pending
+    /// prompt on an answerable manager is a human-paced wait: the wall clock
+    /// pauses for it (bounded by `human_wait_cap`), extending the turn
+    /// layer's own human-wait exclusion to the durable task layer. A prompt
+    /// on an unanswerable manager can never be answered, so arming the
+    /// window there would park the worker on the fail-safe cap; the wall
+    /// clock keeps running instead, exactly as before this opt-in.
+    /// Defaults to `false`: opt in only where the delivery channel exists.
+    /// The gate arms the built-in engine executor's journal tracking; a
+    /// custom executor that emits the `HumanWaitStarted`/`HumanWaitEnded`
+    /// pair is self-declaring its waits answerable, and the supervisor
+    /// honors the pair regardless of this flag.
+    pub human_waits_answerable: bool,
 }
 
 /// Deadlines and persistence cadence for one durable execution.
@@ -539,6 +567,12 @@ pub struct TaskExecutionLimits {
     pub idle_progress: Duration,
     pub cancel_grace: Duration,
     pub persist_debounce: Duration,
+    /// Fail-safe ceiling for the human-wait windows of one task, applied
+    /// both to each open window and to the windows summed across the whole
+    /// execution. Human-paced waits are excluded from `wall_time` — a slow
+    /// answer must not end the task — but prompts that nobody will ever
+    /// answer must still release the worker eventually.
+    pub human_wait_cap: Duration,
 }
 
 impl Default for TaskExecutionLimits {
@@ -548,6 +582,7 @@ impl Default for TaskExecutionLimits {
             idle_progress: Duration::from_secs(2 * 60),
             cancel_grace: Duration::from_secs(5),
             persist_debounce: Duration::from_millis(250),
+            human_wait_cap: Duration::from_secs(24 * 60 * 60),
         }
     }
 }
@@ -560,16 +595,26 @@ impl TaskExecutionLimits {
             idle_progress: Duration::from_millis(150),
             cancel_grace: Duration::from_millis(50),
             persist_debounce: Duration::from_millis(10),
+            human_wait_cap: Duration::from_millis(300),
         }
     }
 }
 
-/// Pure watchdog for cancel grace, wall time, and idle progress.
+/// Pure watchdog for cancel grace, wall time, idle progress, and human-wait
+/// exclusion.
 struct ExecutionGuard {
     started_at: Instant,
     last_progress_at: Instant,
     interrupt_at: Option<Instant>,
     interrupt_reason: Option<TaskTerminalReason>,
+    /// Open human wait (pending approval or user-input prompt), if any.
+    /// Human-paced wall time is excluded from `wall_time` exactly like the
+    /// turn layer's budget excludes it (`TurnWallClock::begin_human_wait` in
+    /// `codewhale-runtime`: "the budget bounds what the agent spends on its
+    /// own, not how long a person takes to answer") — an answer submitted
+    /// past the budget must complete the task, not be collected and dropped.
+    human_wait_since: Option<Instant>,
+    human_wait_total: Duration,
     limits: TaskExecutionLimits,
 }
 
@@ -587,8 +632,48 @@ impl ExecutionGuard {
             last_progress_at: now,
             interrupt_at: None,
             interrupt_reason: None,
+            human_wait_since: None,
+            human_wait_total: Duration::ZERO,
             limits,
         }
+    }
+
+    /// Mark the start of a human-paced wait (idempotent). Only the first
+    /// begin of an unmatched begin/end pair takes effect.
+    ///
+    /// Windows merge rather than stack: the first begin sets the origin and
+    /// any end closes the whole window. That is sound because the engine
+    /// blocks inside a single prompt at a time — approval and user-input
+    /// waits are serial within a turn, and parallel batches exclude
+    /// interactive tools — so overlapping windows never reach this guard
+    /// today. If a future change lets nested prompts surface concurrently,
+    /// switch to paired (counted) windows first.
+    fn begin_human_wait(&mut self, now: Instant) {
+        if self.human_wait_since.is_none() {
+            self.human_wait_since = Some(now);
+        }
+    }
+
+    /// Mark the end of a human-paced wait (idempotent). The idle budget
+    /// restarts fresh: the engine is expected to think and act again after
+    /// an answer, and window silence was expected, not idleness.
+    fn end_human_wait(&mut self, now: Instant) {
+        if let Some(since) = self.human_wait_since.take() {
+            self.human_wait_total += now.saturating_duration_since(since);
+            self.last_progress_at = now;
+        }
+    }
+
+    /// Wall time attributable to the engine itself: excludes every closed
+    /// human-wait window and the currently open one.
+    fn engine_wall_elapsed(&self, now: Instant) -> Duration {
+        let open = self
+            .human_wait_since
+            .map(|since| now.saturating_duration_since(since))
+            .unwrap_or_default();
+        now.saturating_duration_since(self.started_at)
+            .saturating_sub(self.human_wait_total)
+            .saturating_sub(open)
     }
 
     fn note_progress(&mut self, now: Instant) {
@@ -617,15 +702,32 @@ impl ExecutionGuard {
             };
         }
 
-        let wall_elapsed = now.saturating_duration_since(self.started_at);
+        let wall_elapsed = self.engine_wall_elapsed(now);
+        // The human-wait exclusion is bounded by a fail-safe cap: a prompt
+        // that sits unanswered far past any plausible human pace still
+        // releases the worker instead of parking it forever. While the
+        // window is open both clocks pause — silence during a human decision
+        // is expected, not idleness — and the idle budget restarts when the
+        // window closes (see `end_human_wait`).
         let idle_elapsed = now.saturating_duration_since(self.last_progress_at);
-        // A limit whose deadline does not fit in `Instant` can never fire.
-        let wall_deadline = self.started_at.checked_add(self.limits.wall_time);
-        let idle_deadline = self.last_progress_at.checked_add(self.limits.idle_progress);
         let pending = if shutdown {
             Some(TaskTerminalReason::Shutdown)
         } else if cancel {
             Some(TaskTerminalReason::Canceled)
+        } else if let Some(since) = self.human_wait_since {
+            let parked = now.saturating_duration_since(since);
+            if self.human_wait_total.saturating_add(parked) >= self.limits.human_wait_cap {
+                Some(TaskTerminalReason::HumanWaitTimeout)
+            } else {
+                None
+            }
+        } else if self.human_wait_total >= self.limits.human_wait_cap {
+            // The aggregate bound: each window may close under the cap, but
+            // a task chaining prompts must not sum its way past the cap once
+            // per prompt. With no window open right now, the closed windows
+            // alone can cross it, so the accumulated total terminalizes the
+            // task even between windows.
+            Some(TaskTerminalReason::HumanWaitTimeout)
         } else {
             // Attribute the timeout to the limit that was crossed first, not
             // to the one this tick happens to check first. When the watchdog
@@ -633,6 +735,20 @@ impl ExecutionGuard {
             // loaded CI runner is enough with the test budgets), the idle
             // limit that expired earlier is still the truthful reason; a tie
             // keeps the wall limit's precedence (issue #5898).
+            // The wall deadline moves with every excluded human-wait window,
+            // so it stays `wall_time` away from the engine-owned elapsed
+            // time rather than from the raw wall clock.
+            let open = self
+                .human_wait_since
+                .map(|since| now.saturating_duration_since(since))
+                .unwrap_or_default();
+            let wall_deadline =
+                self.started_at
+                    .checked_add(self.limits.wall_time)
+                    .and_then(|deadline| {
+                        deadline.checked_add(self.human_wait_total.saturating_add(open))
+                    });
+            let idle_deadline = self.last_progress_at.checked_add(self.limits.idle_progress);
             match (wall_deadline, idle_deadline) {
                 (Some(wall), Some(idle)) if now >= wall && wall <= idle => {
                     Some(TaskTerminalReason::WallTimeout)
@@ -646,12 +762,37 @@ impl ExecutionGuard {
             return GuardAction::Interrupt { reason };
         }
 
-        let wait = self
+        let mut wait = self
             .limits
             .wall_time
             .saturating_sub(wall_elapsed)
-            .min(self.limits.idle_progress.saturating_sub(idle_elapsed))
-            .min(EVENT_CATCHUP_POLL);
+            .min(self.limits.idle_progress.saturating_sub(idle_elapsed));
+        if let Some(since) = self.human_wait_since {
+            // Both clocks are paused; the only deadline left is the
+            // fail-safe cap. A parked window can last hours, so polling
+            // the journal at the catch-up cadence for that whole span is
+            // waste: back the poll off, doubling with each parked second
+            // up to PARKED_POLL_CAP. An arriving decision wakes this loop
+            // early — the turn loop through the runtime event
+            // subscription, the worker supervisor through the forwarded
+            // task event — so the backoff never delays an answer; it only
+            // thins the empty polls, and only while the event bus is
+            // quiet. The cap wait excludes the already-closed windows too:
+            // the aggregate budget, not this window alone, bounds the
+            // sleep.
+            let parked = now.saturating_duration_since(since);
+            let cap_wait = self
+                .limits
+                .human_wait_cap
+                .saturating_sub(self.human_wait_total)
+                .saturating_sub(parked);
+            let backoff = EVENT_CATCHUP_POLL
+                .saturating_mul(1u32 << parked.as_secs().min(4))
+                .min(PARKED_POLL_CAP);
+            wait = cap_wait.min(backoff);
+        } else {
+            wait = wait.min(EVENT_CATCHUP_POLL);
+        }
         GuardAction::Run {
             wait: wait.max(Duration::from_millis(1)),
         }
@@ -662,9 +803,11 @@ impl ExecutionGuard {
             return result;
         }
         match self.interrupt_reason {
-            Some(reason @ (TaskTerminalReason::WallTimeout | TaskTerminalReason::IdleTimeout)) => {
-                TaskExecutionResult::from_reason(reason, result.result_text)
-            }
+            Some(
+                reason @ (TaskTerminalReason::WallTimeout
+                | TaskTerminalReason::HumanWaitTimeout
+                | TaskTerminalReason::IdleTimeout),
+            ) => TaskExecutionResult::from_reason(reason, result.result_text),
             _ => result,
         }
     }
@@ -687,6 +830,7 @@ impl TaskManagerConfig {
             allow_shell: config.allow_shell(),
             trust_mode: false,
             execution_limits: TaskExecutionLimits::default(),
+            human_waits_answerable: false,
         }
     }
 }
@@ -791,6 +935,16 @@ pub enum TaskExecutionEvent {
     /// progress instead of idle. Supervisor-side liveness signal only: never
     /// persisted and never shown on the task timeline.
     ToolHeartbeat,
+    /// A human-paced wait (pending approval or user-input prompt) opened or
+    /// closed, so the worker supervisor's wall clock can exclude it exactly
+    /// like the turn loop's own guard does. Supervisor-side signal only:
+    /// never persisted and never shown on the task timeline. The built-in
+    /// engine executor emits the pair only where `human_waits_answerable`
+    /// armed the window; a custom executor that emits it is self-declaring
+    /// its waits answerable, and the supervisor honors the pair regardless
+    /// of that flag.
+    HumanWaitStarted,
+    HumanWaitEnded,
     ToolCompleted {
         id: String,
         name: String,
@@ -850,21 +1004,50 @@ pub trait TaskExecutor: Send + Sync {
         events: mpsc::Sender<TaskExecutionEvent>,
         cancel: CancellationToken,
     ) -> TaskExecutionResult;
+
+    /// Test seam for the server wiring pin: the built-in executor as the
+    /// manager actually received it, so the pin reads the answerability flag
+    /// where `start_with_runtime_manager` forwarded it. Custom executors
+    /// keep the default — there is nothing to expose.
+    #[cfg(any(test, feature = "test-support"))]
+    fn as_engine_executor(&self) -> Option<&EngineTaskExecutor> {
+        None
+    }
 }
 
 /// Executor backed by the shared runtime and its canonical provider resolver.
 pub struct EngineTaskExecutor {
     runtime_threads: SharedRuntimeThreadManager,
     limits: TaskExecutionLimits,
+    /// Whether a host exists that can actually deliver an approval or
+    /// user-input decision to this runtime surface. Only the runtime API
+    /// server's HTTP decision endpoints reach a task thread's engine turn;
+    /// a host without such a channel — the TUI's private task runtime —
+    /// cannot answer a prompt, so arming the human-wait window for it
+    /// would park the worker on the fail-safe cap instead of the wall.
+    answerable_waits: bool,
 }
 
 impl EngineTaskExecutor {
     #[must_use]
-    pub fn new(runtime_threads: SharedRuntimeThreadManager, limits: TaskExecutionLimits) -> Self {
+    pub fn new(
+        runtime_threads: SharedRuntimeThreadManager,
+        limits: TaskExecutionLimits,
+        answerable_waits: bool,
+    ) -> Self {
         Self {
             runtime_threads,
             limits,
+            answerable_waits,
         }
+    }
+
+    /// Whether this executor arms human-wait windows. Test seam for the
+    /// server wiring pin, which reads the flag where it lands.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn answerable_waits(&self) -> bool {
+        self.answerable_waits
     }
 }
 
@@ -964,10 +1147,23 @@ impl TaskExecutor for EngineTaskExecutor {
             events,
             cancel,
             self.limits,
+            self.answerable_waits,
         )
         .await
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn as_engine_executor(&self) -> Option<&EngineTaskExecutor> {
+        Some(self)
+    }
 }
+
+/// Drive one engine turn to its terminal state under the supervisor guard.
+///
+/// `answerable_waits` carries [`EngineTaskExecutor`]'s answerability
+/// decision: with no host able to deliver a decision, a pending prompt is
+/// not a human-paced wait but a prompt nobody will answer, so the wall
+/// clock keeps running and releases the worker at its own deadline.
 
 async fn drive_engine_turn(
     runtime_threads: &RuntimeThreadManager,
@@ -976,6 +1172,7 @@ async fn drive_engine_turn(
     events: mpsc::Sender<TaskExecutionEvent>,
     cancel: CancellationToken,
     limits: TaskExecutionLimits,
+    answerable_waits: bool,
 ) -> TaskExecutionResult {
     let mut subscription = runtime_threads.subscribe_events();
     let mut guard = ExecutionGuard::new(limits, Instant::now());
@@ -1063,8 +1260,12 @@ async fn drive_engine_turn(
                         .unwrap_or_else(|| format!("approval-{}", event.seq));
                     let until = match runtime_threads.approval_decision_timeout() {
                         Some(wait) => Instant::now() + wait,
-                        // `0` waits indefinitely by configuration; the wall
-                        // deadline still bounds the run.
+                        // `0` waits indefinitely by configuration. On an
+                        // unanswerable manager the wall deadline still
+                        // bounds the run; on an answerable one
+                        // (`human_waits_answerable`) the wall pauses while
+                        // the prompt is pending and `human_wait_cap` bounds
+                        // it instead.
                         None => Instant::now() + limits.wall_time,
                     };
                     pending_approvals.insert(approval_id, until);
@@ -1075,6 +1276,34 @@ async fn drive_engine_turn(
                     {
                         pending_approvals.remove(approval_id);
                     }
+                }
+                _ => {}
+            }
+            match event.event.as_str() {
+                // A pending approval or user-input prompt is a human-paced
+                // wait: exclude it from the wall clock exactly like the
+                // turn layer's budget does (`TurnWallClock::begin_human_wait`
+                // in `codewhale-runtime`), and publish the window so the
+                // worker supervisor's guard follows in lockstep. Both arms
+                // are gated on `answerable_waits`, so the window pair only
+                // flows where a decision can actually be delivered. Every
+                // wait exit emits one of the paired closing events (the
+                // decision, the interrupt deny, the bridge's timeout
+                // denial, or the cancellation), so the window cannot stick
+                // open; the guard's fail-safe cap bounds the pathological
+                // case regardless.
+                "approval.required" | "user_input.required" if answerable_waits => {
+                    guard.begin_human_wait(Instant::now());
+                    emit_task_event(&events, TaskExecutionEvent::HumanWaitStarted).await;
+                }
+                "approval.decided"
+                | "approval.timeout"
+                | "user_input.answered"
+                | "user_input.canceled"
+                    if answerable_waits =>
+                {
+                    guard.end_human_wait(Instant::now());
+                    emit_task_event(&events, TaskExecutionEvent::HumanWaitEnded).await;
                 }
                 _ => {}
             }
@@ -1743,6 +1972,11 @@ impl TaskManager {
     }
 
     /// Start the manager with an injected runtime thread manager.
+    ///
+    /// Whether prompts on this manager's tasks are answerable human-paced
+    /// waits is `cfg.human_waits_answerable` — the TUI's `start` leaves it
+    /// `false`, the runtime API server opts in. See that field for the
+    /// contract.
     pub async fn start_with_runtime_manager(
         cfg: TaskManagerConfig,
         _api_config: Config,
@@ -1751,6 +1985,7 @@ impl TaskManager {
         let executor: Arc<dyn TaskExecutor> = Arc::new(EngineTaskExecutor::new(
             runtime_threads.clone(),
             cfg.execution_limits,
+            cfg.human_waits_answerable,
         ));
         let identity = runtime_threads.task_execution_identity();
         let manager = Self::start_with_executor_and_runtime(
@@ -1929,6 +2164,15 @@ impl TaskManager {
     /// Request shutdown. Ownership remains retained through actual execution.
     pub fn shutdown(&self) {
         self.cancel_token.cancel();
+    }
+
+    /// Test seam for the server wiring pin: the built-in engine executor
+    /// this manager runs tasks on, so the pin can read the answerability
+    /// flag where the config forward actually landed.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn engine_executor(&self) -> Option<&EngineTaskExecutor> {
+        self.executor.as_engine_executor()
     }
 
     pub fn shutdown_guard(self: &Arc<Self>) -> TaskManagerShutdownGuard {
@@ -2964,6 +3208,20 @@ impl TaskManager {
             guard.note_progress(Instant::now());
             return Ok(());
         }
+        // The human-wait pair moves the supervisor's wall clock in lockstep
+        // with the turn loop's own guard. In-memory only, like the
+        // heartbeat: it never touches the record or its persistence.
+        match event {
+            TaskExecutionEvent::HumanWaitStarted => {
+                guard.begin_human_wait(Instant::now());
+                return Ok(());
+            }
+            TaskExecutionEvent::HumanWaitEnded => {
+                guard.end_human_wait(Instant::now());
+                return Ok(());
+            }
+            _ => {}
+        }
         match self.apply_execution_event(task_id, event.clone()).await {
             Ok(outcome) => {
                 if execution_event_is_progress(&event) {
@@ -3108,6 +3366,8 @@ impl TaskManager {
             // Supervisor-side liveness only: recording it would put a
             // timeline entry behind every poll tick of a silent build.
             TaskExecutionEvent::ToolHeartbeat => {}
+            // Supervisor-side wall-clock signal only (see the variant doc).
+            TaskExecutionEvent::HumanWaitStarted | TaskExecutionEvent::HumanWaitEnded => {}
             TaskExecutionEvent::ToolCompleted {
                 id,
                 name,
@@ -3269,6 +3529,7 @@ impl TaskManager {
                 | TaskTerminalReason::Shutdown => result.terminal_reason.receipt_message(),
                 TaskTerminalReason::Failed
                 | TaskTerminalReason::WallTimeout
+                | TaskTerminalReason::HumanWaitTimeout
                 | TaskTerminalReason::IdleTimeout
                 | TaskTerminalReason::CancelTimeout => format!(
                     "{}: {}",
@@ -3777,6 +4038,10 @@ fn execution_event_persist_urgent(event: &TaskExecutionEvent) -> bool {
             // rewrite the whole task record on every tick while holding the
             // manager-wide state lock.
             | TaskExecutionEvent::ToolHeartbeat
+            // Supervisor-side wall-clock signal for human waits (see the
+            // variant doc): carries no record state.
+            | TaskExecutionEvent::HumanWaitStarted
+            | TaskExecutionEvent::HumanWaitEnded
     )
 }
 
@@ -4195,6 +4460,7 @@ mod tests {
             allow_shell: false,
             trust_mode: false,
             execution_limits: TaskExecutionLimits::default(),
+            human_waits_answerable: false,
         }
     }
 
@@ -6688,6 +6954,7 @@ mod tests {
                 events,
                 cancel,
                 TaskExecutionLimits::default(),
+                false,
             )
             .await
         }
@@ -6840,6 +7107,7 @@ mod tests {
             tx,
             CancellationToken::new(),
             TaskExecutionLimits::short_for_tests(),
+            false,
         )
         .await;
         assert_eq!(result.status, TaskStatus::Failed);
@@ -6868,7 +7136,9 @@ mod tests {
                     idle_progress: Duration::from_millis(80),
                     cancel_grace: Duration::from_millis(500),
                     persist_debounce: Duration::from_millis(10),
+                    human_wait_cap: Duration::from_secs(24 * 60 * 60),
                 },
+                false,
             )
             .await
         });
@@ -6926,6 +7196,7 @@ mod tests {
             tx,
             CancellationToken::new(),
             TaskExecutionLimits::short_for_tests(),
+            false,
         )
         .await;
         assert_eq!(result.status, TaskStatus::Completed);
@@ -6970,7 +7241,9 @@ mod tests {
                     idle_progress: Duration::from_millis(120),
                     cancel_grace: Duration::from_millis(200),
                     persist_debounce: Duration::from_millis(10),
+                    human_wait_cap: Duration::from_secs(24 * 60 * 60),
                 },
+                false,
             )
             .await
         });
@@ -7058,10 +7331,592 @@ mod tests {
             tx,
             CancellationToken::new(),
             TaskExecutionLimits::short_for_tests(),
+            false,
         )
         .await;
         assert_eq!(result.status, TaskStatus::Failed);
         assert_eq!(result.terminal_reason, TaskTerminalReason::IdleTimeout);
+        Ok(())
+    }
+
+    #[test]
+    fn human_wait_timeout_reason_is_serialized_and_fails_the_task() {
+        // The durable record stores `terminal_reason` as this string, so
+        // receipts and status views must keep naming the fail-safe cap.
+        assert_eq!(
+            TaskTerminalReason::HumanWaitTimeout.as_str(),
+            "human_wait_timeout"
+        );
+        assert_eq!(
+            TaskTerminalReason::HumanWaitTimeout.task_status(),
+            TaskStatus::Failed
+        );
+        assert!(
+            TaskTerminalReason::HumanWaitTimeout
+                .receipt_message()
+                .contains("fail-safe cap")
+        );
+    }
+
+    /// Limits with generous wall/idle budgets so a test exercises exactly
+    /// one guard mechanism (the human-wait arithmetic) in isolation.
+    fn execution_guard_limits(human_wait_cap: Duration) -> TaskExecutionLimits {
+        TaskExecutionLimits {
+            wall_time: Duration::from_secs(30),
+            idle_progress: Duration::from_secs(30),
+            cancel_grace: Duration::from_millis(50),
+            persist_debounce: Duration::from_millis(10),
+            human_wait_cap,
+        }
+    }
+
+    #[test]
+    fn execution_guard_parked_backoff_grows_past_the_catchup_poll() {
+        // Two seconds parked: the doubling has run twice, so the parked
+        // wait must exceed the 200ms catch-up cadence the backoff exists
+        // to escape. Asserted as a literal so drifting EVENT_CATCHUP_POLL
+        // off its documented 200ms fails here instead of silently
+        // tracking the constant.
+        let start = Instant::now();
+        let mut guard = ExecutionGuard::new(
+            execution_guard_limits(Duration::from_secs(24 * 60 * 60)),
+            start,
+        );
+        guard.begin_human_wait(start);
+        match guard.evaluate(start + Duration::from_secs(2), false, false) {
+            GuardAction::Run { wait } => {
+                assert_eq!(wait, Duration::from_millis(800));
+            }
+            other => panic!("expected a parked run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execution_guard_parked_backoff_caps_at_two_seconds() {
+        // Asserted as a literal so moving PARKED_POLL_CAP off its
+        // documented 2s ceiling fails here instead of silently tracking
+        // the constant.
+        let start = Instant::now();
+        let mut guard = ExecutionGuard::new(
+            execution_guard_limits(Duration::from_secs(24 * 60 * 60)),
+            start,
+        );
+        guard.begin_human_wait(start);
+        match guard.evaluate(start + Duration::from_secs(3600), false, false) {
+            GuardAction::Run { wait } => {
+                assert_eq!(wait, Duration::from_secs(2));
+            }
+            other => panic!("expected a parked run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execution_guard_parked_wait_respects_the_aggregate_budget() {
+        // The parked wake must respect the aggregate budget, not just the
+        // open window: 10s cap, 7s already closed, 2.5s parked this window
+        // leaves 500ms — not the 800ms the doubling alone would suggest.
+        let start = Instant::now();
+        let mut guard = ExecutionGuard::new(execution_guard_limits(Duration::from_secs(10)), start);
+        guard.begin_human_wait(start);
+        guard.end_human_wait(start + Duration::from_secs(7));
+        guard.begin_human_wait(start + Duration::from_secs(7));
+        match guard.evaluate(start + Duration::from_millis(9500), false, false) {
+            GuardAction::Run { wait } => {
+                assert_eq!(wait, Duration::from_millis(500));
+            }
+            other => panic!("expected a parked run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execution_guard_spent_aggregate_cap_terminalizes_between_windows() {
+        // Closed windows alone reach the cap with no window open: the
+        // guard must terminalize between prompts even though wall and idle
+        // have barely elapsed. This pins the aggregate arm that only sees
+        // `human_wait_total`; the open-window arm is pinned by
+        // human_wait_fail_safe_cap_releases_the_worker.
+        let start = Instant::now();
+        let mut guard =
+            ExecutionGuard::new(execution_guard_limits(Duration::from_millis(200)), start);
+        guard.begin_human_wait(start);
+        guard.end_human_wait(start + Duration::from_millis(200));
+        match guard.evaluate(start + Duration::from_millis(250), false, false) {
+            GuardAction::Interrupt { reason } => {
+                assert_eq!(reason, TaskTerminalReason::HumanWaitTimeout);
+            }
+            other => panic!("expected the aggregate cap to fire, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execution_guard_cancel_outranks_a_spent_aggregate_cap() {
+        // The cap check sits after the shutdown/cancel classification: a
+        // canceled task must never be mislabeled human_wait_timeout.
+        let start = Instant::now();
+        let mut guard =
+            ExecutionGuard::new(execution_guard_limits(Duration::from_millis(200)), start);
+        guard.begin_human_wait(start);
+        guard.end_human_wait(start + Duration::from_millis(200));
+        match guard.evaluate(start + Duration::from_millis(250), true, false) {
+            GuardAction::Interrupt { reason } => {
+                assert_eq!(reason, TaskTerminalReason::Canceled);
+            }
+            other => panic!("cancel must outrank the spent cap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execution_guard_shutdown_outranks_a_spent_aggregate_cap() {
+        let start = Instant::now();
+        let mut guard =
+            ExecutionGuard::new(execution_guard_limits(Duration::from_millis(200)), start);
+        guard.begin_human_wait(start);
+        guard.end_human_wait(start + Duration::from_millis(200));
+        match guard.evaluate(start + Duration::from_millis(250), false, true) {
+            GuardAction::Interrupt { reason } => {
+                assert_eq!(reason, TaskTerminalReason::Shutdown);
+            }
+            other => panic!("shutdown must outrank the spent cap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execution_guard_cancel_outranks_a_spent_parked_cap() {
+        // Twin of the aggregate outranking pins with the window still
+        // OPEN: the parked cap arm sits after the cancel classification
+        // too, so a canceled task parked past the cap must never be
+        // mislabeled human_wait_timeout.
+        let start = Instant::now();
+        let mut guard =
+            ExecutionGuard::new(execution_guard_limits(Duration::from_millis(200)), start);
+        guard.begin_human_wait(start);
+        match guard.evaluate(start + Duration::from_millis(200), true, false) {
+            GuardAction::Interrupt { reason } => {
+                assert_eq!(reason, TaskTerminalReason::Canceled);
+            }
+            other => panic!("cancel must outrank the spent parked cap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execution_guard_wall_timeout_attribution_follows_the_moved_deadline() {
+        // Wall budget mostly spent, then a human-wait window closed: the
+        // wall deadline moves out by the window, and #5898's crossed-first
+        // attribution must still pick the limit that expired first under
+        // that moved scheme. Just before the moved deadline the raw clock
+        // is already past the wall budget, yet the guard must keep running;
+        // past it, with idle (restarted at the close) crossed too but
+        // later, the label must be WallTimeout — not IdleTimeout, not a
+        // quiet Run.
+        let start = Instant::now();
+        let limits = TaskExecutionLimits {
+            wall_time: Duration::from_millis(400),
+            idle_progress: Duration::from_millis(250),
+            cancel_grace: Duration::from_millis(50),
+            persist_debounce: Duration::from_millis(10),
+            human_wait_cap: Duration::from_secs(24 * 60 * 60),
+        };
+        let mut guard = ExecutionGuard::new(limits, start);
+        guard.note_progress(start + Duration::from_millis(300));
+        guard.begin_human_wait(start + Duration::from_millis(300));
+        guard.end_human_wait(start + Duration::from_millis(900));
+        // Moved wall deadline: 400ms + 600ms window = 1000ms; idle
+        // restarted at the close: 900ms + 250ms = 1150ms.
+        match guard.evaluate(start + Duration::from_millis(950), false, false) {
+            GuardAction::Run { .. } => {}
+            other => panic!("the moved deadline must not fire before 1000ms, got {other:?}"),
+        }
+        match guard.evaluate(start + Duration::from_millis(1200), false, false) {
+            GuardAction::Interrupt { reason } => {
+                assert_eq!(reason, TaskTerminalReason::WallTimeout);
+            }
+            other => panic!("expected WallTimeout past the moved deadline, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execution_guard_human_wait_close_restarts_the_idle_budget() {
+        // Ending a window restarts idle from zero: 100ms after the close
+        // the guard must still run, though 1.1s have passed since start.
+        // This composes with #6118's in-window suppression: the watchdog
+        // is held open while the decision is pending, and this restart
+        // covers the model's own post-decision latency.
+        let start = Instant::now();
+        let limits = TaskExecutionLimits {
+            wall_time: Duration::from_millis(400),
+            idle_progress: Duration::from_millis(150),
+            cancel_grace: Duration::from_millis(500),
+            persist_debounce: Duration::from_millis(10),
+            human_wait_cap: Duration::from_secs(24 * 60 * 60),
+        };
+        let mut guard = ExecutionGuard::new(limits, start);
+        guard.begin_human_wait(start);
+        guard.end_human_wait(start + Duration::from_secs(1));
+        match guard.evaluate(start + Duration::from_millis(1100), false, false) {
+            GuardAction::Run { .. } => {}
+            other => panic!("a closed window must restart idle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_runtime_defaults_to_unanswerable_human_waits() {
+        // The safe default: the TUI builds its private task runtime through
+        // `from_runtime` and must never arm the human-wait window — no host
+        // can answer a prompt there. Only the runtime API server opts in,
+        // via its `server_task_config`.
+        let cfg =
+            TaskManagerConfig::from_runtime(&Config::default(), PathBuf::from("."), None, None);
+        assert!(
+            !cfg.human_waits_answerable,
+            "from_runtime must default to unanswerable human waits"
+        );
+    }
+
+    #[tokio::test]
+    async fn human_wait_is_excluded_from_the_task_wall_clock() -> Result<()> {
+        // The engine journals the tool item before its approval/user-input
+        // gate, so the production shape is: tool in flight, then a prompt
+        // opens a human-paced window. An answer submitted past the wall
+        // budget must complete the task, exactly like the turn layer's
+        // budget excludes the same window (TurnWallClock::begin_human_wait:
+        // "the budget bounds what the agent spends on its own, not how
+        // long a person takes to answer").
+        let runtime = Arc::new(test_runtime_manager().await?);
+        let thread = runtime
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let (tx, mut rx) = mpsc::channel(64);
+        let runtime_for_drive = Arc::clone(&runtime);
+        let thread_id = thread.id.clone();
+        let drive = tokio::spawn(async move {
+            drive_engine_turn(
+                runtime_for_drive.as_ref(),
+                &thread_id,
+                "turn_human_wait",
+                tx,
+                CancellationToken::new(),
+                TaskExecutionLimits {
+                    wall_time: Duration::from_millis(400),
+                    idle_progress: Duration::from_secs(10),
+                    cancel_grace: Duration::from_millis(500),
+                    persist_debounce: Duration::from_millis(10),
+                    human_wait_cap: Duration::from_secs(24 * 60 * 60),
+                },
+                true,
+            )
+            .await
+        });
+
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_human_wait"),
+                "item.started",
+                json!({
+                    "item": { "id": "item_human_wait", "status": "in_progress" },
+                    "tool": { "id": "call_1", "name": "request_user_input", "input": {} }
+                }),
+            )
+            .await?;
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_human_wait"),
+                "user_input.required",
+                json!({ "id": "ui_1", "request": {} }),
+            )
+            .await?;
+
+        // Far past the wall budget the decision is still pending: no
+        // wall-time interrupt may fire, and the window must be published
+        // for the worker supervisor's guard.
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        let mut saw_window_signal = false;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, TaskExecutionEvent::HumanWaitStarted) {
+                saw_window_signal = true;
+            }
+            assert!(
+                !matches!(event, TaskExecutionEvent::Status { message }
+                    if message.contains("wall-time")),
+                "wall-time interrupt fired while a human decision was pending"
+            );
+        }
+        assert!(
+            saw_window_signal,
+            "the human-wait window must be published on the task event channel"
+        );
+
+        // The answer arrives past the budget: the window closes, the tool
+        // completes, and the turn completes with no wall-time anywhere.
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_human_wait"),
+                "user_input.answered",
+                json!({ "id": "ui_1" }),
+            )
+            .await?;
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_human_wait"),
+                "item.completed",
+                json!({ "item": { "id": "item_human_wait", "status": "completed" } }),
+            )
+            .await?;
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_human_wait"),
+                "turn.completed",
+                json!({ "turn": { "status": "completed" } }),
+            )
+            .await?;
+        let result = drive.await?;
+        assert_eq!(result.status, TaskStatus::Completed);
+        assert_eq!(result.terminal_reason, TaskTerminalReason::Completed);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn human_wait_fail_safe_cap_releases_the_worker() -> Result<()> {
+        // A prompt nobody will ever answer must not park the worker
+        // forever: past the fail-safe cap the task ends with the dedicated
+        // terminal reason even though wall and idle never elapsed. This is
+        // the open-window cap arm; the aggregate between-windows arm is
+        // pinned by execution_guard_spent_aggregate_cap_terminalizes_between_windows.
+        let runtime = Arc::new(test_runtime_manager().await?);
+        let thread = runtime
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let (tx, mut rx) = mpsc::channel(64);
+        let runtime_for_drive = Arc::clone(&runtime);
+        let thread_id = thread.id.clone();
+        let drive = tokio::spawn(async move {
+            drive_engine_turn(
+                runtime_for_drive.as_ref(),
+                &thread_id,
+                "turn_unanswered",
+                tx,
+                CancellationToken::new(),
+                TaskExecutionLimits {
+                    wall_time: Duration::from_secs(30),
+                    idle_progress: Duration::from_secs(30),
+                    cancel_grace: Duration::from_millis(50),
+                    persist_debounce: Duration::from_millis(10),
+                    human_wait_cap: Duration::from_millis(200),
+                },
+                true,
+            )
+            .await
+        });
+
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_unanswered"),
+                "approval.required",
+                json!({ "approval_id": "ap_1", "tool_call_id": "call_1", "tool_name": "exec_command" }),
+            )
+            .await?;
+
+        let result = tokio::time::timeout(Duration::from_secs(5), drive)
+            .await
+            .expect("the fail-safe cap must release the turn loop")?;
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert_eq!(result.terminal_reason, TaskTerminalReason::HumanWaitTimeout);
+        let _ = rx.try_recv();
+        Ok(())
+    }
+
+    /// Executor that opens a supervisor-side human wait for `delay` and
+    /// only then completes — the task survives a wall budget far shorter
+    /// than the delay if and only if the supervisor's guard honors the
+    /// HumanWaitStarted/Ended signals.
+    struct SupervisedHumanWaitExecutor {
+        delay: Duration,
+    }
+
+    #[async_trait]
+    impl TaskExecutor for SupervisedHumanWaitExecutor {
+        async fn execute(
+            &self,
+            _task: ExecutionTask,
+            events: mpsc::Sender<TaskExecutionEvent>,
+            _cancel: CancellationToken,
+        ) -> TaskExecutionResult {
+            let _ = events.send(TaskExecutionEvent::HumanWaitStarted).await;
+            tokio::time::sleep(self.delay).await;
+            let _ = events.send(TaskExecutionEvent::HumanWaitEnded).await;
+            TaskExecutionResult {
+                status: TaskStatus::Completed,
+                result_text: None,
+                error: None,
+                terminal_reason: TaskTerminalReason::Completed,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_wall_clock_follows_human_wait_signals() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("deepseek-task-test-{}", Uuid::new_v4()));
+        let mut config = short_test_config(root);
+        // Short config's fail-safe cap (300ms) is shorter than the wait
+        // below; this test pins the wall exclusion, not the fail-safe.
+        config.execution_limits.human_wait_cap = Duration::from_secs(30);
+        let manager = TaskManager::start_with_executor(
+            config,
+            Arc::new(SupervisedHumanWaitExecutor {
+                // Two seconds: far past the short wall, with enough margin
+                // that scheduler starvation on a loaded CI runner cannot
+                // eat the exclusion before the supervisor sees the
+                // HumanWaitStarted signal.
+                delay: Duration::from_secs(2),
+            }),
+        )
+        .await?;
+        let task = manager
+            .add_task(NewTaskRequest::from_prompt("human wait past wall"))
+            .await?;
+        let finished = wait_for_terminal_state(&manager, &task.id, Duration::from_secs(10)).await?;
+        assert_eq!(finished.status, TaskStatus::Completed);
+        assert_eq!(finished.terminal_reason.as_deref(), Some("completed"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unanswerable_surface_keeps_the_wall_clock_running_through_a_prompt() -> Result<()> {
+        // The unanswerable default (TUI's private task runtime has no host
+        // that can deliver an approval or user-input decision): a prompt
+        // there must not arm the human-wait window at all — no window
+        // signal, wall excluded nothing — so the wall clock keeps running
+        // and interrupts the turn at its own deadline, exactly as before
+        // the opt-in existed.
+        let runtime = Arc::new(test_runtime_manager().await?);
+        let thread = runtime
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let (tx, mut rx) = mpsc::channel(64);
+        let runtime_for_drive = Arc::clone(&runtime);
+        let thread_id = thread.id.clone();
+        let drive = tokio::spawn(async move {
+            drive_engine_turn(
+                runtime_for_drive.as_ref(),
+                &thread_id,
+                "turn_unanswerable",
+                tx,
+                CancellationToken::new(),
+                TaskExecutionLimits {
+                    wall_time: Duration::from_millis(300),
+                    idle_progress: Duration::from_secs(30),
+                    cancel_grace: Duration::from_millis(500),
+                    persist_debounce: Duration::from_millis(10),
+                    // The fail-safe cap is the default: if the prompt were
+                    // (wrongly) treated as an answerable wait, the task
+                    // would survive the wall and end much later with
+                    // HumanWaitTimeout instead of WallTimeout.
+                    human_wait_cap: Duration::from_secs(24 * 60 * 60),
+                },
+                false,
+            )
+            .await
+        });
+
+        runtime
+            .emit_event_for_test(
+                &thread.id,
+                Some("turn_unanswerable"),
+                "approval.required",
+                json!({ "approval_id": "ap_1", "tool_call_id": "call_1", "tool_name": "exec_command" }),
+            )
+            .await?;
+
+        let result = tokio::time::timeout(Duration::from_secs(5), drive)
+            .await
+            .expect("the wall clock must release the worker")?;
+        assert_eq!(result.terminal_reason, TaskTerminalReason::WallTimeout);
+        let mut saw_window_signal = false;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, TaskExecutionEvent::HumanWaitStarted) {
+                saw_window_signal = true;
+            }
+        }
+        assert!(
+            !saw_window_signal,
+            "an unanswerable surface must not publish a human-wait window"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn chained_short_waits_still_terminate_at_the_fail_safe_cap() -> Result<()> {
+        // Each window is well under the cap, so chaining prompts must not
+        // park the worker forever: once the windows sum past the cap the
+        // guard terminalizes. Which arm observes the crossing first is a
+        // wake-timing detail this test does not pin — with these
+        // back-to-back windows the open-window check fires mid-window
+        // (window one's spend is already in the aggregate total); the
+        // between-windows arm alone is pinned deterministically by
+        // execution_guard_spent_aggregate_cap_terminalizes_between_windows.
+        // A fresh window re-counting after the previous one closed is what
+        // makes this test able to reach two windows at all.
+        let runtime = Arc::new(test_runtime_manager().await?);
+        let thread = runtime
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let (tx, _rx) = mpsc::channel(64);
+        let runtime_for_drive = Arc::clone(&runtime);
+        let thread_id = thread.id.clone();
+        let drive = tokio::spawn(async move {
+            drive_engine_turn(
+                runtime_for_drive.as_ref(),
+                &thread_id,
+                "turn_chained",
+                tx,
+                CancellationToken::new(),
+                TaskExecutionLimits {
+                    wall_time: Duration::from_secs(30),
+                    idle_progress: Duration::from_secs(30),
+                    cancel_grace: Duration::from_millis(50),
+                    persist_debounce: Duration::from_millis(10),
+                    // Two 120ms windows sum past this; neither alone does.
+                    human_wait_cap: Duration::from_millis(200),
+                },
+                true,
+            )
+            .await
+        });
+
+        for round in 0..2 {
+            runtime
+                .emit_event_for_test(
+                    &thread.id,
+                    Some("turn_chained"),
+                    "user_input.required",
+                    json!({ "id": format!("ui_{round}"), "request": {} }),
+                )
+                .await?;
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            runtime
+                .emit_event_for_test(
+                    &thread.id,
+                    Some("turn_chained"),
+                    "user_input.answered",
+                    json!({ "id": format!("ui_{round}") }),
+                )
+                .await?;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let result = tokio::time::timeout(Duration::from_secs(5), drive)
+            .await
+            .expect("the fail-safe cap must release the worker")?;
+        assert_eq!(
+            result.terminal_reason,
+            TaskTerminalReason::HumanWaitTimeout,
+            "chained sub-cap windows must not park the worker forever"
+        );
         Ok(())
     }
 
@@ -7086,7 +7941,9 @@ mod tests {
                     idle_progress: Duration::from_millis(80),
                     cancel_grace: Duration::from_millis(500),
                     persist_debounce: Duration::from_millis(10),
+                    human_wait_cap: Duration::from_secs(24 * 60 * 60),
                 },
+                false,
             )
             .await
         });
@@ -7187,7 +8044,9 @@ mod tests {
                     idle_progress: Duration::from_millis(80),
                     cancel_grace: Duration::from_millis(500),
                     persist_debounce: Duration::from_millis(10),
+                    human_wait_cap: Duration::from_secs(24 * 60 * 60),
                 },
+                false,
             )
             .await
         });
@@ -7258,7 +8117,9 @@ mod tests {
                     idle_progress: Duration::from_millis(80),
                     cancel_grace: Duration::from_millis(500),
                     persist_debounce: Duration::from_millis(10),
+                    human_wait_cap: Duration::from_secs(24 * 60 * 60),
                 },
+                false,
             )
             .await
         });
@@ -7571,6 +8432,7 @@ mod tests {
             tx,
             cancel,
             TaskExecutionLimits::short_for_tests(),
+            false,
         )
         .await;
         assert_eq!(result.status, TaskStatus::Canceled);

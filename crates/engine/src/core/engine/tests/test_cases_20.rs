@@ -25,6 +25,7 @@ async fn restored_task_binding_is_not_missing_when_its_inventory_is_unavailable(
             allow_shell: false,
             trust_mode: false,
             execution_limits: crate::task_manager::TaskExecutionLimits::default(),
+            human_waits_answerable: false,
         },
         Arc::new(Unused),
     )

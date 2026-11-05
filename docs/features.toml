@@ -419,7 +419,7 @@ owner = "crates/engine/src/tools/goal.rs"
 [[feature]]
 id = "thread-scheduled-turns"
 name = "Reminders into the same thread"
-summary = "send_later, automations and /v1/triggers can deliver a scheduled message as a new turn in an existing thread."
+summary = "send_later, automations and /v1/triggers deliver scheduled turns; a run parked on a human answer pauses its wall clock."
 status = "experimental"
 surfaces = { api = "preview" }
 since = "unreleased"

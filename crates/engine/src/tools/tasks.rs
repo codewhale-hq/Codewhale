@@ -1815,6 +1815,7 @@ mod tests {
                 allow_shell: false,
                 trust_mode: false,
                 execution_limits: crate::task_manager::TaskExecutionLimits::default(),
+                human_waits_answerable: false,
             },
             std::sync::Arc::new(NoopExecutor),
         )

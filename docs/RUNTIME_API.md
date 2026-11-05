@@ -1986,7 +1986,8 @@ When set, each run is delivered into that existing thread as a new turn
 instead of starting a new task thread; the turn item carries
 `{"input_provenance":"scheduled","task_id":...}` metadata, and the turn uses
 the thread's own model and permission posture. If the thread is busy the run
-waits for its current turn to finish (bounded by the task wall-time budget).
+waits for its current turn to finish (bounded by the task wall-time budget,
+which pauses while a prompt on the run itself awaits a decision).
 A destination that no longer exists or is archived fails the run with a
 receipt naming the thread; it is never rerouted to a new thread. An empty
 string on `PATCH` clears the destination. Create and update return `404` for
