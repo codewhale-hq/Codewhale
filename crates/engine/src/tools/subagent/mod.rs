@@ -73,7 +73,6 @@ use codewhale_agent_contract::worker_profile::{
     narrow_model_steps, narrow_optional_limit,
 };
 use codewhale_config::AppMode;
-use codewhale_dependencies::{ExternalTool, Git};
 #[cfg(test)]
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_execpolicy::canonical_action::{
@@ -1297,6 +1296,19 @@ impl SubAgentAccountingOrigin {
             session_id: context.state_namespace.clone(),
         }
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn test_session_origin(&self) -> Option<crate::cost_status::NativeUsageOrigin> {
+        crate::session_manager::default_sessions_dir()
+            .ok()
+            .map(|dir| {
+                crate::cost_status::NativeUsageOrigin::session(
+                    self.cost_scope,
+                    dir,
+                    self.session_id.clone(),
+                )
+            })
+    }
 }
 
 /// Publish one child provider response into every projection that owns it.
@@ -1776,26 +1788,20 @@ fn is_false(b: &bool) -> bool {
 }
 
 fn current_git_branch(workspace: &Path) -> Option<String> {
-    let branch = run_git(workspace, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let branch = branch.trim();
-    if branch.is_empty() {
-        return None;
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let head = match codewhale_util::git_metadata::read_head(workspace, &cancel) {
+        Ok(head) => head,
+        Err(codewhale_util::git_metadata::GitReadError::NotRepository) => return None,
+        Err(error) => {
+            tracing::warn!(%error, "sub-agent git branch read failed");
+            return None;
+        }
+    };
+    head.id.as_ref()?;
+    match head.branch {
+        Some(branch) => Some(branch),
+        None => head.short_id().map(|short| format!("detached:{short}")),
     }
-    if branch != "HEAD" {
-        return Some(branch.to_string());
-    }
-
-    let short_hash = run_git(workspace, &["rev-parse", "--short", "HEAD"])?;
-    let short_hash = short_hash.trim();
-    (!short_hash.is_empty()).then(|| format!("detached:{short_hash}"))
-}
-
-fn run_git(workspace: &Path, args: &[&str]) -> Option<String> {
-    let output = Git::output(args, workspace).ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 struct ChildActivationState {
@@ -3232,19 +3238,11 @@ impl SubAgentRuntime {
         // Accounting ownership is fixed here, at dispatch, before any child
         // provider request exists; see `SubAgentAccountingOrigin`.
         let accounting_origin = SubAgentAccountingOrigin::capture(&context);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let context = {
             let mut context = context;
             if context.accounting_origin.is_none() {
-                context.accounting_origin = crate::session_manager::default_sessions_dir()
-                    .ok()
-                    .map(|dir| {
-                        crate::cost_status::NativeUsageOrigin::session(
-                            accounting_origin.cost_scope,
-                            dir,
-                            accounting_origin.session_id.clone(),
-                        )
-                    });
+                context.accounting_origin = accounting_origin.test_session_origin();
             }
             context
         };
@@ -5843,11 +5841,10 @@ impl SubAgentManager {
         {
             return self
                 .with_store_transaction(|manager| {
-                    manager
-                        .expand_write_claim(owner, roots, exact_files, contracts)
-                        .map_err(anyhow::Error::msg)
+                    Ok(manager.expand_write_claim(owner, roots, exact_files, contracts))
                 })
-                .map_err(|error| error.to_string());
+                .map_err(|error| error.to_string())
+                .and_then(|outcome| outcome);
         }
 
         self.ensure_coordination_process_lock()?;
@@ -14241,6 +14238,17 @@ impl SubAgentStoreAuthority {
                 && existing.status.is_terminal()
                 && !incoming.status.is_terminal()
                 && generation(incoming) <= generation(existing)
+            {
+                continue;
+            }
+            if terminal != Some(id.as_str())
+                && let (Some(existing), Some(incoming)) = (existing, incoming)
+                && !existing.status.is_terminal()
+                && incoming.status.is_terminal()
+                && value
+                    .agents
+                    .iter()
+                    .any(|agent| agent.id == id && agent.status == SubAgentStatus::Running)
             {
                 continue;
             }

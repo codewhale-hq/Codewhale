@@ -1385,7 +1385,7 @@ impl Engine {
             });
         let review_route = client.effective_route_envelope(client.model(), chrono::Utc::now());
         let origin = if let Some(child) = child_accounting.as_ref() {
-            child.runtime.context.accounting_origin.clone()
+            child.usage_origin()
         } else {
             self.config
                 .compaction
@@ -1412,13 +1412,12 @@ impl Engine {
             .admit_dispatch(&review_route)
             .await
             .map_err(|error| ToolError::execution_failed(error.to_string()))?
+            && let Some(child) = child_accounting.as_ref()
         {
-            if let Some(child) = child_accounting.as_ref() {
-                child
-                    .project_settled_response(&record)
-                    .await
-                    .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-            }
+            child
+                .project_settled_response(&record)
+                .await
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
         }
         let wire = observation.wire_observations.clone();
         let started = Instant::now();
@@ -4947,7 +4946,7 @@ impl Engine {
         let max_content_bytes = self.config.stream_max_content_bytes;
         let child_request_deadline = self
             .child_job()
-            .map(|job| request_dispatched_at + job.authority.runtime.step_api_timeout);
+            .map(|job| Instant::now() + job.authority.runtime.step_api_timeout);
 
         // Process stream events
         loop {

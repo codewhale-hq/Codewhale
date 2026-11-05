@@ -22,11 +22,13 @@ codewhale-paths = { path = "../paths", version = "0.10.3" }
 codewhale-protocol = { path = "../protocol", version = "0.10.3" }
 codewhale-telemetry = { path = "../telemetry", version = "0.10.3" }
 futures-util = "0.3.31"
+gix.workspace = true
 ignore = "0.4"
 reqwest.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
