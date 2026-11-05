@@ -80,7 +80,7 @@ pub enum MailboxMessage {
     /// Published after each turn so the parent's cost counter updates live.
     TokenUsage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        record: Option<crate::cost_status::RuntimeUsageRecord>,
+        record: Option<Box<crate::cost_status::RuntimeUsageRecord>>,
         agent_id: String,
         /// Stable identity of the provider response. Runtime accounting uses
         /// this across direct durability, mailbox replay, and restart dedupe.
@@ -145,7 +145,7 @@ impl MailboxMessage {
             source_id: record.source_id.clone(),
             route: Box::new(record.usage.route.clone()),
             usage: record.usage.usage.clone(),
-            record: Some(record),
+            record: Some(Box::new(record)),
         }
     }
 

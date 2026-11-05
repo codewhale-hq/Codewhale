@@ -273,7 +273,25 @@ pub enum RuntimeOwnerRequest {
     },
     DecideApproval {
         approval_id: String,
+        binding: Option<codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
         decision: codewhale_engine::runtime_threads::manager::ExternalApprovalDecision,
+    },
+    SubmitUserInput {
+        thread_id: String,
+        input_id: String,
+        turn_id: Option<String>,
+        response: codewhale_engine::tools::user_input::UserInputResponse,
+    },
+    CancelUserInput {
+        thread_id: String,
+        input_id: String,
+        turn_id: Option<String>,
+    },
+    DeliverDynamicToolResult {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        result: codewhale_app_server_protocol::runtime::DynamicToolCallResult,
     },
 }
 

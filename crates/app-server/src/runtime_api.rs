@@ -1571,6 +1571,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         thread_create_idempotency: true,
         thread_idle_precondition: true,
         thread_patch_undo_turn_id: true,
+        thread_scoped_reads: true,
         thread_shell_consent: true,
         turns: true,
         turn_operation_idempotency: true,
@@ -6755,21 +6756,27 @@ async fn decide_approval(
         }
     };
     Ok(Json(
-        settle_approval_request(&state, approval_id, decision).await?,
+        settle_approval_request(&state, approval_id, None, decision).await?,
     ))
 }
 
 async fn settle_approval_request(
     state: &RuntimeApiState,
     approval_id: String,
+    binding: Option<&codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
     decision: ExternalApprovalDecision,
 ) -> Result<DecideApprovalResponse, ApiError> {
     let delivered = state
         .runtime_threads
-        .deliver_external_approval(&approval_id, decision)
+        .deliver_bound_approval(&approval_id, binding, decision)
         .await
         .map_err(|error| {
             if error
+                .downcast_ref::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
+                .is_some()
+            {
+                ApiError::forbidden(error.to_string())
+            } else if error
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
             {
