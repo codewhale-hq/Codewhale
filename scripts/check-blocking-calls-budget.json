@@ -6,8 +6,8 @@
   "crates/account-cli/src/work.rs": {
     "std_fs": 1
   },
-  "crates/app-server/src/exec_agent.rs": {
-    "std_fs": 1
+  "crates/app-server-protocol/src/bin/export.rs": {
+    "std_fs": 3
   },
   "crates/app-server/src/mcp_server.rs": {
     "std_fs": 1
@@ -44,7 +44,11 @@
     "thread_sleep": 1
   },
   "crates/cli/src/metrics.rs": {
-    "std_fs": 6
+    "std_fs": 4
+  },
+  "crates/cli/src/metrics/stats.rs": {
+    "path_canonicalize": 1,
+    "std_fs": 2
   },
   "crates/cli/src/update.rs": {
     "path_canonicalize": 3,
@@ -273,6 +277,9 @@
   "crates/engine/src/voice.rs": {
     "std_fs": 3
   },
+  "crates/engine/src/whale_soul.rs": {
+    "std_fs": 1
+  },
   "crates/execpolicy/src/toml_rules.rs": {
     "std_fs": 1
   },
@@ -421,9 +428,6 @@
   "crates/tui/src/commands/groups/core/acceptance.rs": {
     "std_fs": 1
   },
-  "crates/tui/src/commands/groups/plugins/render.rs": {
-    "path_canonicalize": 1
-  },
   "crates/tui/src/commands/groups/project/init.rs": {
     "std_fs": 13
   },
@@ -468,7 +472,7 @@
   },
   "crates/tui/src/lib.rs": {
     "path_canonicalize": 4,
-    "std_fs": 34
+    "std_fs": 35
   },
   "crates/tui/src/tui/app/init.rs": {
     "std_fs": 1
@@ -525,9 +529,6 @@
   "crates/tui/src/tui/views/fleet_list.rs": {
     "std_fs": 3
   },
-  "crates/tui/src/tui/views/fleet_setup.rs": {
-    "std_fs": 1
-  },
   "crates/tui/src/tui/window_control.rs": {
     "thread_sleep": 1
   },
@@ -541,6 +542,9 @@
     "path_canonicalize": 2,
     "std_fs": 5,
     "thread_sleep": 1
+  },
+  "crates/util/src/git_metadata.rs": {
+    "std_fs": 2
   },
   "crates/util/src/utils.rs": {
     "std_fs": 7

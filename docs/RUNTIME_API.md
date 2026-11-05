@@ -479,7 +479,9 @@ native frontend directly; they do not make loopback HTTP requests.
 `prompt/*`) and the full method list; `thread/capabilities`,
 `app/capabilities`, and `prompt/capabilities` scope it per family. The method
 set is pinned by a drift test in `crates/app-server/src/tests.rs`, so SDK and
-local integration clients can rely on it not changing silently.
+local integration clients can rely on it not changing silently. The permanently
+refused compatibility goal setter is omitted from discovery while
+`goal_execution` is false; goal reads and clears remain advertised.
 
 ### Daemon socket: `codewhale app-server --socket`
 
@@ -561,8 +563,9 @@ HTTP reports 400 with `error.code: "invalid_request"`, `error.jsonrpc_code: -326
 and the same detail in `error.data`. Compatibility `thread/goal/set` and
 `ThreadRequest::GoalSet` also refuse before changing the goal: setting an active
 goal starts background Engine work. Reading and clearing existing goals remain
-available; starting goals uses the full Runtime HTTP API. The known method
-remains dispatchable so older clients get this actionable refusal. For example:
+available; starting goals uses the full Runtime HTTP API. The known setter
+remains recognized for older clients to get this actionable refusal, but it is
+not advertised as an available method. For example:
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"thread/message","params":{"thread_id":"thr_...","input":"Summarize this conversation","allowed_tools":[]}}
@@ -627,6 +630,16 @@ in the app-server can produce model output, so a prompt either runs or fails.
 `POST /thread` with a `Message` body behaves the same way — it runs the turn
 and replies `status: "completed"` with the streamed frames in `events` — where
 it previously replied `accepted` without doing anything.
+
+### Compatibility list and read parameters
+
+`thread/list` accepts only `include_archived` and `limit`; `thread/read`
+accepts only `thread_id` and returns the complete legacy history projection.
+Both also apply inside `thread/request`. Unknown fields fail with `-32602`
+before contacting the canonical owner. Workspace, cursor, `archived`, search
+and `includeTurns` parameters from the pinned v2 contract are not implemented
+by these compatibility methods; they are rejected instead of silently ignored.
+These method names do not establish Codex wire parity.
 
 ### Thread ids and restarts
 
@@ -1451,7 +1464,8 @@ latest turn and publishes a `thread.permissions_changed` event (`from`, `to`,
 - `POST /v1/threads/{id}/compact` (manual compaction)
 - `POST /v1/threads/{id}/undo` - fork the thread with the last N turns removed (`{"depth": N}`, default 0 = last turn only); returns the forked thread plus `original_user_text` so a GUI can pre-populate the input box. `{"turn_id": "turn_…"}` instead names the user turn to remove, together with every turn after it, and wins over `depth`; the Runtime resolves it under the thread's restore guard, so a turn another client appends meanwhile cannot move the cut. `400` when the turn is not a user turn of that thread
 - `POST /v1/threads/{id}/fork-at-turn` - fork at one named user turn (`{"turn_id": "turn_…"}`, as `GET /v1/threads/{id}` reports it). The fork *keeps* that turn and every turn before it, and drops the turns after it; naming the last turn therefore keeps the whole conversation. The receipt is `/undo`'s (`thread`, `original_user_text`, `original_user_images`), carrying the *first dropped* user turn's prompt — what was asked next, even when a prompt-less turn such as a manual `/compact` sits between — so a client can put it back in the composer for editing. The source thread, its session document and the workspace are untouched, and there is no file rollback: a fork is a sibling conversation, and rewinding the workspace would rewind the branch left behind with it. Clients should name the turn instead of computing a `depth` — the transcript they render and the turn list this cuts are not the same list (steers, image-only prompts and injected handoffs each sit on one side only), and a client-side count that is off by one forks the wrong prefix while answering `201`. `400` when the turn is not a user turn of that thread.
-- `POST /v1/threads/{id}/patch-undo` - rolls back the files the dropped turns changed, then the same fork (`{"depth": N}`); returns `patch_result` (`files_restored`, `summary`, `snapshot_label`) alongside the forked thread. See [Workspace restore endpoints](#workspace-restore-endpoints) for ownership, the trust, admission and abort rules, and the `error.code` values of a refusal.
+- `GET /v1/threads/{id}/patch-undo?turn_id=turn_…` - validates the selected restore without changing files or publishing a fork; returns `turn_ids`, the exact dropped range, `paths` needing restoration and an optional no-change `summary`. Requires the `thread_patch_undo_turn_id` capability.
+- `POST /v1/threads/{id}/patch-undo` - rolls back the files the dropped turns changed, then the same fork (`{"depth": N}` or `{"turn_id": "turn_…"}`, with `turn_id` taking precedence); returns `patch_result` (`files_restored`, `summary`, `snapshot_label`) alongside the forked thread. See [Workspace restore endpoints](#workspace-restore-endpoints) for ownership, the trust, admission and abort rules, and the `error.code` values of a refusal.
 - `POST /v1/threads/{id}/file-revert` - restore exactly one file from one restore point the thread owns (`{"path", "snapshot_id", "expected_hash"}`); never forks the conversation. See [Workspace restore endpoints](#workspace-restore-endpoints).
 - `POST /v1/threads/{id}/retry` - fork with the last N turns removed and immediately start a new turn (`{"depth": N, "prompt": "..."}`; `prompt` overrides the original user text, which is re-used when omitted)
 
@@ -1845,7 +1859,9 @@ For `file-revert` the backup is mandatory: if it cannot be written, or the
 requested file is excluded from it (for example by `.gitignore`), the request
 fails and nothing is changed.
 
-**`patch-undo`.** Undoes whole turns. For each dropped turn's `pre_turn` →
+**`patch-undo`.** Undoes whole turns. A named `turn_id` removes that user turn and every turn after it, under the same restore admission as `/undo`. Clients must require `thread_patch_undo_turn_id` before sending selected-turn requests: older Engines may ignore that field. Preview with `GET`, then send its exact `turn_ids` as `expected_turn_ids` and `paths` as `expected_paths` on `POST`; `409 undo_selection_changed` refuses an altered range or file plan before file changes. A preview does not reserve future execution or promise idempotency. The mutation is not automatically retryable after a lost response.
+
+ For each dropped turn's `pre_turn` →
 `post_turn` window, the paths that differ between the two snapshots must all be
 the turn's own: changed only in the span of one of the turn's tool calls (a
 `tool` → `post_tool` span, or a shell turn's whole window), and, inside a file
@@ -2283,6 +2299,29 @@ also how a client sees model-spawned work.
   invented number — and `live: false` marks responses where the engine
   could not be loaded and only the store-recorded route's static window
   resolved.
+
+**Thread-scoped reads.** `GET /v1/git`, `/v1/changes`, `/v1/diff`,
+`/v1/workspace/diff`, `/v1/git/graph`, `/v1/workspace/files` and
+`/v1/workspace/files/read` accept an optional `thread_id`. With it, the route
+reads the workspace recorded on that thread (the runtime store's thread record
+is the only source) instead of the server's workspace, through the same
+confined paths. Without it the route behaves exactly as before. An unknown
+thread is 404; a recorded workspace that is not an absolute path, or that is
+missing, replaced by a link or changed during resolution is 409 with
+`error.code` `thread_workspace_unavailable`. Mutating git routes, file
+writes, `/v1/workspace/status` and file search stay on the server workspace.
+Clients must require the `thread_scoped_reads` capability on
+`GET /v1/runtime/info` before sending `thread_id`: older Engines reject the
+unknown query parameter.
+
+**Status unavailable.** `GET /v1/workspace/status` and `GET /v1/git` report
+`status_unavailable: true` when `git status` could not be read (git failed to
+start or exited non-zero, or the repository's filter configuration could not be
+inspected). `dirty` and the change counts are then unknown, not zero, and clients
+must not present them as clean. Status reads neutralize clean/process filter
+drivers defined in the repository's own configuration (local or worktree scope);
+drivers defined only in the user's global or system configuration, such as Git
+LFS, keep working.
 
 **Git** (workspace repository operations, APPS-106)
 - `GET /v1/git` — status detail: `git_repo`, `branch`, `head`
@@ -3189,6 +3228,23 @@ model is preserved. Cross-origin preflights advertise only `Authorization`,
 allowed. Added in v0.8.10 (#561), tightened in v0.9.1 (#4454).
 
 ## Managed Fleet Runtime and SDK helpers
+
+`GET /v1/fleet/profiles` reads the captured workspace's effective roster,
+including its selected Fleet and admitted plugins, without opening a run ledger.
+`GET /v1/fleet/profiles/{id}/document` addresses an exact effective member ID.
+Its shared `FleetProfileDocument` contract returns `id`, `kind` (`profile` or
+`fleet`), `origin`, nullable `path`, `text`, opaque source-bound `revision`,
+`writable` and nullable `refusal_reason`. Personal/project profile documents and
+selected Fleet files return exact UTF-8 bytes through a bounded, pinned reader
+(one MiB maximum). Changed identity, missing source or linked paths are refused.
+Built-in, config-backed and foreign-managed members instead return an explicitly
+read-only effective profile projection with no file path; sentinel paths and
+native preset entry identifiers are never opened as documents.
+
+All documents currently advertise `writable: false`. No document PUT is exposed;
+use the terminal or the defining source to edit. A revision is not write
+permission or a live-roster adoption receipt. Watch clients may read these
+resources under the existing workspace and authentication boundaries.
 
 The Runtime SDK lives in `npm/runtime-sdk` and is exposed as
 the `@codewhale/runtime-sdk` workspace package. It is deliberately thin: every

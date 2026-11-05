@@ -295,9 +295,8 @@ pub struct PreparedOutboundRequest {
     /// Which transport entry point prepared this request. Never a substitute
     /// for [`Self::wire_stream_field`], which is the wire truth.
     pub entrypoint: CallerStreamMode,
-    /// Wire-normalized tool names omitted by a route-specific compatibility
-    /// check. This stopgap receipt is intentionally not a projection layer;
-    /// it only transports a bounded user-visible warning.
+    /// Wire-normalized tool names omitted by the route tool projection for
+    /// this request. It only transports a bounded user-visible warning.
     pub omitted_tool_names: Vec<String>,
     pub image_omission_notice: Option<String>,
     pub image_projection: Option<crate::llm_client::ImageProjectionReceipt>,

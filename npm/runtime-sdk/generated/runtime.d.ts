@@ -39,6 +39,19 @@ export type DynamicToolSpecOutput = {
   [key: string]: Json | undefined
 }
 
+export type FleetProfileDocument = {
+  id: string
+  kind: FleetProfileDocumentKind
+  origin: string
+  path: (string | null)
+  text: string
+  revision: string
+  writable: boolean
+  refusal_reason: (string | null)
+}
+
+export type FleetProfileDocumentKind = 'profile' | 'fleet'
+
 export type RuntimeCapabilities = {
   client_token_intents: boolean
   account_session: boolean
@@ -47,6 +60,8 @@ export type RuntimeCapabilities = {
   threads: boolean
   thread_create_idempotency: boolean
   thread_idle_precondition: boolean
+  thread_patch_undo_turn_id: boolean
+  thread_scoped_reads: boolean
   thread_shell_consent: boolean
   turns: boolean
   turn_operation_idempotency: boolean

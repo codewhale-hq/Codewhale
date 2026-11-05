@@ -365,7 +365,8 @@ printf '%s\n' \
 `prompt/*`）以及完整的方法清单；`thread/capabilities`、
 `app/capabilities` 与 `prompt/capabilities` 则按族缩小范围。方法集合由
 `crates/app-server/src/tests.rs` 中的一个漂移测试钉住，因此 SDK 与本地集成客户端
-可以依赖它不会悄悄变化。
+可以依赖它不会悄悄变化。`goal_execution` 为 false 时，始终拒绝执行的兼容目标设置
+不会出现在方法清单中；读取和清除现有目标仍会声明。
 
 ### 兼容执行限制
 
@@ -375,13 +376,14 @@ HTTP 兼容路由、stdio 和 socket 均声明 `interactive_execution: false`、
 `thread/message`、`thread/request` 的 message、`prompt/run`、`prompt/request`
 以及 HTTP `/prompt`、`/thread` 的 message 必须显式提供 `allowed_tools: []`。
 省略、null 或非空列表返回 `interactive_execution_unsupported`，不会创建 Runtime
-线程或启动回合；错误类型的值也会被拒绝。桥在实际回合请求中继续传递空工具列表，
+线程或启动回合；错误类型的值也会被拒绝。捕获的原生 owner 在实际回合请求中继续传递空工具列表，
 只转发助手文本和最终状态；意外的审批或澄清请求会报错并中断该回合。
 工具客户端须迁移到带 bearer 认证的完整 HTTP/SSE API。
 JSON-RPC 返回 `-32602` 和 `data.error: "interactive_execution_unsupported"`；
 HTTP 返回 400，`error.code` 为 `invalid_request`，同一详情位于 `error.data`。
 兼容 `thread/goal/set` 以及 `ThreadRequest::GoalSet` 也在修改目标前拒绝，
-因为设为活动目标会启动后台工作。读取、清除现有目标仍可用；开始目标请用完整 HTTP API。
+因为设为活动目标会启动后台工作。它不会列为可用方法，但旧客户端直接调用仍得到明确拒绝。
+读取、清除现有目标仍可用；开始目标请用完整 HTTP API。
 
 `@codewhale/runtime-sdk` 当前只封装 Fleet 和线程事件读取，未封装线程创建、
 回合开始/引导/中断、审批、澄清或模型发现。完整集成请使用
@@ -485,6 +487,15 @@ HTTP `POST /prompt` 都会在运行时上执行一个**真实回合**，经由
 带 `Message` 请求体的 `POST /thread` 行为相同——它运行该回合
 并回复 `status: "completed"`，`events` 中带上流式帧——而
 它以前只是回复 `accepted` 而什么都不做。
+
+### 兼容层的列表与读取参数
+
+`thread/list` 只接受 `include_archived` 和 `limit`；`thread/read`
+只接受 `thread_id`，返回完整的旧协议历史投影。通过 `thread/request`
+调用时也适用。未知字段会在访问规范 Runtime 所有者之前以 `-32602` 拒绝。
+这些兼容方法尚未实现固定 v2 合约中的工作区、游标、`archived`、搜索和
+`includeTurns` 参数，因此会明确拒绝，而不会静默忽略。同名方法不代表
+已实现 Codex 线协议兼容。
 
 ### 线程标识与重启
 
@@ -1828,6 +1839,14 @@ Engine 并不知道的终端。输入可按路由归因：
   而 `live: false` 标记那些引擎无法被加载、只有存储中记录的该路由的静态窗口
   被解析出来的响应。
 
+**线程范围的读取。** `GET /v1/git`、`/v1/changes`、`/v1/diff`、
+`/v1/workspace/diff`、`/v1/git/graph`、`/v1/workspace/files` 与
+`/v1/workspace/files/read` 接受可选的 `thread_id`。提供时，路由读取该线程记录的工作区
+（唯一来源是运行时存储中的线程记录），而不是服务器的工作区，并走同样的受限路径。
+不提供时行为与之前完全一致。未知线程返回 404；记录的工作区不是绝对路径、已不存在、被替换为链接或在解析期间发生变化时，
+返回 409，`error.code` 为 `thread_workspace_unavailable`。会修改内容的 git 路由、文件写入、
+`/v1/workspace/status` 与文件搜索仍使用服务器工作区。
+
 **Git**（工作区仓库操作，APPS-106）
 - `GET /v1/git` — 状态详情：`git_repo`、`branch`、`head`
   （缩写，仅供展示）、`head_oid`、`index_token`、`revision`、
@@ -2553,6 +2572,20 @@ Fleet 流（`/v1/fleet/runs/{run_id}/events`）保留自己的结束帧，
 允许。于 v0.8.10 加入（#561），于 v0.9.1 收紧（#4454）。
 
 ## 托管 Fleet 运行时与 SDK 助手
+
+`GET /v1/fleet/profiles` 从已捕获的工作区读取实际生效的成员列表，包含选中的
+Fleet 和已获准的插件，不会为此打开运行账本。
+`GET /v1/fleet/profiles/{id}/document` 使用精确的生效成员 ID。共享的
+`FleetProfileDocument` 契约返回 `id`、`kind`（`profile` 或 `fleet`）、`origin`、
+可空的 `path`、`text`、绑定源身份的不透明 `revision`、`writable` 和可空的
+`refusal_reason`。个人/项目配置及选中的 Fleet 文件通过固定目录句柄读取原始
+UTF-8 字节，上限为一 MiB。身份改变、源文件消失或链接路径会被拒绝。
+内置、配置文件和外部管理的成员只返回明确只读的生效配置视图，不提供文件路径；
+不会把占位路径或原生预设入口标识当作配置文件打开。
+
+所有文档目前均返回 `writable: false`，尚未提供文档 PUT。请在终端或定义该成员的
+源中编辑。修订号不代表写入权限，也不代表运行中的成员列表已采用更改。只读客户端
+可在现有工作区和身份验证边界内读取这些资源。
 
 运行时 SDK 位于 `npm/runtime-sdk`，并作为
 `@codewhale/runtime-sdk` 工作区包对外暴露。它有意保持轻薄：每个

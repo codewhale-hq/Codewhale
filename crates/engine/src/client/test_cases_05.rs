@@ -535,7 +535,16 @@
                 strict: Some(true),
                 cache_control: None,
             };
-            let encoded = tool_to_chat(&tool);
+            let encoded = super::chat::build_chat_wire_body(
+                &MessageRequest {
+                    model: "fixture".to_string(),
+                    tools: Some(vec![tool]),
+                    messages: vec![], max_tokens: 64, system: None, tool_choice: None,
+                    metadata: None, thinking: None, reasoning_effort: None, stream: None,
+                    temperature: None, top_p: None,
+                },
+                ProviderKind::Openai, "https://api.openai.com/v1", false, None,
+            ).expect("chat projection").body["tools"][0].clone();
             assert_eq!(
                 encoded
                     .get("function")
@@ -559,7 +568,16 @@
                 cache_control: None,
             };
 
-            let encoded = tool_to_chat_for_base_url(&tool, "https://api.fireworks.ai/inference/v1");
+            let encoded = super::chat::build_chat_wire_body(
+                &MessageRequest {
+                    model: "fixture".to_string(),
+                    tools: Some(vec![tool.clone()]),
+                    messages: vec![], max_tokens: 64, system: None, tool_choice: None,
+                    metadata: None, thinking: None, reasoning_effort: None, stream: None,
+                    temperature: None, top_p: None,
+                },
+                ProviderKind::Openai, "https://api.fireworks.ai/inference/v1", false, None,
+            ).expect("chat projection").body["tools"][0].clone();
 
             assert!(encoded.get("allowed_callers").is_none());
             assert!(encoded.get("defer_loading").is_none());
@@ -581,7 +599,16 @@
             cache_control: None,
         };
 
-        let encoded = tool_to_chat_for_base_url(&tool, "https://api.deepseek.com/v1");
+        let encoded = super::chat::build_chat_wire_body(
+                &MessageRequest {
+                    model: "fixture".to_string(),
+                    tools: Some(vec![tool.clone()]),
+                    messages: vec![], max_tokens: 64, system: None, tool_choice: None,
+                    metadata: None, thinking: None, reasoning_effort: None, stream: None,
+                    temperature: None, top_p: None,
+                },
+                ProviderKind::Openai, "https://api.deepseek.com/v1", false, None,
+            ).expect("chat projection").body["tools"][0].clone();
 
         assert!(
             encoded
@@ -609,7 +636,16 @@
             "https://api.deepseek.com/beta",
             "https://example.com/openai/v1",
         ] {
-            let encoded = tool_to_chat_for_base_url(&tool, base_url);
+            let encoded = super::chat::build_chat_wire_body(
+                &MessageRequest {
+                    model: "fixture".to_string(),
+                    tools: Some(vec![tool.clone()]),
+                    messages: vec![], max_tokens: 64, system: None, tool_choice: None,
+                    metadata: None, thinking: None, reasoning_effort: None, stream: None,
+                    temperature: None, top_p: None,
+                },
+                ProviderKind::Openai, base_url, false, None,
+            ).expect("chat projection").body["tools"][0].clone();
             assert_eq!(
                 encoded
                     .get("function")

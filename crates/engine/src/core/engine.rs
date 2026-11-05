@@ -370,6 +370,10 @@ pub struct EngineConfig {
     pub plan_state: SharedPlanState,
     /// Shared runtime goal state for model-visible goal tools.
     pub goal_state: SharedGoalState,
+    /// Gate `update_goal complete` behind an independent judge (`[goal] complete_judge`).
+    pub goal_complete_judge: bool,
+    /// Gate `update_goal blocked` behind an independent judge (`[goal] blocked_judge`).
+    pub goal_blocked_judge: bool,
     /// Maximum sub-agent recursion depth (default 3). See
     /// `SubAgentRuntime::max_spawn_depth`. Override via
     /// `[subagents] max_depth = N` in `~/.codewhale/config.toml`.
@@ -617,6 +621,8 @@ impl Default for EngineConfig {
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
             goal_state: new_shared_goal_state(),
+            goal_complete_judge: false,
+            goal_blocked_judge: false,
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,
@@ -723,6 +729,19 @@ impl CancelReason {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+type MockApprovalPublications = Arc<
+    parking_lot::Mutex<
+        HashMap<
+            String,
+            (
+                NativeApprovalPublication,
+                approval_publication::ApprovalProducer,
+            ),
+        >,
+    >,
+>;
+
 /// Handle to communicate with the engine
 #[derive(Clone)]
 pub struct EngineHandle {
@@ -744,19 +763,7 @@ pub struct EngineHandle {
     tx_approval: mpsc::Sender<SubmittedApproval>,
     current_approval: Arc<parking_lot::Mutex<Option<NativeApprovalPublication>>>,
     #[cfg(any(test, feature = "test-support"))]
-    mock_approval_publications: Option<
-        Arc<
-            parking_lot::Mutex<
-                HashMap<
-                    String,
-                    (
-                        NativeApprovalPublication,
-                        approval_publication::ApprovalProducer,
-                    ),
-                >,
-            >,
-        >,
-    >,
+    mock_approval_publications: Option<MockApprovalPublications>,
     /// Send user input responses to the engine
     tx_user_input: mpsc::Sender<UserInputDecision>,
     /// Send steer input for an in-flight turn.
@@ -11522,7 +11529,7 @@ use self::streaming::{
 use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, EXECUTE_TOOLS_TOOL_NAME, JS_EXECUTION_TOOL_NAME, ToolSurfacePolicy,
     active_tools_for_request, build_model_tool_catalog_with_surface,
-    default_synthetic_catalog_tool_names, execute_code_execution_tool,
+    default_synthetic_catalog_tool_names, default_tool_choice, execute_code_execution_tool,
     maybe_hydrate_requested_deferred_tool, missing_tool_error_message,
 };
 #[cfg(test)]

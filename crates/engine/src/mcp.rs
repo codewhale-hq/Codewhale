@@ -6251,11 +6251,14 @@ impl McpPool {
         let mut api_tools = Vec::new();
         // Add regular tools
         for (name, tool) in self.all_tools() {
+            let mut input_schema = tool.input_schema.clone();
+            codewhale_models::schema_sanitize::sanitize(&mut input_schema);
+            codewhale_models::schema_canonicalize::canonicalize_schema(&mut input_schema);
             api_tools.push(codewhale_models::Tool {
                 tool_type: None,
                 name,
                 description: tool.description.clone().unwrap_or_default(),
-                input_schema: tool.input_schema.clone(),
+                input_schema,
                 allowed_callers: Some(vec!["direct".to_string()]),
                 defer_loading: Some(false),
                 input_examples: None,

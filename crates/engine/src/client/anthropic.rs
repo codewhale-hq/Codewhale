@@ -30,7 +30,10 @@ use serde_json::{Value, json};
 
 use crate::llm_client::StreamEventBox;
 use codewhale_config::ProviderKind;
-use codewhale_models::schema_sanitize;
+use codewhale_models::tool_projection::{
+    RouteToolProjection, ToolSchemaProjection, description_with_constraint_note, forced_tool_name,
+    project_tool_schema,
+};
 use codewhale_models::{ContentBlock, MessageRequest, MessageResponse, StreamEvent, Usage};
 use codewhale_runtime::config::wire_model_for_provider_route;
 use codewhale_runtime::logging;
@@ -44,8 +47,19 @@ use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 
 impl CodewhaleClient {
-    /// Build the native Messages API request body from a [`MessageRequest`].
+    #[cfg(test)]
     pub(super) fn build_anthropic_body(&self, request: &MessageRequest, stream: bool) -> Value {
+        self.build_anthropic_wire_body(request, stream)
+            .expect("anthropic body builds")
+            .0
+    }
+
+    /// Build the native Messages API request body from a [`MessageRequest`].
+    pub(super) fn build_anthropic_wire_body(
+        &self,
+        request: &MessageRequest,
+        stream: bool,
+    ) -> Result<(Value, Vec<String>)> {
         let model =
             wire_model_for_provider_route(self.api_provider, &self.base_url, &request.model);
         let mut body = json!({
@@ -84,44 +98,62 @@ impl CodewhaleClient {
         repair_dangling_tool_uses(&mut messages);
         body["messages"] = Value::Array(messages);
 
+        let mut omitted_tool_names = Vec::new();
+        let mut omitted_logical_names = Vec::new();
         if let Some(tools) = request.tools.as_ref()
             && !tools.is_empty()
         {
-            body["tools"] = json!(
-                tools
-                    .iter()
-                    .map(|tool| {
-                        // Sanitize the tool's input_schema the same way the
-                        // OpenAI Responses adapter does: strip top-level
-                        // oneOf/anyOf/allOf (which Anthropic rejects), merge
-                        // alternative properties into the root, and surface
-                        // the dropped constraint as a description note so the
-                        // model still knows which parameters are expected.
-                        let mut schema = tool.input_schema.clone();
-                        let constraint_note = schema_sanitize::sanitize_for_responses(&mut schema);
-                        let description = match constraint_note {
-                            Some(note) if tool.description.trim().is_empty() => note,
-                            Some(note) => format!("{}\n\n{}", tool.description.trim(), note),
-                            None => tool.description.clone(),
-                        };
+            let route_projection = RouteToolProjection::Relaxed {
+                strict_honored: !self.is_local_ds4_model(&request.model),
+            };
+            let mut wire_tools = Vec::new();
+            for tool in tools {
+                match project_tool_schema(route_projection, &tool.input_schema, tool.strict) {
+                    ToolSchemaProjection::Exact {
+                        parameters,
+                        strict,
+                        constraint_note,
+                    }
+                    | ToolSchemaProjection::Relaxed {
+                        parameters,
+                        strict,
+                        constraint_note,
+                    } => {
                         let mut value = json!({
                             "name": tool.name,
-                            "description": description,
-                            "input_schema": schema,
+                            "description": description_with_constraint_note(
+                                &tool.description,
+                                constraint_note,
+                            ),
+                            "input_schema": parameters,
                         });
-                        if let Some(strict) = tool.strict {
+                        if let Some(strict) = strict {
                             value["strict"] = json!(strict);
                         }
                         if let Some(cache) = tool.cache_control.as_ref() {
                             value["cache_control"] = json!({ "type": cache.cache_type });
                         }
-                        value
-                    })
-                    .collect::<Vec<_>>()
-            );
+                        wire_tools.push(value);
+                    }
+                    ToolSchemaProjection::Omitted { .. } => {
+                        omitted_logical_names.push(tool.name.clone());
+                        omitted_tool_names.push(tool.name.clone());
+                    }
+                }
+            }
+            if !wire_tools.is_empty() {
+                body["tools"] = json!(wire_tools);
+            }
         }
 
         if let Some(tool_choice) = request.tool_choice.as_ref() {
+            if let Some(name) = forced_tool_name(tool_choice)
+                && omitted_logical_names.iter().any(|omitted| omitted == name)
+            {
+                anyhow::bail!(
+                    "cannot force an omitted tool because its input schema is incompatible with this route"
+                );
+            }
             body["tool_choice"] = anthropic_tool_choice(tool_choice, &model);
         }
 
@@ -277,7 +309,7 @@ impl CodewhaleClient {
         }
 
         apply_anthropic_cache_breakpoints(&mut body);
-        body
+        Ok((body, omitted_tool_names))
     }
 
     /// Non-streaming send through the shared typed retry path

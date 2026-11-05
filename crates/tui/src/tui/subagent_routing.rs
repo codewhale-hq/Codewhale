@@ -467,12 +467,7 @@ pub(super) fn handle_subagent_mailbox_for_turn(
     message: &MailboxMessage,
 ) -> bool {
     // Accumulate sub-agent token costs for the real-time footer counter (#166).
-    if let MailboxMessage::TokenUsage {
-        record,
-        agent_id: _,
-        ..
-    } = message
-    {
+    if let MailboxMessage::TokenUsage { record, .. } = message {
         if let Some(record) = record.as_ref().filter(|record| record.settlement.is_some()) {
             let pending = codewhale_engine::cost_status::drain();
             app.absorb_pending_background_cost(&pending);
@@ -486,7 +481,7 @@ pub(super) fn handle_subagent_mailbox_for_turn(
                 .session
                 .accounted_usage_sources
                 .get(&fingerprint)
-                .is_some_and(|contribution| contribution.record == *record)
+                .is_some_and(|contribution| contribution.record == **record)
             {
                 record_agent_current_activity(app, message);
             }
@@ -676,6 +671,7 @@ fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
         record,
         route,
         usage,
+        source_id,
         ..
     } = message
     {
@@ -695,8 +691,14 @@ fn record_agent_current_activity(app: &mut App, message: &MailboxMessage) {
                     .saturating_sub(previous)
                     .saturating_add(total),
             );
-        } else {
+        } else if source_id.is_empty() {
             meta.received_tokens = Some(meta.received_tokens.unwrap_or(0).saturating_add(total));
+        } else {
+            let key = codewhale_engine::cost_status::usage_source_fingerprint(source_id);
+            if meta.received_usage_sources.insert(key, total).is_none() {
+                meta.received_tokens =
+                    Some(meta.received_tokens.unwrap_or(0).saturating_add(total));
+            }
         }
         meta.resolved_provider = Some(route.provider.as_str().to_string());
         meta.resolved_model = Some(bound_agent_activity_text(

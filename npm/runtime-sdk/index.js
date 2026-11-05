@@ -29,6 +29,19 @@ export class CodeWhaleRuntimeClient {
     }
   }
 
+  async deliverDynamicToolResult(call, result, options = {}) {
+    const path = `/v1/threads/${segment(call.thread_id)}/turns/${segment(call.turn_id)}/tool-calls/${segment(call.call_id)}/result`;
+    const response = await this.#rawRequest(path, {
+      method: "POST", body: result, signal: options.signal, redirect: "error",
+    });
+    await response.body?.cancel();
+    if (response.status !== 202) {
+      throw new RuntimeApiError("Runtime dynamic-tool result did not return the expected acceptance", {
+        method: "POST", path, status: response.status,
+      });
+    }
+  }
+
   async createFleetRun(spec) {
     return this.#jsonRequest("/v1/fleet/runs", {
       method: "POST",
@@ -220,7 +233,11 @@ function segment(value) {
   if (value === null || value === undefined || String(value).trim() === "") {
     throw new TypeError("Runtime API path segment must be a non-empty value");
   }
-  return encodeURIComponent(String(value));
+  const text = String(value);
+  if (text === "." || text === ".." || /[\u0000-\u001f\u007f]/u.test(text)) {
+    throw new TypeError("Runtime API path segment must identify a resource");
+  }
+  return encodeURIComponent(text);
 }
 
 function fleetEventPath(path, options) {

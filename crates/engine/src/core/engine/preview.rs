@@ -316,13 +316,10 @@ impl Engine {
         let active_tools = surface.active.clone().unwrap_or_default();
         let active_catalog_sha256 = active_tool_catalog_sha256(&active_tools);
 
-        let tool_choice = surface.active.as_ref().map(|_| {
-            if surface.strict_tool_mode {
-                json!("required")
-            } else {
-                json!({ "type": "auto" })
-            }
-        });
+        let tool_choice = surface
+            .active
+            .as_ref()
+            .map(|_| default_tool_choice(surface.strict_tool_mode));
 
         // The tool surface is only publishable when the MCP contribution is
         // exactly known. Anything else would be "the tools of some other

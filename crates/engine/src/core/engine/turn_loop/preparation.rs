@@ -543,10 +543,8 @@ impl Engine {
                     // if a provider ignores the report-only request
                     // (C02-10: the step-budget final report included).
                     Some(json!("none"))
-                } else if strict_tool_mode {
-                    Some(json!("required"))
                 } else {
-                    Some(json!({ "type": "auto" }))
+                    Some(default_tool_choice(strict_tool_mode))
                 }
             } else {
                 None

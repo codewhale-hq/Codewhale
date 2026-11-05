@@ -60,6 +60,16 @@ pub(crate) async fn run_native_turn<W: AsyncWrite + Unpin>(
     turn: NativeTurn<'_>,
     transcript: Option<&mut TurnTranscript>,
 ) -> std::result::Result<Value, DispatchError> {
+    run_native_turn_for(state, writer, turn, transcript, None).await
+}
+
+pub(crate) async fn run_native_turn_for<W: AsyncWrite + Unpin>(
+    state: &AppState,
+    writer: &mut W,
+    turn: NativeTurn<'_>,
+    transcript: Option<&mut TurnTranscript>,
+    connection: Option<crate::connection::ConnectionId>,
+) -> std::result::Result<Value, DispatchError> {
     if !matches!(turn.allowed_tools, Some([])) {
         return Err(DispatchError::unsupported_interactive_execution());
     }
@@ -153,6 +163,7 @@ pub(crate) async fn run_native_turn<W: AsyncWrite + Unpin>(
             writer,
             registration,
             transcript,
+            connection,
         )
         .await
         .map_err(|error| {
@@ -385,6 +396,7 @@ async fn message_native_thread<W: AsyncWrite + Unpin>(
     writer: &mut W,
     registration: Option<(TurnRegistry, String)>,
     mut transcript: Option<&mut TurnTranscript>,
+    connection: Option<crate::connection::ConnectionId>,
 ) -> Result<Value> {
     anyhow::ensure!(
         !input
@@ -436,6 +448,7 @@ async fn message_native_thread<W: AsyncWrite + Unpin>(
         owner: TurnExecutionOwner::Native(owner),
         runtime_thread_id: thread_id.to_owned(),
         turn_id: turn_id.clone(),
+        connection,
     };
     let mut claim = NativeTurnClaim {
         live,
@@ -459,7 +472,14 @@ async fn message_native_thread<W: AsyncWrite + Unpin>(
     }
     let result = async {
         if let Some((registry, key)) = claim.registration.as_ref() {
-            registry.lock().await.insert(key.clone(), claim.live.clone());
+            match registry.lock().await.entry(key.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => anyhow::bail!(
+                    "a turn is already registered for thread {key}; refusing a second registration"
+                ),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(claim.live.clone());
+                }
+            }
             claim.registration_published = true;
         }
         anyhow::ensure!(
@@ -515,10 +535,10 @@ async fn message_native_thread<W: AsyncWrite + Unpin>(
                     );
                     let status = turn_terminal_status(&payload)?;
                     claim.terminal_observed = true;
-                    if let Some(transcript) = transcript.as_deref_mut() {
-                        if let Some(model) = record.get("effective_model").and_then(Value::as_str) {
-                            transcript.model = Some(model.to_owned());
-                        }
+                    if let Some(transcript) = transcript.as_deref_mut()
+                        && let Some(model) = record.get("effective_model").and_then(Value::as_str)
+                    {
+                        transcript.model = Some(model.to_owned());
                     }
                     match status {
                         TurnTerminalStatus::Completed => return Ok(record.clone()),

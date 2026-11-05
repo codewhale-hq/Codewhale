@@ -2,7 +2,7 @@ use super::*;
 use crate::client::chat::{
     build_chat_messages, build_chat_messages_for_request,
     build_chat_messages_for_request_and_provider, count_reasoning_replay_chars, parse_chat_message,
-    parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat, tool_to_chat_for_base_url,
+    parse_sse_chunk, sanitize_thinking_mode_messages,
 };
 use crate::client::responses::build_responses_body;
 use crate::tools::apply_patch::ApplyPatchTool;
@@ -1438,6 +1438,14 @@ async fn assert_deepseek_strict_request_route_boundary(streaming: bool) {
             expected_wire_strict,
             "{route_base_url} {body}"
         );
+        let parameters = &body["tools"][0]["function"]["parameters"];
+        if expected_wire_strict == Some(true) {
+            assert_eq!(parameters["additionalProperties"], false);
+            assert_eq!(parameters["required"], json!([]));
+        } else {
+            assert!(parameters.get("additionalProperties").is_none());
+            assert!(parameters.get("required").is_none());
+        }
     }
 }
 

@@ -25,8 +25,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use codewhale_app_server_protocol::runtime::{
-    DynamicToolCallResult, RUNTIME_API_VERSION, RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION,
-    RuntimeCapabilities, RuntimeEventEnvelope, RuntimeExperimentalCapabilities,
+    DynamicToolCallResult, FleetProfileDocument, FleetProfileDocumentKind, RUNTIME_API_VERSION,
+    RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION, RuntimeCapabilities, RuntimeEventEnvelope,
+    RuntimeExperimentalCapabilities,
 };
 #[cfg(unix)]
 use codewhale_paths::daemon_socket::default_socket_path;
@@ -1569,6 +1570,8 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         threads: true,
         thread_create_idempotency: true,
         thread_idle_precondition: true,
+        thread_patch_undo_turn_id: true,
+        thread_scoped_reads: true,
         thread_shell_consent: true,
         turns: true,
         turn_operation_idempotency: true,
@@ -2917,8 +2920,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/agent-runs/{run_id}/cancel", post(cancel_agent_run))
         .route("/v1/fleet/profiles", get(list_fleet_profiles))
         .route(
+            "/v1/fleet/profiles/{id}/document",
+            get(get_fleet_profile_document),
+        )
+        .route(
             "/v1/fleet/runs",
-            get(list_fleet_runs).post(create_fleet_run),
+            get(list_fleet_runs)
+                .post(create_fleet_run)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route("/v1/fleet/runs/{run_id}", get(get_fleet_run))
         .route(
@@ -3081,7 +3090,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/threads/{id}/fork", post(fork_thread))
         .route("/v1/threads/{id}/undo", post(undo_thread_turn))
         .route("/v1/threads/{id}/fork-at-turn", post(fork_thread_at_turn))
-        .route("/v1/threads/{id}/patch-undo", post(patch_undo_thread_turn))
+        .route(
+            "/v1/threads/{id}/patch-undo",
+            get(preview_patch_undo_thread_turn).post(patch_undo_thread_turn),
+        )
         .route("/v1/threads/{id}/file-revert", post(revert_thread_file))
         .route("/v1/threads/{id}/retry", post(retry_thread_turn))
         .route(
@@ -4280,30 +4292,140 @@ async fn cancel_agent_run(
     }
 }
 
+async fn read_fleet_profiles<T: Send + 'static>(
+    state: RuntimeApiState,
+    read: impl FnOnce(
+        &RuntimeApiState,
+        &codewhale_engine::fleet::roster::FleetRoster,
+    ) -> Result<T, ApiError>
+    + Send
+    + 'static,
+) -> Result<T, ApiError> {
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        state
+            .workspace_scope
+            .validate_sync()
+            .map_err(|_| ApiError::conflict("selected workspace identity changed"))?;
+        let plugins = state
+            .plugin_discovery
+            .registry_for_workspace(&state.workspace);
+        let roster = codewhale_engine::fleet::identity::load_effective_roster(
+            &state.config.read().fleet_config(),
+            &state.workspace,
+            Some(plugins.as_ref()),
+        );
+        let result = read(&state, &roster);
+        state
+            .workspace_scope
+            .validate_sync()
+            .map_err(|_| ApiError::conflict("selected workspace identity changed"))?;
+        result
+    })
+    .await
+    .map_err(|_| ApiError::internal("Fleet profiles could not be read"))?
+}
+
 async fn list_fleet_profiles(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<Value>, ApiError> {
-    let manager = open_fleet_manager(&state)?;
-    // Same roster path the manager uses to validate `agent_profile` ids on
-    // run creation, so GUI pickers can never offer a profile the runtime
-    // would reject.
-    let roster = manager.agent_roster();
-    let profiles = roster
-        .members()
-        .iter()
-        .map(|member| {
-            json!({
-                "id": member.id.clone(),
-                "display_name": member.display_name.clone(),
-                "description": member.description.clone(),
-                "origin": member.origin.to_string(),
+    read_fleet_profiles(state, |_, roster| {
+        let profiles = roster
+            .members()
+            .iter()
+            .map(|member| {
+                json!({
+                    "id": member.id,
+                    "display_name": member.display_name,
+                    "description": member.description,
+                    "origin": member.origin.to_string(),
+                })
             })
-        })
-        .collect::<Vec<_>>();
-    Ok(Json(json!({
-        "profiles": profiles,
-        "load_error": roster.load_error().map(str::to_string),
-    })))
+            .collect::<Vec<_>>();
+        Ok(Json(
+            json!({"profiles": profiles, "load_error": roster.load_error()}),
+        ))
+    })
+    .await
+}
+
+async fn get_fleet_profile_document(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<FleetProfileDocument>, ApiError> {
+    if id.len() > 160 {
+        return Err(ApiError::bad_request("Profile identity is too long"));
+    }
+    read_fleet_profiles(state, move |state, roster| {
+        use codewhale_engine::fleet::profile::{
+            FleetProfileScope, MAX_PROFILE_DOCUMENT_BYTES, agent_profile_dir_for_scope,
+            parse_agent_profile_text, read_agent_profile_source_document,
+        };
+        use codewhale_engine::fleet::roster::ProfileOrigin;
+        if let Some(error) = roster.load_error() {
+            return Err(ApiError::conflict(error));
+        }
+        let member = roster.get(&id).filter(|member| member.id == id)
+            .ok_or_else(|| ApiError::not_found("Profile is not in the effective roster"))?;
+        let (kind, path, text, reason) = if matches!(member.origin, ProfileOrigin::Workspace | ProfileOrigin::Personal) {
+            let scope = if member.origin == ProfileOrigin::Workspace { FleetProfileScope::Project } else { FleetProfileScope::Personal };
+            let text = read_agent_profile_source_document(scope, &state.workspace, &member.source)
+                .map_err(|error| ApiError::conflict(error.to_string()))?
+                .ok_or_else(|| ApiError::conflict("Profile source disappeared; read the roster again"))?;
+            let path = member.source.to_str().ok_or_else(|| ApiError::conflict("Profile source path is not UTF-8"))?.to_owned();
+            let directory = agent_profile_dir_for_scope(scope, &state.workspace)
+                .map_err(|error| ApiError::conflict(error.to_string()))?;
+            let kind = if member.source.parent() == Some(directory.as_path()) {
+                let parsed = parse_agent_profile_text(&member.source, &text)
+                    .map_err(|error| ApiError::conflict(error.to_string()))?;
+                if parsed.id != id {
+                    return Err(ApiError::conflict("Profile identity changed; read the roster again"));
+                }
+                FleetProfileDocumentKind::Profile
+            } else {
+                let fleet = codewhale_engine::fleet::store::FleetFile::parse(&text)
+                    .map_err(|error| ApiError::conflict(error.to_string()))?;
+                if fleet.member(&id).is_none() {
+                    return Err(ApiError::conflict("Fleet member changed; read the roster again"));
+                }
+                FleetProfileDocumentKind::Fleet
+            };
+            (kind, Some(path), text, "Edit this profile or Fleet in the terminal.".to_owned())
+        } else {
+            if let Some(authority) = &member.plugin_authority {
+                codewhale_plugins::registry::verify_plugin_authority(authority)
+                    .map_err(ApiError::conflict)?;
+            }
+            if member.profile.role.instructions.as_ref().map_or(0, String::len)
+                .saturating_add(member.profile.role.description.as_ref().map_or(0, String::len))
+                > MAX_PROFILE_DOCUMENT_BYTES
+            {
+                return Err(ApiError::payload_too_large("Effective profile exceeds the one MiB reading limit"));
+            }
+            let text = toml::to_string_pretty(&member.profile)
+                .map_err(|_| ApiError::internal("Effective profile could not be rendered"))?;
+            let reason = match member.origin {
+                ProfileOrigin::BuiltIn => "Effective built-in profile; save a personal profile in the terminal to customize this role.",
+                ProfileOrigin::Config => "Effective configuration profile; edit its defining configuration.",
+                ProfileOrigin::Plugin => "Effective plugin profile; edit its reviewed plugin source.",
+                ProfileOrigin::ClaudeCode => "Effective Codewhale profile from Claude Code; edit its original agent file.",
+                _ => return Err(ApiError::internal("Profile origin changed while reading")),
+            };
+            (FleetProfileDocumentKind::Profile, None, text, reason.to_owned())
+        };
+        if text.len() > MAX_PROFILE_DOCUMENT_BYTES {
+            return Err(ApiError::payload_too_large("Profile document exceeds the one MiB editing limit"));
+        }
+        let origin = member.origin.to_string();
+        let revision_bytes = serde_json::to_vec(&(&id, kind, &origin, &path, &text))
+            .map_err(|_| ApiError::internal("Profile revision could not be rendered"))?;
+        let revision = format!("profile-document-v1-{}", codewhale_runtime::hashing::sha256_hex(revision_bytes));
+        Ok(Json(FleetProfileDocument { id, kind, origin, path, text, revision,
+            writable: false, refusal_reason: Some(reason) }))
+    }).await
 }
 
 async fn create_fleet_run(
@@ -4364,6 +4486,11 @@ fn prepare_managed_fleet_run(
     if request.roles.len() > 128 {
         return Err(ApiError::bad_request(
             "roles cannot contain more than 128 entries",
+        ));
+    }
+    if request.workflow.tasks.len() > 64 {
+        return Err(ApiError::bad_request(
+            "workflow.tasks cannot contain more than 64 entries",
         ));
     }
     let workflow_id = managed_fleet_token("workflow.id", &request.workflow.id)?;
@@ -6614,21 +6741,27 @@ async fn decide_approval(
         }
     };
     Ok(Json(
-        settle_approval_request(&state, approval_id, decision).await?,
+        settle_approval_request(&state, approval_id, None, decision).await?,
     ))
 }
 
 async fn settle_approval_request(
     state: &RuntimeApiState,
     approval_id: String,
+    binding: Option<&codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
     decision: ExternalApprovalDecision,
 ) -> Result<DecideApprovalResponse, ApiError> {
     let delivered = state
         .runtime_threads
-        .deliver_external_approval(&approval_id, decision)
+        .deliver_bound_approval(&approval_id, binding, decision)
         .await
         .map_err(|error| {
             if error
+                .downcast_ref::<codewhale_engine::runtime_threads::manager::ApprovalBindingMismatch>()
+                .is_some()
+            {
+                ApiError::forbidden(error.to_string())
+            } else if error
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)
             {
@@ -8703,6 +8836,10 @@ struct UndoTurnRequest {
     /// The user turn to undo, with every turn after it. Wins over `depth`.
     #[serde(default)]
     turn_id: Option<String>,
+    #[serde(default)]
+    expected_turn_ids: Option<Vec<String>>,
+    #[serde(default)]
+    expected_paths: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -8814,12 +8951,92 @@ struct PatchUndoResponse {
     original_user_images: Vec<codewhale_app_server_protocol::runtime::RuntimeImageInput>,
 }
 
+async fn prepare_patch_undo(
+    state: &RuntimeApiState,
+    id: &str,
+    req: &UndoTurnRequest,
+) -> Result<codewhale_engine::runtime_threads::manager::PreparedThreadFork, ApiError> {
+    let prepared = match req.turn_id.as_deref() {
+        Some(turn_id) => {
+            state
+                .runtime_threads
+                .prepare_fork_dropping_user_turn_in_sessions_dir(id, turn_id, &state.sessions_dir)
+                .await
+        }
+        None => {
+            state
+                .runtime_threads
+                .prepare_fork_at_user_message_in_sessions_dir(
+                    id,
+                    req.depth.unwrap_or(0),
+                    &state.sessions_dir,
+                )
+                .await
+        }
+    }
+    .map_err(map_thread_err)?;
+    if let Some(expected) = &req.expected_turn_ids {
+        let actual: Vec<_> = prepared
+            .dropped_turns()
+            .iter()
+            .map(|turn| &turn.turn_id)
+            .collect();
+        if actual != expected.iter().collect::<Vec<_>>() {
+            return Err(ApiError::conflict(
+                "The selected turn range changed; review it again before undoing files.",
+            )
+            .with_code("undo_selection_changed"));
+        }
+    }
+    Ok(prepared)
+}
+
+#[derive(Debug, Serialize)]
+struct PatchUndoPreview {
+    turn_ids: Vec<String>,
+    paths: Vec<String>,
+    summary: Option<String>,
+}
+
+async fn preview_patch_undo_thread_turn(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Query(req): Query<UndoTurnRequest>,
+) -> Result<Json<PatchUndoPreview>, ApiError> {
+    let (_reservation, thread) = state
+        .runtime_threads
+        .thread_restore_guard(&id)
+        .await
+        .map_err(map_thread_err)?;
+    let prepared = prepare_patch_undo(&state, &id, &req).await?;
+    let dropped_turns = prepared.dropped_turns().to_vec();
+    let turn_ids = dropped_turns
+        .iter()
+        .map(|turn| turn.turn_id.clone())
+        .collect();
+    let trusted = thread.trust_mode || thread.auto_approve;
+    #[cfg(any(test, feature = "test-support"))]
+    let env_ticket = codewhale_engine::test_support::env_scope_ticket();
+    let (result, paths) = tokio::task::spawn_blocking(move || {
+        let _reservation = _reservation;
+        #[cfg(any(test, feature = "test-support"))]
+        let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
+        patch_undo_workspace_files_impl(&thread.workspace, &dropped_turns, trusted, true, None)
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Patch undo preview failed: {error}")))??;
+    Ok(Json(PatchUndoPreview {
+        turn_ids,
+        paths,
+        summary: result.summary,
+    }))
+}
+
 async fn patch_undo_thread_turn(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
     Json(req): Json<UndoTurnRequest>,
 ) -> Result<(StatusCode, Json<PatchUndoResponse>), ApiError> {
-    let depth = req.depth.unwrap_or(0);
     // Admission first, then the thread record under it: trust, session
     // binding and workspace are the values that hold while files change.
     // Active turns in an overlapping workspace are rejected (409). The wait
@@ -8838,13 +9055,9 @@ async fn patch_undo_thread_turn(
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
     tokio::spawn(async move {
         let reservation = reservation;
-        // Validate depth/history before touching any file, so an invalid
+        // Validate the selected turn/history before touching any file, so an invalid
         // undo request cannot leave a half-applied workspace.
-        let prepared = state
-            .runtime_threads
-            .prepare_fork_at_user_message_in_sessions_dir(&id, depth, &state.sessions_dir)
-            .await
-            .map_err(map_thread_err)?;
+        let prepared = prepare_patch_undo(&state, &id, &req).await?;
         // File rollback is a workspace mutation, so it needs the trust the
         // TUI's `/undo` requires. Read from the thread's own record: the
         // client does not get to assert it.
@@ -8860,7 +9073,7 @@ async fn patch_undo_thread_turn(
         let patch_result = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
-            patch_undo_workspace_files(&workspace, &dropped_turns, trusted)
+            patch_undo_workspace_files_impl(&workspace, &dropped_turns, trusted, false, req.expected_paths.as_deref()).map(|(result, _)| result)
         })
         .await
         .map_err(|e| ApiError::internal(format!("Patch undo task failed: {e}")))??;
@@ -9142,6 +9355,26 @@ pub fn patch_undo_workspace_files(
     dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
     trusted: bool,
 ) -> Result<PatchUndoResult, ApiError> {
+    patch_undo_workspace_files_impl(workspace, dropped_turns, trusted, false, None)
+        .map(|(result, _)| result)
+}
+
+fn patch_undo_workspace_files_impl(
+    workspace: &FsPath,
+    dropped_turns: &[codewhale_engine::runtime_threads::manager::DroppedTurnSnapshots],
+    trusted: bool,
+    preview: bool,
+    expected_paths: Option<&[String]>,
+) -> Result<(PatchUndoResult, Vec<String>), ApiError> {
+    let check_paths = |paths: &[String]| {
+        if expected_paths.is_some_and(|expected| expected != paths) {
+            return Err(ApiError::conflict(
+                "The files to restore changed; review the selection again before undoing files.",
+            )
+            .with_code("undo_selection_changed"));
+        }
+        Ok(())
+    };
     // An unreadable workspace directory (unmounted volume, disconnected
     // share, permissions) proves nothing about the files a turn changed, so
     // the conversation is not forked away from them.
@@ -9179,14 +9412,15 @@ pub fn patch_undo_workspace_files(
         );
     }
     if windows.is_empty() {
-        return Ok(PatchUndoResult {
+        check_paths(&[])?;
+        return Ok((PatchUndoResult {
             files_restored: false,
             summary: Some(
                 "The undone turn(s) ran no tools, so they changed no workspace files; nothing to restore."
                     .to_string(),
             ),
             snapshot_label: None,
-        });
+        }, Vec::new()));
     }
 
     // Every repository failure is operational and aborts: "nothing to
@@ -9366,18 +9600,23 @@ pub fn patch_undo_workspace_files(
     }
     let first = &segments[0];
     if to_restore.is_empty() {
-        return Ok(PatchUndoResult {
-            files_restored: false,
-            summary: Some(if plan.is_empty() {
-                "The undone turn(s) left workspace files unchanged; nothing to restore.".to_string()
-            } else {
-                format!(
-                    "The files the undone turn(s) changed are already at their state before turn {}; nothing to restore.",
-                    first.turn_id
-                )
-            }),
-            snapshot_label: None,
-        });
+        check_paths(&[])?;
+        return Ok((
+            PatchUndoResult {
+                files_restored: false,
+                summary: Some(if plan.is_empty() {
+                    "The undone turn(s) left workspace files unchanged; nothing to restore."
+                        .to_string()
+                } else {
+                    format!(
+                        "The files the undone turn(s) changed are already at their state before turn {}; nothing to restore.",
+                        first.turn_id
+                    )
+                }),
+                snapshot_label: None,
+            },
+            Vec::new(),
+        ));
     }
 
     // Restoring is a workspace mutation. Gate it exactly where the TUI gates
@@ -9389,6 +9628,22 @@ pub fn patch_undo_workspace_files(
              Turn on /trust or switch this thread to Full Access, then undo again.",
         )
         .with_code(PATCH_UNDO_UNTRUSTED));
+    }
+
+    let paths: Vec<String> = to_restore
+        .iter()
+        .map(|(path, _, _)| path.display().to_string())
+        .collect();
+    check_paths(&paths)?;
+    if preview {
+        return Ok((
+            PatchUndoResult {
+                files_restored: false,
+                summary: None,
+                snapshot_label: Some(first.pre_label.clone()),
+            },
+            paths,
+        ));
     }
 
     let restore_plan: Vec<(PathBuf, codewhale_snapshot::SnapshotId)> = to_restore
@@ -9425,17 +9680,20 @@ pub fn patch_undo_workspace_files(
         .iter()
         .map(|outcome| format!("{} {}", outcome.action.as_str(), outcome.path.display()))
         .collect();
-    Ok(PatchUndoResult {
-        files_restored: true,
-        summary: Some(format!(
-            "Restored {} file(s) to their state before turn {} (snapshot '{}'):\n{}",
-            outcomes.len(),
-            first.turn_id,
-            first.pre_label,
-            lines.join("\n")
-        )),
-        snapshot_label: Some(first.pre_label.clone()),
-    })
+    Ok((
+        PatchUndoResult {
+            files_restored: true,
+            summary: Some(format!(
+                "Restored {} file(s) to their state before turn {} (snapshot '{}'):\n{}",
+                outcomes.len(),
+                first.turn_id,
+                first.pre_label,
+                lines.join("\n")
+            )),
+            snapshot_label: Some(first.pre_label.clone()),
+        },
+        paths,
+    ))
 }
 
 #[derive(Debug, Deserialize)]

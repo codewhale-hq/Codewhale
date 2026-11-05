@@ -155,73 +155,73 @@ async fn responses_stream_retries_rate_limited_request() {
 }
 
 #[tokio::test]
-async fn responses_stream_retries_transient_server_error() {
+async fn responses_stream_does_not_replay_transient_server_error() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(RetryThenSuccess {
+        .respond_with(AlwaysError {
             attempts: Arc::clone(&attempts),
-            retry_status: 503,
-            retry_body: "temporarily unavailable",
+            status: 503,
+            body: "temporarily unavailable",
         })
         .mount(&server)
         .await;
 
     let client = CodewhaleClient::new(&test_codex_config(&server)).unwrap();
-    let mut stream = client
+    let error = match client
         .handle_responses_stream(
             &client
                 .prepare_outbound_request(minimal_responses_request(), true)
                 .expect("responses request prepares"),
         )
         .await
-        .unwrap();
+    {
+        Ok(_) => panic!("an unknown-outcome inference failure must not be replayed"),
+        Err(error) => error,
+    };
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while let Some(event) = stream.next().await {
-            event.unwrap();
-        }
-    })
-    .await
-    .expect("Responses retry stream should finish after response.completed");
-
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let typed = error.downcast_ref::<crate::llm_client::LlmError>().unwrap();
+    assert!(matches!(
+        typed,
+        crate::llm_client::LlmError::ServerError { status: 503, .. }
+    ));
 }
 
 #[tokio::test]
-async fn responses_stream_retries_upstream_499_before_streaming() {
+async fn responses_stream_does_not_replay_upstream_499() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(RetryThenSuccess {
+        .respond_with(AlwaysError {
             attempts: Arc::clone(&attempts),
-            retry_status: 499,
-            retry_body: "upstream request cancelled",
+            status: 499,
+            body: "upstream request cancelled",
         })
         .mount(&server)
         .await;
 
     let client = CodewhaleClient::new(&test_codex_config(&server)).unwrap();
-    let mut stream = client
+    let error = match client
         .handle_responses_stream(
             &client
                 .prepare_outbound_request(minimal_responses_request(), true)
                 .expect("responses request prepares"),
         )
         .await
-        .unwrap();
+    {
+        Ok(_) => panic!("an unknown-outcome inference failure must not be replayed"),
+        Err(error) => error,
+    };
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while let Some(event) = stream.next().await {
-            event.unwrap();
-        }
-    })
-    .await
-    .expect("Responses retry stream should finish after response.completed");
-
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let typed = error.downcast_ref::<crate::llm_client::LlmError>().unwrap();
+    assert!(matches!(
+        typed,
+        crate::llm_client::LlmError::ServerError { status: 499, .. }
+    ));
 }
 
 async fn collect_responses_stream(sse_body: &str) -> Vec<Result<StreamEvent>> {
