@@ -15,6 +15,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_alpha"
@@ -26,6 +27,7 @@
           "defer_loading": false,
           "description": "Second page.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_mid"
@@ -37,6 +39,7 @@
           "defer_loading": false,
           "description": "First page, listed first.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_zulu"

@@ -1239,7 +1239,7 @@ fn thread_usage_split(thread: &ThreadRecord, turns: &[TurnRecord]) -> ThreadUsag
                 UsageGroupBy::Thread,
                 record,
                 turn,
-                &thread,
+                thread,
             );
         }
         for child in &turn.routed_usage {
@@ -1986,7 +1986,9 @@ pub struct PendingApprovalRequest {
     /// `tool_call_id` on `approval.required`. A client resuming from a
     /// snapshot needs it to attach the prompt to the execution it belongs to.
     /// It is a correlator, never a capability: `deliver_external_approval`
-    /// matches `id` only, so this value settles nothing.
+    /// matches `id` only, so this value settles nothing. A caller that
+    /// presents an `ExternalApprovalBinding` to `deliver_bound_approval` has
+    /// it compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// Model-independent one-line summary of the gated call ("Search the web
@@ -3554,6 +3556,17 @@ pub enum ExternalApprovalDecision {
     Deny { remember: bool },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalApprovalBinding {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("approval does not belong to the claimed thread, turn or tool call")]
+pub struct ApprovalBindingMismatch;
+
 pub(super) struct PendingApprovalEntry {
     pub(super) thread_id: String,
     pub(super) request: PendingApprovalRequest,
@@ -4974,11 +4987,31 @@ impl RuntimeThreadManager {
         approval_id: &str,
         decision: ExternalApprovalDecision,
     ) -> Result<bool> {
+        self.deliver_bound_approval(approval_id, None, decision)
+            .await
+    }
+
+    pub async fn deliver_bound_approval(
+        &self,
+        approval_id: &str,
+        binding: Option<&ExternalApprovalBinding>,
+        decision: ExternalApprovalDecision,
+    ) -> Result<bool> {
         let publication = {
             let mut pending = self.pending_approvals.lock();
             let Some(entry) = pending.get_mut(approval_id) else {
                 return Ok(false);
             };
+            if let Some(binding) = binding
+                && (entry.thread_id != binding.thread_id
+                    || entry.request.turn_id != binding.turn_id
+                    || binding
+                        .tool_call_id
+                        .as_deref()
+                        .is_some_and(|id| entry.request.tool_call_id.as_deref() != Some(id)))
+            {
+                return Err(ApprovalBindingMismatch.into());
+            }
             if let Some(previous) = entry.proposed {
                 if previous != decision {
                     return Err(io::Error::new(
@@ -5062,6 +5095,17 @@ impl RuntimeThreadManager {
         input_id: &str,
         response: crate::tools::user_input::UserInputResponse,
     ) -> Result<bool> {
+        self.submit_user_input_for_turn(thread_id, input_id, None, response)
+            .await
+    }
+
+    pub async fn submit_user_input_for_turn(
+        &self,
+        thread_id: &str,
+        input_id: &str,
+        turn_id: Option<&str>,
+        response: crate::tools::user_input::UserInputResponse,
+    ) -> Result<bool> {
         let admission = self.config_admission.read().await;
         self.ensure_accepting_execution()?;
         let engine = {
@@ -5073,7 +5117,7 @@ impl RuntimeThreadManager {
         };
         let request = match self
             .user_input_settlement(thread_id)
-            .claim_pending_user_input(thread_id, input_id, None, Some(&response))?
+            .claim_pending_user_input(thread_id, input_id, turn_id, Some(&response))?
         {
             PendingUserInputClaim::Claimed(request) => request,
             PendingUserInputClaim::Missing | PendingUserInputClaim::Settling => {
@@ -5110,6 +5154,16 @@ impl RuntimeThreadManager {
     }
 
     pub async fn cancel_user_input(&self, thread_id: &str, input_id: &str) -> Result<bool> {
+        self.cancel_user_input_for_turn(thread_id, input_id, None)
+            .await
+    }
+
+    pub async fn cancel_user_input_for_turn(
+        &self,
+        thread_id: &str,
+        input_id: &str,
+        turn_id: Option<&str>,
+    ) -> Result<bool> {
         let admission = self.config_admission.read().await;
         self.ensure_accepting_execution()?;
         let engine = {
@@ -5121,7 +5175,7 @@ impl RuntimeThreadManager {
         };
         let request = match self
             .user_input_settlement(thread_id)
-            .claim_pending_user_input(thread_id, input_id, None, None)?
+            .claim_pending_user_input(thread_id, input_id, turn_id, None)?
         {
             PendingUserInputClaim::Claimed(request) => request,
             PendingUserInputClaim::Missing | PendingUserInputClaim::Settling => {
@@ -11394,7 +11448,7 @@ impl RuntimeThreadManager {
             .map_err(|_| Unavailable)?;
         let lock_path = self
             .store
-            .turn_operation_lock_path(&fingerprint)
+            .turn_operation_lock_path(fingerprint)
             .map_err(|_| Unavailable)?;
         let lock_file = match open_runtime_store_file(
             &lock_path,
@@ -11411,7 +11465,7 @@ impl RuntimeThreadManager {
             {
                 return match self
                     .store
-                    .load_turn_operation_binding(&fingerprint)
+                    .load_turn_operation_binding(fingerprint)
                     .map_err(|_| Unavailable)?
                 {
                     None => Ok(None),
@@ -11433,7 +11487,7 @@ impl RuntimeThreadManager {
         })?;
         let Some(binding) = self
             .store
-            .load_turn_operation_binding(&fingerprint)
+            .load_turn_operation_binding(fingerprint)
             .map_err(|_| Unavailable)?
         else {
             return Ok(None);
@@ -17008,13 +17062,12 @@ source_usage_records: Default::default(),
                         payload["timeout"] = json!(true);
                     }
                     let projection = projection_lock.lock().await;
-                    if *outcome == crate::approval_log::ApprovalOutcome::Timeout {
-                        if let Err(error) = self.emit_event(&thread_id, Some(&turn_id), None,
+                    if *outcome == crate::approval_log::ApprovalOutcome::Timeout
+                        && let Err(error) = self.emit_event(&thread_id, Some(&turn_id), None,
                             "approval.timeout", json!({"approval_id": approval_id, "tool_call_id": id, "timeout_secs": publication.timeout_seconds()})).await {
                             let _ = publication.acknowledge(Err(format!("Runtime approval timeout append failed: {error}")));
                             return Err(error);
                         }
-                    }
                     if let Err(error) = self
                         .emit_event(
                             &thread_id,
@@ -17331,7 +17384,6 @@ source_usage_records: Default::default(),
                     duration_ms,
                     first_token_ms,
                     request_ms,
-                    finish_reason: _,
                     ..
                 } => {
                     let cost = if let Some(record) = accounting.as_ref() {
