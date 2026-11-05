@@ -1412,13 +1412,12 @@ impl Engine {
             .admit_dispatch(&review_route)
             .await
             .map_err(|error| ToolError::execution_failed(error.to_string()))?
+            && let Some(child) = child_accounting.as_ref()
         {
-            if let Some(child) = child_accounting.as_ref() {
-                child
-                    .project_settled_response(&record)
-                    .await
-                    .map_err(|error| ToolError::execution_failed(error.to_string()))?;
-            }
+            child
+                .project_settled_response(&record)
+                .await
+                .map_err(|error| ToolError::execution_failed(error.to_string()))?;
         }
         let wire = observation.wire_observations.clone();
         let started = Instant::now();

@@ -1414,13 +1414,13 @@ impl SessionCostSnapshot {
             record.permits_replacement(previous.map(|previous| &previous.record))?;
         } else {
             record.validate()?;
-            if let Some(previous) = previous {
-                if !record.follows_protected(&previous.record)? {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "protected usage projection changed route or spend owner",
-                    ));
-                }
+            if let Some(previous) = previous
+                && !record.follows_protected(&previous.record)?
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "protected usage projection changed route or spend owner",
+                ));
             }
         }
         let next = crate::cost_status::UsageSourceContribution::for_record(record);
@@ -3236,7 +3236,7 @@ impl SessionManager {
                 changed = true;
             }
             if changed {
-                Self::write_late_usage_candidate(&path, &original, &ledger)?;
+                Self::write_late_usage_candidate(path, &original, &ledger)?;
             }
             return Ok(true);
         }
@@ -3251,12 +3251,12 @@ impl SessionManager {
         {
             if !ledger.overflowed {
                 ledger.overflowed = true;
-                Self::write_late_usage_ledger(&path, &ledger)?;
+                Self::write_late_usage_ledger(path, &ledger)?;
             }
             return Ok(true);
         }
         ledger.records.push(incoming);
-        Self::write_late_usage_candidate(&path, &original, &ledger)?;
+        Self::write_late_usage_candidate(path, &original, &ledger)?;
         Ok(true)
     }
 

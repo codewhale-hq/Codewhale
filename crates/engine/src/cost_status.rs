@@ -2155,16 +2155,15 @@ impl RuntimeUsageRecord {
         if state.prepared.as_ref().is_some_and(|record| record == self) {
             state.accepted = Some(self.persisted());
             state.prepared = None;
-        } else if !state.accepted.as_ref().is_some_and(|record| record == self) {
-            if !proof
+        } else if !state.accepted.as_ref().is_some_and(|record| record == self)
+            && !proof
                 .acknowledged
                 .load(std::sync::atomic::Ordering::Acquire)
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::ResourceBusy,
-                    "usage acknowledgement does not match its prepared revision",
-                ));
-            }
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ResourceBusy,
+                "usage acknowledgement does not match its prepared revision",
+            ));
         }
         proof
             .acknowledged

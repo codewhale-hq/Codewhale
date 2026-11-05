@@ -2248,6 +2248,7 @@ pub(super) async fn git_branch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use codewhale_engine::test_support::{EnvVarGuard, lock_test_env};
     use std::fs;
 
