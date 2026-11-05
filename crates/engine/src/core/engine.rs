@@ -370,6 +370,10 @@ pub struct EngineConfig {
     pub plan_state: SharedPlanState,
     /// Shared runtime goal state for model-visible goal tools.
     pub goal_state: SharedGoalState,
+    /// Gate `update_goal complete` behind an independent judge (`[goal] complete_judge`).
+    pub goal_complete_judge: bool,
+    /// Gate `update_goal blocked` behind an independent judge (`[goal] blocked_judge`).
+    pub goal_blocked_judge: bool,
     /// Maximum sub-agent recursion depth (default 3). See
     /// `SubAgentRuntime::max_spawn_depth`. Override via
     /// `[subagents] max_depth = N` in `~/.codewhale/config.toml`.
@@ -617,6 +621,8 @@ impl Default for EngineConfig {
             todos: new_shared_todo_list(),
             plan_state: new_shared_plan_state(),
             goal_state: new_shared_goal_state(),
+            goal_complete_judge: false,
+            goal_blocked_judge: false,
             max_spawn_depth: crate::tools::subagent::DEFAULT_MAX_SPAWN_DEPTH,
             network_policy: None,
             snapshots_enabled: true,

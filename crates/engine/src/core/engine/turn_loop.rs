@@ -8532,7 +8532,7 @@ mod tests {
 
     fn goal_continuation_registry(engine: &Engine) -> crate::tools::ToolRegistry {
         crate::tools::ToolRegistryBuilder::new()
-            .with_goal_tools(engine.config.goal_state.clone())
+            .with_goal_tools(engine.config.goal_state.clone(), None)
             .build(crate::tools::spec::ToolContext::new(
                 engine.config.workspace.clone(),
             ))

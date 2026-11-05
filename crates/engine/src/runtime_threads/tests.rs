@@ -11944,6 +11944,8 @@ async fn host_goal_loop_kickoff_arms_one_continuation_and_parks_at_engine_cap() 
             continuation_delay_seconds: None,
             max_steps: None,
             enforce_token_budget: None,
+            complete_judge: None,
+            blocked_judge: None,
         });
         let mut __cw_config_init_26_value: Config = Config::default();
         __cw_config_init_26_value.goal = __cw_config_init_26_0;
@@ -12397,6 +12399,8 @@ async fn model_created_goal_persists_through_adopted_revision() -> Result<()> {
                 continuation_delay_seconds: Some(3600),
                 max_steps: None,
                 enforce_token_budget: None,
+                complete_judge: None,
+                blocked_judge: None,
             });
             let mut __cw_config_init_27_value: Config = Config::default();
             __cw_config_init_27_value.goal = __cw_config_init_27_0;
