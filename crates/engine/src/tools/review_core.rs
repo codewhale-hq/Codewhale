@@ -1094,10 +1094,10 @@ async fn refute_claims(
     let mut steps = *steps_used;
     let mut final_text = String::new();
     while steps < request.budget.max_steps.saturating_add(2) {
-        if let Some(cap) = request.money_cap_usd {
-            if source_spend_usd(source_records).is_none_or(|spent| spent >= cap) {
-                break;
-            }
+        if let Some(cap) = request.money_cap_usd
+            && source_spend_usd(source_records).is_none_or(|spent| spent >= cap)
+        {
+            break;
         }
         steps += 1;
         let (response, record) = accounted_model_call(

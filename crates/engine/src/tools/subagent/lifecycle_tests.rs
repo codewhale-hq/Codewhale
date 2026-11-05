@@ -318,12 +318,20 @@ async fn lifecycle_addressed_status_follows_lineage_and_detail_is_bounded() {
     let manager = new_shared_subagent_manager(dir.path().to_path_buf(), 3);
     let (old, latest) = {
         let mut guard = manager.write().await;
-        let (old, _) =
-            guard.insert_test_interrupted_continuable_agent("old", dir.path(), prior_messages());
-        let latest = guard.insert_test_running_agent("latest", dir.path());
-        guard.resume_targets.insert(old.clone(), latest.clone());
-        guard.agents.get_mut(&latest).unwrap().result = Some("🐋".repeat(100_000));
-        (old, latest)
+        guard
+            .with_store_transaction(|guard| {
+                let (old, _) = guard.insert_test_interrupted_continuable_agent(
+                    "old",
+                    dir.path(),
+                    prior_messages(),
+                );
+                let latest = guard.insert_test_running_agent("latest", dir.path());
+                guard.resume_targets.insert(old.clone(), latest.clone());
+                guard.agents.get_mut(&latest).unwrap().result = Some("🐋".repeat(100_000));
+                guard.persist_state_synchronously()?;
+                Ok((old, latest))
+            })
+            .unwrap()
     };
     let context = ToolContext::new(dir.path());
     let roster = inspect_agent_from_input(

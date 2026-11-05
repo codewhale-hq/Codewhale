@@ -56,6 +56,8 @@ const VOLATILE_KEYS: &[&str] = &[
     "request_ms",
     "elapsed_ms",
     "pinned_combined_hash",
+    "request_id",
+    "source_id",
 ];
 
 fn event_deadline() -> Duration {
@@ -254,6 +256,9 @@ fn workspace_listing(workspace: &Path) -> BTreeMap<String, String> {
                     .expect("inside workspace")
                     .to_string_lossy()
                     .replace('\\', "/");
+                if relative.contains("subagents.v3.writer.boot_") {
+                    continue;
+                }
                 let digest = codewhale_runtime::hashing::sha256_hex(&bytes);
                 out.insert(relative, digest[..16].to_string());
             }

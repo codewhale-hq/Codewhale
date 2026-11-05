@@ -543,6 +543,9 @@
     "std_fs": 5,
     "thread_sleep": 1
   },
+  "crates/util/src/git_metadata.rs": {
+    "std_fs": 2
+  },
   "crates/util/src/utils.rs": {
     "std_fs": 7
   },
