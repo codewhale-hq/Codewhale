@@ -131,6 +131,9 @@ pub(super) struct WorkspaceStatusResponse {
     pub(super) branch: Option<String>,
     pub(super) head: Option<String>,
     pub(super) dirty: bool,
+    /// True when `git status` could not be read, so `dirty` and the
+    /// staged/unstaged/untracked counts are unknown rather than zero.
+    pub(super) status_unavailable: bool,
     pub(super) staged: usize,
     pub(super) unstaged: usize,
     pub(super) untracked: usize,
@@ -148,11 +151,10 @@ pub(super) struct WorkspaceGitMetadata {
 }
 
 /// Status is several blocking `git` spawns, so it runs off the async workers
-/// (#6149) like every other git read on this surface. It deliberately keeps
-/// normal Git filters and untracked settings rather than the full review
-/// command, so its counts match `git status` and the operator writes (see
-/// `git.rs`), but it never runs a repository-configured helper: fsmonitor and
-/// hooks are off, as on every read-only review path (see `run_git`).
+/// (#6149) like every other git read on this surface. It keeps normal
+/// untracked settings rather than the full review diff flags, but it never
+/// runs a repository-configured helper: fsmonitor, hooks and clean/process
+/// filters are off, as on every read-only review path (see `run_status`).
 pub(super) async fn workspace_status(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<WorkspaceStatusResponse>, ApiError> {
@@ -238,6 +240,7 @@ pub(super) fn collect_workspace_status(workspace: &FsPath) -> WorkspaceStatusRes
         branch: None,
         head: None,
         dirty: false,
+        status_unavailable: false,
         staged: 0,
         unstaged: 0,
         untracked: 0,
@@ -254,12 +257,16 @@ pub(super) fn collect_workspace_status(workspace: &FsPath) -> WorkspaceStatusRes
     };
 
     status.git_repo = true;
-    let metadata = workspace_git_metadata(workspace, &head);
-    status.branch = metadata.branch;
-    status.head = metadata.head;
-    status.dirty = metadata.dirty;
+    let (branch, short_head) = branch_and_head(&head);
+    status.branch = branch;
+    status.head = short_head;
 
-    if let Some(porcelain) = run_git(workspace, &["status", "--porcelain=v1"]) {
+    let porcelain = run_status(workspace);
+    status.status_unavailable = porcelain.is_none();
+    status.dirty = porcelain
+        .as_deref()
+        .is_some_and(|porcelain| !porcelain.trim().is_empty());
+    if let Some(porcelain) = porcelain {
         for line in porcelain.lines() {
             if line.starts_with("??") {
                 status.untracked += 1;
@@ -278,7 +285,7 @@ pub(super) fn collect_workspace_status(workspace: &FsPath) -> WorkspaceStatusRes
     }
 
     if let Some(counts) = run_git(
-        workspace,
+        Git::review_base(workspace),
         &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
     ) {
         let mut parts = counts.split_whitespace();
@@ -298,8 +305,8 @@ pub(super) fn collect_workspace_git_metadata(workspace: &FsPath) -> WorkspaceGit
     }
 }
 
-fn workspace_git_metadata(workspace: &FsPath, head: &GitHead) -> WorkspaceGitMetadata {
-    let (branch, short_id) = match head.id {
+fn branch_and_head(head: &GitHead) -> (Option<String>, Option<String>) {
+    match head.id {
         Some(_) => (
             head.branch.clone().or_else(|| {
                 head.short_id()
@@ -308,11 +315,17 @@ fn workspace_git_metadata(workspace: &FsPath, head: &GitHead) -> WorkspaceGitMet
             head.short_id().map(str::to_string),
         ),
         None => (None, None),
-    };
+    }
+}
+
+fn workspace_git_metadata(workspace: &FsPath, head: &GitHead) -> WorkspaceGitMetadata {
+    let (branch, head) = branch_and_head(head);
+    let porcelain = run_status(workspace);
     WorkspaceGitMetadata {
         branch,
-        head: short_id,
-        dirty: run_git(workspace, &["status", "--porcelain=v1"])
+        head,
+        dirty: porcelain
+            .as_deref()
             .is_some_and(|porcelain| !porcelain.trim().is_empty()),
     }
 }
@@ -329,12 +342,20 @@ fn read_workspace_head(workspace: &FsPath) -> Option<GitHead> {
     }
 }
 
-/// Read-only git for status and metadata. `Git::review_base` disables
-/// `core.fsmonitor`, `core.hooksPath`, lazy fetch and replace objects: a
-/// status poll must not execute a helper the repository's config names.
-fn run_git(workspace: &FsPath, args: &[&str]) -> Option<String> {
-    let mut command = Git::review_base(workspace).ok()?;
-    let output = command.args(args).output().ok()?;
+/// `git status` through [`Git::status_command`]: besides fsmonitor and hooks
+/// it neutralizes every clean/process filter driver the repository itself
+/// configures (never the user's global or system ones, such as Git LFS),
+/// and submodules are compared without a child status inside them. `None`
+/// means git could not be read, never a clean tree.
+fn run_status(workspace: &FsPath) -> Option<String> {
+    run_git(
+        Git::status_command(workspace),
+        &["status", "--porcelain=v1", "--ignore-submodules=dirty"],
+    )
+}
+
+fn run_git(command: anyhow::Result<std::process::Command>, args: &[&str]) -> Option<String> {
+    let output = command.ok()?.args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }

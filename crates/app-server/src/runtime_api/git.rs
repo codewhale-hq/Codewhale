@@ -217,6 +217,22 @@ fn run_git_sync(workspace: &FsPath, args: &[&str]) -> Result<String, ApiError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn status_sync(workspace: &FsPath, args: &[&str]) -> Result<String, ApiError> {
+    let output = Git::status_command(workspace)
+        .map_err(|error| ApiError::internal(format!("git is unavailable: {error}")))?
+        .args(args)
+        .output()
+        .map_err(|error| ApiError::internal(format!("failed to run git: {error}")))?;
+    if !output.status.success() {
+        return Err(ApiError::internal(format!(
+            "git {} failed: {}",
+            args.first().copied().unwrap_or(""),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 // ---------------------------------------------------------------------------
 // GET /v1/git — status detail
 // ---------------------------------------------------------------------------
@@ -252,6 +268,8 @@ pub(super) struct GitStatusDetailResponse {
     head: Option<String>,
     /// Full HEAD commit id; null on an unborn branch.
     head_oid: Option<String>,
+    /// True when `git status` could not be read: the counts are unknown.
+    status_unavailable: bool,
     /// Opaque token for the whole index (every stage entry, repository-wide).
     index_token: Option<String>,
     /// Opaque token for the whole tree: HEAD, the index and every row.
@@ -289,6 +307,7 @@ fn collect_git_status_detail(workspace: &FsPath) -> Result<GitStatusDetailRespon
         detached: false,
         head: status.head,
         head_oid: None,
+        status_unavailable: status.status_unavailable,
         index_token: None,
         revision: None,
         ahead: status.ahead,
@@ -388,13 +407,13 @@ fn status_rows(
     frame: &RepoFrame,
 ) -> Result<(Vec<GitFileEntry>, bool), ApiError> {
     let mut complete = true;
-    let mut rows = match run_git_sync(workspace, &["status", "--porcelain=v1", "-z"]) {
+    let mut rows = match status_sync(workspace, &["status", "--porcelain=v1", "-z"]) {
         Ok(porcelain) => parse_porcelain(&porcelain),
         Err(_) => {
             // One broken submodule can abort all of Git's porcelain output.
             // Recover ordinary rows, then inspect gitlinks individually so
             // only the unreadable submodule is shown as unknown/unguardable.
-            let porcelain = run_git_sync(
+            let porcelain = status_sync(
                 workspace,
                 &["status", "--porcelain=v1", "-z", "--ignore-submodules=all"],
             )?;
@@ -407,7 +426,7 @@ fn status_rows(
                     continue;
                 }
                 rows.retain(|row| normalized_row_path(&row.path) != path);
-                match run_git_sync(
+                match status_sync(
                     &frame.toplevel,
                     &[
                         "--literal-pathspecs",
@@ -2229,6 +2248,7 @@ pub(super) async fn git_branch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codewhale_engine::test_support::{EnvVarGuard, lock_test_env};
     use std::fs;
 
     thread_local! {
@@ -2811,9 +2831,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn status_and_guards_respect_clean_filters() {
+        let _env_lock = lock_test_env();
         let tmp = repo();
         let ws = tmp.path();
-        git(ws, &["config", "filter.up.clean", "tr a-z A-Z"]);
+        let global = tempfile::tempdir().unwrap();
+        let global_config = global.path().join("gitconfig");
+        git(
+            ws,
+            &[
+                "config",
+                "--file",
+                global_config.to_str().unwrap(),
+                "filter.up.clean",
+                "tr a-z A-Z",
+            ],
+        );
+        let _global = EnvVarGuard::set("GIT_CONFIG_GLOBAL", &global_config);
         fs::write(ws.join(".gitattributes"), "*.txt filter=up\n").unwrap();
         git(ws, &["add", ".gitattributes"]);
         // The tracked file is unchanged since the initial commit. Apply the
