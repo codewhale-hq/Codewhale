@@ -500,14 +500,17 @@ export function apply(ctx) {
                     },
                 )
                 .await?;
-            wait_for_terminal_turn_status(
-                &client,
-                addr,
-                &thread.id,
-                &turn.id,
-                Duration::from_secs(20),
-            )
-            .await?;
+            assert_eq!(
+                wait_for_terminal_turn_status(
+                    &client,
+                    addr,
+                    &thread.id,
+                    &turn.id,
+                    Duration::from_secs(20),
+                )
+                .await?,
+                "completed"
+            );
             let store = codewhale_engine::runtime_threads::RuntimeThreadStore::open(
                 runtime_threads.session_store_binding().data_dir,
             )?;
@@ -588,14 +591,17 @@ export function apply(ctx) {
                 },
             )
             .await?;
-        wait_for_terminal_turn_status(
-            &client,
-            addr,
-            &thread.id,
-            &accepted.id,
-            Duration::from_secs(20),
-        )
-        .await?;
+        assert_eq!(
+            wait_for_terminal_turn_status(
+                &client,
+                addr,
+                &thread.id,
+                &accepted.id,
+                Duration::from_secs(20),
+            )
+            .await?,
+            "completed"
+        );
         if owned {
             let store = codewhale_engine::runtime_threads::RuntimeThreadStore::open(
                 runtime_threads.session_store_binding().data_dir,
