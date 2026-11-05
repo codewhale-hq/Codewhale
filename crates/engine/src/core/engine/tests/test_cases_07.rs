@@ -1522,8 +1522,12 @@ async fn productive_tool_results_do_not_hit_no_user_input_backstop() {
 
     let mock = std::sync::Arc::new(MockLlmClient::new(turns));
     let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let usage_owner = format!("productive-backstop:{}", uuid::Uuid::new_v4());
+    crate::cost_status::register_runtime_usage_sink(&usage_owner, std::sync::Arc::new(|_| true));
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.compaction.runtime_cost_owner = Some(usage_owner);
     let (engine, handle) = Engine::new_with_model_client(
-        deterministic_engine_config(workspace.path()),
+        engine_config,
         &Config::default(),
         client,
     );

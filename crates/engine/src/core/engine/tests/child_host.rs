@@ -913,14 +913,26 @@ async fn child_step_timeout_interrupts_open_and_body_without_replay_and_keeps_ex
             "retries do not consume a fresh logical work step"
         );
         assert_eq!(successful.call_count(), 0);
-        let record = job
-            .authority
-            .runtime
-            .manager
-            .read()
-            .await
-            .get_worker_record(&job.authority.owner_agent_id)
-            .unwrap();
+        let record = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let record = job
+                    .authority
+                    .runtime
+                    .manager
+                    .read()
+                    .await
+                    .get_worker_record(&job.authority.owner_agent_id)
+                    .unwrap();
+                if !record.usage_source_fingerprints.is_empty()
+                    && (!body || record.usage.input_tokens.is_some())
+                {
+                    break record;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the child's usage receipt settles");
         if body {
             assert_eq!(
                 record.usage_source_fingerprints.len(),

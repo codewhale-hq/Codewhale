@@ -670,11 +670,22 @@ mod tests {
                 response.error
             );
             if depth == 0 {
+                let snapshot = bridge.usage_snapshot().await;
+                assert_eq!(snapshot.records.len(), 1);
+                let revision = snapshot.records[0]
+                    .settlement
+                    .as_ref()
+                    .expect("canceled provider work keeps a settled receipt");
                 assert_eq!(
-                    bridge.usage_snapshot().await.dropped_records,
-                    1,
+                    revision.coverage,
+                    crate::llm_client::ProviderUsageCoverage::Missing,
                     "canceled provider work has unknown usage, never priced zero"
                 );
+                assert_eq!(
+                    revision.reason,
+                    crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+                );
+                assert_eq!(snapshot.dropped_records, 0);
             }
         }
     }
@@ -761,7 +772,9 @@ mod tests {
         assert_eq!(snapshot.usage.input_tokens, 7);
         assert_eq!(snapshot.usage.output_tokens, 11);
         assert_eq!(snapshot.records.len(), 1);
-        assert_eq!(snapshot.records[0].usage.usage, snapshot.usage);
+        let mut flat_usage = snapshot.usage.clone();
+        flat_usage.request_usages.clear();
+        assert_eq!(snapshot.records[0].usage.usage, flat_usage);
         assert!(snapshot.drop_records.is_empty());
         assert_eq!(snapshot.dropped_records, 0);
     }
@@ -792,14 +805,26 @@ mod tests {
 
         let first = bridge.usage_snapshot().await;
         let replay = bridge.usage_snapshot().await;
-        assert_eq!(first.usage, Usage::default());
-        assert!(first.records.is_empty());
-        assert_eq!(first.drop_records.len(), 1);
-        assert_eq!(first.dropped_records, 1);
-        assert_eq!(replay.drop_records, first.drop_records);
-        assert_eq!(replay.dropped_records, 1);
-        assert_eq!(first.drop_records[0].route.model, "child-model");
-        assert!(first.drop_records[0].source_id.starts_with("rlm:"));
+        assert_eq!(first.usage.input_tokens, 0);
+        assert_eq!(first.usage.output_tokens, 0);
+        assert_eq!(first.records.len(), 1);
+        assert_eq!(replay.records, first.records);
+        let revision = first.records[0]
+            .settlement
+            .as_ref()
+            .expect("settled missing-usage receipt");
+        assert_eq!(
+            revision.coverage,
+            crate::llm_client::ProviderUsageCoverage::Missing
+        );
+        assert_eq!(
+            revision.reason,
+            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+        );
+        assert!(first.drop_records.is_empty());
+        assert_eq!(first.dropped_records, 0);
+        assert_eq!(first.records[0].usage.route.model, "child-model");
+        assert!(first.records[0].source_id.starts_with("rlm:"));
     }
 
     #[tokio::test]
@@ -922,7 +947,7 @@ mod tests {
         expected_usage.request_usages = vec![usage.clone()];
         assert_eq!(snapshot.usage, expected_usage);
         assert_eq!(snapshot.records.len(), 1);
-        assert_eq!(snapshot.records[0].usage.usage, expected_usage);
+        assert_eq!(snapshot.records[0].usage.usage, usage);
         let rejected_fragments: Vec<_> = snapshot
             .nested_events
             .iter()

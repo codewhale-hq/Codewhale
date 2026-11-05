@@ -14174,6 +14174,17 @@ impl SubAgentStoreAuthority {
             {
                 continue;
             }
+            if terminal != Some(id.as_str())
+                && let (Some(existing), Some(incoming)) = (existing, incoming)
+                && !existing.status.is_terminal()
+                && incoming.status.is_terminal()
+                && value
+                    .agents
+                    .iter()
+                    .any(|agent| agent.id == id && agent.status == SubAgentStatus::Running)
+            {
+                continue;
+            }
             next.state.agents.retain(|agent| agent.id != id);
             next.state
                 .workers

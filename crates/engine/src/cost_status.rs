@@ -1150,18 +1150,30 @@ impl NativeUsageOrigin {
     }
 
     pub(crate) fn runtime(scope: CostScopeToken, owner: &str) -> std::io::Result<Self> {
-        let (sink, projection) = with_runtime_usage_sinks(|sinks| {
+        let local = with_runtime_usage_sinks(|sinks| {
             sinks
                 .get(owner)
                 .map(|entry| (entry.sink.clone(), entry.session_projection.clone()))
-        })
-        .ok_or_else(|| {
+        });
+        #[cfg(any(test, feature = "test-support"))]
+        let (local, registered_on) = match local {
+            Some(found) => (Some(found), None),
+            None => match migrated_runtime_usage_sink(owner) {
+                Some((thread, sink, projection)) => (Some((sink, projection)), Some(thread)),
+                None => (None, None),
+            },
+        };
+        let (sink, projection) = local.ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "native usage owner has no admitted sink",
             )
         })?;
         let mut origin = Self::captured_runtime(scope, owner.to_string(), sink);
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(thread) = registered_on {
+            origin.test_origin = thread;
+        }
         if let NativeUsageDestination::Runtime {
             projection: target, ..
         } = &mut origin.destination
@@ -2693,6 +2705,33 @@ fn with_runtime_usage_sinks<R>(
             .unwrap_or_else(|error| error.into_inner());
         f(by_thread.entry(test_cost_scope_id()).or_default())
     }
+}
+
+/// A multi-thread runtime can resume the task that registered a sink on a
+/// different worker thread, where the thread-keyed registry has no entry. An
+/// owner registered under exactly one scope is still unambiguous; two scopes
+/// naming the same owner stay unresolved so tests cannot cross-route usage.
+#[cfg(any(test, feature = "test-support"))]
+fn migrated_runtime_usage_sink(
+    owner: &str,
+) -> Option<(
+    std::thread::ThreadId,
+    RuntimeUsageSink,
+    Option<SessionUsageProjection>,
+)> {
+    let by_thread = TEST_RUNTIME_USAGE_SINKS.get()?;
+    let by_thread = by_thread.lock().unwrap_or_else(|error| error.into_inner());
+    let mut found = by_thread.iter().filter_map(|(thread, sinks)| {
+        sinks.get(owner).map(|entry| {
+            (
+                *thread,
+                entry.sink.clone(),
+                entry.session_projection.clone(),
+            )
+        })
+    });
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
 }
 
 /// Like [`with_runtime_usage_sinks`], but does not create the registry when it

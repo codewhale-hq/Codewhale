@@ -8443,16 +8443,23 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
             .unwrap()
     };
     assert!(enforce_lru_capacity(&mut active, 2, &pending_commands).is_empty());
-    let _ = authority
+    let cancelled = authority
         .try_write()
         .unwrap()
-        .cancel_agent_for_session("thr_a", &child);
+        .cancel_agent_for_session("thr_a", &child)
+        .map(|result| result.status)
+        .map_err(|error| error.to_string());
     pending_commands.insert("thr_a".to_string());
     assert!(enforce_lru_capacity(&mut active, 2, &pending_commands).is_empty());
     assert!(active.engines.contains_key("thr_a"));
     pending_commands.clear();
+    let live_after_cancel = authority.try_read().unwrap().live_count_for_session("thr_a");
     let evicted = enforce_lru_capacity(&mut active, 2, &pending_commands);
-    assert_eq!(evicted.len(), 1);
+    assert_eq!(
+        evicted.len(),
+        1,
+        "cancel result {cancelled:?}, live children after cancel {live_after_cancel}"
+    );
     assert!(!active.engines.contains_key("thr_a"));
     assert!(active.engines.contains_key("thr_b"));
 }

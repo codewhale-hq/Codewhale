@@ -349,7 +349,7 @@ mod tests {
             if candidate.name == "computer-use" {
                 assert_eq!(
                     spec,
-                    "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/download/v0.16.0/computer-use.tar.gz"
+                    "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/download/v0.16.0/computer-use.tar.gz#sha256=11a4f5c97c32717fa5648d10c080aa0db48a4798ccdf0d17112d1ae5b9133ae4"
                 );
             } else {
                 assert!(spec.starts_with(

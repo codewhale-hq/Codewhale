@@ -57,6 +57,7 @@ const VOLATILE_KEYS: &[&str] = &[
     "elapsed_ms",
     "pinned_combined_hash",
     "request_id",
+    "source_id",
 ];
 
 fn event_deadline() -> Duration {

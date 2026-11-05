@@ -509,7 +509,9 @@ export function apply(ctx) {
                     Duration::from_secs(20),
                 )
                 .await?,
-                "completed"
+                "completed",
+                "{}",
+                turn_detail(&client, addr, &thread.id, &turn.id).await?
             );
             let store = codewhale_engine::runtime_threads::RuntimeThreadStore::open(
                 runtime_threads.session_store_binding().data_dir,
@@ -600,7 +602,9 @@ export function apply(ctx) {
                 Duration::from_secs(20),
             )
             .await?,
-            "completed"
+            "completed",
+            "{}",
+            turn_detail(&client, addr, &thread.id, &accepted.id).await?
         );
         if owned {
             let store = codewhale_engine::runtime_threads::RuntimeThreadStore::open(
@@ -804,4 +808,23 @@ fn hook_listing_masks_url_paths_and_userinfo() {
         redact_hook_command_for_listing("./scripts/lint.sh --fix"),
         "./scripts/lint.sh --fix"
     );
+}
+
+async fn turn_detail(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<String> {
+    let detail: Value = client
+        .get(format!("http://{addr}/v1/threads/{thread_id}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(detail["turns"]
+        .as_array()
+        .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
+        .map_or_else(|| "turn absent".to_string(), Value::to_string))
 }
