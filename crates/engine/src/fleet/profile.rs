@@ -146,12 +146,50 @@ pub fn read_agent_profile_document(
     path: &Path,
 ) -> Result<Option<String>> {
     let (root, relative) = profile_document_location(scope, workspace, path)?;
-    let file = match codewhale_util::files::WorkspaceFile::open(&root, &relative, false) {
+    read_profile_document_at(&root, &relative)
+}
+
+fn read_profile_document_at(root: &Path, relative: &Path) -> Result<Option<String>> {
+    let file = match codewhale_util::files::WorkspaceFile::open(root, relative, false) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     read_profile_document_file(&file)
+}
+
+pub fn read_agent_profile_source_document(
+    scope: FleetProfileScope,
+    workspace: &Path,
+    path: &Path,
+) -> Result<Option<String>> {
+    let directory = agent_profile_dir_for_scope(scope, workspace)?;
+    if path.parent() == Some(directory.as_path()) {
+        return read_agent_profile_document(scope, workspace, path);
+    }
+    let root = match scope {
+        FleetProfileScope::Project => workspace.to_path_buf(),
+        FleetProfileScope::Personal => directory
+            .parent()
+            .context("Personal profile directory has no state root")?
+            .to_path_buf(),
+    };
+    let fleet_directory = match scope {
+        FleetProfileScope::Project => root.join(".codewhale").join(super::store::FLEET_DIR),
+        FleetProfileScope::Personal => root.join(super::store::FLEET_DIR),
+    };
+    anyhow::ensure!(
+        root.is_absolute()
+            && path.parent() == Some(fleet_directory.as_path())
+            && path.extension().and_then(|value| value.to_str()) == Some("toml"),
+        "Profile source is outside its selected directory"
+    );
+    let relative = path.strip_prefix(&root)?;
+    anyhow::ensure!(
+        codewhale_util::files::path_is_confined(relative),
+        "Profile source is outside its selected directory"
+    );
+    read_profile_document_at(&root, relative)
 }
 
 pub fn save_agent_profile_document(

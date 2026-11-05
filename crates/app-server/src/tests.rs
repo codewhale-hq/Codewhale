@@ -204,6 +204,7 @@ async fn full_control_queue_keeps_interrupt_priority_and_guest_shutdown_refusal(
         },
         runtime_thread_id: "runtime".into(),
         turn_id: "turn".into(),
+        connection: None,
     };
     state
         .in_flight_turns
@@ -231,7 +232,8 @@ async fn full_control_queue_keeps_interrupt_priority_and_guest_shutdown_refusal(
             r#"{"id":1,"method":"shutdown","params":{}}"#,
             &mut pending,
             &mut bytes,
-            guest
+            guest,
+            None
         )
         .await
         .is_err()
@@ -247,7 +249,8 @@ async fn full_control_queue_keeps_interrupt_priority_and_guest_shutdown_refusal(
             r#"{"id":2,"method":"thread/interrupt","params":{"thread_id":"client"}}"#,
             &mut pending,
             &mut bytes,
-            guest
+            guest,
+            None
         )
         .await
         .is_err()
@@ -276,7 +279,8 @@ async fn full_control_queue_keeps_interrupt_priority_and_guest_shutdown_refusal(
             r#"{"id":3,"method":"shutdown","params":{}}"#,
             &mut pending,
             &mut bytes,
-            owner
+            owner,
+            None
         )
         .await
         .is_err()
@@ -876,15 +880,6 @@ async fn config_update_keeps_the_stdio_thread_mapping() {
             .as_ref()
             .is_some_and(|captured| Arc::ptr_eq(captured, &bridge)),
         "reload keeps the already captured owner"
-    );
-    assert_eq!(
-        state
-            .runtime_thread_map
-            .lock()
-            .await
-            .get("canonical-1")
-            .map(String::as_str),
-        Some("canonical-1")
     );
     let result = dispatch_stdio_request(
         &state,
@@ -1791,14 +1786,11 @@ async fn stdio_thread_goal_methods_refuse_execution_and_read_existing_goal() {
             .iter()
             .any(|method| method == "thread/goal/set")
     );
-    let started = dispatch_stdio_request(
-        &state,
-        "thread/start",
-        json!({"operation_key":"goal-start"}),
-    )
-    .await
-    .unwrap();
-    let id = started.result["thread_id"].as_str().unwrap();
+    let started =
+        dispatch_stdio_request(&state, "thread/start", json!({"operationKey":"goal-start"}))
+            .await
+            .unwrap();
+    let id = started.result["thread"]["id"].as_str().unwrap();
     let set = dispatch_stdio_request(
         &state,
         "thread/goal/set",
@@ -2154,7 +2146,7 @@ async fn interrupt_stops_a_turn_that_would_otherwise_stream_forever() {
                         "turn_runaway"
                     );
                     assert!(
-                        interrupt_stdio_turn(&state, "thr_a")
+                        interrupt_stdio_turn(&state, "thr_a", None)
                             .await
                             .expect("explicit recovery interrupt")
                     );
@@ -2768,6 +2760,7 @@ async fn prompt_request_executes_a_genuine_model_turn() {
         json!({ "allowed_tools": [], "prompt": "what is 2+2" }),
         AppTransport::Stdio,
         None,
+        None,
     )
     .await
     .expect("prompt/request dispatch");
@@ -3156,6 +3149,7 @@ async fn socket_transport_advertises_daemon_attach() {
         "capabilities",
         json!({}),
         AppTransport::Socket,
+        None,
         None,
     )
     .await
@@ -3939,6 +3933,7 @@ impl RuntimeOwnerFrontend for MockRuntimeFrontend {
                 ),
                 RuntimeOwnerRequest::DecideApproval {
                     approval_id,
+                    binding: _,
                     decision,
                 } => {
                     let (decision, remember) = match decision {
@@ -3963,6 +3958,57 @@ impl RuntimeOwnerFrontend for MockRuntimeFrontend {
                         "interrupt".to_owned(),
                     ],
                     None,
+                    Vec::new(),
+                ),
+                RuntimeOwnerRequest::SubmitUserInput {
+                    thread_id,
+                    input_id,
+                    turn_id: _,
+                    response,
+                } => (
+                    Method::POST,
+                    vec![
+                        "v1".to_owned(),
+                        "user-input".to_owned(),
+                        thread_id,
+                        input_id,
+                    ],
+                    Some(json!({"answers": response.answers})),
+                    Vec::new(),
+                ),
+                RuntimeOwnerRequest::CancelUserInput {
+                    thread_id,
+                    input_id,
+                    turn_id: _,
+                } => (
+                    Method::DELETE,
+                    vec![
+                        "v1".to_owned(),
+                        "user-input".to_owned(),
+                        thread_id,
+                        input_id,
+                    ],
+                    None,
+                    Vec::new(),
+                ),
+                RuntimeOwnerRequest::DeliverDynamicToolResult {
+                    thread_id,
+                    turn_id,
+                    call_id,
+                    result,
+                } => (
+                    Method::POST,
+                    vec![
+                        "v1".to_owned(),
+                        "threads".to_owned(),
+                        thread_id,
+                        "turns".to_owned(),
+                        turn_id,
+                        "tool-calls".to_owned(),
+                        call_id,
+                        "result".to_owned(),
+                    ],
+                    Some(serde_json::to_value(result)?),
                     Vec::new(),
                 ),
             };

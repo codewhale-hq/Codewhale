@@ -45,6 +45,7 @@
           "defer_loading": false,
           "description": "Exits after reading the call, without answering.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_dies"
@@ -72,6 +73,7 @@
           "defer_loading": false,
           "description": "Always reports a tool-level error.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_fails"
@@ -83,6 +85,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_rpc-error"
@@ -169,6 +172,7 @@
           "defer_loading": false,
           "description": "Exits after reading the call, without answering.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_dies"
@@ -196,6 +200,7 @@
           "defer_loading": false,
           "description": "Always reports a tool-level error.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_fails"
@@ -207,6 +212,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_rpc-error"

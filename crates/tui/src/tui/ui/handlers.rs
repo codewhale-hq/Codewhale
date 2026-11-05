@@ -2718,9 +2718,7 @@ pub(crate) async fn handle_view_events(
                                     ))
                                 }
                             });
-                        if let Err(message) = checked {
-                            return Err(message);
-                        }
+                        checked?;
                     }
                     codewhale_engine::fleet::profile::save_agent_profile_document(
                         scope,

@@ -47,6 +47,7 @@ pub fn runtime_schema() -> Value {
     let _ = output.subschema_for::<ThreadLoadedListResponse>();
     let _ = output.subschema_for::<ThreadSetNameResponse>();
     let _ = output.subschema_for::<RuntimeCapabilities>();
+    let _ = output.subschema_for::<FleetProfileDocument>();
     let _ = output.subschema_for::<RuntimeExperimentalCapabilities>();
     let _ = output.subschema_for::<DynamicToolCallParams>();
     let _ = output.subschema_for::<DynamicToolSpec>();

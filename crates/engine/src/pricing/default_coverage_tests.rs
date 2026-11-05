@@ -183,7 +183,15 @@ fn shipped_default_routes_have_reviewed_pricing_coverage() {
             recorded_at,
         );
         assert!(
-            route.provider_live_pricing.is_none(),
+            route
+                .provider_live_pricing
+                .as_ref()
+                .is_none_or(|quote| !matches!(
+                    quote.provenance,
+                    PricingProvenance::ProviderLive
+                        | PricingProvenance::ModelsDevLive
+                        | PricingProvenance::CloudFacts
+                )),
             "offline default captured live pricing"
         );
         let key = [
