@@ -333,7 +333,7 @@ mod tests {
         let store = MarketplaceStore::open(Some(&state_path)).unwrap();
         let initial = store.load().unwrap();
         let catalog = initial.get("codewhale").expect("first-party catalog");
-        assert_eq!(catalog.catalog.total_candidates(), 19);
+        assert_eq!(catalog.catalog.total_candidates(), 21);
         assert_eq!(catalog.catalog.error_count(), 0);
         assert_eq!(catalog.catalog.warning_count(), 0);
         assert!(!catalog.catalog.provenance.grants_trust());
@@ -349,7 +349,7 @@ mod tests {
             if candidate.name == "computer-use" {
                 assert_eq!(
                     spec,
-                    "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/latest/download/computer-use.tar.gz"
+                    "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/download/v0.16.0/computer-use.tar.gz"
                 );
             } else {
                 assert!(spec.starts_with(
