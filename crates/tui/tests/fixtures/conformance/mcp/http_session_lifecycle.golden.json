@@ -40,6 +40,7 @@
           "defer_loading": false,
           "description": "Echo.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_echo"
@@ -51,6 +52,7 @@
           "defer_loading": false,
           "description": "Answers with a tools/list_changed notification.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_notify_tool"
@@ -62,6 +64,7 @@
           "defer_loading": false,
           "description": "Answers with a JSON-RPC error that mentions the session.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_session_error"
@@ -97,6 +100,7 @@
           "defer_loading": false,
           "description": "Echo.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_echo"
@@ -108,6 +112,7 @@
           "defer_loading": false,
           "description": "Answers with a tools/list_changed notification.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_notify_tool"
@@ -119,6 +124,7 @@
           "defer_loading": false,
           "description": "Answers with a JSON-RPC error that mentions the session.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_session_error"
@@ -154,6 +160,7 @@
           "defer_loading": false,
           "description": "Only advertised after a reconnect.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_added_later"
@@ -165,6 +172,7 @@
           "defer_loading": false,
           "description": "Echo.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_echo"
@@ -176,6 +184,7 @@
           "defer_loading": false,
           "description": "Answers with a tools/list_changed notification.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_notify_tool"
@@ -187,6 +196,7 @@
           "defer_loading": false,
           "description": "Answers with a JSON-RPC error that mentions the session.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_session_error"

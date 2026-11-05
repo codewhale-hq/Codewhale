@@ -1786,13 +1786,10 @@ async fn stdio_thread_goal_methods_refuse_execution_and_read_existing_goal() {
             .iter()
             .any(|method| method == "thread/goal/set")
     );
-    let started = dispatch_stdio_request(
-        &state,
-        "thread/start",
-        json!({"operationKey":"goal-start"}),
-    )
-    .await
-    .unwrap();
+    let started =
+        dispatch_stdio_request(&state, "thread/start", json!({"operationKey":"goal-start"}))
+            .await
+            .unwrap();
     let id = started.result["thread"]["id"].as_str().unwrap();
     let set = dispatch_stdio_request(
         &state,
@@ -3936,6 +3933,7 @@ impl RuntimeOwnerFrontend for MockRuntimeFrontend {
                 ),
                 RuntimeOwnerRequest::DecideApproval {
                     approval_id,
+                    binding: _,
                     decision,
                 } => {
                     let (decision, remember) = match decision {
@@ -3960,6 +3958,57 @@ impl RuntimeOwnerFrontend for MockRuntimeFrontend {
                         "interrupt".to_owned(),
                     ],
                     None,
+                    Vec::new(),
+                ),
+                RuntimeOwnerRequest::SubmitUserInput {
+                    thread_id,
+                    input_id,
+                    turn_id: _,
+                    response,
+                } => (
+                    Method::POST,
+                    vec![
+                        "v1".to_owned(),
+                        "user-input".to_owned(),
+                        thread_id,
+                        input_id,
+                    ],
+                    Some(json!({"answers": response.answers})),
+                    Vec::new(),
+                ),
+                RuntimeOwnerRequest::CancelUserInput {
+                    thread_id,
+                    input_id,
+                    turn_id: _,
+                } => (
+                    Method::DELETE,
+                    vec![
+                        "v1".to_owned(),
+                        "user-input".to_owned(),
+                        thread_id,
+                        input_id,
+                    ],
+                    None,
+                    Vec::new(),
+                ),
+                RuntimeOwnerRequest::DeliverDynamicToolResult {
+                    thread_id,
+                    turn_id,
+                    call_id,
+                    result,
+                } => (
+                    Method::POST,
+                    vec![
+                        "v1".to_owned(),
+                        "threads".to_owned(),
+                        thread_id,
+                        "turns".to_owned(),
+                        turn_id,
+                        "tool-calls".to_owned(),
+                        call_id,
+                        "result".to_owned(),
+                    ],
+                    Some(serde_json::to_value(result)?),
                     Vec::new(),
                 ),
             };

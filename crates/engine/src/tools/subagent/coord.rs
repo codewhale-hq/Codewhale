@@ -1773,29 +1773,33 @@ mod tests {
         ));
         let live = {
             let mut guard = manager.write().await;
-            let live = guard.insert_test_running_agent("live-builder", tmp.path());
-            let active = [live.clone()].into_iter().collect::<BTreeSet<_>>();
-            for claim in [
-                WriteScopeClaim {
-                    owner: live.clone(),
-                    roots: vec!["src/live".into()],
-                    exact_files: Vec::new(),
-                    contracts: Vec::new(),
-                },
-                WriteScopeClaim {
-                    owner: "zombie-builder".into(),
-                    roots: vec!["src/zombie".into()],
-                    exact_files: Vec::new(),
-                    contracts: Vec::new(),
-                },
-            ] {
-                guard
-                    .coordination
-                    .register_claim(claim, false, |candidate| active.contains(candidate))
-                    .expect("initial claim");
-            }
-            let _ = guard.persist_state_synchronously();
-            live
+            guard
+                .with_store_transaction(|guard| {
+                    let live = guard.insert_test_running_agent("live-builder", tmp.path());
+                    let active = [live.clone()].into_iter().collect::<BTreeSet<_>>();
+                    for claim in [
+                        WriteScopeClaim {
+                            owner: live.clone(),
+                            roots: vec!["src/live".into()],
+                            exact_files: Vec::new(),
+                            contracts: Vec::new(),
+                        },
+                        WriteScopeClaim {
+                            owner: "zombie-builder".into(),
+                            roots: vec!["src/zombie".into()],
+                            exact_files: Vec::new(),
+                            contracts: Vec::new(),
+                        },
+                    ] {
+                        guard
+                            .coordination
+                            .register_claim(claim, false, |candidate| active.contains(candidate))
+                            .expect("initial claim");
+                    }
+                    guard.persist_state_synchronously()?;
+                    Ok(live)
+                })
+                .unwrap()
         };
 
         let result = AgentsCoordinateTool::new(Arc::clone(&manager), None)
