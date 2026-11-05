@@ -169,6 +169,8 @@ pub fn snapshot() -> RetryState {
     with_state(|state| state.clone())
 }
 
+pub const MAX_PROVIDER_PAUSE: Duration = Duration::from_secs(3600);
+
 /// Extend the rate-limit pause window for one provider `scope` (the caller's
 /// route identity and host). This is separate from the footer banner so one
 /// successful concurrent request cannot clear another request's active
@@ -176,6 +178,7 @@ pub fn snapshot() -> RetryState {
 /// pauses requests to another. Expired scopes are dropped here, so the map
 /// holds at most the providers currently rate limited.
 pub fn note_rate_limit(scope: &str, delay: Duration) {
+    let delay = delay.min(MAX_PROVIDER_PAUSE);
     with_rate_limit(|pauses| {
         let now = Instant::now();
         pauses.retain(|_, (observed, delay)| {
@@ -214,6 +217,7 @@ pub fn rate_limit_remaining(scope: &str) -> Option<Duration> {
 /// retry (1 for the first); `delay` is how long the client will sleep
 /// before firing.
 pub fn start(attempt: u32, delay: Duration, reason: impl Into<String>) {
+    let delay = delay.min(MAX_PROVIDER_PAUSE);
     let banner = RetryBanner {
         attempt,
         deadline: Instant::now() + delay,
@@ -336,11 +340,13 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_preserves_unrepresentable_instant_minimum() {
+    fn rate_limit_bounds_unrepresentable_instant_minimum() {
         let _g = setup();
         note_rate_limit("extreme-minimum", Duration::from_secs(u64::MAX));
         note_rate_limit("extreme-minimum", Duration::from_secs(1));
-        assert!(rate_limit_remaining("extreme-minimum").unwrap().as_secs() > u64::MAX - 2);
+        let remaining = rate_limit_remaining("extreme-minimum").unwrap();
+        assert!(remaining <= MAX_PROVIDER_PAUSE);
+        assert!(remaining > Duration::from_secs(3598));
         clear_rate_limit();
     }
 

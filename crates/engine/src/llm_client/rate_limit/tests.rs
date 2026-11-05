@@ -31,6 +31,24 @@ fn server_minima_and_provider_codes() {
         LlmError::from_http_response(429, raw),
         LlmError::QuotaExhausted(_)
     ));
+    let raw = r#"{"base_resp":{"status_code":1002,"status_msg":"retry in 30s"}}"#;
+    assert_eq!(
+        provider_error("minimax", 429, raw, "safe", Some(Duration::from_secs(2)))
+            .unwrap()
+            .suggested_retry_delay(),
+        Some(Duration::from_secs(30))
+    );
+    for raw in [
+        r#"{"base_resp":{"status_code":1002,"status_msg":"retry in 7200s"}}"#,
+        r#"{"error":{"code":1002,"details":[{"retryDelay":"7200s"}]}}"#,
+    ] {
+        assert_eq!(
+            provider_error("minimax", 429, raw, "safe", None)
+                .unwrap()
+                .suggested_retry_delay(),
+            Some(Duration::from_secs(7200))
+        );
+    }
     for (provider, code, expected) in [
         ("minimax", 1002, "retry"),
         ("minimax", 1008, "billing"),
@@ -41,6 +59,18 @@ fn server_minima_and_provider_codes() {
     ] {
         let raw = serde_json::json!({"error":{"code":code,"message":"fixture"}}).to_string();
         let error = provider_error(provider, 429, &raw, "safe", None).unwrap();
+        if expected == "window" {
+            assert_eq!(
+                error.transmission(),
+                super::super::RequestTransmission::Rejected
+            );
+            assert!(!error.is_retryable());
+            assert!(!error.to_string().contains("checkpoint retained"));
+            let envelope = codewhale_error_taxonomy::ErrorEnvelope::from(
+                provider_error(provider, 429, &raw, "safe", None).unwrap(),
+            );
+            assert!(!envelope.recoverable);
+        }
         assert!(
             match expected {
                 "retry" => matches!(error, LlmError::RateLimited { .. }),
@@ -58,6 +88,19 @@ fn server_minima_and_provider_codes() {
     assert_eq!(
         body_delay(r#"{"error":{"retryDelay":"120s"}}"#),
         Some(Duration::from_secs(120))
+    );
+    let window = provider_error(
+        "minimax",
+        200,
+        r#"{"base_resp":{"status_code":2045,"status_msg":"weekly usage limit reached"}}"#,
+        "safe",
+        Some(Duration::from_secs(7200)),
+    )
+    .unwrap();
+    assert!(matches!(window, LlmError::QuotaWindow { .. }));
+    assert_eq!(
+        window.suggested_retry_delay(),
+        Some(Duration::from_secs(7200))
     );
     let reset = (chrono::Utc::now() + chrono::Duration::hours(5)).timestamp();
     let hint =
@@ -88,9 +131,14 @@ fn policy_validation_and_equal_jitter() {
 
 #[tokio::test(start_paused = true)]
 async fn rate_budget_is_independent_from_transport_retries() {
-    let mut config = RetryConfig::default();
-    config.max_retries = 0;
-    config.rate_limit.max_attempts = 3;
+    let config = RetryConfig {
+        max_retries: 0,
+        rate_limit: RateLimitRetryPolicy {
+            max_attempts: 3,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let calls = AtomicU32::new(0);
     let result: RetryResult<()> = with_retry(
         &config,
@@ -107,8 +155,10 @@ async fn rate_budget_is_independent_from_transport_retries() {
 
 #[tokio::test(start_paused = true)]
 async fn long_hints_and_quota_windows_park_without_early_retry() {
-    let config = RetryConfig::default();
-    for window in [false, true] {
+    let mut config = RetryConfig::default();
+    config.rate_limit.recovery_budget_secs = 7200;
+    for (window, enabled) in [(false, true), (true, true), (false, false), (true, false)] {
+        config.enabled = enabled;
         let calls = AtomicU32::new(0);
         let start = tokio::time::Instant::now();
         let result: RetryResult<()> = with_retry(
@@ -119,6 +169,7 @@ async fn long_hints_and_quota_windows_park_without_early_retry() {
                     LlmError::QuotaWindow {
                         message: "window".into(),
                         retry_after: Some(Duration::from_secs(2)),
+                        transmission: super::super::RequestTransmission::Rejected,
                     }
                 } else {
                     refused(Some(Duration::from_secs(86400)))
@@ -127,7 +178,10 @@ async fn long_hints_and_quota_windows_park_without_early_retry() {
             None,
         )
         .await;
-        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err().last_error,
+            LlmError::QuotaWindow { .. }
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(start.elapsed(), Duration::ZERO);
     }
@@ -199,7 +253,7 @@ async fn successful_json_refusal_preserves_header_minimum_and_disclosure() {
         .header("content-type", "Application/JSON; charset=utf-8")
         .header("retry-after", "3600")
         .body(reqwest::Body::from(r#"{"base_resp":{"status_code":1002,"status_msg":"fixture-secret"},"retry_after":7200}"#)).unwrap());
-    let error = inspect_json_envelope_with_disclosure("minimax", response, |_, body| {
+    let error = inspect_json_envelope_with_disclosure("minimax", response, None, |_, body| {
         body.replace("fixture-secret", "[redacted]")
     })
     .await
@@ -281,10 +335,15 @@ async fn long_backoff_does_not_consume_the_nonstream_active_envelope() {
 
 #[tokio::test(start_paused = true)]
 async fn mixed_transport_failure_cannot_restart_expired_rate_recovery() {
-    let mut config = RetryConfig::default();
-    config.operation = super::super::RetryOperation::ReadOnly;
-    config.rate_limit.initial_delay_secs = 1;
-    config.rate_limit.max_delay_secs = 1;
+    let config = RetryConfig {
+        operation: super::super::RetryOperation::ReadOnly,
+        rate_limit: RateLimitRetryPolicy {
+            initial_delay_secs: 1,
+            max_delay_secs: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let calls = AtomicU32::new(0);
     let result: RetryResult<()> = with_retry(
         &config,
@@ -304,7 +363,7 @@ async fn mixed_transport_failure_cannot_restart_expired_rate_recovery() {
     .await;
     assert!(matches!(
         result.unwrap_err().last_error,
-        LlmError::RateLimited { .. }
+        LlmError::ServerError { status: 503, .. }
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -335,6 +394,8 @@ fn unknown_rate_limit_quota_code_requires_independent_billing_evidence() {
         r#"{"error":{"code":"insufficient_quota","message":"Account quota exhausted"}}"#,
         r#"{"error":{"code":"insufficient_quota","message":"Plan quota is exhausted"}}"#,
         r#"{"error":{"code":"insufficient_quota","message":"TPM exceeded"},"detail":"Billing quota has been exhausted"}"#,
+        r#"{"error":{"message":"Too many requests"},"detail":"Billing quota has been exhausted"}"#,
+        r#"{"error":{"code":"gateway_limit","message":"Too many requests"},"detail":"Billing quota has been exhausted"}"#,
         r#"{"error":{"code":"insufficient_quota","type":"billing_hard_limit_reached","message":"fixture"}}"#,
         r#"{"error":{"code":"insufficient_quota","message":"\u4f59\u989d\u4e0d\u8db3"}}"#,
     ] {
@@ -363,4 +424,56 @@ fn unknown_rate_limit_quota_code_requires_independent_billing_evidence() {
         LlmError::QuotaExhausted(_)
     ));
     assert!(provider_error("custom", 401, raw, "safe", hint).is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_json_envelope_bounds_first_byte_idle_and_size() {
+    use futures_util::StreamExt;
+    for sent in [false, true] {
+        let prefix = futures_util::stream::iter(if sent {
+            vec![Ok::<_, std::io::Error>("{")]
+        } else {
+            vec![]
+        });
+        let body = reqwest::Body::wrap_stream(prefix.chain(futures_util::stream::pending()));
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .header("content-type", "application/json")
+                .body(body)
+                .unwrap(),
+        );
+        let error = inspect_json_envelope_with_disclosure(
+            "minimax",
+            response,
+            Some((Duration::from_secs(2), Duration::from_secs(3))),
+            |_, _| "safe".into(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, LlmError::Timeout(delay) if delay == Duration::from_secs(if sent {3} else {2}))
+        );
+        assert_eq!(
+            error.transmission(),
+            super::super::RequestTransmission::OutcomeUnknown
+        );
+    }
+    for declared in [false, true] {
+        let body = reqwest::Body::wrap_stream(futures_util::stream::iter(
+            (0..33).map(|_| Ok::<_, std::io::Error>(vec![b' '; 1024 * 1024])),
+        ));
+        let mut response = http::Response::builder().header("content-type", "application/json");
+        if declared {
+            response = response.header("content-length", 33 * 1024 * 1024);
+        }
+        let response = reqwest::Response::from(response.body(body).unwrap());
+        let error = inspect_json_envelope("minimax", response)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LlmError::ParseError(ref message) if message.contains("32 MiB")));
+        assert_eq!(
+            error.transmission(),
+            super::super::RequestTransmission::OutcomeUnknown
+        );
+    }
 }

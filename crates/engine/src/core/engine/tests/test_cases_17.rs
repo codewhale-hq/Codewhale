@@ -1401,6 +1401,12 @@ impl crate::core::model_client::ModelClient for TransportRetryModelClient {
                 max_retries: 2,
                 initial_delay: 0.0,
                 jitter: false,
+                rate_limit: codewhale_runtime::config::RateLimitRetryPolicy {
+                    max_attempts: 3,
+                    initial_delay_secs: 1,
+                    max_delay_secs: 1,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             || async {
@@ -1484,7 +1490,7 @@ async fn engine_transport_retry_receipts_and_counts_match_actual_scripted_attemp
         } else {
             for attempt in 1..=expected_retries {
                 assert!(events.iter().any(|event| matches!(event,
-                    Event::Status { message } if message.starts_with(&format!("Retry attempt: transport {attempt}/2;"))
+                    Event::Status { message } if message.starts_with(&format!("Retry attempt: HTTP {attempt};"))
                 )));
             }
         }
@@ -1497,7 +1503,7 @@ async fn engine_transport_retry_receipts_and_counts_match_actual_scripted_attemp
         if failures == 1 {
             assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
             assert!(events.iter().any(|event| matches!(event,
-                Event::Status { message } if message == "Retry recovery: transport request recovered after 1 retries"
+                Event::Status { message } if message == "Retry recovery: HTTP operation recovered after 2 attempts"
             )));
         } else {
             assert_eq!(status, TurnOutcomeStatus::Failed);

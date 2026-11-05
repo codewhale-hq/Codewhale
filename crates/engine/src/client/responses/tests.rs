@@ -156,7 +156,7 @@ async fn responses_stream_retries_rate_limited_request() {
 }
 
 #[tokio::test]
-async fn responses_stream_retries_transient_server_error() {
+async fn responses_stream_does_not_replay_unknown_server_outcome() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
@@ -170,28 +170,29 @@ async fn responses_stream_retries_transient_server_error() {
         .await;
 
     let client = CodewhaleClient::new(&test_codex_config(&server)).unwrap();
-    let mut stream = client
+    let error = match client
         .handle_responses_stream(
             &client
                 .prepare_outbound_request(minimal_responses_request(), true)
                 .expect("responses request prepares"),
         )
         .await
-        .unwrap();
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while let Some(event) = stream.next().await {
-            event.unwrap();
-        }
-    })
-    .await
-    .expect("Responses retry stream should finish after response.completed");
-
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    {
+        Ok(_) => panic!("an unknown inference outcome must not be replayed"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::llm_client::LlmError>(),
+            Some(crate::llm_client::LlmError::ServerError { status: 503, .. })
+        ),
+        "{error:#}"
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn responses_stream_retries_upstream_499_before_streaming() {
+async fn responses_stream_does_not_replay_unknown_upstream_499_outcome() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
@@ -205,24 +206,25 @@ async fn responses_stream_retries_upstream_499_before_streaming() {
         .await;
 
     let client = CodewhaleClient::new(&test_codex_config(&server)).unwrap();
-    let mut stream = client
+    let error = match client
         .handle_responses_stream(
             &client
                 .prepare_outbound_request(minimal_responses_request(), true)
                 .expect("responses request prepares"),
         )
         .await
-        .unwrap();
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while let Some(event) = stream.next().await {
-            event.unwrap();
-        }
-    })
-    .await
-    .expect("Responses retry stream should finish after response.completed");
-
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    {
+        Ok(_) => panic!("an unknown inference outcome must not be replayed"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::llm_client::LlmError>(),
+            Some(crate::llm_client::LlmError::ServerError { status: 499, .. })
+        ),
+        "{error:#}"
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
 async fn collect_responses_stream(sse_body: &str) -> Vec<Result<StreamEvent>> {
@@ -435,6 +437,7 @@ async fn chatgpt_http_usage_limit_is_not_retried() {
         crate::llm_client::LlmError::QuotaExhausted(_)
     ));
     assert!(!typed.is_retryable());
+    assert!(typed.to_string().contains("ChatGPT Settings > Usage"));
 }
 
 #[tokio::test]

@@ -14,18 +14,25 @@ These are engineering defaults. They do not assert a provider-wide recovery
 percentile. The budget starts at the first rate refusal, counts the initial HTTP
 attempt, and is independent of the existing network/5xx retry count. Backoff
 doubles to a local ceiling of 60 seconds, with equal jitter over 50–100% of the
-base. The greater of the local delay and the server minimum is used.
+base. The greater of the local delay and the server minimum is used, with
+additional jitter of half the local delay when a nonzero minimum is present.
 
 Numeric and HTTP-date Retry-After values and recognized JSON reset fields are
 supported. A minimum beyond the remaining recovery budget is returned to the
 caller immediately, without shortening it to the local backoff ceiling. Native
 MiniMax/Zhipu JSON success envelopes carrying a failure use the same policy and
 the caller's existing error-disclosure boundary. Known quota windows, billing
-and invalid-input failures are not short-retried.
+and invalid-input failures are not short-retried. Server-directed provider pauses and
+automatic retry sleeps are limited to 3600 seconds, including sub-agents. Longer
+minima remain attached to the returned error as advice; the current operation
+stops rather than retrying before that minimum. Quota-window errors distinguish
+a server rejection from admission that did not dispatch a request and do not
+claim that this transport slice saved a checkpoint.
 
 Backoff does not consume the active HTTP envelope. The request's existing body
-timeout still bounds a stalled non-streaming response. Streaming body and idle
-recovery remain owned by the existing stream adapter. Dropping the operation
+timeout still bounds a stalled non-streaming response. Native JSON envelope
+inspection has a 32 MiB size limit and applies the caller's first-byte and inter-chunk idle deadlines. Ordinary SSE body and idle recovery
+remain owned by the existing stream adapter. Dropping the operation
 cancels its wait. `retry.enabled = false` still runs a transport operation once.
 
 This contribution changes the common native HTTP transport loop, its isolated

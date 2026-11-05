@@ -1319,7 +1319,8 @@ pub fn report_compaction_failure(
             "provider plan quota exhausted — switch provider/model or renew the provider plan"
                 .to_string()
         }
-        Some(crate::llm_client::LlmError::RateLimited { .. }) => {
+        Some(crate::llm_client::LlmError::RateLimited { .. }
+            | crate::llm_client::LlmError::QuotaWindow { .. }) => {
             "provider rate limit blocked making room — retry after the limit resets or switch provider/model"
                 .to_string()
         }

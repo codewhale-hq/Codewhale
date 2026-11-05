@@ -10685,6 +10685,33 @@ fn transient_provider_classifier_uses_typed_retryability_without_keywords() {
     let retry = retryable_subagent_provider_failure(&error, 1).expect("transient rate limit");
     assert_eq!(retry.delay, Duration::from_secs(7));
     assert_eq!(retry.checkpoint_reason, "api_rate_limited");
+    for error in [
+        LlmError::QuotaWindow {
+            message: "window".into(),
+            retry_after: Some(Duration::from_secs(2)),
+            transmission: crate::llm_client::RequestTransmission::Rejected,
+        },
+        LlmError::QuotaWindow {
+            message: "admission".into(),
+            retry_after: Some(Duration::from_secs(3600)),
+            transmission: crate::llm_client::RequestTransmission::NotDispatched,
+        },
+        LlmError::RateLimited {
+            message: "long minimum".into(),
+            retry_after: Some(Duration::from_secs(7200)),
+        },
+    ] {
+        let error = anyhow::Error::new(error);
+        assert!(engine::provider_request_refusal_proven(&error));
+        assert!(retryable_subagent_provider_failure(&error, 1).is_none());
+        assert!(matches!(
+            engine::ChildRequestRetries::default().decide(&stub_runtime(), &error),
+            Some(engine::ChildRequestRecovery::Interrupted {
+                checkpoint_reason: "api_rate_limited",
+                ..
+            })
+        ));
+    }
 }
 
 #[tokio::test]
@@ -10768,107 +10795,112 @@ async fn subagent_retries_transient_provider_header_timeout_before_succeeding() 
     );
 }
 
-#[test]
-fn subagent_rate_limit_exhaustion_interrupts_with_checkpoint() {
-    // This complete Engine fixture uses the actual product worker stack.
-    // Keep the runtime's independent default-small-stack probes unchanged.
+fn run_worker_fixture<F: std::future::Future<Output = ()>>(
+    fixture: impl FnOnce() -> F + Send + 'static,
+) {
     std::thread::Builder::new()
         .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(async {
-                    let tmp = tempdir().expect("tempdir");
-                    let manager = Arc::new(RwLock::new(SubAgentManager::new(
-                        tmp.path().to_path_buf(),
-                        2,
-                    )));
-                    let agent_id = "agent_rate_limited_checkpoint".to_string();
-                    let (task_input_tx, task_input_rx) = mpsc::unbounded_channel();
-                    let agent = SubAgent::new(
-                        agent_id.clone(),
-                        FleetRole::Worker,
-                        "Inspect rate-limit recovery".to_string(),
-                        make_assignment(),
-                        "deepseek-v4-flash".to_string(),
-                        Some("Blue".to_string()),
-                        Some(vec![]),
-                        task_input_tx,
-                        tmp.path().to_path_buf(),
-                        "boot_test".to_string(),
-                    );
-                    {
-                        let mut manager = manager.write().await;
-                        manager.agents.insert(agent_id.clone(), agent);
-                        manager
-                            .register_worker(make_worker_spec(&agent_id, tmp.path().to_path_buf()));
-                    }
-
-                    let (client, calls, fixture_config) = always_rate_limited_chat_client().await;
-                    let mut runtime = stub_runtime().with_step_api_timeout(Duration::from_secs(5));
-                    runtime.client = client;
-                    runtime.api_config = Some(Arc::new(fixture_config));
-                    runtime.manager = Arc::clone(&manager);
-                    runtime.context = ToolContext::new(tmp.path());
-
-                    let task = SubAgentTask {
-                        manager_handle: Arc::clone(&manager),
-                        runtime,
-                        agent_id: agent_id.clone(),
-                        agent_type: FleetRole::Worker,
-                        prompt: "Inspect rate-limit recovery".to_string(),
-                        assignment: make_assignment(),
-                        allowed_tools: Some(vec![]),
-                        fork_context: false,
-                        started_at: Instant::now(),
-                        max_steps: 3,
-                        wall_time: None,
-                        wall_ceiling_ms: None,
-                        input_rx: task_input_rx,
-                        launch_gate: None,
-                        _foreground_child_registration: None,
-                    };
-
-                    tokio::time::timeout(
-                        Duration::from_secs(10),
-                        tokio::spawn(run_subagent_task(task)),
-                    )
-                    .await
-                    .expect("sub-agent task should finish")
-                    .expect("sub-agent join should succeed");
-
-                    assert_eq!(
-                        calls.load(Ordering::SeqCst),
-                        SUBAGENT_TRANSIENT_PROVIDER_MAX_RETRIES.saturating_add(1) as usize,
-                        "rate-limit retries should be owned by the sub-agent retry loop"
-                    );
-                    let snapshot = {
-                        let manager = manager.read().await;
-                        manager
-                            .get_result(&agent_id)
-                            .expect("agent should stay registered")
-                    };
-                    let SubAgentStatus::Interrupted(reason) = &snapshot.status else {
-                        panic!("expected interrupted sub-agent, got {:?}", snapshot.status);
-                    };
-                    assert!(
-                        reason.contains("rate-limited provider response"),
-                        "reason should name the provider rate limit: {reason}"
-                    );
-                    let checkpoint = snapshot
-                        .checkpoint
-                        .as_ref()
-                        .expect("rate-limit interruption should preserve checkpoint");
-                    assert_eq!(checkpoint.reason, "api_rate_limited");
-                    assert!(checkpoint.continuable);
-                    assert!(snapshot.needs_input.is_some());
-                })
+                .block_on(fixture())
         })
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn subagent_rate_limit_exhaustion_interrupts_with_checkpoint() {
+    run_worker_fixture(subagent_rate_limit_exhaustion_interrupts_with_checkpoint_body);
+}
+
+async fn subagent_rate_limit_exhaustion_interrupts_with_checkpoint_body() {
+    let tmp = tempdir().expect("tempdir");
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        2,
+    )));
+    let agent_id = "agent_rate_limited_checkpoint".to_string();
+    let (task_input_tx, task_input_rx) = mpsc::unbounded_channel();
+    let agent = SubAgent::new(
+        agent_id.clone(),
+        FleetRole::Worker,
+        "Inspect rate-limit recovery".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
+        Some(vec![]),
+        task_input_tx,
+        tmp.path().to_path_buf(),
+        "boot_test".to_string(),
+    );
+    {
+        let mut manager = manager.write().await;
+        manager.agents.insert(agent_id.clone(), agent);
+        manager.register_worker(make_worker_spec(&agent_id, tmp.path().to_path_buf()));
+    }
+
+    let (client, calls, fixture_config) = always_rate_limited_chat_client().await;
+    let mut runtime = stub_runtime().with_step_api_timeout(Duration::from_secs(5));
+    runtime.client = client;
+    runtime.api_config = Some(Arc::new(fixture_config));
+    runtime.manager = Arc::clone(&manager);
+    runtime.context = ToolContext::new(tmp.path());
+
+    let task = SubAgentTask {
+        manager_handle: Arc::clone(&manager),
+        runtime,
+        agent_id: agent_id.clone(),
+        agent_type: FleetRole::Worker,
+        prompt: "Inspect rate-limit recovery".to_string(),
+        assignment: make_assignment(),
+        allowed_tools: Some(vec![]),
+        fork_context: false,
+        started_at: Instant::now(),
+        max_steps: 3,
+        wall_time: None,
+        wall_ceiling_ms: None,
+        input_rx: task_input_rx,
+        launch_gate: None,
+        _foreground_child_registration: None,
+    };
+
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::spawn(run_subagent_task(task)),
+    )
+    .await
+    .expect("sub-agent task should finish")
+    .expect("sub-agent join should succeed");
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        SUBAGENT_TRANSIENT_PROVIDER_MAX_RETRIES.saturating_add(1) as usize,
+        "rate-limit retries should be owned by the sub-agent retry loop"
+    );
+    let snapshot = {
+        let manager = manager.read().await;
+        manager
+            .get_result(&agent_id)
+            .expect("agent should stay registered")
+    };
+    let SubAgentStatus::Interrupted(reason) = &snapshot.status else {
+        panic!("expected interrupted sub-agent, got {:?}", snapshot.status);
+    };
+    assert!(
+        reason.contains("rate-limited provider response"),
+        "reason should name the provider rate limit: {reason}"
+    );
+    let checkpoint = snapshot
+        .checkpoint
+        .as_ref()
+        .expect("rate-limit interruption should preserve checkpoint");
+    assert_eq!(checkpoint.reason, "api_rate_limited");
+    assert!(checkpoint.continuable);
+    assert!(snapshot.needs_input.is_some());
 }
 
 #[tokio::test]
@@ -19832,51 +19864,35 @@ async fn spawn_budget_capped_worker_with_pause(
 
 #[test]
 fn worker_stops_with_typed_wall_time_reason() {
-    // Construct and poll this heavy Engine fixture on the real product stack.
-    std::thread::Builder::new()
-        .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async {
-                    let tmp = tempdir().expect("tempdir");
-                    let (manager, agent_id, _calls, task_handle) = spawn_budget_capped_worker(
-                        tmp.path(),
-                        60,
-                        40,
-                        120,
-                        Duration::from_millis(1),
-                    )
-                    .await;
+    run_worker_fixture(worker_stops_with_typed_wall_time_reason_body);
+}
 
-                    tokio::time::timeout(Duration::from_secs(5), task_handle)
-                        .await
-                        .expect("wall-time-capped worker must terminate")
-                        .expect("task should finish");
+async fn worker_stops_with_typed_wall_time_reason_body() {
+    let tmp = tempdir().expect("tempdir");
+    let (manager, agent_id, _calls, task_handle) =
+        spawn_budget_capped_worker(tmp.path(), 60, 40, 120, Duration::from_millis(1)).await;
 
-                    let result = manager
-                        .read()
-                        .await
-                        .get_result(&agent_id)
-                        .expect("agent registered");
-                    assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
-                    let reason = &result
-                        .checkpoint
-                        .as_ref()
-                        .expect("wall-budget checkpoint")
-                        .reason;
-                    assert_eq!(reason, "child wall-time work budget exhausted");
-                    assert_eq!(
-                        subagent_failure_class(&result.status, reason),
-                        "wall_time_budget"
-                    );
-                })
-        })
-        .unwrap()
-        .join()
-        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task_handle)
+        .await
+        .expect("wall-time-capped worker must terminate")
+        .expect("task should finish");
+
+    let result = manager
+        .read()
+        .await
+        .get_result(&agent_id)
+        .expect("agent registered");
+    assert_eq!(result.status, SubAgentStatus::BudgetExhausted);
+    let reason = &result
+        .checkpoint
+        .as_ref()
+        .expect("wall-budget checkpoint")
+        .reason;
+    assert_eq!(reason, "child wall-time work budget exhausted");
+    assert_eq!(
+        subagent_failure_class(&result.status, reason),
+        "wall_time_budget"
+    );
 }
 
 /// Scripted provider for the child-compaction test. Task steps call
@@ -20141,67 +20157,54 @@ impl Drop for ClearRateLimitOnDrop {
 }
 
 #[test]
-#[allow(clippy::await_holding_lock)]
 fn worker_is_not_stranded_by_transient_global_rate_limit_window() {
-    // Construct the complete worker future on the actual product worker stack.
-    std::thread::Builder::new()
-        .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async {
-                    // Regression for a parallel-suite flake: `rate_limit_pause_blocks_subagent_spawn`
-                    // opens a 30s process-wide rate-limit window and closes it milliseconds
-                    // later. A worker whose request reached `send_with_retry` inside that
-                    // window used to commit to sleeping the FULL remaining window without
-                    // re-checking, blowing the 5s timeouts in the budget tests above. The
-                    // pause must be re-polled so an already-cleared window releases
-                    // in-flight requests promptly.
-                    let _guard = codewhale_runtime::retry_status::test_guard();
-                    let _clear = ClearRateLimitOnDrop;
+    run_worker_fixture(worker_is_not_stranded_by_transient_global_rate_limit_window_body);
+}
 
-                    let tmp = tempdir().expect("tempdir");
-                    let (manager, agent_id, _calls, task_handle) =
-                        spawn_budget_capped_worker_with_pause(
-                            tmp.path(),
-                            60,
-                            40,
-                            4,
-                            Duration::from_secs(30),
-                            Some(Duration::from_secs(30)),
-                        )
-                        .await;
+#[allow(clippy::await_holding_lock)]
+async fn worker_is_not_stranded_by_transient_global_rate_limit_window_body() {
+    // Regression for a parallel-suite flake: `rate_limit_pause_blocks_subagent_spawn`
+    // opens a 30s process-wide rate-limit window and closes it milliseconds
+    // later. A worker whose request reached `send_with_retry` inside that
+    // window used to commit to sleeping the FULL remaining window without
+    // re-checking, blowing the 5s timeouts in the budget tests above. The
+    // pause must be re-polled so an already-cleared window releases
+    // in-flight requests promptly.
+    let _guard = codewhale_runtime::retry_status::test_guard();
+    let _clear = ClearRateLimitOnDrop;
 
-                    // Simulate the concurrent test finishing: the window closes shortly
-                    // after the worker's first request has already observed it.
-                    tokio::spawn(async {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                        codewhale_runtime::retry_status::clear_rate_limit();
-                    });
+    let tmp = tempdir().expect("tempdir");
+    let (manager, agent_id, _calls, task_handle) = spawn_budget_capped_worker_with_pause(
+        tmp.path(),
+        60,
+        40,
+        4,
+        Duration::from_secs(30),
+        Some(Duration::from_secs(30)),
+    )
+    .await;
 
-                    tokio::time::timeout(Duration::from_secs(5), task_handle)
-                        .await
-                        .expect(
-                            "worker must not be stranded by an already-cleared rate-limit window",
-                        )
-                        .expect("task should finish");
+    // Simulate the concurrent test finishing: the window closes shortly
+    // after the worker's first request has already observed it.
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        codewhale_runtime::retry_status::clear_rate_limit();
+    });
 
-                    let result = {
-                        let manager = manager.read().await;
-                        manager.get_result(&agent_id).expect("agent registered")
-                    };
-                    // Token budgets are tracked, never enforced (#6298 slice 5), so a
-                    // worker that used to stop at its token ceiling now runs to
-                    // completion. The regression under test is only that an already-cleared
-                    // rate-limit window cannot strand the worker past the 5s timeout.
-                    assert_eq!(result.status, SubAgentStatus::Completed);
-                })
-        })
-        .unwrap()
-        .join()
-        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task_handle)
+        .await
+        .expect("worker must not be stranded by an already-cleared rate-limit window")
+        .expect("task should finish");
+
+    let result = {
+        let manager = manager.read().await;
+        manager.get_result(&agent_id).expect("agent registered")
+    };
+    // Token budgets are tracked, never enforced (#6298 slice 5), so a
+    // worker that used to stop at its token ceiling now runs to
+    // completion. The regression under test is only that an already-cleared
+    // rate-limit window cannot strand the worker past the 5s timeout.
+    assert_eq!(result.status, SubAgentStatus::Completed);
 }
 
 /// #4217: terminal worker records must age out of the persisted ledger so

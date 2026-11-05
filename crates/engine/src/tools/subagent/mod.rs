@@ -18408,6 +18408,11 @@ fn retryable_subagent_provider_failure(
     retry_number: u32,
 ) -> Option<RetryableSubAgentProviderFailure> {
     if let Some(LlmError::RateLimited { retry_after, .. }) = error.downcast_ref::<LlmError>() {
+        if retry_after
+            .is_some_and(|delay| delay > codewhale_runtime::retry_status::MAX_PROVIDER_PAUSE)
+        {
+            return None;
+        }
         return Some(RetryableSubAgentProviderFailure {
             label: "rate-limited provider response",
             checkpoint_reason: "api_rate_limited",

@@ -403,10 +403,11 @@ pub enum LlmError {
         message: String,
         retry_after: Option<Duration>,
     },
-    /// A long-lived quota window. Preserve the checkpoint; resume requires task policy or user action.
+    /// A quota window requiring caller policy or user action rather than a short retry.
     QuotaWindow {
         message: String,
         retry_after: Option<Duration>,
+        transmission: RequestTransmission,
     },
 
     /// The provider explicitly reported that the account's plan quota is exhausted.
@@ -462,9 +463,10 @@ impl std::fmt::Display for LlmError {
             LlmError::QuotaWindow {
                 message,
                 retry_after,
+                ..
             } => write!(
                 f,
-                "Rate limit exceeded: {message}; quota window reset in {retry_after:?}; checkpoint retained"
+                "Rate limit exceeded: {message}; quota window reset in {retry_after:?}; automatic retry stopped"
             ),
             LlmError::RateLimited { message, .. } => write!(f, "Rate limit exceeded: {message}"),
             LlmError::QuotaExhausted(error) => {
@@ -497,9 +499,32 @@ impl std::fmt::Display for LlmError {
 impl std::error::Error for LlmError {}
 
 impl LlmError {
+    fn for_recovery_budget(self, remaining: Duration) -> Self {
+        if let Self::RateLimited {
+            message,
+            retry_after: Some(minimum),
+        } = self
+        {
+            if minimum >= remaining || minimum > codewhale_runtime::retry_status::MAX_PROVIDER_PAUSE
+            {
+                return Self::QuotaWindow {
+                    message,
+                    retry_after: Some(minimum),
+                    transmission: RequestTransmission::Rejected,
+                };
+            }
+            return Self::RateLimited {
+                message,
+                retry_after: Some(minimum),
+            };
+        }
+        self
+    }
+
     pub fn transmission(&self) -> RequestTransmission {
         match self {
             Self::ConnectError { .. } => RequestTransmission::NotDispatched,
+            Self::QuotaWindow { transmission, .. } => *transmission,
             Self::RateLimited { .. }
             | Self::QuotaExhausted(_)
             | Self::AuthenticationError(_)
@@ -1809,7 +1834,7 @@ pub fn observe_transport_attempt() {
 /// Raw errors remain intact in the original result and diagnostic/log paths.
 pub fn retry_reason_summary(error: &LlmError) -> String {
     match error {
-        LlmError::RateLimited { .. } => "rate limited".into(),
+        LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. } => "rate limited".into(),
         LlmError::ServerError { status, .. } => format!("upstream {status}"),
         LlmError::NetworkError(_) => "network error; request outcome unknown".into(),
         LlmError::ConnectError { .. } => "connection failed before dispatch".into(),
@@ -1878,7 +1903,8 @@ where
     // If retries are disabled, just run once
     if !config.enabled {
         return operation().await.map_err(|e| RetryError {
-            last_error: e,
+            last_error: e
+                .for_recovery_budget(Duration::from_secs(config.rate_limit.recovery_budget_secs)),
             attempts: 1,
             total_time: Duration::ZERO,
         });
@@ -1889,15 +1915,13 @@ where
     let mut transport_retries = 0u32;
     let mut rate_retries = 0u32;
     let mut recovery_started: Option<tokio::time::Instant> = None;
+    let mut last_error = None;
     rate_limit::note_recovery_started(None);
     loop {
         if recovery_started.is_some_and(|started| {
             started.elapsed() >= Duration::from_secs(config.rate_limit.recovery_budget_secs)
-        }) {
-            let error = LlmError::RateLimited {
-                message: "HTTP recovery time budget exhausted".into(),
-                retry_after: None,
-            };
+        }) && let Some(error) = last_error.take()
+        {
             observe_transport_stopped(attempts.saturating_sub(1), &error, true).await;
             return Err(RetryError {
                 last_error: error,
@@ -1912,7 +1936,7 @@ where
         rate_limit::new_attempt();
         match operation().await {
             Ok(result) => {
-                if recovery_started.is_some() {
+                if attempts > 1 {
                     observe_transport_status(format!(
                         "Retry recovery: HTTP operation recovered after {attempts} attempts"
                     ))
@@ -1920,7 +1944,7 @@ where
                 }
                 return Ok(result);
             }
-            Err(err) => {
+            Err(mut err) => {
                 let rate_limited = matches!(
                     err,
                     LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }
@@ -1931,10 +1955,18 @@ where
                     rate_limit::note_recovery_started(Some(started));
                     let local = rate_limit::retry_delay(&config.rate_limit, rate_retries);
                     rate_retries = rate_retries.saturating_add(1);
-                    let delay = local.max(err.suggested_retry_delay().unwrap_or_default());
+                    let minimum = err.suggested_retry_delay().unwrap_or_default();
+                    let delay = local.max(minimum).saturating_add(if minimum.is_zero() {
+                        Duration::ZERO
+                    } else {
+                        local.div_f64(2.0)
+                    });
                     let remaining = Duration::from_secs(config.rate_limit.recovery_budget_secs)
                         .saturating_sub(started.elapsed());
-                    stop |= attempts >= config.rate_limit.max_attempts || delay >= remaining;
+                    stop |= attempts >= config.rate_limit.max_attempts
+                        || delay >= remaining
+                        || delay > codewhale_runtime::retry_status::MAX_PROVIDER_PAUSE;
+                    err = err.for_recovery_budget(remaining);
                     delay
                 } else {
                     stop |= transport_retries >= config.max_retries;
@@ -1946,24 +1978,11 @@ where
                         Duration::ZERO
                     })
                 };
-                if !stop
-                    && recovery_started.is_some_and(|started| {
-                        delay
-                            >= Duration::from_secs(config.rate_limit.recovery_budget_secs)
-                                .saturating_sub(started.elapsed())
-                    })
-                {
-                    let error = LlmError::RateLimited {
-                        message: "HTTP recovery time budget exhausted".into(),
-                        retry_after: None,
-                    };
-                    observe_transport_stopped(attempts.saturating_sub(1), &error, true).await;
-                    return Err(RetryError {
-                        last_error: error,
-                        attempts,
-                        total_time: start_time.elapsed(),
-                    });
-                }
+                stop |= recovery_started.is_some_and(|started| {
+                    delay
+                        >= Duration::from_secs(config.rate_limit.recovery_budget_secs)
+                            .saturating_sub(started.elapsed())
+                });
                 stop |= recovery_started.is_some() && attempts >= config.rate_limit.max_attempts;
                 stop |= config.total_timeout > 0.0
                     && start_time.elapsed().saturating_add(delay).as_secs_f64()
@@ -1985,6 +2004,7 @@ where
                     delay.as_secs_f64()
                 ))
                 .await;
+                last_error = Some(err);
                 rate_limit::wait(delay).await;
             }
         }
@@ -2007,8 +2027,6 @@ pub fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Durat
         .and_then(parse_retry_after)
 }
 
-const PROVIDER_RETRY_HINT_MAX: Duration = Duration::from_secs(120);
-
 pub fn retry_delay_from_error_body(body: &str) -> Option<Duration> {
     static HINTS: std::sync::OnceLock<[regex::Regex; 2]> = std::sync::OnceLock::new();
     let [structured, prose] = HINTS.get_or_init(|| {
@@ -2017,15 +2035,13 @@ pub fn retry_delay_from_error_body(body: &str) -> Option<Duration> {
             regex::Regex::new(r"(?i)retry in\s+(\d+(?:\.\d+)?)\s*s").unwrap(),
         ]
     });
-    structured
-        .captures(body)
-        .or_else(|| prose.captures(body))
-        .and_then(|captures| captures.get(1))
-        .and_then(|value| value.as_str().parse::<f64>().ok())
-        .filter(|seconds| {
-            seconds.is_finite() && (0.0..=PROVIDER_RETRY_HINT_MAX.as_secs_f64()).contains(seconds)
-        })
-        .map(Duration::from_secs_f64)
+    [structured, prose]
+        .into_iter()
+        .flat_map(|pattern| pattern.captures_iter(body))
+        .filter_map(|captures| captures.get(1))
+        .filter_map(|value| value.as_str().parse::<f64>().ok())
+        .filter_map(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        .max()
 }
 
 #[cfg(test)]
