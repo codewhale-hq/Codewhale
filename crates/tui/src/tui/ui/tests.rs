@@ -10125,6 +10125,7 @@ async fn apply_loaded_session_resets_workspace_runtime_state() {
     if let Ok(mut cell) = old_context_cell.lock() {
         *cell = Some(crate::tui::workspace_context::WorkspaceContextSnapshot {
             notes: Vec::new(),
+            memory_size_hint: None,
             workspace: app.workspace.clone(),
             context: Some("old workspace context".to_string()),
             is_linked_worktree: false,
@@ -20990,6 +20991,7 @@ fn workspace_context_discards_old_workspace_results_and_clears_missing_git() {
     *app.workspace_context_cell.lock().unwrap() =
         Some(crate::tui::workspace_context::WorkspaceContextSnapshot {
             notes: Vec::new(),
+            memory_size_hint: None,
             workspace: app.workspace.join("old-workspace"),
             context: Some("stale | clean".into()),
             is_linked_worktree: false,
@@ -21004,6 +21006,7 @@ fn workspace_context_discards_old_workspace_results_and_clears_missing_git() {
     *app.workspace_context_cell.lock().unwrap() =
         Some(crate::tui::workspace_context::WorkspaceContextSnapshot {
             notes: Vec::new(),
+            memory_size_hint: None,
             workspace: app.workspace.clone(),
             context: None,
             is_linked_worktree: false,
@@ -21024,6 +21027,7 @@ fn workspace_context_drain_requests_redraw_when_context_changes() {
         let mut cell = app.workspace_context_cell.lock().expect("context cell");
         *cell = Some(crate::tui::workspace_context::WorkspaceContextSnapshot {
             notes: Vec::new(),
+            memory_size_hint: None,
             workspace: app.workspace.clone(),
             context: Some("feature/new | clean".to_string()),
             is_linked_worktree: false,

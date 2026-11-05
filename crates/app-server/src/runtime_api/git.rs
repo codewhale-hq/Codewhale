@@ -174,6 +174,19 @@ fn output_tail(run: &GitRun) -> String {
     text
 }
 
+async fn resolve_workspace(workspace: &FsPath, check_repo: bool) -> Result<PathBuf, ApiError> {
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let workspace = canonical_workspace(&workspace)?;
+        if check_repo {
+            require_repo(&workspace)?;
+        }
+        Ok(workspace)
+    })
+    .await
+    .map_err(|_| ApiError::internal("workspace resolution failed"))?
+}
+
 /// A non-repo workspace is a 404, not a 500: `rev-parse --is-inside-work-tree`
 /// exits 128 there, so probe directly rather than through the erroring helper.
 fn require_repo(workspace: &FsPath) -> Result<(), ApiError> {
@@ -1193,8 +1206,7 @@ pub(super) async fn git_diff(
     Query(query): Query<GitDiffQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let path = relative_request_path(&query.path, false)?;
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     let base = selected_diff_base(&workspace, query.base.as_deref()).await?;
     let context = diff_context(query.context)?;
     let path_arg = path.to_string_lossy().into_owned();
@@ -1275,8 +1287,7 @@ pub(super) async fn workspace_diff(
             "limit must be between 1024 and {WORKSPACE_DIFF_MAX_BYTES} bytes"
         )));
     }
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     let base = selected_diff_base(&workspace, query.base.as_deref()).await?;
     let context = diff_context(query.context)?;
 
@@ -1358,8 +1369,7 @@ pub(super) async fn git_graph(
             "limit must be between 1 and {GRAPH_LIMIT_MAX}"
         )));
     }
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     let limit_arg = format!("-n{limit}");
     let format = format!(
         "%H{GRAPH_FIELD}%h{GRAPH_FIELD}%P{GRAPH_FIELD}%an{GRAPH_FIELD}%ae{GRAPH_FIELD}%aI{GRAPH_FIELD}%D{GRAPH_FIELD}%s{GRAPH_RECORD}"
@@ -1831,8 +1841,7 @@ async fn guarded_write(
     args: Vec<String>,
 ) -> Result<Json<Value>, GitWriteError> {
     let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     if !expect.is_empty() {
         let root = workspace.clone();
         tokio::task::spawn_blocking(move || check_preconditions(&root, &expect))
@@ -1989,7 +1998,7 @@ async fn patch_write(
     .await
     .map_err(|_| ApiError::internal("patch staging failed"))?
     .map_err(|error| ApiError::internal(format!("patch staging failed: {error}")))?;
-    let workspace = canonical_workspace(&state.workspace)?;
+    let workspace = resolve_workspace(&state.workspace, false).await?;
     let place = git_read_ok(&workspace, &["rev-parse", "--show-cdup", "--show-prefix"]).await?;
     let mut place = place.lines();
     let (cdup, prefix) = (
@@ -2155,8 +2164,7 @@ pub(super) async fn git_push(
     State(state): State<RuntimeApiState>,
     Json(request): Json<GitPushRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     let args = push_args(&workspace, request.remote.as_deref(), request.set_upstream).await?;
     // Push stays outside the write lock: it crosses the network under a
     // 120 s bound and only moves a remote ref, never the index or worktree.
@@ -2176,8 +2184,7 @@ pub(super) async fn git_branch(
     // Switching rewrites the worktree and index, so it shares the lock with
     // stage/discard/commit.
     let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
-    let workspace = canonical_workspace(&state.workspace)?;
-    require_repo(&workspace)?;
+    let workspace = resolve_workspace(&state.workspace, true).await?;
     state
         .runtime_threads
         .reject_active_turns_in_workspace(&workspace)
