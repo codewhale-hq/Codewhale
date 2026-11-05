@@ -27,6 +27,7 @@ pub(crate) struct WorkspaceContextSnapshot {
     /// The workspace notes (`/note`), read off the render path with the git
     /// context on the same TTL, for the dock's NOTES view.
     pub notes: Vec<String>,
+    pub memory_size_hint: Option<String>,
 }
 
 /// Read the badge from the shared git probe: its cached snapshot while that
@@ -47,7 +48,18 @@ fn collect_snapshot(workspace: &Path, force: bool) -> WorkspaceContextSnapshot {
         is_linked_worktree: current && snap.is_linked_worktree,
         notes: crate::commands::read_notes(workspace, &crate::commands::notes_path(workspace))
             .unwrap_or_default(),
+        memory_size_hint: None,
     }
+}
+
+fn collect_snapshot_with_memory(
+    workspace: &Path,
+    force: bool,
+    memory_path: Option<std::path::PathBuf>,
+) -> WorkspaceContextSnapshot {
+    let mut snapshot = collect_snapshot(workspace, force);
+    snapshot.memory_size_hint = memory_path.as_deref().map(memory_size_hint);
+    snapshot
 }
 
 fn apply_snapshot(app: &mut App, snapshot: WorkspaceContextSnapshot) {
@@ -57,12 +69,14 @@ fn apply_snapshot(app: &mut App, snapshot: WorkspaceContextSnapshot) {
     if app.workspace_context != snapshot.context
         || app.workspace_is_linked_worktree != snapshot.is_linked_worktree
         || app.workspace_notes != snapshot.notes
+        || app.memory_size_hint != snapshot.memory_size_hint
     {
         app.needs_redraw = true;
     }
     app.workspace_context = snapshot.context;
     app.workspace_is_linked_worktree = snapshot.is_linked_worktree;
     app.workspace_notes = snapshot.notes;
+    app.memory_size_hint = snapshot.memory_size_hint;
 }
 
 /// Pull a fresh workspace context from disk if the cached value is
@@ -98,21 +112,15 @@ fn refresh_inner(app: &mut App, now: Instant, allow_refresh: bool, force: bool) 
         return;
     }
 
-    // The Session sidebar shows the memory file's size every frame it is
-    // visible. Stat it here, on the same TTL as the git context, so the draw
-    // closure reads a cached string instead of issuing a syscall per frame
-    // (#3908). Cheap on a local disk; tens of ms on NFS/SSHFS/cloud-synced
-    // home directories, which is exactly where the stutter was reported.
-    refresh_memory_size_hint(app);
-
     // Offload git query to a background thread when a Tokio runtime is
     // available. Fall back to synchronous execution for tests and other
     // non-async contexts (#399 S1).
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         let ctx = app.workspace_context_cell.clone();
         let workspace = app.workspace.clone();
+        let memory_path = app.use_memory.then(|| app.memory_path.clone());
         handle.spawn_blocking(move || {
-            let result = collect_snapshot(&workspace, force);
+            let result = collect_snapshot_with_memory(&workspace, force, memory_path);
             if let Ok(mut guard) = ctx.lock() {
                 *guard = Some(result);
             }
@@ -120,30 +128,19 @@ fn refresh_inner(app: &mut App, now: Instant, allow_refresh: bool, force: bool) 
     } else {
         // No runtime — run synchronously so tests and one-shot callers
         // still get a result immediately.
-        let snapshot = collect_snapshot(&app.workspace, force);
+        let memory_path = app.use_memory.then(|| app.memory_path.clone());
+        let snapshot = collect_snapshot_with_memory(&app.workspace, force, memory_path);
         apply_snapshot(app, snapshot);
     }
     app.workspace_context_refreshed_at = Some(now);
 }
 
-/// Re-read the memory file's size into [`App::memory_size_hint`].
-///
-/// A missing or unreadable file renders as an em dash, matching what the
-/// sidebar showed when it stat-ed inline.
-fn refresh_memory_size_hint(app: &mut App) {
-    let hint = if app.use_memory {
-        Some(
-            std::fs::metadata(&app.memory_path)
-                .map(|meta| format_size(meta.len()))
-                .unwrap_or_else(|_| "\u{2014}".to_string()),
-        )
-    } else {
-        None
-    };
-    if app.memory_size_hint != hint {
-        app.needs_redraw = true;
-        app.memory_size_hint = hint;
-    }
+/// The memory file's size as the sidebar shows it; a missing or unreadable
+/// file renders as an em dash.
+fn memory_size_hint(memory_path: &Path) -> String {
+    std::fs::metadata(memory_path)
+        .map(|meta| format_size(meta.len()))
+        .unwrap_or_else(|_| "\u{2014}".to_string())
 }
 
 /// Human-readable byte size, in the exact shape the sidebar rendered inline.
@@ -278,26 +275,10 @@ mod tests {
         let memory = dir.path().join("MEMORY.md");
         std::fs::write(&memory, vec![b'x'; 2048]).unwrap();
 
-        let mut app = crate::tui::app::App::new(
-            crate::tui::test_support::test_tui_options(dir.path()),
-            &codewhale_runtime::config::Config::default(),
-        );
-        app.use_memory = true;
-        app.memory_path = memory.clone();
+        assert_eq!(memory_size_hint(&memory), "2.0 KB");
 
-        refresh_memory_size_hint(&mut app);
-        assert_eq!(app.memory_size_hint.as_deref(), Some("2.0 KB"));
-
-        // A file that is not there reads the same as one we cannot stat: the
-        // sidebar's original em dash, not a crash or a stale number.
         std::fs::remove_file(&memory).unwrap();
-        refresh_memory_size_hint(&mut app);
-        assert_eq!(app.memory_size_hint.as_deref(), Some("\u{2014}"));
-
-        // Memory off means nothing to show at all.
-        app.use_memory = false;
-        refresh_memory_size_hint(&mut app);
-        assert_eq!(app.memory_size_hint, None);
+        assert_eq!(memory_size_hint(&memory), "\u{2014}");
     }
 
     #[test]

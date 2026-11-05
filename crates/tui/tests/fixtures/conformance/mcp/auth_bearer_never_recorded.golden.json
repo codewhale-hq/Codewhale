@@ -31,6 +31,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_echo"
@@ -42,6 +43,7 @@
           "defer_loading": false,
           "description": "A buggy server: answers 500 and repeats the Authorization header.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_echo_credential"
@@ -53,6 +55,7 @@
           "defer_loading": false,
           "description": "The token stops being accepted mid-session.",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_revoked"

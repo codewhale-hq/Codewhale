@@ -8595,7 +8595,7 @@ async fn plugin_contributed_server_auth_required_names_its_env_credential_not_oa
     let (_, authority) = active_plugin_fixture(&plugin_base);
 
     // A plugin-contributed server whose reviewed environment-backed header is
-    // absent, against an endpoint that 401s without it.
+    // present but rejected by an endpoint that 401s it.
     let mock = OAuthMcpMock::spawn().await;
     let endpoint = mock.url();
     let mut server = mock_oauth_server_config(mock.addr);
@@ -8607,7 +8607,10 @@ async fn plugin_contributed_server_auth_required_names_its_env_credential_not_oa
         ReviewedPluginMcpSource::from_authority(
             authority,
             Some(&endpoint),
-            Arc::new(codewhale_plugins::HostEnvironment::default()),
+            Arc::new(codewhale_plugins::HostEnvironment::from_entries([(
+                std::ffi::OsString::from("CW_TEST_WIKI_PLUGIN_TOKEN"),
+                std::ffi::OsString::from("Bearer stale-plugin-credential"),
+            )])),
         )
         .unwrap(),
     );

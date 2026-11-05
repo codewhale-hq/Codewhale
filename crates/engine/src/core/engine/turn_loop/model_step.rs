@@ -137,13 +137,14 @@ impl Engine {
         if let Err(error) = accounting_source.bind_dispatch(&request_route, &retry_observation) {
             return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(error.to_string())));
         }
-        if self.child_host.is_none() && self.rlm_host.is_none() {
-            if let Err(error) = accounting_source.admit_dispatch(&request_route).await {
-                return PhaseResult::Return((
-                    TurnOutcomeStatus::Failed,
-                    Some(format!("provider source admission failed: {error}")),
-                ));
-            }
+        if self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && let Err(error) = accounting_source.admit_dispatch(&request_route).await
+        {
+            return PhaseResult::Return((
+                TurnOutcomeStatus::Failed,
+                Some(format!("provider source admission failed: {error}")),
+            ));
         }
         let dispatch_observation = retry_observation.clone();
         let mut request_receipt = Some(PendingProviderRequestReceipt {
@@ -181,13 +182,13 @@ impl Engine {
             Err(error) => Some(Err(error)),
             Ok(request) => {
                 rlm_dispatch = request;
-                if let Some(dispatch) = rlm_dispatch.as_mut() {
-                    if let Err(error) = dispatch.bind_dispatch(&dispatch_observation).await {
-                        return PhaseResult::Return((
-                            TurnOutcomeStatus::Failed,
-                            Some(error.to_string()),
-                        ));
-                    }
+                if let Some(dispatch) = rlm_dispatch.as_mut()
+                    && let Err(error) = dispatch.bind_dispatch(&dispatch_observation).await
+                {
+                    return PhaseResult::Return((
+                        TurnOutcomeStatus::Failed,
+                        Some(error.to_string()),
+                    ));
                 }
                 let opening =
                     crate::llm_client::observe_request_retries(Some(retry_observation), async {

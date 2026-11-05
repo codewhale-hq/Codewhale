@@ -99,6 +99,18 @@ impl CapturedRlmCaller {
         }
         let mut captured_context = context.clone();
         captured_context.rlm_caller = None;
+        #[cfg(any(test, feature = "test-support"))]
+        if captured_context.accounting_origin.is_none() {
+            captured_context.accounting_origin = crate::session_manager::default_sessions_dir()
+                .ok()
+                .map(|dir| {
+                    crate::cost_status::NativeUsageOrigin::session(
+                        crate::cost_status::scope_token(),
+                        dir,
+                        captured_context.state_namespace.clone(),
+                    )
+                });
+        }
         let child_accounting = engine
             .child_host
             .as_ref()

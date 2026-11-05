@@ -21,6 +21,7 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(test)]
 use std::process::{Command, Stdio};
+#[cfg(all(test, unix))]
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]
@@ -303,6 +304,7 @@ impl RuntimeBridge {
                 },
                 runtime_thread_id: thread_id.to_string(),
                 turn_id: turn_id.clone(),
+                connection: None,
             };
             if let Err(interrupt) = interrupt_turn_request(&orphan).await {
                 tracing::warn!(
@@ -328,6 +330,7 @@ impl RuntimeBridge {
                     },
                     runtime_thread_id: thread_id.to_string(),
                     turn_id: turn_id.clone(),
+                    connection: None,
                 },
             );
         }
@@ -377,6 +380,7 @@ impl RuntimeBridge {
                 },
                 runtime_thread_id: thread_id.to_string(),
                 turn_id: turn_id.clone(),
+                connection: None,
             };
             if let Err(error) = interrupt_turn_request(&orphan).await {
                 tracing::warn!(
