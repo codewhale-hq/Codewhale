@@ -3112,6 +3112,19 @@ impl SessionManager {
         write().map(Some)
     }
 
+    fn with_session_observation<T>(
+        &self,
+        session_id: &str,
+        observe: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        self.with_session_read_lock(session_id, |path| {
+            if Self::late_usage_is_deleted(path)? {
+                return Ok(None);
+            }
+            observe().map(Some)
+        })
+    }
+
     /// Run an out-of-band rewrite of a session's files (`scrub-secrets`)
     /// under the same per-session lock every save takes, so it cannot
     /// interleave with a save, and while holding the session's live lease, so
@@ -4900,7 +4913,7 @@ impl SessionManager {
             let observation = if admission_held {
                 capture()
             } else {
-                self.with_session_write_admission(id, capture)
+                self.with_session_observation(id, capture)
                     .and_then(|observation| {
                         observation.ok_or_else(Self::retired_session_write_error)
                     })
@@ -5453,7 +5466,7 @@ impl SessionManager {
         let observation = if admission_held {
             capture()
         } else {
-            self.with_session_write_admission(id, capture)
+            self.with_session_observation(id, capture)
                 .and_then(|observation| observation.ok_or_else(Self::retired_session_write_error))
         };
         match observation {
