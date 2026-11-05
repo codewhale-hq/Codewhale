@@ -2025,7 +2025,10 @@ mod recovery {
             first.error
         );
         assert_eq!(first.max_output_tokens, NonZeroU32::new(1500));
-        assert_eq!(first.schema_version, OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION);
+        assert_eq!(
+            first.schema_version,
+            SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION
+        );
         let calls = mock.captured_requests();
         assert_eq!(
             calls.len(),
@@ -21843,10 +21846,8 @@ mod runtime_image_inputs {
             ..Default::default()
         };
         let turn = manager.start_turn(&thread.id, request.clone()).await?;
-        assert_eq!(
-            wait_for_terminal_turn(&manager, &turn.id).await?.status,
-            RuntimeTurnStatus::Completed
-        );
+        let terminal = wait_for_terminal_turn(&manager, &turn.id).await?;
+        assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
         assert_eq!(turn.max_output_tokens, max_output_tokens);
         assert_eq!(
             turn.schema_version,
@@ -21903,7 +21904,7 @@ mod runtime_image_inputs {
         let replayed = reopened.start_turn(&thread.id, request).await?;
         assert_eq!(replayed.id, turn.id);
         assert_eq!(replayed.max_output_tokens, max_output_tokens);
-        assert_eq!(replayed.schema_version, turn.schema_version);
+        assert_eq!(replayed.schema_version, terminal.schema_version);
         assert!(
             reopened.active.lock().await.engines.is_empty(),
             "exact replay needs no provider or Engine"

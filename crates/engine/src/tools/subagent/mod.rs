@@ -1296,6 +1296,19 @@ impl SubAgentAccountingOrigin {
             session_id: context.state_namespace.clone(),
         }
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn test_session_origin(&self) -> Option<crate::cost_status::NativeUsageOrigin> {
+        crate::session_manager::default_sessions_dir()
+            .ok()
+            .map(|dir| {
+                crate::cost_status::NativeUsageOrigin::session(
+                    self.cost_scope,
+                    dir,
+                    self.session_id.clone(),
+                )
+            })
+    }
 }
 
 /// Publish one child provider response into every projection that owns it.
@@ -3225,19 +3238,11 @@ impl SubAgentRuntime {
         // Accounting ownership is fixed here, at dispatch, before any child
         // provider request exists; see `SubAgentAccountingOrigin`.
         let accounting_origin = SubAgentAccountingOrigin::capture(&context);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let context = {
             let mut context = context;
             if context.accounting_origin.is_none() {
-                context.accounting_origin = crate::session_manager::default_sessions_dir()
-                    .ok()
-                    .map(|dir| {
-                        crate::cost_status::NativeUsageOrigin::session(
-                            accounting_origin.cost_scope,
-                            dir,
-                            accounting_origin.session_id.clone(),
-                        )
-                    });
+                context.accounting_origin = accounting_origin.test_session_origin();
             }
             context
         };

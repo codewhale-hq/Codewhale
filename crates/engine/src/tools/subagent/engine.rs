@@ -1165,11 +1165,19 @@ impl ChildJob {
             .fetch_max(logical_step, std::sync::atomic::Ordering::Relaxed);
         self.requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let origin = self.authority.runtime.context.accounting_origin.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let origin = origin.or_else(|| {
+            self.authority
+                .runtime
+                .accounting_origin
+                .test_session_origin()
+        });
         ChildDispatchedRequest {
             accounting_source: crate::cost_status::NativeUsageSource::capture_with_origin(
                 source,
                 crate::cost_status::UsageSpendOwner::Auxiliary,
-                self.authority.runtime.context.accounting_origin.clone(),
+                origin,
             ),
             job: self.clone(),
             route,
