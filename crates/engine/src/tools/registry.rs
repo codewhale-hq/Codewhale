@@ -905,6 +905,8 @@ pub struct AgentToolSurfaceOptions {
     pub vision_config: Option<codewhale_runtime::config::VisionModelConfig>,
     pub speech_output_dir: Option<PathBuf>,
     pub goal_state: Option<SharedGoalState>,
+    pub goal_complete_judge: bool,
+    pub goal_blocked_judge: bool,
     /// Register the agent-callable `verify` self-critique tool (#4196).
     /// Gated by `Feature::Verify` (`[features] verify_tool`), default on.
     pub verify_tool_enabled: bool,
@@ -929,6 +931,8 @@ impl AgentToolSurfaceOptions {
             vision_config: None,
             speech_output_dir: None,
             goal_state: None,
+            goal_complete_judge: false,
+            goal_blocked_judge: false,
             verify_tool_enabled: true,
             user_input_limits: super::user_input::UserInputLimits::default(),
             request_plugin_install_enabled: true,
@@ -1575,6 +1579,8 @@ impl ToolRegistryBuilder {
         let vision_client = client.clone();
         let verify_client = client.clone();
         let verify_model = model.clone();
+        let goal_client = client.clone();
+        let goal_model = model.clone();
         let mut builder = self
             .with_agent_tools_policy(options.shell_policy, options.user_input_limits)
             .with_todo_tool(todo_list)
@@ -1594,7 +1600,18 @@ impl ToolRegistryBuilder {
             builder = builder.with_verify_tool(verify_client, verify_model);
         }
         if let Some(goal_state) = options.goal_state {
-            builder = builder.with_goal_tools(goal_state);
+            let gate = (options.goal_complete_judge || options.goal_blocked_judge)
+                .then_some(goal_client)
+                .flatten()
+                .map(|client| {
+                    Arc::new(super::goal::GoalGate::new(
+                        client,
+                        goal_model,
+                        options.goal_complete_judge,
+                        options.goal_blocked_judge,
+                    ))
+                });
+            builder = builder.with_goal_tools(goal_state, gate);
         }
         if options.apply_patch_enabled {
             builder = builder.with_patch_tools();
@@ -1669,11 +1686,15 @@ impl ToolRegistryBuilder {
 
     /// Include runtime goal tools (`create_goal`, `get_goal`, `update_goal`).
     #[must_use]
-    pub fn with_goal_tools(self, goal_state: super::goal::SharedGoalState) -> Self {
+    pub fn with_goal_tools(
+        self,
+        goal_state: super::goal::SharedGoalState,
+        gate: Option<Arc<super::goal::GoalGate>>,
+    ) -> Self {
         use super::goal::{CreateGoalTool, GetGoalTool, UpdateGoalTool};
         self.with_tool(Arc::new(CreateGoalTool::new(goal_state.clone())))
             .with_tool(Arc::new(GetGoalTool::new(goal_state.clone())))
-            .with_tool(Arc::new(UpdateGoalTool::new(goal_state)))
+            .with_tool(Arc::new(UpdateGoalTool::new(goal_state).with_gate(gate)))
     }
 
     /// Include sub-agent management tools.

@@ -1554,6 +1554,12 @@ continuation_delay_seconds = 300
 # Default: uncapped (0 or absent). Positive values are preserved.
 # This bounds each provider turn, never the number of continuation passes.
 max_steps = 0
+
+# Optional independent judges (#6013). Default: false. When true, one
+# adversarial critique of the claim runs before update_goal completes
+# (complete_judge) or blocks (blocked_judge) the goal.
+complete_judge = false
+blocked_judge = false
 ```
 
 有效延迟上限为 86,400 秒（24 小时）；比每天一次更不频繁的调度，请使用自动化。

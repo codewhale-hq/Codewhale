@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::client::CodewhaleClient;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
 };
@@ -1136,15 +1137,150 @@ impl ToolSpec for GetGoalTool {
     }
 }
 
+enum GoalGateVerdict {
+    Accept,
+    Reject(Vec<String>),
+    Inconclusive(&'static str),
+}
+
+/// Independent judge for `update_goal` complete/blocked claims, reusing the
+/// `verify` critic. Known limitation: the judge sees only the contract text
+/// (objective, evidence, receipt), not the transcript or the diff, so it
+/// cannot detect a fabricated evidence string.
+pub struct GoalGate {
+    client: CodewhaleClient,
+    model: String,
+    complete: bool,
+    blocked: bool,
+}
+
+impl GoalGate {
+    #[must_use]
+    pub fn new(client: CodewhaleClient, model: String, complete: bool, blocked: bool) -> Self {
+        Self {
+            client,
+            model,
+            complete,
+            blocked,
+        }
+    }
+
+    fn covers(&self, status: &str) -> bool {
+        match status {
+            "complete" => self.complete,
+            "blocked" => self.blocked,
+            _ => false,
+        }
+    }
+
+    async fn judge(
+        &self,
+        claim: String,
+        objective: String,
+        context: &ToolContext,
+    ) -> GoalGateVerdict {
+        match super::verify::judge_claim(
+            &self.client,
+            &self.model,
+            claim,
+            objective,
+            context.accounting_origin.clone(),
+        )
+        .await
+        {
+            Err(error) => {
+                tracing::warn!("goal judge call failed: {error}");
+                GoalGateVerdict::Inconclusive("the judge call failed")
+            }
+            Ok(report) => match report.verdict.as_str() {
+                "upheld" if !report.unresolved_risk => GoalGateVerdict::Accept,
+                "upheld" => GoalGateVerdict::Inconclusive("unresolved risk remains"),
+                "refuted" => {
+                    let mut gaps: Vec<String> = report
+                        .findings
+                        .iter()
+                        .map(|finding| finding.issue.trim().to_string())
+                        .filter(|issue| !issue.is_empty())
+                        .collect();
+                    if gaps.is_empty() {
+                        gaps.push(format!(
+                            "independent judge refuted the claim: {}",
+                            report.summary
+                        ));
+                    }
+                    GoalGateVerdict::Reject(gaps)
+                }
+                _ => GoalGateVerdict::Inconclusive("the verdict was uncertain"),
+            },
+        }
+    }
+}
+
 pub struct UpdateGoalTool {
     goal_state: SharedGoalState,
+    gate: Option<Arc<GoalGate>>,
 }
 
 impl UpdateGoalTool {
     #[must_use]
     pub fn new(goal_state: SharedGoalState) -> Self {
-        Self { goal_state }
+        Self {
+            goal_state,
+            gate: None,
+        }
     }
+
+    #[must_use]
+    pub fn with_gate(mut self, gate: Option<Arc<GoalGate>>) -> Self {
+        self.gate = gate;
+        self
+    }
+}
+
+fn parse_complete_inputs(input: &Value) -> Result<(String, GoalCompletionVerification), ToolError> {
+    let evidence = input
+        .get("evidence")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if evidence.is_empty() {
+        return Err(ToolError::invalid_input(
+            "evidence is required when status is complete",
+        ));
+    }
+    Ok((evidence, parse_completion_verification(input)?))
+}
+
+fn parse_blocker_input(input: &Value) -> Result<String, ToolError> {
+    let blocker = input
+        .get("blocker")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if blocker.is_empty() {
+        return Err(ToolError::invalid_input(
+            "blocker is required when status is blocked",
+        ));
+    }
+    Ok(blocker)
+}
+
+fn judge_rejection(
+    state: &mut GoalState,
+    summary: String,
+    gaps: Vec<String>,
+) -> Result<(), ToolError> {
+    state
+        .record_not_achieved(GoalProgressVerification {
+            status: "not_achieved".to_string(),
+            check: "independent goal judge".to_string(),
+            summary,
+            role: GoalReviewRole::Critical,
+            gaps,
+        })
+        .map_err(ToolError::invalid_input)
 }
 
 #[async_trait]
@@ -1154,6 +1290,16 @@ impl ToolSpec for UpdateGoalTool {
     }
 
     fn description(&self) -> &'static str {
+        if self
+            .gate
+            .as_ref()
+            .is_some_and(|gate| gate.complete || gate.blocked)
+        {
+            return concat!(
+                "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress cannot continue at all; needing the user's answer is a yield, not a block. Mark yield when you finished a stage and the next step needs the user's decision, or when you need the user's answer before the next pass can do anything useful: the goal stays unfinished, the turn ends, and their next message resumes it.",
+                " An independent judge reviews complete and blocked claims; it may decline them and return the gaps, and the goal then stays active."
+            );
+        }
         "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress cannot continue at all; needing the user's answer is a yield, not a block. Mark yield when you finished a stage and the next step needs the user's decision, or when you need the user's answer before the next pass can do anything useful: the goal stays unfinished, the turn ends, and their next message resumes it."
     }
 
@@ -1267,6 +1413,37 @@ impl ToolSpec for UpdateGoalTool {
                 "progress is only accepted with status not_achieved, advisory or yield",
             ));
         }
+        let judged = match self.gate.as_ref().filter(|gate| gate.covers(&status)) {
+            Some(gate) => {
+                let current = {
+                    let state = lock_goal_state(&self.goal_state)?;
+                    state
+                        .is_active()
+                        .then(|| (state.goal_id.clone(), state.objective.clone()))
+                };
+                match current {
+                    Some((goal_id, Some(objective))) => {
+                        let claim = if status == "complete" {
+                            let (evidence, verification) = parse_complete_inputs(&input)?;
+                            format!(
+                                "The goal is complete.\nEvidence: {evidence}\nVerification receipt: status={}; check={}; summary={}",
+                                verification.status, verification.check, verification.summary
+                            )
+                        } else {
+                            format!(
+                                "No further progress is possible by the agent: {}",
+                                parse_blocker_input(&input)?
+                            )
+                        };
+                        let verdict = gate.judge(claim, objective.clone(), context).await;
+                        Some((goal_id, objective, verdict))
+                    }
+                    _ => None,
+                }
+            }
+            None => None,
+        };
+        let mut notice: Option<String> = None;
         let snapshot = {
             let mut state = lock_goal_state(&self.goal_state)?;
             // #6542: with no goal there is nothing to update. Say so as a
@@ -1278,39 +1455,81 @@ impl ToolSpec for UpdateGoalTool {
                      asked for a tracked goal."
                 )));
             }
+            let verdict = match judged {
+                Some((goal_id, objective, verdict)) => {
+                    if state.goal_id != goal_id
+                        || state.objective.as_deref() != Some(objective.as_str())
+                        || !state.is_active()
+                    {
+                        return Ok(ToolResult::success(
+                            "The goal changed while the independent judge ran; nothing was applied."
+                                .to_string(),
+                        ));
+                    }
+                    Some(verdict)
+                }
+                None => None,
+            };
             match status.as_str() {
                 "complete" => {
-                    let evidence = input
-                        .get("evidence")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .unwrap_or_default()
-                        .to_string();
-                    if evidence.is_empty() {
-                        return Err(ToolError::invalid_input(
-                            "evidence is required when status is complete",
-                        ));
+                    let (evidence, verification) = parse_complete_inputs(&input)?;
+                    match verdict {
+                        None | Some(GoalGateVerdict::Accept) => state
+                            .mark_complete(evidence, verification)
+                            .map_err(ToolError::invalid_input)?,
+                        Some(rejected) => {
+                            let (summary, gaps) = match rejected {
+                                GoalGateVerdict::Reject(gaps) => (
+                                    "the independent judge refuted the completion claim"
+                                        .to_string(),
+                                    gaps,
+                                ),
+                                GoalGateVerdict::Inconclusive(reason) => (
+                                    format!(
+                                        "the independent judge gave no usable verdict: {reason}"
+                                    ),
+                                    vec![format!(
+                                        "independent completion judge returned no usable verdict: {reason}"
+                                    )],
+                                ),
+                                GoalGateVerdict::Accept => unreachable!(),
+                            };
+                            notice = Some(format!(
+                                "Completion was not accepted: {summary}. Remaining gaps: {}. The goal stays active.",
+                                gaps.join("; ")
+                            ));
+                            judge_rejection(&mut state, summary, gaps)?;
+                        }
                     }
-                    let verification = parse_completion_verification(&input)?;
-                    state
-                        .mark_complete(evidence, verification)
-                        .map_err(ToolError::invalid_input)?;
                 }
                 "blocked" => {
-                    let blocker = input
-                        .get("blocker")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .unwrap_or_default()
-                        .to_string();
-                    if blocker.is_empty() {
-                        return Err(ToolError::invalid_input(
-                            "blocker is required when status is blocked",
-                        ));
+                    let blocker = parse_blocker_input(&input)?;
+                    match verdict {
+                        None | Some(GoalGateVerdict::Accept) => state
+                            .mark_blocked(blocker)
+                            .map_err(ToolError::invalid_input)?,
+                        Some(GoalGateVerdict::Reject(gaps)) => {
+                            let gaps = gaps
+                                .into_iter()
+                                .map(|gap| format!("blocker is not genuine: {gap}"))
+                                .collect::<Vec<_>>();
+                            notice = Some(format!(
+                                "The block was not accepted by the independent judge: {}. The goal stays active.",
+                                gaps.join("; ")
+                            ));
+                            judge_rejection(
+                                &mut state,
+                                "the independent judge refuted the blocker".to_string(),
+                                gaps,
+                            )?;
+                        }
+                        Some(GoalGateVerdict::Inconclusive(reason)) => {
+                            state.mark_yielded().map_err(ToolError::invalid_input)?;
+                            notice = Some(format!(
+                                "The independent judge could not verify the block ({reason}); the goal is handed back as needing your input."
+                            ));
+                        }
                     }
-                    state
-                        .mark_blocked(blocker)
-                        .map_err(ToolError::invalid_input)?;
                 }
                 "not_achieved" => {
                     let verification = parse_progress_verification(&input)?;
@@ -1354,7 +1573,11 @@ impl ToolSpec for UpdateGoalTool {
             }
             state.snapshot()
         };
-        json_result(&snapshot)
+        match notice {
+            Some(notice) => ToolResult::json(&json!({ "notice": notice, "goal": snapshot }))
+                .map_err(|err| ToolError::execution_failed(err.to_string())),
+            None => json_result(&snapshot),
+        }
     }
 }
 
