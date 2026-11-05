@@ -12764,9 +12764,9 @@ fn create_isolated_worktree_reports_friendly_error_when_no_repo_found() {
     let harness = tempdir().expect("harness");
     // Keep the probe more than `git_repo_root`'s parent-search limit below
     // the temporary root. Containerized CI commonly checks the repository out
-    // at `/workspace`; a shallow `/tmp` fixture can otherwise reach `/` and
-    // correctly discover that sibling checkout instead of exercising the
-    // no-repository path.
+    // at `/workspace`; ancestors no longer adopt lone child checkouts, but
+    // keeping the walk inside the temp region means the test never depends on
+    // whatever other checkouts share its ancestry.
     let no_repo = harness
         .path()
         .join("not-a-repo")
@@ -12815,6 +12815,68 @@ fn create_isolated_worktree_rejects_ambiguous_nested_repos() {
     assert!(
         message.contains("Multiple git repositories found"),
         "expected ambiguity diagnostic, got: {message}"
+    );
+}
+
+#[test]
+fn create_isolated_worktree_ignores_unrelated_repos_above_the_workspace() {
+    // Incident shape: the workspace is not itself a repository and sits a few
+    // levels below a directory that holds unrelated checkouts. Scanning the
+    // children of every ancestor made the walk reach that directory and
+    // report the user's other projects as "multiple repositories" even
+    // though none of them contains the workspace.
+    let harness = tempdir().expect("harness");
+    for name in ["RepoA", "RepoB"] {
+        let sibling = harness.path().join(name);
+        std::fs::create_dir_all(&sibling).expect("sibling dir");
+        init_git_repo_at(&sibling);
+    }
+    let workspace = harness
+        .path()
+        .join("a")
+        .join("b")
+        .join("c")
+        .join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    let worktree_home = tempdir().expect("worktree home");
+    let request = SubAgentWorktreeRequest {
+        branch: Some("codex/agent-ancestor-scan".to_string()),
+        path: Some(worktree_home.path().join("isolated")),
+        base_ref: None,
+    };
+
+    let err = create_isolated_worktree(&workspace, &request, None, &FleetRole::Worker)
+        .expect_err("no repository contains the workspace");
+
+    let message = err.to_string();
+    assert!(
+        !message.contains("Multiple git repositories"),
+        "ancestor directories must not adopt their children's repositories, got: {message}"
+    );
+    assert!(
+        message.contains("requires a git repository") && message.contains("Tried:"),
+        "expected friendly no-repository error, got: {message}"
+    );
+    // The walk must actually reach the ancestor holding the sibling
+    // repositories. A substring check cannot prove that: every tried path
+    // starts with the harness root, so it would match even if a shrunken
+    // parent-search limit stopped the walk short of the harness root and the
+    // test passed without ever scanning their children. Require the harness
+    // root as an exact entry of the "Tried:" list instead (mirrors
+    // git_repo_root_reports_attempted_paths_when_no_repo_found).
+    let harness_root = harness
+        .path()
+        .canonicalize()
+        .expect("canonical harness root")
+        .to_string_lossy()
+        .into_owned();
+    let tried = message
+        .split_once("Tried: ")
+        .expect("friendly error should list attempted paths")
+        .1;
+    assert!(
+        tried.split(", ").any(|path| path == harness_root),
+        "walk should reach the ancestor holding the sibling repos, got: {message}"
     );
 }
 
