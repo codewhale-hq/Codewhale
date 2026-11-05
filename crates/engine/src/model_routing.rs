@@ -3977,7 +3977,12 @@ mod decision_router_tests {
                     .as_ref()
                     .unwrap()
                     .coverage,
-                crate::llm_client::ProviderUsageCoverage::Rejected
+                if matches!(status, 402 | 500) {
+                    crate::llm_client::ProviderUsageCoverage::Missing
+                } else {
+                    crate::llm_client::ProviderUsageCoverage::Rejected
+                },
+                "status {status}"
             );
         }
     }

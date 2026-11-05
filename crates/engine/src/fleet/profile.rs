@@ -70,6 +70,218 @@ pub fn agent_profile_dir_for_scope(scope: FleetProfileScope, workspace: &Path) -
     }
 }
 
+pub const MAX_PROFILE_DOCUMENT_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Profile source changed; reopen {} before saving", path.display())]
+pub struct AgentProfileWriteConflict {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Profile {id} is already defined in {}", path.display())]
+pub struct AgentProfileIdentityConflict {
+    pub id: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Profile save outcome is unconfirmed for {}; read the file before saving again: {source}", path.display())]
+pub struct AgentProfileWriteUnconfirmed {
+    pub path: PathBuf,
+    #[source]
+    source: std::io::Error,
+}
+
+fn profile_document_location(
+    scope: FleetProfileScope,
+    workspace: &Path,
+    path: &Path,
+) -> Result<(PathBuf, PathBuf)> {
+    let directory = agent_profile_dir_for_scope(scope, workspace)?;
+    let root = match scope {
+        FleetProfileScope::Project => workspace.to_path_buf(),
+        FleetProfileScope::Personal => directory
+            .parent()
+            .context("Personal profile directory has no state root")?
+            .to_path_buf(),
+    };
+    anyhow::ensure!(
+        root.is_absolute()
+            && path.parent() == Some(directory.as_path())
+            && path.extension().and_then(|value| value.to_str()) == Some("toml"),
+        "Profile source is outside its selected directory"
+    );
+    let relative = path.strip_prefix(&root)?.to_path_buf();
+    anyhow::ensure!(
+        codewhale_util::files::path_is_confined(&relative),
+        "Profile source is outside its selected directory"
+    );
+    Ok((root, relative))
+}
+
+fn read_profile_document_file(
+    file: &codewhale_util::files::WorkspaceFile,
+) -> Result<Option<String>> {
+    use std::io::Read as _;
+    let handle = match file.open_file_shared() {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut raw = String::new();
+    handle
+        .take((MAX_PROFILE_DOCUMENT_BYTES + 1) as u64)
+        .read_to_string(&mut raw)?;
+    anyhow::ensure!(
+        raw.len() <= MAX_PROFILE_DOCUMENT_BYTES,
+        "Profile document exceeds the one MiB editing limit"
+    );
+    Ok(Some(raw))
+}
+
+pub fn read_agent_profile_document(
+    scope: FleetProfileScope,
+    workspace: &Path,
+    path: &Path,
+) -> Result<Option<String>> {
+    let (root, relative) = profile_document_location(scope, workspace, path)?;
+    read_profile_document_at(&root, &relative)
+}
+
+fn read_profile_document_at(root: &Path, relative: &Path) -> Result<Option<String>> {
+    let file = match codewhale_util::files::WorkspaceFile::open(root, relative, false) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    read_profile_document_file(&file)
+}
+
+pub fn read_agent_profile_source_document(
+    scope: FleetProfileScope,
+    workspace: &Path,
+    path: &Path,
+) -> Result<Option<String>> {
+    let directory = agent_profile_dir_for_scope(scope, workspace)?;
+    if path.parent() == Some(directory.as_path()) {
+        return read_agent_profile_document(scope, workspace, path);
+    }
+    let root = match scope {
+        FleetProfileScope::Project => workspace.to_path_buf(),
+        FleetProfileScope::Personal => directory
+            .parent()
+            .context("Personal profile directory has no state root")?
+            .to_path_buf(),
+    };
+    let fleet_directory = match scope {
+        FleetProfileScope::Project => root.join(".codewhale").join(super::store::FLEET_DIR),
+        FleetProfileScope::Personal => root.join(super::store::FLEET_DIR),
+    };
+    anyhow::ensure!(
+        root.is_absolute()
+            && path.parent() == Some(fleet_directory.as_path())
+            && path.extension().and_then(|value| value.to_str()) == Some("toml"),
+        "Profile source is outside its selected directory"
+    );
+    let relative = path.strip_prefix(&root)?;
+    anyhow::ensure!(
+        codewhale_util::files::path_is_confined(relative),
+        "Profile source is outside its selected directory"
+    );
+    read_profile_document_at(&root, relative)
+}
+
+pub fn save_agent_profile_document(
+    scope: FleetProfileScope,
+    workspace: &Path,
+    path: &Path,
+    expected: Option<&str>,
+    id: &str,
+    text: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        text.len() <= MAX_PROFILE_DOCUMENT_BYTES,
+        "Profile document exceeds the one MiB editing limit"
+    );
+    anyhow::ensure!(
+        scope != FleetProfileScope::Project || super::roster::project_agent_profiles_enabled(),
+        "Project profiles are disabled for this launch"
+    );
+    let (root, relative) = profile_document_location(scope, workspace, path)?;
+    let file = match scope {
+        FleetProfileScope::Project => {
+            codewhale_util::files::WorkspaceFile::open_shared(&root, &relative, true)?
+        }
+        FleetProfileScope::Personal => {
+            codewhale_util::files::WorkspaceFile::open(&root, &relative, true)?
+        }
+    };
+    let lock_relative = relative
+        .parent()
+        .context("Profile source has no directory")?
+        .join(".codewhale-profile-write.lock");
+    let lock_entry = file.sibling(".codewhale-profile-write.lock")?;
+    let lock_file = lock_entry.open_update(true, false)?;
+    codewhale_config::private_directory::tighten_mode_of(
+        &lock_file,
+        &root.join(&lock_relative),
+        0o600,
+    )?;
+    let mut lock = fd_lock::RwLock::new(lock_file);
+    let guard = lock.write()?;
+    anyhow::ensure!(
+        codewhale_util::files::same_file(
+            &guard,
+            &codewhale_util::files::WorkspaceFile::open(&root, &lock_relative, false)?
+                .open_file()?,
+        )?,
+        "Profile write lock changed; reopen the source"
+    );
+    let current = read_profile_document_file(&file)?;
+    if current.as_deref() != expected {
+        return Err(AgentProfileWriteConflict {
+            path: path.to_path_buf(),
+        }
+        .into());
+    }
+    let profile = parse_agent_profile_text(path, text)?;
+    anyhow::ensure!(
+        profile.id == id,
+        "Profile identity changed; reopen the source"
+    );
+    let identities = match scope {
+        FleetProfileScope::Project => load_workspace_agent_profile_identities(workspace)?,
+        FleetProfileScope::Personal => load_agent_profile_identities_from_dir(
+            path.parent().context("Profile source has no directory")?,
+        )?,
+    };
+    if let Some(other) = identities
+        .into_iter()
+        .find(|other| other.id.eq_ignore_ascii_case(id) && other.source != path)
+    {
+        return Err(AgentProfileIdentityConflict {
+            id: id.to_owned(),
+            path: other.source,
+        }
+        .into());
+    }
+    anyhow::ensure!(
+        codewhale_util::files::same_file(
+            &guard,
+            &codewhale_util::files::WorkspaceFile::open(&root, &lock_relative, false)?
+                .open_file()?,
+        )?,
+        "Profile write lock changed; reopen the source"
+    );
+    file.replace(text.as_bytes())
+        .map_err(|source| AgentProfileWriteUnconfirmed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentProfile {
     pub id: String,
@@ -661,7 +873,11 @@ fn load_agent_profile_identity_file(
 fn load_agent_profile_file(root: Option<&Path>, path: &Path) -> Result<AgentProfile> {
     let raw = read_profile_text(root, path)
         .with_context(|| format!("reading agent profile {}", path.display()))?;
-    let parsed: AgentProfileToml = toml::from_str(&raw)
+    parse_agent_profile_text(path, &raw)
+}
+
+pub fn parse_agent_profile_text(path: &Path, raw: &str) -> Result<AgentProfile> {
+    let parsed: AgentProfileToml = toml::from_str(raw)
         .map_err(|err| anyhow!("parsing agent profile {}: {err}", path.display()))?;
     agent_profile_from_toml(path, parsed)
 }

@@ -285,6 +285,10 @@
           "type": "boolean",
           "default": false
         },
+        "thread_scoped_reads": {
+          "type": "boolean",
+          "default": false
+        },
         "thread_shell_consent": {
           "type": "boolean",
           "description": "Explicit per-thread shell opt-in is checked against loaded policy and\ncannot broaden a conversation while it has an active turn.",
@@ -449,6 +453,7 @@
         "thread_create_idempotency",
         "thread_idle_precondition",
         "thread_patch_undo_turn_id",
+        "thread_scoped_reads",
         "thread_shell_consent",
         "turns",
         "turn_operation_idempotency",
@@ -486,6 +491,59 @@
         "event_stream_resume"
       ],
       "description": "Fixed capability map advertised by `GET /v1/runtime/info`.\n\nAll fields are required on serialization so clients can rely on the shape."
+    },
+    "FleetProfileDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/FleetProfileDocumentKind"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "writable": {
+          "type": "boolean"
+        },
+        "refusal_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "origin",
+        "path",
+        "text",
+        "revision",
+        "writable",
+        "refusal_reason"
+      ]
+    },
+    "FleetProfileDocumentKind": {
+      "type": "string",
+      "enum": [
+        "profile",
+        "fleet"
+      ]
     },
     "RuntimeExperimentalCapabilities": {
       "type": "object",

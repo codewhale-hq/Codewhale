@@ -472,7 +472,7 @@ mod tests {
             "billed usage must still be charged"
         );
         assert_eq!(result.routed_usage.len(), 1);
-        assert_eq!(result.routed_usage[0].usage.usage, expected_usage);
+        assert_eq!(result.routed_usage[0].usage.usage, usage);
         assert_eq!(result.routed_usage_dropped_records, 0);
         assert_eq!(mock.call_count(), 1, "truncation must not retry");
         assert!(
@@ -513,14 +513,24 @@ mod tests {
         .await;
 
         assert_eq!(result.termination, RlmTermination::Error);
-        assert_eq!(result.usage, Usage::default());
-        assert!(result.routed_usage.is_empty());
-        assert_eq!(result.routed_usage_drop_records.len(), 1);
-        assert_eq!(result.routed_usage_dropped_records, 1);
+        assert_eq!(result.usage.input_tokens, 0);
+        assert_eq!(result.usage.output_tokens, 0);
+        assert_eq!(result.routed_usage.len(), 1);
+        let revision = result.routed_usage[0]
+            .settlement
+            .as_ref()
+            .expect("settled missing-usage receipt");
         assert_eq!(
-            result.routed_usage_drop_records[0].route.model,
-            "root-model"
+            revision.coverage,
+            crate::llm_client::ProviderUsageCoverage::Missing
         );
+        assert_eq!(
+            revision.reason,
+            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
+        );
+        assert!(result.routed_usage_drop_records.is_empty());
+        assert_eq!(result.routed_usage_dropped_records, 0);
+        assert_eq!(result.routed_usage[0].usage.route.model, "root-model");
     }
 
     fn text_response(text: &str) -> MessageResponse {
@@ -718,11 +728,29 @@ mod tests {
             );
             let mut expected_usage = text_response(partial).usage;
             expected_usage.request_usages = vec![text_response(partial).usage];
+            if pending_model {
+                expected_usage.request_usages.push(Usage::default());
+            }
             assert_eq!(result.usage, expected_usage);
             assert_eq!(client.0.call_count(), 1);
             let snapshot = usage.snapshot().await;
-            assert_eq!(snapshot.records.len(), 1, "keep completed usage");
-            assert_eq!(snapshot.dropped_records, u64::from(pending_model));
+            assert_eq!(
+                snapshot.records.len(),
+                1 + usize::from(pending_model),
+                "keep completed usage and the unknown pending request"
+            );
+            assert_eq!(snapshot.dropped_records, 0);
+            assert!(snapshot.drop_records.is_empty());
+            if pending_model {
+                let revision = snapshot.records[1]
+                    .settlement
+                    .as_ref()
+                    .expect("pending request keeps a settled receipt");
+                assert_eq!(
+                    revision.coverage,
+                    crate::llm_client::ProviderUsageCoverage::Missing
+                );
+            }
             if pending_model {
                 assert_eq!(result.trace.len(), 1, "keep completed rounds");
                 assert!(!result.trace[0].had_error);
@@ -813,7 +841,20 @@ mod tests {
         );
         assert_eq!(client.0.call_count(), 0, "no scripted response completed");
         let snapshot = usage.snapshot().await;
-        assert_eq!(snapshot.dropped_records, 1, "one pending admitted request");
+        assert_eq!(snapshot.records.len(), 1, "one pending admitted request");
+        let revision = snapshot.records[0]
+            .settlement
+            .as_ref()
+            .expect("pending request keeps a settled receipt");
+        assert_eq!(
+            revision.coverage,
+            crate::llm_client::ProviderUsageCoverage::Missing
+        );
+        assert_eq!(
+            revision.reason,
+            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
+        );
+        assert_eq!(snapshot.dropped_records, 0);
         assert_eq!(
             snapshot
                 .nested_events
