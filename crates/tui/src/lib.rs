@@ -14569,6 +14569,8 @@ async fn build_direct_workflow_tool(
         .flatten();
     surface.speech_output_dir = config.speech_output_dir();
     surface.goal_state = Some(new_shared_goal_state());
+    surface.goal_complete_judge = config.goal_complete_judge();
+    surface.goal_blocked_judge = config.goal_blocked_judge();
 
     let client = CodewhaleClient::new(config)?;
     // A FIXED model with `reasoning_effort = auto` (the shape a Fleet worker

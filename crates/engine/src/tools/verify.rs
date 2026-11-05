@@ -519,6 +519,49 @@ self-check of whether what you just did is actually correct and complete."
     }
 }
 
+pub(crate) async fn judge_claim(
+    client: &CodewhaleClient,
+    model: &str,
+    claim: String,
+    requirement: String,
+    origin: Option<crate::cost_status::NativeUsageOrigin>,
+) -> Result<CritiqueReport, ToolError> {
+    #[cfg(not(any(test, feature = "test-support")))]
+    if origin.is_none() {
+        return Err(ToolError::execution_failed(
+            "judge has no admitted usage origin".to_string(),
+        ));
+    }
+    let route = client.effective_route_envelope(model, chrono::Utc::now());
+    let max_tokens = client.effective_max_output_tokens(&route.model);
+    let input = CritiqueInput {
+        claim,
+        requirement: Some(requirement),
+        focus: None,
+        evidence: Vec::new(),
+        no_code_evidence: true,
+    };
+    let run = VERIFY_ACTIVE
+        .scope(
+            (),
+            run_critique(
+                client,
+                model,
+                ReasoningEffort::Max,
+                max_tokens,
+                &input,
+                origin,
+            ),
+        )
+        .await?;
+    if let Some(reason) = run.incomplete_stop_reason {
+        return Err(ToolError::execution_failed(format!(
+            "judge response incomplete: provider stop reason `{reason}`"
+        )));
+    }
+    Ok(run.report)
+}
+
 /// Run one adversarial critic pass. Generic over [`LlmClient`] so tests can
 /// drive it with `MockLlmClient` without a network call.
 async fn run_critique<C: LlmClient>(

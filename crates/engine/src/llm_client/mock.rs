@@ -54,7 +54,7 @@ use codewhale_models::{
     ContentBlock, MessageDelta, MessageRequest, MessageResponse, StreamEvent, Usage,
 };
 
-use super::{LlmClient, StreamEventBox};
+use super::{LlmClient, RequestTransmission, StreamEventBox};
 #[cfg(test)]
 use codewhale_models::Role;
 
@@ -252,6 +252,7 @@ impl LlmClient for MockLlmClient {
 
     async fn create_message(&self, request: MessageRequest) -> Result<MessageResponse> {
         self.record_request(&request);
+        record_transmission();
 
         if let Some(canned) = self.pop_message() {
             return Ok(canned);
@@ -271,6 +272,7 @@ impl LlmClient for MockLlmClient {
 
     async fn create_message_stream(&self, request: MessageRequest) -> Result<StreamEventBox> {
         self.record_request(&request);
+        record_transmission();
 
         let Some(step) = self.pop_step() else {
             return Err(anyhow!(
@@ -285,6 +287,12 @@ impl LlmClient for MockLlmClient {
 
     async fn health_check(&self) -> Result<bool> {
         Ok(true)
+    }
+}
+
+fn record_transmission() {
+    if let Some((wire, source)) = super::begin_outbound_transmission(&reqwest::Method::POST) {
+        wire.settle_transmission(&source, RequestTransmission::OutcomeUnknown, Some(200));
     }
 }
 

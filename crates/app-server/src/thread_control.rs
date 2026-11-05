@@ -379,6 +379,236 @@ pub(super) async fn loaded(state: &AppState) -> Result<ThreadResponse> {
     Ok(result)
 }
 
+fn wire_thread(thread: Thread) -> codewhale_app_server_protocol::rpc::ThreadListItem {
+    use codewhale_app_server_protocol::rpc::{ThreadListItem, ThreadListSource, ThreadListStatus};
+    ThreadListItem {
+        session_id: thread.id.clone(),
+        id: thread.id,
+        preview: thread.preview,
+        ephemeral: thread.ephemeral,
+        model_provider: thread.model_provider,
+        created_at: thread.created_at,
+        updated_at: thread.updated_at,
+        status: match thread.status {
+            ThreadStatus::Running => ThreadListStatus::Active {
+                active_flags: Vec::new(),
+            },
+            ThreadStatus::Idle | ThreadStatus::Completed | ThreadStatus::Paused => {
+                ThreadListStatus::Idle
+            }
+            ThreadStatus::Archived => ThreadListStatus::NotLoaded,
+            ThreadStatus::Failed => ThreadListStatus::SystemError,
+        },
+        cwd: thread.cwd.to_string_lossy().into_owned(),
+        cli_version: thread.cli_version,
+        source: match thread.source {
+            SessionSource::Interactive => ThreadListSource::Cli,
+            SessionSource::Api => ThreadListSource::AppServer,
+            SessionSource::Resume | SessionSource::Fork | SessionSource::Unknown => {
+                ThreadListSource::Unknown
+            }
+        },
+        project_id: None,
+        turns: Vec::new(),
+        name: thread.name,
+    }
+}
+
+pub(super) fn list_wire(
+    response: ThreadResponse,
+) -> codewhale_app_server_protocol::rpc::ThreadListResponse {
+    codewhale_app_server_protocol::rpc::ThreadListResponse {
+        data: response.threads.into_iter().map(wire_thread).collect(),
+        next_cursor: None,
+        backwards_cursor: None,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct WireTurnRow {
+    id: String,
+    status: String,
+    started_at: Option<chrono::DateTime<chrono::Utc>>,
+    ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    duration_ms: Option<u64>,
+    error: Option<String>,
+    #[serde(default)]
+    item_ids: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct WireItemRow {
+    id: String,
+    turn_id: String,
+    kind: String,
+    summary: String,
+    detail: Option<String>,
+}
+
+fn wire_turns(data: &Value) -> Result<Vec<codewhale_app_server_protocol::rpc::ThreadTurn>> {
+    use codewhale_app_server_protocol::rpc::{
+        ThreadTurn, ThreadTurnError, ThreadTurnItem, ThreadTurnItemsView, ThreadTurnStatus,
+        ThreadUserInput,
+    };
+    let turns: Vec<WireTurnRow> =
+        serde_json::from_value(data.get("turns").cloned().unwrap_or(Value::Null))
+            .context("canonical turn records are malformed")?;
+    let items: Vec<WireItemRow> =
+        serde_json::from_value(data.get("items").cloned().unwrap_or(Value::Null))
+            .context("canonical item records are malformed")?;
+    anyhow::ensure!(
+        turns.len() <= MAX_CANONICAL_HISTORY_ENTRIES
+            && items.len() <= MAX_CANONICAL_HISTORY_ENTRIES,
+        "canonical turn history exceeds bound"
+    );
+    turns
+        .into_iter()
+        .map(|turn| {
+            let mut own: Vec<&WireItemRow> = items
+                .iter()
+                .filter(|item| item.turn_id == turn.id)
+                .collect();
+            own.sort_by_key(|item| {
+                turn.item_ids
+                    .iter()
+                    .position(|id| *id == item.id)
+                    .unwrap_or(usize::MAX)
+            });
+            let mut complete = true;
+            let mut mapped = Vec::with_capacity(own.len());
+            for item in own {
+                let text = item.detail.clone().unwrap_or_else(|| item.summary.clone());
+                let id = item.id.clone();
+                match item.kind.as_str() {
+                    "user_message" => mapped.push(ThreadTurnItem::UserMessage {
+                        id,
+                        content: if text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![ThreadUserInput::Text { text }]
+                        },
+                    }),
+                    "agent_message" => mapped.push(ThreadTurnItem::AgentMessage { id, text }),
+                    "agent_reasoning" => mapped.push(ThreadTurnItem::Reasoning {
+                        id,
+                        content: item.detail.iter().cloned().collect(),
+                    }),
+                    "context_compaction" => mapped.push(ThreadTurnItem::ContextCompaction { id }),
+                    _ => complete = false,
+                }
+            }
+            Ok(ThreadTurn {
+                id: turn.id,
+                items: mapped,
+                items_view: if complete {
+                    ThreadTurnItemsView::Full
+                } else {
+                    ThreadTurnItemsView::Summary
+                },
+                status: match turn.status.as_str() {
+                    "completed" => ThreadTurnStatus::Completed,
+                    "failed" => ThreadTurnStatus::Failed,
+                    "interrupted" | "canceled" => ThreadTurnStatus::Interrupted,
+                    "queued" | "in_progress" => ThreadTurnStatus::InProgress,
+                    other => bail!("unknown canonical turn status {other}"),
+                },
+                error: turn.error.map(|message| ThreadTurnError { message }),
+                started_at: turn.started_at.map(|at| at.timestamp()),
+                completed_at: turn.ended_at.map(|at| at.timestamp()),
+                duration_ms: turn.duration_ms.and_then(|ms| i64::try_from(ms).ok()),
+            })
+        })
+        .collect()
+}
+
+pub(super) fn start_params(
+    params: codewhale_app_server_protocol::rpc::ThreadStartParams,
+) -> std::result::Result<codewhale_protocol::ThreadStartParams, DispatchError> {
+    let refused: Vec<&str> = [
+        ("ephemeral", params.ephemeral == Some(true)),
+        ("approvalPolicy", params.approval_policy.is_some()),
+        ("approvalsReviewer", params.approvals_reviewer.is_some()),
+        ("sandbox", params.sandbox.is_some()),
+        ("config", params.config.is_some()),
+        ("baseInstructions", params.base_instructions.is_some()),
+        (
+            "developerInstructions",
+            params.developer_instructions.is_some(),
+        ),
+        ("serviceName", params.service_name.is_some()),
+        ("serviceTier", params.service_tier.is_some()),
+        ("sessionStartSource", params.session_start_source.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(name, set)| set.then_some(name))
+    .collect();
+    if !refused.is_empty() {
+        return Err(DispatchError {
+            wire: RpcErrorDetails {
+                code: -32602,
+                message: format!(
+                    "thread/start cannot honor {}: threads are durable and tool-free with a fixed read-only sandbox, and these settings are not applied",
+                    refused.join(", ")
+                ),
+                data: Some(json!({
+                    "error": "unsupported_thread_start_parameter",
+                    "parameters": refused,
+                })),
+            },
+            transport_error: None,
+        });
+    }
+    Ok(codewhale_protocol::ThreadStartParams {
+        operation_key: Some(
+            params
+                .operation_key
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        ),
+        model: params.model,
+        model_provider: params.model_provider,
+        cwd: params.cwd.map(PathBuf::from),
+        persist_extended_history: false,
+    })
+}
+
+pub(super) fn start_wire(
+    response: ThreadResponse,
+) -> Result<codewhale_app_server_protocol::rpc::ThreadStartResponse> {
+    let thread = wire_thread(
+        response
+            .thread
+            .context("canonical start returned no thread")?,
+    );
+    Ok(codewhale_app_server_protocol::rpc::ThreadStartResponse {
+        model: response
+            .model
+            .context("canonical start returned no model")?,
+        model_provider: thread.model_provider.clone(),
+        cwd: thread.cwd.clone(),
+        approval_policy: "never".to_owned(),
+        approvals_reviewer: "user".to_owned(),
+        sandbox: codewhale_app_server_protocol::rpc::ThreadSandboxPolicy::ReadOnly,
+        thread,
+    })
+}
+
+pub(super) fn read_wire(
+    response: ThreadResponse,
+    include_turns: bool,
+) -> Result<codewhale_app_server_protocol::rpc::ThreadReadResponse> {
+    let thread = response
+        .thread
+        .context("canonical read returned no thread")?;
+    let mut thread = wire_thread(thread);
+    if include_turns {
+        thread.turns = wire_turns(&response.data)?
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<_, _>>()?;
+    }
+    Ok(codewhale_app_server_protocol::rpc::ThreadReadResponse { thread })
+}
+
 async fn list(
     state: &AppState,
     params: codewhale_protocol::ThreadListParams,

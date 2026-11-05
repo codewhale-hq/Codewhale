@@ -2025,7 +2025,10 @@ mod recovery {
             first.error
         );
         assert_eq!(first.max_output_tokens, NonZeroU32::new(1500));
-        assert_eq!(first.schema_version, OUTPUT_LIMIT_RUNTIME_SCHEMA_VERSION);
+        assert_eq!(
+            first.schema_version,
+            SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION
+        );
         let calls = mock.captured_requests();
         assert_eq!(
             calls.len(),
@@ -2077,7 +2080,10 @@ mod recovery {
         let second = wait_for_terminal_turn(&manager, &second.id).await?;
         assert_eq!(second.status, RuntimeTurnStatus::Completed);
         assert_eq!(second.max_output_tokens, None);
-        assert_eq!(second.schema_version, CURRENT_RUNTIME_SCHEMA_VERSION);
+        assert_eq!(
+            second.schema_version,
+            SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION
+        );
         assert!(
             mock.last_request().unwrap().max_tokens > 1500,
             "cap cannot leak to the next turn"
@@ -8423,21 +8429,40 @@ fn enforce_lru_capacity_does_not_loop_when_all_threads_are_active() {
     let authority = active.engines["thr_a"].engine.subagent_manager();
     let child = {
         let mut workers = authority.try_write().unwrap();
-        let child = workers.insert_test_running_agent("lru_child", &PathBuf::from("."));
-        workers.assign_test_session_owner(&child, "thr_a");
-        child
+        workers
+            .with_store_transaction(|workers| {
+                workers
+                    .insert_test_running_direct_child_in_origin(
+                        &format!("lru_child_{}", Uuid::new_v4().simple()),
+                        &std::env::temp_dir(),
+                        &std::env::temp_dir(),
+                        "thr_a",
+                    )
+                    .map_err(anyhow::Error::msg)
+            })
+            .unwrap()
     };
     assert!(enforce_lru_capacity(&mut active, 2, &pending_commands).is_empty());
-    let _ = authority
+    let cancelled = authority
         .try_write()
         .unwrap()
-        .cancel_agent_for_session("thr_a", &child);
+        .cancel_agent_for_session("thr_a", &child)
+        .map(|result| result.status)
+        .map_err(|error| error.to_string());
     pending_commands.insert("thr_a".to_string());
     assert!(enforce_lru_capacity(&mut active, 2, &pending_commands).is_empty());
     assert!(active.engines.contains_key("thr_a"));
     pending_commands.clear();
+    let live_after_cancel = authority
+        .try_read()
+        .unwrap()
+        .live_count_for_session("thr_a");
     let evicted = enforce_lru_capacity(&mut active, 2, &pending_commands);
-    assert_eq!(evicted.len(), 1);
+    assert_eq!(
+        evicted.len(),
+        1,
+        "cancel result {cancelled:?}, live children after cancel {live_after_cancel}"
+    );
     assert!(!active.engines.contains_key("thr_a"));
     assert!(active.engines.contains_key("thr_b"));
 }
@@ -11944,6 +11969,8 @@ async fn host_goal_loop_kickoff_arms_one_continuation_and_parks_at_engine_cap() 
             continuation_delay_seconds: None,
             max_steps: None,
             enforce_token_budget: None,
+            complete_judge: None,
+            blocked_judge: None,
         });
         let mut __cw_config_init_26_value: Config = Config::default();
         __cw_config_init_26_value.goal = __cw_config_init_26_0;
@@ -12397,6 +12424,8 @@ async fn model_created_goal_persists_through_adopted_revision() -> Result<()> {
                 continuation_delay_seconds: Some(3600),
                 max_steps: None,
                 enforce_token_budget: None,
+                complete_judge: None,
+                blocked_judge: None,
             });
             let mut __cw_config_init_27_value: Config = Config::default();
             __cw_config_init_27_value.goal = __cw_config_init_27_0;
@@ -21839,10 +21868,8 @@ mod runtime_image_inputs {
             ..Default::default()
         };
         let turn = manager.start_turn(&thread.id, request.clone()).await?;
-        assert_eq!(
-            wait_for_terminal_turn(&manager, &turn.id).await?.status,
-            RuntimeTurnStatus::Completed
-        );
+        let terminal = wait_for_terminal_turn(&manager, &turn.id).await?;
+        assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
         assert_eq!(turn.max_output_tokens, max_output_tokens);
         assert_eq!(
             turn.schema_version,
@@ -21899,7 +21926,7 @@ mod runtime_image_inputs {
         let replayed = reopened.start_turn(&thread.id, request).await?;
         assert_eq!(replayed.id, turn.id);
         assert_eq!(replayed.max_output_tokens, max_output_tokens);
-        assert_eq!(replayed.schema_version, turn.schema_version);
+        assert_eq!(replayed.schema_version, terminal.schema_version);
         assert!(
             reopened.active.lock().await.engines.is_empty(),
             "exact replay needs no provider or Engine"
@@ -21919,7 +21946,7 @@ mod runtime_image_inputs {
         let forked_turns = reopened.store.list_turns_for_thread(&fork.id)?;
         assert_eq!(forked_turns.len(), 1);
         assert_eq!(forked_turns[0].max_output_tokens, max_output_tokens);
-        assert_eq!(forked_turns[0].schema_version, turn.schema_version);
+        assert_eq!(forked_turns[0].schema_version, terminal.schema_version);
         let messages = reopened.restore_thread_messages(&fork)?;
         assert_eq!(
             crate::image_attach::runtime_images_from_blocks(
