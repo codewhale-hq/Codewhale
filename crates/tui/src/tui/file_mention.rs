@@ -135,7 +135,7 @@ pub fn find_file_mention_completions(
     let entries = workspace.completions(partial, limit);
     // #441: re-rank by frecency so files the user mentions a lot float up.
     // Never-mentioned candidates fall back to the workspace ranker's order.
-    let entries = super::file_frecency::rerank_by_frecency(entries);
+    let entries = super::file_frecency::rerank_by_frecency(&workspace.root, entries);
     tracing::debug!(
         target: "codewhale_tui::file_mention",
         partial = %partial,
@@ -183,7 +183,9 @@ pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> 
 /// this once per tick so a finished scan repaints the popup even when the user
 /// has stopped typing.
 pub(crate) fn poll_background_mention_discovery(app: &mut App) -> bool {
-    if app.composer.mention_discovery.poll() {
+    let discovered = app.composer.mention_discovery.poll();
+    let frecency_loaded = super::file_frecency::poll_loaded();
+    if discovered || frecency_loaded {
         app.composer.mention_completion_cache = None;
         return true;
     }
@@ -242,7 +244,7 @@ fn mention_menu_entries(app: &mut App, partial: &str, limit: usize) -> (Vec<Stri
             let ranked = codewhale_runtime::working_set::rank_completion_candidates(
                 candidates, partial, limit,
             );
-            super::file_frecency::rerank_by_frecency(ranked)
+            super::file_frecency::rerank_by_frecency(&workspace, ranked)
         }
         MentionDiscoveryBehavior::Browser { .. } => {
             candidates.iter().take(limit).cloned().collect()
@@ -327,7 +329,7 @@ pub fn apply_mention_menu_selection(app: &mut App, entries: &[String]) -> bool {
     let replacement = &entries[selected_idx];
     // #441: bump this path's frecency before we splice it in. The store
     // persists asynchronously, so this never blocks input handling.
-    super::file_frecency::record_mention(replacement);
+    super::file_frecency::record_mention(&app.workspace, replacement);
     replace_file_mention(app, byte_start, &partial, &file_mention_body(replacement));
     app.mention_menu_hidden = false;
     app.status_message = Some(format!("Attached @{replacement}"));
@@ -358,7 +360,7 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
     }
     if candidates.len() == 1 {
         // #441: a unique-match completion is also a "mention" for ranking.
-        super::file_frecency::record_mention(&candidates[0]);
+        super::file_frecency::record_mention(&app.workspace, &candidates[0]);
         replace_file_mention(
             app,
             byte_start,

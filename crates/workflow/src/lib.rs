@@ -142,19 +142,13 @@ impl WorkflowSpec {
         &self,
         limits: WorkflowFleetLimits,
     ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+        let shape = estimate_fleet_shape(&self.nodes, limits)?;
         validate_workflow_nodes(&self.nodes)
             .map_err(|source| WorkflowFleetLimitError::InvalidWorkflow { source })?;
-        let shape = estimate_fleet_shape(&self.nodes)?;
         if limits.max_total_agents > 0 && shape.total_agents > limits.max_total_agents {
             return Err(WorkflowFleetLimitError::TooManyAgents {
                 total_agents: shape.total_agents,
                 max_total_agents: limits.max_total_agents,
-            });
-        }
-        if limits.max_depth > 0 && shape.max_depth > limits.max_depth {
-            return Err(WorkflowFleetLimitError::RecursionTooDeep {
-                depth: shape.max_depth,
-                max_depth: limits.max_depth,
             });
         }
         Ok(shape)
@@ -1798,32 +1792,45 @@ pub enum WorkflowFleetLimitError {
 
 fn estimate_fleet_shape(
     nodes: &[WorkflowNode],
+    limits: WorkflowFleetLimits,
 ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
-    estimate_fleet_shape_at_depth(nodes, 1)
+    estimate_fleet_shape_at_depth(nodes, 1, limits)
 }
 
 fn estimate_fleet_shape_at_depth(
     nodes: &[WorkflowNode],
     depth: usize,
+    limits: WorkflowFleetLimits,
 ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+    if limits.max_depth > 0 && depth > limits.max_depth {
+        return Err(WorkflowFleetLimitError::RecursionTooDeep {
+            depth,
+            max_depth: limits.max_depth,
+        });
+    }
     nodes
         .iter()
         .try_fold(WorkflowFleetShape::default(), |shape, node| {
-            Ok(shape.add(estimate_node_fleet_shape(node, depth)?))
+            Ok(shape.add(estimate_node_fleet_shape(node, depth, limits)?))
         })
 }
 
 fn estimate_node_fleet_shape(
     node: &WorkflowNode,
     depth: usize,
+    limits: WorkflowFleetLimits,
 ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
     match node {
         WorkflowNode::Leaf(_) => Ok(WorkflowFleetShape {
             total_agents: 1,
             max_depth: depth,
         }),
-        WorkflowNode::BranchSet(spec) => estimate_fleet_shape_at_depth(&spec.children, depth + 1),
-        WorkflowNode::Sequence(spec) => estimate_fleet_shape_at_depth(&spec.children, depth),
+        WorkflowNode::BranchSet(spec) => {
+            estimate_fleet_shape_at_depth(&spec.children, depth + 1, limits)
+        }
+        WorkflowNode::Sequence(spec) => {
+            estimate_fleet_shape_at_depth(&spec.children, depth, limits)
+        }
         WorkflowNode::Reduce(_) | WorkflowNode::TeacherReview(_) => Ok(WorkflowFleetShape {
             total_agents: 0,
             max_depth: 0,
@@ -1834,10 +1841,18 @@ fn estimate_node_fleet_shape(
                     .ok_or_else(|| WorkflowFleetLimitError::UnboundedLoop {
                         node: spec.id.clone(),
                     })? as usize;
-            Ok(estimate_fleet_shape_at_depth(&spec.children, depth)?.repeat(iterations.max(1)))
+            Ok(
+                estimate_fleet_shape_at_depth(&spec.children, depth, limits)?
+                    .repeat(iterations.max(1)),
+            )
         }
-        WorkflowNode::Cond(spec) => Ok(estimate_fleet_shape_at_depth(&spec.then_nodes, depth)?
-            .add(estimate_fleet_shape_at_depth(&spec.else_nodes, depth)?)),
+        WorkflowNode::Cond(spec) => {
+            Ok(
+                estimate_fleet_shape_at_depth(&spec.then_nodes, depth, limits)?.add(
+                    estimate_fleet_shape_at_depth(&spec.else_nodes, depth, limits)?,
+                ),
+            )
+        }
         WorkflowNode::Expand(spec) => {
             let max_children =
                 spec.max_children
@@ -1851,7 +1866,7 @@ fn estimate_node_fleet_shape(
             })?;
             validate_workflow_node_shapes(std::slice::from_ref(template))
                 .map_err(|source| WorkflowFleetLimitError::InvalidWorkflow { source })?;
-            Ok(estimate_node_fleet_shape(template, depth)?.repeat(max_children))
+            Ok(estimate_node_fleet_shape(template, depth, limits)?.repeat(max_children))
         }
     }
 }
@@ -2934,6 +2949,33 @@ mod tests {
             })
             .expect_err("the explicit owner depth should be enforced");
 
+        assert_eq!(
+            err,
+            WorkflowFleetLimitError::RecursionTooDeep {
+                depth: 9,
+                max_depth: 8,
+            }
+        );
+
+        let mut deeper = leaf_node("deeper-leaf");
+        for depth in (0..64).rev() {
+            deeper = WorkflowNode::BranchSet(BranchSpec {
+                id: format!("deep-ring-{depth}"),
+                description: None,
+                parallel: true,
+                budget: BudgetSpec::default(),
+                permissions: PermissionSpec::default(),
+                model_policy: ModelPolicy::default(),
+                children: vec![deeper],
+            });
+        }
+        let deeper = workflow_spec(vec![deeper]);
+        let err = deeper
+            .validate_for_fleet_with_limits(WorkflowFleetLimits {
+                max_depth: 8,
+                ..Default::default()
+            })
+            .expect_err("depth must be rejected before the whole tree is descended");
         assert_eq!(
             err,
             WorkflowFleetLimitError::RecursionTooDeep {
