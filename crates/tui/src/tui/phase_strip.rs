@@ -203,12 +203,12 @@ fn join_while_fitting(clauses: &[&str], budget: usize) -> Option<String> {
 
 /// Fit a notice into `budget` by dropping whole trailing clauses.
 ///
-/// Returns `None` only when not even the first inner phrase fits, and the
-/// rail then says nothing rather than dangling a stump. Notices get first
-/// call on the row: identity and the ledger chips have already stood down by
-/// the time this is asked, and the key hints stand down after it if that is
-/// what the notice needs.
-fn fit_notice(text: &str, budget: usize) -> Option<String> {
+/// Returns `None` only when not even the first inner phrase fits and the
+/// notice is not urgent; an urgent notice is truncated rather than dropped.
+/// Notices get first call on the row: identity and the ledger chips have
+/// already stood down by the time this is asked, and the key hints stand down
+/// after it if that is what the notice needs.
+fn fit_notice(text: &str, budget: usize, urgent: bool) -> Option<String> {
     let text = text.trim();
     if text.is_empty() || budget == 0 {
         return None;
@@ -222,7 +222,13 @@ fn fit_notice(text: &str, budget: usize) -> Option<String> {
     }
     let first = sentences.first().copied().unwrap_or(text);
     let clauses = notice_clauses(first, &CLAUSE_MARKS);
-    let fitted = join_while_fitting(&clauses, budget)?;
+    let Some(fitted) = join_while_fitting(&clauses, budget) else {
+        return if urgent {
+            truncate_notice(text, budget)
+        } else {
+            None
+        };
+    };
     // A one-word label whose value was shed is not a notice, it is a false
     // one: `Thinking: high → max · model qwen` cut to `Thinking` sat in an
     // idle footer reading as if a turn were thinking (experience mark 8).
@@ -231,7 +237,37 @@ fn fit_notice(text: &str, budget: usize) -> Option<String> {
         .first()
         .is_some_and(|label| label.ends_with([':', '：']))
         && !fitted.contains(char::is_whitespace);
-    (!bare_label).then_some(fitted)
+    if bare_label {
+        return if urgent {
+            truncate_notice(text, budget)
+        } else {
+            None
+        };
+    }
+    Some(fitted)
+}
+
+fn truncate_notice(text: &str, budget: usize) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() || budget == 0 {
+        return None;
+    }
+    let mut fitted = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let width = ch.width().unwrap_or(0);
+        if used + width + 1 > budget {
+            break;
+        }
+        fitted.push(ch);
+        used += width;
+    }
+    let mut fitted = fitted.trim_end().to_string();
+    if let Some(space) = fitted.rfind(char::is_whitespace) {
+        fitted.truncate(space);
+    }
+    let fitted = fitted.trim_end();
+    (!fitted.is_empty()).then(|| format!("{fitted}…"))
 }
 
 /// Map the boot surface's typed severity through the same semantic palette as
@@ -381,16 +417,16 @@ mod tests {
     #[test]
     fn a_notice_sheds_whole_clauses_and_never_dangles() {
         const NOTICE: &str = "Anonymous usage counts are on. Conversations and code are never collected. Change this in /settings; schema: docs/TELEMETRY.md";
-        assert_eq!(fit_notice(NOTICE, 200).as_deref(), Some(NOTICE));
+        assert_eq!(fit_notice(NOTICE, 200, false).as_deref(), Some(NOTICE));
         assert_eq!(
-            fit_notice(NOTICE, 80).as_deref(),
+            fit_notice(NOTICE, 80, false).as_deref(),
             Some("Anonymous usage counts are on. Conversations and code are never collected.")
         );
         assert_eq!(
-            fit_notice(NOTICE, 40).as_deref(),
+            fit_notice(NOTICE, 40, false).as_deref(),
             Some("Anonymous usage counts are on.")
         );
-        assert_eq!(fit_notice("   ", 40), None);
+        assert_eq!(fit_notice("   ", 40, false), None);
     }
 
     /// Experience mark 8: a `/model` thinking change on a narrow rail used to
@@ -399,16 +435,21 @@ mod tests {
     #[test]
     fn a_label_never_sheds_to_a_bare_word_that_reads_as_activity() {
         let notice = "Thinking: high → max · model deepseek-v4-flash";
-        assert_eq!(fit_notice(notice, 40), None);
+        assert_eq!(fit_notice(notice, 40, false), None);
         assert_eq!(
-            fit_notice("思考：高 → 最高 · 模型 deepseek-v4-flash", 12),
+            fit_notice("思考：高 → 最高 · 模型 deepseek-v4-flash", 12, false),
             None
         );
         // Room for the whole reading keeps it whole.
-        assert_eq!(fit_notice(notice, 60).as_deref(), Some(notice));
+        assert_eq!(fit_notice(notice, 60, false).as_deref(), Some(notice));
         // A phrase before the colon is still a notice on its own.
         assert_eq!(
-            fit_notice("Auto-denied exec_shell: denied earlier this turn", 30).as_deref(),
+            fit_notice(
+                "Auto-denied exec_shell: denied earlier this turn",
+                30,
+                false
+            )
+            .as_deref(),
             Some("Auto-denied exec_shell")
         );
     }
@@ -422,13 +463,13 @@ mod tests {
     fn a_clause_less_warning_sheds_at_inner_joints_rather_than_vanishing() {
         const WARNING: &str =
             "Auto-denied exec_shell: denied earlier; restart Codewhale to re-enable it.";
-        assert_eq!(fit_notice(WARNING, 120).as_deref(), Some(WARNING));
+        assert_eq!(fit_notice(WARNING, 120, false).as_deref(), Some(WARNING));
         assert_eq!(
-            fit_notice(WARNING, 60).as_deref(),
+            fit_notice(WARNING, 60, false).as_deref(),
             Some("Auto-denied exec_shell: denied earlier")
         );
         assert_eq!(
-            fit_notice(WARNING, 30).as_deref(),
+            fit_notice(WARNING, 30, false).as_deref(),
             Some("Auto-denied exec_shell")
         );
     }
@@ -1113,7 +1154,7 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         .max(8)
         .min(usize::from(width).saturating_sub(permission_chip.0.width() + 5));
     let right = selected_notice(app.active_status_toast(phase), &phase_label)
-        .map(|(text, ink, _urgent)| {
+        .map(|(text, ink, urgent)| {
             (
                 text,
                 if ink == ChromeInk::Info {
@@ -1121,6 +1162,7 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
                 } else {
                     ink
                 },
+                urgent,
             )
         })
         .or_else(|| {
@@ -1136,14 +1178,16 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
             }
             let boot = crate::tui::session_boot::SessionBootSurface::from_app(app);
             boot.activity_notice(app.ui_locale, notice_budget)
-                .map(|chip| (chip.text, boot_activity_ink(chip.level)))
+                .map(|chip| (chip.text, boot_activity_ink(chip.level), false))
         })
-        .and_then(|(text, ink)| fit_notice(&text, notice_budget).map(|fitted| (fitted, ink)))
+        .and_then(|(text, ink, urgent)| {
+            fit_notice(&text, notice_budget, urgent).map(|fitted| (fitted, ink))
+        })
         .or_else(|| {
             if app.remote_control.status() == codewhale_app_server::remote_control::Status::Failed {
                 let notice = format!("/rc status · {}", tr(app.ui_locale, MessageId::PhaseFailed));
-                fit_notice(&notice, notice_budget)
-                    .or_else(|| fit_notice("/rc status", notice_budget))
+                fit_notice(&notice, notice_budget, false)
+                    .or_else(|| fit_notice("/rc status", notice_budget, false))
                     .map(|text| (text, ChromeInk::Failure))
             } else {
                 app.remote_control
