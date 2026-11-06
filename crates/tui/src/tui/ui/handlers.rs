@@ -1858,6 +1858,8 @@ pub(crate) async fn handle_view_events(
                     }
                 }
                 crate::tui::views::CommandPaletteAction::InsertText { text } => {
+                    app.clear_input_recoverable();
+                    app.line_began_with_slash = text.starts_with('/');
                     app.input = text;
                     app.cursor_position = app.input.chars().count();
                     app.status_message = Some(
