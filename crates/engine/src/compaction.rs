@@ -4,7 +4,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::core::model_client::ModelClient;
 use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
@@ -1280,7 +1279,7 @@ pub struct CompactionResult {
     pub coverage: CompactionCoverage,
 }
 
-/// Classify a compaction LLM failure for the retry / input-ladder policy.
+#[cfg(test)]
 fn classify_compaction_failure(e: &anyhow::Error) -> CompactionFailureKind {
     if let Some(error) = llm_error_in_chain(e) {
         return match error {
@@ -1360,22 +1359,16 @@ pub fn report_compaction_failure(
     format!("{prefix}: {detail}")
 }
 
-/// Only typed pre-dispatch connection failures and authoritative ordinary429
-/// refusals permit replay. Context overflow needs a different request.
+#[cfg(test)]
 fn is_transient_error(e: &anyhow::Error) -> bool {
     classify_compaction_failure(e).is_transient()
 }
 
-/// Compact messages with retry and backoff for transient errors.
-///
-/// This function wraps `compact_messages` with retry logic to handle
-/// proven pre-dispatch connection failures and ordinary429 refusals. It uses exponential backoff
-/// with delays of 1s, 2s, 4s between retries.
+/// Compact messages for one replacement pass.
 ///
 /// # Safety
 /// - Never panics
 /// - Never corrupts the original messages (returns error instead)
-/// - Only retries on transient errors (network, rate limit, etc.)
 ///
 /// `invocation_usage` retains every decoded response, including rejected
 /// summaries, across retries and cancellation of this future.
@@ -1386,23 +1379,26 @@ pub async fn compact_messages_safe(
     prepared: &PreparedCompactionEnvelope,
     invocation_usage: &mut Usage,
 ) -> Result<CompactionResult> {
-    const MAX_RETRIES: u32 = 3;
-    const BASE_DELAY_MS: u64 = 1000;
-
     // Persist the complete pre-compaction history before any pruning or provider
     // call. Failure leaves the original context intact. The model-authored
     // handoff is saved separately before replacement is returned to the engine.
     let checkpoint_id = uuid::Uuid::new_v4().to_string();
-    if let Some(session_id) = prepared.session_id.as_deref() {
-        let bytes = serde_json::to_vec(&codewhale_config::persistence::redact_json_secrets(
-            &serde_json::to_value(messages)?,
-        ))?;
-        codewhale_runtime::artifacts::write_session_relative_immutable(
-            session_id,
-            &std::path::PathBuf::from("artifacts")
-                .join(format!("context-transfer-{checkpoint_id}.json")),
-            &bytes,
-        )?;
+    if let Some(session_id) = prepared.session_id.clone() {
+        let messages = messages.to_vec();
+        let checkpoint_id = checkpoint_id.clone();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            let bytes = serde_json::to_vec(&codewhale_config::persistence::redact_json_secrets(
+                &serde_json::to_value(&messages)?,
+            ))?;
+            codewhale_runtime::artifacts::write_session_relative_immutable(
+                &session_id,
+                &std::path::PathBuf::from("artifacts")
+                    .join(format!("context-transfer-{checkpoint_id}.json")),
+                &bytes,
+            )?;
+            Ok(())
+        })
+        .await?;
     }
 
     let config = &prepared.config;
@@ -1452,13 +1448,22 @@ pub async fn compact_messages_safe(
         if was_over_threshold && now_under_threshold {
             let kept = sanitize_retained_messages(pruned_messages);
             last_round::validate_retained_coverage(messages, &kept, recent_tokens)?;
+            let anchors_chars = match config.workspace.clone() {
+                Some(workspace) => {
+                    codewhale_runtime::runtime_control::owner_work(move || {
+                        Ok(pinned_anchors_text(Some(&workspace))
+                            .map(|text| text.chars().count())
+                            .unwrap_or(0))
+                    })
+                    .await?
+                }
+                None => 0,
+            };
             let coverage = last_round::measure_coverage(
                 messages,
                 &kept,
                 CompactionPath::PruneOnly,
-                pinned_anchors_text(config.workspace.as_deref())
-                    .map(|text| text.chars().count())
-                    .unwrap_or(0),
+                anchors_chars,
             );
             return Ok(CompactionResult {
                 messages: kept,
@@ -1469,73 +1474,52 @@ pub async fn compact_messages_safe(
         }
     }
 
-    let mut last_error: Option<anyhow::Error> = None;
     let mut quality_retries = 0u32;
-
-    for attempt in 0..MAX_RETRIES {
-        if attempt > 0 {
-            // Exponential backoff: 1s, 2s, 4s
-            let delay = Duration::from_millis(BASE_DELAY_MS * (1 << (attempt - 1)));
-            tokio::time::sleep(delay).await;
-        }
-
-        match compact_messages_with_metadata(
-            client,
-            // The selected older span uses original evidence, including prior
-            // checkpoints. The recent tail survives separately in replacement.
-            messages,
-            system_prompt,
-            prepared,
-            &mut quality_retries,
-            invocation_usage,
-        )
-        .await
-        {
-            Ok((msgs, prompt, mut coverage)) => {
-                let kept = sanitize_retained_messages(msgs);
-                last_round::validate_retained_coverage(messages, &kept, recent_tokens)?;
-                if config.enabled && was_over_threshold && estimate(&kept) >= estimate(messages) {
-                    anyhow::bail!(
-                        "Making room did not shrink the context; the original conversation was preserved."
-                    );
-                }
-                let keep: CompactionKeep = inspect_compaction_keep(&kept);
-                coverage.last_round_messages = keep.last_round_messages;
-                coverage.last_round_tool_results = keep.last_round_tool_results;
-                coverage.last_round_assistant = keep.last_round_assistant;
-                if let (Some(session_id), Some(summary)) =
-                    (prepared.session_id.as_deref(), prompt.as_ref())
-                {
-                    let text = summary_prompt_text(summary);
-                    let redacted = codewhale_config::persistence::redact_json_secrets(
-                        &serde_json::Value::String(text),
-                    );
-                    codewhale_runtime::artifacts::write_session_relative_immutable(
-                        session_id,
-                        &std::path::PathBuf::from("artifacts")
-                            .join(format!("context-transfer-{checkpoint_id}.md")),
-                        redacted.as_str().unwrap_or_default().as_bytes(),
-                    )?;
-                }
-                return Ok(CompactionResult {
-                    messages: kept,
-                    summary_prompt: prompt,
-                    retries_used: attempt.saturating_add(quality_retries),
-                    coverage,
-                });
-            }
-            Err(e) => {
-                // Only retry on transient errors
-                if !is_transient_error(&e) {
-                    return Err(e);
-                }
-                last_error = Some(e);
-            }
-        }
+    let (msgs, prompt, mut coverage) = compact_messages_with_metadata(
+        client,
+        // The selected older span uses original evidence, including prior
+        // checkpoints. The recent tail survives separately in replacement.
+        messages,
+        system_prompt,
+        prepared,
+        &mut quality_retries,
+        invocation_usage,
+    )
+    .await?;
+    let kept = sanitize_retained_messages(msgs);
+    last_round::validate_retained_coverage(messages, &kept, recent_tokens)?;
+    if config.enabled && was_over_threshold && estimate(&kept) >= estimate(messages) {
+        anyhow::bail!(
+            "Making room did not shrink the context; the original conversation was preserved."
+        );
     }
-
-    Err(last_error
-        .unwrap_or_else(|| anyhow::anyhow!("Making room failed after {MAX_RETRIES} retries")))
+    let keep: CompactionKeep = inspect_compaction_keep(&kept);
+    coverage.last_round_messages = keep.last_round_messages;
+    coverage.last_round_tool_results = keep.last_round_tool_results;
+    coverage.last_round_assistant = keep.last_round_assistant;
+    if let (Some(session_id), Some(summary)) = (prepared.session_id.clone(), prompt.as_ref()) {
+        let text = summary_prompt_text(summary);
+        let checkpoint_id = checkpoint_id.clone();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            let redacted = codewhale_config::persistence::redact_json_secrets(
+                &serde_json::Value::String(text),
+            );
+            codewhale_runtime::artifacts::write_session_relative_immutable(
+                &session_id,
+                &std::path::PathBuf::from("artifacts")
+                    .join(format!("context-transfer-{checkpoint_id}.md")),
+                redacted.as_str().unwrap_or_default().as_bytes(),
+            )?;
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(CompactionResult {
+        messages: kept,
+        summary_prompt: prompt,
+        retries_used: quality_retries,
+        coverage,
+    })
 }
 
 pub fn build_compaction_summary_block_text(summary: &str, anchors: &str) -> String {
@@ -1640,11 +1624,15 @@ pub fn retained_user_messages_in_era(
 /// User-pinned facts from `/anchor` (`.codewhale/anchors.md`). These are the
 /// user's own words, re-stated after the summary because the command promises
 /// they survive compaction.
-fn user_anchors_section(workspace: Option<&std::path::Path>) -> String {
-    match pinned_anchors_text(workspace) {
+fn anchors_section_text(anchors: Option<&str>) -> String {
+    match anchors {
         Some(contents) => format!("\n\nUser-pinned anchors (verbatim):\n{contents}"),
         None => String::new(),
     }
+}
+
+fn user_anchors_section(workspace: Option<&std::path::Path>) -> String {
+    anchors_section_text(pinned_anchors_text(workspace).as_deref())
 }
 
 #[cfg(test)]
@@ -1703,7 +1691,16 @@ async fn compact_messages_with_metadata(
         invocation_usage,
     )
     .await?;
-    let anchors = user_anchors_section(config.workspace.as_deref());
+    let pinned_anchors = match config.workspace.clone() {
+        Some(workspace) => {
+            codewhale_runtime::runtime_control::owner_work(move || {
+                Ok(pinned_anchors_text(Some(&workspace)))
+            })
+            .await?
+        }
+        None => None,
+    };
+    let anchors = anchors_section_text(pinned_anchors.as_deref());
     let checkpoint_text = build_compaction_summary_block_text(&summary, &anchors);
     let summary_block = SystemBlock {
         block_type: "text".to_string(),
@@ -1716,7 +1713,7 @@ async fn compact_messages_with_metadata(
     let retained = last_round::build_replacement_history(
         messages,
         &checkpoint_text,
-        pinned_anchors_text(config.workspace.as_deref()).as_deref(),
+        pinned_anchors.as_deref(),
         config.retained_user_message_tokens,
         recent_tokens,
     )?;
@@ -1724,7 +1721,8 @@ async fn compact_messages_with_metadata(
         messages,
         &retained,
         CompactionPath::Summary,
-        pinned_anchors_text(config.workspace.as_deref())
+        pinned_anchors
+            .as_deref()
             .map(|text| text.chars().count())
             .unwrap_or(0),
     );
@@ -2032,7 +2030,18 @@ async fn create_summary(
             crate::cost_status::UsageSpendOwner::Auxiliary,
             native_origin,
         );
-        let observation = source.observe_route(&cost_route)?;
+        let observation = match prepared.notice_sink.clone() {
+            Some(sink) => {
+                let mut observation = source.observation();
+                observation.emit = Arc::new(move |message| {
+                    sink.notice(format!("Making room: {message}"));
+                    Box::pin(async {})
+                });
+                source.bind_dispatch(&cost_route, &observation)?;
+                observation
+            }
+            None => source.observe_route(&cost_route)?,
+        };
         if let Some(record) = source.admit_dispatch(&cost_route).await?
             && let Some(sink) = notice_sink
         {
@@ -2290,6 +2299,7 @@ mod quota_tests;
 #[cfg(test)]
 mod tests {
     use codewhale_models::{ImageUrlContent, Message};
+    use std::time::Duration;
 
     #[test]
     fn legacy_checkpoint_headings_are_recognised_but_quotes_are_not() {
@@ -4292,7 +4302,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quality_retry_count_survives_a_later_transient_failure() {
+    async fn transient_failure_after_a_quality_retry_stops_without_replacement() {
         let client = ScriptedSummaryClient::with_outcomes(vec![
             Ok(vec![ContentBlock::Text {
                 text: "...".to_string(),
@@ -4303,10 +4313,6 @@ mod tests {
                 retry_after: Some(Duration::ZERO),
             }
             .into()),
-            Ok(vec![ContentBlock::Text {
-                text: FIXED_SUMMARY.to_string(),
-                cache_control: None,
-            }]),
         ]);
         let config = CompactionConfig {
             model: "test-model".to_string(),
@@ -4315,7 +4321,7 @@ mod tests {
         };
 
         let mut invocation_usage = Usage::default();
-        let result = compact_messages_safe(
+        let error = compact_messages_safe(
             &client,
             &[msg("user", "Preserve the current migration state.")],
             None,
@@ -4323,24 +4329,21 @@ mod tests {
             &mut invocation_usage,
         )
         .await
-        .expect("the outer retry should recover after the transient failure");
-        assert_eq!(invocation_usage.input_tokens, 34);
-        assert_eq!(invocation_usage.output_tokens, 6);
-        assert_eq!(invocation_usage.prompt_cache_hit_tokens, Some(10));
-        assert_eq!(invocation_usage.reasoning_tokens, Some(4));
+        .expect_err("a transient failure after the quality retry must stop the pass");
+        assert!(format!("{error:#}").contains("Rate limit"), "{error:#}");
+        assert_eq!(invocation_usage.input_tokens, 17);
+        assert_eq!(invocation_usage.output_tokens, 3);
+        assert_eq!(invocation_usage.prompt_cache_hit_tokens, Some(5));
+        assert_eq!(invocation_usage.reasoning_tokens, Some(2));
 
-        assert_eq!(
-            result.retries_used, 2,
-            "one quality retry plus one outer transient retry must be reported"
-        );
         assert_eq!(
             client
                 .requests
                 .lock()
                 .expect("read scripted summary requests")
                 .len(),
-            3,
-            "the diagnostic count must match the two calls after the initial request"
+            2,
+            "the client owns transport retries; the pass must not add a third call"
         );
     }
 
