@@ -7,8 +7,8 @@ const source = JSON.parse(readFileSync(new URL("../../crates/config/assets/model
 describe("reviewed public model projection", () => {
   it("preserves all public identities, labels and proven source-support dates", () => {
     const rows = parseModelCatalog(source);
-    expect(rows).toHaveLength(91);
-    expect(new Set(rows?.map(row => row.id)).size).toBe(91);
+    expect(rows).toHaveLength(92);
+    expect(new Set(rows?.map(row => row.id)).size).toBe(92);
     for (const original of source._reviewed.public_models) {
       expect(rows?.find(row => row.id === original.id)).toMatchObject({ provider: original.label, addedAt: original.added_at });
     }

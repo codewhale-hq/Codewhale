@@ -346,7 +346,7 @@ owner = "crates/sandbox/src"
 [[feature]]
 id = "providers"
 name = "Providers"
-summary = "Provider routes including Runcrate, with scoped facts, limits, price estimates and a disclosed OrcaRouter offer."
+summary = "Provider routes including Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PROVIDERS.md"

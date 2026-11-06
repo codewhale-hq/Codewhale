@@ -267,6 +267,7 @@ models = [
   "z-ai/glm-5.3",
   "z-ai/glm-5.3-flash",
   "dots-studio/dots-3-note-preview:free",
+  "tencent/hy4",
 ]
 
 [[providers]]

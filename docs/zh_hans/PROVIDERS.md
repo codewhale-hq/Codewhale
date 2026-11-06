@@ -28,6 +28,7 @@ DeepSeek 仍是默认提供商，但 `ProviderKind::ALL` 中的每个条目都�
 | Standard Compute | `https://api.stdcmpt.com/v1` | `standardcompute`（路由）；`deepseek/deepseek-v4-pro`、`anthropic/claude-sonnet-5.5` | `STANDARDCOMPUTE_API_KEY` |
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`、`zai-org/GLM-5.3`、`openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`、`gpt-5.4-mini`（池名称）；`anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
+| 腾讯 TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 
 AICraft 的 OpenAI 兼容端点提供 DeepSeek、Anthropic Claude、Google Gemini、Qwen、GLM、MiniMax 和 Doubao 的模型 ID。权威来源是带上你的密钥请求 `GET https://aicraftapi.com/v1/models` 的结果：请从该列表中选择模型，而不是从上表中选。
 Tsubasa 只实现了 `GET /v1/models` 和 Chat Completions。它的两个公开模型 ID 共用 32,768 token 的上下文，小于 Codewhale 对未知模型假定的 128,000 token，因此保存后请在该路由上设置：
@@ -36,6 +37,8 @@ Cheaper Inference 是 OpenAI 兼容网关，模型 ID 不带前缀（例如 `gpt
 Standard Compute 提供按月固定套餐和算力预算。默认情况下，预算用尽后请求返回 HTTP 402；符合条件的套餐可启用按量付费，通过额外预付费用继续请求，详见其[预算政策](https://docs.standardcompute.com/budgets-and-limits)。模型 ID `standardcompute` 会在多个模型和提供商之间路由每个请求；带厂商前缀的 ID（例如 `deepseek/deepseek-v4-pro`）则固定使用单个模型，以 `GET https://api.stdcmpt.com/v1/models` 的结果为准。
 Runcrate 是 OpenAI 兼容网关，一个密钥即可使用来自多家实验室的模型。模型 ID 区分大小写，形如 `deepseek-ai/DeepSeek-V4.1-Flash`。模型列表以 `GET https://api.runcrate.ai/v1/models` 的结果为准。配置好 Runcrate 后，运行 `codewhale models --update --provider runcrate` 即可匿名刷新。推理仍需要 `RUNCRATE_API_KEY`，公开列表无法验证密钥。文档见 <https://www.runcrate.ai/docs/getting-started/quickstart>。
 Opper 是托管在欧盟的 OpenAI 兼容网关，一个密钥即可使用来自 50 多家提供商的 700 多个模型。`claude-sonnet-4-6` 这类不带前缀的池名称由 Opper 按请求选择路由；`anthropic/claude-sonnet-4-6` 这类 `provider/model` ID 则固定使用单条路由。Token 价格即模型提供商的价格，不加价。以带密钥请求 `GET https://api.opper.ai/v3/compat/models` 的结果为准，文档见 <https://docs.opper.ai/build/gateway/drop-in-sdks>。
+
+使用 `/provider tencent` 选择腾讯 TokenHub 国际端点，模型 ID 为 `hy4`，密钥环境变量为 `TENCENT_API_KEY`。腾讯文档给出的上下文为 1M，最大输入为 960K，最大输出为 64K，并支持图像、工具和推理。可用模型以认证后的 `/v1/models` 为准；若列表未提供限制信息，仍使用兼容路由的保守默认值，可将 `providers.tencent.model_context_windows.hy4` 显式设为 `1000000`，不影响同一网关上的其他模型。直连价格未经核验，不会套用 OpenRouter 的价格。OpenRouter 上的正式版 ID 是 `tencent/hy4`，支持 1,048,576 上下文、65,536 最大输出及 `none`、`low`、`high` 推理级别。预览版和现有 HY3 选择保持不变。文档见 <https://www.tencentcloud.com/document/product/1300/80695>。
 OpenCode Zen 和 OpenCode Go 是一等提供商路由，配置方式与下文其他提供商相同；它们不在上表之列。在 `/provider` 中，直接输入即可筛选列表（未绑定行操作的字母）；`Ctrl+T` 探测所选行的 `/models`，只记录可达性（2xx 并不代表模型可用）。
 
 需要保持同步的来源：

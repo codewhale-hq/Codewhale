@@ -14,6 +14,8 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **Tencent HY4:** the stable `tencent/hy4` model is available through OpenRouter with its published multimodal, tool, reasoning and context metadata. `/provider tencent` adds the direct TokenHub route with `hy4` and `TENCENT_API_KEY`; direct availability and prices remain separate from OpenRouter, and preview/HY3 selections are preserved.
+
 - **WeCom steers a running turn (#7211):** a WeCom message sent while a turn is running is forwarded to the Runtime's steer endpoint instead of being dropped with the busy notice, which remains the fallback when the steer is rejected. Thanks [@gaord](https://github.com/gaord).
 - **WeCom accepts media and voice (#7212):** the WeCom bridge downloads image, video and file messages into `WECOM_MEDIA_DIR` (default `<workspace>/media`) under a sanitized name and replies with the saved name, size and path; a failed download tells the sender the link expires after about five minutes. Voice messages use WeCom's transcription as the prompt, and other message types get an explicit answer instead of a blanket refusal. Thanks [@gaord](https://github.com/gaord).
 - **Pinned local thread controls (preview):** initialized App Server clients can list retained loaded Engines with cursor paging and rename the canonical thread through `thread/loaded/list` and `thread/name/set`. Saved but unloaded threads stay out of the loaded list; existing aliases remain available. Full-tool turns and subscription parity remain unfinished.
@@ -176,6 +178,9 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Frozen prices on DeepSeek endpoints:** published rates are captured for DeepSeek's root, `/v1`, `/beta` and Anthropic endpoint variants, and remain bound to the exact endpoint on replay. Other providers keep their existing pricing scopes; official credential aliases alone do not establish equivalent regional or plan prices. Request outcomes, missing provider usage, legacy usage and unverified corrections now have distinct cost explanations; saved receipts without a frozen quote remain unpriced.
+- **Clipboard image persistence:** the existing confined writer handles relocated user state directly, without a second filesystem fallback that bypassed its protections and exceeded the blocking-call budget.
+- **Case-sensitive model selection (#7214):** the provider picker restores the exact configured or wire model ID before trying case-insensitive compatibility matches. Thanks [@liuyy2](https://github.com/liuyy2) for the diagnosis and [@SparkofSpike](https://github.com/SparkofSpike) for the compatibility-preserving fix.
 - **WeCom replies carry the API's error (#7208):** a rejected WeCom call now shows its `errcode` and message in the bridge reply instead of `[object Object]`. Thanks [@gaord](https://github.com/gaord).
 - **WeCom streams survive the ten-minute expiry (#7210):** the bridge finalizes the current stream and opens a fresh one before WeCom stops accepting updates, and reopens once on a rejected update. Thanks [@gaord](https://github.com/gaord).
 - **Non-English packs lose stale mode-jump and rail copy (#7225):** the sweep covers every non-English locale and a test pins it. Thanks [@asto18089](https://github.com/asto18089).
@@ -436,6 +441,8 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Contributors
 
+- **[@printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).
+- **[@liuyy2](https://github.com/liuyy2)** — diagnosed case-sensitive model selection collisions in the provider picker ([#7214](https://github.com/codewhale-hq/Codewhale/issues/7214)).
 - **[@isaacs](https://github.com/isaacs)** — upstream minimatch preprocessing and glob cancellation fixes reused in compatible web build dependency backports.
 - **[@Gabriel-Degret](https://github.com/Gabriel-Degret)** — reported that a hosted output limit truncated reasoning on a custom endpoint ([#7179](https://github.com/codewhale-hq/Codewhale/issues/7179)).
 - **[@soarkit](https://github.com/soarkit)** — reported that `/patch-undo` ignored `turn_id` and undid the latest turn ([#7216](https://github.com/codewhale-hq/Codewhale/issues/7216)).

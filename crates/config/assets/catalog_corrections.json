@@ -1274,6 +1274,13 @@
         "max_output": 65536,
         "reasoning": true
       },
+      "tencent/hy4": {
+        "source": "https://openrouter.ai/api/v1/models, verified 2026-11-05",
+        "context_window": 1048576,
+        "max_output": 65536,
+        "generation_default": 65536,
+        "reasoning": true
+      },
       "tencent/hy3-preview": {
         "source": "preserved exact cited model lookup; see source_receipts",
         "context_window": 262144,
@@ -2385,6 +2392,17 @@
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "zai"
+      },
+      {
+        "id": "tencent/hy4",
+        "aliases": [
+          "hy4",
+          "tencent-hy4",
+          "hunyuan-hy4"
+        ],
+        "supports_tools": true,
+        "supports_reasoning": true,
+        "provider": "openrouter"
       },
       {
         "id": "tencent/hy3-preview",
@@ -3735,6 +3753,15 @@
     ],
     "public_models": [
       {
+        "id": "tencent/hy4",
+        "label": "OpenRouter",
+        "added_at": "2026-11-05",
+        "aliases": [
+          "tencent/hy4",
+          "hy4"
+        ]
+      },
+      {
         "id": "claude-opus-5-5",
         "label": "Anthropic",
         "added_at": "2026-10-17",
@@ -4483,6 +4510,7 @@
       "OPENROUTER_QWEN_3_7_MAX_MODEL": "qwen/qwen3.7-max",
       "OPENROUTER_QWEN_3_8_FLASH_MODEL": "qwen/qwen3.8-flash",
       "OPENROUTER_TENCENT_HY3_PREVIEW_MODEL": "tencent/hy3-preview",
+      "OPENROUTER_TENCENT_HY4_MODEL": "tencent/hy4",
       "OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL": "xiaomi/mimo-v2.5-pro",
       "OPENROUTER_XIAOMI_MIMO_V2_5_MODEL": "xiaomi/mimo-v2.5",
       "XIAOMI_MIMO_V2_5_PRO_ULTRASPEED_MODEL": "mimo-v2.5-pro-ultraspeed",
@@ -4559,6 +4587,7 @@
         "z-ai/glm-5.3",
         "z-ai/glm-5.3-flash",
         "tencent/hy3-preview",
+        "tencent/hy4",
         "google/gemma-4-31b-it",
         "google/gemma-4-26b-a4b-it",
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
@@ -4586,6 +4615,8 @@
       ]
     },
     "source_receipts": {
+      "https://openrouter.ai/api/v1/models": "verified 2026-11-05: tencent/hy4 is the stable 2026-11-04 release, distinct from tencent/hy4-preview; 1048576 context, 65536 output, text/image input, tools, structured output and none/low/high reasoning efforts. Live provider rates remain the pricing authority.",
+      "https://www.tencentcloud.com/document/product/1300/80695": "verified 2026-11-05: direct TokenHub wire id hy4, text/image input, tools and reasoning, 1M context, 960K input and 64K output; compatible Chat Completions supports stream_options.include_usage. Direct account access and prices were not exercised.",
       "crates/models/src/lib.rs": "f25ecfb95e4af9d03b62a4b84586e0db3c924e2c2aa6d02ff4015919648adfe5",
       "crates/models/src/model_catalog.rs": "555d5b959f16d7b06c5959931eae34539f9882f1fc286282dde8f3be9f82c96a",
       "crates/models/assets/model_catalog.bundled.json": "b9fae73287534d09c233db8c12ed43df01329c0bbd05b0847a9d2e99b7b7cd6b",
@@ -6368,6 +6399,10 @@
         "qwen3.8-flash": "$OPENROUTER_QWEN_3_8_FLASH_MODEL",
         "qwen-3.8-flash": "$OPENROUTER_QWEN_3_8_FLASH_MODEL",
         "$OPENROUTER_TENCENT_HY3_PREVIEW_MODEL": "$OPENROUTER_TENCENT_HY3_PREVIEW_MODEL",
+        "$OPENROUTER_TENCENT_HY4_MODEL": "$OPENROUTER_TENCENT_HY4_MODEL",
+        "hy4": "$OPENROUTER_TENCENT_HY4_MODEL",
+        "tencent-hy4": "$OPENROUTER_TENCENT_HY4_MODEL",
+        "hunyuan-hy4": "$OPENROUTER_TENCENT_HY4_MODEL",
         "hy3-preview": "$OPENROUTER_TENCENT_HY3_PREVIEW_MODEL",
         "tencent-hy3-preview": "$OPENROUTER_TENCENT_HY3_PREVIEW_MODEL",
         "hy3": "$OPENROUTER_TENCENT_HY3_PREVIEW_MODEL",

@@ -613,7 +613,7 @@ mod tests {
     fn reviewed_selection_and_transport_preserve_separate_scopes() {
         let reviewed = bundled_reviewed();
         reviewed.validate().expect("committed data");
-        assert_eq!(reviewed.selections.len(), 187);
+        assert_eq!(reviewed.selections.len(), 188);
         assert_eq!(reviewed.transports.len(), 122);
         let go = reviewed_transport("opencode-go", "gpt-5.6-luna").unwrap();
         assert_eq!(go.endpoint_key, "responses");

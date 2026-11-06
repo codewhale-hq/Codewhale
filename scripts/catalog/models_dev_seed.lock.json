@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-10-30T05:26:16Z",
-    "sha256": "5048a9f4555766dbe616aa3fbe49a6c5cae7fdcce56b7a9fa529383992ed9036"
+    "fetched_at": "2026-11-06T04:39:42Z",
+    "sha256": "83270dc8406a2bc8ab486a5fcce9fb208bd6de19792c90bcb0cca2223a2a57ec"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -2911,7 +2911,7 @@
         "tool_call": true,
         "structured_output": false,
         "temperature": true,
-        "open_weights": false,
+        "open_weights": true,
         "modalities": {
           "input": [
             "text",
@@ -4411,9 +4411,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.816234,
-          "output": 1.632468,
-          "cache_read": 0.06802
+          "input": 0.95526,
+          "output": 1.91052,
+          "cache_read": 0.079605
         }
       },
       "dots-studio/dots-3-note-preview:free": {
@@ -4741,6 +4741,50 @@
           "cache_read": 0.016
         }
       },
+      "tencent/hy4": {
+        "id": "tencent/hy4",
+        "canonical_model_id": "tencent/hy4",
+        "name": "Hy4",
+        "description": "Tencent Hy reasoning model for coding, instruction following, and agent tasks",
+        "family": "Hy",
+        "release_date": "2026-11-04",
+        "last_updated": "2026-11-04",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "none",
+              "low",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "input": 983010,
+          "output": 65536
+        },
+        "cost": {
+          "input": 0.417,
+          "output": 1.2505,
+          "cache_read": 0.021
+        }
+      },
       "z-ai/glm-5.2": {
         "id": "z-ai/glm-5.2",
         "canonical_model_id": "zhipuai/glm-5.2",
@@ -4782,7 +4826,7 @@
         },
         "cost": {
           "input": 0.006,
-          "output": 7,
+          "output": 6.8,
           "cache_read": 0.005
         }
       },
@@ -4823,9 +4867,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.08,
-          "output": 3.6,
-          "cache_read": 0.076
+          "input": 0.0699,
+          "output": 1.4,
+          "cache_read": 0.0689
         }
       },
       "z-ai/glm-5.3-flash": {
@@ -4864,11 +4908,11 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 943717
         },
         "cost": {
-          "input": 0.0497,
-          "output": 0.0701,
+          "input": 0.15,
+          "output": 0.5,
           "cache_read": 0.03
         }
       }
