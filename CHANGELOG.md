@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.10.3] - Unreleased candidate
+## [0.10.3] - 2026-11-06
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release
 until the matching tag, packages, checksums, and release assets exist.
@@ -13298,7 +13298,7 @@ overflow report and `/theme` picker edge-wrapping patch in #1814.
 Older releases (v0.8.39 and earlier) are archived in [docs/CHANGELOG_ARCHIVE.md](docs/CHANGELOG_ARCHIVE.md).
 
 [Unreleased]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...HEAD
-[0.10.3]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...HEAD
+[0.10.3]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/codewhale-hq/CodeWhale/compare/v0.9.13...v0.10.0
