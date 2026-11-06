@@ -1223,9 +1223,11 @@ impl NativeUsageOrigin {
             NativeUsageDestination::Runtime { owner, sink, .. } => {
                 if !sink(record.clone()) {
                     retain_runtime_usage_record(owner, record)?;
-                    return Err(std::io::Error::other(
-                        "captured usage sink did not acknowledge its source; exact receipt retained",
-                    ));
+                    tracing::warn!(
+                        owner = %owner,
+                        "captured usage receipt retained for a later flush; the turn continues"
+                    );
+                    return Ok(());
                 }
                 record.acknowledge_persisted()?;
                 retire_runtime_usage_record(owner, record);
