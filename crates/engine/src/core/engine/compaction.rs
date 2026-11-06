@@ -413,7 +413,7 @@ impl Engine {
             previous_source,
         )
         .await;
-        if let Err(err) = self.install_resolved_runtime_route(route) {
+        if let Err(err) = self.install_resolved_runtime_route_async(route).await {
             let message =
                 format!("Cannot compact context because its provider route is not ready: {err}");
             self.finish_compaction(&id);

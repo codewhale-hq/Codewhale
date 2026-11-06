@@ -467,7 +467,7 @@ fn translation_session_is_current(app: &App, origin_session_fingerprint: Option<
     translation_origin(app).0.as_deref() == origin_session_fingerprint
 }
 
-fn exact_translation_client(
+async fn exact_translation_client(
     config: &Config,
     route: &codewhale_engine::core::events::TurnRoute,
 ) -> anyhow::Result<Arc<CodewhaleClient>> {
@@ -483,7 +483,8 @@ fn exact_translation_client(
         Some(&route.model),
     )
     .map_err(anyhow::Error::msg)?
-    .validate()
+    .validate_async()
+    .await
     .map_err(anyhow::Error::msg)?;
     if validated.identity.key.as_str() != route.provider_identity
         || validated.model != route.model
@@ -1351,7 +1352,7 @@ pub async fn run_tui(
     // startup, even when the API key is missing, the base URL is malformed,
     // or the network is unavailable.
     // Translations are skipped with a logged warning until a key is saved.
-    let translation_client = match CodewhaleClient::new(config) {
+    let translation_client = match crate::active_route_client(config).await {
         Ok(client) => Some(Arc::new(client)),
         Err(err) => {
             if app.onboarding == OnboardingState::None {
@@ -1419,7 +1420,7 @@ pub async fn run_tui(
     app.dispatch_completion_tx = Some(dispatch_completion_tx);
 
     if std::mem::take(&mut app.start_remote_control_on_launch) {
-        start_remote_control_session(&mut app, config);
+        start_remote_control_session(&mut app, config).await;
     }
     submit_initial_input_if_ready(&mut app, config, &engine_handle).await?;
 
@@ -3354,7 +3355,7 @@ pub(crate) async fn run_event_loop(
                             app.status_message = Some("Press Esc or Ctrl+C to cancel".to_string());
                         }
                         active_translation_client = match route.as_ref() {
-                            Some(route) => match exact_translation_client(config, route) {
+                            Some(route) => match exact_translation_client(config, route).await {
                                 Ok(client) => Some(client),
                                 Err(error) => {
                                     tracing::warn!(
@@ -3403,7 +3404,9 @@ pub(crate) async fn run_event_loop(
                         if app.runtime_turn_id.as_deref() == Some(turn_id.as_str()) {
                             active_translation_client = match exact_translation_client(
                                 config, &route,
-                            ) {
+                            )
+                            .await
+                            {
                                 Ok(client) => Some(client),
                                 Err(error) => {
                                     tracing::warn!(
@@ -8043,7 +8046,8 @@ pub(crate) fn apply_mcp_session_boot_event(
 
 pub(crate) async fn run_cache_warmup(app: &App, config: &Config) -> Result<CacheWarmupOutcome> {
     let route = resolve_cache_replay_route(app, config)?
-        .validate()
+        .validate_async()
+        .await
         .map_err(anyhow::Error::msg)?;
     let base_url = route.client.base_url().to_string();
     let reasoning_effort = app

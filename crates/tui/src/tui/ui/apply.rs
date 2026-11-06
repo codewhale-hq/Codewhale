@@ -3222,10 +3222,10 @@ async fn apply_command_result_inner(
             }
             AppAction::RemoteControl(action) => match action {
                 codewhale_app_server::remote_control::RemoteControlAction::Start => {
-                    start_remote_control_session(app, config);
+                    start_remote_control_session(app, config).await;
                 }
                 codewhale_app_server::remote_control::RemoteControlAction::Stop => {
-                    app.remote_control.stop();
+                    app.remote_control.stop_async().await;
                     let status = app.remote_control.status_line();
                     app.sticky_status = None;
                     app.status_message = Some(status);

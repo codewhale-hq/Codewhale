@@ -109,6 +109,7 @@ impl Engine {
             // mode gate below the schema boundary blocks write/edit, and
             // the ToolContext carries ShellPolicy::None.
             .with_file_tools()
+            .with_present_tool()
             // Foreground-only shell registration: never add terminal/*
             // lifecycle tools to Plan merely to keep the `bash` identity
             // stable across modes.

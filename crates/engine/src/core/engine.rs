@@ -2043,32 +2043,51 @@ impl Engine {
         self.config.model.clone_from(&self.session.model);
     }
 
-    /// Activate a structurally resolved route at the engine boundary. Normal
-    /// engines construct the concrete client before any turn state changes.
-    /// Embedders/tests that explicitly injected a provider-neutral client keep
-    /// that client as the I/O authority while still installing the exact route
-    /// identity, model, config, and budget receipt.
-    fn install_resolved_runtime_route(
+    async fn install_resolved_runtime_route_async(
         &mut self,
         mut route: ResolvedRuntimeRoute,
     ) -> Result<(), String> {
         if !self.model_client_injected {
-            self.install_validated_runtime_route(route.validate()?);
+            self.install_validated_runtime_route(route.validate_async().await?);
             return Ok(());
         }
 
         let context_window = route.context_window;
-        let preflighted_client = route.take_preflighted_client();
+        let concrete_client = match route.take_preflighted_client() {
+            Some(client) => Ok(client),
+            None => {
+                let config = std::mem::take(&mut route.config);
+                match CodewhaleClient::capture_candidate_preflight(config, &route.candidate).await {
+                    Ok((config, captured)) => {
+                        route.config = config;
+                        CodewhaleClient::from_candidate_captured(
+                            &route.config,
+                            &route.candidate,
+                            captured,
+                        )
+                        .map_err(|err| err.to_string())
+                    }
+                    Err(err) => Err(err.to_string()),
+                }
+            }
+        }
+        .map(|client| client.with_context_window(context_window));
+        self.install_injected_runtime_route(route, context_window, concrete_client);
+        Ok(())
+    }
+
+    fn install_injected_runtime_route(
+        &mut self,
+        route: ResolvedRuntimeRoute,
+        context_window: crate::route_runtime::ContextWindowResolution,
+        concrete_client: Result<CodewhaleClient, String>,
+    ) {
         let provider = route.identity.provider;
         let identity = route.identity;
         let model = route.model;
         let limits = crate::route_budget::known_route_limits(route.candidate.limits());
         let capabilities = route.candidate.capabilities();
         let api_config = *route.config;
-        let concrete_client = preflighted_client
-            .map(Ok)
-            .unwrap_or_else(|| CodewhaleClient::from_candidate(&api_config, &route.candidate))
-            .map(|client| client.with_context_window(context_window));
 
         let endpoint = route.candidate.endpoint().clone();
         self.forget_input_bill_if_route_changes(
@@ -2096,12 +2115,11 @@ impl Engine {
             }
             Err(err) => {
                 self.codewhale_client = None;
-                self.codewhale_client_error = Some(err.to_string());
+                self.codewhale_client_error = Some(err);
             }
         }
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
-        Ok(())
     }
 
     fn current_runtime_route(&self) -> Result<ResolvedRuntimeRoute, String> {
@@ -6960,7 +6978,7 @@ impl Engine {
         // Freeze the billing receipt here, while `route` is still the single
         // authority for this turn: `route.config` is the identity-scoped
         // Config the client is being built from, and `route.candidate` names
-        // the endpoint it will call. After `install_resolved_runtime_route`
+        // the endpoint it will call. After `install_resolved_runtime_route_async`
         // consumes `route`, the only sound source for these facts is this
         // receipt — an ambient `Config` read at TurnStarted or TurnComplete
         // would follow a later provider switch, auto-router hop, or custom
@@ -6968,7 +6986,7 @@ impl Engine {
         let dispatched_base_url = route.candidate.endpoint().base_url.clone();
         let dispatched_product =
             crate::route_billing::capture_product(&route.config, &route.identity);
-        if let Err(err) = self.install_resolved_runtime_route(route) {
+        if let Err(err) = self.install_resolved_runtime_route_async(route).await {
             let cost_scope = crate::cost_status::scope_token();
             crate::cost_status::report_runtime_usage_batch(
                 cost_scope,
@@ -7118,8 +7136,9 @@ impl Engine {
         turn.max_output_tokens = max_output_tokens;
         self.turn_counter = self.turn_counter.saturating_add(1);
         let turn_started_at = chrono::Utc::now();
-        // Mint the route receipt from the client that `install_resolved_runtime_route`
-        // actually installed above — the same client `Event::TurnComplete`
+        // Mint the route receipt from the client that
+        // `install_resolved_runtime_route_async` installed above — the same
+        // client `Event::TurnComplete`
         // reports `base_url` from. Hosts must not re-derive this from config
         // when they process `TurnStarted`: by then config may already describe
         // a different endpoint or credential.
