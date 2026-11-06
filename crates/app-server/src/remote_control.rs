@@ -5505,6 +5505,7 @@ mod tests {
             &virtual_thread_id,
             &virtual_turn_id,
         )
+        .await
         .unwrap();
         host.acquire_inference_ownership_for_tests().await;
         assert!(host.inference_ownership_is_held_for_tests());
@@ -5571,6 +5572,7 @@ mod tests {
                 &virtual_thread_id,
                 &virtual_turn_id,
             )
+            .await
             .unwrap();
             host.acquire_inference_ownership_for_tests().await;
             terminal_seq = first.next_runtime_seq("run_fixture");
@@ -5653,6 +5655,7 @@ mod tests {
                 &virtual_thread_id,
                 &virtual_turn_id,
             )
+            .await
             .unwrap();
         }
 
@@ -5742,6 +5745,7 @@ mod tests {
                     &virtual_thread_id,
                     &virtual_turn_id,
                 )
+                .await
                 .unwrap();
         }
 
@@ -5918,8 +5922,8 @@ mod tests {
         let _ = worker.await;
     }
 
-    #[test]
-    fn preattachment_failure_cannot_release_a_recovered_unsettled_turn() {
+    #[tokio::test]
+    async fn preattachment_failure_cannot_release_a_recovered_unsettled_turn() {
         let root = tempfile::tempdir().unwrap();
         let registry = Arc::new(codewhale_plugins::PluginRegistry::empty(root.path()));
         let mut controller = RemoteControlController::default();
@@ -5941,6 +5945,7 @@ mod tests {
             &format!("local_thread_{}", "a".repeat(24)),
             &format!("local_turn_{}", "b".repeat(24)),
         )
+        .await
         .unwrap();
         let retained_model = host.configured_default_model_for_tests();
         controller
