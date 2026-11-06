@@ -296,6 +296,50 @@ impl ResolvedRuntimeRoute {
         self.validate_for(RouteErrorSurface::Interactive)
     }
 
+    pub async fn preflight_async(mut self) -> Result<Self, String> {
+        self.config.verify_provider_identity(&self.identity)?;
+        if self.preflighted_client.is_none() {
+            let client = self
+                .build_preflighted_client(RouteErrorSurface::Interactive)
+                .await?;
+            self.preflighted_client =
+                Some(Box::new(client.with_context_window(self.context_window)));
+        }
+        Ok(self)
+    }
+
+    async fn build_preflighted_client(
+        &mut self,
+        surface: RouteErrorSurface,
+    ) -> Result<CodewhaleClient, String> {
+        if let Some(client) = self.preflighted_client.take() {
+            return Ok(*client);
+        }
+        let config = std::mem::take(&mut self.config);
+        let (config, captured) =
+            CodewhaleClient::capture_candidate_preflight(config, &self.candidate)
+                .await
+                .map_err(|err| {
+                    format_provider_route_preflight_error(
+                        self.identity.key.as_str(),
+                        &self.model,
+                        &err,
+                        surface,
+                    )
+                })?;
+        self.config = config;
+        CodewhaleClient::from_candidate_captured(&self.config, &self.candidate, captured).map_err(
+            |err| {
+                format_provider_route_preflight_error(
+                    self.identity.key.as_str(),
+                    &self.model,
+                    &err,
+                    surface,
+                )
+            },
+        )
+    }
+
     /// [`Self::validate`] with next steps worded for `surface`.
     pub fn validate_for(
         mut self,
@@ -331,6 +375,33 @@ impl ResolvedRuntimeRoute {
 
     pub fn take_preflighted_client(&mut self) -> Option<CodewhaleClient> {
         self.preflighted_client.take().map(|client| *client)
+    }
+
+    pub async fn validate_async(self) -> Result<ValidatedRuntimeRoute, String> {
+        self.validate_for_async(RouteErrorSurface::Interactive)
+            .await
+    }
+
+    pub async fn validate_for_async(
+        mut self,
+        surface: RouteErrorSurface,
+    ) -> Result<ValidatedRuntimeRoute, String> {
+        self.config.verify_provider_identity(&self.identity)?;
+        let client = self
+            .build_preflighted_client(surface)
+            .await?
+            .with_context_window(self.context_window);
+        if client.admitted_provider_identity() != &self.identity {
+            return Err("preflighted client does not match captured provider identity".into());
+        }
+        Ok(ValidatedRuntimeRoute {
+            identity: self.identity,
+            candidate: self.candidate,
+            config: self.config,
+            model: self.model,
+            context_window: self.context_window,
+            client,
+        })
     }
 }
 

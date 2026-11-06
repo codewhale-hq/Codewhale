@@ -1601,14 +1601,15 @@ pub(super) fn requested_provider_identity(
 /// Resolve and client-preflight `identity` for `model` (`None` or `auto`
 /// selects the provider's default route). A provider whose route does not
 /// resolve, or whose credentials cannot build a client, is not ready.
-pub(super) fn ready_provider_route(
+pub(super) async fn ready_provider_route(
     config: &Config,
     identity: &ProviderIdentity,
     model: Option<&str>,
 ) -> Result<crate::route_runtime::ResolvedRuntimeRoute> {
     let model = model.filter(|model| !model.trim().eq_ignore_ascii_case("auto"));
     resolve_runtime_thread_route_for_identity(config, identity, model)?
-        .preflight()
+        .preflight_async()
+        .await
         .map_err(|reason| anyhow!("provider '{}' is not ready: {reason}", identity.key))
 }
 
@@ -8187,7 +8188,8 @@ impl RuntimeThreadManager {
                             .then_some(current_model)
                     });
                     let route =
-                        ready_provider_route(&config, &identity, requested_model.as_deref())?;
+                        ready_provider_route(&config, &identity, requested_model.as_deref())
+                            .await?;
                     let model = match requested_model {
                         Some(model) if model.trim().eq_ignore_ascii_case("auto") => model,
                         _ => route.model.clone(),
@@ -12935,7 +12937,12 @@ impl RuntimeThreadManager {
                     None if thread.model.trim().eq_ignore_ascii_case("auto") => {
                         thread.model.clone()
                     }
-                    None => ready_provider_route(&cfg_snapshot, identity, None)?.model.clone(),
+                    None => {
+                        ready_provider_route(&cfg_snapshot, identity, None)
+                            .await?
+                            .model
+                            .clone()
+                    }
                 }
             }
             None => req.model.as_deref().unwrap_or(&thread.model).to_string(),
@@ -13248,7 +13255,8 @@ impl RuntimeThreadManager {
         };
         let route = if client_preflight_required || turn_provider.is_some() || req.account_model_owner.is_some() {
             route
-                .preflight()
+                .preflight_async()
+                .await
                 .map_err(|reason| anyhow!("Failed to validate runtime thread route: {reason}"))?
         } else {
             route
@@ -13833,7 +13841,8 @@ source_usage_records: Default::default(),
         let route = self.resolved_route_for_thread(&self.read_config(), &thread)?;
         let route = if client_preflight_required {
             route
-                .preflight()
+                .preflight_async()
+                .await
                 .map_err(|reason| anyhow!("Failed to validate runtime thread route: {reason}"))?
         } else {
             route

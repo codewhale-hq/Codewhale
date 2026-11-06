@@ -422,7 +422,10 @@ impl Engine {
             Some(&next.model),
         )
         .map_err(anyhow::Error::msg)?;
-        let mut route = resolved.validate().map_err(anyhow::Error::msg)?;
+        let mut route = resolved
+            .validate_async()
+            .await
+            .map_err(anyhow::Error::msg)?;
         anyhow::ensure!(
             next.client.admitted_provider_identity() == &route.identity
                 && route.candidate.endpoint().base_url == next.client.base_url(),
