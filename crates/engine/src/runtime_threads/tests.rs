@@ -17920,15 +17920,27 @@ async fn auto_review_force_prompt_is_denied_without_opening_a_modal() -> Result<
             id: "tool_auto_hold".to_string(),
         })
     );
+    let decided = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if manager.pending_approvals_count() == 0
+                && let Some(event) =
+                    manager
+                        .events_since(&thread.id, None)?
+                        .into_iter()
+                        .find(|event| {
+                            event.event == "approval.decided"
+                                && event.payload.get("posture").and_then(Value::as_str)
+                                    == Some("auto_review")
+                        })
+            {
+                return Ok::<_, anyhow::Error>(event);
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .context("auto-review hold must emit approval.decided")??;
     assert_eq!(manager.pending_approvals_count(), 0);
-    let decided = manager
-        .events_since(&thread.id, None)?
-        .into_iter()
-        .find(|event| {
-            event.event == "approval.decided"
-                && event.payload.get("posture").and_then(Value::as_str) == Some("auto_review")
-        })
-        .context("auto-review hold must emit approval.decided")?;
     assert_eq!(
         decided.payload.get("tool_call_id").and_then(Value::as_str),
         Some("tool_auto_hold")
