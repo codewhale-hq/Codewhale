@@ -23,6 +23,13 @@ pub enum RouteError {
         /// The foreign model selector that was rejected.
         model: String,
     },
+    /// The resolved route has no unambiguous Responses dialect profile.
+    ResponsesProfile {
+        /// Provider whose route was being resolved.
+        provider: ProviderId,
+        /// Profile selection failure.
+        detail: String,
+    },
     /// A model-aware provider did not prove a supported request protocol for
     /// the selected model/endpoint.
     UnsupportedModelProtocol {
@@ -51,6 +58,11 @@ impl fmt::Display for RouteError {
             Self::ForeignModelForDirectProvider { provider, model } => write!(
                 f,
                 "model {model:?} is not served by direct provider {}",
+                provider.as_str()
+            ),
+            Self::ResponsesProfile { provider, detail } => write!(
+                f,
+                "provider {} responses profile: {detail}",
                 provider.as_str()
             ),
             Self::UnsupportedModelProtocol {

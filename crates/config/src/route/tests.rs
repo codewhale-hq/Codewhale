@@ -86,6 +86,11 @@ fn concentrate_passes_ids_through_and_strips_only_its_own_namespace() {
             RequestProtocol::Responses,
             "{raw} must ride the Responses wire"
         );
+        assert_eq!(
+            out.responses_profile_id().map(|id| id.as_str()),
+            Some("concentrate"),
+            "{raw} profile"
+        );
     }
 
     // Codewhale's own `auto` sentinel resolves to the provider default, never
@@ -266,6 +271,12 @@ fn resolver_records_exact_limit_override_provenance() {
         .expect("Codex route with sourced overrides resolves");
 
     assert_eq!(candidate.applied_limit_overrides(), overrides.as_slice());
+    assert_eq!(candidate.protocol(), RequestProtocol::Responses);
+    assert_eq!(
+        candidate.responses_profile_id().map(|id| id.as_str()),
+        Some("codex")
+    );
+    assert_ne!(candidate.endpoint().endpoint_key, "responses");
 }
 
 #[test]
@@ -396,6 +407,10 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
     assert_eq!(default_flash.protocol(), RequestProtocol::Responses);
     assert_eq!(default_flash.endpoint().endpoint_key, "responses");
     assert_eq!(
+        default_flash.responses_profile_id().map(|id| id.as_str()),
+        Some("deepseek_stateless_plain_reasoning")
+    );
+    assert_eq!(
         default_flash.capabilities().server_side_web_search,
         CapabilityState::Supported
     );
@@ -409,6 +424,10 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
     assert_eq!(flash.protocol(), RequestProtocol::Responses);
     assert_eq!(flash.endpoint().endpoint_key, "responses");
     assert_eq!(
+        flash.responses_profile_id().map(|id| id.as_str()),
+        Some("deepseek_stateless_plain_reasoning")
+    );
+    assert_eq!(
         flash.capabilities().server_side_web_search,
         CapabilityState::Supported
     );
@@ -418,6 +437,7 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
         .expect("official Pro route resolves");
     assert_eq!(pro.protocol(), RequestProtocol::ChatCompletions);
     assert_eq!(pro.endpoint().endpoint_key, "chat");
+    assert!(pro.responses_profile_id().is_none());
     assert_eq!(
         pro.capabilities().server_side_web_search,
         CapabilityState::Supported
@@ -431,6 +451,7 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
         .expect("unknown future model preserves direct-provider pass-through");
     assert_eq!(future.protocol(), RequestProtocol::ChatCompletions);
     assert_eq!(future.endpoint().endpoint_key, "chat");
+    assert!(future.responses_profile_id().is_none());
 
     let legacy_unknown = resolver
         .resolve(&req(
@@ -440,6 +461,7 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
         .expect("unknown unversioned model preserves historical Chat pass-through");
     assert_eq!(legacy_unknown.protocol(), RequestProtocol::ChatCompletions);
     assert_eq!(legacy_unknown.endpoint().endpoint_key, "chat");
+    assert!(legacy_unknown.responses_profile_id().is_none());
 
     let custom = resolver
         .resolve(&RouteRequest {
@@ -453,6 +475,7 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
         .expect("custom compatible Flash route remains pass-through");
     assert_eq!(custom.protocol(), RequestProtocol::ChatCompletions);
     assert_eq!(custom.endpoint().endpoint_key, "chat");
+    assert!(custom.responses_profile_id().is_none());
     assert_eq!(
         custom.capabilities().server_side_web_search,
         CapabilityState::Unknown
@@ -1096,6 +1119,7 @@ fn resolver_explicit_custom_with_base_url_override_passes_model_through_verbatim
         out.protocol(),
         crate::route::RequestProtocol::ChatCompletions
     );
+    assert!(out.responses_profile_id().is_none());
     assert!(out.validation().ok);
     assert!(out.validation().messages.is_empty());
 }
@@ -1130,6 +1154,11 @@ fn custom_wire_override_mints_a_wire_true_candidate() {
             .resolve(&request)
             .expect("custom provider should resolve via pass-through");
         assert_eq!(out.protocol(), protocol, "{dialect:?} must mint its wire");
+        assert_eq!(
+            out.responses_profile_id().map(|id| id.as_str()),
+            (protocol == RequestProtocol::Responses).then_some("standard"),
+            "{dialect:?} profile"
+        );
         assert_eq!(out.endpoint().base_url, "https://relay.example.com/v1");
         assert_eq!(out.wire_model_id().as_str(), "gpt-5.5");
         assert!(out.validation().ok);

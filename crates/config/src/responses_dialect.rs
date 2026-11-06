@@ -8,13 +8,16 @@
 
 use std::sync::OnceLock;
 
+use serde::Serialize;
+
 use crate::ProviderKind;
 use crate::provider::WireFormat;
 
 #[path = "responses_dialect_data.rs"]
 mod data;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
 pub struct ResponsesProfileId(&'static str);
 
 impl ResponsesProfileId {
