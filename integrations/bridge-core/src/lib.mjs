@@ -559,23 +559,50 @@ export function preservedChatStateFields(state = {}, fields = ["model", "authori
   return preserved;
 }
 
-export function splitMessage(text, maxChars = 3500) {
+export function splitMessage(text, maxChars = 3500, maxBytes = 0) {
   const value = String(text || "");
   const limit = Math.max(1, Math.floor(Number(maxChars) || 3500));
   // Materialize code points once; all chunking below works on index ranges
   // instead of re-running Array.from over the shrinking remainder.
   const chars = Array.from(value);
-  if (chars.length <= limit) return value ? [value] : [];
-  const chunks = [];
-  let offset = 0;
-  let openFence = null;
-  while (offset < chars.length) {
-    const next = takeRenderedSplitMessageChunk(chars, offset, limit, openFence);
-    chunks.push(next.chunk);
-    offset = next.offset;
-    openFence = next.openFence;
+  let chunks;
+  if (chars.length <= limit) {
+    chunks = value ? [value] : [];
+  } else {
+    chunks = [];
+    let offset = 0;
+    let openFence = null;
+    while (offset < chars.length) {
+      const next = takeRenderedSplitMessageChunk(chars, offset, limit, openFence);
+      chunks.push(next.chunk);
+      offset = next.offset;
+      openFence = next.openFence;
+    }
   }
-  return chunks;
+  const byteLimit = Math.floor(Number(maxBytes) || 0);
+  if (byteLimit <= 0) return chunks;
+  // Transport caps such as WeCom's 4096-byte message limit are measured in
+  // UTF-8 bytes, not characters: a 3500-character CJK reply is ~10.5 KB and
+  // gets silently truncated. Split any oversized chunk on code-point bounds.
+  return chunks.flatMap((chunk) => splitChunkByBytes(chunk, byteLimit));
+}
+
+function splitChunkByBytes(chunk, maxBytes) {
+  const out = [];
+  let buf = "";
+  let size = 0;
+  for (const ch of String(chunk || "")) {
+    const b = Buffer.byteLength(ch, "utf8");
+    if (size + b > maxBytes && buf) {
+      out.push(buf);
+      buf = "";
+      size = 0;
+    }
+    buf += ch;
+    size += b;
+  }
+  if (buf) out.push(buf);
+  return out;
 }
 
 function takeRenderedSplitMessageChunk(chars, offset, maxChars, openFence) {
