@@ -142,11 +142,13 @@ async fn search_files_async(
     timeout: Duration,
     follow_symlinks: bool,
 ) -> Result<Vec<FileSearchMatch>, ToolError> {
+    let workspace_canonical = tokio::fs::canonicalize(&workspace).await.ok();
     run_blocking_file_search(timeout, cancel_token, move |worker_cancel_token| {
         search_files(
             &query,
             &base_path,
             &workspace,
+            workspace_canonical,
             extensions,
             exclude_patterns,
             limit,
@@ -261,6 +263,7 @@ fn search_files(
     query: &str,
     base_path: &Path,
     workspace: &Path,
+    workspace_canonical: Option<PathBuf>,
     extensions: Vec<String>,
     exclude_patterns: Vec<String>,
     limit: usize,
@@ -330,7 +333,6 @@ fn search_files(
     let walk_root = base_path.to_path_buf();
     let walk_cancel_token = cancel_token.cloned();
 
-    let workspace_canonical = workspace.canonicalize().ok();
     let mut builder = WalkBuilder::new(base_path);
     builder
         .hidden(false)

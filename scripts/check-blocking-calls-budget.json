@@ -193,9 +193,6 @@
   "crates/engine/src/session_secret_scrub.rs": {
     "std_fs": 8
   },
-  "crates/engine/src/tools/file_search.rs": {
-    "path_canonicalize": 1
-  },
   "crates/engine/src/tools/git.rs": {
     "path_canonicalize": 1
   },
