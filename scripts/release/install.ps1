@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $destination = Join-Path $env:USERPROFILE 'bin'
 $names = @('codewhale.exe', 'codew.exe', 'codewhale.bat')
+$receiptName = '.codewhale-install.sha256'
 $optional = $env:CODEWHALE_INSTALL_COMPILED_HOST -eq '1'
 if ($optional) {
     $names += @('codewhale-extension-host.exe', 'codewhale-extension-host.LICENSES.txt', 'codewhale-extension-host.relink-source.tar.gz', 'codewhale-extension-host.release.json')
@@ -34,6 +35,7 @@ try {
         if (!(File-Hash (Join-Path $PSScriptRoot $name))) { throw "Missing archive payload $name; extract the complete archive" }
     }
     if ((File-Hash (Join-Path $PSScriptRoot 'codewhale.exe')) -ne (File-Hash (Join-Path $PSScriptRoot 'codew.exe'))) { throw 'Command alias differs from the canonical Codewhale program' }
+    $sourceLauncherHash = File-Hash (Join-Path $PSScriptRoot 'codewhale.bat')
     if ($optional) {
         $entry = Host-Entry (Join-Path $PSScriptRoot 'codewhale-extension-host.release.json')
         $hashes = @($entry.sha256, $entry.notices_sha256, $entry.source_sha256)
@@ -45,6 +47,22 @@ try {
         $directory = Get-Item -LiteralPath $destination -Force
         if (!$directory.PSIsContainer -or ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Refusing a nonregular or redirected installation directory' }
     }
+    $receiptTarget = Join-Path $destination $receiptName
+    $claims = @{}
+    if (File-Hash $receiptTarget) {
+        if ((Get-Item -LiteralPath $receiptTarget -Force).Length -gt 65536) { throw "Refusing oversized install receipt $receiptTarget" }
+        $receiptText = [string](Get-Content -LiteralPath $receiptTarget -Raw)
+        foreach ($line in ($receiptText -split "`r?`n")) {
+            if (!$line) { continue }
+            if ($line -match '^([a-f0-9]{64})  (codewhale\.exe|codew\.exe|codewhale\.bat)$') {
+                if ($claims.ContainsKey($Matches[2])) { throw "Refusing duplicate install receipt entry $($Matches[2]) in $receiptTarget" }
+                $claims[$Matches[2]] = $Matches[1].ToLowerInvariant()
+            } else {
+                throw "Refusing unrecognized install receipt entry '$line' in $receiptTarget"
+            }
+        }
+        if ($claims.Count -ne 3) { throw "Refusing incomplete Codewhale install receipt $receiptTarget" }
+    }
     [IO.Directory]::CreateDirectory($destination) | Out-Null
     $stage = Join-Path $destination ('.codewhale-install-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($stage) | Out-Null
@@ -54,6 +72,16 @@ try {
     foreach ($name in $names) {
         $target = Join-Path $destination $name
         $oldHash = File-Hash $target
+        if ($oldHash -and $name -in @('codewhale.exe', 'codew.exe', 'codewhale.bat') -and $claims[$name] -ne $oldHash) {
+            $legacy = $false
+            if ($claims.Count -eq 0) {
+                $primary = File-Hash (Join-Path $destination 'codewhale.exe')
+                $alias = File-Hash (Join-Path $destination 'codew.exe')
+                $launcher = File-Hash (Join-Path $destination 'codewhale.bat')
+                $legacy = $primary -and $primary -eq $alias -and $launcher -eq $sourceLauncherHash
+            }
+            if (!$legacy) { throw "Refusing unclaimed destination $target; the Codewhale install receipt does not own its bytes" }
+        }
         if ($optional -and $name -like 'codewhale-extension-host*' -and $name -ne 'codewhale-extension-host.release.json' -and $oldHash) {
             if (!$oldHost) { throw "Refusing unclaimed compiled-host destination $target" }
             $expected = switch ($name) { 'codewhale-extension-host.exe' { $oldHost.sha256 }; 'codewhale-extension-host.LICENSES.txt' { $oldHost.notices_sha256 }; 'codewhale-extension-host.relink-source.tar.gz' { $oldHost.source_sha256 } }
@@ -70,11 +98,9 @@ try {
         }
         $snapshots += [PSCustomObject]@{ Name=$name; Target=$target; Staged=$staged; OldHash=$oldHash; NewHash=$newHash; Backup=$backup }
     }
-    $receiptName = '.codewhale-install.sha256'
     $receiptStaged = Join-Path $stage $receiptName
     $receiptText = ($snapshots | Where-Object { $_.Name -in @('codewhale.exe', 'codew.exe', 'codewhale.bat') } | ForEach-Object { "$($_.NewHash)  $($_.Name)`n" }) -join ''
     [IO.File]::WriteAllText($receiptStaged, $receiptText)
-    $receiptTarget = Join-Path $destination $receiptName
     $receiptOld = File-Hash $receiptTarget
     $receiptBackup = Join-Path $stage ($receiptName + '.previous')
     if ($receiptOld) {
