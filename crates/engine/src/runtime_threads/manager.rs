@@ -477,6 +477,18 @@ pub(super) fn projected_user_text(message: &Message) -> Option<String> {
     {
         return None;
     }
+    // A `<context_update>` drift notice is the same case in a bare shape: the
+    // engine appends it between turns as one whole text block, without the
+    // `<turn_meta>` provenance line the notices above carry, and no turn
+    // record keeps it. Reading it as a kept prompt made every fork, `/undo`
+    // and retry of a session that had received one refuse with "cannot
+    // identify an exact saved-history boundary"; the envelope is the engine's
+    // own fixed rendering, so a message that is exactly one is skipped.
+    if let [ContentBlock::Text { text, .. }] = message.content.as_slice()
+        && codewhale_core::prefix_cache::is_context_update_envelope(text)
+    {
+        return None;
+    }
     let text = message
         .content
         .iter()
