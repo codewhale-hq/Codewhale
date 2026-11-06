@@ -575,6 +575,7 @@ async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
         "load_skill",
         "context_archive_get",
         "context_archive_search",
+        "present",
     ]);
 
     for mode in ["plan", "act", "operate"] {
@@ -605,6 +606,7 @@ async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
             expected_mode_active.insert("execute_tools");
         } else {
             expected_mode_active.remove("task_shell_wait");
+            expected_mode_active.remove("present");
         }
         assert_eq!(
             metric_tool_names(&payload, mode, "active"),
@@ -754,7 +756,10 @@ fn representative_prompt(
         PromptSessionContext {
             user_memory_block,
             goal_objective,
-            skills_config: std::sync::Arc::new(codewhale_runtime::config::SkillsConfig { scan_codewhale_only: Some(true), ..Default::default() }),
+            skills_config: std::sync::Arc::new(codewhale_runtime::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            }),
             mode: AppMode::Agent,
             ..PromptSessionContext::default()
         },
