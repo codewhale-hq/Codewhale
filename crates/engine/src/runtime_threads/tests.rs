@@ -6753,7 +6753,7 @@ fn runtime_usage_sink_survives_parent_terminal_and_restart_exactly_once() -> Res
 }
 
 #[test]
-fn routed_usage_append_is_bounded_and_idempotent_for_every_delivery_path() {
+fn routed_usage_append_has_no_cap_and_is_idempotent_for_every_delivery_path() {
     let mut turn = sample_turn(
         "thr_all_paths",
         "turn_all_paths",
@@ -6784,18 +6784,12 @@ fn routed_usage_append_is_bounded_and_idempotent_for_every_delivery_path() {
                 },
             },
         );
-        assert_eq!(
-            changed,
-            index <= u32::try_from(MAX_ROUTED_USAGE_RECORDS_PER_TURN).unwrap()
-        );
+        assert!(changed);
     }
 
-    assert_eq!(turn.routed_usage.len(), MAX_ROUTED_USAGE_RECORDS_PER_TURN);
-    assert_eq!(turn.routed_usage_dropped_records, 1);
-    assert_eq!(
-        turn.routed_usage_source_ids.len(),
-        MAX_ROUTED_USAGE_RECORDS_PER_TURN
-    );
+    assert_eq!(turn.routed_usage.len(), 90);
+    assert_eq!(turn.routed_usage_dropped_records, 0);
+    assert_eq!(turn.routed_usage_source_ids.len(), 90);
     let before = turn.clone();
     assert!(!append_routed_usage_record(
         &mut turn,
@@ -6897,52 +6891,6 @@ async fn raw_metadata_missing_usage_deduplicates_direct_drop_and_legacy_totals()
         }
     }
     Ok(())
-}
-
-#[test]
-fn routed_usage_rejects_new_records_when_legacy_source_ledger_already_exceeds_bound() {
-    let mut turn = sample_turn(
-        "thr_legacy_ledger",
-        "turn_legacy_ledger",
-        RuntimeTurnStatus::Completed,
-    );
-    turn.routed_usage_source_ids = (0..=MAX_ROUTED_USAGE_RECORDS_PER_TURN)
-        .map(|index| routed_usage_source_fingerprint(&format!("legacy-response-{index}")))
-        .collect();
-    let route = crate::cost_status::EffectiveRouteEnvelope::capture(
-        None,
-        ProviderKind::Deepseek,
-        "deepseek",
-        "deepseek-v4-flash",
-        Some(ProviderKind::Deepseek.provider().default_base_url()),
-        Utc::now(),
-    );
-    let record = EffectiveRouteUsage {
-        route: route.clone(),
-        usage: Usage {
-            input_tokens: 1,
-            ..Usage::default()
-        },
-    };
-    turn.routed_usage = vec![record.clone(); MAX_ROUTED_USAGE_RECORDS_PER_TURN];
-    let source_count = turn.routed_usage_source_ids.len();
-    assert!(append_routed_usage_record(
-        &mut turn,
-        "new-response",
-        record
-    ));
-    assert!(!append_routed_usage_drop_record(
-        &mut turn,
-        RuntimeUsageDropRecord {
-            reason: crate::cost_status::RuntimeUsageMissingReason::default(),
-            source_id: "another-new-response".to_string(),
-            route,
-        }
-    ));
-    assert_eq!(turn.routed_usage.len(), MAX_ROUTED_USAGE_RECORDS_PER_TURN);
-    assert_eq!(turn.routed_usage_source_ids.len(), source_count);
-    assert!(turn.routed_usage_drop_records.is_empty());
-    assert_eq!(turn.routed_usage_dropped_records, 1);
 }
 
 #[tokio::test]
