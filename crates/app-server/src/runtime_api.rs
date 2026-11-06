@@ -4444,22 +4444,30 @@ async fn create_fleet_run(
         )));
     }
     let (document, descriptor, max_workers) = prepare_managed_fleet_run(request)?;
-    let manager = open_fleet_manager(&state)?;
-    let report = manager
-        .create_queued_run_with_descriptor(document, max_workers, descriptor)
-        .map_err(|error| ApiError::bad_request(format!("Failed to create Fleet run: {error}")))?;
-    let ledger_state = manager
-        .rebuild_state()
-        .map_err(|error| ApiError::internal(format!("Failed to rebuild Fleet state: {error}")))?;
-    let run = ledger_state
-        .runs
-        .get(&report.run_id.0)
-        .ok_or_else(|| ApiError::internal("Created Fleet run was missing from its ledger"))?;
+    let (report, detail) = tokio::task::spawn_blocking(move || {
+        let manager = open_fleet_manager(&state)?;
+        let report = manager
+            .create_queued_run_with_descriptor(document, max_workers, descriptor)
+            .map_err(|error| {
+                ApiError::bad_request(format!("Failed to create Fleet run: {error}"))
+            })?;
+        let ledger_state = manager.rebuild_state().map_err(|error| {
+            ApiError::internal(format!("Failed to rebuild Fleet state: {error}"))
+        })?;
+        let run = ledger_state
+            .runs
+            .get(&report.run_id.0)
+            .ok_or_else(|| ApiError::internal("Created Fleet run was missing from its ledger"))?;
+        let detail = fleet_run_detail_json(&manager, run, &ledger_state)?;
+        Ok::<_, ApiError>((report, detail))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Fleet run creation task failed: {error}")))??;
     Ok((
         StatusCode::CREATED,
         Json(json!({
             "execution": "awaiting_start",
-            "run": fleet_run_detail_json(&manager, run, &ledger_state)?,
+            "run": detail,
             "warnings": report.warnings,
         })),
     ))
@@ -4673,10 +4681,16 @@ async fn start_fleet_run(
     State(state): State<RuntimeApiState>,
     Path(run_id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let manager = open_fleet_manager(&state)?;
-    let durable = manager
-        .rebuild_state()
-        .map_err(|error| ApiError::internal(format!("Failed to rebuild Fleet state: {error}")))?;
+    let open_state = state.clone();
+    let (manager, durable) = tokio::task::spawn_blocking(move || {
+        let manager = open_fleet_manager(&open_state)?;
+        let durable = manager.rebuild_state().map_err(|error| {
+            ApiError::internal(format!("Failed to rebuild Fleet state: {error}"))
+        })?;
+        Ok::<_, ApiError>((manager, durable))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Fleet run start task failed: {error}")))??;
     let run = durable
         .runs
         .get(&run_id)
@@ -5016,48 +5030,70 @@ async fn get_fleet_worker(
     State(state): State<RuntimeApiState>,
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let manager = open_fleet_manager(&state)?;
-    let inspection = manager.inspect_worker(&worker_id).map_err(|err| {
-        ApiError::not_found(format!("Fleet worker '{worker_id}' not found: {err}"))
-    })?;
-    Ok(Json(fleet_worker_json(&inspection)))
+    let response = tokio::task::spawn_blocking(move || {
+        let manager = open_fleet_manager(&state)?;
+        let inspection = manager.inspect_worker(&worker_id).map_err(|err| {
+            ApiError::not_found(format!("Fleet worker '{worker_id}' not found: {err}"))
+        })?;
+        Ok::<_, ApiError>(fleet_worker_json(&inspection))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Fleet worker read task failed: {error}")))??;
+    Ok(Json(response))
 }
 
 async fn interrupt_fleet_worker(
     State(state): State<RuntimeApiState>,
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let manager = open_fleet_manager(&state)?;
-    let inspection = manager.interrupt_worker(&worker_id).map_err(|err| {
-        ApiError::bad_request(format!(
-            "Failed to interrupt Fleet worker '{worker_id}': {err}"
-        ))
-    })?;
-    Ok(Json(json!({
-        "action": "interrupt",
-        "worker": fleet_worker_json(&inspection),
-    })))
+    let response = tokio::task::spawn_blocking(move || {
+        let manager = open_fleet_manager(&state)?;
+        let inspection = manager.interrupt_worker(&worker_id).map_err(|err| {
+            ApiError::bad_request(format!(
+                "Failed to interrupt Fleet worker '{worker_id}': {err}"
+            ))
+        })?;
+        Ok::<_, ApiError>(json!({
+            "action": "interrupt",
+            "worker": fleet_worker_json(&inspection),
+        }))
+    })
+    .await
+    .map_err(|error| {
+        ApiError::internal(format!("Fleet worker interrupt task failed: {error}"))
+    })??;
+    Ok(Json(response))
 }
 
 async fn stop_fleet_worker(
     State(state): State<RuntimeApiState>,
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let manager = open_fleet_manager(&state)?;
-    let inspection = manager.interrupt_worker(&worker_id).map_err(|err| {
-        ApiError::bad_request(format!("Failed to stop Fleet worker '{worker_id}': {err}"))
-    })?;
-    Ok(Json(json!({
-        "action": "stop",
-        "worker": fleet_worker_json(&inspection),
-    })))
+    let response = tokio::task::spawn_blocking(move || {
+        let manager = open_fleet_manager(&state)?;
+        let inspection = manager.interrupt_worker(&worker_id).map_err(|err| {
+            ApiError::bad_request(format!("Failed to stop Fleet worker '{worker_id}': {err}"))
+        })?;
+        Ok::<_, ApiError>(json!({
+            "action": "stop",
+            "worker": fleet_worker_json(&inspection),
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Fleet worker stop task failed: {error}")))??;
+    Ok(Json(response))
 }
 
 async fn restart_fleet_worker(
     State(state): State<RuntimeApiState>,
     Path(worker_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let manager = open_fleet_manager(&state)?;
+    let open_state = state.clone();
+    let manager = tokio::task::spawn_blocking(move || open_fleet_manager(&open_state))
+        .await
+        .map_err(|error| {
+            ApiError::internal(format!("Fleet worker restart open task failed: {error}"))
+        })??;
     let restart_manager = manager.clone();
     let restart_worker = worker_id.clone();
     let report = codewhale_runtime::runtime_control::owner_work(move || {
@@ -5109,20 +5145,25 @@ async fn stop_fleet_run(
     State(state): State<RuntimeApiState>,
     Path(run_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let manager = open_fleet_manager(&state)?;
-    let run_id = FleetRunId::from(run_id);
-    let stopped = manager.stop_run(&run_id).map_err(|err| {
-        ApiError::bad_request(format!("Failed to stop Fleet run '{}': {err}", run_id.0))
-    })?;
-    let status = manager
-        .run_status(&run_id)
-        .map_err(|err| ApiError::internal(format!("Failed to read Fleet run status: {err}")))?;
-    Ok(Json(json!({
-        "action": "stop",
-        "run_id": run_id.0,
-        "stopped": stopped,
-        "status": fleet_status_json(&status),
-    })))
+    let response = tokio::task::spawn_blocking(move || {
+        let manager = open_fleet_manager(&state)?;
+        let run_id = FleetRunId::from(run_id);
+        let stopped = manager.stop_run(&run_id).map_err(|err| {
+            ApiError::bad_request(format!("Failed to stop Fleet run '{}': {err}", run_id.0))
+        })?;
+        let status = manager
+            .run_status(&run_id)
+            .map_err(|err| ApiError::internal(format!("Failed to read Fleet run status: {err}")))?;
+        Ok::<_, ApiError>(json!({
+            "action": "stop",
+            "run_id": run_id.0,
+            "stopped": stopped,
+            "status": fleet_status_json(&status),
+        }))
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("Fleet run stop task failed: {error}")))??;
+    Ok(Json(response))
 }
 
 /// Maximum bytes read from a receipt evidence file for the inspection endpoint.

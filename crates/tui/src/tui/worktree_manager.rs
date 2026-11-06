@@ -40,6 +40,7 @@ pub struct WorktreeManagerView {
     compare_against: Option<PathBuf>,
     status: Option<String>,
     last_snapshot: GitStatusSnapshot,
+    current_flags: Vec<bool>,
 }
 
 impl WorktreeManagerView {
@@ -48,7 +49,7 @@ impl WorktreeManagerView {
         let workspace = workspace.into();
         git_status::refresh_if_stale(&workspace);
         let last_snapshot = git_status::cached_status();
-        Self {
+        let mut view = Self {
             workspace,
             selected: 0,
             mode: Mode::List,
@@ -57,7 +58,10 @@ impl WorktreeManagerView {
             compare_against: None,
             status: None,
             last_snapshot,
-        }
+            current_flags: Vec::new(),
+        };
+        view.recompute_current_flags();
+        view
     }
 
     fn refresh(&mut self) {
@@ -67,6 +71,16 @@ impl WorktreeManagerView {
         if self.selected >= n {
             self.selected = n.saturating_sub(1);
         }
+        self.recompute_current_flags();
+    }
+
+    fn recompute_current_flags(&mut self) {
+        self.current_flags = self
+            .last_snapshot
+            .worktrees
+            .iter()
+            .map(|entry| same_path(&self.workspace, &entry.path))
+            .collect();
     }
 
     fn entries(&self) -> &[WorktreeEntry] {
@@ -75,10 +89,6 @@ impl WorktreeManagerView {
 
     fn selected_entry(&self) -> Option<&WorktreeEntry> {
         self.entries().get(self.selected)
-    }
-
-    fn is_current(workspace: &Path, entry: &WorktreeEntry) -> bool {
-        same_path(workspace, &entry.path)
     }
 }
 
@@ -195,7 +205,12 @@ impl WorktreeManagerView {
             KeyCode::Enter => {
                 if let Some(entry) = self.selected_entry() {
                     let path = entry.path.display().to_string();
-                    if Self::is_current(&self.workspace, entry) {
+                    let current = self
+                        .current_flags
+                        .get(self.selected)
+                        .copied()
+                        .unwrap_or(false);
+                    if current {
                         self.status = Some("Already in this worktree".into());
                         ViewAction::None
                     } else {
@@ -324,7 +339,7 @@ impl WorktreeManagerView {
         } else {
             for (i, entry) in self.entries().iter().enumerate() {
                 let selected = i == self.selected;
-                let current = Self::is_current(&self.workspace, entry);
+                let current = self.current_flags.get(i).copied().unwrap_or(false);
                 let marker = if selected { "▸ " } else { "  " };
                 let cur = if current { " · current" } else { "" };
                 let locked = if entry.locked { " 🔒" } else { "" };
