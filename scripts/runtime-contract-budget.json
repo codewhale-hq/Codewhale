@@ -14,7 +14,6 @@
   "document_kind": "codewhale.runtime_contract_budget",
   "representative_context": {
     "fixture_id": "representative-v1",
-    "prompts_byte_identical": true,
     "stages": {
       "base": {
         "bytes": 7231,
@@ -98,9 +97,9 @@
     "modes": {
       "act": {
         "active": {
-          "bytes": 40133,
-          "identity_sha256": "cec6ec925c301f6a69bea0e6aacdd4c3d7f0b9845ec55bcb5680b80143309ede",
-          "tokens_est": 10034,
+          "bytes": 41398,
+          "identity_sha256": "1578366e28f28bf12261e2b62b51644767c229f815a342881dcc721e84bdfa92",
+          "tokens_est": 10350,
           "tool_names": [
             "agent",
             "bash",
@@ -112,6 +111,7 @@
             "file_search",
             "get_goal",
             "load_skill",
+            "present",
             "read",
             "task_shell_wait",
             "todo_write",
@@ -120,12 +120,12 @@
             "workflow",
             "write"
           ],
-          "tools": 17
+          "tools": 18
         },
         "full": {
-          "bytes": 87056,
-          "identity_sha256": "d9b10a33ed89341c5f21d4ea211ce22cd7db57a5f0097f2f82559d61911bcad8",
-          "tokens_est": 21764,
+          "bytes": 88625,
+          "identity_sha256": "b63d6fb294f6c92e4c7eedfa9d775886459f51798a3fd22ae4f931d5ed6cf41b",
+          "tokens_est": 22157,
           "tool_names": [
             "Git",
             "Run",
@@ -152,6 +152,7 @@
             "lsp",
             "note",
             "notify",
+            "present",
             "project_map",
             "read",
             "read_media",
@@ -181,14 +182,14 @@
             "workflow",
             "write"
           ],
-          "tools": 53
+          "tools": 54
         }
       },
       "operate": {
         "active": {
-          "bytes": 40133,
-          "identity_sha256": "cec6ec925c301f6a69bea0e6aacdd4c3d7f0b9845ec55bcb5680b80143309ede",
-          "tokens_est": 10034,
+          "bytes": 41398,
+          "identity_sha256": "1578366e28f28bf12261e2b62b51644767c229f815a342881dcc721e84bdfa92",
+          "tokens_est": 10350,
           "tool_names": [
             "agent",
             "bash",
@@ -200,6 +201,7 @@
             "file_search",
             "get_goal",
             "load_skill",
+            "present",
             "read",
             "task_shell_wait",
             "todo_write",
@@ -208,12 +210,12 @@
             "workflow",
             "write"
           ],
-          "tools": 17
+          "tools": 18
         },
         "full": {
-          "bytes": 87056,
-          "identity_sha256": "d9b10a33ed89341c5f21d4ea211ce22cd7db57a5f0097f2f82559d61911bcad8",
-          "tokens_est": 21764,
+          "bytes": 88625,
+          "identity_sha256": "b63d6fb294f6c92e4c7eedfa9d775886459f51798a3fd22ae4f931d5ed6cf41b",
+          "tokens_est": 22157,
           "tool_names": [
             "Git",
             "Run",
@@ -240,6 +242,7 @@
             "lsp",
             "note",
             "notify",
+            "present",
             "project_map",
             "read",
             "read_media",
@@ -269,14 +272,14 @@
             "workflow",
             "write"
           ],
-          "tools": 53
+          "tools": 54
         }
       },
       "plan": {
         "active": {
-          "bytes": 37633,
-          "identity_sha256": "bf3b0d167ab75fe74093a00f73463d792ffd94b753d3c1eb538af726058fea47",
-          "tokens_est": 9409,
+          "bytes": 38629,
+          "identity_sha256": "bef7948b985f61653725507678de10ece050a4fde69a5f17cff425c95f0366e5",
+          "tokens_est": 9658,
           "tool_names": [
             "agent",
             "bash",
@@ -287,6 +290,7 @@
             "file_search",
             "get_goal",
             "load_skill",
+            "present",
             "read",
             "todo_write",
             "tool_search",
@@ -294,12 +298,12 @@
             "workflow",
             "write"
           ],
-          "tools": 15
+          "tools": 16
         },
         "full": {
-          "bytes": 57098,
-          "identity_sha256": "79c54c03cbeed6242c79feedb48d07fa84578c5950ace5235ee8adf5f8209dc5",
-          "tokens_est": 14275,
+          "bytes": 58241,
+          "identity_sha256": "f9578ac50bc6b69d793dd70090ecb4d7c9b2a8ad957dba57726c1da84ecc1cf9",
+          "tokens_est": 14561,
           "tool_names": [
             "Git",
             "Web",
@@ -319,6 +323,7 @@
             "list_dir",
             "load_skill",
             "notify",
+            "present",
             "read",
             "read_media",
             "request_plugin_install",
@@ -334,7 +339,7 @@
             "workflow",
             "write"
           ],
-          "tools": 32
+          "tools": 33
         }
       }
     },
