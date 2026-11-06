@@ -2852,16 +2852,37 @@ reasoning contract, and all four membership ids omit generic sampling fields.
     last-round survival contract still applies on top. The `/compact` receipt
     names the effective budget and whether operator instructions were applied,
     so you can tell the knob took effect.
-- `retry.*` (optional): retry/backoff settings for API requests:
+- `retry.*` (optional): HTTP retry settings. The following backoff fields govern
+  ordinary transport retries; HTTP 429 uses the independent policy below:
   - `[retry].enabled` (bool, default `true`)
-  - `[retry].max_retries` (int, default `3`)
+  - `[retry].max_retries` (int, default `3`): ordinary transport retries
   - `[retry].initial_delay` (float seconds, default `1.0`)
   - `[retry].max_delay` (float seconds, default `60.0`)
   - `[retry].exponential_base` (float, default `2.0`)
-  - `[retry].jitter` (bool, default `true`): randomize each backoff delay
+  - `[retry].jitter` (bool, default `true`): randomize ordinary transport backoff
   - `[retry].jitter_factor` (float, default `0.1` = ±10%; clamps to `0.0..=1.0`)
   - `[retry].respect_retry_after` (bool, default `true`): wait for a server
-    `Retry-After` header instead of the computed backoff
+    `Retry-After` preference retained for legacy retry configuration; it does not
+    disable HTTP 429 server minima
+
+  HTTP 429 recovery has its own validated `[retry.rate_limit]` fields:
+
+  - `max_attempts` (integer, default `20`, range `1..=1000`): total attempts,
+    including the first
+  - `recovery_budget_secs` (integer seconds, default `600`, range `1..=86400`)
+  - `initial_delay_secs` (integer seconds, default `5`)
+  - `max_delay_secs` (integer seconds, default `60`), with
+    `1 <= initial_delay_secs <= max_delay_secs <= 86400`
+
+  This policy always honors server minima and uses equal jitter, independently
+  of the legacy `initial_delay`, `max_delay`, `exponential_base`, `jitter`,
+  `jitter_factor` and `respect_retry_after` fields. `max_retries = 0` does not
+  disable 429 recovery; set `retry.rate_limit.max_attempts = 1` to disable only
+  automatic 429 retries, or `retry.enabled = false` to disable this HTTP retry
+  loop. A safe pre-dispatch HTTP/1.1 fallback inside a stream-opening operation
+  remains possible. The one-hour limit on actual provider pauses and automatic sleeps
+  still applies. See [HTTP rate-limit retries](rate-limit-retries.md) for the
+  budget, server-minimum and active-time boundaries.
 
   `[retry]` schedules HTTP-request retries inside the client. Each physical
   streaming request gets its own `stream.open_timeout_secs` response-header
@@ -3057,6 +3078,13 @@ continuation_delay_seconds = 300
 # Default: uncapped (0 or absent). Positive values are preserved.
 # This bounds each provider turn, never the number of continuation passes.
 max_steps = 0
+
+# Optional independent judges (#6013). Default: false (the model's own
+# update_goal call is final). When true, one adversarial critique of the claim
+# runs before `update_goal` completes (complete_judge) or blocks (blocked_judge)
+# the goal. Each judged call is billed as auxiliary usage.
+complete_judge = false
+blocked_judge = false
 ```
 
 The effective delay is capped at 86,400 seconds (24 hours); use an automation
@@ -3073,6 +3101,17 @@ it gets one bounded final report and the turn classifies as budget-exhausted. An
 unfinished goal then pauses with the BudgetLimit reason instead of re-arming
 another goal turn — resume it explicitly after reviewing the report. Wall-clock
 and stream protections are separate and still apply.
+
+With `[goal] complete_judge = true`, a refuted completion claim keeps the goal
+active and records the judge's findings as critical gaps. A missing,
+unparseable, uncertain or failed verdict never completes the goal; it records
+one fixed gap, so a persistent judge outage ends in the existing no-progress
+pause rather than a silent pass. With `[goal] blocked_judge = true`, a refuted
+blocker keeps the goal active, and an unverifiable one hands the goal back as a
+yield that your next message resumes. The judge reads only the objective, the
+evidence and the verification receipt, not the transcript or the diff. The
+operator `POST /v1/threads/{id}/goal/complete|block` routes and `/goal`
+commands stay ungated.
 
 The delay starts only after a successful turn while an explicitly created goal
 is still active. `/goal pause`, `/goal done`, `/goal blocked`, `/goal clear`,

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse } from "../src/lib.mjs";
+import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse, sanitizeFilename } from "../src/lib.mjs";
 
 // ─── ThreadStore ─────────────────────────────────────────────────
 
@@ -163,4 +163,17 @@ test("WeCom accepted turn origin survives reload and cannot transfer to a later 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ─── sanitizeFilename ────────────────────────────────────────────
+
+test("sanitizeFilename strips path components and keeps the name", () => {
+  const risky = sanitizeFilename("../../etc/passwd");
+  assert.ok(!risky.includes("/"), risky);
+  assert.ok(!risky.startsWith("."), risky);
+  assert.equal(sanitizeFilename("clip final.mp4"), "clip final.mp4");
+  assert.equal(sanitizeFilename("  .hidden. "), "hidden");
+  assert.equal(sanitizeFilename("", "fallback.bin"), "fallback.bin");
+  const long = "a".repeat(500) + ".mp4";
+  assert.ok(sanitizeFilename(long).length <= 120);
 });

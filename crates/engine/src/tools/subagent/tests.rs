@@ -1990,36 +1990,41 @@ fn coordination_acceptance_preserves_scopes_candidates_and_replay() {
 
     let mut manager =
         SubAgentManager::new(repo.path().to_path_buf(), 8).with_state_path(state_path.clone());
-    let mut planner = make_worker_spec("parent_session", repo.path().to_path_buf());
-    planner.agent_type = FleetRole::Planner;
-    planner.role = Some("planner".into());
-    manager.register_worker(planner);
-    let agent_a = manager.insert_test_running_agent("a", repo.path());
-    let agent_b = manager.insert_test_running_agent("b", repo.path());
-    let agent_c = manager.insert_test_running_agent("c", repo.path());
+    let (agent_a, agent_b) = manager
+        .with_store_transaction(|manager| {
+            let mut planner = make_worker_spec("parent_session", repo.path().to_path_buf());
+            planner.agent_type = FleetRole::Planner;
+            planner.role = Some("planner".into());
+            manager.register_worker(planner);
+            let agent_a = manager.insert_test_running_agent("a", repo.path());
+            let agent_b = manager.insert_test_running_agent("b", repo.path());
+            let agent_c = manager.insert_test_running_agent("c", repo.path());
 
-    let claim = |owner: &str, path: &str| WriteScopeClaim {
-        owner: owner.into(),
-        roots: vec![],
-        exact_files: vec![path.into()],
-        contracts: vec![],
-    };
-    manager
-        .coordination
-        .register_claim(claim(&agent_a, "src/a.rs"), false, |_| false)
-        .expect("A claim");
-    manager
-        .coordination
-        .register_claim(claim(&agent_b, "src/b.rs"), false, |_| false)
-        .expect("B claim");
-    let contention = manager
-        .coordination
-        .register_claim(claim(&agent_c, "src/a.rs"), false, |owner| {
-            owner == agent_a || owner == agent_b
+            let claim = |owner: &str, path: &str| WriteScopeClaim {
+                owner: owner.into(),
+                roots: vec![],
+                exact_files: vec![path.into()],
+                contracts: vec![],
+            };
+            manager
+                .coordination
+                .register_claim(claim(&agent_a, "src/a.rs"), false, |_| false)
+                .expect("A claim");
+            manager
+                .coordination
+                .register_claim(claim(&agent_b, "src/b.rs"), false, |_| false)
+                .expect("B claim");
+            let contention = manager
+                .coordination
+                .register_claim(claim(&agent_c, "src/a.rs"), false, |owner| {
+                    owner == agent_a || owner == agent_b
+                })
+                .expect_err("C cannot collide silently with A");
+            assert!(contention.contains(&agent_a), "{contention}");
+            assert_eq!(manager.coordination.contentions.len(), 1);
+            Ok((agent_a, agent_b))
         })
-        .expect_err("C cannot collide silently with A");
-    assert!(contention.contains(&agent_a), "{contention}");
-    assert_eq!(manager.coordination.contentions.len(), 1);
+        .unwrap();
 
     let scope_expansion = manager
         .expand_write_claim(&agent_a, vec![], vec!["src/b.rs".into()], vec![])
@@ -2112,14 +2117,21 @@ fn coordination_acceptance_preserves_scopes_candidates_and_replay() {
         .expect("claim B")
         .claim
         .clone();
-    let (projection_a, projection_a_receipt) =
-        manager
-            .coordination
-            .project_relevant_decisions(&agent_a, Some(&claim_a), &["File".into()]);
-    let (projection_b, projection_b_receipt) =
-        manager
-            .coordination
-            .project_relevant_decisions(&agent_b, Some(&claim_b), &["File".into()]);
+    let ((projection_a, projection_a_receipt), (projection_b, projection_b_receipt)) = manager
+        .with_store_transaction(|manager| {
+            let a = manager.coordination.project_relevant_decisions(
+                &agent_a,
+                Some(&claim_a),
+                &["File".into()],
+            );
+            let b = manager.coordination.project_relevant_decisions(
+                &agent_b,
+                Some(&claim_b),
+                &["File".into()],
+            );
+            Ok((a, b))
+        })
+        .expect("projection receipts persist");
     assert!(projection_a.contains("api-a") && !projection_a.contains("api-b"));
     assert!(projection_b.contains("api-b") && !projection_b.contains("api-a"));
     for receipt in [&projection_a_receipt, &projection_b_receipt] {
@@ -4387,6 +4399,125 @@ fn declared_write_scope_is_normalized_and_rejects_traversal() {
         err.contains("repo-relative") || err.contains("traversal"),
         "{err}"
     );
+}
+
+/// A write-capable child that spells its target as an absolute path inside
+/// its own workspace is writing the same file the relative spelling names,
+/// and that is the path the write tool would resolve it to — the claim lane
+/// must treat both spellings alike. Absolute paths outside the workspace,
+/// `..` traversal (relative or absolute), and a symlinked ancestor that
+/// resolves outside the workspace stay refused, exactly as before.
+#[test]
+fn scoped_mutation_paths_accept_absolute_targets_inside_the_workspace() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("src")).expect("workspace tree");
+    let canonical = workspace.canonicalize().expect("canonical workspace");
+
+    // Existing target, canonical absolute spelling.
+    std::fs::write(workspace.join("src/lib.rs"), "x").expect("seed");
+    let paths = mutation_paths(
+        "write",
+        &json!({ "path": canonical.join("src/lib.rs").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute in-workspace path is admitted");
+    assert_eq!(paths, vec!["src/lib.rs".to_string()]);
+
+    // Not-yet-existing target (the write creates it), spelled through the
+    // un-canonicalized workspace path.
+    let paths = mutation_paths(
+        "write",
+        &json!({ "path": workspace.join("src/new.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute path to a file the write will create is admitted");
+    assert_eq!(paths, vec!["src/new.txt".to_string()]);
+
+    // Relative spelling is unchanged.
+    let paths = mutation_paths("write", &json!({ "path": "src/new.txt" }), &workspace)
+        .expect("relative path");
+    assert_eq!(paths, vec!["src/new.txt".to_string()]);
+
+    // The two spellings land in the same claimed scope: a child holding the
+    // `src` root admits both the relative form and the absolute form's
+    // workspace-relative equivalent.
+    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 4);
+    let child_owner = manager.insert_test_running_agent("abs_child", &workspace);
+    let claim = manager
+        .namespace_write_claim(
+            &workspace,
+            false,
+            WriteScopeClaim {
+                owner: child_owner.clone(),
+                roots: vec!["src".into()],
+                exact_files: Vec::new(),
+                contracts: Vec::new(),
+            },
+        )
+        .expect("child claim namespace");
+    manager
+        .coordination
+        .register_claim(claim, false, |_| true)
+        .expect("child claim");
+    manager
+        .validate_write_scope(&child_owner, &["src/lib.rs".into()])
+        .expect("relative spelling admitted by the claimed root scope");
+    let absolute_paths = mutation_paths(
+        "write",
+        &json!({ "path": canonical.join("src/lib.rs").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute spelling strips to its workspace-relative equivalent");
+    assert_eq!(absolute_paths, vec!["src/lib.rs".to_string()]);
+    manager
+        .validate_write_scope(&child_owner, &absolute_paths)
+        .expect("absolute spelling of the same target is admitted by the same scope");
+
+    // Outside the workspace: refused as before.
+    let err = mutation_paths(
+        "write",
+        &json!({ "path": tmp.path().join("escape.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect_err("absolute path outside the workspace is refused")
+    .to_string();
+    assert!(err.contains("repo-relative"), "{err}");
+
+    // Traversal: refused as before, relative or absolute.
+    for path in ["../escape.txt", "src/../../escape.txt"] {
+        let err = mutation_paths("write", &json!({ "path": path }), &workspace)
+            .expect_err("traversal is refused")
+            .to_string();
+        assert!(err.contains("traversal"), "{path}: {err}");
+    }
+    let err = mutation_paths(
+        "write",
+        &json!({ "path": workspace.join("src/../../escape.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect_err("absolute traversal out of the workspace is refused")
+    .to_string();
+    assert!(err.contains("repo-relative"), "{err}");
+
+    // A symlinked ancestor that resolves outside the workspace stays
+    // refused: the deepest-existing walk resolves through the link, the
+    // strip fails, and the raw absolute spelling is refused by the
+    // validator — the same posture as the write boundary's real-path check.
+    let outside = tempdir().expect("outside tempdir");
+    std::fs::write(outside.path().join("outside.txt"), "x").expect("outside seed");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.path(), workspace.join("link")).expect("symlink");
+        let err = mutation_paths(
+            "write",
+            &json!({ "path": workspace.join("link/outside.txt").to_string_lossy() }),
+            &workspace,
+        )
+        .expect_err("symlink hop out of the workspace is refused")
+        .to_string();
+        assert!(err.contains("repo-relative"), "{err}");
+    }
 }
 
 #[test]
@@ -10932,7 +11063,12 @@ async fn spawn_duplicate_session_name_error_names_conflicting_agent() {
     let existing_id = existing.id.clone();
     {
         let mut guard = manager.write().await;
-        guard.agents.insert(existing_id.clone(), existing);
+        guard
+            .with_store_transaction(|guard| {
+                guard.agents.insert(existing_id.clone(), existing);
+                guard.persist_state_synchronously()
+            })
+            .unwrap();
     }
 
     let err = {
@@ -11057,7 +11193,12 @@ async fn spawn_reuses_name_released_by_settled_worker() {
     let settled_id = settled.id.clone();
     {
         let mut guard = manager.write().await;
-        guard.agents.insert(settled_id.clone(), settled);
+        guard
+            .with_store_transaction(|guard| {
+                guard.agents.insert(settled_id.clone(), settled);
+                guard.persist_state_synchronously()
+            })
+            .unwrap();
     }
 
     let mut runtime = stub_runtime();
@@ -11206,7 +11347,10 @@ async fn write_capable_agent_does_not_launch_when_durable_registration_fails() {
         )
         .expect_err("writer must fail before spawn when its durable claim cannot commit")
         .to_string();
-    assert!(error.contains("durably register"), "{error}");
+    assert!(
+        error.contains("durably register") || error.contains("writer lock"),
+        "{error}"
+    );
 
     let guard = manager.read().await;
     assert!(guard.agents.is_empty(), "no child task was admitted");
@@ -11854,6 +11998,8 @@ fn persist_and_reload_preserves_checkpoint_for_interrupted_running_agent() {
         .join()
         .expect("persist thread");
 
+    drop(manager);
+
     let mut reloaded = SubAgentManager::new(workspace, 2)
         .with_state_path(default_state_path(tmp.path()).expect("default state path"));
     reloaded.load_state().expect("load state");
@@ -11951,6 +12097,8 @@ fn restart_reconciles_every_orphan_execution_status_once_and_preserves_receipts(
         .expect("persist restart fixture")
         .join()
         .expect("persist thread");
+
+    drop(manager);
 
     let mut reloaded =
         SubAgentManager::new(workspace.clone(), 8).with_state_path(state_path.clone());
@@ -12079,7 +12227,7 @@ fn persist_state_rejects_state_path_outside_state_root() {
         .persist_state()
         .expect_err("outside state path should fail");
 
-    assert!(format!("{err:#}").contains("must stay within state root"));
+    assert!(format!("{err:#}").contains("without its writer lock"));
 }
 
 /// A user who keeps application state on another volume makes the workspace's
@@ -12814,9 +12962,9 @@ fn create_isolated_worktree_reports_friendly_error_when_no_repo_found() {
     let harness = tempdir().expect("harness");
     // Keep the probe more than `git_repo_root`'s parent-search limit below
     // the temporary root. Containerized CI commonly checks the repository out
-    // at `/workspace`; a shallow `/tmp` fixture can otherwise reach `/` and
-    // correctly discover that sibling checkout instead of exercising the
-    // no-repository path.
+    // at `/workspace`; ancestors no longer adopt lone child checkouts, but
+    // keeping the walk inside the temp region means the test never depends on
+    // whatever other checkouts share its ancestry.
     let no_repo = harness
         .path()
         .join("not-a-repo")
@@ -12865,6 +13013,68 @@ fn create_isolated_worktree_rejects_ambiguous_nested_repos() {
     assert!(
         message.contains("Multiple git repositories found"),
         "expected ambiguity diagnostic, got: {message}"
+    );
+}
+
+#[test]
+fn create_isolated_worktree_ignores_unrelated_repos_above_the_workspace() {
+    // Incident shape: the workspace is not itself a repository and sits a few
+    // levels below a directory that holds unrelated checkouts. Scanning the
+    // children of every ancestor made the walk reach that directory and
+    // report the user's other projects as "multiple repositories" even
+    // though none of them contains the workspace.
+    let harness = tempdir().expect("harness");
+    for name in ["RepoA", "RepoB"] {
+        let sibling = harness.path().join(name);
+        std::fs::create_dir_all(&sibling).expect("sibling dir");
+        init_git_repo_at(&sibling);
+    }
+    let workspace = harness
+        .path()
+        .join("a")
+        .join("b")
+        .join("c")
+        .join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    let worktree_home = tempdir().expect("worktree home");
+    let request = SubAgentWorktreeRequest {
+        branch: Some("codex/agent-ancestor-scan".to_string()),
+        path: Some(worktree_home.path().join("isolated")),
+        base_ref: None,
+    };
+
+    let err = create_isolated_worktree(&workspace, &request, None, &FleetRole::Worker)
+        .expect_err("no repository contains the workspace");
+
+    let message = err.to_string();
+    assert!(
+        !message.contains("Multiple git repositories"),
+        "ancestor directories must not adopt their children's repositories, got: {message}"
+    );
+    assert!(
+        message.contains("requires a git repository") && message.contains("Tried:"),
+        "expected friendly no-repository error, got: {message}"
+    );
+    // The walk must actually reach the ancestor holding the sibling
+    // repositories. A substring check cannot prove that: every tried path
+    // starts with the harness root, so it would match even if a shrunken
+    // parent-search limit stopped the walk short of the harness root and the
+    // test passed without ever scanning their children. Require the harness
+    // root as an exact entry of the "Tried:" list instead (mirrors
+    // git_repo_root_reports_attempted_paths_when_no_repo_found).
+    let harness_root = harness
+        .path()
+        .canonicalize()
+        .expect("canonical harness root")
+        .to_string_lossy()
+        .into_owned();
+    let tried = message
+        .split_once("Tried: ")
+        .expect("friendly error should list attempted paths")
+        .1;
+    assert!(
+        tried.split(", ").any(|path| path == harness_root),
+        "walk should reach the ancestor holding the sibling repos, got: {message}"
     );
 }
 
@@ -13988,6 +14198,8 @@ fn subagent_registry_with_mcp_action(auto_approve: bool) -> (ChildCoreProbe, tem
         crate::approval_log::ApprovalReceiptStore::new(home.path().join("sessions")),
     ));
     runtime.context.auto_approve = auto_approve;
+    runtime.context.runtime.runtime_mcp_servers =
+        Some((home.path().to_path_buf(), Default::default()));
     // Core dispatches MCP through the captured pool; the registry facade supplies its schema.
     runtime = runtime.with_mcp_pool(Some(Arc::new(tokio::sync::Mutex::new(
         crate::mcp::McpPool::new(codewhale_mcp::config::McpConfig::default()),
@@ -14018,30 +14230,35 @@ async fn child_write_tool_fails_closed_outside_registered_scope() {
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
     {
         let mut guard = manager.write().await;
-        assert_eq!(
-            guard.insert_test_running_agent("scoped", tmp.path()),
-            "agent_scoped"
-        );
         guard
-            .coordination
-            .register_claim(
-                WriteScopeClaim {
-                    owner: "agent_scoped".into(),
-                    roots: vec!["src".into()],
-                    exact_files: vec![],
-                    contracts: vec![],
-                },
-                false,
-                |_| false,
-            )
+            .with_store_transaction(|guard| {
+                assert_eq!(
+                    guard.insert_test_running_agent("scoped", tmp.path()),
+                    "agent_scoped"
+                );
+                guard
+                    .coordination
+                    .register_claim(
+                        WriteScopeClaim {
+                            owner: "agent_scoped".into(),
+                            roots: vec!["src".into()],
+                            exact_files: vec![],
+                            contracts: vec![],
+                        },
+                        false,
+                        |_| false,
+                    )
+                    .unwrap();
+                guard
+                    .register_worker_with_coordination(make_write_worker_spec(
+                        "other-writer",
+                        tmp.path().to_path_buf(),
+                        "conflict",
+                    ))
+                    .expect("active conflicting writer");
+                Ok(())
+            })
             .unwrap();
-        guard
-            .register_worker_with_coordination(make_write_worker_spec(
-                "other-writer",
-                tmp.path().to_path_buf(),
-                "conflict",
-            ))
-            .expect("active conflicting writer");
     }
     let mut runtime = stub_runtime();
     runtime.manager = Arc::clone(&manager);
@@ -14603,7 +14820,7 @@ async fn a_parked_child_stops_holding_its_write_claim() {
     let record = manager.get_worker_record(&parked).expect("worker record");
     assert_eq!(
         record.status,
-        AgentWorkerStatus::WaitingForUser,
+        AgentWorkerStatus::Interrupted,
         "the parked projection is unchanged; only coordination learns to read it"
     );
     assert!(
@@ -15943,10 +16160,8 @@ fn persisted_advisory_assignment_roles_replay_and_repersist_as_consultant() {
         assert_eq!(result.assignment.role.as_deref(), Some("advisor"));
 
         manager
-            .persist_state()
-            .expect("canonical state persists")
-            .join()
-            .expect("persist thread");
+            .with_store_transaction(|manager| manager.persist_state_synchronously())
+            .expect("canonical state persists");
         let repersisted: Value = serde_json::from_str(
             &std::fs::read_to_string(&state_path).expect("read canonical state"),
         )
@@ -18927,10 +19142,31 @@ async fn launch_gate_queues_extra_direct_children() {
     use tokio_util::sync::CancellationToken;
 
     let tmp = tempdir().expect("tempdir");
+    let sessions = crate::session_manager::SessionManager::new(tmp.path().join("sessions"))
+        .expect("launch gate session store");
+    let session_id = "launch-gate-session";
+    sessions
+        .save_session(
+            &crate::session_manager::create_saved_session_with_id_and_mode(
+                session_id.to_string(),
+                &[],
+                "deepseek-v4-flash",
+                tmp.path(),
+                0,
+                None,
+                Some("agent"),
+            ),
+        )
+        .expect("launch gate saved origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
         4,
     )));
+    manager.write().await.register_worker_for_session(
+        make_worker_spec("agent_gate_b", tmp.path().to_path_buf()),
+        session_id,
+        None,
+    );
 
     let (client, _calls, _bodies, fixture_config) =
         delayed_chat_client(Duration::from_millis(150), "done").await;
@@ -18939,7 +19175,13 @@ async fn launch_gate_queues_extra_direct_children() {
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(tmp.path());
+    runtime.context = ToolContext::new(tmp.path()).with_state_namespace(session_id);
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        runtime.accounting_origin.cost_scope,
+        sessions.sessions_dir().to_path_buf(),
+        session_id.to_string(),
+    ));
     runtime.mailbox = Some(mailbox);
 
     runtime.spawn_depth = 1;
@@ -23117,7 +23359,7 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // schema edits, plus 112B for the display-only bash description. The
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
 // ceiling keeps its existing platform margin after the reviewed schema growth.
-const PARENT_SURFACE_BYTE_CEILING: usize = 91_812;
+const PARENT_SURFACE_BYTE_CEILING: usize = 92_100;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {
@@ -24951,11 +25193,33 @@ mod child_permission_gate {
             runtime.api_config = Some(Arc::new(config));
         }
         let workspace = tmp.path().to_path_buf();
+        runtime.manager = new_shared_subagent_manager(workspace.clone(), 5);
         let session_id = format!("child_gate_{}", uuid::Uuid::new_v4().simple());
         runtime.context = ToolContext::new(workspace.clone()).with_state_namespace(session_id);
         runtime.context.auto_approve = auto_approve;
         runtime.context.approval_mode = approval_mode;
         runtime.context.live_posture = live_posture;
+        runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+        let sessions = crate::session_manager::SessionManager::new(tmp.path().join("accounting"))
+            .expect("guardian accounting session store");
+        sessions
+            .save_session(
+                &crate::session_manager::create_saved_session_with_id_and_mode(
+                    runtime.accounting_origin.session_id.clone(),
+                    &[],
+                    "deepseek-v4-flash",
+                    &workspace,
+                    0,
+                    None,
+                    Some("agent"),
+                ),
+            )
+            .expect("guardian accounting saved origin");
+        runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+            runtime.accounting_origin.cost_scope,
+            sessions.sessions_dir().to_path_buf(),
+            runtime.accounting_origin.session_id.clone(),
+        ));
         runtime.allow_shell = true;
         runtime.event_tx = Some(tx);
         runtime = runtime.with_approval_receipt_store(Ok(
@@ -25697,13 +25961,18 @@ mod child_permission_gate {
         name: &str,
     ) -> String {
         let mut manager = manager.write().await;
-        let agent_id = insert_running_agent(&mut manager, name);
-        manager.register_worker_for_session(
-            make_worker_spec(&agent_id, registry.gate_runtime.context.workspace.clone()),
-            "guardian-test-session",
-            None,
-        );
-        agent_id
+        manager
+            .with_store_transaction(|manager| {
+                let agent_id = insert_running_agent(manager, name);
+                manager.register_worker_for_session(
+                    make_worker_spec(&agent_id, registry.gate_runtime.context.workspace.clone()),
+                    "guardian-test-session",
+                    None,
+                );
+                manager.persist_state_synchronously()?;
+                Ok(agent_id)
+            })
+            .expect("durable worker operation")
     }
 
     #[tokio::test]
@@ -25734,7 +26003,9 @@ mod child_permission_gate {
                 terminal.needs_input = None;
                 assert!(
                     manager
-                        .finish_terminal_result(&agent_id, terminal, false, true)
+                        .with_store_transaction(|manager| {
+                            manager.finish_terminal_result(&agent_id, terminal, false, true)
+                        })
                         .expect("durable worker operation")
                 );
             }
@@ -25907,6 +26178,7 @@ mod child_permission_gate {
         let (registry, _rx, manager) = worker_registry(ApprovalMode::Suggest, false, true, None);
         let agent_id = running_gate_agent(&registry, &manager, "old_session_child").await;
         let mut manager = manager.write().await;
+        manager.assign_test_session_owner(&agent_id, "workspace");
         let (_id, receiver) = manager
             .register_child_approval(
                 &agent_id,
@@ -26226,14 +26498,17 @@ mod child_permission_gate {
         assert!(output.contains("guardian-missing-usage"), "{output}");
 
         let pending = crate::cost_status::drain();
-        assert_eq!(pending.priced_turns, 0);
-        assert_eq!(pending.unpriced_turns, 1);
+        let mut cost = crate::session_manager::SessionCostSnapshot::default();
+        for record in &pending.source_records {
+            cost.project_usage_record(record).unwrap();
+        }
+        assert_eq!(cost.priced_turns, 0);
+        assert_eq!(cost.unpriced_turns, 1);
         assert!(
-            pending
-                .unpriced_reasons
+            cost.unpriced_reasons
                 .contains("provider_success_missing_usage")
         );
-        assert_eq!(pending.usage_source_fingerprints.len(), 1);
+        assert_eq!(cost.usage_source_fingerprints.len(), 1);
 
         let worker = manager
             .read()
@@ -26922,22 +27197,27 @@ async fn agent_claim_expands_the_callers_write_scope() {
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 2);
     {
         let mut guard = manager.write().await;
-        assert_eq!(
-            guard.insert_test_running_agent("scoped", tmp.path()),
-            "agent_scoped"
-        );
         guard
-            .coordination
-            .register_claim(
-                WriteScopeClaim {
-                    owner: "agent_scoped".into(),
-                    roots: vec!["src".into()],
-                    exact_files: vec![],
-                    contracts: vec![],
-                },
-                false,
-                |_| false,
-            )
+            .with_store_transaction(|guard| {
+                assert_eq!(
+                    guard.insert_test_running_agent("scoped", tmp.path()),
+                    "agent_scoped"
+                );
+                guard
+                    .coordination
+                    .register_claim(
+                        WriteScopeClaim {
+                            owner: "agent_scoped".into(),
+                            roots: vec!["src".into()],
+                            exact_files: vec![],
+                            contracts: vec![],
+                        },
+                        false,
+                        |_| false,
+                    )
+                    .unwrap();
+                Ok(())
+            })
             .unwrap();
     }
     let mut runtime = stub_runtime();

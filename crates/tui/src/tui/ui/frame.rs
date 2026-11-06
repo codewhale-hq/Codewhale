@@ -1048,6 +1048,8 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
                 )
             },
         ),
+        goal_complete_judge: config.goal_complete_judge(),
+        goal_blocked_judge: config.goal_blocked_judge(),
         max_spawn_depth: identity.map_or_else(
             || config.subagent_max_spawn_depth(),
             |identity| config.subagent_max_spawn_depth_for_provider(identity),

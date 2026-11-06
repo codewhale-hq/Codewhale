@@ -17,6 +17,22 @@ doubles to a local ceiling of 60 seconds, with equal jitter over 50–100% of th
 base. The greater of the local delay and the server minimum is used, with
 additional jitter of half the local delay when a nonzero minimum is present.
 
+The legacy `[retry]` backoff fields (`initial_delay`, `max_delay`,
+`exponential_base`, `jitter`, `jitter_factor` and `respect_retry_after`) do not
+override this 429 policy. In particular, `respect_retry_after = false` does not
+suppress server minima and `jitter = false` does not disable rate-limit jitter.
+`max_retries` counts ordinary transport retries; `max_retries = 0` alone does
+not disable 429 recovery. Use `retry.rate_limit.max_attempts = 1` to disable only
+automatic 429 retries, or `retry.enabled = false` to disable this HTTP retry loop.
+The existing safe pre-dispatch HTTP/1.1 fallback inside a stream-opening operation
+remains possible.
+
+All four rate-limit fields are validated when configuration loads:
+`max_attempts` must be `1..=1000`, `recovery_budget_secs` must be `1..=86400`,
+and `1 <= initial_delay_secs <= max_delay_secs <= 86400`. Invalid values fail
+loading rather than silently changing these bounds. The actual pause/sleep
+limit below still applies even when a longer recovery budget is configured.
+
 Numeric and HTTP-date Retry-After values and recognized JSON reset fields are
 supported. A minimum beyond the remaining recovery budget is returned to the
 caller immediately, without shortening it to the local backoff ceiling. Native

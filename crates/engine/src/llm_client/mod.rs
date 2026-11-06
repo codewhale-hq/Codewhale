@@ -1918,6 +1918,18 @@ where
     let mut last_error = None;
     rate_limit::note_recovery_started(None);
     loop {
+        if config.total_timeout > 0.0 && start_time.elapsed().as_secs_f64() >= config.total_timeout
+        {
+            let error = last_error.take().unwrap_or_else(|| {
+                LlmError::Timeout(Duration::from_secs_f64(config.total_timeout))
+            });
+            observe_transport_stopped(attempts.saturating_sub(1), &error, true).await;
+            return Err(RetryError {
+                last_error: error,
+                attempts,
+                total_time: start_time.elapsed(),
+            });
+        }
         if recovery_started.is_some_and(|started| {
             started.elapsed() >= Duration::from_secs(config.rate_limit.recovery_budget_secs)
         }) && let Some(error) = last_error.take()

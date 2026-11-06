@@ -825,11 +825,6 @@ pub(super) fn append_usage_source_record(
     if !record.permits_replacement(turn.source_usage_records.get(&key))? {
         return Ok(false);
     }
-    if !turn.source_usage_records.contains_key(&key)
-        && turn.routed_usage_source_ids.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN
-    {
-        bail!("Runtime source receipt capacity reached; update retained without acknowledgement");
-    }
     if !turn.routed_usage_source_ids.contains(&key) {
         turn.routed_usage_source_ids.push(key.clone());
     }
@@ -840,53 +835,6 @@ pub(super) fn append_usage_source_record(
         .schema_version
         .max(SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION);
     Ok(true)
-}
-
-fn append_owned_usage_source_record(
-    store: &RuntimeThreadStore,
-    turn: &mut TurnRecord,
-    record: &RuntimeUsageRecord,
-) -> Result<bool> {
-    let key = routed_usage_source_fingerprint(&record.source_id);
-    if record.settlement.is_none()
-        || turn.source_usage_records.contains_key(&key)
-        || turn.routed_usage_source_ids.len() < MAX_ROUTED_USAGE_RECORDS_PER_TURN
-        || turn.routing_settlement
-        || !turn.source_accounting
-        || turn.source_usage_records.len() != turn.routed_usage_source_ids.len()
-    {
-        return append_usage_source_record(turn, record);
-    }
-    anyhow::ensure!(
-        turn.source_usage_origin_turn_id.as_deref() == Some(turn.id.as_str()),
-        "inherited native usage cannot admit an original-owner partition"
-    );
-    store.load_thread(&turn.thread_id)?;
-    let partition_id = runtime_usage_partition_id(&turn.id, &record.source_id)?;
-    let mut partition = if store.turn_path(&partition_id)?.exists() {
-        let partition = store.load_turn(&partition_id)?;
-        anyhow::ensure!(
-            partition.thread_id == turn.thread_id
-                && runtime_usage_partition_parent(&partition) == Some(turn.id.as_str())
-                && partition.source_usage_origin_turn_id.as_deref() == Some(partition.id.as_str())
-                && partition
-                    .source_usage_records
-                    .keys()
-                    .all(|current| current == &key),
-            "Runtime usage partition belongs to another source or original owner"
-        );
-        partition
-    } else {
-        let mut partition = unaccepted_usage_turn(&turn.thread_id, &partition_id);
-        partition.input_summary = RUNTIME_USAGE_PARTITION_SUMMARY.to_string();
-        partition.created_at = turn.created_at;
-        partition.status = RuntimeTurnStatus::Completed;
-        partition.error = None;
-        partition
-    };
-    append_usage_source_record(&mut partition, record)?;
-    store.save_turn(&partition)?;
-    Ok(false)
 }
 
 pub(super) fn append_routed_usage_record(
@@ -928,17 +876,6 @@ pub(super) fn append_routed_usage_record(
     {
         return false;
     }
-    if turn.routed_usage_source_ids.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN {
-        // Stop admitting new records once both the record and exact-dedupe
-        // ledgers reach their shared bound. Retaining the first accepted set
-        // makes replay idempotent; one explicit incompleteness marker is safer
-        // than evicting fingerprints and later counting a replay twice.
-        if turn.routed_usage_dropped_records == 0 {
-            turn.routed_usage_dropped_records = 1;
-            return true;
-        }
-        return false;
-    }
     turn.routed_usage_source_ids.push(source_fingerprint);
     turn.routed_usage.push(EffectiveRouteUsage {
         route: usage.route.sanitized_for_persistence(),
@@ -957,13 +894,6 @@ pub(super) fn append_routed_usage_drop_record(
         .iter()
         .any(|persisted| persisted == &source_fingerprint)
     {
-        return false;
-    }
-    if turn.routed_usage_source_ids.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN {
-        if turn.routed_usage_dropped_records == 0 {
-            turn.routed_usage_dropped_records = 1;
-            return true;
-        }
         return false;
     }
     turn.routed_usage_source_ids
@@ -989,13 +919,6 @@ pub(super) fn append_decision_receipt(
         .iter()
         .any(|old| old.source_id == receipt.source_id)
     {
-        return false;
-    }
-    if turn.decision_receipts.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN {
-        if turn.routed_usage_dropped_records == 0 {
-            turn.routed_usage_dropped_records = 1;
-            return true;
-        }
         return false;
     }
     turn.decision_receipts.push(receipt);
@@ -1239,7 +1162,7 @@ fn thread_usage_split(thread: &ThreadRecord, turns: &[TurnRecord]) -> ThreadUsag
                 UsageGroupBy::Thread,
                 record,
                 turn,
-                &thread,
+                thread,
             );
         }
         for child in &turn.routed_usage {
@@ -1986,7 +1909,9 @@ pub struct PendingApprovalRequest {
     /// `tool_call_id` on `approval.required`. A client resuming from a
     /// snapshot needs it to attach the prompt to the execution it belongs to.
     /// It is a correlator, never a capability: `deliver_external_approval`
-    /// matches `id` only, so this value settles nothing.
+    /// matches `id` only, so this value settles nothing. A caller that
+    /// presents an `ExternalApprovalBinding` to `deliver_bound_approval` has
+    /// it compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// Model-independent one-line summary of the gated call ("Search the web
@@ -3554,6 +3479,17 @@ pub enum ExternalApprovalDecision {
     Deny { remember: bool },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalApprovalBinding {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("approval does not belong to the claimed thread, turn or tool call")]
+pub struct ApprovalBindingMismatch;
+
 pub(super) struct PendingApprovalEntry {
     pub(super) thread_id: String,
     pub(super) request: PendingApprovalRequest,
@@ -4974,11 +4910,31 @@ impl RuntimeThreadManager {
         approval_id: &str,
         decision: ExternalApprovalDecision,
     ) -> Result<bool> {
+        self.deliver_bound_approval(approval_id, None, decision)
+            .await
+    }
+
+    pub async fn deliver_bound_approval(
+        &self,
+        approval_id: &str,
+        binding: Option<&ExternalApprovalBinding>,
+        decision: ExternalApprovalDecision,
+    ) -> Result<bool> {
         let publication = {
             let mut pending = self.pending_approvals.lock();
             let Some(entry) = pending.get_mut(approval_id) else {
                 return Ok(false);
             };
+            if let Some(binding) = binding
+                && (entry.thread_id != binding.thread_id
+                    || entry.request.turn_id != binding.turn_id
+                    || binding
+                        .tool_call_id
+                        .as_deref()
+                        .is_some_and(|id| entry.request.tool_call_id.as_deref() != Some(id)))
+            {
+                return Err(ApprovalBindingMismatch.into());
+            }
             if let Some(previous) = entry.proposed {
                 if previous != decision {
                     return Err(io::Error::new(
@@ -5062,6 +5018,17 @@ impl RuntimeThreadManager {
         input_id: &str,
         response: crate::tools::user_input::UserInputResponse,
     ) -> Result<bool> {
+        self.submit_user_input_for_turn(thread_id, input_id, None, response)
+            .await
+    }
+
+    pub async fn submit_user_input_for_turn(
+        &self,
+        thread_id: &str,
+        input_id: &str,
+        turn_id: Option<&str>,
+        response: crate::tools::user_input::UserInputResponse,
+    ) -> Result<bool> {
         let admission = self.config_admission.read().await;
         self.ensure_accepting_execution()?;
         let engine = {
@@ -5073,7 +5040,7 @@ impl RuntimeThreadManager {
         };
         let request = match self
             .user_input_settlement(thread_id)
-            .claim_pending_user_input(thread_id, input_id, None, Some(&response))?
+            .claim_pending_user_input(thread_id, input_id, turn_id, Some(&response))?
         {
             PendingUserInputClaim::Claimed(request) => request,
             PendingUserInputClaim::Missing | PendingUserInputClaim::Settling => {
@@ -5110,6 +5077,16 @@ impl RuntimeThreadManager {
     }
 
     pub async fn cancel_user_input(&self, thread_id: &str, input_id: &str) -> Result<bool> {
+        self.cancel_user_input_for_turn(thread_id, input_id, None)
+            .await
+    }
+
+    pub async fn cancel_user_input_for_turn(
+        &self,
+        thread_id: &str,
+        input_id: &str,
+        turn_id: Option<&str>,
+    ) -> Result<bool> {
         let admission = self.config_admission.read().await;
         self.ensure_accepting_execution()?;
         let engine = {
@@ -5121,7 +5098,7 @@ impl RuntimeThreadManager {
         };
         let request = match self
             .user_input_settlement(thread_id)
-            .claim_pending_user_input(thread_id, input_id, None, None)?
+            .claim_pending_user_input(thread_id, input_id, turn_id, None)?
         {
             PendingUserInputClaim::Claimed(request) => request,
             PendingUserInputClaim::Missing | PendingUserInputClaim::Settling => {
@@ -11394,7 +11371,7 @@ impl RuntimeThreadManager {
             .map_err(|_| Unavailable)?;
         let lock_path = self
             .store
-            .turn_operation_lock_path(&fingerprint)
+            .turn_operation_lock_path(fingerprint)
             .map_err(|_| Unavailable)?;
         let lock_file = match open_runtime_store_file(
             &lock_path,
@@ -11411,7 +11388,7 @@ impl RuntimeThreadManager {
             {
                 return match self
                     .store
-                    .load_turn_operation_binding(&fingerprint)
+                    .load_turn_operation_binding(fingerprint)
                     .map_err(|_| Unavailable)?
                 {
                     None => Ok(None),
@@ -11433,7 +11410,7 @@ impl RuntimeThreadManager {
         })?;
         let Some(binding) = self
             .store
-            .load_turn_operation_binding(&fingerprint)
+            .load_turn_operation_binding(fingerprint)
             .map_err(|_| Unavailable)?
         else {
             return Ok(None);
@@ -11766,7 +11743,7 @@ impl RuntimeThreadManager {
                         append_decision_receipt(&mut turn, receipt);
                     }
                     for record in background_usage.records.iter().cloned() {
-                        match append_owned_usage_source_record(&self.store, &mut turn, &record) {
+                        match append_usage_source_record(&mut turn, &record) {
                             Ok(_) => {
                                 if record.has_native_producer() {
                                     drained_native_usage.push(record);
@@ -14318,6 +14295,8 @@ source_usage_records: Default::default(),
                 todos: new_shared_todo_list(),
                 plan_state: new_shared_plan_state(),
                 goal_state,
+                goal_complete_judge: cfg.goal_complete_judge(),
+                goal_blocked_judge: cfg.goal_blocked_judge(),
                 max_spawn_depth: cfg.subagent_max_spawn_depth_for_provider(&route_identity),
                 network_policy,
                 snapshots_enabled: !isolated_chat && cfg.snapshots_config().enabled,
@@ -15237,7 +15216,7 @@ source_usage_records: Default::default(),
         }
         let _turn_mutation = self.store.turn_mutation.lock();
         let mut turn = self.store.load_turn(turn_id)?;
-        match append_owned_usage_source_record(&self.store, &mut turn, record) {
+        match append_usage_source_record(&mut turn, record) {
             Ok(changed) => {
                 if changed {
                     self.store.save_turn(&turn)?;
@@ -15332,7 +15311,7 @@ source_usage_records: Default::default(),
                 if turn.thread_id != source_thread {
                     return false;
                 }
-                match append_owned_usage_source_record(&store, &mut turn, &record) {
+                match append_usage_source_record(&mut turn, &record) {
                     Ok(_) => store.save_turn(&turn).is_ok(),
                     Err(error) => {
                         tracing::warn!(%error, "durable Runtime usage correction refused");
@@ -17006,13 +16985,12 @@ source_usage_records: Default::default(),
                         payload["timeout"] = json!(true);
                     }
                     let projection = projection_lock.lock().await;
-                    if *outcome == crate::approval_log::ApprovalOutcome::Timeout {
-                        if let Err(error) = self.emit_event(&thread_id, Some(&turn_id), None,
+                    if *outcome == crate::approval_log::ApprovalOutcome::Timeout
+                        && let Err(error) = self.emit_event(&thread_id, Some(&turn_id), None,
                             "approval.timeout", json!({"approval_id": approval_id, "tool_call_id": id, "timeout_secs": publication.timeout_seconds()})).await {
                             let _ = publication.acknowledge(Err(format!("Runtime approval timeout append failed: {error}")));
                             return Err(error);
                         }
-                    }
                     if let Err(error) = self
                         .emit_event(
                             &thread_id,
@@ -17280,10 +17258,7 @@ source_usage_records: Default::default(),
                             && let Some(source) = receipt["source_id"].as_str()
                         {
                             let fingerprint = routed_usage_source_fingerprint(source);
-                            if !turn.routed_usage_source_ids.contains(&fingerprint)
-                                && turn.routed_usage_source_ids.len()
-                                    < MAX_ROUTED_USAGE_RECORDS_PER_TURN
-                            {
+                            if !turn.routed_usage_source_ids.contains(&fingerprint) {
                                 turn.routed_usage_source_ids.push(fingerprint);
                             }
                         }
@@ -17329,7 +17304,6 @@ source_usage_records: Default::default(),
                     duration_ms,
                     first_token_ms,
                     request_ms,
-                    finish_reason: _,
                     ..
                 } => {
                     let cost = if let Some(record) = accounting.as_ref() {
@@ -17635,7 +17609,7 @@ source_usage_records: Default::default(),
             }
             let mut drained_native_usage = Vec::new();
             for record in background_usage.records {
-                match append_owned_usage_source_record(&self.store, &mut turn, &record) {
+                match append_usage_source_record(&mut turn, &record) {
                     Ok(_) => {
                         if record.has_native_producer() {
                             drained_native_usage.push(record);

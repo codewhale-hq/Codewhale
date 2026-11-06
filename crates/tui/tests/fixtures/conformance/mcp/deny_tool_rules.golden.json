@@ -42,6 +42,7 @@
           "defer_loading": false,
           "description": "",
           "input_schema": {
+            "properties": {},
             "type": "object"
           },
           "name": "mcp_conformance_echo"

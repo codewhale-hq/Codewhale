@@ -194,8 +194,13 @@ async fn fixture(mode: &'static str, first_tokens: u64, max_steps: u32) -> Fixtu
     agent.status = SubAgentStatus::Running;
     {
         let mut guard = manager.write().await;
-        guard.register_worker_for_session(spec, &runtime.context.state_namespace, None);
-        guard.agents.insert("report-worker".to_string(), agent);
+        guard
+            .with_store_transaction(|guard| {
+                guard.register_worker_for_session(spec, &runtime.context.state_namespace, None);
+                guard.agents.insert("report-worker".to_string(), agent);
+                guard.persist_state_synchronously()
+            })
+            .unwrap();
     }
     let task = tokio::spawn(run_subagent_task(SubAgentTask {
         manager_handle: Arc::clone(&manager),
@@ -395,7 +400,13 @@ async fn child_work_cancellation_wins_once() {
         .unwrap();
     fixture.cancel.cancel();
     let result = fixture.finish().await;
-    assert_eq!(result.status, SubAgentStatus::Cancelled);
+    assert_eq!(
+        result.status,
+        SubAgentStatus::Cancelled,
+        "{:?} / {:?}",
+        result.result,
+        fixture.manager.read().await.worker_records["report-worker"].error
+    );
     assert_eq!(result.usage.as_ref().unwrap().total_tokens, Some(15));
     assert!(fixture.manager.read().await.worker_records["report-worker"].has_unreported_usage);
     assert!(
@@ -446,7 +457,13 @@ async fn child_work_cancellation_after_response_preserves_actual_usage() {
     fixture.cancel.cancel();
     drop(guard);
     let result = fixture.finish().await;
-    assert_eq!(result.status, SubAgentStatus::Cancelled);
+    assert_eq!(
+        result.status,
+        SubAgentStatus::Cancelled,
+        "{:?} / {:?}",
+        result.result,
+        fixture.manager.read().await.worker_records["report-worker"].error
+    );
     assert_eq!(result.usage.as_ref().unwrap().total_tokens, Some(45));
     assert!(!fixture.manager.read().await.worker_records["report-worker"].has_unreported_usage);
     assert!(

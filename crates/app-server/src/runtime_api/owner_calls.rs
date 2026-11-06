@@ -44,6 +44,20 @@ fn decode<T: serde::de::DeserializeOwned>(body: Value) -> Result<T> {
     })
 }
 
+fn user_input_receipt(input_id: String, delivered: bool) -> Result<Value, ApiError> {
+    if !delivered {
+        return Err(ApiError::not_found(format!(
+            "no pending user-input request with id '{input_id}'"
+        )));
+    }
+    serde_json::to_value(SubmitUserInputResponse {
+        ok: true,
+        input_id,
+        delivered,
+    })
+    .map_err(|error| ApiError::internal(error.to_string()))
+}
+
 pub(super) async fn execute(state: RuntimeApiState, request: RuntimeOwnerRequest) -> Result<Value> {
     validate(&state).await?;
     Ok(match request {
@@ -156,10 +170,53 @@ pub(super) async fn execute(state: RuntimeApiState, request: RuntimeOwnerRequest
         }
         RuntimeOwnerRequest::DecideApproval {
             approval_id,
+            binding,
             decision,
         } => {
-            let value = api(settle_approval_request(&state, approval_id, decision).await)?;
+            let value =
+                api(
+                    settle_approval_request(&state, approval_id, binding.as_ref(), decision).await,
+                )?;
             serde_json::to_value(value)?
+        }
+        RuntimeOwnerRequest::SubmitUserInput {
+            thread_id,
+            input_id,
+            turn_id,
+            response,
+        } => {
+            let delivered = api(state
+                .runtime_threads
+                .submit_user_input_for_turn(&thread_id, &input_id, turn_id.as_deref(), response)
+                .await
+                .map_err(map_thread_err))?;
+            api(user_input_receipt(input_id, delivered))?
+        }
+        RuntimeOwnerRequest::CancelUserInput {
+            thread_id,
+            input_id,
+            turn_id,
+        } => {
+            let delivered = api(state
+                .runtime_threads
+                .cancel_user_input_for_turn(&thread_id, &input_id, turn_id.as_deref())
+                .await
+                .map_err(map_thread_err))?;
+            api(user_input_receipt(input_id, delivered))?
+        }
+        RuntimeOwnerRequest::DeliverDynamicToolResult {
+            thread_id,
+            turn_id,
+            call_id,
+            result,
+        } => {
+            api(deliver_dynamic_tool_result(
+                State(state),
+                Path((thread_id, turn_id, call_id)),
+                Json(result),
+            )
+            .await)?;
+            json!({ "ok": true, "delivered": true })
         }
         RuntimeOwnerRequest::InterruptTurn { thread_id, turn_id } => {
             let Json(value) =

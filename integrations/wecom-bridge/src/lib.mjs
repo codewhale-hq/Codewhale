@@ -79,6 +79,18 @@ export function stripGroupPrefix(text, { chatType, requirePrefix, prefix }) {
   });
 }
 
+/** Reduce a provider-supplied filename to a safe single path component. */
+export function sanitizeFilename(name, fallback = "upload.bin") {
+  const cleaned = String(name || "")
+    .replace(/[\\/]/g, "_")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f]/g, "")
+    .replace(/^[.\s]+/, "")
+    .replace(/[\s.]+$/, "")
+    .slice(0, 120);
+  return cleaned || fallback;
+}
+
 /** Check if text is a natural-language approval response (Chinese or English). */
 export function isApprovalResponse(text) {
   const t = String(text || "").trim().toLowerCase();

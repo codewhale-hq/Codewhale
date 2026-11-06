@@ -472,7 +472,7 @@
   },
   "crates/tui/src/lib.rs": {
     "path_canonicalize": 4,
-    "std_fs": 35
+    "std_fs": 36
   },
   "crates/tui/src/tui/app/init.rs": {
     "std_fs": 1
@@ -539,9 +539,12 @@
     "path_canonicalize": 2
   },
   "crates/util/src/files.rs": {
-    "path_canonicalize": 2,
+    "path_canonicalize": 5,
     "std_fs": 5,
     "thread_sleep": 1
+  },
+  "crates/util/src/git_metadata.rs": {
+    "std_fs": 2
   },
   "crates/util/src/utils.rs": {
     "std_fs": 7

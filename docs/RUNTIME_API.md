@@ -2300,6 +2300,29 @@ also how a client sees model-spawned work.
   could not be loaded and only the store-recorded route's static window
   resolved.
 
+**Thread-scoped reads.** `GET /v1/git`, `/v1/changes`, `/v1/diff`,
+`/v1/workspace/diff`, `/v1/git/graph`, `/v1/workspace/files` and
+`/v1/workspace/files/read` accept an optional `thread_id`. With it, the route
+reads the workspace recorded on that thread (the runtime store's thread record
+is the only source) instead of the server's workspace, through the same
+confined paths. Without it the route behaves exactly as before. An unknown
+thread is 404; a recorded workspace that is not an absolute path, or that is
+missing, replaced by a link or changed during resolution is 409 with
+`error.code` `thread_workspace_unavailable`. Mutating git routes, file
+writes, `/v1/workspace/status` and file search stay on the server workspace.
+Clients must require the `thread_scoped_reads` capability on
+`GET /v1/runtime/info` before sending `thread_id`: older Engines reject the
+unknown query parameter.
+
+**Status unavailable.** `GET /v1/workspace/status` and `GET /v1/git` report
+`status_unavailable: true` when `git status` could not be read (git failed to
+start or exited non-zero, or the repository's filter configuration could not be
+inspected). `dirty` and the change counts are then unknown, not zero, and clients
+must not present them as clean. Status reads neutralize clean/process filter
+drivers defined in the repository's own configuration (local or worktree scope);
+drivers defined only in the user's global or system configuration, such as Git
+LFS, keep working.
+
 **Git** (workspace repository operations, APPS-106)
 - `GET /v1/git` — status detail: `git_repo`, `branch`, `head`
   (abbreviated, for display), `head_oid`, `index_token`, `revision`,

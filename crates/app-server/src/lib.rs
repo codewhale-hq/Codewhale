@@ -273,7 +273,25 @@ pub enum RuntimeOwnerRequest {
     },
     DecideApproval {
         approval_id: String,
+        binding: Option<codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
         decision: codewhale_engine::runtime_threads::manager::ExternalApprovalDecision,
+    },
+    SubmitUserInput {
+        thread_id: String,
+        input_id: String,
+        turn_id: Option<String>,
+        response: codewhale_engine::tools::user_input::UserInputResponse,
+    },
+    CancelUserInput {
+        thread_id: String,
+        input_id: String,
+        turn_id: Option<String>,
+    },
+    DeliverDynamicToolResult {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        result: codewhale_app_server_protocol::runtime::DynamicToolCallResult,
     },
 }
 
@@ -370,6 +388,7 @@ struct InFlightTurn {
     /// Thread id as the *runtime* knows it, not the stdio-facing id.
     runtime_thread_id: String,
     turn_id: String,
+    connection: Option<connection::ConnectionId>,
 }
 
 type TurnRegistry = Arc<Mutex<HashMap<String, InFlightTurn>>>;
@@ -995,6 +1014,19 @@ impl DispatchError {
                 code: NOT_DAEMON_OWNER_CODE,
                 message: "only the client that claimed this daemon may shut it down".to_string(),
                 data: Some(json!({ "error": "not_daemon_owner" })),
+            },
+            transport_error: None,
+        }
+    }
+
+    /// Server error (-32000..-32099): only the connection that started a
+    /// turn may interrupt it.
+    fn not_turn_owner() -> Self {
+        Self {
+            wire: RpcErrorDetails {
+                code: NOT_DAEMON_OWNER_CODE,
+                message: "only the connection that started this turn may interrupt it".to_string(),
+                data: Some(json!({ "error": "not_turn_owner" })),
             },
             transport_error: None,
         }

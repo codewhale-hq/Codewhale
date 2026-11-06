@@ -2,12 +2,41 @@ use crate::{DispatchError, params_or_object, parse_params};
 use codewhale_app_server_protocol::lifecycle::{InitializeParams, InitializeResponse};
 use serde_json::Value;
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ConnectionId(u64);
+
+impl ConnectionId {
+    fn mint() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl std::fmt::Display for ConnectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub(crate) struct ConnectionSession {
+    id: ConnectionId,
     initialization: Option<InitializeParams>,
 }
 
+impl Default for ConnectionSession {
+    fn default() -> Self {
+        Self {
+            id: ConnectionId::mint(),
+            initialization: None,
+        }
+    }
+}
+
 impl ConnectionSession {
+    pub(crate) fn id(&self) -> ConnectionId {
+        self.id
+    }
+
     pub(crate) fn initialized(&self) -> bool {
         self.initialization.is_some()
     }

@@ -1839,6 +1839,14 @@ Engine 并不知道的终端。输入可按路由归因：
   而 `live: false` 标记那些引擎无法被加载、只有存储中记录的该路由的静态窗口
   被解析出来的响应。
 
+**线程范围的读取。** `GET /v1/git`、`/v1/changes`、`/v1/diff`、
+`/v1/workspace/diff`、`/v1/git/graph`、`/v1/workspace/files` 与
+`/v1/workspace/files/read` 接受可选的 `thread_id`。提供时，路由读取该线程记录的工作区
+（唯一来源是运行时存储中的线程记录），而不是服务器的工作区，并走同样的受限路径。
+不提供时行为与之前完全一致。未知线程返回 404；记录的工作区不是绝对路径、已不存在、被替换为链接或在解析期间发生变化时，
+返回 409，`error.code` 为 `thread_workspace_unavailable`。会修改内容的 git 路由、文件写入、
+`/v1/workspace/status` 与文件搜索仍使用服务器工作区。
+
 **Git**（工作区仓库操作，APPS-106）
 - `GET /v1/git` — 状态详情：`git_repo`、`branch`、`head`
   （缩写，仅供展示）、`head_oid`、`index_token`、`revision`、

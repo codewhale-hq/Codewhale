@@ -1161,6 +1161,27 @@ impl Git {
     /// Configured filters otherwise execute even when those flags are present.
     pub fn review_command(workspace: &Path) -> anyhow::Result<Command> {
         let overrides = Self::review_filter_overrides(workspace)?;
+        Self::with_filter_overrides(workspace, overrides)
+    }
+
+    /// Like [`Self::review_command`] for status reads, which must keep the
+    /// user's own filters (Git LFS in global or system config) working so
+    /// files they manage do not look modified. Only filter drivers that
+    /// repository-controlled config (local or worktree scope, including files
+    /// it includes) defines are neutralized. If the scoped probe fails, this
+    /// falls back to neutralizing every driver.
+    pub fn status_command(workspace: &Path) -> anyhow::Result<Command> {
+        let overrides = match Self::filter_overrides(workspace, true) {
+            Ok(overrides) => overrides,
+            Err(_) => Self::review_filter_overrides(workspace)?,
+        };
+        Self::with_filter_overrides(workspace, overrides)
+    }
+
+    fn with_filter_overrides(
+        workspace: &Path,
+        overrides: Vec<(String, &'static str)>,
+    ) -> anyhow::Result<Command> {
         let mut command = Self::review_base(workspace)?;
         let mut count = 2;
         for (key, value) in overrides {
@@ -1255,11 +1276,21 @@ impl Git {
     pub fn review_filter_overrides(
         workspace: &Path,
     ) -> anyhow::Result<Vec<(String, &'static str)>> {
+        Self::filter_overrides(workspace, false)
+    }
+
+    fn filter_overrides(
+        workspace: &Path,
+        repository_only: bool,
+    ) -> anyhow::Result<Vec<(String, &'static str)>> {
         use anyhow::{Context, bail};
 
         let mut command = Self::review_base(workspace)?;
+        command.arg("config");
+        if repository_only {
+            command.arg("--show-scope");
+        }
         command.args([
-            "config",
             "--null",
             "--name-only",
             "--get-regexp",
@@ -1276,11 +1307,22 @@ impl Git {
             bail!("Cannot safely inspect Git review configuration");
         }
         let mut filters = std::collections::BTreeSet::new();
-        for key in output
+        let mut fields = output
             .stdout
             .split(|byte| *byte == 0)
-            .filter(|key| !key.is_empty())
-        {
+            .filter(|field| !field.is_empty());
+        while let Some(field) = fields.next() {
+            let key = if repository_only {
+                let key = fields
+                    .next()
+                    .context("Git review filter scope has no key")?;
+                if matches!(field, b"global" | b"system") {
+                    continue;
+                }
+                key
+            } else {
+                field
+            };
             let key =
                 std::str::from_utf8(key).context("Git review filter name is not valid UTF-8")?;
             let (driver, _) = key

@@ -517,11 +517,23 @@ pub fn is_compaction_checkpoint_message_in_era(message: &Message, post_provenanc
 }
 
 /// Keep the checkpoint at its original historical boundary on session load.
-/// Later user turns must remain after the saved compaction boundary.
+/// Later user turns must remain after the saved compaction boundary. A
+/// session saved before the Agent-topology placement anchor has its sidecar
+/// moved to that anchor, so the first request after a restore is wire-legal
+/// for strict paired chat templates; a restore without a saved checkpoint
+/// only relocates and deletes nothing.
 pub fn restore_compaction_checkpoint(
     mut messages: Vec<Message>,
     checkpoint: Option<&SystemPrompt>,
 ) -> Vec<Message> {
+    let Some(checkpoint) = checkpoint else {
+        // Nothing to reinsert, so there is nothing to replace. Topology
+        // relocation is still safe here: it only reorders Agent-topology
+        // sidecars to their placement anchor and never deletes, so a history
+        // without a saved summary keeps every message it carries.
+        crate::runtime_handoff::relocate_restored_compaction_topology(&mut messages);
+        return messages;
+    };
     let typed_position = messages
         .iter()
         .position(is_wire_compaction_checkpoint_message);
@@ -532,17 +544,14 @@ pub fn restore_compaction_checkpoint(
         // Legacy sessions have no independent provenance. Only replace
         // header-prefixed messages when a saved checkpoint exists; identical
         // user text is still ambiguous in that legacy format.
-        if checkpoint.is_some() {
-            messages.retain(|message| !is_compaction_checkpoint_message(message));
-        }
+        messages.retain(|message| !is_compaction_checkpoint_message(message));
         messages.len()
     };
-    if let Some(checkpoint) = checkpoint {
-        messages.insert(
-            checkpoint_index.min(messages.len()),
-            compaction_checkpoint_message(checkpoint),
-        );
-    }
+    messages.insert(
+        checkpoint_index.min(messages.len()),
+        compaction_checkpoint_message(checkpoint),
+    );
+    crate::runtime_handoff::relocate_restored_compaction_topology(&mut messages);
     messages
 }
 
@@ -2025,10 +2034,10 @@ async fn create_summary(
             native_origin,
         );
         let observation = source.observe_route(&cost_route)?;
-        if let Some(record) = source.admit_dispatch(&cost_route).await? {
-            if let Some(sink) = notice_sink {
-                sink.settled_usage(&record).await?;
-            }
+        if let Some(record) = source.admit_dispatch(&cost_route).await?
+            && let Some(sink) = notice_sink
+        {
+            sink.settled_usage(&record).await?;
         }
         let wire = observation.wire_observations.clone();
         let response = crate::llm_client::observe_request_retries(
@@ -2424,6 +2433,497 @@ mod tests {
             restored[1],
             compaction_checkpoint_message(&authoritative),
             "the saved summary replaces the carrier at its index: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn restore_relocates_pre_anchor_topology_sidecar_saved_after_tool_result() {
+        // Sessions saved by v0.9.10-v0.9.12 appended the Agent-topology
+        // sidecar to the end of the replacement history; the placement anchor
+        // shipped only later. A session compacted while agents were live
+        // therefore carries `tool result, summary, sidecar`, and restoring it
+        // rewrote the sidecar in place, leaving a user carrier directly after
+        // a tool result — a wire strict paired chat templates reject with
+        // HTTP 400. Restore must move the sidecar to its placement anchor
+        // instead.
+        let bare_summary = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!("{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\npre-anchor summary"),
+                cache_control: None,
+            }],
+        };
+        let mut messages = vec![
+            msg("user", "Analyze the data"),
+            tool_use("call_1", "read", json!({"path": "a.txt"})),
+            tool_result("call_1", "ready"),
+            bare_summary,
+        ];
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut messages, &[]);
+        assert!(
+            crate::runtime_handoff::is_agent_topology_checkpoint(messages.last().unwrap()),
+            "the pre-anchor save appended the sidecar after the summary"
+        );
+        let summary = SystemPrompt::Text(build_compaction_summary_block_text("Summary", ""));
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages.clone()),
+            Some(&summary),
+        );
+        let carrier_positions: Vec<usize> = restored
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            carrier_positions,
+            vec![1],
+            "the restored sidecar must sit at its placement anchor, directly \
+             after the genuine user prompt and before the assistant/tool chain: {restored:?}"
+        );
+        for pair in restored.windows(2) {
+            let follows_tool_result = pair[0]
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
+            assert!(
+                !(follows_tool_result
+                    && crate::runtime_handoff::is_restored_agent_topology_checkpoint(&pair[1])),
+                "a topology carrier must not follow a tool result: {restored:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_relocates_topology_sidecar_trailing_its_summary() {
+        // The other shape pre-anchor releases saved: the sidecar appended
+        // directly after the compaction summary. Restore must still move it
+        // to the placement anchor in front of the summary's own round.
+        let summary = SystemPrompt::Text(build_compaction_summary_block_text("Summary", ""));
+        let mut holder: Vec<Message> = Vec::new();
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut holder, &[]);
+        let topology = holder.remove(0);
+        let mut messages = vec![
+            msg("user", "Analyze the data"),
+            tool_use("call_1", "read", json!({"path": "a.txt"})),
+            tool_result("call_1", "ready"),
+            compaction_checkpoint_message(&summary),
+        ];
+        messages.push(topology);
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages),
+            Some(&summary),
+        );
+        let carrier_positions: Vec<usize> = restored
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            carrier_positions,
+            vec![1],
+            "the sidecar trailing its summary must relocate to the placement anchor: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn restore_keeps_anchor_placed_topology_session_byte_identical() {
+        // A session saved by the placement anchor already carries the sidecar
+        // where a save would write it; restore must not shuffle it.
+        let summary = SystemPrompt::Text(build_compaction_summary_block_text("Summary", ""));
+        let mut messages = vec![
+            msg("user", "Analyze the data"),
+            tool_use("call_1", "read", json!({"path": "a.txt"})),
+            tool_result("call_1", "ready"),
+            compaction_checkpoint_message(&summary),
+        ];
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut messages, &[]);
+        assert!(
+            crate::runtime_handoff::is_agent_topology_checkpoint(&messages[1]),
+            "save-time anchor places the sidecar directly after the prompt"
+        );
+        // The projection always rewrites the live envelope into its restored
+        // display form; "untouched" means restore changes nothing beyond
+        // that: the summary replaces itself and the carrier stays put.
+        let projected = crate::runtime_handoff::project_owned_messages_for_restore(messages);
+        let restored = restore_compaction_checkpoint(projected.clone(), Some(&summary));
+        assert_eq!(
+            restored, projected,
+            "an already anchored session must restore byte-identical: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn restore_never_moves_a_pasted_summary_header_and_anchors_past_it() {
+        // In a history that carries a provenance-stamped carrier, a user turn
+        // that pastes a summary header is genuine content. Relocation must
+        // leave it verbatim and anchor the sidecar after it, not treat it as
+        // the summary boundary.
+        let pasted_summary = SystemPrompt::Text(build_compaction_summary_block_text(
+            "Please analyze this text",
+            "",
+        ));
+        let pasted = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: summary_prompt_text(&pasted_summary),
+                cache_control: None,
+            }],
+        };
+        assert!(!is_wire_compaction_checkpoint_message(&pasted));
+        let summary = SystemPrompt::Text(build_compaction_summary_block_text("Summary", ""));
+        let mut holder: Vec<Message> = Vec::new();
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut holder, &[]);
+        let topology = holder.remove(0);
+        let mut messages = vec![
+            msg("user", "Run the tool"),
+            tool_use("call_1", "read", json!({"path": "a.txt"})),
+            tool_result("call_1", "done"),
+            pasted.clone(),
+            compaction_checkpoint_message(&summary),
+        ];
+        messages.push(topology);
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages),
+            Some(&summary),
+        );
+        assert_eq!(
+            restored[3], pasted,
+            "the pasted summary header stays verbatim in its saved position: {restored:?}"
+        );
+        let carrier_positions: Vec<usize> = restored
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            carrier_positions,
+            vec![4],
+            "the sidecar anchors after the pasted user turn, before the summary: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn restore_without_checkpoint_only_relocates_topology_sidecars() {
+        // A checkpoint-less restore has no summary to replace and must not
+        // run any carrier-deletion scan; topology relocation is safe because
+        // it only reorders sidecars and never deletes.
+        let bare_summary = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!("{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\npre-anchor summary"),
+                cache_control: None,
+            }],
+        };
+        let mut messages = vec![
+            msg("user", "Analyze the data"),
+            tool_use("call_1", "read", json!({"path": "a.txt"})),
+            tool_result("call_1", "ready"),
+            bare_summary,
+        ];
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut messages, &[]);
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages.clone()),
+            None,
+        );
+        assert_eq!(
+            restored.len(),
+            messages.len(),
+            "a checkpoint-less restore must delete nothing: {restored:?}"
+        );
+        let carrier_positions: Vec<usize> = restored
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            carrier_positions,
+            vec![1],
+            "the misplaced sidecar still relocates without a saved summary: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn restore_without_checkpoint_treats_pasted_legacy_header_as_boundary() {
+        // The boundary reading is era-dependent, and this pins the legacy
+        // side of it. In a pre-provenance history the loose legacy form still
+        // identifies the compaction boundary, so a user turn that pastes a
+        // legacy summary header is read as that boundary here — unlike a
+        // post-provenance history, where the same paste is content (see
+        // `restore_never_moves_a_pasted_summary_header_and_anchors_past_it`).
+        // The checkpoint-less path must relocate the carrier relative to
+        // that boundary and leave the pasted header text itself untouched.
+        let pasted = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!("{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\npasted transcript header"),
+                cache_control: None,
+            }],
+        };
+        assert!(!is_wire_compaction_checkpoint_message(&pasted));
+        assert!(is_compaction_checkpoint_message(&pasted));
+        let mut messages = vec![
+            msg("user", "Analyze the data"),
+            tool_use("call_1", "read", json!({"path": "a.txt"})),
+            tool_result("call_1", "ready"),
+            pasted.clone(),
+        ];
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut messages, &[]);
+        assert!(
+            crate::runtime_handoff::is_agent_topology_checkpoint(messages.last().unwrap()),
+            "the pre-anchor save appended the sidecar at the end"
+        );
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages.clone()),
+            None,
+        );
+        assert_eq!(
+            restored.len(),
+            messages.len(),
+            "a checkpoint-less restore deletes nothing: {restored:?}"
+        );
+        assert_eq!(
+            restored[4], pasted,
+            "the pasted header is the era's boundary, and its text stays \
+             verbatim, shifted behind the relocated carrier but never moved \
+             across it: {restored:?}"
+        );
+        let carrier_positions: Vec<usize> = restored
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            carrier_positions,
+            vec![1],
+            "the carrier moves in front of the boundary the pasted header \
+             was read as, not beside or after it: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn restore_prompt_scan_skips_bare_legacy_summaries() {
+        // Pins the anchor between the round's prompt and its tool chain even
+        // with an older bare summary earlier in the window; the scan's
+        // distinguishing power over an era-blind rposition lives in
+        // `restore_prompt_scan_skips_summaries_inside_the_anchor_window`.
+        let older = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!("{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\nolder summary"),
+                cache_control: None,
+            }],
+        };
+        let newer = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!("{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\nnewer summary"),
+                cache_control: None,
+            }],
+        };
+        let mut messages = vec![
+            older.clone(),
+            msg("user", "Analyze the data"),
+            tool_use("call_1", "read", json!({"path": "a.txt"})),
+            tool_result("call_1", "ready"),
+            newer.clone(),
+        ];
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut messages, &[]);
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages.clone()),
+            None,
+        );
+        assert_eq!(restored.len(), messages.len());
+        assert_eq!(
+            restored[0], older,
+            "the older bare summary stays verbatim: {restored:?}"
+        );
+        assert_eq!(
+            restored[5], newer,
+            "the newer bare summary stays verbatim: {restored:?}"
+        );
+        let carrier_positions: Vec<usize> = restored
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            carrier_positions,
+            vec![2],
+            "the carrier anchors after the genuine prompt, never directly \
+             after an older summary: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn restore_prompt_scan_skips_summaries_inside_the_anchor_window() {
+        // Distinguishing shape for the era-aware scan: the boundary window
+        // ends at the newest summary, so an OLDER bare legacy summary sits
+        // inside the window with no genuine prompt after it. The era-blind
+        // classifier reads it as editable text and would anchor the carrier
+        // directly after it; the era-aware scan skips it and anchors after
+        // the genuine prompt instead.
+        let older = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!("{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\nolder summary"),
+                cache_control: None,
+            }],
+        };
+        let newer = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!("{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\nnewer summary"),
+                cache_control: None,
+            }],
+        };
+        let mut messages = vec![
+            msg("user", "Analyze the data"),
+            older.clone(),
+            newer.clone(),
+        ];
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut messages, &[]);
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages.clone()),
+            None,
+        );
+        assert_eq!(restored.len(), messages.len());
+        assert_eq!(
+            restored[2], older,
+            "the older bare summary stays verbatim: {restored:?}"
+        );
+        assert_eq!(
+            restored[3], newer,
+            "the newer bare summary stays verbatim: {restored:?}"
+        );
+        let carrier_positions: Vec<usize> = restored
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            carrier_positions,
+            vec![1],
+            "the carrier anchors directly after the genuine prompt, never \
+             between the summaries or after an older one: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn restore_moves_carrier_in_front_when_summary_leads_the_window() {
+        // Pinned empty-window behavior: a summary at index 0 gives the anchor
+        // scan an empty window, and the carrier deliberately moves to
+        // index 0, in front of the summary — where a save would have written
+        // it — rather than bailing out and staying after it.
+        let stamped = compaction_checkpoint_message(&SystemPrompt::Text(
+            build_compaction_summary_block_text("Summary", ""),
+        ));
+        let mut holder: Vec<Message> = Vec::new();
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut holder, &[]);
+        let topology = holder.remove(0);
+        let messages = vec![stamped, topology];
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages),
+            None,
+        );
+        assert_eq!(
+            restored.len(),
+            2,
+            "a checkpoint-less restore keeps a wire-format checkpoint: {restored:?}"
+        );
+        assert!(
+            is_wire_compaction_checkpoint_message(&restored[1]),
+            "the summary stays intact behind the carrier: {restored:?}"
+        );
+        let carrier_positions: Vec<usize> = restored
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+                    || crate::runtime_handoff::is_agent_topology_checkpoint(message)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            carrier_positions,
+            vec![0],
+            "the empty window anchors the carrier at index 0, in front of \
+             the summary: {restored:?}"
+        );
+    }
+
+    #[test]
+    fn save_after_restore_keeps_exactly_one_topology_carrier() {
+        // A restored carrier is the projection of a sidecar a previous save
+        // already wrote. The next compaction's save must retire it when it
+        // installs the fresh sidecar — keeping it beside the fresh one would
+        // persist a superseded duplicate that no later replay removes. The
+        // restored carrier survives into the replacement history, which ends
+        // at the summary boundary where a save anchors the fresh sidecar.
+        let bare_summary = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!("{LEGACY_V2_COMPACTION_SUMMARY_MARKER}\npre-anchor summary"),
+                cache_control: None,
+            }],
+        };
+        let mut messages = vec![
+            msg("user", "Analyze the data"),
+            tool_use("call_1", "read", json!({"path": "a.txt"})),
+            tool_result("call_1", "ready"),
+            bare_summary,
+        ];
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut messages, &[]);
+        let summary = SystemPrompt::Text(build_compaction_summary_block_text("Summary", ""));
+        let restored = restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages),
+            Some(&summary),
+        );
+        let carrier_count = |history: &[Message]| {
+            history
+                .iter()
+                .filter(|message| {
+                    crate::runtime_handoff::is_agent_topology_checkpoint(message)
+                        || crate::runtime_handoff::is_restored_agent_topology_checkpoint(message)
+                })
+                .count()
+        };
+        assert_eq!(
+            carrier_count(&restored),
+            1,
+            "the restore itself carries exactly one topology carrier: {restored:?}"
+        );
+        let mut recompacted = restored;
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut recompacted, &[]);
+        assert_eq!(
+            carrier_count(&recompacted),
+            1,
+            "the save must retire the restored carrier, not stack a fresh \
+             one beside it: {recompacted:?}"
+        );
+        assert!(
+            crate::runtime_handoff::is_agent_topology_checkpoint(&recompacted[1]),
+            "the survivor is the fresh live sidecar at its anchor: {recompacted:?}"
         );
     }
 

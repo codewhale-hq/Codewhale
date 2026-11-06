@@ -44,18 +44,12 @@ impl crate::compaction::CompactionNoticeSink for EngineCompactionNoticeSink {
     }
     fn accounting_origin(&self) -> std::io::Result<Option<crate::cost_status::NativeUsageOrigin>> {
         if let Some(child) = self.child.as_ref() {
-            return child
-                .runtime
-                .context
-                .accounting_origin
-                .clone()
-                .map(Some)
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "child compaction has no admitted accounting origin",
-                    )
-                });
+            return child.usage_origin().map(Some).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "child compaction has no admitted accounting origin",
+                )
+            });
         }
         Ok(self.origin.clone())
     }

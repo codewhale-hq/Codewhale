@@ -161,6 +161,12 @@ impl ChildAuthority {
     pub fn accounting_projection(&self) -> ChildAccountingProjection {
         ChildAccountingProjection::capture(&self.runtime, &self.owner_agent_id)
     }
+    pub fn usage_origin(&self) -> Option<crate::cost_status::NativeUsageOrigin> {
+        let origin = self.runtime.context.accounting_origin.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let origin = origin.or_else(|| self.runtime.accounting_origin.test_session_origin());
+        origin
+    }
     pub fn accounting_origin(&self) -> (crate::cost_status::CostScopeToken, String, String) {
         (
             self.runtime.accounting_origin.cost_scope,
@@ -393,7 +399,7 @@ impl ChildAuthority {
                 .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
             || (name == "pandoc_convert" && input.get("output_path").is_some());
         if scope_aware_write && self.enforce_write_claim {
-            let paths = mutation_paths(name, input)?;
+            let paths = mutation_paths(name, input, &self.runtime.context.workspace)?;
             if paths.is_empty() {
                 return Err(admission_denied(format!(
                     "Write tool {name} did not expose a bounded repo-relative target for coordination"
@@ -459,7 +465,7 @@ impl ChildAuthority {
             }
         }
         let observed_paths = if scope_aware_write {
-            mutation_paths(name, input)?
+            mutation_paths(name, input, &self.runtime.context.workspace)?
         } else {
             Vec::new()
         };
@@ -1165,11 +1171,12 @@ impl ChildJob {
             .fetch_max(logical_step, std::sync::atomic::Ordering::Relaxed);
         self.requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let origin = self.authority.usage_origin();
         ChildDispatchedRequest {
             accounting_source: crate::cost_status::NativeUsageSource::capture_with_origin(
                 source,
                 crate::cost_status::UsageSpendOwner::Auxiliary,
-                self.authority.runtime.context.accounting_origin.clone(),
+                origin,
             ),
             job: self.clone(),
             route,

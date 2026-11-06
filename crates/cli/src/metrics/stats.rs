@@ -1054,7 +1054,7 @@ impl<'a> Collector<'a> {
                 Some(total as f64 / self.session_tokens.len() as f64);
             let mid = self.session_tokens.len() / 2;
             self.report.overview.median_saved_session_tokens =
-                Some(if self.session_tokens.len() % 2 == 0 {
+                Some(if self.session_tokens.len().is_multiple_of(2) {
                     self.session_tokens[mid - 1] as f64 / 2.0
                         + self.session_tokens[mid] as f64 / 2.0
                 } else {

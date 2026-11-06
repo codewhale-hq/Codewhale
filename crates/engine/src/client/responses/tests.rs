@@ -161,10 +161,10 @@ async fn responses_stream_does_not_replay_unknown_server_outcome() {
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(RetryThenSuccess {
+        .respond_with(AlwaysError {
             attempts: Arc::clone(&attempts),
-            retry_status: 503,
-            retry_body: "temporarily unavailable",
+            status: 503,
+            body: "temporarily unavailable",
         })
         .mount(&server)
         .await;
@@ -178,17 +178,16 @@ async fn responses_stream_does_not_replay_unknown_server_outcome() {
         )
         .await
     {
-        Ok(_) => panic!("an unknown inference outcome must not be replayed"),
+        Ok(_) => panic!("an unknown-outcome inference failure must not be replayed"),
         Err(error) => error,
     };
-    assert!(
-        matches!(
-            error.downcast_ref::<crate::llm_client::LlmError>(),
-            Some(crate::llm_client::LlmError::ServerError { status: 503, .. })
-        ),
-        "{error:#}"
-    );
+
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let typed = error.downcast_ref::<crate::llm_client::LlmError>().unwrap();
+    assert!(matches!(
+        typed,
+        crate::llm_client::LlmError::ServerError { status: 503, .. }
+    ));
 }
 
 #[tokio::test]
@@ -197,10 +196,10 @@ async fn responses_stream_does_not_replay_unknown_upstream_499_outcome() {
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(RetryThenSuccess {
+        .respond_with(AlwaysError {
             attempts: Arc::clone(&attempts),
-            retry_status: 499,
-            retry_body: "upstream request cancelled",
+            status: 499,
+            body: "upstream request cancelled",
         })
         .mount(&server)
         .await;
@@ -214,17 +213,16 @@ async fn responses_stream_does_not_replay_unknown_upstream_499_outcome() {
         )
         .await
     {
-        Ok(_) => panic!("an unknown inference outcome must not be replayed"),
+        Ok(_) => panic!("an unknown-outcome inference failure must not be replayed"),
         Err(error) => error,
     };
-    assert!(
-        matches!(
-            error.downcast_ref::<crate::llm_client::LlmError>(),
-            Some(crate::llm_client::LlmError::ServerError { status: 499, .. })
-        ),
-        "{error:#}"
-    );
+
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let typed = error.downcast_ref::<crate::llm_client::LlmError>().unwrap();
+    assert!(matches!(
+        typed,
+        crate::llm_client::LlmError::ServerError { status: 499, .. }
+    ));
 }
 
 async fn collect_responses_stream(sse_body: &str) -> Vec<Result<StreamEvent>> {

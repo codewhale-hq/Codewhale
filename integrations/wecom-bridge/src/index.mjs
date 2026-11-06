@@ -1,4 +1,6 @@
 import { WSClient, generateReqId } from "@wecom/aibot-node-sdk";
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import {
   activeTurnBlock,
@@ -12,6 +14,7 @@ import {
   parseBool,
   parseCommand,
   parseList,
+  sanitizeFilename,
   parseApprovalDecisionArgs,
   isApprovalResponse,
   isDenyResponse,
@@ -45,6 +48,7 @@ const config = {
   runtimeUrl: (process.env.CODEWHALE_RUNTIME_URL || "http://127.0.0.1:7878").replace(/\/+$/, ""),
   runtimeToken: requiredEnv("CODEWHALE_RUNTIME_TOKEN"),
   workspace: process.env.CODEWHALE_WORKSPACE || process.cwd(),
+  mediaDir: process.env.WECOM_MEDIA_DIR || "",
   model: process.env.CODEWHALE_MODEL || "auto",
   mode: process.env.CODEWHALE_MODE || "agent",
   allowShell: parseBool(process.env.CODEWHALE_ALLOW_SHELL, true),
@@ -54,6 +58,7 @@ const config = {
   allowUnlisted: parseBool(process.env.WECOM_ALLOW_UNLISTED, false),
   threadMapPath: process.env.WECOM_THREAD_MAP_PATH || "/var/lib/codewhale-wecom-bridge/thread-map.json",
   maxReplyChars: Number(process.env.WECOM_MAX_REPLY_CHARS || 3500),
+  maxReplyBytes: Number(process.env.WECOM_MAX_REPLY_BYTES || 3800),
   turnTimeoutMs: Number(process.env.CODEWHALE_TURN_TIMEOUT_MS || 900000),
   approvalTimeoutMs: Number(process.env.CODEWHALE_APPROVAL_TIMEOUT_MS || 300000)
 };
@@ -97,11 +102,52 @@ if (!config.allowlist.length && !config.allowUnlisted) {
 client.connect();
 
 function replyText(frame, text) {
-  const chunks = splitMessage(text, config.maxReplyChars);
+  // WeCom caps one message at 4096 UTF-8 bytes; without the byte cap a
+  // char-split chunk of CJK text is truncated silently.
+  const chunks = splitMessage(text, config.maxReplyChars, config.maxReplyBytes);
   return chunks.reduce(
     (chain, chunk) => chain.then(() => client.replyStream(frame, generateReqId("stream"), chunk, true)),
     Promise.resolve()
   );
+}
+
+function isMediaMessage(msgtype) {
+  return msgtype === "video" || msgtype === "file" || msgtype === "image";
+}
+
+function mediaStorageDir() {
+  return config.mediaDir || path.join(config.workspace, "media");
+}
+
+async function handleMediaMessage(frame, body, identity) {
+  const kind = body.msgtype;
+  const content = body.video || body.file || body.image || {};
+  if (!content.url) {
+    await replyText(frame, "The media message carried no downloadable URL.");
+    return;
+  }
+  const zh = kind === "video" ? "video" : kind === "image" ? "image" : "file";
+  // Download URLs stay valid for ~5 minutes; tell the user before starting.
+  await replyText(frame, `Received ${zh}, downloading (the link is valid for ~5 minutes)…`);
+  try {
+    const { buffer, filename } = await client.downloadFile(content.url, content.aeskey);
+    const dir = mediaStorageDir();
+    mkdirSync(dir, { recursive: true });
+    const fallbackExt = kind === "image" ? "jpg" : kind === "video" ? "mp4" : "bin";
+    const name = sanitizeFilename(filename, `upload-${Date.now()}.${fallbackExt}`);
+    const target = path.join(dir, name);
+    writeFileSync(target, buffer);
+    await replyText(
+      frame,
+      `Saved ${name} (${(buffer.length / 1048576).toFixed(1)} MB) to ${target}\n` +
+        `Send follow-up instructions in chat to use it.`
+    );
+  } catch (error) {
+    await replyText(
+      frame,
+      `Download failed (links expire after ~5 minutes; large files should be re-sent promptly): ${error?.errmsg || error?.message || error}`
+    );
+  }
 }
 
 async function reportHandlerError(frame, context, error) {
@@ -124,21 +170,31 @@ async function handleIncomingMessage(frame) {
   console.log(`Incoming message: chatId=${identity.chatId} userId=${identity.userId} chatType=${identity.chatType}`);
   if (!identity.chatId || !identity.messageId) return;
 
-  if (body.msgtype && body.msgtype !== "text") {
-    await replyText(frame, "目前仅支持文本消息。");
+  if (body.msgtype && body.msgtype !== "text" && body.msgtype !== "voice" &&
+      !isMediaMessage(body.msgtype)) {
+    await replyText(frame, `Only text, voice, image, video and file messages are supported (got ${body.msgtype}).`);
     return;
   }
 
-  const textContent = body.text?.content || "";
-  const scoped = stripGroupPrefix(textContent, {
-    chatType: identity.chatType,
-    requirePrefix: identity.chatType === "group",
-    prefix: "/ds"
-  });
+  const textContent = body.msgtype === "voice" ? (body.voice?.content || "") : (body.text?.content || "");
+  // Media frames carry no text and must not go through the group-prefix
+  // filter, which rejects empty text and would drop them silently.
+  const scoped = isMediaMessage(body.msgtype)
+    ? { accepted: true, text: "" }
+    : stripGroupPrefix(textContent, {
+        chatType: identity.chatType,
+        requirePrefix: identity.chatType === "group",
+        prefix: "/ds"
+      });
   if (!scoped.accepted) return;
 
   if (!isAllowed(identity, config.allowlist, config.allowUnlisted)) {
     await replyText(frame, pairingRefusalText(identity));
+    return;
+  }
+
+  if (isMediaMessage(body.msgtype)) {
+    await handleMediaMessage(frame, body, identity);
     return;
   }
 
@@ -267,7 +323,18 @@ async function runPrompt(chatId, prompt, frame) {
       activeTurnId: activeBlock.turnId,
       updatedAt: new Date().toISOString()
     });
-    await replyText(frame, activeBlock.message);
+    // The turn is still running: forward the message as steering guidance
+    // instead of dropping it. The steer may be dropped by the engine if the
+    // turn moved on first; the Runtime reports that verdict.
+    try {
+      await runtimeJson(
+        `/v1/threads/${encodeURIComponent(state.threadId)}/turns/${encodeURIComponent(activeBlock.turnId)}/steer`,
+        { method: "POST", body: { prompt } }
+      );
+      await replyText(frame, `[running] forwarded to the active turn: ${prompt.slice(0, 80)}`);
+    } catch {
+      await replyText(frame, activeBlock.message);
+    }
     return;
   }
   if (state.activeTurnId) {
