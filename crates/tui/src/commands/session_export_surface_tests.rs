@@ -379,15 +379,15 @@ fn public_dispatch_file_receipts_and_usage_errors_are_exact() {
     );
 
     let usage = export_info().usage;
-    for (arg, reason) in [("clipboard extra.md", "clipboard does not accept a path")] {
-        let result = execute(&format!("/export {arg}"), app);
-        assert!(result.is_error, "{arg} must be rejected");
-        assert_eq!(
-            result_message(&result),
-            format!("Error: {reason}. Usage: {usage}"),
-            "{arg} must keep the baseline usage error"
-        );
-    }
+    let arg = "clipboard extra.md";
+    let reason = "clipboard does not accept a path";
+    let result = execute(&format!("/export {arg}"), app);
+    assert!(result.is_error, "{arg} must be rejected");
+    assert_eq!(
+        result_message(&result),
+        format!("Error: {reason}. Usage: {usage}"),
+        "{arg} must keep the baseline usage error"
+    );
 }
 
 // ---------------------------------------------------------------------------
