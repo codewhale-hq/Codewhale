@@ -4399,6 +4399,125 @@ fn declared_write_scope_is_normalized_and_rejects_traversal() {
     );
 }
 
+/// A write-capable child that spells its target as an absolute path inside
+/// its own workspace is writing the same file the relative spelling names,
+/// and that is the path the write tool would resolve it to — the claim lane
+/// must treat both spellings alike. Absolute paths outside the workspace,
+/// `..` traversal (relative or absolute), and a symlinked ancestor that
+/// resolves outside the workspace stay refused, exactly as before.
+#[test]
+fn scoped_mutation_paths_accept_absolute_targets_inside_the_workspace() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("src")).expect("workspace tree");
+    let canonical = workspace.canonicalize().expect("canonical workspace");
+
+    // Existing target, canonical absolute spelling.
+    std::fs::write(workspace.join("src/lib.rs"), "x").expect("seed");
+    let paths = mutation_paths(
+        "write",
+        &json!({ "path": canonical.join("src/lib.rs").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute in-workspace path is admitted");
+    assert_eq!(paths, vec!["src/lib.rs".to_string()]);
+
+    // Not-yet-existing target (the write creates it), spelled through the
+    // un-canonicalized workspace path.
+    let paths = mutation_paths(
+        "write",
+        &json!({ "path": workspace.join("src/new.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute path to a file the write will create is admitted");
+    assert_eq!(paths, vec!["src/new.txt".to_string()]);
+
+    // Relative spelling is unchanged.
+    let paths = mutation_paths("write", &json!({ "path": "src/new.txt" }), &workspace)
+        .expect("relative path");
+    assert_eq!(paths, vec!["src/new.txt".to_string()]);
+
+    // The two spellings land in the same claimed scope: a child holding the
+    // `src` root admits both the relative form and the absolute form's
+    // workspace-relative equivalent.
+    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 4);
+    let child_owner = manager.insert_test_running_agent("abs_child", &workspace);
+    let claim = manager
+        .namespace_write_claim(
+            &workspace,
+            false,
+            WriteScopeClaim {
+                owner: child_owner.clone(),
+                roots: vec!["src".into()],
+                exact_files: Vec::new(),
+                contracts: Vec::new(),
+            },
+        )
+        .expect("child claim namespace");
+    manager
+        .coordination
+        .register_claim(claim, false, |_| true)
+        .expect("child claim");
+    manager
+        .validate_write_scope(&child_owner, &["src/lib.rs".into()])
+        .expect("relative spelling admitted by the claimed root scope");
+    let absolute_paths = mutation_paths(
+        "write",
+        &json!({ "path": canonical.join("src/lib.rs").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute spelling strips to its workspace-relative equivalent");
+    assert_eq!(absolute_paths, vec!["src/lib.rs".to_string()]);
+    manager
+        .validate_write_scope(&child_owner, &absolute_paths)
+        .expect("absolute spelling of the same target is admitted by the same scope");
+
+    // Outside the workspace: refused as before.
+    let err = mutation_paths(
+        "write",
+        &json!({ "path": tmp.path().join("escape.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect_err("absolute path outside the workspace is refused")
+    .to_string();
+    assert!(err.contains("repo-relative"), "{err}");
+
+    // Traversal: refused as before, relative or absolute.
+    for path in ["../escape.txt", "src/../../escape.txt"] {
+        let err = mutation_paths("write", &json!({ "path": path }), &workspace)
+            .expect_err("traversal is refused")
+            .to_string();
+        assert!(err.contains("traversal"), "{path}: {err}");
+    }
+    let err = mutation_paths(
+        "write",
+        &json!({ "path": workspace.join("src/../../escape.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect_err("absolute traversal out of the workspace is refused")
+    .to_string();
+    assert!(err.contains("repo-relative"), "{err}");
+
+    // A symlinked ancestor that resolves outside the workspace stays
+    // refused: the deepest-existing walk resolves through the link, the
+    // strip fails, and the raw absolute spelling is refused by the
+    // validator — the same posture as the write boundary's real-path check.
+    let outside = tempdir().expect("outside tempdir");
+    std::fs::write(outside.path().join("outside.txt"), "x").expect("outside seed");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.path(), workspace.join("link")).expect("symlink");
+        let err = mutation_paths(
+            "write",
+            &json!({ "path": workspace.join("link/outside.txt").to_string_lossy() }),
+            &workspace,
+        )
+        .expect_err("symlink hop out of the workspace is refused")
+        .to_string();
+        assert!(err.contains("repo-relative"), "{err}");
+    }
+}
+
 #[test]
 fn shared_child_cwd_claims_use_one_root_namespace_for_collisions_and_mutations() {
     let repo = tempdir().expect("repo");
