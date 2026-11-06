@@ -193,6 +193,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **ChatGPT sign-in tolerates a small device clock skew:** identity-token expiry and not-before checks allow the same 60-second tolerance already used for ordinary network time drift, while signature, issuer, audience, subject and nonce checks remain exact. The diagnostic text still names the exact failed check when a token is genuinely invalid.
 - **Remaining long-blocking work moved off async callers (#6553):** route
   credential and certificate preflight, worktree creation, Runtime Chat relay
   and remote-control journal transactions, and the remaining session, branch,
