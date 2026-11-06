@@ -48,6 +48,7 @@ pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // Continuation instructions require these controls. Hiding them behind
     // discovery leaves a model unable to stop the work it was asked to run.
     "create_goal", "get_goal", "update_goal", "task_shell_wait",
+    "present",
     // The pinned `## Skills` index tells the model to call `load_skill`, so
     // the tool has to be on the wire for that instruction to be true. Behind
     // `tool_search` it cost a discovery hop plus a `change:tool_surface`
