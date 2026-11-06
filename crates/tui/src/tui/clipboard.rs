@@ -1123,7 +1123,7 @@ fn read_image_via_powershell(workspace: &Path) -> Option<PastedImage> {
 
     // Read on a helper thread: a child that fills the pipe would otherwise
     // block forever while the main thread waits for it to exit.
-    let mut stdout = child.stdout.take()?;
+    let stdout = child.stdout.take()?;
     let reader = std::thread::Builder::new()
         .name("clipboard-powershell".to_string())
         .spawn(move || {
