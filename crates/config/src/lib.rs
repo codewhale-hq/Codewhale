@@ -25,6 +25,7 @@ mod provider_defaults;
 mod provider_kind;
 pub mod redaction;
 pub mod resolve;
+pub mod responses_dialect;
 pub mod route;
 pub mod settings_schema;
 pub mod setup_state;
