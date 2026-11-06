@@ -14,6 +14,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine exposes a trusted and enabled plugin's client entry and assets through two loopback-only, read-only routes with bounded sizes, confined paths and safe MIME/no-store responses; no other plugin route gains an unauthenticated path. (#2, #3)
 - **Present final files:** the read-only `present` tool takes 1–32 existing
   workspace files, streams their SHA-256 and byte counts, and returns an
   auditable handoff receipt without copying, moving or uploading them. It is
@@ -193,6 +194,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **ChatGPT sign-in tolerates a small device clock skew:** identity-token expiry and not-before checks allow the same 60-second tolerance already used for ordinary network time drift, while signature, issuer, audience, subject and nonce checks remain exact. The diagnostic text still names the exact failed check when a token is genuinely invalid.
 - **Remaining long-blocking work moved off async callers (#6553):** route
   credential and certificate preflight, worktree creation, Runtime Chat relay
   and remote-control journal transactions, and the remaining session, branch,

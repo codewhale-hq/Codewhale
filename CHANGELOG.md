@@ -14,6 +14,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine exposes a trusted and enabled plugin's client entry and assets through two loopback-only, read-only routes with bounded sizes, confined paths and safe MIME/no-store responses; no other plugin route gains an unauthenticated path. (#2, #3)
 - **Present final files:** the read-only `present` tool takes 1–32 existing
   workspace files, streams their SHA-256 and byte counts, and returns an
   auditable handoff receipt without copying, moving or uploading them. It is
