@@ -848,45 +848,46 @@ fn append_owned_usage_source_record(
     record: &RuntimeUsageRecord,
 ) -> Result<bool> {
     let key = routed_usage_source_fingerprint(&record.source_id);
-    if record.settlement.is_none()
-        || turn.source_usage_records.contains_key(&key)
-        || turn.routed_usage_source_ids.len() < MAX_ROUTED_USAGE_RECORDS_PER_TURN
-        || turn.routing_settlement
-        || !turn.source_accounting
-        || turn.source_usage_records.len() != turn.routed_usage_source_ids.len()
+    if record.settlement.is_some()
+        && !turn.source_usage_records.contains_key(&key)
+        && turn.routed_usage_source_ids.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN
+        && !turn.routing_settlement
     {
-        return append_usage_source_record(turn, record);
-    }
-    anyhow::ensure!(
-        turn.source_usage_origin_turn_id.as_deref() == Some(turn.id.as_str()),
-        "inherited native usage cannot admit an original-owner partition"
-    );
-    store.load_thread(&turn.thread_id)?;
-    let partition_id = runtime_usage_partition_id(&turn.id, &record.source_id)?;
-    let mut partition = if store.turn_path(&partition_id)?.exists() {
-        let partition = store.load_turn(&partition_id)?;
         anyhow::ensure!(
-            partition.thread_id == turn.thread_id
-                && runtime_usage_partition_parent(&partition) == Some(turn.id.as_str())
-                && partition.source_usage_origin_turn_id.as_deref() == Some(partition.id.as_str())
-                && partition
-                    .source_usage_records
-                    .keys()
-                    .all(|current| current == &key),
-            "Runtime usage partition belongs to another source or original owner"
+            turn.source_usage_origin_turn_id
+                .as_deref()
+                .is_none_or(|origin| origin == turn.id.as_str()),
+            "inherited native usage cannot admit an original-owner partition"
         );
-        partition
-    } else {
-        let mut partition = unaccepted_usage_turn(&turn.thread_id, &partition_id);
-        partition.input_summary = RUNTIME_USAGE_PARTITION_SUMMARY.to_string();
-        partition.created_at = turn.created_at;
-        partition.status = RuntimeTurnStatus::Completed;
-        partition.error = None;
-        partition
-    };
-    append_usage_source_record(&mut partition, record)?;
-    store.save_turn(&partition)?;
-    Ok(false)
+        store.load_thread(&turn.thread_id)?;
+        let partition_id = runtime_usage_partition_id(&turn.id, &record.source_id)?;
+        let mut partition = if store.turn_path(&partition_id)?.exists() {
+            let partition = store.load_turn(&partition_id)?;
+            anyhow::ensure!(
+                partition.thread_id == turn.thread_id
+                    && runtime_usage_partition_parent(&partition) == Some(turn.id.as_str())
+                    && partition.source_usage_origin_turn_id.as_deref()
+                        == Some(partition.id.as_str())
+                    && partition
+                        .source_usage_records
+                        .keys()
+                        .all(|current| current == &key),
+                "Runtime usage partition belongs to another source or original owner"
+            );
+            partition
+        } else {
+            let mut partition = unaccepted_usage_turn(&turn.thread_id, &partition_id);
+            partition.input_summary = RUNTIME_USAGE_PARTITION_SUMMARY.to_string();
+            partition.created_at = turn.created_at;
+            partition.status = RuntimeTurnStatus::Completed;
+            partition.error = None;
+            partition
+        };
+        append_usage_source_record(&mut partition, record)?;
+        store.save_turn(&partition)?;
+        return Ok(false);
+    }
+    append_usage_source_record(turn, record)
 }
 
 pub(super) fn append_routed_usage_record(
