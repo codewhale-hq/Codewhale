@@ -525,24 +525,7 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             crate::tui::ui::prepare_offline_queue_transition(&app, &session.metadata.id)?;
         // C01-09: an explicit path may replace a saved session (a re-save),
         // never an arbitrary file. Whatever exists there must read as one.
-        if let Some(path) = explicit_save_path.as_deref() {
-            match path.symlink_metadata() {
-                Ok(_) => {
-                    if let Err(error) =
-                        codewhale_engine::session_manager::SessionManager::load_session_metadata(
-                            path,
-                        )
-                    {
-                        return Err(format!(
-                            "Refusing to overwrite {}: the existing session could not be inspected ({error}). Choose a new path, or move that file first.",
-                            path.display()
-                        ));
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!("Could not inspect {}: {error}", path.display())),
-            }
-        }
+        let inspect_path = explicit_save_path.clone();
         let in_place = explicit_save_path.is_none();
         let save_path = explicit_save_path.unwrap_or_else(|| {
             let dir = codewhale_engine::session_manager::default_sessions_dir()
@@ -554,66 +537,77 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .map_or_else(|| app.workspace.clone(), std::path::Path::to_path_buf);
+        let display_path = save_path.display().to_string();
 
-        match std::fs::create_dir_all(&sessions_dir) {
-            Ok(()) => {
-                let managed =
-                    in_place || manager.owns_session_path(&session.metadata.id, &save_path);
-                let result = if managed {
-                    if let Some(source) = control_source {
-                        session.write_receipt = Some(
-                            source
-                                .capture(control_owner)
-                                .map_err(|error| error.to_string())?,
-                        );
-                    } else {
-                        session
-                            .capture_publication(control_owner)
-                            .map_err(|error| error.to_string())?;
-                    }
-                    manager
-                        .publish_session_bounded(session.clone())
-                        .map(|publication| {
-                            session.adopt_publication(&publication);
-                        })
-                } else {
-                    let json = match serde_json::to_string_pretty(&session) {
-                        Ok(json) => json,
-                        Err(error) => return Err(format!("Failed to serialize session: {error}")),
-                    };
-                    codewhale_util::utils::write_atomic(&save_path, json.as_bytes())
-                };
-                match result {
-                    Ok(()) => {
-                        crate::tui::ui::install_offline_queue_transition(
-                            &mut app,
-                            queue_transition,
-                        );
-                        app.set_current_session_id(Some(session.metadata.id.clone()));
-                        app.session_write_receipt = session.write_receipt.clone();
-                        app.current_session_metadata = Some(session.metadata.clone());
-                        app.session_title = Some(session.metadata.title.clone());
-                        if let Err(err) = app.publish_saved_work_state(
-                            work_owner.as_deref(),
-                            session.work_state.as_ref(),
-                        ) {
+        let (mut session, publication) = run_owner_blocking(move || {
+            if let Some(path) = inspect_path.as_deref() {
+                match path.symlink_metadata() {
+                    Ok(_) => {
+                        if let Err(error) =
+                            codewhale_engine::session_manager::SessionManager::load_session_metadata(
+                                path,
+                            )
+                        {
                             return Err(format!(
-                                "Session saved, but Work views were not published: {err}"
+                                "Refusing to overwrite {}: the existing session could not be inspected ({error}). Choose a new path, or move that file first.",
+                                path.display()
                             ));
                         }
-                        Ok(SessionSaveReceipt {
-                            display_path: save_path.display().to_string(),
-                            truncated_id: codewhale_engine::session_manager::truncate_id(
-                                &session.metadata.id,
-                            )
-                            .to_string(),
-                        })
                     }
-                    Err(e) => Err(format!("Failed to save session: {e}")),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!("Could not inspect {}: {error}", path.display()));
+                    }
                 }
             }
-            Err(e) => Err(format!("Failed to create directory: {e}")),
+            std::fs::create_dir_all(&sessions_dir)
+                .map_err(|e| format!("Failed to create directory: {e}"))?;
+            let managed = in_place || manager.owns_session_path(&session.metadata.id, &save_path);
+            if managed {
+                let mut session = session;
+                if let Some(source) = control_source {
+                    session.write_receipt = Some(
+                        source
+                            .capture(control_owner)
+                            .map_err(|error| error.to_string())?,
+                    );
+                } else {
+                    session
+                        .capture_publication(control_owner)
+                        .map_err(|error| error.to_string())?;
+                }
+                let publication = manager
+                    .publish_session_bounded(session.clone())
+                    .map_err(|e| format!("Failed to save session: {e}"))?;
+                Ok((session, Some(publication)))
+            } else {
+                let json = serde_json::to_string_pretty(&session)
+                    .map_err(|error| format!("Failed to serialize session: {error}"))?;
+                codewhale_util::utils::write_atomic(&save_path, json.as_bytes())
+                    .map_err(|e| format!("Failed to save session: {e}"))?;
+                Ok((session, None))
+            }
+        })?;
+        if let Some(publication) = publication {
+            session.adopt_publication(&publication);
         }
+        crate::tui::ui::install_offline_queue_transition(&mut app, queue_transition);
+        app.set_current_session_id(Some(session.metadata.id.clone()));
+        app.session_write_receipt = session.write_receipt.clone();
+        app.current_session_metadata = Some(session.metadata.clone());
+        app.session_title = Some(session.metadata.title.clone());
+        if let Err(err) =
+            app.publish_saved_work_state(work_owner.as_deref(), session.work_state.as_ref())
+        {
+            return Err(format!(
+                "Session saved, but Work views were not published: {err}"
+            ));
+        }
+        Ok(SessionSaveReceipt {
+            display_path,
+            truncated_id: codewhale_engine::session_manager::truncate_id(&session.metadata.id)
+                .to_string(),
+        })
     }
 
     fn fork_active(&mut self) -> Result<SessionForkReceipt, String> {
@@ -648,9 +642,12 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
 
         let work_owner = app.current_session_id.clone();
         parent.make_storage_compatible();
-        let publication = manager
-            .publish_session_bounded(parent.clone())
-            .map_err(|error| format!("Failed to save parent session: {error}"))?;
+        let (manager, mut parent, publication) = run_owner_blocking(move || {
+            let publication = manager
+                .publish_session_bounded(parent.clone())
+                .map_err(|error| format!("Failed to save parent session: {error}"))?;
+            Ok((manager, parent, publication))
+        })?;
         parent.adopt_publication(&publication);
         app.session_write_receipt = parent.write_receipt.clone();
 
@@ -678,9 +675,12 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             crate::tui::ui::prepare_offline_queue_transition(&app, &forked.metadata.id)?;
 
         forked.write_receipt = Some(fork_source);
-        let publication = manager
-            .publish_session(&forked)
-            .map_err(|error| format!("Failed to save forked session: {error}"))?;
+        let (mut forked, publication) = run_owner_blocking(move || {
+            let publication = manager
+                .publish_session(&forked)
+                .map_err(|error| format!("Failed to save forked session: {error}"))?;
+            Ok((forked, publication))
+        })?;
         forked.adopt_publication(&publication);
         if let Err(err) =
             app.publish_saved_work_state(work_owner.as_deref(), parent.work_state.as_ref())
@@ -731,18 +731,16 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
                 return Err(format!("could not open sessions directory: {err}"));
             }
         };
-        let source = manager
-            .load_session(session_id_or_prefix)
-            .or_else(|_| manager.load_session_by_prefix(session_id_or_prefix));
-        let mut source_session = match source {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(format!(
-                    "could not load session '{}': {e}",
-                    session_id_or_prefix
-                ));
+        let source_id = session_id_or_prefix.to_string();
+        let (manager, mut source_session) = run_owner_blocking(move || {
+            let source = manager
+                .load_session(&source_id)
+                .or_else(|_| manager.load_session_by_prefix(&source_id));
+            match source {
+                Ok(session) => Ok((manager, session)),
+                Err(error) => Err(format!("could not load session '{source_id}': {error}")),
             }
-        };
+        })?;
         source_session.ensure_journal();
         let journal = source_session.journal.clone().unwrap_or_else(|| {
             codewhale_runtime::session_tree::SessionJournal::from_messages(
@@ -791,9 +789,12 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         forked.work_state = source_session.work_state.clone();
         forked.last_auto_route = source_session.last_auto_route.clone();
         forked.write_receipt = Some(fork_source);
-        let publication = manager
-            .publish_session(&forked)
-            .map_err(|error| format!("Failed to save forked session: {error}"))?;
+        let (mut forked, publication) = run_owner_blocking(move || {
+            let publication = manager
+                .publish_session(&forked)
+                .map_err(|error| format!("Failed to save forked session: {error}"))?;
+            Ok((forked, publication))
+        })?;
         forked.adopt_publication(&publication);
         let parent_label =
             codewhale_engine::session_manager::truncate_id(&source_session.metadata.id).to_string();
@@ -855,25 +856,21 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
     }
 
     fn load_session(&mut self, path: &str) -> Result<PathBuf, String> {
-        let app = self.host.app.borrow();
-        let load_path = app
-            .workspace
-            .join(crate::commands::config_main_host::expand_tilde(path));
-
-        let content = match std::fs::read_to_string(&load_path) {
-            Ok(c) => c,
-            Err(e) => {
-                return Err(format!("Failed to read session file: {e}"));
-            }
+        let load_path = {
+            let app = self.host.app.borrow();
+            app.workspace
+                .join(crate::commands::config_main_host::expand_tilde(path))
         };
 
-        let _session: codewhale_engine::session_manager::SavedSession =
-            match serde_json::from_str(&content) {
-                Ok(s) => s,
-                Err(e) => {
-                    return Err(format!("Failed to parse session file: {e}"));
-                }
-            };
+        let read_path = load_path.clone();
+        run_owner_blocking(move || {
+            let content = std::fs::read_to_string(&read_path)
+                .map_err(|e| format!("Failed to read session file: {e}"))?;
+            let _session: codewhale_engine::session_manager::SavedSession =
+                serde_json::from_str(&content)
+                    .map_err(|e| format!("Failed to parse session file: {e}"))?;
+            Ok(())
+        })?;
         Ok(load_path)
     }
 
@@ -918,30 +915,29 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             }
         };
         crate::tui::persistence_actor::flush_before_transition()?;
-        match manager.set_session_archived(
-            session_id,
-            archived,
-            codewhale_engine::session_manager::SessionMutator::Owner,
-        ) {
-            Ok(metadata) => {
-                app.adopt_session_mutation(&metadata);
-                if let Some(cached) = app.current_session_metadata.as_mut()
-                    && cached.id == metadata.id
-                {
-                    cached.archived = metadata.archived;
-                }
-                Ok(SessionArchiveReceipt {
-                    truncated_id: codewhale_engine::session_manager::truncate_id(&metadata.id)
-                        .to_string(),
-                    title: metadata.title,
-                })
-            }
-            Err(err) => Err(format!("{verb} failed: {err}")),
+        let session_id = session_id.to_string();
+        let metadata = run_owner_blocking(move || {
+            manager
+                .set_session_archived(
+                    &session_id,
+                    archived,
+                    codewhale_engine::session_manager::SessionMutator::Owner,
+                )
+                .map_err(|err| format!("{verb} failed: {err}"))
+        })?;
+        app.adopt_session_mutation(&metadata);
+        if let Some(cached) = app.current_session_metadata.as_mut()
+            && cached.id == metadata.id
+        {
+            cached.archived = metadata.archived;
         }
+        Ok(SessionArchiveReceipt {
+            truncated_id: codewhale_engine::session_manager::truncate_id(&metadata.id).to_string(),
+            title: metadata.title,
+        })
     }
 
     fn prune_sessions(&mut self, days: u64) -> Result<usize, String> {
-        let app = self.host.app.borrow();
         let manager = match codewhale_engine::session_manager::SessionManager::default_location() {
             Ok(m) => m,
             Err(err) => {
@@ -952,10 +948,12 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
         let max_age = std::time::Duration::from_secs(days.saturating_mul(24 * 60 * 60));
         // Never prune the active session, even if its timestamp is stale (a
         // just-resumed session isn't re-saved until its first post-resume write).
-        let keep = app.current_session_id.as_deref();
-        manager
-            .prune_sessions_older_than_keeping(max_age, keep)
-            .map_err(|err| format!("prune failed: {err}"))
+        let keep = self.host.app.borrow().current_session_id.clone();
+        run_owner_blocking(move || {
+            manager
+                .prune_sessions_older_than_keeping(max_age, keep.as_deref())
+                .map_err(|err| format!("prune failed: {err}"))
+        })
     }
 }
 
@@ -1206,57 +1204,27 @@ impl CommandSessionControlContext for SessionControlAdapter<'_> {
     }
 
     fn resolve_resume_source(&mut self, raw: &str) -> Result<ResumeSource, String> {
-        // Baseline order: direct path (or `.json` existing path) first, then
-        // workspace-relative, then session id/prefix, then inline container.
-        let raw_path = PathBuf::from(raw);
-        if raw_path.is_file() || (raw.ends_with(".json") && Path::new(raw).exists()) {
-            return Ok(ResumeSource::File(raw_path));
-        }
-        let workspace_relative = {
-            let app = self.host.app.borrow();
-            let ws_path = app.workspace.join(raw);
-            ws_path.is_file().then_some(ws_path)
-        };
-        if let Some(ws_path) = workspace_relative {
-            return Ok(ResumeSource::File(ws_path));
-        }
-        let manager = match codewhale_engine::session_manager::SessionManager::default_location() {
-            Ok(m) => m,
-            Err(e) => return Err(format!("could not open sessions directory: {e}")),
-        };
-        // Resolution only needs durable identity — the resume that follows
-        // runs and persists the repair, so probe the snapshot instead of
-        // running (and logging) an in-memory repair here.
-        match manager.load_session_snapshot(raw).or_else(|_| {
-            manager
-                .resolve_session_id_prefix(raw)
-                .and_then(|id| manager.load_session_snapshot(&id))
-        }) {
-            Ok(sess) => {
-                let path = manager
-                    .sessions_dir()
-                    .join(format!("{}.json", sess.metadata.id));
-                Ok(ResumeSource::Session {
-                    load_path: path.exists().then_some(path),
-                    truncated_id: codewhale_engine::session_manager::truncate_id(&sess.metadata.id)
-                        .to_string(),
-                    title: sess.metadata.title,
-                })
+        let workspace = self.host.app.borrow().workspace.clone();
+        let raw_owned = raw.to_string();
+        match run_owner_blocking(move || probe_resume_source(&raw_owned, &workspace))? {
+            ResumeProbe::File(path) => Ok(ResumeSource::File(path)),
+            ResumeProbe::Session {
+                load_path,
+                truncated_id,
+                title,
+            } => Ok(ResumeSource::Session {
+                load_path,
+                truncated_id,
+                title,
+            }),
+            ResumeProbe::Container(container) => {
+                let mut app = self.host.app.borrow_mut();
+                import_session_container(&mut app, container).map(ResumeSource::Imported)
             }
-            Err(e) => {
-                if let Ok(container) =
-                    codewhale_runtime::session_tree::SessionImportContainer::from_json(raw)
-                {
-                    let mut app = self.host.app.borrow_mut();
-                    let receipt = import_session_container(&mut app, container)?;
-                    Ok(ResumeSource::Imported(receipt))
-                } else {
-                    Ok(ResumeSource::NotFound {
-                        raw: raw.to_string(),
-                        error: e.to_string(),
-                    })
-                }
-            }
+            ResumeProbe::NotFound { error } => Ok(ResumeSource::NotFound {
+                raw: raw.to_string(),
+                error,
+            }),
         }
     }
 
@@ -1329,25 +1297,26 @@ impl CommandSessionControlContext for SessionControlAdapter<'_> {
         session.metadata.title = new_title.to_string();
         session.metadata.title_is_custom = true;
 
-        match manager.publish_session(&session) {
-            Ok(publication) => {
-                session.adopt_publication(&publication);
-                app.session_write_receipt = session.write_receipt.clone();
-                app.current_session_metadata = Some(session.metadata.clone());
-                app.session_title = Some(new_title.to_string());
-                if let Err(err) =
-                    app.publish_saved_work_state(Some(&session_id), session.work_state.as_ref())
-                {
-                    return Err(format!(
-                        "Session renamed, but Work views were not published: {err}"
-                    ));
-                }
-                Ok(SessionTitleReceipt {
-                    title: new_title.to_string(),
-                })
-            }
-            Err(e) => Err(format!("Could not save session: {e}")),
+        let (mut session, publication) = run_owner_blocking(move || {
+            let publication = manager
+                .publish_session(&session)
+                .map_err(|e| format!("Could not save session: {e}"))?;
+            Ok((session, publication))
+        })?;
+        session.adopt_publication(&publication);
+        app.session_write_receipt = session.write_receipt.clone();
+        app.current_session_metadata = Some(session.metadata.clone());
+        app.session_title = Some(new_title.to_string());
+        if let Err(err) =
+            app.publish_saved_work_state(Some(&session_id), session.work_state.as_ref())
+        {
+            return Err(format!(
+                "Session renamed, but Work views were not published: {err}"
+            ));
         }
+        Ok(SessionTitleReceipt {
+            title: new_title.to_string(),
+        })
     }
 
     fn title_report(&self) -> TitleReport {
@@ -1420,8 +1389,10 @@ impl CommandSessionControlContext for SessionControlAdapter<'_> {
     }
 
     fn resolve_hosted_work_target(&self) -> Option<HostedWorkTarget> {
-        let app = self.host.app.borrow();
-        let target = resolve_target(&app.workspace)?;
+        let workspace = self.host.app.borrow().workspace.clone();
+        let target = run_owner_blocking(move || Ok(resolve_target(&workspace)))
+            .ok()
+            .flatten()?;
         let url = hosted_work_url(&target.repo, &target.branch);
         Some(HostedWorkTarget {
             url,
@@ -1515,26 +1486,24 @@ fn persist_session_display(
     app.sync_cost_to_metadata(&mut session.metadata);
     stage(&mut session);
 
-    match manager.publish_session_preserving_lifecycle(&session) {
-        Ok(publication) => {
-            session.adopt_publication(&publication);
-            app.session_write_receipt = session.write_receipt.clone();
-            app.current_session_metadata = Some(session.metadata.clone());
-            commit(app);
-            // The render loop syncs the resolved prefix into the terminal
-            // title; force a frame so the change lands immediately.
-            app.needs_redraw = true;
-            if let Err(error) =
-                app.publish_saved_work_state(Some(&session_id), session.work_state.as_ref())
-            {
-                return Err(format!(
-                    "{saved} saved, but Work views were not published: {error}"
-                ));
-            }
-            Ok(())
-        }
-        Err(error) => Err(format!("Could not save session: {error}")),
+    let (mut session, publication) = run_owner_blocking(move || {
+        let publication = manager
+            .publish_session_preserving_lifecycle(&session)
+            .map_err(|error| format!("Could not save session: {error}"))?;
+        Ok((session, publication))
+    })?;
+    session.adopt_publication(&publication);
+    app.session_write_receipt = session.write_receipt.clone();
+    app.current_session_metadata = Some(session.metadata.clone());
+    commit(app);
+    app.needs_redraw = true;
+    if let Err(error) = app.publish_saved_work_state(Some(&session_id), session.work_state.as_ref())
+    {
+        return Err(format!(
+            "{saved} saved, but Work views were not published: {error}"
+        ));
     }
+    Ok(())
 }
 
 /// Map one synchronous browser-launch attempt to its portable outcome.
@@ -1585,30 +1554,80 @@ fn plan_snapshot_to_sections(
 /// `/resume <file>` import: read, parse a container or plain saved session,
 /// and apply it atomically. Errors are the exact baseline text.
 fn import_foreign_file(app: &mut App, path: &Path) -> Result<ResumeImportReceipt, String> {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            return Err(format!(
-                "failed to read import file {}: {e}",
-                path.display()
-            ));
+    let read_path = path.to_path_buf();
+    let container = run_owner_blocking(move || {
+        let content = std::fs::read_to_string(&read_path)
+            .map_err(|e| format!("failed to read import file {}: {e}", read_path.display()))?;
+        if let Ok(container) =
+            codewhale_runtime::session_tree::SessionImportContainer::from_json(&content)
+        {
+            return Ok(container);
         }
-    };
-    if let Ok(container) =
-        codewhale_runtime::session_tree::SessionImportContainer::from_json(&content)
-    {
-        return import_session_container(app, container);
+        if let Ok(foreign) =
+            serde_json::from_str::<codewhale_engine::session_manager::SavedSession>(&content)
+        {
+            return Ok(foreign.export_container("foreign"));
+        }
+        Err(format!(
+            "File {} is not a recognized session export",
+            read_path.display()
+        ))
+    })?;
+    import_session_container(app, container)
+}
+
+enum ResumeProbe {
+    File(PathBuf),
+    Session {
+        load_path: Option<PathBuf>,
+        truncated_id: String,
+        title: String,
+    },
+    Container(codewhale_runtime::session_tree::SessionImportContainer),
+    NotFound {
+        error: String,
+    },
+}
+
+fn probe_resume_source(raw: &str, workspace: &Path) -> Result<ResumeProbe, String> {
+    let raw_path = PathBuf::from(raw);
+    if raw_path.is_file() || (raw.ends_with(".json") && Path::new(raw).exists()) {
+        return Ok(ResumeProbe::File(raw_path));
     }
-    if let Ok(foreign) =
-        serde_json::from_str::<codewhale_engine::session_manager::SavedSession>(&content)
-    {
-        let container = foreign.export_container("foreign");
-        return import_session_container(app, container);
+    let ws_path = workspace.join(raw);
+    if ws_path.is_file() {
+        return Ok(ResumeProbe::File(ws_path));
     }
-    Err(format!(
-        "File {} is not a recognized session export",
-        path.display()
-    ))
+    let manager = codewhale_engine::session_manager::SessionManager::default_location()
+        .map_err(|e| format!("could not open sessions directory: {e}"))?;
+    match manager.load_session_snapshot(raw).or_else(|_| {
+        manager
+            .resolve_session_id_prefix(raw)
+            .and_then(|id| manager.load_session_snapshot(&id))
+    }) {
+        Ok(sess) => {
+            let path = manager
+                .sessions_dir()
+                .join(format!("{}.json", sess.metadata.id));
+            Ok(ResumeProbe::Session {
+                load_path: path.exists().then_some(path),
+                truncated_id: codewhale_engine::session_manager::truncate_id(&sess.metadata.id)
+                    .to_string(),
+                title: sess.metadata.title,
+            })
+        }
+        Err(e) => {
+            if let Ok(container) =
+                codewhale_runtime::session_tree::SessionImportContainer::from_json(raw)
+            {
+                Ok(ResumeProbe::Container(container))
+            } else {
+                Ok(ResumeProbe::NotFound {
+                    error: e.to_string(),
+                })
+            }
+        }
+    }
 }
 
 /// Apply a parsed foreign container: persist, mutate the active session,
@@ -1649,9 +1668,12 @@ fn import_session_container(
     imported
         .capture_publication(codewhale_engine::session_manager::SessionWriteOwner::control())
         .map_err(|error| error.to_string())?;
-    let publication = manager
-        .publish_session(&imported)
-        .map_err(|error| format!("imported session could not be saved: {error}"))?;
+    let (mut imported, publication) = run_owner_blocking(move || {
+        let publication = manager
+            .publish_session(&imported)
+            .map_err(|error| format!("imported session could not be saved: {error}"))?;
+        Ok((imported, publication))
+    })?;
     imported.adopt_publication(&publication);
     crate::tui::ui::install_offline_queue_transition(app, queue_transition);
     app.set_current_session_id(Some(new_id.clone()));
@@ -1720,11 +1742,23 @@ impl CommandSessionExportContext for SessionExportAdapter<'_> {
     /// borrowed projection (tracked with the FEAT-043/046 extraction work); it is
     /// not something this slice can fix locally.
     fn conversation_projection(&self) -> ConversationExportProjection {
-        let app = self.host.app.borrow();
+        let (metadata, transcript, workspace) = {
+            let app = self.host.app.borrow();
+            (
+                export_metadata(&app),
+                project_transcript(&app),
+                app.workspace.clone(),
+            )
+        };
+        let restore_points =
+            match run_owner_blocking(move || Ok(project_restore_points(&workspace))) {
+                Ok(points) => points,
+                Err(reason) => RestorePointProjection::Unreadable { reason },
+            };
         ConversationExportProjection {
-            metadata: export_metadata(&app),
-            transcript: project_transcript(&app),
-            restore_points: project_restore_points(&app.workspace),
+            metadata,
+            transcript,
+            restore_points,
         }
     }
 
@@ -1741,7 +1775,14 @@ impl CommandSessionExportContext for SessionExportAdapter<'_> {
     }
 
     fn write_recovery_copy(&self, markdown: &str) -> Option<PathBuf> {
-        crate::commands::session_export_host::write_last_copy(markdown)
+        let markdown = markdown.to_string();
+        run_owner_blocking(move || {
+            Ok(crate::commands::session_export_host::write_last_copy(
+                &markdown,
+            ))
+        })
+        .ok()
+        .flatten()
     }
 
     fn write_clipboard(&self, markdown: &str) -> Result<(), String> {
@@ -1754,16 +1795,26 @@ impl CommandSessionExportContext for SessionExportAdapter<'_> {
     }
 
     fn resolve_export_path(&self, raw: &str) -> Result<PathBuf, String> {
-        let app = self.host.app.borrow();
-        crate::commands::session_export_host::resolve_export_path(&app.workspace, raw)
+        let workspace = self.host.app.borrow().workspace.clone();
+        let raw = raw.to_string();
+        run_owner_blocking(move || {
+            crate::commands::session_export_host::resolve_export_path(&workspace, &raw)
+        })
     }
 
     fn default_export_path(&self, file_name: &str) -> Result<PathBuf, String> {
-        crate::commands::session_export_host::default_export_path(file_name)
+        let file_name = file_name.to_string();
+        run_owner_blocking(move || {
+            crate::commands::session_export_host::default_export_path(&file_name)
+        })
     }
 
     fn write_export_file(&self, path: &Path, contents: &[u8], force: bool) -> Result<(), String> {
-        crate::commands::session_export_host::write_export_file(path, contents, force)
+        let path = path.to_path_buf();
+        let contents = contents.to_vec();
+        run_owner_blocking(move || {
+            crate::commands::session_export_host::write_export_file(&path, &contents, force)
+        })
     }
 }
 
@@ -2739,20 +2790,23 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
     }
 
     fn import(&self) -> Result<MemoryImportOutcome, String> {
-        let app = self.host.app.borrow();
-        let store = native_store_from_memory_path(&app.memory_path);
-        let legacy_path = store
-            .root()
-            .parent()
-            .map(|parent| parent.join("memory.md"))
-            .unwrap_or_else(|| app.memory_path.clone());
-        match store.import_legacy(&legacy_path) {
+        let (store, legacy_path) = {
+            let app = self.host.app.borrow();
+            let store = native_store_from_memory_path(&app.memory_path);
+            let legacy_path = store
+                .root()
+                .parent()
+                .map(|parent| parent.join("memory.md"))
+                .unwrap_or_else(|| app.memory_path.clone());
+            (store, legacy_path)
+        };
+        run_owner_blocking(move || match store.import_legacy(&legacy_path) {
             Ok(true) => Ok(MemoryImportOutcome::Imported {
                 destination: store.global_path(),
             }),
             Ok(false) => Ok(MemoryImportOutcome::Skipped),
             Err(err) => Err(err.to_string()),
-        }
+        })
     }
 
     fn get(&self, workspace: &Path, id: i64) -> Result<MemoryGetOutcome, String> {
@@ -2924,6 +2978,25 @@ where
     F: std::future::Future<Output = T>,
 {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+}
+
+fn run_owner_blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            run_async(async move {
+                codewhale_runtime::runtime_control::owner_work(move || {
+                    work().map_err(anyhow::Error::msg)
+                })
+                .await
+                .map_err(|error| error.to_string())
+            })
+        }
+        _ => work(),
+    }
 }
 
 /// Read the active config knobs for the installer (network policy, max size,
@@ -3357,26 +3430,25 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
-        let (network, max_size, registry_url) = installer_settings();
-        let ctx = MutationContext {
-            workspace: &workspace,
-            home: home.as_deref(),
-            configured_skills_dir: None,
-            network: &network,
-            max_size,
-            registry_url: &registry_url,
+        let request = SkillMutationRequest::RemoveByName {
+            name: name.to_string(),
+            scope: portable_scope(scope),
+            expected_digest: None,
         };
-        match codewhale_skills::mutation::execute_sync(
-            SkillMutationRequest::RemoveByName {
-                name: name.to_string(),
-                scope: portable_scope(scope),
-                expected_digest: None,
-            },
-            &ctx,
-        ) {
-            Ok(receipt) => Ok(portable_mutation_receipt(&receipt)),
-            Err(err) => Err(format!("Uninstall failed: {err:#}")),
-        }
+        run_owner_blocking(move || {
+            let (network, max_size, registry_url) = installer_settings();
+            let ctx = MutationContext {
+                workspace: &workspace,
+                home: home.as_deref(),
+                configured_skills_dir: None,
+                network: &network,
+                max_size,
+                registry_url: &registry_url,
+            };
+            codewhale_skills::mutation::execute_sync(request, &ctx)
+                .map(|receipt| portable_mutation_receipt(&receipt))
+                .map_err(|err| format!("Uninstall failed: {err:#}"))
+        })
     }
 
     fn trust_skill(
@@ -3387,26 +3459,25 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
-        let (network, max_size, registry_url) = installer_settings();
-        let ctx = MutationContext {
-            workspace: &workspace,
-            home: home.as_deref(),
-            configured_skills_dir: None,
-            network: &network,
-            max_size,
-            registry_url: &registry_url,
+        let request = SkillMutationRequest::TrustByName {
+            name: name.to_string(),
+            scope: portable_scope(scope),
+            expected_digest: None,
         };
-        match codewhale_skills::mutation::execute_sync(
-            SkillMutationRequest::TrustByName {
-                name: name.to_string(),
-                scope: portable_scope(scope),
-                expected_digest: None,
-            },
-            &ctx,
-        ) {
-            Ok(receipt) => Ok(portable_mutation_receipt(&receipt)),
-            Err(err) => Err(format!("Trust failed: {err:#}")),
-        }
+        run_owner_blocking(move || {
+            let (network, max_size, registry_url) = installer_settings();
+            let ctx = MutationContext {
+                workspace: &workspace,
+                home: home.as_deref(),
+                configured_skills_dir: None,
+                network: &network,
+                max_size,
+                registry_url: &registry_url,
+            };
+            codewhale_skills::mutation::execute_sync(request, &ctx)
+                .map(|receipt| portable_mutation_receipt(&receipt))
+                .map_err(|err| format!("Trust failed: {err:#}"))
+        })
     }
 
     fn fetch_remote_registry(&mut self) -> Result<RemoteRegistryOutcome, String> {
@@ -3513,27 +3584,26 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
 
     fn snapshot_list(&mut self, limit: usize) -> Result<Vec<SnapshotEntry>, String> {
         let workspace = self.host.app.borrow().workspace.clone();
-        let repo = match codewhale_snapshot::SnapshotRepo::open_or_init(&workspace) {
-            Ok(repo) => repo,
-            Err(err) => {
-                return Err(format!(
-                    "Snapshot repo unavailable for {}: {err}",
-                    workspace.display(),
-                ));
-            }
-        };
-        let snapshots = match repo.list(limit) {
-            Ok(snapshots) => snapshots,
-            Err(err) => return Err(format!("Failed to list snapshots: {err}")),
-        };
-        Ok(snapshots
-            .into_iter()
-            .map(|snapshot| SnapshotEntry {
-                id: snapshot.id.into_string(),
-                label: snapshot.label,
-                timestamp: snapshot.timestamp,
-            })
-            .collect())
+        run_owner_blocking(move || {
+            let repo =
+                codewhale_snapshot::SnapshotRepo::open_or_init(&workspace).map_err(|err| {
+                    format!(
+                        "Snapshot repo unavailable for {}: {err}",
+                        workspace.display(),
+                    )
+                })?;
+            let snapshots = repo
+                .list(limit)
+                .map_err(|err| format!("Failed to list snapshots: {err}"))?;
+            Ok(snapshots
+                .into_iter()
+                .map(|snapshot| SnapshotEntry {
+                    id: snapshot.id.into_string(),
+                    label: snapshot.label,
+                    timestamp: snapshot.timestamp,
+                })
+                .collect())
+        })
     }
 
     fn restore_snapshot(&mut self, id: &str) -> Result<(), String> {
@@ -4497,32 +4567,41 @@ impl CommandPluginContext for PluginAdapter<'_> {
         // File-level rollback removal for a bundle whose content hash
         // mismatched; no registry resolution, rediscovery, or skill side
         // effects (FEAT-020 D1 — the `codewhale_plugins` call stays host-side).
-        codewhale_plugins::install::uninstall(name, plugins_dir)
-            .map_err(|error| format!("{error:#}"))
+        let name = name.to_string();
+        let plugins_dir = plugins_dir.to_path_buf();
+        run_owner_blocking(move || {
+            codewhale_plugins::install::uninstall(&name, &plugins_dir)
+                .map_err(|error| format!("{error:#}"))
+        })
     }
 
     fn export(&self, selector: &str, target: &Path) -> Result<PluginExportReceipt, String> {
-        let app = self.host.app.borrow();
-        let plugin = app
-            .plugin_registry
-            .get(selector)
-            .ok_or_else(|| format!("no plugin named {selector}"))?
-            .clone();
-        let existing_names: std::collections::BTreeSet<String> = app
-            .plugin_registry
-            .list()
-            .iter()
-            .map(|other| other.name().to_string())
-            .filter(|name| name != plugin.name())
-            .collect();
-        let target = if target.is_absolute() {
-            target.to_path_buf()
-        } else {
-            app.workspace.join(target)
+        let (plugin, existing_names, target) = {
+            let app = self.host.app.borrow();
+            let plugin = app
+                .plugin_registry
+                .get(selector)
+                .ok_or_else(|| format!("no plugin named {selector}"))?
+                .clone();
+            let existing_names: std::collections::BTreeSet<String> = app
+                .plugin_registry
+                .list()
+                .iter()
+                .map(|other| other.name().to_string())
+                .filter(|name| name != plugin.name())
+                .collect();
+            let target = if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                app.workspace.join(target)
+            };
+            (plugin, existing_names, target)
         };
-        codewhale_plugins::export::export_plugin_bundle(&plugin, &target, &existing_names)
-            .map(|receipt| portable_export_receipt(&receipt))
-            .map_err(|error| format!("Export of `{}` failed: {}", plugin.name(), error))
+        run_owner_blocking(move || {
+            codewhale_plugins::export::export_plugin_bundle(&plugin, &target, &existing_names)
+                .map(|receipt| portable_export_receipt(&receipt))
+                .map_err(|error| format!("Export of `{}` failed: {}", plugin.name(), error))
+        })
     }
 
     fn legacy_scan(&self) -> Result<Option<PluginLegacyScan>, String> {
