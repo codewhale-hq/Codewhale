@@ -1,11 +1,14 @@
-name: Issue triage
+name: Issue and PR triage
 
 on:
   issues:
     types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened, synchronize]
 
 permissions:
   issues: write
+  pull-requests: write
   contents: read
 
 jobs:
@@ -13,44 +16,95 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Auto-label by title and body
+      - name: Auto-label by title, body and changed paths
         uses: actions/github-script@v9
         with:
           script: |
-            const issue = context.payload.issue;
+            const pr = context.payload.pull_request;
+            const issue = context.payload.issue || pr;
             const title = (issue.title || '').toLowerCase();
             const body = (issue.body || '').toLowerCase();
             const text = `${title}\n${body}`;
             const labels = new Set();
 
-            // Type — matched against the TITLE only.
-            //
-            // These ran against title+body and mislabelled long, well-specified
-            // issues. Any body containing an acceptance criterion like "fails
-            // when a pack drifts" matched the bug rule, and a "How to add a
-            // locale" heading matched the question rule, so planned work landed
-            // tagged `bug, question`. A title states the type; a body just
-            // discusses it. `error`/`fail` are dropped entirely — they describe
-            // what almost every issue talks about, not what any issue *is*.
-            if (/\b(bug|crash|panic|broken|stack ?trace|regression)\b/.test(title)) labels.add('bug');
-            if (/\b(feat(?:ure)?|request|enhancement|wishlist|proposal|please add|would be nice|support for)\b/.test(title)) labels.add('enhancement');
-            if (/\b(docs?|readme|documentation|typo|grammar|wording|spelling)\b/.test(title)) labels.add('documentation');
-            if (/\b(question|how (?:do|to)|why does|what does|is it possible)\b/.test(title)) labels.add('question');
+            if (pr) {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              const pathRules = [
+                [/^crates\/(tui|tui-kit|palette)\//, 'area:tui'],
+                [/^crates\/(tools\/|engine\/src\/tools\/)/, 'area:tools'],
+                [/^crates\/(engine|core|runtime|agent|agent-contract|protocol)\/(?!src\/tools\/)/, 'area:core'],
+                [/^crates\/mcp\//, 'area:mcp'],
+                [/^crates\/(state|snapshot|memory)\//, 'area:state'],
+                [/^crates\/(sandbox|execpolicy)\//, 'area:sandbox'],
+                [/^crates\/(plugins|skills|skill-install|hooks)\//, 'area:plugins'],
+                [/^(crates\/(app-server|app-server-protocol)|npm\/runtime-sdk)\//, 'area:runtime-api'],
+                [/^crates\/models\//, 'area:providers'],
+                [/^(crates\/localization|docs\/zh_hans)\//, 'area:localization'],
+                [/^(npm\/(codewhale|deepseek-tui)|scripts\/release)\//, 'area:install'],
+                [/^(\.github|scripts\/ci)\//, 'area:ci'],
+                [/^apps\/desktop\//, 'area:desktop'],
+                [/^(apps\/web|web)\//, 'area:web'],
+                [/^apps\/mobile\//, 'area:mobile'],
+              ];
+              const areas = new Set();
+              let docsOnly = files.length > 0;
+              for (const f of files) {
+                if (!/^(docs\/|[^/]+\.md$)/.test(f.filename)) docsOnly = false;
+                for (const [re, name] of pathRules) if (re.test(f.filename)) areas.add(name);
+              }
+              if (areas.size <= 4) areas.forEach(name => labels.add(name));
+              if (docsOnly) labels.add('documentation');
+              if (/^feat(\(|!|:)/.test(title)) labels.add('enhancement');
+              if (/^fix(\(|!|:)/.test(title)) labels.add('bug');
+              if (/^docs(\(|!|:)/.test(title)) labels.add('documentation');
+              if (/^(chore|refactor|style|build)(\(|!|:)/.test(title)) labels.add('cleanup');
+              if (/^perf(\(|!|:)/.test(title)) labels.add('performance');
+              if (!['OWNER', 'MEMBER', 'COLLABORATOR'].includes(pr.author_association) && pr.user.type !== 'Bot') {
+                labels.add('contributor:external');
+              }
+            } else {
 
-            // Locale — title contains CJK (Chinese, Japanese, Korean) characters
-            if (/[぀-ヿ㐀-鿿가-힯]/.test(issue.title || '')) labels.add('lang:zh');
+                // Type — matched against the TITLE only.
+                //
+                // These ran against title+body and mislabelled long, well-specified
+                // issues. Any body containing an acceptance criterion like "fails
+                // when a pack drifts" matched the bug rule, and a "How to add a
+                // locale" heading matched the question rule, so planned work landed
+                // tagged `bug, question`. A title states the type; a body just
+                // discusses it. `error`/`fail` are dropped entirely — they describe
+                // what almost every issue talks about, not what any issue *is*.
+                if (/\b(bug|crash|panic|broken|stack ?trace|regression)\b/.test(title)) labels.add('bug');
+                if (/\b(feat(?:ure)?|request|enhancement|wishlist|proposal|please add|would be nice|support for)\b/.test(title)) labels.add('enhancement');
+                if (/\b(docs?|readme|documentation|typo|grammar|wording|spelling)\b/.test(title)) labels.add('documentation');
+                if (/\b(question|how (?:do|to)|why does|what does|is it possible)\b/.test(title)) labels.add('question');
 
-            // Areas (path-driven hints)
-            if (/crates\/tui|\btui\b|ratatui|composer|sidebar/.test(text)) labels.add('area:tui');
-            if (/crates\/core|engine|turn ?loop|agent ?loop/.test(text)) labels.add('area:core');
-            if (/crates\/mcp|\bmcp\b/.test(text)) labels.add('area:mcp');
-            if (/crates\/state|sqlite|sessions?|persistence/.test(text)) labels.add('area:state');
-            if (/crates\/execpolicy|approval|sandbox|seatbelt|landlock/.test(text)) labels.add('area:execpolicy');
-            if (/crates\/tools|tool[ _]call|tool[ _]registry/.test(text)) labels.add('area:tools');
-            if (/install|cargo install|npm install|scoop|homebrew|prebuilt|binary/.test(text)) labels.add('area:install');
-            if (/windows/.test(text)) labels.add('os:windows');
-            if (/macos|darwin|apple silicon/.test(text)) labels.add('os:macos');
-            if (/\blinux\b|ubuntu|debian|fedora|arch ?linux/.test(text)) labels.add('os:linux');
+                // Locale — title contains CJK (Chinese, Japanese, Korean) characters
+                if (/[぀-ヿ㐀-鿿가-힯]/.test(issue.title || '')) labels.add('lang:zh');
+
+                // Areas (path-driven hints)
+                if (/crates\/tui|\btui\b|ratatui|composer|sidebar/.test(text)) labels.add('area:tui');
+                if (/crates\/core|engine|turn ?loop|agent ?loop/.test(text)) labels.add('area:core');
+                if (/crates\/mcp|\bmcp\b/.test(text)) labels.add('area:mcp');
+                if (/crates\/state|sqlite|sessions?|persistence/.test(text)) labels.add('area:state');
+                if (/crates\/execpolicy|approval|sandbox|seatbelt|landlock/.test(text)) labels.add('area:sandbox');
+                if (/crates\/tools|tool[ _]call|tool[ _]registry/.test(text)) labels.add('area:tools');
+                if (/install|cargo install|npm install|scoop|homebrew|prebuilt|binary/.test(text)) labels.add('area:install');
+                if (/\bdesktop app\b|electron/.test(text)) labels.add('area:desktop');
+                if (/app\.codewhale\.net|\bweb app\b|codewhale web/.test(text)) labels.add('area:web');
+                if (/\bmobile\b|\bios\b|\bandroid\b/.test(text)) labels.add('area:mobile');
+                if (/screen ?reader|accessib|a11y|voiceover|\bnvda\b|keyboard navigation/.test(text)) labels.add('accessibility');
+                if (/windows/.test(text)) labels.add('os:windows');
+                if (/freebsd/.test(text)) labels.add('os:freebsd');
+                if (/\bohos\b|harmonyos/.test(text)) labels.add('os:ohos');
+                if (/macos|darwin|apple silicon/.test(text)) labels.add('os:macos');
+                if (/\blinux\b|ubuntu|debian|fedora|arch ?linux/.test(text)) labels.add('os:linux');
+
+            }
 
             if (labels.size === 0) return;
 

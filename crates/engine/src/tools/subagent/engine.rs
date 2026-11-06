@@ -399,7 +399,7 @@ impl ChildAuthority {
                 .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
             || (name == "pandoc_convert" && input.get("output_path").is_some());
         if scope_aware_write && self.enforce_write_claim {
-            let paths = mutation_paths(name, input)?;
+            let paths = mutation_paths(name, input, &self.runtime.context.workspace)?;
             if paths.is_empty() {
                 return Err(admission_denied(format!(
                     "Write tool {name} did not expose a bounded repo-relative target for coordination"
@@ -465,7 +465,7 @@ impl ChildAuthority {
             }
         }
         let observed_paths = if scope_aware_write {
-            mutation_paths(name, input)?
+            mutation_paths(name, input, &self.runtime.context.workspace)?
         } else {
             Vec::new()
         };

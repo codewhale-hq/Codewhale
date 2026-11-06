@@ -291,10 +291,13 @@ for (const bridge of ["telegram-bridge", "feishu-bridge", "wecom-bridge"]) {
       assert.equal(store.turnOrigin(chatId, threadId, first).actorId, actors[bridge]);
       const reopened = await ThreadStore.open(store.filePath, { actions: true });
       const { decideApproval: consumer } = await shipping(bridge, ["turnActor", "decideApproval"], environment(reopened, runtime));
+      // The WeCom bridge steers the still-active turn with the follow-up text,
+      // so count approval decisions only, not every runtime POST.
+      const approvalPosts = () => runtime.state.posts.filter((post) => post.route.startsWith("/v1/approvals"));
       await consumer(chatId, { decision: "allow", approvalId: "approval-a" }, identities[bridge]("bob"));
-      assert.equal(runtime.state.posts.length, 0);
+      assert.equal(approvalPosts().length, 0);
       await consumer(chatId, { decision: "allow", approvalId: "approval-a" }, identities[bridge]("alice"));
-      assert.equal(runtime.state.posts.length, 1);
+      assert.equal(approvalPosts().length, 1);
     }));
   });
 }

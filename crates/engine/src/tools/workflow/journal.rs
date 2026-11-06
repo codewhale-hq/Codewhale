@@ -177,7 +177,10 @@ enum WorkflowJournalRecord {
 
 #[derive(Debug)]
 struct WorkflowRunJournal {
-    /// Workspace the ledger must stay inside; links below it are refused.
+    /// State directory the ledger must stay inside; links below it are refused.
+    /// A home workspace makes this the resolved `~/.codewhale` target, while
+    /// every other workspace passes itself here with `.codewhale` still inside
+    /// the ledger path. See [`WorkflowRunJournal::open`].
     root: PathBuf,
     ledger_path: PathBuf,
 }
@@ -186,11 +189,15 @@ impl WorkflowRunJournal {
     /// Opening has no side effects: `.codewhale/` and the ledger appear with
     /// the first appended record, and only through the confined helpers, so a
     /// linked `.codewhale` never receives an empty `state/` or ledger.
+    ///
+    /// A home workspace resolves `~/.codewhale` to its target, because that
+    /// junction is where the user chose to keep application state. Any other
+    /// workspace keeps itself as the root with `.codewhale` inside the walked
+    /// path, so a repository-supplied link is refused as before.
     fn open(workspace: &Path) -> Self {
-        Self {
-            root: workspace.to_path_buf(),
-            ledger_path: workspace.join(CODEWHALE_DIR).join(WORKFLOW_RUNS_FILE),
-        }
+        let (root, ledger_path) =
+            codewhale_util::files::workspace_state_path(workspace, Path::new(WORKFLOW_RUNS_FILE));
+        Self { root, ledger_path }
     }
 
     fn hydrate_runs(&self, recover_orphans: bool) -> HashMap<String, WorkflowRunRecord> {

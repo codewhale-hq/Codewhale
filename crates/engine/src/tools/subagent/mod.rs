@@ -3959,13 +3959,24 @@ pub const COORDINATION_LOCK_TIMEOUT_MARKER: &str =
 impl CoordinationProcessLock {
     fn acquire(state_root: &Path, exclusive: bool) -> Result<Self> {
         let requested_root = normalize_subagent_workspace(state_root);
-        let lock_dir = requested_root.join(".codewhale").join("state");
+        // Root and path for the lock. A non-home workspace keeps itself as the
+        // root, so a repository-supplied `.codewhale` link is walked and
+        // refused before `create_dir_all` could follow it into the target. A
+        // home workspace resolves its own junction once and still walks
+        // everything below it.
+        let (walk_root, lock_path) = codewhale_util::files::workspace_state_path(
+            &requested_root,
+            &Path::new("state").join(SUBAGENT_STATE_LOCK_FILE),
+        );
+        let lock_dir = lock_path
+            .parent()
+            .map_or_else(|| walk_root.clone(), Path::to_path_buf);
         // Refuse a linked `.codewhale` or `state` before creating anything:
         // `create_dir_all` follows links and would populate the target.
-        reject_root_relative_symlinks(&requested_root, &lock_dir.join(SUBAGENT_STATE_LOCK_FILE))?;
+        reject_root_relative_symlinks(&walk_root, &lock_path)?;
         fs::create_dir_all(&lock_dir)?;
         let ignore = lock_dir.join(".gitignore");
-        let ignored = reject_root_relative_symlinks(&requested_root, &ignore).and_then(|()| {
+        let ignored = reject_root_relative_symlinks(&walk_root, &ignore).and_then(|()| {
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -3983,11 +3994,11 @@ impl CoordinationProcessLock {
         // Windows (for example by adding a `\\?\` prefix). Re-resolve both
         // sides before checking containment.
         let state_root = normalize_subagent_workspace(state_root);
-        let lock_path = state_root
-            .join(".codewhale")
-            .join("state")
-            .join(SUBAGENT_STATE_LOCK_FILE);
-        reject_root_relative_symlinks(&state_root, &lock_path)?;
+        let (walk_root, lock_path) = codewhale_util::files::workspace_state_path(
+            &state_root,
+            &Path::new("state").join(SUBAGENT_STATE_LOCK_FILE),
+        );
+        reject_root_relative_symlinks(&walk_root, &lock_path)?;
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -21997,7 +22008,7 @@ fn raw_mutation_target_paths(name: &str, input: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn mutation_paths(name: &str, input: &Value) -> Result<Vec<String>> {
+fn mutation_paths(name: &str, input: &Value, workspace: &Path) -> Result<Vec<String>> {
     let raw_paths = if name == "apply_patch"
         || (name == "File" && input.get("action").and_then(Value::as_str) == Some("patch"))
     {
@@ -22017,10 +22028,46 @@ fn mutation_paths(name: &str, input: &Value) -> Result<Vec<String>> {
     } else {
         Vec::new()
     };
+    // One normalization per batch, not per path: every absolute spelling
+    // below strips against the same canonical workspace.
+    let workspace = normalize_subagent_workspace(workspace);
     raw_paths
         .into_iter()
-        .map(|path| normalize_claim_path(&path).map_err(anyhow::Error::msg))
+        .map(|path| {
+            let path = workspace_relative_mutation_path(&workspace, &path);
+            normalize_claim_path(&path).map_err(anyhow::Error::msg)
+        })
         .collect()
+}
+
+/// An absolute target inside the child's workspace names the same file as
+/// its relative form, and that is what the write tool would resolve it to;
+/// the claim ledger speaks repo-relative paths, so strip the workspace
+/// prefix before scope validation instead of refusing the spelling. A target
+/// outside the workspace is handed to the validator untouched and refused
+/// there, as before. The string is judged exactly as the tool receives it —
+/// no trimming: a padded spelling is not absolute, so it stays on the
+/// validator's existing lane (which trims and then refuses the absolute
+/// form, as before this helper existed). The deepest-existing walk delegates
+/// to the core's single implementation
+/// ([`crate::core::authority::resolve_deepest_existing`]) — the same one
+/// behind the write carve-out's real-path check — so this lane cannot drift
+/// from it on symlinked or partially-existing spellings.
+///
+/// `workspace` arrives already normalized from [`mutation_paths`].
+fn workspace_relative_mutation_path(workspace: &Path, path: &str) -> String {
+    let candidate = Path::new(path);
+    if !candidate.is_absolute() {
+        return path.to_string();
+    }
+    // The walk always composes a path, so this only guards a future
+    // signature change of the shared core walk.
+    let resolved = crate::core::authority::resolve_deepest_existing(candidate)
+        .unwrap_or_else(|| candidate.to_path_buf());
+    match resolved.strip_prefix(workspace) {
+        Ok(relative) => relative.to_string_lossy().into_owned(),
+        Err(_) => path.to_string(),
+    }
 }
 
 fn reject_subagent_terminal_takeover(name: &str, input: &Value) -> Result<()> {
