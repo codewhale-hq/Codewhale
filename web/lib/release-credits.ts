@@ -44,6 +44,7 @@ export const RELEASE_CONTRIBUTORS: string[] = [
 export const UNRELEASED_CONTRIBUTORS: string[] = [
   "@isaacs",
   "@Gabriel-Degret",
+  "@soarkit",
   "@7jrxt42BxFZo4iAnN4CX",
   "@Lstarsky0",
   "@gaord",
