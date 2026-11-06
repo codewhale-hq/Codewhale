@@ -392,6 +392,7 @@ Common commands for first-time users:
 | `/receipts` | List what this session did: files changed, commands run, web and MCP calls, agents, approvals and who gave them, failures |
 | `/compact` | Summarize long context to recover token budget |
 | `/copy` | Copy the last completed assistant response to the clipboard |
+| `/export` | Copy the conversation, or save it as Markdown, HTML or JSON; see [Exporting a conversation](#exporting-a-conversation) |
 | `/review` | Ask for a structured review workflow |
 | `/memory` | Inspect or manage memory when enabled |
 | `/mcp` | Configure or inspect MCP server integration |
@@ -443,6 +444,32 @@ or no classification request.
 
 Use `/compact` when a session gets long and the model starts carrying too much
 history. Compaction trades raw transcript detail for a concise working summary.
+
+### Exporting a conversation
+
+`/export` copies a redacted transcript to the clipboard. `/export file` saves
+it instead, and the file format follows the extension:
+
+```text
+/export file                     auto-named Markdown under the Codewhale exports folder
+/export file notes.html          a self-contained HTML page (light and dark, no scripts)
+/export file notes.json          structured JSON with typed message blocks
+/export file notes.md --no-tools Markdown without tool calls and results
+/export file notes.md --force    replace an existing file
+/export turn                     the latest turn as a handoff note
+```
+
+`--format md|html|json` overrides the extension, and `--format html` or
+`--format json` on its own writes an auto-named file. HTML and JSON are
+file-only because a clipboard paste would lose their structure. Auto-named
+files are `codewhale-<title>-<timestamp>.<ext>` in `<codewhale home>/exports`.
+`~` is expanded, quotes keep a path with spaces together, and an existing file
+is never replaced without `--force`.
+
+Every format omits the system prompt and internal reasoning, redacts
+secret-like values and credential-bearing URLs, and fences tool output so it
+cannot forge a heading or a message. `/share` publishes the same HTML page as a
+secret gist after a confirmation.
 
 This guide intentionally does not list every command. The command surface
 changes more often than the onboarding flow, and the TUI command palette is the
@@ -765,7 +792,7 @@ session store. Symlinks are skipped; linked artifact roots, hard links,
 nonportable filenames, and trees exceeding 64 directory levels or 100,000
 entries fail the export without replacing the destination.
 
-Unlike the sanitized Markdown `/export`, these archives retain unredacted
+Unlike the sanitized `/export`, these archives retain unredacted
 session content, including system prompts, thinking, tool calls and results,
 journal branches, and approval receipts. Extract `session.json` and open it
 with `/load` in the TUI; `/resume` imports the conversation only. Extracted

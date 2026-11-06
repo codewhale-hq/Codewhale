@@ -14,6 +14,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **`/export` writes HTML and JSON:** `/export file report.html` saves a self-contained page (light and dark, no scripts, a strict content-security policy, tool calls collapsed) and `report.json` a versioned, typed-block envelope. `--format md|html|json` overrides the extension, and `--no-tools` drops tool calls and results from the conversation. `/export file` with no path now writes an auto-named `codewhale-<title>-<timestamp>` file under `<codewhale home>/exports` and reports the format, line count and redactions; `~` expands and quotes keep a path with spaces together. `--force`, `--no-tools` and `--format` are accepted in any position. HTML and JSON are file-only; the clipboard and `/export turn` remain Markdown.
 - **Tencent HY4:** the stable `tencent/hy4` model is available through OpenRouter with its published multimodal, tool, reasoning and context metadata. `/provider tencent` adds the direct TokenHub route with `hy4` and `TENCENT_API_KEY`; direct availability and prices remain separate from OpenRouter, and preview/HY3 selections are preserved.
 
 - **WeCom steers a running turn (#7211):** a WeCom message sent while a turn is running is forwarded to the Runtime's steer endpoint instead of being dropped with the busy notice, which remains the fallback when the steer is rejected. Thanks [@gaord](https://github.com/gaord).
@@ -93,6 +94,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Changed
 
+- **Cleaner, safer Markdown export:** headings no longer carry `Content N:` numbering, a text block that opens a message is bare, tool results show their tool name and appear under a `tool` role instead of `user`, and `Error:` appears only on an error. Tool output is now fenced, so a tool result can no longer forge a heading or a message in the transcript. A trailing `--force` is a flag rather than part of the path. `/share` now publishes the same HTML page as `/export file x.html`, still as a redacted secret gist after confirmation.
 - Internal coarse split: Runtime owns bounded owner work, Paths owns the protected socket layout, and Protocol owns shared avatar data. App Server now owns the Runtime host and control transports previously embedded in the TUI. Engine and Sandbox do not depend on App Server; the remaining Stage B boundaries stay open (#5586).
 - **Newer DeepSeek Harness plugin compatibility:** the Native host targets
   DSH 0.2.1-rc.5 with Cordis 4.0.5 and refreshed reviewed composition

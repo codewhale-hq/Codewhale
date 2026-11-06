@@ -764,6 +764,16 @@ surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/session/structcopy.rs"
 
 [[feature]]
+id = "conversation-export"
+name = "Conversation export"
+summary = "/export saves a redacted conversation as Markdown, HTML or JSON, to the clipboard or an auto-named file."
+status = "stable"
+surfaces = { tui = "stable" }
+since = "unreleased"
+docs = "docs/GUIDE.md#exporting-a-conversation"
+owner = "crates/tui/src/commands/groups/session/export.rs"
+
+[[feature]]
 id = "live-thinking"
 name = "Live thinking"
 summary = "/verbose toggles live model thinking in the transcript."

@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "14dce28aae668a86a2bcdab0955c572f4a3bc0430dfad2276075dbf345ae2d10"
+    "sha256": "8d4597754384844f8b5d7e34e8b9ecef29615c7e9c4775de3059f76243f7d976"
   },
   "features": [
     {
@@ -1014,6 +1014,19 @@
       "registryLine": 759
     },
     {
+      "id": "conversation-export",
+      "name": "Conversation export",
+      "summary": "/export saves a redacted conversation as Markdown, HTML or JSON, to the clipboard or an auto-named file.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/GUIDE.md#exporting-a-conversation",
+      "registryLine": 767
+    },
+    {
       "id": "live-thinking",
       "name": "Live thinking",
       "summary": "/verbose toggles live model thinking in the transcript.",
@@ -1024,7 +1037,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 767
+      "registryLine": 777
     },
     {
       "id": "local-model-reasoning",
@@ -1039,7 +1052,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/LOCAL_MODEL_REASONING.md",
-      "registryLine": 775
+      "registryLine": 785
     },
     {
       "id": "workbar",
@@ -1052,7 +1065,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 785
+      "registryLine": 795
     },
     {
       "id": "terminal-dock",
@@ -1065,7 +1078,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 793
+      "registryLine": 803
     },
     {
       "id": "telemetry",
@@ -1078,7 +1091,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TELEMETRY.md",
-      "registryLine": 804
+      "registryLine": 814
     },
     {
       "id": "docker",
@@ -1091,7 +1104,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/DOCKER.md",
-      "registryLine": 813
+      "registryLine": 823
     },
     {
       "id": "termux",
@@ -1104,7 +1117,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TERMUX.md",
-      "registryLine": 822
+      "registryLine": 832
     },
     {
       "id": "harmonyos-native",
@@ -1117,7 +1130,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/HarmonyOS.md",
-      "registryLine": 831
+      "registryLine": 841
     },
     {
       "id": "chatgpt-plan-sign-in",
@@ -1132,7 +1145,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-chatgpt",
-      "registryLine": 840
+      "registryLine": 850
     },
     {
       "id": "claude-plan-sign-in",
@@ -1147,7 +1160,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-claude",
-      "registryLine": 850
+      "registryLine": 860
     },
     {
       "id": "plugin-oauth-providers",
@@ -1162,7 +1175,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PLUGIN_PROVIDERS.md",
-      "registryLine": 860
+      "registryLine": 870
     },
     {
       "id": "orcarouter-sign-in",
@@ -1177,7 +1190,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 870
+      "registryLine": 880
     },
     {
       "id": "merch-interest",
@@ -1192,7 +1205,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "web/lib/merch/README.md",
-      "registryLine": 881
+      "registryLine": 891
     },
     {
       "id": "local-whale-voice",
@@ -1206,7 +1219,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#local-whale-voice",
-      "registryLine": 891
+      "registryLine": 901
     },
     {
       "id": "profile-constitution",
@@ -1220,7 +1233,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#profile-constitution",
-      "registryLine": 901
+      "registryLine": 911
     },
     {
       "id": "plugin-shell-install",
@@ -1233,7 +1246,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 911
+      "registryLine": 921
     },
     {
       "id": "herdr-agent-state",
@@ -1246,7 +1259,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 921
+      "registryLine": 931
     },
     {
       "id": "instruction-budgets",
@@ -1259,7 +1272,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526",
-      "registryLine": 930
+      "registryLine": 940
     },
     {
       "id": "github-action-review",
@@ -1272,7 +1285,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/GITHUB_ACTION.md",
-      "registryLine": 940
+      "registryLine": 950
     },
     {
       "id": "telegram-agent",
@@ -1285,7 +1298,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/telegram-bridge/README.md",
-      "registryLine": 950
+      "registryLine": 960
     },
     {
       "id": "dingtalk-agent",
@@ -1298,7 +1311,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
-      "registryLine": 960
+      "registryLine": 970
     },
     {
       "id": "compaction-archive-recall",
@@ -1311,7 +1324,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": null,
-      "registryLine": 970
+      "registryLine": 980
     },
     {
       "id": "usage-statistics",
@@ -1324,7 +1337,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
-      "registryLine": 979
+      "registryLine": 989
     },
     {
       "id": "cache-call-receipts",
@@ -1337,7 +1350,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
-      "registryLine": 989
+      "registryLine": 999
     }
   ]
 }
