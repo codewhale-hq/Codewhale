@@ -40,10 +40,16 @@ changelog or release notes, and this contributor record.
 ## Contributors by time
 
 <details open>
-<summary><strong>Unreleased (0.10.3 candidate)</strong></summary>
+<summary><strong>v0.10.3 — unreleased candidate</strong></summary>
 
 **Contributions**
 
+- **[printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).
+- **[liuyy2](https://github.com/liuyy2)** — diagnosed case-sensitive model selection collisions in the provider picker ([#7214](https://github.com/codewhale-hq/Codewhale/issues/7214)); the compatibility-preserving selection order was supplied by [SparkofSpike](https://github.com/SparkofSpike).
+- **[M-Maciej](https://github.com/M-Maciej)** — reported answerless output-limit stops in long Fleet proofs ([#6990](https://github.com/codewhale-hq/Codewhale/issues/6990)).
+- **[Statter](https://github.com/Statter)** — reported black-on-black text on terminals that do not report their background ([#7043](https://github.com/codewhale-hq/Codewhale/issues/7043)).
+- **[eugenicum](https://github.com/eugenicum)** — asked for a visible Full Access flag for `serve --acp` ([#6992](https://github.com/codewhale-hq/Codewhale/issues/6992)).
+- **[luestr](https://github.com/luestr)** — reported file and conversation rollback diverging ([#6970](https://github.com/codewhale-hq/Codewhale/issues/6970)), the Linux multiline send key ([#7093](https://github.com/codewhale-hq/Codewhale/issues/7093)) and session export guidance ([#6996](https://github.com/codewhale-hq/Codewhale/issues/6996)).
 - **[isaacs](https://github.com/isaacs)** — upstream minimatch preprocessing and glob cancellation fixes reused in compatible web build dependency backports.
 - **[Gabriel-Degret](https://github.com/Gabriel-Degret)** — reported that a hosted output limit truncated reasoning on a custom endpoint ([#7179](https://github.com/codewhale-hq/Codewhale/issues/7179)).
 - **[soarkit](https://github.com/soarkit)** — reported that `/patch-undo` ignored `turn_id` and undid the latest turn ([#7216](https://github.com/codewhale-hq/Codewhale/issues/7216)).

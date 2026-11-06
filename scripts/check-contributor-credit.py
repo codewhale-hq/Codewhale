@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # "contributors" in the credit sense this file guards.
 SKIP = {
     "codewhale bot", "codewhalebot", "codewhale agent", "claude", "codex", "dependabot[bot]",
-    "codewhale-maint",
+    "codewhale-maint", "copilot",
     "hunter bown", "hunter b", "hmbown", "deepseek-v41-flash", "devin",
 }
 
