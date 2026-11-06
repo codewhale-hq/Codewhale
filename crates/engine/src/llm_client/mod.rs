@@ -697,7 +697,7 @@ impl LlmError {
     /// optional structured details for authentication failures.
     ///
     /// The `body` passed here must already be safe for user display. Prefer
-    /// [`Self::from_http_response_with_request_context`] when the raw API key is
+    /// `Self::from_http_response_with_request_context` when the raw API key is
     /// available so the response body can be redacted before rendering.
     #[must_use]
     pub fn from_http_response_with_auth_context(

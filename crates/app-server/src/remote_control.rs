@@ -1462,7 +1462,7 @@ impl RemoteControlController {
     pub fn stop(&mut self) {
         match blocking_owner_handle() {
             Some(handle) => {
-                let _ = tokio::task::block_in_place(|| handle.block_on(self.stop_async()));
+                tokio::task::block_in_place(|| handle.block_on(self.stop_async()));
             }
             None => self.stop_inner(),
         }

@@ -16,6 +16,7 @@ export const TOOLS_COPY = {
     { name: "todo_write", detail: { en: "Replace the task list with content and status entries.", zh: "用包含内容与状态的条目替换任务列表。" } },
     { name: "create_goal · get_goal · update_goal", detail: { en: "Create, inspect and update the active goal.", zh: "创建、查看与更新当前目标。" } },
     { name: "task_shell_wait", detail: { en: "Poll or stop a background shell task by task_id.", zh: "按 task_id 轮询或停止后台 shell 任务。" } },
+    { name: "present", detail: { en: "Hand off 1–32 existing files with SHA-256 receipts; read-only.", zh: "以 SHA-256 回执交付 1–32 个现有文件；只读。" } },
     { name: "load_skill", detail: { en: "Load a skill by exact name, or pass query to search the catalogue.", zh: "按确切名称加载技能，或传入 query 搜索技能目录。" } },
     { name: "context_archive_search · context_archive_get", detail: { en: "Search and read what compaction replaced, read-only and bounded, with credentials masked.", zh: "只读、有上限地搜索并读取被压缩替换的内容，凭据会被遮蔽。" } },
     { name: "tool_search", detail: { en: "Discover policy-allowed tools. Each child has its own search and activation cache.", zh: "发现策略允许的工具。每个子 Agent 拥有独立的搜索与激活缓存。" } },

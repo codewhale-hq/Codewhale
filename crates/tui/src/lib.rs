@@ -1,6 +1,10 @@
 //! Codewhale TUI library — single-binary entry point.
 
-#![allow(clippy::uninlined_format_args)]
+#![allow(
+    clippy::large_enum_variant,
+    clippy::too_many_arguments,
+    clippy::uninlined_format_args
+)]
 
 use codewhale_engine::runtime_options::RuntimeOptions;
 use codewhale_engine::{
