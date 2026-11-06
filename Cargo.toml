@@ -91,7 +91,7 @@ reqwest = { version = "0.13.1", default-features = false, features = ["json", "r
 # multi-thread engine over channels (see crates/workflow-js).
 rquickjs = { version = "0.14", features = ["futures"] }
 rustls = { version = "0.23.36", default-features = false, features = ["ring", "std", "tls12"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 # DSH bundle import: event-level parsing so aliases and explicit tags can be refused.
