@@ -650,6 +650,18 @@ impl ClipboardHandler {
                         "read: clipboard has no readable image: {error}"
                     ),
                 }
+                // arboard reads the Win32 clipboard through CF_DIB/CF_DIBV5.
+                // Some capture tools publish the bitmap under a format that
+                // path misses, or leave it delay-rendered in a way that only
+                // resolves once another application asks: QQ's screenshot is
+                // the reported case, where the picture becomes readable only
+                // after it has been pasted somewhere else first. .NET's
+                // Clipboard.GetImage() handles those, so ask it before
+                // deciding the clipboard holds no image.
+                #[cfg(all(target_os = "windows", not(test)))]
+                if let Some(pasted) = read_image_via_powershell(workspace) {
+                    return Some(ClipboardContent::Image(pasted));
+                }
             }
         }
 
@@ -1131,6 +1143,123 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
         width,
         height,
         byte_len,
+    })
+}
+
+/// Read the clipboard image through .NET instead of the Win32 clipboard API.
+///
+/// Windows only, where arboard's `CF_DIB`/`CF_DIBV5` path misses pictures some
+/// capture tools publish under another format or leave delay-rendered. QQ's
+/// screenshot is the reported case: the image only becomes readable after it
+/// has been pasted into another application first, which is exactly what a
+/// second reader that asks .NET for the bitmap can bridge.
+///
+/// Known costs: one PowerShell start, paid only after arboard already failed,
+/// and the PNG crosses the child's stdout as base64, so a multi-megabyte
+/// screenshot moves a few megabytes through the pipe.
+///
+/// Bounds: the child is killed after [`POWERSHELL_TIMEOUT`], its stdout is cut
+/// at [`MAX_ENCODED_BYTES`], and reads happen on a helper thread so a child
+/// that fills the pipe cannot deadlock the wait. The UI thread can still block
+/// for that timeout; a clipboard owner that never renders the format is the
+/// case this guards against, and failing closed after ten seconds beats
+/// freezing the TUI.
+#[cfg(all(target_os = "windows", not(test)))]
+fn powershell_path() -> std::path::PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("powershell.exe"))
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+fn read_image_via_powershell(workspace: &Path) -> Option<PastedImage> {
+    use base64::Engine as _;
+    use std::io::Read as _;
+    use std::time::Duration;
+    use wait_timeout::ChildExt as _;
+
+    /// The script prints the PNG as base64; anything past this is beyond the
+    /// attach limit anyway, so the read stops instead of buffering an
+    /// unbounded stream.
+    const MAX_ENCODED_BYTES: u64 = 16 * 1024 * 1024;
+    /// A clipboard owner that never renders the format must not hold the UI.
+    const POWERSHELL_TIMEOUT: Duration = Duration::from_secs(10);
+
+    const SCRIPT: &str = concat!(
+        "Add-Type -AssemblyName System.Windows.Forms; ",
+        "Add-Type -AssemblyName System.Drawing; ",
+        "$img = [System.Windows.Forms.Clipboard]::GetImage(); ",
+        "if ($img -ne $null) { ",
+        "$ms = New-Object System.IO.MemoryStream; ",
+        "$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); ",
+        "[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray())) }"
+    );
+
+    let mut child = Command::new(powershell_path())
+        .args(["-NoProfile", "-STA", "-Command", SCRIPT])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    // Read on a helper thread: a child that fills the pipe would otherwise
+    // block forever while the main thread waits for it to exit.
+    let stdout = child.stdout.take()?;
+    let reader = std::thread::Builder::new()
+        .name("clipboard-powershell".to_string())
+        .spawn(move || {
+            let mut buffer = String::new();
+            let _ = stdout.take(MAX_ENCODED_BYTES).read_to_string(&mut buffer);
+            buffer
+        })
+        .ok()?;
+
+    let status = match child.wait_timeout(POWERSHELL_TIMEOUT) {
+        Ok(Some(status)) => status,
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = reader.join();
+            return None;
+        }
+    };
+    let encoded = reader.join().ok()?;
+    if !status.success() || encoded.trim().is_empty() {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let (width, height) = image::ImageReader::new(std::io::Cursor::new(&bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    let dir = codewhale_runtime::config::clipboard_images_dir(workspace);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = format!("clipboard-{timestamp}.png");
+    clipboard_image_target(&dir, &file_name)
+        .ok()?
+        .publish(&bytes)
+        .ok()?;
+    Some(PastedImage {
+        path: dir.join(file_name),
+        width,
+        height,
+        byte_len: bytes.len(),
     })
 }
 
