@@ -90,12 +90,12 @@ try {
     [System.Windows.Forms.Clipboard]::SetText($payload)
     if ([System.Windows.Forms.Clipboard]::GetText() -ne $payload) { throw 'Clipboard readback mismatch' }
     Focus-OwnedWindow
-    [System.Windows.Forms.SendKeys]::SendWait('^+%v')
+    [System.Windows.Forms.SendKeys]::SendWait('+{INS}')
     # Let every pasted line arrive before asking the independent HTTP observer
     # whether anything was submitted prematurely.
     Start-Sleep -Milliseconds 1800
     Capture 'pasted'
-    @{ processId = $ownedPid; sessionId = (Get-Process -Id $ownedPid).SessionId; chars = $payload.Length; input = 'Windows clipboard + Ctrl+Shift+Alt+V' } |
+    @{ processId = $ownedPid; sessionId = (Get-Process -Id $ownedPid).SessionId; chars = $payload.Length; input = 'Windows clipboard + Shift+Insert' } |
         ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $Evidence 'pasted.json')
     Wait-For { Test-Path (Join-Path $Evidence 'submit') } 'independent no-submit assertion'
     Focus-OwnedWindow
