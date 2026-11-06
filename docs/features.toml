@@ -473,6 +473,15 @@ docs = "docs/PREVIEW_REQUEST.md"
 owner = "crates/engine/src/request_manifest.rs"
 
 [[feature]]
+id = "present-handoff"
+name = "Present final files"
+summary = "Declare existing workspace files as final deliverables with a read-only handoff receipt."
+status = "experimental"
+surfaces = { tui = "preview", api = "partial" }
+since = "unreleased"
+owner = "crates/engine/src/tools/present.rs"
+
+[[feature]]
 id = "read-media"
 name = "read_media"
 summary = "Reads and preprocesses images for vision-capable models with size and privacy guards."
