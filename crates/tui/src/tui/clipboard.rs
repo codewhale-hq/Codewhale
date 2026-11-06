@@ -1100,42 +1100,9 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
         .context("encode clipboard PNG")?;
     let file_name = format!("clipboard-{timestamp}.png");
     let path = dir.join(&file_name);
-    // The confined writer pins every ancestor and refuses a layout it cannot
-    // walk end to end; a relocated state root (`~/.codewhale` behind a user
-    // junction) is one of those, and the failure used to be swallowed by the
-    // caller's `if let Ok(..)`, so a pasted screenshot vanished silently.
-    // This directory is the application's own image cache and the file name is
-    // generated here, so a direct write is the safe fallback rather than a
-    // reason to lose the picture.
-    let confined = clipboard_image_target(dir, &file_name)
-        .and_then(|file| file.publish(&encoded).map_err(anyhow::Error::from));
-    if confined.is_err() {
-        // The confined writer pins every ancestor and refuses a layout it
-        // cannot walk end to end; a relocated state root (`~/.codewhale`
-        // behind a user junction) is one of those. This directory is the
-        // application's own image cache and the file name is generated here,
-        // so a direct write is the fallback - but it still refuses a linked
-        // directory and creates the file exclusively, so it cannot write
-        // through a link or replace one.
-        std::fs::create_dir_all(dir).context("create clipboard-images directory")?;
-        if std::fs::symlink_metadata(dir)
-            .context("inspect clipboard-images directory")?
-            .file_type()
-            .is_symlink()
-        {
-            bail!("clipboard image directory is a link");
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path).context("create clipboard PNG")?;
-        use std::io::Write as _;
-        file.write_all(&encoded).context("write clipboard PNG")?;
-    }
+    clipboard_image_target(dir, &file_name)?
+        .publish(&encoded)
+        .context("write clipboard PNG")?;
 
     let byte_len = encoded.len();
     Ok(PastedImage {
