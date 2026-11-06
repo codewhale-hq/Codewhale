@@ -173,6 +173,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A long turn no longer ends at 64 model requests:** a turn that had recorded 64 provider usage receipts failed on the next one with "captured usage sink did not acknowledge its source", discarding the person's answer. The per-turn receipt cap is removed. Receipts keep recording exactly once, and a failure to persist one (lost owner lock, thread mismatch, load or save failure) still stops the turn instead of continuing with unrecorded spend.
 - **The `verify` tool names a callable surface (#7223):** its description taught the model to use the retired, hidden `run_verifiers` name; it now says to use the Run tool with `action="verifiers"`, and the retired-name guard test now covers `verify`'s description. Thanks [@asto18089](https://github.com/asto18089).
 - **A home-directory workspace no longer refuses its own state (#7207):** a session started in the home directory treated it as a confined workspace, which broke the supported layout where `~/.codewhale` is a directory junction onto another volume (Windows `mklink /J`); only the home state directory is now exempt, and confinement for links elsewhere is unchanged. Thanks [@SparkofSpike](https://github.com/SparkofSpike).
 - **The command palette keeps your draft (#7205):** picking a command that takes an argument, such as `/rename`, no longer discards what was in the composer; the draft is stashed so history search can recover it. Thanks [@Lstarsky0](https://github.com/Lstarsky0).
