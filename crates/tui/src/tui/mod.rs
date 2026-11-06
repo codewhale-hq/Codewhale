@@ -57,6 +57,7 @@ pub mod hot_tail;
 pub mod hotbar;
 pub mod hover_hit;
 pub mod hover_layer;
+pub(crate) mod image_preview;
 pub mod infoline;
 pub mod key_actions;
 pub mod key_shortcuts;

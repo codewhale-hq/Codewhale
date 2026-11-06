@@ -538,6 +538,9 @@
   "crates/tui/src/tui/worktree_manager.rs": {
     "path_canonicalize": 2
   },
+  "crates/tui/src/tui/clipboard.rs": {
+    "std_fs": 2
+  },
   "crates/util/src/files.rs": {
     "path_canonicalize": 5,
     "std_fs": 5,

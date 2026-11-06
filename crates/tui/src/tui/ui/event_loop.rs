@@ -5665,6 +5665,15 @@ pub(crate) async fn run_event_loop(
 
         app.settle_stale_mcp_boot_prediction();
 
+        // An image preview decoded since the last frame needs a repaint of its
+        // own: the frame that handled the paste was already drawn when the
+        // worker finished, and an idle session may not draw again for a long
+        // time. Polling here, before the draw decision, makes the flag survive
+        // the `needs_redraw = false` that follows every paint.
+        if app.attachment_preview.poll() {
+            app.needs_redraw = true;
+        }
+
         let draw_wait = if app.needs_redraw {
             frame_rate_limiter.time_until_next_draw(now)
         } else {
@@ -6051,7 +6060,18 @@ pub(crate) async fn run_event_loop(
             };
 
             if key.kind != KeyEventKind::Press {
-                continue;
+                // Windows Terminal consumes the key-down of any chord it handles
+                // itself (its own paste action, and any global hotkey) and
+                // forwards only the key-up. A Press-only gate therefore makes
+                // Ctrl+V unreachable in the one terminal where that chord is
+                // most used. Paste is a clipboard read, so acting on the release
+                // is safe; `paste_from_clipboard` de-duplicates the terminals
+                // that do send both edges.
+                let paste_release =
+                    key.kind == KeyEventKind::Release && key_shortcuts::is_paste_shortcut(&key);
+                if !paste_release {
+                    continue;
+                }
             }
 
             // Normalize macOS modifiers: map SUPER (Cmd) to CONTROL so that

@@ -200,7 +200,7 @@ impl TerminalClipboardContext {
 
 /// Metadata captured for a pasted clipboard image. Used by the composer to
 /// render a status hint like `Pasted 1024x768 image (235KB) → <path>`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PastedImage {
     pub path: PathBuf,
     pub width: u32,
@@ -233,6 +233,7 @@ impl PastedImage {
     ),
     allow(dead_code)
 )]
+#[derive(Clone)]
 pub enum ClipboardContent {
     Text(String),
     Image(PastedImage),
@@ -355,6 +356,10 @@ pub struct ClipboardHandler {
     written_text: Vec<String>,
     #[cfg(test)]
     fail_text_writes: bool,
+    /// A deterministic clipboard answer for tests; `None` means the host
+    /// clipboard answers, which tests must never touch.
+    #[cfg(test)]
+    clipboard_content: Option<ClipboardContent>,
 }
 
 impl ClipboardHandler {
@@ -393,6 +398,8 @@ impl ClipboardHandler {
             written_text: Vec::new(),
             #[cfg(test)]
             fail_text_writes: false,
+            #[cfg(test)]
+            clipboard_content: None,
         }
     }
 
@@ -419,6 +426,15 @@ impl ClipboardHandler {
     }
 
     /// Construct a deterministic unavailable clipboard for command tests.
+    /// A clipboard whose read answers `content` exactly, for tests that must
+    /// not touch the host clipboard.
+    #[cfg(test)]
+    pub(crate) fn with_content_for_test(content: ClipboardContent) -> Self {
+        let mut handler = Self::for_test(false, false);
+        handler.clipboard_content = Some(content);
+        handler
+    }
+
     #[cfg(test)]
     pub(crate) fn unavailable_for_test(in_ssh_session: bool) -> Self {
         let mut handler = Self::for_test(in_ssh_session, false);
@@ -532,19 +548,35 @@ impl ClipboardHandler {
         all(target_os = "linux", not(target_env = "ohos"))
     ))]
     fn ensure_clipboard(&mut self) {
-        if self.clipboard_init_attempted {
+        // `clipboard_init_attempted` means the backend answered for good:
+        // either it opened, or it refused. A timeout does not set it, so the
+        // next paste retries instead of staying dead for the session.
+        if self.clipboard.is_some() || self.clipboard_init_attempted {
             return;
         }
-        self.clipboard_init_attempted = true;
 
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(Clipboard::new().ok());
         });
-        self.clipboard = rx
-            .recv_timeout(std::time::Duration::from_millis(500))
-            .ok()
-            .flatten();
+        // A timeout is not proof that the clipboard is unusable: a capture tool
+        // holding the clipboard open can delay the open past the budget, and
+        // the old code latched that into "never try again" for the rest of the
+        // session, so the next paste silently read nothing. Retry on timeout;
+        // a real failure (the backend said no) is still remembered.
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(Some(clipboard)) => {
+                self.clipboard = Some(clipboard);
+                self.clipboard_init_attempted = true;
+            }
+            Ok(None) => self.clipboard_init_attempted = true,
+            Err(_) => {
+                tracing::warn!(
+                    target: "codewhale_tui::clipboard",
+                    "clipboard open timed out; will retry on the next paste"
+                );
+            }
+        }
     }
 
     /// Read the clipboard and return the parsed content.
@@ -552,6 +584,10 @@ impl ClipboardHandler {
     /// `workspace` is used as a fallback location when `~/.codewhale/` cannot
     /// be resolved (e.g. running with a stripped HOME in CI sandboxes).
     pub fn read(&mut self, workspace: &Path) -> Option<ClipboardContent> {
+        #[cfg(test)]
+        if let Some(content) = self.clipboard_content.clone() {
+            return Some(content);
+        }
         self.read_content(workspace, false)
     }
 
@@ -559,6 +595,10 @@ impl ClipboardHandler {
     /// rich applications. Credentials and configuration fields use `read` so
     /// their literal text is never interpreted as Markdown.
     pub fn read_markdown(&mut self, workspace: &Path) -> Option<ClipboardContent> {
+        #[cfg(test)]
+        if let Some(content) = self.clipboard_content.clone() {
+            return Some(content);
+        }
         self.read_content(workspace, true)
     }
 
@@ -597,10 +637,18 @@ impl ClipboardHandler {
                     return Some(ClipboardContent::Text(text));
                 }
 
-                if let Ok(image) = clipboard.get_image()
-                    && let Ok(pasted) = save_image_as_png(workspace, &image)
-                {
-                    return Some(ClipboardContent::Image(pasted));
+                match clipboard.get_image() {
+                    Ok(image) => match save_image_as_png(workspace, &image) {
+                        Ok(pasted) => return Some(ClipboardContent::Image(pasted)),
+                        Err(error) => tracing::warn!(
+                            target: "codewhale_tui::clipboard",
+                            "read: saving the clipboard image failed: {error:#}"
+                        ),
+                    },
+                    Err(error) => tracing::warn!(
+                        target: "codewhale_tui::clipboard",
+                        "read: clipboard has no readable image: {error}"
+                    ),
                 }
             }
         }
@@ -1006,6 +1054,13 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
         .as_nanos();
     let width = u32::try_from(image.width).context("clipboard image width too large")?;
     let height = u32::try_from(image.height).context("clipboard image height too large")?;
+    // Bound the copy and the encode before they allocate: a capture tool can
+    // publish a huge bitmap, and the RGBA copy plus the PNG encoder peak at
+    // several times that size. The same ceiling `read_media` enforces.
+    const MAX_CLIPBOARD_PIXELS: u64 = 33_554_432;
+    if u64::from(width) * u64::from(height) > MAX_CLIPBOARD_PIXELS {
+        bail!("clipboard image is too large: {width}x{height} pixels");
+    }
 
     // arboard hands us RGBA8 row-major. Copy into an ImageBuffer so we can
     // run it through the `image` crate's PNG encoder. We pad / truncate any
@@ -1032,10 +1087,43 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
         )
         .context("encode clipboard PNG")?;
     let file_name = format!("clipboard-{timestamp}.png");
-    clipboard_image_target(dir, &file_name)?
-        .publish(&encoded)
-        .context("write clipboard PNG")?;
-    let path = dir.join(file_name);
+    let path = dir.join(&file_name);
+    // The confined writer pins every ancestor and refuses a layout it cannot
+    // walk end to end; a relocated state root (`~/.codewhale` behind a user
+    // junction) is one of those, and the failure used to be swallowed by the
+    // caller's `if let Ok(..)`, so a pasted screenshot vanished silently.
+    // This directory is the application's own image cache and the file name is
+    // generated here, so a direct write is the safe fallback rather than a
+    // reason to lose the picture.
+    let confined = clipboard_image_target(dir, &file_name)
+        .and_then(|file| file.publish(&encoded).map_err(anyhow::Error::from));
+    if confined.is_err() {
+        // The confined writer pins every ancestor and refuses a layout it
+        // cannot walk end to end; a relocated state root (`~/.codewhale`
+        // behind a user junction) is one of those. This directory is the
+        // application's own image cache and the file name is generated here,
+        // so a direct write is the fallback - but it still refuses a linked
+        // directory and creates the file exclusively, so it cannot write
+        // through a link or replace one.
+        std::fs::create_dir_all(dir).context("create clipboard-images directory")?;
+        if std::fs::symlink_metadata(dir)
+            .context("inspect clipboard-images directory")?
+            .file_type()
+            .is_symlink()
+        {
+            bail!("clipboard image directory is a link");
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).context("create clipboard PNG")?;
+        use std::io::Write as _;
+        file.write_all(&encoded).context("write clipboard PNG")?;
+    }
 
     let byte_len = encoded.len();
     Ok(PastedImage {

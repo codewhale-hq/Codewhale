@@ -433,13 +433,20 @@ pub(crate) fn paste_provider_picker_from_clipboard(app: &mut App) -> bool {
     if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
         return false;
     }
+    // The same guard the composer uses: a backend that forwards both edges of
+    // Ctrl+V would otherwise paste the text twice into the credential field.
+    if app.clipboard_paste_within_dedupe_window() {
+        return true;
+    }
     if app.clipboard.requires_terminal_paste() {
         app.status_message = Some(app.tr(MessageId::ClipboardSshPasteHint).into_owned());
+        app.note_clipboard_paste();
         return true;
     }
     if let Some(ClipboardContent::Text(text)) = app.clipboard.read(app.workspace.as_path()) {
         let _ = paste_text_into_provider_picker(app, &text);
     }
+    app.note_clipboard_paste();
     true
 }
 

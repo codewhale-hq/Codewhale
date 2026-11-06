@@ -482,6 +482,15 @@ docs = "docs/READ_MEDIA.md"
 owner = "crates/engine/src/tools/read_media.rs"
 
 [[feature]]
+id = "clipboard-image-preview"
+name = "Clipboard image paste preview"
+summary = "Attaches an image from the clipboard and previews it as a truecolor cell thumbnail above the composer."
+status = "stable"
+surfaces = { tui = "stable" }
+docs = "docs/READ_MEDIA.md"
+owner = "crates/tui/src/tui/image_preview.rs"
+
+[[feature]]
 id = "memory"
 name = "User memory"
 summary = "Opt-in local store of preferences and conventions that persists across sessions."

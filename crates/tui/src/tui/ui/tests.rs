@@ -1049,6 +1049,40 @@ fn bracketed_paste_returns_dock_focus_to_the_visible_composer() {
     assert!(app.composer_enter_would_submit(true));
 }
 
+/// Windows Terminal answers an image-only clipboard with an **empty** bracketed
+/// paste ("LOAD BEARING: Send an empty bracketed paste even if the clipboard
+/// was empty" in its paste handler). That empty event is the only signal a TUI
+/// gets, so it has to be read as "the person pasted; ask the clipboard
+/// yourself" rather than as "nothing happened".
+#[test]
+fn empty_bracketed_paste_attaches_the_clipboard_image() {
+    let mut app = App::new(
+        crate::tui::test_support::test_tui_options("."),
+        &Config::default(),
+    );
+    app.clipboard = crate::tui::clipboard::ClipboardHandler::with_content_for_test(
+        crate::tui::clipboard::ClipboardContent::Image(crate::tui::clipboard::PastedImage {
+            path: std::path::PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        }),
+    );
+
+    handle_bracketed_paste(&mut app, "");
+
+    assert!(
+        app.input
+            .contains("[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]"),
+        "draft did not receive the attachment: {:?}",
+        app.input
+    );
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Attached image: 8x4 PNG (2KB)")
+    );
+}
+
 /// One representative terminal encoding per shell binding.
 fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
     match id {
