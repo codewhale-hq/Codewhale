@@ -6,6 +6,7 @@
 //! background-friendly call sites.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -30,6 +31,18 @@ enum Mode {
     Compare,
 }
 
+struct PendingWorktreeCreate {
+    cell: Arc<Mutex<Option<WorktreeCreateOutcome>>>,
+}
+
+enum WorktreeCreateOutcome {
+    Created {
+        path: PathBuf,
+        snapshot: GitStatusSnapshot,
+    },
+    Failed(String),
+}
+
 /// Native worktree manager modal.
 pub struct WorktreeManagerView {
     workspace: PathBuf,
@@ -41,6 +54,7 @@ pub struct WorktreeManagerView {
     status: Option<String>,
     last_snapshot: GitStatusSnapshot,
     current_flags: Vec<bool>,
+    pending_create: Option<PendingWorktreeCreate>,
 }
 
 impl WorktreeManagerView {
@@ -59,14 +73,19 @@ impl WorktreeManagerView {
             status: None,
             last_snapshot,
             current_flags: Vec::new(),
+            pending_create: None,
         };
         view.recompute_current_flags();
         view
     }
 
     fn refresh(&mut self) {
-        git_status::force_refresh(&self.workspace);
-        self.last_snapshot = git_status::cached_status();
+        let snapshot = git_status::force_refresh(&self.workspace);
+        self.adopt_snapshot(snapshot);
+    }
+
+    fn adopt_snapshot(&mut self, snapshot: GitStatusSnapshot) {
+        self.last_snapshot = snapshot;
         let n = self.last_snapshot.worktrees.len().max(1);
         if self.selected >= n {
             self.selected = n.saturating_sub(1);
@@ -129,6 +148,28 @@ impl ModalView for WorktreeManagerView {
             Mode::Create => self.handle_create_key(key),
             Mode::Compare => self.handle_compare_key(key),
         }
+    }
+
+    fn tick(&mut self) -> ViewAction {
+        let landed = self
+            .pending_create
+            .as_ref()
+            .and_then(|pending| pending.cell.lock().ok().and_then(|mut guard| guard.take()));
+        let Some(outcome) = landed else {
+            return ViewAction::None;
+        };
+        self.pending_create = None;
+        match outcome {
+            WorktreeCreateOutcome::Created { path, snapshot } => {
+                self.adopt_snapshot(snapshot);
+                self.mode = Mode::List;
+                self.status = Some(format!("Created worktree at {}", path.display()));
+            }
+            WorktreeCreateOutcome::Failed(err) => {
+                self.status = Some(format!("Create failed: {err}"));
+            }
+        }
+        ViewAction::Redraw
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
@@ -243,6 +284,9 @@ impl WorktreeManagerView {
                 ViewAction::None
             }
             KeyCode::Enter => {
+                if self.pending_create.is_some() {
+                    return ViewAction::None;
+                }
                 let name = self.create_buffer.trim();
                 if let Some(message) = worktree_name_error(name) {
                     self.status = Some(message.into());
@@ -252,25 +296,30 @@ impl WorktreeManagerView {
                     .workspace
                     .join(".cw-worktrees")
                     .join(name.replace('/', "-"));
-                let result = git_status::create_worktree(
-                    self.last_snapshot
-                        .root
-                        .as_deref()
-                        .unwrap_or(&self.workspace),
-                    &path,
-                    name,
-                    self.create_as_new_branch,
-                );
-                match result {
-                    Ok(()) => {
-                        self.refresh();
-                        self.mode = Mode::List;
-                        self.status = Some(format!("Created worktree at {}", path.display()));
+                let repo = self
+                    .last_snapshot
+                    .root
+                    .clone()
+                    .unwrap_or_else(|| self.workspace.clone());
+                let branch = name.to_string();
+                let new_branch = self.create_as_new_branch;
+                let workspace = self.workspace.clone();
+                let cell = Arc::new(Mutex::new(None));
+                let slot = Arc::clone(&cell);
+                codewhale_util::utils::spawn_blocking_supervised("worktree-create", move || {
+                    let outcome =
+                        match git_status::create_worktree(&repo, &path, &branch, new_branch) {
+                            Ok(()) => WorktreeCreateOutcome::Created {
+                                snapshot: git_status::force_refresh(&workspace),
+                                path,
+                            },
+                            Err(err) => WorktreeCreateOutcome::Failed(err),
+                        };
+                    if let Ok(mut guard) = slot.lock() {
+                        *guard = Some(outcome);
                     }
-                    Err(err) => {
-                        self.status = Some(format!("Create failed: {err}"));
-                    }
-                }
+                });
+                self.pending_create = Some(PendingWorktreeCreate { cell });
                 ViewAction::None
             }
             KeyCode::Char(c)
