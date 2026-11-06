@@ -2088,6 +2088,8 @@ impl Engine {
         let limits = crate::route_budget::known_route_limits(route.candidate.limits());
         let capabilities = route.candidate.capabilities();
         let api_config = *route.config;
+        let configured_sandbox_mode = self.api_config.sandbox_mode.clone();
+        let configured_sandbox_network_access = self.api_config.sandbox_network_access;
 
         let endpoint = route.candidate.endpoint().clone();
         self.forget_input_bill_if_route_changes(
@@ -2101,6 +2103,8 @@ impl Engine {
         self.api_provider = provider;
         self.api_provider_identity = Some(identity);
         self.api_config = api_config;
+        self.api_config.sandbox_mode = configured_sandbox_mode;
+        self.api_config.sandbox_network_access = configured_sandbox_network_access;
         self.active_route_limits = limits;
         if self.active_context_window != Some(context_window) {
             self.session.latest_parent_input_tokens = None;
