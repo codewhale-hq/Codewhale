@@ -109,7 +109,7 @@ try {
     // excluding Terminal's own optional multiline confirmation dialog.
     multiLinePasteWarning: false, largePasteWarning: false,
     profiles: { defaults: { font: { size: 12 } }, list: [{ guid: profile, name: 'Codewhale fixture', commandline: 'cmd.exe' }] },
-    actions: [{ command: 'paste', keys: 'ctrl+shift+v' }],
+    actions: [{ command: 'paste', keys: 'ctrl+shift+alt+v' }],
   }, null, 2));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
