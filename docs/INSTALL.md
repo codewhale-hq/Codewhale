@@ -1113,6 +1113,50 @@ response is fine; it means the host is reachable). If you're behind a proxy,
 make sure `HTTPS_PROXY` is exported. `codewhale doctor --probe-api` only says
 `✗ API connection failed` for both bad keys and network problems.
 
+### A local proxy that closed after the session started
+
+reqwest reads `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` when a client is
+built, and a session builds its clients once. Without a fallback, a local proxy
+(Clash, v2rayN, sing-box) that stops after Codewhale starts leaves every
+request dialing a port that no longer answers — including requests to providers
+that need no proxy at all.
+
+Codewhale now watches that port on the paths listed below. While it refuses
+connections, requests on those paths go direct; when it answers again, proxy
+routing resumes. Detection runs in the background and takes effect within a few
+seconds of a port starting to refuse, so a request issued in that gap can still
+fail once. A port that drops packets instead of refusing them is not treated as
+down at all.
+
+Paths that install the watch: the model client and the API-key verification
+probe, the model-list and catalog clients, HTTP/1.1 fallback, web search, web
+run, vision, finance, the MCP registry, `models.dev`, the profile constitution
+check, the TUI balance poll and the remote-control relay. `doctor --probe-api`
+and `doctor --probe-local` go through the model client, so they are covered.
+
+Other probes keep the previous behaviour and can still fail while a local proxy
+is down: `doctor`'s search probe and the Runtime API runtime-info probe read
+the proxy environment themselves, `cloud-facts` refreshes the same way, and the
+sandbox client is not covered. The dev-server readiness probe is not affected at
+all because it always goes direct.
+
+Only loopback proxies are watched, each on its own port: a live `HTTP_PROXY`
+does not keep a dead `HTTPS_PROXY` in the path, and a remote proxy in the same
+configuration is routed through exactly as before, never diverted. While a port
+answers, `NO_PROXY`, proxy credentials and the `ALL_PROXY` / `HTTP_PROXY` /
+`HTTPS_PROXY` precedence are unchanged. Detection is a TCP probe rather than a
+proxy handshake, so a process that holds the port without forwarding traffic
+still counts as up.
+
+The proxy environment is read once, when the first client is built. Exporting a
+different `HTTPS_PROXY` mid-session needs a restart.
+
+Going direct means the connection leaves from your own address. If you rely on
+the proxy to hide it, set the variable below instead of letting the fallback
+run; `NO_PROXY` matches still go direct either way.
+
+Set `CODEWHALE_LOCAL_PROXY_FALLBACK=0` to keep the previous behaviour.
+
 **`codewhale install: refusing to replace existing ~/.local/bin/codewhale`.**
 A different version is already installed there. Run `codewhale update`, or
 delete the two files first (§7 rollback), or install into a fresh

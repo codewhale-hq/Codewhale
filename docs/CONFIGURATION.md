@@ -1462,6 +1462,7 @@ route's endpoint takes the generic override away from every route.
 
 Remaining variables:
 
+- `CODEWHALE_LOCAL_PROXY_FALLBACK` (`0`) — keeps reqwest's build-time proxy snapshot; the loopback fallback is on by default. Read once when the first client is built.
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_ANTHROPIC_BASE_URL`
 - `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)

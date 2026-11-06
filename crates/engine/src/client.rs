@@ -2380,7 +2380,7 @@ impl CodewhaleClient {
             auth_disabled,
             surface,
         )?;
-        let mut builder = codewhale_release::tls::reqwest_client_builder()
+        let mut builder = crate::platform_client_builder()
             .default_headers(headers)
             .user_agent(client_user_agent(api_provider))
             .connect_timeout(config.connect_timeout())
@@ -2779,7 +2779,7 @@ pub async fn verify_provider_api_key(
         AuthHeaderSurface::Listing,
     )
     .map_err(|err| format!("failed to build auth headers: {err:#}"))?;
-    let client = codewhale_release::tls::reqwest_client_builder()
+    let client = crate::platform_client_builder()
         .default_headers(headers)
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(concat!(

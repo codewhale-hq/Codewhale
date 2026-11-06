@@ -277,7 +277,7 @@ async fn real_core_http_capture_and_host_request_are_bounded_without_credentials
         )
         .mount(&server)
         .await;
-    let response = codewhale_release::tls::reqwest_client_builder()
+    let response = crate::platform_client_builder()
         .build()
         .unwrap()
         .get(format!("{}/oversize", server.uri()))

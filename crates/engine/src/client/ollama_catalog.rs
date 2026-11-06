@@ -211,7 +211,7 @@ pub fn probe_client() -> anyhow::Result<reqwest::Client> {
     // The first-run probe can run before any provider client has installed
     // the rustls crypto provider; the shared builder installs it (the bare
     // `reqwest::Client::builder()` panics under `rustls-no-provider`).
-    Ok(codewhale_release::tls::reqwest_client_builder()
+    Ok(crate::platform_client_builder()
         .timeout(TAGS_PROBE_TIMEOUT)
         .build()?)
 }
@@ -221,7 +221,7 @@ pub const MODEL_LOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[cfg(not(any(test, all(feature = "test-thread-scoped-state", debug_assertions))))]
 pub async fn load_model(origin: &str, tag: &str) -> bool {
-    let Ok(client) = codewhale_release::tls::reqwest_client_builder()
+    let Ok(client) = crate::platform_client_builder()
         .timeout(MODEL_LOAD_TIMEOUT)
         .build()
     else {

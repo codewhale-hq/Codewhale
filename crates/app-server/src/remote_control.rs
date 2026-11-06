@@ -3259,12 +3259,14 @@ async fn relay_worker(
     phase: &mut RelayPhase,
 ) -> Result<(), String> {
     let base = runner_control_plane_base()?;
-    let client = codewhale_release::tls::reqwest_client_builder()
-        .https_only(!cfg!(debug_assertions))
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|_| "Remote control could not initialize secure networking.".to_string())?;
+    let client = codewhale_net::proxy::install_loopback_proxy(
+        codewhale_release::tls::reqwest_client_builder(),
+    )
+    .https_only(!cfg!(debug_assertions))
+    .redirect(reqwest::redirect::Policy::none())
+    .timeout(Duration::from_secs(20))
+    .build()
+    .map_err(|_| "Remote control could not initialize secure networking.".to_string())?;
 
     let saved_enrollment = load_persisted_enrollment()?;
     // The device id is stable across enrollments: it is what lets the control
