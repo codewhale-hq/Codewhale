@@ -6767,7 +6767,7 @@ fn routed_usage_append_is_bounded_and_idempotent_for_every_delivery_path() {
         Some(ProviderKind::Deepseek.provider().default_base_url()),
         Utc::now(),
     );
-    for index in 0..(MAX_ROUTED_USAGE_RECORDS_PER_TURN + 26) {
+    for index in 0..90 {
         let path = match index % 3 {
             0 => "sink",
             1 => "mailbox",
