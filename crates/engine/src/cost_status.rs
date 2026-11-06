@@ -1222,10 +1222,17 @@ impl NativeUsageOrigin {
             }
             NativeUsageDestination::Runtime { owner, sink, .. } => {
                 if !sink(record.clone()) {
+                    // The receipt is retained exactly as captured, so the only
+                    // thing left at stake is whether this request may run. A
+                    // turn exists to do the person's work: bookkeeping that
+                    // could not be written inline must not end it, and a later
+                    // admitted flush settles the retained receipt.
                     retain_runtime_usage_record(owner, record)?;
-                    return Err(std::io::Error::other(
-                        "captured usage sink did not acknowledge its source; exact receipt retained",
-                    ));
+                    tracing::warn!(
+                        owner = %owner,
+                        "captured usage receipt retained for a later flush; the turn continues"
+                    );
+                    return Ok(());
                 }
                 record.acknowledge_persisted()?;
                 retire_runtime_usage_record(owner, record);

@@ -94,7 +94,7 @@ const RUNTIME_STORE_WORK_DIRS: [&str; 7] = [
     "turn-operations",
 ];
 const TURN_OPERATION_BINDING_SCHEMA_VERSION: u32 = 2;
-pub const MAX_ROUTED_USAGE_RECORDS_PER_TURN: usize = 64;
+pub const MAX_ROUTED_USAGE_RECORDS_PER_TURN: usize = 4096;
 const RUNTIME_USAGE_PARTITION_SUMMARY: &str = "Provider usage receipt partition";
 
 pub fn runtime_usage_partition_parent(turn: &TurnRecord) -> Option<&str> {
