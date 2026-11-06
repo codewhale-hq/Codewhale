@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::SystemTime;
 
 use image::imageops::FilterType;
@@ -264,32 +264,27 @@ impl ThumbnailCache {
     /// again for a long time.
     pub fn poll(&mut self) -> bool {
         let mut published = false;
-        loop {
-            match self.rx.try_recv() {
-                Ok((path, stamp, thumbnail)) => {
-                    // A decode the draft has already dropped (the attachment
-                    // was removed while it ran) must not reappear in the
-                    // cache: `retain_only` cleared its pending entry.
-                    if !self.pending.remove(&path) {
-                        continue;
-                    }
-                    match thumbnail {
-                        Some(thumbnail) => {
-                            if self
-                                .entries
-                                .get(&path)
-                                .is_none_or(|entry| entry.stamp != stamp)
-                            {
-                                self.entries.insert(path, Entry { stamp, thumbnail });
-                                published = true;
-                            }
-                        }
-                        None => {
-                            self.entries.remove(&path);
-                        }
+        while let Ok((path, stamp, thumbnail)) = self.rx.try_recv() {
+            // A decode the draft has already dropped (the attachment
+            // was removed while it ran) must not reappear in the
+            // cache: `retain_only` cleared its pending entry.
+            if !self.pending.remove(&path) {
+                continue;
+            }
+            match thumbnail {
+                Some(thumbnail) => {
+                    if self
+                        .entries
+                        .get(&path)
+                        .is_none_or(|entry| entry.stamp != stamp)
+                    {
+                        self.entries.insert(path, Entry { stamp, thumbnail });
+                        published = true;
                     }
                 }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                None => {
+                    self.entries.remove(&path);
+                }
             }
         }
         published
