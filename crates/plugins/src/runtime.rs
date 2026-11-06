@@ -39,11 +39,11 @@ fn component_paths(plugin: &LoadedPlugin, capability: PluginActivationCapability
 
 /// Why `path` cannot be an extension-host entry, if it cannot.
 ///
-/// A `native` entry is one `.mjs`, `.js` or `.mts` ES module file: the host imports
-/// exactly that file and re-hashes it first. This is the one statement of the
-/// rule. Discovery reports it as an error diagnostic (so `/plugin validate`
-/// and the review screen show it) and activation refuses the entry, both only
-/// while the activation policy supports `Native` (`[features]
+/// A `native` entry is one `.mjs`, `.js`, `.cjs`, `.mts` or `.cts` module file:
+/// the host imports exactly that file and re-hashes it first. This is the one
+/// statement of the rule. Discovery reports it as an error diagnostic (so
+/// `/plugin validate` and the review screen show it) and activation refuses the
+/// entry, both only while the activation policy supports `Native` (`[features]
 /// extension_host`). With the flag off, `native` stays inventory-only and any
 /// path is accepted as before.
 ///
@@ -52,10 +52,12 @@ fn component_paths(plugin: &LoadedPlugin, capability: PluginActivationCapability
 /// function touches no filesystem.
 #[must_use]
 pub fn native_entry_problem(path: &Path, is_regular_file: bool) -> Option<&'static str> {
-    const RULE: &str = "a native entry must be one .mjs, .js or .mts ES module file";
-    let is_module = path
-        .extension()
-        .is_some_and(|extension| extension == "mjs" || extension == "js" || extension == "mts");
+    const RULE: &str = "a native entry must be one .mjs, .js, .cjs, .mts or .cts module file";
+    let is_module = path.extension().is_some_and(|extension| {
+        ["mjs", "js", "cjs", "mts", "cts"]
+            .iter()
+            .any(|candidate| extension == *candidate)
+    });
     (!is_module || !is_regular_file).then_some(RULE)
 }
 
