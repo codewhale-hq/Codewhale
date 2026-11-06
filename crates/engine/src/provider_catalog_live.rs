@@ -1572,7 +1572,9 @@ fn published_pricing_scope(provider: ProviderKind, identity: &str, fingerprint: 
         provider,
         ProviderKind::Custom | ProviderKind::OpenaiCodex | ProviderKind::OpencodeGo
     ) && identity == provider.as_str()
-        && fingerprint == base_url_fingerprint(provider.provider().default_base_url())
+        && codewhale_config::provider_published_pricing_base_urls(provider)
+            .iter()
+            .any(|base_url| fingerprint == base_url_fingerprint(base_url))
 }
 
 #[must_use]

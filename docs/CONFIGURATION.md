@@ -103,6 +103,19 @@ usage or prices; absent or contradictory cache classes show unknown. The header
 counts retained sources, not physical requests or complete historical calls.
 The command does not issue a model request or remove accounting receipts.
 
+Published prices are frozen for DeepSeek's root, `/v1`, `/beta` and Anthropic
+endpoint variants, and for other providers' default endpoints. Each quote stays
+bound to the exact endpoint, identity, model and dispatch time when saved or replayed.
+Operator endpoint overrides do not become published pricing authorities, and
+subscription or token-plan routes remain outside money coverage. Signed cloud
+facts keep their separate route-scoping rules. Recognition as an official
+credential endpoint alone does not authorize sharing prices across regions or plans.
+
+Missing request outcomes, omitted provider usage, unverified legacy usage and
+usage corrections have distinct cost reasons. Known limitation: saved receipts
+without a frozen price are not repriced from today's catalog; their complete
+cost remains unknown even after updating the binary.
+
 ## Constitution, project instructions, and repo authority
 
 Codewhale has several instruction surfaces. They are deliberately separate so a
