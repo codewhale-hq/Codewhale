@@ -1758,6 +1758,10 @@ impl CommandSessionExportContext for SessionExportAdapter<'_> {
         crate::commands::session_export_host::resolve_export_path(&app.workspace, raw)
     }
 
+    fn default_export_path(&self, file_name: &str) -> Result<PathBuf, String> {
+        crate::commands::session_export_host::default_export_path(file_name)
+    }
+
     fn write_export_file(&self, path: &Path, contents: &[u8], force: bool) -> Result<(), String> {
         crate::commands::session_export_host::write_export_file(path, contents, force)
     }
@@ -1785,8 +1789,17 @@ fn export_metadata(app: &App) -> ExportMetadata {
         .and_then(|name| name.to_str())
         .unwrap_or("workspace")
         .to_string();
+    let title = app
+        .session_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| {
+            !title.is_empty() && *title != codewhale_engine::session_manager::DEFAULT_SESSION_TITLE
+        })
+        .map(str::to_string);
     ExportMetadata {
         session_label,
+        title,
         provider: app.provider_identity_for_persistence().to_string(),
         model: app.model_display_label(),
         mode: app.mode.display_name().to_string(),

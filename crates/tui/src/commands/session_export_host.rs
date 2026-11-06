@@ -1,16 +1,19 @@
 //! TUI-owned host services for the session-export slice (FEAT-025 D5/D7).
 //!
 //! This module deliberately lives outside `commands/groups/session`, which
-//! FEAT-043 moves into `codewhale-commands`. It owns the two filesystem
-//! services the `/export` slice needs from the host:
+//! FEAT-043 moves into `codewhale-commands`. It owns the filesystem services
+//! the `/export` slice needs from the host:
 //!
 //! * the shared `last-copy.md` recovery writer reused by `/export` and `/copy`
-//!   (D5), and
+//!   (D5),
 //! * the protected export-destination resolver/writer used only by `/export`
-//!   (D7).
+//!   (D7), and
+//! * the default export directory (`<home>/exports`) for exports that name no
+//!   path.
 //!
-//! The algorithm, check order, error text, and platform behavior are the exact
-//! baseline implementations relocated unchanged. The portable `/export`
+//! The check order, error text, and platform behavior are the baseline
+//! implementations relocated, extended only by leading-`~` expansion and the
+//! default export directory. The portable `/export`
 //! handler reaches these services only through
 //! `CommandSessionExportContext` — never by importing this module — so the
 //! future portable group keeps no host dependency.
@@ -24,6 +27,14 @@ use std::path::{Component, Path, PathBuf};
 /// user, so the same content lands at `<home>/exports/last-copy.md` and every
 /// failure message names it. Returns the path when the write succeeded.
 pub(crate) fn write_last_copy(markdown: &str) -> Option<PathBuf> {
+    let (exports_dir, _) = exports_dirs()?;
+    write_last_copy_to(&exports_dir, markdown).ok()
+}
+
+/// The Codewhale exports directory as `(logical, physical)` paths, created on
+/// demand and confined to the Codewhale home: `None` when the home is
+/// unresolvable or `exports` resolves outside it through a symlink.
+fn exports_dirs() -> Option<(PathBuf, PathBuf)> {
     let home = codewhale_paths::codewhale_home().ok().flatten()?;
     let exports_dir = home.join("exports");
     std::fs::create_dir_all(&exports_dir).ok()?;
@@ -32,7 +43,26 @@ pub(crate) fn write_last_copy(markdown: &str) -> Option<PathBuf> {
     if !physical_exports.starts_with(&physical_home) {
         return None;
     }
-    write_last_copy_to(&exports_dir, markdown).ok()
+    Some((exports_dir, physical_exports))
+}
+
+/// Default destination for an export that named no path: `file_name` inside
+/// the Codewhale exports directory. The physical directory is used so the
+/// symlink-component guard in `write_export_file` is not tripped by platform
+/// aliases such as macOS `/var -> /private/var` in the home path.
+pub(crate) fn default_export_path(file_name: &str) -> Result<PathBuf, String> {
+    let mut components = Path::new(file_name).components();
+    if !matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(_)), None)
+    ) {
+        return Err(format!(
+            "export file name must be a single path component: {file_name}"
+        ));
+    }
+    let (_, physical_exports) = exports_dirs()
+        .ok_or_else(|| "could not prepare the Codewhale exports directory".to_string())?;
+    Ok(physical_exports.join(file_name))
 }
 
 fn write_last_copy_to(exports_dir: &Path, markdown: &str) -> std::io::Result<PathBuf> {
@@ -47,17 +77,17 @@ fn write_last_copy_to(exports_dir: &Path, markdown: &str) -> std::io::Result<Pat
 
 /// Resolve a requested export destination against the trusted workspace root.
 ///
-/// Verbatim baseline algorithm (D7): trim; empty → `export path is empty`;
-/// reject `..` components; canonicalize the workspace with its current
-/// fallback; rebase workspace-absolute paths (raw or canonicalized); otherwise
-/// join workspace-relative; require a file name. Errors are returned unwrapped
-/// so the portable handler keeps the exact baseline text.
+/// Baseline algorithm (D7) plus home expansion: trim; empty → `export path is
+/// empty`; expand a leading `~`/`~/`; reject `..` components; canonicalize the
+/// workspace with its current fallback; rebase workspace-absolute paths (raw or
+/// canonicalized); otherwise join workspace-relative; require a file name.
+/// Errors are returned unwrapped so the portable handler keeps the exact text.
 pub(crate) fn resolve_export_path(workspace: &Path, raw: &str) -> Result<PathBuf, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("export path is empty".to_string());
     }
-    let requested = PathBuf::from(raw);
+    let requested = PathBuf::from(crate::commands::config_main_host::expand_tilde(raw));
     if requested
         .components()
         .any(|component| component == Component::ParentDir)
