@@ -735,4 +735,16 @@ export interface ComputerUseDict {
   demo: string;
   source: string;
   platforms: string;
+  connectTitle: string;
+  connectVersion: string;
+  connectLimit: string;
+  connectRuntime: string;
+  connectReload: string;
+  connectPrompt: string;
+  connectExpected: string;
+  connectGuide: string;
+  contributeTitle: string;
+  contributeBody: string;
+  contributeGuide: string;
+  contributeIssue: string;
 }

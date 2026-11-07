@@ -1,10 +1,10 @@
 # MCP（外部工具服务器）
 
-> 本文翻译自英文版 [MCP.md](../MCP.md)，与英文源文件同步于 2026-09-29。
+> 本文依据英文版 [MCP.md](../MCP.md)，包含 main 候选版本的行为。截至 2026 年 11 月 7 日，最新公开 CLI 为 [v0.10.2](https://github.com/codewhale-hq/Codewhale/releases/tag/v0.10.2)。基本 stdio、HTTP/SSE、直接配置的远程 OAuth 和插件 MCP 已在该版本提供；SDK 默认后端、现代协议、凭据绑定和目录扩展等差异请参阅英文版[版本对照](../MCP.md#version-scope)。使用已安装的 v0.10.2 时，可查阅[对应版本指南](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MCP.md)。
 
 在终端中，`/mcp`（也可用 `/mcps`）会打开 **Extensions → MCP**。按 Enter 会对所选服务器执行恢复操作，或打开只读详情。清单为空时会提供服务器建议；浏览这些建议不会安装任何内容。`/mcp status`、`/mcp doctor`、`/mcp login`、`/mcp add` 等显式子命令的行为保持不变。
 
-codewhale 可以通过 MCP（Model Context Protocol，模型上下文协议）加载额外工具。MCP 服务器可以是 TUI 启动的本地 stdio 进程，也可以是使用 Streamable HTTP（带传统 SSE 回退）的远程基于 URL 的服务器。
+Codewhale 可以通过 MCP（Model Context Protocol，模型上下文协议）加载额外工具。MCP 服务器可以是 Codewhale 启动的本地 stdio 进程，也可以是使用 Streamable HTTP（带传统 SSE 回退）的远程基于 URL 的服务器。
 
 浏览说明：
 - `Web` 是规范的、延迟加载的内置浏览工具；在网络策略允许时，它提供 `search`、`fetch` 和 `wait` 操作。
@@ -60,9 +60,11 @@ codewhale 可以通过 MCP（Model Context Protocol，模型上下文协议）�
 
 ## 插件贡献的 MCP
 
-通过审查的本地插件包可以贡献 MCP 服务器，而无需创建第二套传输或审批系统。这些服务器使用本文档记载的同一条 MCP 管理器、工具审批、资源、提示、超时和网络策略路径，并以命名空间化的 `<plugin>-<server>` 身份出现。
+通过审查的本地插件包可以贡献 MCP 服务器，而无需创建第二套传输或审批系统。这些服务器使用本文档记载的同一条 MCP 管理器、工具审批、资源、提示、超时和网络策略路径，并以避免身份冲突的 `plugin-<plugin-name-byte-length>-<plugin>-<server>` 命名。
 
-插件包边界有意比用户编写的 `mcp.json` 更严格：未知字段和模糊的传输方式默认失败关闭；stdio 环境变量值必须是精确的环境来源引用；远程字面量请求头和含机密信息的 URL 会被拒绝；声明的网络主机必须与规范化后的端点主机集合完全匹配；重定向保持在已审查的源站内。已审查的插件远程端点还会完全绕过环境中的 HTTP 代理配置；代理凭据和代理可见流量不属于 v1 审查范围。插件审查会披露本地主机用户权限、结构化 argv、环境来源、端点、认证来源名称、作用域和工具过滤器，但不会读取或打印机密值。
+认证范围与用户直接编写的 MCP 配置不同：插件远程服务器可使用 `env_headers` 或 `bearer_token_env_var`，但 v0.10.2 和 main 候选版本均不支持插件提供的 MCP OAuth。插件 MCP 清单声明 OAuth、作用域或 OAuth 资源时会验证失败。需要 OAuth 时，请直接在你自己的 `mcp.json` 中配置该远程服务器。
+
+插件包边界有意比用户编写的 `mcp.json` 更严格：未知字段和模糊的传输方式默认失败关闭；stdio 环境变量值必须是精确的环境来源引用；远程字面量请求头和含机密信息的 URL 会被拒绝；声明的网络主机必须与规范化后的端点主机集合完全匹配；重定向保持在已审查的源站内。已审查的插件远程端点还会完全绕过环境中的 HTTP 代理配置；代理凭据和代理可见流量不属于 v1 审查范围。插件审查会披露本地主机用户权限、结构化 argv、环境来源、端点、认证来源名称和工具过滤器，但不会读取或打印机密值。
 
 信任（Trust）会暂存已审查的内容，但不会启用它。启用操作会把该暂存快照附加到当前工作区的 MCP 池。禁用、撤销以及其他跨进程的代际变更会移除目录条目、取消进行中的操作，并终止插件的 stdio 子进程。在每次分派/目录边界之前，源码或暂存树的漂移都会被完全重新验证，并让下一个边界失败关闭；v0.9.1 不会在已经运行的调用期间持续对可变树做哈希，因此不承诺由漂移触发的调用中途取消。MCP 订阅不会通过插件包暴露。完整的生命周期契约请参阅[插件包](./PLUGIN_BUNDLES.md)。
 
@@ -91,6 +93,8 @@ codewhale mcp disable <name>
 codewhale mcp remove <name>
 codewhale mcp validate
 ```
+
+终端中的 `codewhale mcp validate` 会在自己的进程中启动并连接已启用且获准的服务器，报告连接或发现失败；它不是静态检查，也不会把连接附加到正在运行的 TUI。TUI 中的 `/mcp validate` 只报告最近记录的快照，不会重新连接；`/mcp reload` 才会重建该会话的实时连接池。`codewhale doctor` 默认提供静态诊断，除非显式请求实际探测。
 
 `codewhale mcp logout <name>`（以及 `/mcp logout`）只会清除本地存储的 OAuth 凭据——提供商可能仍保留其既有授权。下一次登录会强制显示授权确认页，因此可以更换所授权的账号/工作区；若要在远端彻底撤销授权，请在提供商的账号设置中撤销该应用。
 
@@ -164,7 +168,7 @@ v0.9.10 的产品建议使用这些经过审查的固定版本定义。Plugins �
 
 ## 远程 HTTP 认证
 
-基于 URL 的 MCP 服务器可以使用静态请求头、环境变量派生的请求头、bearer-token 环境变量或 OAuth。授权优先级是保守的：
+直接配置的基于 URL 的 MCP 服务器可以使用静态请求头、环境变量派生的请求头、bearer-token 环境变量或 OAuth。插件远程服务器只支持基于环境变量的请求头或 bearer token，不支持 MCP OAuth；参阅[插件贡献的 MCP](#插件贡献的-mcp)。直接配置的服务器按以下优先级选择认证：
 
 1. `headers` 和 `env_headers` 首先应用。
 2. 若 `Authorization` 头尚未设置，`bearer_token_env_var` 会添加 `Authorization: Bearer <env value>`。
@@ -243,15 +247,13 @@ Codewhale 同时读取 `servers` 和 `mcpServers`，因此设置页生成的片�
   "servers": {
     "huggingface": {
       "url": "https://huggingface.co/mcp",
-      "headers": {
-        "Authorization": "Bearer ${HF_TOKEN}"
-      }
+      "bearer_token_env_var": "HF_TOKEN"
     }
   }
 }
 ```
 
-上面的占位符不是可运行的机密。请在私有 MCP 配置中使用设置页生成的值，并且永远不要提交真实的 Hugging Face 令牌。
+请在启动 Codewhale 的环境中设置 `HF_TOKEN`；上例只保存变量名。字面量 `headers` 值不会展开 `${HF_TOKEN}`。按需调整设置页生成的服务器条目，不要提交真实令牌。
 
 交互式辅助命令：
 
@@ -274,7 +276,11 @@ Codewhale 同时读取 `servers` 和 `mcpServers`，因此设置页生成的片�
 覆盖方式：
 
 - 配置项：`mcp_config_path = "/path/to/mcp.json"`
-- 环境变量：`DEEPSEEK_MCP_CONFIG=/path/to/mcp.json`
+- 环境变量：`CODEWHALE_MCP_CONFIG=/absolute/path/to/mcp.json`，优先于旧名 `DEEPSEEK_MCP_CONFIG`。
+
+自定义路径必须是绝对路径；相对 `mcp_config_path` 会回退到用户全局路径，不会随启动目录改变。
+
+工作区在用户拥有的配置中获准信任后，Codewhale 还会读取 `<workspace>/.codewhale/mcp.json`。项目中的同名服务器覆盖全局条目；项目文件不能自行授予信任，也不能覆盖全局 `mcp_config_path`。全局或受信任项目中的显式条目优先于身份冲突的插件服务器。项目 stdio 命令默认以工作区为工作目录。main 候选版本中的 `always_allow_tools` 仅接受全局服务器配置，不接受项目或插件声明。
 
 `codewhale mcp init`（以及 `codewhale setup --mcp`）会写入这个解析出的路径。
 
@@ -321,11 +327,15 @@ Codewhale 同时读取 `servers` 和 `mcpServers`，因此设置页生成的片�
 }
 ```
 
-为了与其他客户端兼容，你也可以使用 `mcpServers` 而不是 `servers`。
+为了与其他客户端兼容，你也可以使用 `mcpServers` 而不是 `servers`，但同一文件只能使用其中一个，同时出现会解析失败。`env_http_headers` 是 `env_headers` 的别名。
 
 ## 将 Codewhale 作为 MCP 服务器运行
 
-你可以把本地 Codewhale 二进制注册为 MCP 服务器，这样其他 Codewhale 会话（或任何 MCP 客户端）就能调用它的工具。
+你可以把本地 Codewhale 二进制注册为 stdio MCP 工具服务器，供其他 Codewhale 会话或支持其声明协议版本的客户端使用。这与让 Codewhale 连接外部 MCP 服务器是两个方向。
+
+### 客户端配置与服务器配置
+
+`mcp.json` 告诉客户端启动或连接哪些服务器。原生 `codewhale serve --mcp` 则从保留的旧版路径 `~/.deepseek/mcp_server.toml` 读取 `[server]` 配置，默认仅暴露 `file_read` 和 `search`。写入文件或执行命令，需要在 `expose_tools` 中列出对应工具，并显式设置 `require_approval = false`。这个 stdio 服务器没有交互式审批通道；要求审批时，写入和执行工具会被隐藏并拒绝调用。
 
 ### 快速设置
 
@@ -431,7 +441,7 @@ codewhale mcp tools codewhale
 
 每个服务器的设置：
 
-- `command`（字符串，必需）
+- `command`（字符串，本地 stdio 服务器必需）：要启动的程序。远程服务器改用 `url`，只有 URL 的条目同样有效。
 - `args`（字符串数组，可选）
 - `env`（对象，可选）
 - `connect_timeout`、`execute_timeout`、`read_timeout`（秒，可选）。服务器级的值会覆盖全局 `timeouts` 块，三个预算彼此独立：

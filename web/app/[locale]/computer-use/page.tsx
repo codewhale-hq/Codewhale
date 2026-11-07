@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { Status } from "@/components/status-badge";
@@ -44,17 +45,25 @@ export default async function ComputerUsePage({ params }: { params: Promise<{ lo
             {t.requirements}
           </>
         }
-      >
-        {release.status === "ready" && primary ? (
-          <div className="cu-download">
-            <div className="actions">
+        actions={
+          <>
+            {release.status === "ready" && primary ? (
               <a className="btn btn-primary btn-lg" href={primary.downloadUrl}>
                 {t.download}
               </a>
-              <span className="page-meta tabular">
-                v{release.version} · {Math.ceil(primary.size / 1024 / 1024)} MB
-              </span>
-            </div>
+            ) : null}
+            <a href={COMPUTER_USE_REPO} className="btn btn-secondary btn-lg">
+              {t.source}
+              <Icon name="external" className="icon" />
+            </a>
+          </>
+        }
+      >
+        {release.status === "ready" && primary ? (
+          <div className="cu-download">
+            <span className="page-meta tabular">
+              v{release.version} · {Math.ceil(primary.size / 1024 / 1024)} MB
+            </span>
             <p className="status-line">
               <a href={release.receiptUrl} className="link">{t.receipt}</a>
               {release.dmg ? <a href={release.downloadUrl} className="link">{t.downloadZip}</a> : null}
@@ -88,6 +97,22 @@ export default async function ComputerUsePage({ params }: { params: Promise<{ lo
           </ol>
         </Section>
 
+        <Section id="cu-codewhale" title={t.connectTitle}>
+          <p>{t.connectVersion}</p>
+          <p>{t.connectLimit}</p>
+          <p>{t.connectRuntime}</p>
+          <pre tabIndex={0} className="code-block">{`APP="/Applications/Codewhale Computer Use.app"
+codewhale mcp add computer --command "$APP/Contents/MacOS/node" --arg "$APP/Contents/Resources/plugin/mcp/server.mjs"
+codewhale mcp tools computer`}</pre>
+          <p>{t.connectReload}</p>
+          <pre tabIndex={0} className="code-block">{t.connectPrompt}</pre>
+          <p>{t.connectExpected}</p>
+          <p className="status-line">
+            <Link href={`/${locale}/docs/mcp`} className="link">{t.connectGuide}</Link>
+            <a href={`${COMPUTER_USE_REPO}/blob/main/README.md#codewhale-cli-setup`} className="link">Computer Use</a>
+          </p>
+        </Section>
+
         <section className="page-section" aria-label={t.controlsTitle}>
           <div className="grid-2">
             <div className="tile">
@@ -119,13 +144,17 @@ export default async function ComputerUsePage({ params }: { params: Promise<{ lo
             </p>
             <div className="actions">
               <a href={`${COMPUTER_USE_REPO}/blob/main/docs/TROUBLESHOOTING.md`} className="btn btn-secondary">{t.help}</a>
-              <a href={COMPUTER_USE_REPO} className="btn btn-ghost">
-                {t.source}
-                <Icon name="external" className="icon" />
-              </a>
             </div>
           </div>
         </section>
+
+        <Section id="cu-contribute" title={t.contributeTitle}>
+          <p>{t.contributeBody}</p>
+          <div className="actions">
+            <a href={`${COMPUTER_USE_REPO}/blob/main/CONTRIBUTING.md`} className="btn btn-secondary">{t.contributeGuide}</a>
+            <a href={`${COMPUTER_USE_REPO}/issues`} className="btn btn-ghost">{t.contributeIssue}</a>
+          </div>
+        </Section>
       </div>
     </>
   );

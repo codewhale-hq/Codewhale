@@ -2811,8 +2811,9 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   Custom paths must be absolute; a relative value falls back to the user-global
   path so changing the launch directory cannot silently change the MCP pool.
   It is visible in `/config` and can be changed from the TUI. The new path is
-  used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
-  requires restarting the TUI.
+  used immediately by `/mcp`; run `/mcp reload` to rebuild the model-visible
+  MCP tool pool without restarting the TUI. A headless runtime still needs a
+  restart because its `ConfigReload` request does not refresh MCP connections.
 - `notes_path` (string, optional): defaults to `~/.codewhale/notes.txt`, with
   legacy `~/.deepseek/notes.txt` fallback when the Codewhale path is absent, and
   is used by the model-visible `note` tool.

@@ -420,8 +420,12 @@ and renders every candidate with an honest install plan:
 - Foreign policies are visibly ignored: a Codex `INSTALLED_BY_DEFAULT` entry
   is listed with a `NO_AUTO_INSTALL` warning and nothing is installed until
   an operator runs the install verb.
-- Sources Codewhale cannot fetch (npm packages, `command:` sources, non-tarball
-  URLs) are listed as `not installable` with the reason.
+- Catalog npm package declarations, `command:` sources and non-tarball URLs
+  are listed as `not installable` with the reason. Explicit
+  `/plugin install npm:package@1.2.3` and `codewhale install npm:package@1.2.3`
+  instead fetch an exact-version npm registry tarball containing a native plugin
+  manifest. They do not run npm lifecycle scripts or install dependencies; see
+  [install sources](PLUGINS.md#sources).
 - `install` routes through the same reviewed installer as `/plugin install`:
   the bundle lands disabled and untrusted, and enters the hash-bound trust
   review before anything activates.
