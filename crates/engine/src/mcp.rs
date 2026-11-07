@@ -640,11 +640,10 @@ impl ReviewedPluginMcpSource {
         cwd: Option<&Path>,
     ) -> Result<ReviewedStdioLaunch> {
         self.validate_before_stdio_spawn(server_name)?;
-        let staged_root = self
-            .authority
-            .staged_manifest
-            .parent()
-            .context("reviewed plugin stage manifest has no parent")?;
+        let staged_root = codewhale_plugins::agent_plugin::plugin_root_for_manifest(
+            &self.authority.staged_manifest,
+        )
+        .context("reviewed plugin stage manifest has no bundle root")?;
         let validated = codewhale_plugins::manifest::PluginManifest::validate_from_path(
             &self.authority.staged_manifest,
         )
@@ -7715,10 +7714,10 @@ fn merge_plugin_mcp_servers(
             "Native MCP namespace collides with an existing reviewed or explicit server"
         );
         if server.command.is_some() {
-            let root = authority
-                .staged_manifest
-                .parent()
-                .context("Native stage has no root")?;
+            let root = codewhale_plugins::agent_plugin::plugin_root_for_manifest(
+                &authority.staged_manifest,
+            )
+            .context("Native stage has no root")?;
             server.cwd = Some(resolve_plugin_mcp_cwd(root, server.cwd.as_deref())?);
             freeze_plugin_stdio_paths(&mut server, root)?;
         }
