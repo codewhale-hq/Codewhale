@@ -149,6 +149,18 @@ were added. Release candidate 38899652987 on the frozen 0.10.2 source
 on ARM64, 453 on x64 including the installer payload, and 163 for the x86
 setup.
 
+### Recorded 0.10.3 candidate evidence
+
+Release candidate run 42381818665 on source `549ff01ebb` stopped the import
+check on both 64-bit targets: 12 x64 pairs and 10 ARM64 pairs, all from DLLs
+the profiles already listed. Probe run 42389141087 (Windows 11 ARM64 build
+26200.9725) resolved all 444 imports of that candidate's ARM64 executables, and
+the 10 new pairs were added. No x64 export probe exists, so the 12 x64 pairs are
+recorded as documented Microsoft API contracts below the 14393 floor, labelled
+separately from the #6953 reporter-observed exports; the x64 profile now allows
+468 pairs. The candidate still has to pass the import check against its final
+executable bytes, and neither addition is a 14393 or installer run.
+
 At this snapshot, startup/installation of the final release bytes on an actual
 1607 machine and the candidate's generated uninstaller were still unqualified.
 The final frozen source, release import dumps, archive/native/npm installation,
