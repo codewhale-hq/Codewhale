@@ -288,12 +288,19 @@ This experimental implementation retains one active registration. A picker
 for multiple saved ChatGPT accounts is not implemented yet.
 
 If the browser succeeds but token verification fails, the error identifies the
-failed check: signature, issuer, audience, expiry, not-before time, or a
-missing required claim. For an expired or not-yet-valid token, synchronize
-your device date and time and start a new sign-in. Other verification failures
-are not evidence of a plan limitation. Report the error text and Codewhale
-version; never share tokens, callback codes, credential files or decoded claims.
-A failed verification does not activate the new registration.
+failed check: signature, issuer, audience, expiry, not-before time, or the
+exact missing or malformed claim. Expiry and not-before times are checked
+against the issuer's clock, read from the `Date` header of the issuer's
+verification-key response, with a 60-second tolerance, so a skewed device
+clock does not reject a fresh sign-in; when that header is unavailable the
+device clock is used and the error asks you to synchronize it. A time error
+also reports how far this device's clock is from the issuer's when the
+difference exceeds the tolerance. A token signed with a key the first key
+download lacked triggers one fresh download before verification fails.
+Other verification failures are not evidence of a plan limitation. Report
+the error text and Codewhale version; never share tokens, callback codes,
+credential files or decoded claims. A failed verification does not activate
+the new registration.
 
 Model discovery uses your granted bearer token at
 `GET https://api.openai.com/v1/models`; inference uses the public

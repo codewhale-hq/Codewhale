@@ -1478,7 +1478,7 @@ pub async fn login_with_config(
 
 pub trait OAuthFormClient {
     fn post_form(&self, url: &str, form: &[(&str, &str)]) -> Result<(u16, String)>;
-    fn chatgpt_jwks(&self, issuer: &str) -> Result<JwkSet> {
+    fn chatgpt_jwks(&self, issuer: &str) -> Result<ChatgptKeys> {
         fetch_chatgpt_jwks(issuer)
     }
     fn revocation_endpoint(&self, params: &OAuthProviderParams, issuer: &str) -> Result<String> {
@@ -2382,12 +2382,19 @@ fn pkce_login_with_selected(
                 .is_some_and(|value| value.eq_ignore_ascii_case("bearer")),
             "ChatGPT token response did not return Bearer credentials"
         );
-        let keys = fetch_chatgpt_jwks(&inputs.issuer)?;
+        let id_token = token
+            .id_token
+            .as_deref()
+            .context("ChatGPT sign-in omitted its ID token")?;
+        let access_token = token
+            .access_token
+            .as_deref()
+            .context("ChatGPT sign-in omitted its access token")?;
+        let keys = chatgpt_keys_covering(&[id_token, access_token], || {
+            fetch_chatgpt_jwks(&inputs.issuer)
+        })?;
         let registration = verify_chatgpt_id_token(
-            token
-                .id_token
-                .as_deref()
-                .context("ChatGPT sign-in omitted its ID token")?,
+            id_token,
             &keys,
             &inputs.issuer,
             &client_id,
@@ -2397,14 +2404,7 @@ fn pkce_login_with_selected(
                 .map(|registration| registration.subject.as_str()),
             &host.host_id,
         )?;
-        verify_chatgpt_access_token(
-            token
-                .access_token
-                .as_deref()
-                .context("ChatGPT sign-in omitted its access token")?,
-            &keys,
-            &registration,
-        )?;
+        verify_chatgpt_access_token(access_token, &keys, &registration)?;
         token.verified_chatgpt = Some(registration);
     }
     Ok(PendingOAuthLogin {
@@ -2436,7 +2436,22 @@ pub const CHATGPT_OAUTH_CLIENT_ID: &str = "dynamic_agent_client";
 pub const CHATGPT_OAUTH_RESOURCE: &str = "https://api.openai.com/v1";
 pub const CHATGPT_OAUTH_SCOPE: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
-const CHATGPT_CLOCK_SKEW_LEEWAY_SECS: u64 = 60;
+const CHATGPT_CLOCK_SKEW_LEEWAY_SECS: i64 = 60;
+
+#[derive(Clone)]
+pub struct ChatgptKeys {
+    set: JwkSet,
+    issuer_clock_offset: Option<i64>,
+}
+
+impl From<JwkSet> for ChatgptKeys {
+    fn from(set: JwkSet) -> Self {
+        Self {
+            set,
+            issuer_clock_offset: None,
+        }
+    }
+}
 
 /// Verified registration identity. The client ID also binds the selected workspace.
 /// One active registration is supported; use CODEWHALE_CHATGPT_NEW_ACCOUNT=1
@@ -2531,7 +2546,7 @@ struct ChatgptIdClaims {
     email: Option<String>,
 }
 
-fn fetch_chatgpt_jwks(issuer: &str) -> Result<JwkSet> {
+fn fetch_chatgpt_jwks(issuer: &str) -> Result<ChatgptKeys> {
     let url = oauth_endpoint_url(&format!(
         "{}/.well-known/jwks.json",
         issuer.trim_end_matches('/')
@@ -2540,19 +2555,101 @@ fn fetch_chatgpt_jwks(issuer: &str) -> Result<JwkSet> {
         .get(url)
         .send()
         .context("ChatGPT identity verification keys could not be retrieved")?;
-    let (status, keys) = parse_oauth_json(response, "ChatGPT verification keys")?;
+    let issuer_clock_offset = response
+        .headers()
+        .get(reqwest::header::DATE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| chrono::DateTime::parse_from_rfc2822(value).ok())
+        .zip(now_unix_secs())
+        .map(|(issuer_now, local_now)| issuer_now.timestamp().saturating_sub(local_now));
+    let (status, set) = parse_oauth_json(response, "ChatGPT verification keys")?;
     anyhow::ensure!(
         status.is_success(),
         "ChatGPT identity verification keys are unavailable"
     );
-    Ok(keys)
+    Ok(ChatgptKeys {
+        set,
+        issuer_clock_offset,
+    })
+}
+
+fn chatgpt_keys_covering(
+    tokens: &[&str],
+    fetch: impl Fn() -> Result<ChatgptKeys>,
+) -> Result<ChatgptKeys> {
+    let keys = fetch()?;
+    let unknown_key = tokens.iter().any(|token| {
+        decode_header(token)
+            .ok()
+            .and_then(|header| header.kid)
+            .is_some_and(|kid| keys.set.find(&kid).is_none())
+    });
+    if unknown_key { fetch() } else { Ok(keys) }
+}
+
+fn chatgpt_clock_difference(issuer_clock_offset: Option<i64>) -> String {
+    match issuer_clock_offset {
+        Some(offset) if offset.abs() > CHATGPT_CLOCK_SKEW_LEEWAY_SECS => format!(
+            " (this device's clock is {} s {} the issuer's)",
+            offset.unsigned_abs(),
+            if offset > 0 { "behind" } else { "ahead of" }
+        ),
+        _ => String::new(),
+    }
+}
+
+fn verify_chatgpt_token_time(claims: &Value, keys: &ChatgptKeys) -> Result<()> {
+    let local_now =
+        now_unix_secs().context("System clock is unavailable for ChatGPT token verification")?;
+    let now = local_now.saturating_add(keys.issuer_clock_offset.unwrap_or(0));
+    let numeric_date = |claim: &str| -> Result<Option<i64>> {
+        claims
+            .get(claim)
+            .map(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| {
+                        value
+                            .as_f64()
+                            .filter(|seconds| seconds.is_finite())
+                            .map(|seconds| seconds as i64)
+                    })
+                    .with_context(|| format!("ChatGPT token has an invalid {claim} claim format"))
+            })
+            .transpose()
+    };
+    let difference = chatgpt_clock_difference(keys.issuer_clock_offset);
+    if numeric_date("exp")?
+        .is_some_and(|exp| exp.saturating_add(CHATGPT_CLOCK_SKEW_LEEWAY_SECS) < now)
+    {
+        anyhow::bail!(if keys.issuer_clock_offset.is_some() {
+            format!("ChatGPT token has expired by the issuer's clock{difference}; sign in again")
+        } else {
+            "ChatGPT token has expired; check your device date and time, then sign in again"
+                .to_string()
+        });
+    }
+    if numeric_date("nbf")?
+        .is_some_and(|nbf| nbf > now.saturating_add(CHATGPT_CLOCK_SKEW_LEEWAY_SECS))
+    {
+        anyhow::bail!(if keys.issuer_clock_offset.is_some() {
+            format!(
+                "ChatGPT token is not valid yet by the issuer's clock{difference}; sign in again"
+            )
+        } else {
+            "ChatGPT token is not valid yet; synchronize your device clock, then sign in again"
+                .to_string()
+        });
+    }
+    Ok(())
 }
 
 fn verify_chatgpt_jwt<T: serde::de::DeserializeOwned + Clone>(
     token: &str,
-    keys: &JwkSet,
+    keys: &ChatgptKeys,
     issuer: &str,
     audience: &str,
+    text_claims: &[&'static str],
 ) -> Result<T> {
     let header = decode_header(token).context("ChatGPT identity token header is invalid")?;
     anyhow::ensure!(
@@ -2572,6 +2669,7 @@ fn verify_chatgpt_jwt<T: serde::de::DeserializeOwned + Clone>(
         .as_deref()
         .context("ChatGPT identity token omitted its verification key")?;
     let jwk = keys
+        .set
         .find(kid)
         .context("ChatGPT identity token verification key is unknown")?;
     let key = DecodingKey::from_jwk(jwk).context("ChatGPT identity verification key is invalid")?;
@@ -2579,19 +2677,13 @@ fn verify_chatgpt_jwt<T: serde::de::DeserializeOwned + Clone>(
     validation.set_issuer(&[issuer]);
     validation.set_audience(&[audience]);
     validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-    validation.validate_nbf = true;
-    validation.leeway = CHATGPT_CLOCK_SKEW_LEEWAY_SECS;
+    validation.validate_exp = false;
+    validation.validate_nbf = false;
     let claims = decode::<Value>(token, &key, &validation)
         .map_err(|error| match error.kind() {
             ErrorKind::InvalidSignature => {
                 anyhow::anyhow!("ChatGPT token signature verification failed")
             }
-            ErrorKind::ExpiredSignature => anyhow::anyhow!(
-                "ChatGPT token has expired; check your device date and time, then sign in again"
-            ),
-            ErrorKind::ImmatureSignature => anyhow::anyhow!(
-                "ChatGPT token is not valid yet; synchronize your device clock, then sign in again"
-            ),
             ErrorKind::InvalidIssuer => {
                 anyhow::anyhow!("ChatGPT token issuer does not match the expected issuer")
             }
@@ -2617,6 +2709,7 @@ fn verify_chatgpt_jwt<T: serde::de::DeserializeOwned + Clone>(
             _ => anyhow::anyhow!("ChatGPT token format or identity claims failed verification"),
         })?
         .claims;
+    verify_chatgpt_token_time(&claims, keys)?;
     let exact_audience = claims.get("aud").is_some_and(|aud| {
         aud.as_str() == Some(audience)
             || aud
@@ -2627,19 +2720,28 @@ fn verify_chatgpt_jwt<T: serde::de::DeserializeOwned + Clone>(
         exact_audience,
         "ChatGPT token audience does not match this registration"
     );
+    for claim in text_claims {
+        match claims.get(*claim) {
+            None => anyhow::bail!("ChatGPT token is missing required {claim} claim"),
+            Some(value) if !value.is_string() => {
+                anyhow::bail!("ChatGPT token has an invalid {claim} claim format")
+            }
+            Some(_) => {}
+        }
+    }
     serde_json::from_value(claims).context("ChatGPT token identity claims are invalid")
 }
 
 fn verify_chatgpt_id_token(
     token: &str,
-    keys: &JwkSet,
+    keys: &ChatgptKeys,
     issuer: &str,
     client_id: &str,
     nonce: Option<&str>,
     expected_subject: Option<&str>,
     host_id: &str,
 ) -> Result<ChatgptRegistration> {
-    let claims: ChatgptIdClaims = verify_chatgpt_jwt(token, keys, issuer, client_id)?;
+    let claims: ChatgptIdClaims = verify_chatgpt_jwt(token, keys, issuer, client_id, &["sub"])?;
     anyhow::ensure!(
         !claims.sub.trim().is_empty(),
         "ChatGPT identity token has no subject"
@@ -2674,11 +2776,16 @@ struct ChatgptAccessClaims {
 
 fn verify_chatgpt_access_token(
     token: &str,
-    keys: &JwkSet,
+    keys: &ChatgptKeys,
     registration: &ChatgptRegistration,
 ) -> Result<()> {
-    let claims: ChatgptAccessClaims =
-        verify_chatgpt_jwt(token, keys, &registration.issuer, CHATGPT_OAUTH_RESOURCE)?;
+    let claims: ChatgptAccessClaims = verify_chatgpt_jwt(
+        token,
+        keys,
+        &registration.issuer,
+        CHATGPT_OAUTH_RESOURCE,
+        &["sub", "client_id", "scope"],
+    )?;
     anyhow::ensure!(
         claims.sub == registration.subject && claims.client_id == registration.client_id,
         "ChatGPT access token does not match the selected account registration"
@@ -3956,15 +4063,15 @@ where
                 .is_some_and(|token| !token.trim().is_empty()),
             "ChatGPT refresh omitted its rotating refresh token; sign in again"
         );
-        let keys = client.chatgpt_jwks(&issuer)?;
-        verify_chatgpt_access_token(
-            refreshed
-                .access_token
-                .as_deref()
-                .context("ChatGPT refresh omitted its access token")?,
-            &keys,
-            &registration,
-        )?;
+        let access_token = refreshed
+            .access_token
+            .as_deref()
+            .context("ChatGPT refresh omitted its access token")?;
+        let presented: Vec<&str> = std::iter::once(access_token)
+            .chain(refreshed.id_token.as_deref())
+            .collect();
+        let keys = chatgpt_keys_covering(&presented, || client.chatgpt_jwks(&issuer))?;
+        verify_chatgpt_access_token(access_token, &keys, &registration)?;
         if let Some(id_token) = &refreshed.id_token {
             let refreshed_registration = verify_chatgpt_id_token(
                 id_token,
@@ -8391,6 +8498,86 @@ consent_version = 1
             verify(&signer.token(skewed)).is_ok(),
             "a small clock skew must not reject a valid identity token"
         );
+        let verify_with = |keys: &ChatgptKeys, token: &str| {
+            verify_chatgpt_id_token(
+                token,
+                keys,
+                CHATGPT_OAUTH_ISSUER,
+                "oaiapp_codewhale_test",
+                Some("pending-nonce"),
+                Some("test-sub"),
+                "urn:uuid:00000000-0000-4000-8000-000000000001",
+            )
+        };
+        let local_now = now_unix_secs().unwrap();
+        for (issuer_offset, field, value, accepted) in [
+            (None, "nbf", local_now + 15, true),
+            (None, "exp", local_now - 15, true),
+            (None, "nbf", local_now + 90, false),
+            (None, "exp", local_now - 90, false),
+            (Some(90), "nbf", local_now + 90, true),
+            (Some(90), "exp", local_now - 15, false),
+            (Some(-90), "exp", local_now - 75, true),
+            (Some(-90), "nbf", local_now + 90, false),
+        ] {
+            let mut changed = claims.clone();
+            changed[field] = Value::from(value);
+            let keys = ChatgptKeys {
+                issuer_clock_offset: issuer_offset,
+                ..signer.keys.clone()
+            };
+            assert_eq!(
+                verify_with(&keys, &signer.token(changed)).is_ok(),
+                accepted,
+                "{field}={value} with issuer clock offset {issuer_offset:?}"
+            );
+        }
+        let mut future = claims.clone();
+        future["nbf"] = Value::from(local_now + 2 * 3600);
+        let issuer_ahead = ChatgptKeys {
+            issuer_clock_offset: Some(900),
+            ..signer.keys.clone()
+        };
+        let error = verify_with(&issuer_ahead, &signer.token(future))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("not valid yet by the issuer's clock") && error.contains("900 s behind"),
+            "{error}"
+        );
+        let stale = ChatgptKeys::from(JwkSet { keys: Vec::new() });
+        let fetches = std::cell::Cell::new(0);
+        let rotated = chatgpt_keys_covering(&[&signed], || {
+            fetches.set(fetches.get() + 1);
+            Ok(if fetches.get() == 1 {
+                stale.clone()
+            } else {
+                signer.keys.clone()
+            })
+        })
+        .unwrap();
+        assert_eq!(fetches.get(), 2, "an unknown key id refetches once");
+        assert!(verify_with(&rotated, &signed).is_ok());
+        fetches.set(0);
+        let still_stale = chatgpt_keys_covering(&[&signed], || {
+            fetches.set(fetches.get() + 1);
+            Ok(stale.clone())
+        })
+        .unwrap();
+        assert_eq!(fetches.get(), 2, "the refetch happens only once");
+        assert!(
+            verify_with(&still_stale, &signed)
+                .unwrap_err()
+                .to_string()
+                .contains("verification key is unknown")
+        );
+        fetches.set(0);
+        chatgpt_keys_covering(&[&signed], || {
+            fetches.set(fetches.get() + 1);
+            Ok(signer.keys.clone())
+        })
+        .unwrap();
+        assert_eq!(fetches.get(), 1, "known keys are fetched once");
         for required in ["iss", "aud", "exp", "sub", "nonce"] {
             let mut changed = claims.clone();
             changed.as_object_mut().unwrap().remove(required);
@@ -8486,6 +8673,28 @@ consent_version = 1
                 verify_chatgpt_access_token(&token, &signer.keys, &registration).is_err(),
                 "accepted invalid {field}"
             );
+        }
+        for (claim, broken, expected) in [
+            ("client_id", None, "missing required client_id claim"),
+            ("scope", None, "missing required scope claim"),
+            (
+                "scope",
+                Some(serde_json::json!(["resource.invoke"])),
+                "invalid scope claim format",
+            ),
+        ] {
+            let mut claims = serde_json::json!({"iss": CHATGPT_OAUTH_ISSUER, "aud": CHATGPT_OAUTH_RESOURCE, "sub": "test-sub", "client_id": "oaiapp_codewhale_test", "scope": CHATGPT_OAUTH_SCOPE, "exp": now_unix_secs().unwrap() + 3600});
+            match broken {
+                Some(value) => claims[claim] = value,
+                None => {
+                    claims.as_object_mut().unwrap().remove(claim);
+                }
+            }
+            let error =
+                verify_chatgpt_access_token(&signer.token(claims), &signer.keys, &registration)
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains(expected), "{claim}: {error}");
         }
     }
 

@@ -5,7 +5,7 @@ pub(super) type MockForm = Vec<(String, String)>;
 pub(super) type MockPost = (String, MockForm);
 pub(super) struct SiwcSigningFixture {
     pair: ring::signature::Ed25519KeyPair,
-    pub(super) keys: JwkSet,
+    pub(super) keys: ChatgptKeys,
 }
 
 impl SiwcSigningFixture {
@@ -15,12 +15,15 @@ impl SiwcSigningFixture {
             ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
                 .unwrap();
         let pair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-        let keys = serde_json::from_value(serde_json::json!({"keys": [{
+        let keys: JwkSet = serde_json::from_value(serde_json::json!({"keys": [{
             "kty": "OKP", "crv": "Ed25519", "kid": "siwc-fixture", "alg": "EdDSA", "use": "sig",
             "x": URL_SAFE_NO_PAD.encode(pair.public_key().as_ref())
         }]}))
         .unwrap();
-        Self { pair, keys }
+        Self {
+            pair,
+            keys: keys.into(),
+        }
     }
     pub(super) fn token(&self, claims: Value) -> String {
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","kid":"siwc-fixture"}"#);
@@ -41,7 +44,7 @@ impl SiwcSigningFixture {
 }
 
 struct SiwcRefreshClient {
-    pub(super) keys: JwkSet,
+    pub(super) keys: ChatgptKeys,
     access: String,
     posts: Mutex<Vec<MockPost>>,
 }
@@ -55,7 +58,7 @@ impl OAuthFormClient for SiwcRefreshClient {
         ));
         Ok((200, serde_json::json!({"access_token": self.access, "refresh_token": "rotated-refresh", "expires_in": 3600, "scope": CHATGPT_OAUTH_SCOPE, "token_type": "Bearer"}).to_string()))
     }
-    fn chatgpt_jwks(&self, _: &str) -> Result<JwkSet> {
+    fn chatgpt_jwks(&self, _: &str) -> Result<ChatgptKeys> {
         Ok(self.keys.clone())
     }
 }

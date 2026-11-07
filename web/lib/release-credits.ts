@@ -51,6 +51,7 @@ export const UNRELEASED_CONTRIBUTORS: string[] = [];
 export const RELEASE_HELPERS: string[] = [
   "@Gabriel-Degret",
   "@soarkit",
+  "@d-onistack",
   "@liuyy2",
   "@luestr",
   "@M-Maciej",
