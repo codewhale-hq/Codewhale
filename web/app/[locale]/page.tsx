@@ -7,7 +7,7 @@ import { Section } from "@/components/page-header";
 import { Strata } from "@/components/strata";
 import { ReleaseUpdates } from "@/components/release-updates";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
-import { WhaleLive } from "@/components/whale-live";
+import { LivingHeroWhale } from "@/components/living-hero-whale";
 import { getFacts } from "@/lib/facts";
 import { CONTRIBUTION_PATHS, SKILL_CONTRIBUTION } from "@/lib/content/contributing";
 import { PLUGINS_COPY } from "@/lib/content/plugins";
@@ -93,7 +93,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               </div>
             </div>
             <div className="home-whale">
-              <WhaleLive locale={locale} />
+              <LivingHeroWhale locale={locale} />
             </div>
           </div>
         </section>

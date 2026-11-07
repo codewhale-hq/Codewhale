@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Website: the homepage whale comes alive.** It starts as the flat Codewhale
+  mark, is colored in as the live whale, then becomes a field of breathing
+  lights made of the same 64 points as the desktop app. Pointing at it or
+  picking a terminal view brings the whale back. Reduced motion keeps the still
+  whale. Not yet published to codewhale.net.
+
 ### Fixed
 
 - **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.

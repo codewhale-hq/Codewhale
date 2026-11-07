@@ -23,7 +23,16 @@ export type WhaleDirector = {
 
 type View = { theme: "paper" | "charcoal"; size: number; dpr: number; lod: number; pose?: Record<string, number> };
 
+type RigShape = { id: string; role: string; opacity: number; path: unknown };
+
+export type WhaleRig = {
+  build(direction: "mark" | "cruise" | "open", pose?: Record<string, number>): { shapes: RigShape[] };
+  holesFor(id: string, shapes: RigShape[], mono?: boolean): unknown[];
+  pathString(path: unknown): string;
+};
+
 export type WhaleReference = {
+  rig: WhaleRig;
   acting: {
     Director: new (options?: { seed?: number; reduced?: boolean }) => WhaleDirector;
     render(ctx: CanvasRenderingContext2D, director: WhaleDirector, view: View): void;
@@ -50,9 +59,9 @@ export function loadWhaleReference(): Promise<WhaleReference> {
     await import("../vendor/whale-character-v2/acting.js");
     // @ts-expect-error The vendor reference has no TypeScript declarations.
     await import("../vendor/whale-character-v2/habitat.js");
-    const globals = window as unknown as { WhaleActing?: WhaleReference["acting"]; WhaleHabitat?: WhaleReference["habitat"] };
-    if (!globals.WhaleActing?.Director || !globals.WhaleHabitat?.pose) throw new Error("The whale motion reference did not load.");
-    return { acting: globals.WhaleActing, habitat: globals.WhaleHabitat };
+    const globals = window as unknown as { WhaleActing?: WhaleReference["acting"]; WhaleHabitat?: WhaleReference["habitat"]; WhaleRig?: WhaleRig };
+    if (!globals.WhaleActing?.Director || !globals.WhaleHabitat?.pose || !globals.WhaleRig?.build) throw new Error("The whale motion reference did not load.");
+    return { rig: globals.WhaleRig, acting: globals.WhaleActing, habitat: globals.WhaleHabitat };
   })();
   return reference;
 }
