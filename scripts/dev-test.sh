@@ -124,7 +124,7 @@ shift
 
 # Path form: map a source path onto an area, and invent a filter only when
 # the caller did not already pass one.
-if [ -e "$area" ] || printf '%s' "$area" | grep -q /; then
+if [ "$area" != plugins ] && [ -e "$area" ] || printf '%s' "$area" | grep -q /; then
   rel=${area#./}
   extra=
   case $rel in
