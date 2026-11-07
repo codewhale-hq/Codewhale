@@ -490,10 +490,21 @@ fn stale_enable_cannot_resurrect_revoked_trust() {
     revoker.revoke_trust("demo").unwrap();
     assert!(super::registry::verify_plugin_state_authority(&authority).is_err());
 
-    stale.enable("demo").unwrap();
+    let revoked_state = fs::read(&config.state_path).unwrap();
+    assert!(stale.enable("demo").unwrap_err().contains("changed"));
+    assert_eq!(fs::read(&config.state_path).unwrap(), revoked_state);
     let fresh = discover_with_config(&config);
     assert!(fresh.get("demo").unwrap().enabled);
     assert!(!fresh.get("demo").unwrap().trusted());
+    assert!(!fresh.is_active("demo"));
+
+    revoker.trust("demo").unwrap();
+    let reviewed_state = fs::read(&config.state_path).unwrap();
+    assert!(stale.enable("demo").unwrap_err().contains("changed"));
+    assert_eq!(fs::read(&config.state_path).unwrap(), reviewed_state);
+    let fresh = discover_with_config(&config);
+    assert!(!fresh.get("demo").unwrap().enabled);
+    assert!(fresh.get("demo").unwrap().trusted());
     assert!(!fresh.is_active("demo"));
 }
 

@@ -599,7 +599,9 @@ impl PluginRegistry {
                 plugin.trust_status.as_str()
             ));
         }
-        if plugin.staged_root.is_none() {
+        if plugin.staged_root.as_deref().is_none_or(|root| {
+            !staged_bundle_matches(root, &plugin.content_hash, &plugin.capability_hash)
+        }) {
             return Err(format!(
                 "Plugin bundle `{}` has no verified Codewhale runtime snapshot; review and trust it again before enablement",
                 plugin.name()
@@ -621,7 +623,22 @@ impl PluginRegistry {
         }
         let id = plugin.id.clone();
         self.commit_state_change(|state| {
-            let entry = state.plugins.entry(id).or_default();
+            let entry = state
+                .plugins
+                .get_mut(&id)
+                .filter(|entry| {
+                    entry.generation == plugin.state_generation
+                        && entry.trust.as_ref().is_some_and(|receipt| {
+                            receipt.content_hash == plugin.content_hash
+                                && receipt.capability_hash == plugin.capability_hash
+                        })
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "Plugin bundle `{}` state or review changed; refresh plugin state and review it if needed before enabling again",
+                        plugin.name()
+                    )
+                })?;
             entry.generation = entry
                 .generation
                 .checked_add(1)
