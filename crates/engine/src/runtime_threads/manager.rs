@@ -7262,18 +7262,14 @@ impl RuntimeThreadManager {
             return Ok(thread);
         }
         self.store.save_thread(&thread)?;
-        if let Err(error) = self
-            .emit_event(
-                &thread.id,
-                None,
-                None,
-                "thread.started",
-                json!({ "thread": thread.clone() }),
-            )
-            .await
-        {
-            return Err(error);
-        }
+        self.emit_event(
+            &thread.id,
+            None,
+            None,
+            "thread.started",
+            json!({ "thread": thread.clone() }),
+        )
+        .await?;
         Ok(thread)
     }
 

@@ -650,7 +650,7 @@ impl AccountLogin {
             bail!("The Codewhale service returned an account without an ID");
         };
         let user = user.clone();
-        validate_auth_bundle(&bundle)?;
+        validate_auth_bundle(bundle)?;
         if Instant::now() >= self.deadline {
             return Ok(AccountLoginPoll::Expired);
         }

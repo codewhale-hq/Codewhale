@@ -218,37 +218,35 @@ pub(super) fn project_operation(
                 .find(|(thread, _)| thread == &operation.thread_id)
             && let Ok(mut manager) = manager.lock()
             && let Some(witness) = manager.job_receipt_witness(&job_id)
+            && !witness.wait_failed
+            && (witness.status == ShellStatus::Running || witness.terminal_confirmed)
+            && witness.owner_session_id == api_job_scope(&operation.thread_id)
+            && witness.cwd == operation.cwd
         {
-            if !witness.wait_failed
-                && (witness.status == ShellStatus::Running || witness.terminal_confirmed)
-                && witness.owner_session_id == api_job_scope(&operation.thread_id)
-                && witness.cwd == operation.cwd
+            operation.status = if witness.status == ShellStatus::Running {
+                "running"
+            } else {
+                "completed"
+            }
+            .to_string();
+            if operation.status == "completed" {
+                operation.job_status = Some(format!("{:?}", witness.status));
+                operation.exit_code = witness.exit_code;
+                operation.updated_at_ms = chrono::Utc::now()
+                    .timestamp_millis()
+                    .max(operation.created_at_ms);
+                record.operation = operation.clone();
+                transaction.save(record).map_err(operation_error)?;
+                manager.release_job_receipt(&job_id);
+            }
+            if let Ok(detail) = manager.inspect_job(&job_id)
+                && !detail.snapshot.stale
             {
-                operation.status = if witness.status == ShellStatus::Running {
-                    "running"
-                } else {
-                    "completed"
-                }
-                .to_string();
-                if operation.status == "completed" {
-                    operation.job_status = Some(format!("{:?}", witness.status));
-                    operation.exit_code = witness.exit_code;
-                    operation.updated_at_ms = chrono::Utc::now()
-                        .timestamp_millis()
-                        .max(operation.created_at_ms);
-                    record.operation = operation.clone();
-                    transaction.save(record).map_err(operation_error)?;
-                    manager.release_job_receipt(&job_id);
-                }
-                if let Ok(detail) = manager.inspect_job(&job_id)
-                    && !detail.snapshot.stale
-                {
-                    view = Some(JobView::new(
-                        detail.snapshot,
-                        operation.thread_id.clone(),
-                        &manager,
-                    ));
-                }
+                view = Some(JobView::new(
+                    detail.snapshot,
+                    operation.thread_id.clone(),
+                    &manager,
+                ));
             }
         }
     } else if record.owner_generation == generation

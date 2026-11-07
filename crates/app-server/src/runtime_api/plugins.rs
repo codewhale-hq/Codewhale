@@ -531,14 +531,13 @@ impl PluginUiGrants {
         let mut entries = self.entries.lock();
         let now = std::time::Instant::now();
         entries.retain(|_, value| value.expires > now);
-        if entries.len() >= 256 {
-            if let Some(oldest) = entries
+        if entries.len() >= 256
+            && let Some(oldest) = entries
                 .iter()
                 .min_by_key(|(_, value)| value.expires)
                 .map(|(key, _)| key.clone())
-            {
-                entries.remove(&oldest);
-            }
+        {
+            entries.remove(&oldest);
         }
         loop {
             let revision = format!("\"{}\"", uuid::Uuid::new_v4());

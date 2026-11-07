@@ -2954,12 +2954,11 @@ pub fn capture_plugin_state_authority(
     let state_file = open_existing_regular_file(&authority.state_path, false)
         .map_err(|_| "Plugin authority state could not be opened safely".to_string())?
         .ok_or_else(|| "Plugin authority state is missing".to_string())?;
-    if let Some(expected) = expected {
-        if !codewhale_util::files::same_file(expected, &state_file)
+    if let Some(expected) = expected
+        && !codewhale_util::files::same_file(expected, &state_file)
             .map_err(|_| "Plugin authority state identity could not be checked".to_string())?
-        {
-            return Err("Plugin authority state changed after UI authorization".to_string());
-        }
+    {
+        return Err("Plugin authority state changed after UI authorization".to_string());
     }
     let state = load_state_from_file(
         &authority.state_path,
