@@ -59,7 +59,7 @@
   --ocean-sky: var(--kit-mark-navy);
   --brand-light: var(--kit-current-blue);
   --brand-deep: var(--kit-whale-blue);
-  --brand-mid: var(--kit-signal-blue);
+  --brand-mid: #1877c9;
   --brand-fill: linear-gradient(135deg, var(--brand-mid), var(--brand-deep));
   --brand-fill-hover: linear-gradient(135deg, var(--brand-deep), var(--kit-mark-navy));
   --on-brand: var(--kit-white);
@@ -152,21 +152,21 @@
 
 /* ---------- light — warm paper ---------- */
 :root {
-  --bg: var(--kit-warm-paper);
-  --surface: var(--kit-seaglass);
+  --bg: #faf8f5;
+  --surface: #f0ede8;
   --panel: var(--kit-white);
   --text: var(--kit-ink);
   --muted: var(--kit-slate);
-  --line: var(--kit-tideline);
+  --line: #d9d5cf;
   --line-strong: var(--kit-slate);
-  --accent: var(--kit-signal-blue);
-  --accent-hover: rgb(36 91 199 / var(--gpui-primary-hover-opacity));
+  --accent: var(--kit-whale-blue);
+  --accent-hover: rgb(11 72 187 / var(--gpui-primary-hover-opacity));
   --on-accent: var(--kit-white);
 
-  --hover: var(--kit-seaglass);
+  --hover: #f0ede8;
   --selected: var(--kit-shallows);
-  --selection: rgb(36 91 199 / var(--gpui-selection-opacity));
-  --ring: var(--kit-signal-blue);
+  --selection: rgb(11 72 187 / var(--gpui-selection-opacity));
+  --ring: var(--kit-whale-blue);
   --live: var(--kit-kelp-deep);
   --success: var(--kit-kelp-deep);
   --attention: var(--kit-amber);
@@ -175,9 +175,9 @@
   --ombre-ink: linear-gradient(135deg, var(--brand-light), var(--brand-deep));
   --diff-add: rgb(57 101 84 / 0.14);
   --diff-del: rgb(158 63 54 / 0.11);
-  --ground: var(--kit-warm-paper);
+  --ground: var(--bg);
   --glow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
-  --glow-focus: 0 0 0 4px rgb(36 91 199 / 0.16);
+  --glow-focus: 0 0 0 4px rgb(11 72 187 / 0.16);
   --shadow-popover: var(--gpui-elevation-popover-light);
   --shadow-dialog: var(--gpui-elevation-dialog-light);
   color-scheme: light;

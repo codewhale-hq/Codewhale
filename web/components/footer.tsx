@@ -28,6 +28,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
     <footer className="site-footer">
       <div className="site-footer-sea">
         <div className="horizon" aria-hidden="true" />
+        <div className="sea-texture" aria-hidden="true" />
         <div className="site-footer-main">
           <div className="site-footer-brand">
             <Link href={homeHref} className="site-wordmark site-wordmark-footer" aria-label="Codewhale">

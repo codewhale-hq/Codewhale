@@ -217,11 +217,11 @@ describe("navigation parity and accessibility", () => {
     const reference = buildNavLinks("en", getChrome("en")).map((l) =>
       l.href.replace(/^\/en\//, ""),
     );
-    expect(reference).toEqual(["product", "computer-use", "models", "plugins", "docs", "changelog"]);
+    expect(reference).toEqual(["product", "computer-use", "models", "plugins", "docs"]);
     const moreReference = buildSecondaryNavLinks("en", getChrome("en")).map((l) =>
       l.href.replace(/^\/en\//, ""),
     );
-    expect(moreReference).toEqual(["features", "docs/guide", "install", "ratatui", "faq", "community", "contribute"]);
+    expect(moreReference).toEqual(["features", "docs/guide", "install", "changelog", "ratatui", "faq", "community", "contribute"]);
     for (const locale of locales) {
       const links = buildNavLinks(locale, getChrome(locale));
       expect(

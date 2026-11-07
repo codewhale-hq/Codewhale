@@ -62,10 +62,10 @@ describe("role tokens", () => {
     expect(CSS).not.toMatch(/@media \(prefers-color-scheme: dark\)/);
   });
 
-  it("inks with the Moda brand kit in both appearances", () => {
+  it("uses recovered paper and the Moda brand inks in both appearances", () => {
     const kit = (name: string) => hex(`var(--kit-${name})`);
     const inks: Record<string, Record<string, string>> = {
-      light: { text: "ink", muted: "slate", accent: "signal-blue", ring: "signal-blue", live: "kelp-deep", attention: "amber", danger: "rust", "on-accent": "white" },
+      light: { text: "ink", muted: "slate", accent: "whale-blue", ring: "whale-blue", live: "kelp-deep", attention: "amber", danger: "rust", "on-accent": "white" },
       dark: { text: "foam", muted: "mist", accent: "bioluminescence", ring: "bioluminescence", live: "kelp", attention: "lantern", danger: "coral", "on-accent": "abyss" },
     };
     for (const [mode, scheme] of [["light", light()], ["dark", pinnedDark()], ["dark", stage()]] as const) {
@@ -74,7 +74,7 @@ describe("role tokens", () => {
         expect(hex(scheme[role]), `${mode}.${role}`).toBe(kit(name));
       }
     }
-    expect(hex(light().bg)).toBe(kit("warm-paper"));
+    expect(hex(light().bg)).toBe("#faf8f5");
     expect(hex(light().panel)).toBe(kit("white"));
     for (const role of GROUNDS) expect(pinnedDark()[role], role).toMatch(/^var\(--ocean-[\w-]+\)$/);
   });

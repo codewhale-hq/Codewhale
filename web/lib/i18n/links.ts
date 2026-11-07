@@ -29,7 +29,7 @@ export interface ChromeLink {
 }
 
 /**
- * The primary nav links — Product / Computer Use / Models / Plugins / Docs / Changelog — identical
+ * The primary nav links — Product / Computer Use / Models / Plugins / Docs — identical
  * in shape for every routed locale. This is the strip a serious product
  * shows; discovery and community routes live in `secondaryNavLinks` (the
  * compact sheet's second group) and the footer.
@@ -41,16 +41,16 @@ export function navLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
     { href: `/${locale}/models`, label: chrome.navModels },
     { href: `/${locale}/plugins`, label: chrome.navPlugins },
     { href: `/${locale}/docs`, label: chrome.navDocs },
-    { href: `/${locale}/changelog`, label: chrome.footerChangelog },
   ];
 }
 
-/** The compact sheet's second group: getting started, install, and community. */
+/** The compact sheet's second group: getting started, releases, and community. */
 export function secondaryNavLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
     { href: `/${locale}/features`, label: chrome.navFeatures },
     { href: `/${locale}/docs/guide`, label: chrome.navStart },
     { href: `/${locale}/install`, label: chrome.navInstall },
+    { href: `/${locale}/changelog`, label: chrome.footerChangelog },
     { href: `/${locale}/ratatui`, label: "Ratatui" },
     { href: `/${locale}/faq`, label: chrome.navFaq },
     { href: `/${locale}/community`, label: chrome.navCommunity },

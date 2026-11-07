@@ -12,7 +12,7 @@ import { ArrowLabel } from "./arrow-label";
 
 /**
  * Masthead + primary nav. Like the GPUI titlebar it carries few visible
- * controls: the whale and the wordmark, four links, quiet icon controls
+ * controls: the whale and the wordmark, five links, quiet icon controls
  * with accessible names and the one primary action, Install.
  */
 export function Nav({ locale = "en" }: { locale?: Locale }) {

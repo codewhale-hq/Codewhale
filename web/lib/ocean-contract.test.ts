@@ -33,14 +33,13 @@ describe("the whale", () => {
     expect(web("app/manifest.ts")).not.toContain("#142352");
   });
 
-  it("keeps the founder's 404 poster and the restored seals and water, and no retired illustrations", () => {
+  it("keeps the founder's 404 poster, seals and recovered water drawing", () => {
     // The Codwhale poster is the 404 joke, restored on purpose (site merge plan R4).
     expect(existsSync(new URL("../public/codwhale-404.webp", import.meta.url))).toBe(true);
     expect(web("components/route-state.tsx")).toContain('src="/codwhale-404.webp"');
-    // Seals stay. The blurred strata bands were retired on 2026-10-04 for
-    // paper above, sea below: one horizon and the tide ombré, no wave art.
+    // Seals and the recovered static water drawing use the original geometry.
     expect(existsSync(new URL("../components/seal.tsx", import.meta.url))).toBe(true);
-    expect(existsSync(new URL("../components/strata.tsx", import.meta.url))).toBe(false);
+    expect(existsSync(new URL("../components/strata.tsx", import.meta.url))).toBe(true);
     expect(existsSync(new URL("../components/install-binary.tsx", import.meta.url))).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { HeroInstall } from "@/components/hero-install";
 import { Icon } from "@/components/icon";
 import { Section } from "@/components/page-header";
+import { Strata } from "@/components/strata";
 import { ReleaseUpdates } from "@/components/release-updates";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { WhaleLive } from "@/components/whale-live";
@@ -26,7 +27,7 @@ export const dynamic = "force-dynamic";
 /**
  * The whale-road homepage: the promise, capabilities and reading
  * sections sit on paper. The live v2 whale (the desktop app's own Director)
- * rests on the ocean above the captured terminal,
+ * rests above the captured terminal with drawn water behind it,
  * and the page ends in the sea with the install action, running into the
  * footer.
  *
@@ -64,60 +65,63 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         dangerouslySetInnerHTML={{ __html: serializeJsonLd(jsonLd) }}
       />
 
-      {/* PAPER — the promise, one primary action, the install command, and
-          the whale resting on the terminal below. */}
-      <section className="home-hero" aria-labelledby="home-title">
-        <div className="home-hero-inner">
-          <div className="home-hero-copy">
-            <h1 id="home-title" className="home-title">{d.heroTitle}</h1>
-            <p className="home-lede">
-              {ledeParts.map((part, index) => (
-                <Fragment key={index}>
-                  {index > 0 && <strong>Codewhale</strong>}
-                  {part}
-                </Fragment>
-              ))}
-            </p>
-            <HeroInstall locale={locale} ariaLabel={d.heroInstallAria} copyLabel={d.copy} copiedLabel={d.copied} />
-            <div className="actions">
-              <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
-                {d.getCodewhale}
-              </Link>
-              <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
-                {d.contribute}
-                <Icon name="arrow-right" className="icon icon-flip" />
-              </Link>
+      <div className="home-intro">
+        <div className="home-water" aria-hidden="true"><Strata /></div>
+        {/* PAPER — the promise, one primary action, the install command, and
+            the whale resting on the terminal below. */}
+        <section className="home-hero" aria-labelledby="home-title">
+          <div className="home-hero-inner">
+            <div className="home-hero-copy">
+              <h1 id="home-title" className="home-title">{d.heroTitle}</h1>
+              <p className="home-lede">
+                {ledeParts.map((part, index) => (
+                  <Fragment key={index}>
+                    {index > 0 && <strong>Codewhale</strong>}
+                    {part}
+                  </Fragment>
+                ))}
+              </p>
+              <HeroInstall locale={locale} ariaLabel={d.heroInstallAria} copyLabel={d.copy} copiedLabel={d.copied} />
+              <div className="actions">
+                <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
+                  {d.getCodewhale}
+                </Link>
+                <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
+                  {d.contribute}
+                  <Icon name="arrow-right" className="icon icon-flip" />
+                </Link>
+              </div>
+            </div>
+            <div className="home-whale">
+              <WhaleLive locale={locale} />
             </div>
           </div>
-          <div className="home-whale">
-            <WhaleLive locale={locale} />
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <section className="home-terminal stage" aria-label={d.shotPreview}>
-        <div className="home-terminal-inner">
-          <figure className="home-shot figure">
-            <div className="figure-frame" dir="ltr">
-              <NativeTerminalGallery
-                locale={locale}
-                defaultFrame="home"
-                regionLabel={d.shotPreview}
-                label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
-              />
+        <section className="home-terminal" aria-label={d.shotPreview}>
+          <div className="home-terminal-inner">
+            <figure className="home-shot figure">
+              <div className="figure-frame stage" dir="ltr">
+                <NativeTerminalGallery
+                  locale={locale}
+                  defaultFrame="home"
+                  regionLabel={d.shotPreview}
+                  label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
+                />
+              </div>
+              <figcaption className="figure-caption">{d.shotPreview}</figcaption>
+            </figure>
+            <div
+              className="home-proof"
+              data-source-state={sourceIsPublished ? "published release" : "source candidate"}
+              data-source-state-label={sourceIsPublished ? d.publishedRelease : d.sourceCandidate}
+            >
+              <Link href={`/${locale}/changelog`} className="section-link">{getChrome(locale).footerChangelog}</Link>
+              <span>{facts.license ?? "MIT"}</span>
             </div>
-            <figcaption className="figure-caption">{d.shotPreview}</figcaption>
-          </figure>
-          <div
-            className="home-proof"
-            data-source-state={sourceIsPublished ? "published release" : "source candidate"}
-            data-source-state-label={sourceIsPublished ? d.publishedRelease : d.sourceCandidate}
-          >
-            <Link href={`/${locale}/changelog`} className="section-link">{getChrome(locale).footerChangelog}</Link>
-            <span>{facts.license ?? "MIT"}</span>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
 
       {/* PAPER — models, connections, and the getting-started path. */}
       <div className="home-body">
@@ -143,7 +147,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
 
       </div>
 
-      <div className="home-computer-use stage">
+      <div className="home-computer-use">
         <div className="home-computer-inner">
           <Section
             id="home-computer-use"

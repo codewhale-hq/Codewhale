@@ -9,9 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Website:** restored the ocean blues and gradient actions, brought Operate, Fleet, Workflows and Computer Use into the product story, corrected Computer Use setup guidance, and added direct paths to contribute bug reports, documentation, translations and code.
-- **Website copy:** removed repeated setup instructions, duplicate product sections and developer-facing release notes from the homepage; shortened contribution and Computer Use copy.
-- **Website guidance:** restored the full-width ocean product stage, unified localized headlines, and corrected Workflow confirmation, Fleet recovery, plugin trust, provider setup, snapshot and Computer Use instructions against published versions.
+- **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.
 
 ## [0.10.3] - 2026-11-06
 

@@ -3,18 +3,42 @@
 /* ------------------------------------------------------------------ */
 /*
  * Paper holds the promise, capabilities and reading sections.
- * The live whale rests on the top edge of the real terminal capture under
+ * Drawn water rises behind the live whale and real terminal capture under
  * the hero. The page ends in the sea with the install action, which runs
  * on into the footer.
  */
 
 .home { --home-measure: 36rem; }
+.home-intro { position: relative; isolation: isolate; overflow: clip; }
+.home-water {
+  --strata-haze: rgb(30 143 216 / 0.08);
+  --strata-1: rgb(30 143 216 / 0.12);
+  --strata-2: rgb(30 143 216 / 0.16);
+  --strata-3: rgb(11 72 187 / 0.14);
+  --strata-4: #cfe2f6;
+  --strata-line: var(--brand-light);
+  --strata-thread: var(--brand-deep);
+  position: absolute;
+  inset: 0 0 auto;
+  height: min(64rem, 100%);
+  z-index: -1;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 70%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0, #000 70%, transparent 100%);
+}
+.strata { display: block; width: 100%; height: 100%; pointer-events: none; }
+:root[data-theme="dark"] .home-water {
+  --strata-1: rgb(30 143 216 / 0.08);
+  --strata-2: rgb(11 72 187 / 0.18);
+  --strata-3: rgb(11 72 187 / 0.28);
+  --strata-4: var(--ocean-sky);
+  --strata-line: var(--kit-bioluminescence);
+}
 
 /* ---------- paper: the hero ---------- */
 .home-hero {
   position: relative;
   padding-block: clamp(2rem, 3vw, 2.5rem) 0;
-  background: radial-gradient(ellipse 48rem 30rem at 85% 100%, color-mix(in srgb, var(--brand-light) 12%, transparent), transparent 72%);
 }
 
 .home-hero-inner {
@@ -74,7 +98,7 @@
 .home-hero-copy .hero-install { max-width: 35rem; margin-top: var(--space-2); }
 .home-hero-copy .actions { margin-top: calc(var(--space-2) * -1); }
 
-/* The whale rests on the horizon above the terminal. */
+/* The whale rests above the terminal at the waterline. */
 .home-whale {
   display: flex;
   justify-content: center;
@@ -84,8 +108,8 @@
 .home-whale .whale-live {
   --whale-size: clamp(18rem, 36vw, 29rem);
   width: var(--whale-size);
-  /* The rig fills the middle 72% of the canvas; drop its belly onto the
-     horizon below. */
+  /* The rig fills the middle 72% of the canvas; lower its belly toward
+     the terminal below. */
   margin-bottom: calc(var(--whale-size) * -0.26);
   position: relative;
   z-index: 2;
@@ -164,28 +188,17 @@
 .home-terminal {
   position: relative;
   z-index: 1;
-  background: var(--tide), var(--ocean-floor);
-}
-:root[data-theme="dark"] .home-terminal {
-  background: linear-gradient(180deg, var(--page-ground) 0, var(--sea-shallow) 3.5rem, var(--sea-mid) 9rem, var(--ocean-floor) 26rem);
-}
-.home-terminal::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: var(--horizon-light);
 }
 .home-terminal-inner {
   width: var(--container);
   margin-inline: auto;
-  padding-block: clamp(4rem, 7vw, 6rem) clamp(2.5rem, 6vw, 4.5rem);
+  padding-block: clamp(2rem, 4vw, 3rem) clamp(2.5rem, 6vw, 4.5rem);
 }
-.home-shot { margin: 0; }
+.home-shot { max-width: 64rem; margin-inline: auto; }
 .home-shot .figure-frame {
   background: var(--surface);
   border-color: color-mix(in srgb, var(--brand-light) 35%, var(--line));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand-light) 20%, transparent), 0 40px 80px -40px rgb(0 0 0 / 0.75);
+  box-shadow: 0 24px 60px -28px rgb(11 72 187 / 0.3);
 }
 
 /* Release, licence and the contributor count read from facts, never typed into copy. */
@@ -209,11 +222,8 @@
   display: grid;
   gap: var(--space-3);
   min-width: 0;
-  padding: var(--space-5);
-  border: 1px solid var(--line);
-  border-inline-start: 3px solid var(--accent);
-  border-radius: var(--radius-sheet);
-  background: var(--panel);
+  padding-block: var(--space-5);
+  border-block-start: 1px solid var(--line);
 }
 .release-card h3 { font-size: var(--text-ui); font-weight: 600; color: var(--muted); }
 .release-version { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-4); }
@@ -270,7 +280,7 @@
 .home-work-patterns code { font-size: var(--text-ui); overflow-wrap: anywhere; }
 
 .home-computer-use {
-  background: linear-gradient(115deg, var(--ocean-floor), var(--ocean-raised) 55%, var(--ocean-sky));
+  border-block: 1px solid var(--line);
 }
 .home-computer-inner {
   width: var(--container);
@@ -340,6 +350,6 @@
 }
 
 @media (forced-colors: active) {
-  .home-install::before,
-  .home-terminal::before { background: CanvasText; }
+  .home-install::before { background: CanvasText; }
+  .home-water { display: none; }
 }

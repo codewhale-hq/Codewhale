@@ -1,10 +1,11 @@
 # Site colors and the design tokens
 
-Founder request, 2026-11-06: restore the website's ocean identity. The
-October 27 migration replaced its navy grounds, blue actions and ocean
-gradients with the desktop app's neutral palette. The website again uses
-the Codewhale brand colors recorded before that migration, while retaining
-the current shared type, spacing, radius, motion and elevation tokens.
+Founder clarification, 2026-11-06: recover the earlier warm-paper website,
+clear blue actions, and drawn water accents. The retained Moda homepage
+capture, original brand board and Claude-authored Tidal Folio direction
+anchor this restoration. The website uses its earlier paper neutrals and
+Codewhale blue, with current shared type, spacing, radius, motion and
+elevation tokens.
 
 This supersedes the October 27 website color mapping. It does not change
 the desktop app's palette or the generated design artifact.
@@ -24,24 +25,35 @@ the desktop app's palette or the generated design artifact.
 
 | Role | Light | Dark (pinned) and the stage |
 | --- | --- | --- |
-| `--bg` | Warm paper #faf9f5 | Deep navy #142638 |
-| `--surface` (recessed) | Seaglass #edf1ef | Abyss #0f1e2d |
+| `--bg` | Warm paper #faf8f5 | Deep navy #142638 |
+| `--surface` (recessed) | Warm inset #f0ede8 | Abyss #0f1e2d |
 | `--panel` (raised) | White #ffffff | Ocean depth #173b50 |
 | `--text` | Ink #263844 | Foam #e6eef7 |
 | `--muted` | Slate #495a63 | Mist #bbc9d7 |
-| `--line` / `--line-strong` | Tideline #d2dedd / slate #495a63 | Night border #31495e / mist #bbc9d7 |
-| `--accent`, `--ring` | Signal blue #245bc7 | Bioluminescence #8fbdff |
-| `--brand-fill` / `--on-brand` | Signal blue → whale blue / white | Signal blue → whale blue / white |
-| `--hover` / `--selected` | Seaglass #edf1ef / shallows #dcefeb | Night surface #20374e / night border #31495e |
+| `--line` / `--line-strong` | Warm rule #d9d5cf / slate #495a63 | Night border #31495e / mist #bbc9d7 |
+| `--accent`, `--ring` | Whale blue #0b48bb | Bioluminescence #8fbdff |
+| `--brand-fill` / `--on-brand` | Contrast-adjusted current blue → whale blue / white | Contrast-adjusted current blue → whale blue / white |
+| `--hover` / `--selected` | Warm inset #f0ede8 / shallows #dcefeb | Night surface #20374e / night border #31495e |
 | `--live` / `--attention` / `--danger` | Kelp deep #396554 / amber #84530d / rust #9e3f36 | Kelp #9ecbbd / lantern #eab982 / coral #eea59d |
 
-The logo ombre remains `#1e8fd8` → `#0b48bb`. Filled actions use the deeper
-signal-blue → whale-blue ramp so white text remains readable. The sea
+The logo ombre remains `#1e8fd8` → `#0b48bb`. Filled actions recover the earlier
+#1877c9 → #0b48bb ramp so the blue is clear and white text remains readable. The sea
 ramps from #0f3991 through #142352 to #142638; the footer and home install
 band remain in that sea in both appearances.
 
-The tide passes through paper and aqua before blue and navy. Only its deep
-stops carry stage text; muted text begins after the mid-blue stop.
+The homepage reads on paper. Static SVG water rises behind the whale and
+real terminal, using the original hero paths from `48140294df0` with low
+opacity blue washes and fine current lines. The terminal frame keeps its
+own dark roles. Computer Use and release updates sit on paper; deep water
+is reserved for the closing action and footer. The footer recovers the
+original tiny, fading SVG current texture. Decorative water ignores pointer
+input, has no animation, and disappears in forced colors.
+
+The original retained website neutral values are from `168c3c2658c`; the
+water geometry and current texture are from `48140294df0`. These are visual
+references. Current typography, product instructions and captured media
+retain their current owners; historical copy and interface mockups are not
+release evidence.
 
 ## Verification
 
