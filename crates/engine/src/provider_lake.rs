@@ -1817,6 +1817,11 @@ pub async fn update_provider_catalog(
     let base_url = route_config.active_route_base_url();
     let fingerprint = base_url_fingerprint(&base_url);
     let mut receipt = cached_receipt(&route_config, identity);
+    if crate::client::model_listing_unavailable(identity.provider, &base_url) {
+        receipt.outcome = "skipped";
+        receipt.error = Some("provider_model_listing_unavailable");
+        return receipt;
+    }
     if identity.provider == ProviderKind::Antigravity {
         receipt.outcome = "skipped";
         receipt.error = Some("provider_retired");

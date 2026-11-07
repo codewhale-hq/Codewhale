@@ -2923,6 +2923,32 @@ fn model_listing_is_public(base_url: &str) -> bool {
         })
 }
 
+pub(crate) fn model_listing_unavailable(api_provider: ProviderKind, base_url: &str) -> bool {
+    if api_provider != ProviderKind::Custom {
+        return false;
+    }
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    codewhale_config::descriptors::bundled_provider_descriptors()
+        .iter()
+        .filter(|row| row.discovery == codewhale_config::descriptors::DescriptorDiscovery::None)
+        .filter_map(|row| reqwest::Url::parse(&row.base_url).ok())
+        .any(|known| {
+            known.scheme() == url.scheme()
+                && known.host_str() == url.host_str()
+                && known.port_or_known_default() == url.port_or_known_default()
+                && known.path().trim_end_matches('/') == url.path().trim_end_matches('/')
+        })
+}
+
 fn api_provider_skips_models_probe(api_provider: ProviderKind) -> bool {
     // Concentrate's `GET /v1/models` is explicitly unauthenticated
     // (docs/PROVIDERS.md): a 2xx proves nothing about the key, so guided
@@ -2944,7 +2970,9 @@ pub fn provider_api_key_verification_is_observed_for_route(
     api_provider: ProviderKind,
     base_url: &str,
 ) -> bool {
-    provider_api_key_verification_is_observed(api_provider) && !model_listing_is_public(base_url)
+    provider_api_key_verification_is_observed(api_provider)
+        && !model_listing_is_public(base_url)
+        && !model_listing_unavailable(api_provider, base_url)
 }
 
 /// Verify a provider API key by hitting the `/models` endpoint
@@ -4093,6 +4121,11 @@ impl CodewhaleClient {
         &self,
         mode: ModelsRequestMode,
     ) -> Result<(String, tokio::time::Instant), ModelsFetchError> {
+        if model_listing_unavailable(self.api_provider, &self.base_url) {
+            return Err(ModelsFetchError::Interactive(anyhow::anyhow!(
+                "This provider has no documented model-list endpoint; select a configured model instead"
+            )));
+        }
         let mut endpoint = reqwest::Url::parse(&api_url(&self.base_url, "models"))
             .map_err(|_| CatalogRefreshError::InvalidResponse)?;
         // OrcaRouter scopes `GET /v1/models` to one capability. Ask for the chat
@@ -4629,6 +4662,9 @@ impl CodewhaleClient {
     }
 
     async fn maybe_probe_recovery(&self) {
+        if model_listing_unavailable(self.api_provider, &self.base_url) {
+            return;
+        }
         let should_probe = {
             let mut health = self.connection_health.lock().await;
             mark_recovery_probe_if_due(&mut health, Instant::now())
@@ -5412,6 +5448,9 @@ impl LlmClient for CodewhaleClient {
     }
 
     async fn health_check(&self) -> Result<bool> {
+        if model_listing_unavailable(self.api_provider, &self.base_url) {
+            anyhow::bail!("Provider health is unobserved: no documented model-list endpoint");
+        }
         if !provider_api_key_verification_is_observed_for_route(self.api_provider, &self.base_url) {
             self.mark_request_success().await;
             return Ok(true);
