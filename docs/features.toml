@@ -1015,6 +1015,16 @@ docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
 owner = "crates/tui/src/commands/contract/debug_diagnostics.rs"
 
 [[feature]]
+id = "local-proxy-fallback"
+name = "Local proxy fallback"
+summary = "Long-lived clients go direct while a loopback proxy port refuses connections, then resume proxying."
+status = "experimental"
+surfaces = { tui = "partial", api = "partial" }
+since = "unreleased"
+docs = "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started"
+owner = "crates/net/src/proxy.rs"
+
+[[feature]]
 id = "rate-limit-recovery"
 name = "Bounded HTTP rate-limit retries"
 summary = "Bound HTTP transport retries for 429 independently of network retries and honor provider reset minima."

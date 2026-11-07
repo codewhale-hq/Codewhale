@@ -413,7 +413,7 @@ async fn refresh_from_path(path: &Path) -> Result<usize, ModelsDevRefreshError> 
 }
 
 async fn fetch_catalog_body(url: &str) -> Result<String, ModelsDevRefreshError> {
-    let client = codewhale_release::tls::reqwest_client_builder()
+    let client = crate::platform_client_builder()
         .timeout(FETCH_TIMEOUT)
         .connect_timeout(Duration::from_secs(10))
         .user_agent(USER_AGENT)

@@ -644,7 +644,7 @@ const BALANCE_FETCH_COOLDOWN: Duration = Duration::from_secs(60);
 /// Shared `reqwest::Client` for balance fetches so connection pools are
 /// reused across successive background polls.
 static BALANCE_CLIENT: LazyLock<::reqwest::Client> = LazyLock::new(|| {
-    codewhale_release::tls::reqwest_client_builder()
+    codewhale_net::proxy::install_loopback_proxy(codewhale_release::tls::reqwest_client_builder())
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default()

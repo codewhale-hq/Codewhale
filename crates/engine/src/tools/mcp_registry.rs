@@ -818,7 +818,7 @@ fn merge_incremental_entries(
 /// memory, and atomically replace the cache file. Retried on failure;
 /// the old snapshot survives any failed sync.
 async fn sync_once(path: &Path) -> Result<(), ToolError> {
-    let client = codewhale_release::tls::reqwest_client_builder()
+    let client = crate::platform_client_builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()
