@@ -2422,6 +2422,15 @@ LFS, keep working.
   then runs `git worktree remove` without `--force`. The branch and its
   commits stay. A worktree whose folder is already gone is removed with `--force` for that exact path; other prunable worktrees are untouched.
 
+Worktree removal also refuses `409 worktree_busy` while this runtime tracks a
+running shell job whose launch directory overlaps the worktree. Removal and
+API job starts share admission with new turns, and retain their guards until
+the mutation finishes even if the HTTP request disconnects. This covers the
+same runtime manager's tracked jobs. Launch directories do not prove where a
+command later changes directory; escaped descendants, late independent
+subagent launches and other runtime managers or processes remain outside this
+guard. It is not an OS-wide process reservation.
+
 Diffs and precondition token reads run through the hardened review command
 (filters, fsmonitor, hooks, lazy fetches and replace-objects neutralized).
 Porcelain status uses normal Git, matching the workspace counts and filters;

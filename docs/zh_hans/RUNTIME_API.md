@@ -1896,6 +1896,8 @@ Engine 并不知道的终端。输入可按路由归因：
   `{ "remote"?, "set_upstream"? }`（`remote`，或仅提供 `set_upstream` 时使用的 `origin`，必须是已配置的远端名称）；`POST /v1/git/branch`
   `{ "name", "create"? }`
 
+`POST /v1/worktrees/remove?thread_id=` 还会在当前运行时跟踪到启动目录与工作树重叠的运行中 shell 作业时，返回 `409 worktree_busy`。工作树删除与 API 作业启动使用和新轮次相同的准入锁；即使 HTTP 连接断开，也会持有保护直到修改完成。此保护仅覆盖同一个运行时管理器跟踪的作业。启动目录不能证明命令后来切换到了哪里；脱离跟踪的后代进程、稍后独立启动的子代理以及其他运行时管理器或进程仍不在此保护范围内。这不是操作系统级的进程占用保留。
+
 diff 与前置条件令牌的读取通过加固过的审阅命令运行（过滤器、fsmonitor、钩子、
 惰性抓取与 replace-objects 均被中和）。porcelain 状态使用普通 Git，与工作区的计数和
 过滤器一致；写入通过非交互式命令路径运行（`GIT_TERMINAL_PROMPT=0`、BatchMode ssh），

@@ -281,6 +281,7 @@ pub(super) async fn create_thread_job(
         }
     }
 
+    let admission = state.runtime_threads.session_checkpoint_guard().await;
     let thread = state
         .runtime_threads
         .get_thread(&thread_id)
@@ -330,6 +331,7 @@ pub(super) async fn create_thread_job(
     let request_env = request.env;
     let command = command.to_string();
     let job = tokio::task::spawn_blocking(move || -> Result<JobView, ApiError> {
+        let _admission = admission;
         let mut guard = manager.lock().unwrap_or_else(|e| e.into_inner());
         let result = guard
             .execute_with_options_env_for_session(
