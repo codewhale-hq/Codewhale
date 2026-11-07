@@ -274,15 +274,27 @@ until the matching tag, packages, checksums, and release assets exist.
   generation or trust receipt. The macOS stale-enable check passed (1/1);
   a separate Linux run reported 202 passed and one ignored on an earlier base
   with matching plugin files and lockfile. Snapshot checking is point-in-time;
-  automatic restoration is unfinished and filesystem races remain open. A
-  stage-disappearance regression and the final candidate remain unqualified.
+  missing-stage recovery reuses the current receipt and policy. Filesystem
+  race coverage and final-candidate native qualification remain open.
 - **Plugin status and UI admission:** an enabled, trusted plugin whose reviewed
   runtime snapshot is missing or invalid now reports
   `runtime-snapshot-unavailable`. Both plugin UI metadata and assets require a
   declared DSH client; ordinary plugins cannot expose staged files through the
-  client UI route. Automatic restoration of missing snapshots from
-  receipt-matching canonical source and authenticated DSH asset transport
-  remain work in progress; existing modified snapshots require review.
+  client UI route. Missing snapshots recover only from receipt-matching
+  canonical source; authenticated assets require an exact current grant.
+  Native and Electron qualification remains open; existing modified snapshots
+  require review.
+- **DSH package-directory imports:** the existing offline reviewer uses npm's
+  version-range parser with the pinned DeepSeek host's prerelease policy, and
+  bare self-package exports resolve inside the selected package directory.
+  Invalid or incompatible ranges and paths outside the reviewed package still
+  refuse. Real published-plugin activation remains unqualified.
+- **Coordination lock diagnostics (#7232):** stale lock-file contents no longer
+  identify an owner PID. A refused legacy admission keeps its reason in Work
+  and shows one notice per cause instead of repeating cleanup warnings on
+  every sidebar refresh. Legacy migration still requires the actual holder to
+  exit and the refused owning Runtime to restart; locks and retained state
+  remain protected.
 - **A local proxy that stops mid-session no longer strands the session (#7231):** the model, catalog, search, vision, finance, MCP-registry, profile and remote-control clients watch a loopback proxy port and go direct while it refuses connections, then resume proxying when it returns. Only a definite refusal from every resolved address changes the route; remote proxies, `NO_PROXY` matches, credentials and the existing precedence are unchanged. Set `CODEWHALE_LOCAL_PROXY_FALLBACK=0` to keep the old build-time snapshot.
 - **Proxy diagnostic privacy ([#7233](https://github.com/codewhale-hq/codewhale/issues/7233)):** malformed MCP proxy warnings omit configured values; local-proxy log labels mask userinfo and omit URL paths, queries and fragments. Routing is unchanged. All 23 existing proxy tests passed on macOS; runtime log capture and other platforms remain unqualified. Thanks [@SparkofSpike](https://github.com/SparkofSpike) for the report.
 - **Fork, undo and retry work after a workspace drift notice (#7234):** the history-boundary walks now treat a whole `<context_update>` envelope as engine-owned, so a session that received one can be cut at every saved turn. A person quoting a notice or a truncated envelope still counts as their own prompt.

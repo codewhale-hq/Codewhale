@@ -831,37 +831,31 @@ fn contained_bare_native_row_imports_but_an_unresolved_sibling_never_installs_a_
     let build = |mixed: bool| {
         let f = fixture(
             Some(&format!(
-                "- insert:\n  - {{id: native-row, name: '@demo/profile'}}\n{}",
+                "- insert:\n  - {{id: native-row, name: '@demo/tools-dsh'}}\n{}",
                 if mixed {
                     "  - {id: missing, name: absent-package}\n"
                 } else {
                     ""
                 }
             )),
-            None,
+            Some(json!({
+                "type": "module",
+                "exports": "./index.mjs",
+                "engines": {"dsh": ">=0.2.0-rc.1 <0.3.0-0"}
+            })),
         );
-        let dir = f.bundle.join("node_modules/@demo/profile");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(
-            dir.join("package.json"),
-            r#"{"name":"@demo/profile","type":"module","exports":"./index.mjs"}"#,
-        )
-        .unwrap();
-        fs::write(dir.join("index.mjs"),"export const inject=['prompt'];export function apply(ctx){ctx.prompt.registerSection({id:'profile',text:'actual closed bare module'})}\n").unwrap();
+        fs::write(f.bundle.join("index.mjs"),"export const inject=['prompt'];export function apply(ctx){ctx.prompt.registerSection({id:'profile',text:'actual closed bare module'})}\n").unwrap();
         f
     };
     let valid = build(false);
     let converted = convert_package(&valid.bundle, &valid.output).unwrap();
     assert!(converted.requires_native);
-    assert_eq!(converted.native_rows, ["@demo/profile"]);
+    assert_eq!(converted.native_rows, ["@demo/tools-dsh"]);
     let spec: Json =
         serde_json::from_slice(&fs::read(valid.output.join("native/composition.json")).unwrap())
             .unwrap();
-    assert_eq!(spec["modules"][0]["name"], "@demo/profile");
-    assert_eq!(
-        spec["modules"][0]["path"],
-        "node_modules/@demo/profile/index.mjs"
-    );
+    assert_eq!(spec["modules"][0]["name"], "@demo/tools-dsh");
+    assert_eq!(spec["modules"][0]["path"], "index.mjs");
     assert!(
         codewhale_plugins::manifest::PluginManifest::validate_from_path(
             &valid.output.join("plugin.json")

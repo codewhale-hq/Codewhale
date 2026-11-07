@@ -3939,13 +3939,9 @@ struct CoordinationProcessLock {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-/// Marker prefix for a coordination-lock failure whose holder is THIS
-/// process: an engine swap (model/provider switch) constructs the new
-/// engine's manager while the old engine still holds the flock on its own
-/// fd, and flock treats a second descriptor in the same process as a
-/// conflict. This is a transient handover that self-heals on the next
-/// projection retry (#5036) — UI surfaces must not present it as "another
-/// Codewhale process" (owner report, 2026-08-04).
+/// Marker prefix retained for presentation compatibility with same-process
+/// handover notes from earlier hosts. It does not control lock acquisition
+/// or retry.
 pub const COORDINATION_SAME_PROCESS_HANDOVER: &str =
     "handing delegated coordination between engines in this process";
 
@@ -4036,23 +4032,10 @@ impl CoordinationProcessLock {
             }),
             Ok(Err(error)) => {
                 let _ = thread.join();
-                let holder_pid = std::fs::read_to_string(&lock_path)
-                    .ok()
-                    .and_then(|contents| contents.trim().parse::<u32>().ok());
-                if holder_pid == Some(std::process::id()) {
-                    Err(anyhow!(
-                        "{COORDINATION_SAME_PROCESS_HANDOVER} for {}: {error}",
-                        state_root.display()
-                    ))
-                } else {
-                    Err(anyhow!(
-                        "another Codewhale process{} owns delegated coordination for {}: {error}",
-                        holder_pid
-                            .map(|pid| format!(" (pid {pid})"))
-                            .unwrap_or_default(),
-                        state_root.display()
-                    ))
-                }
+                Err(anyhow!(
+                    "delegated coordination lock is unavailable for {}: {error}; close any other running or suspended Codewhale session using this workspace, then restart this Runtime if admission was refused",
+                    state_root.display()
+                ))
             }
             Err(error) => {
                 drop(release_tx);
@@ -4166,7 +4149,7 @@ pub struct SubAgentManager {
     /// capture the most recent checkpoint.
     last_persist_at: Option<Instant>,
     persist_pending: bool,
-    /// #3803: last time `cleanup` ran. The sidebar refresh (`Op::ListSubAgents`)
+    /// #3803: last time a cleanup attempt finished. The sidebar refresh (`Op::ListSubAgents`)
     /// renders from a read-only `list()` snapshot and only runs the
     /// write-locked `cleanup` on a bounded cadence, so a UI refresh storm during
     /// a sub-agent fanout no longer contends for the write lock on every request.
@@ -11338,7 +11321,9 @@ impl SubAgentManager {
     /// given duration. Returns the number of running agents auto-cancelled
     /// during this pass.
     pub fn cleanup(&mut self, max_age: Duration) -> Result<usize> {
-        self.with_store_transaction(|held| held.cleanup_inner(None, max_age))
+        let result = self.with_store_transaction(|held| held.cleanup_inner(None, max_age));
+        self.last_cleanup_at = Some(Instant::now());
+        result
     }
 
     pub fn cleanup_for_session(
@@ -11346,7 +11331,10 @@ impl SubAgentManager {
         active_session_id: &str,
         max_age: Duration,
     ) -> Result<usize> {
-        self.with_store_transaction(|held| held.cleanup_inner(Some(active_session_id), max_age))
+        let result = self
+            .with_store_transaction(|held| held.cleanup_inner(Some(active_session_id), max_age));
+        self.last_cleanup_at = Some(Instant::now());
+        result
     }
 
     fn cleanup_inner(
@@ -11592,18 +11580,18 @@ impl SubAgentManager {
             self.pending_handle_evictions
                 .push((agent_id, owner_session_id));
         }
-        self.last_cleanup_at = Some(Instant::now());
         Ok(auto_cancelled)
     }
 
-    /// #3803: whether enough time has elapsed since the last `cleanup` that the
-    /// next sidebar refresh should run the write-locked cleanup again. Every
-    /// other refresh renders from the read-only `list()` snapshot, so a UI
-    /// refresh storm during a fanout does not take the write lock per request.
+    /// #3803: whether the next sidebar refresh should attempt cleanup.
+    /// Read-only managers without a process lock only render their refusal.
+    /// Other managers use the last attempt's interval to bound cleanup locking.
     #[must_use]
     pub fn cleanup_due(&self, min_interval: Duration) -> bool {
-        self.last_cleanup_at
-            .is_none_or(|last| last.elapsed() >= min_interval)
+        (!self.coordination_snapshot_read_only || self.holds_coordination_process_lock())
+            && self
+                .last_cleanup_at
+                .is_none_or(|last| last.elapsed() >= min_interval)
     }
 
     #[must_use]
