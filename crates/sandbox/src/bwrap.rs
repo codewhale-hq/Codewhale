@@ -190,6 +190,7 @@ pub fn is_available() -> bool {
 ///
 /// A `Vec<String>` representing the full bwrap invocation.
 #[cfg(target_os = "linux")]
+#[expect(clippy::too_many_arguments)]
 pub fn build_bwrap_command(
     cwd: &std::path::Path,
     program: &str,
@@ -214,6 +215,7 @@ pub fn build_bwrap_command(
 }
 
 #[cfg(target_os = "linux")]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn build_bwrap_command_with_read_paths(
     cwd: &std::path::Path,
     program: &str,
