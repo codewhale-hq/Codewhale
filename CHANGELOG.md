@@ -14,6 +14,9 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **Worktrees for parallel workspaces:** `GET /v1/worktrees` lists a repository's worktrees, `POST /v1/worktrees` creates a branch and its own checkout under `<repository>/.codewhale/worktrees/` through the existing lane provisioning, and `POST /v1/worktrees/remove` archives a clean managed one without `--force`, keeping the branch. A client starts a thread in the new folder, so several agents can work on one project without sharing files. (codewhale-hq/codewhale-app#3500)
+- **Thread-scoped snapshots:** `GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept `?thread_id=` and act on that thread's workspace under the same restore admission rule. (codewhale-hq/codewhale-app#3500)
+- **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine exposes a trusted and enabled plugin's client entry and assets through two loopback-only, read-only routes with bounded sizes, confined paths and safe MIME/no-store responses; no other plugin route gains an unauthenticated path. (#2, #3)
 - **Present final files:** the read-only `present` tool takes 1–32 existing
   workspace files, streams their SHA-256 and byte counts, and returns an
   auditable handoff receipt without copying, moving or uploading them. It is
@@ -193,6 +196,8 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Git writes land in the right workspace:** stage, unstage, discard, commit, push and branch take `?thread_id=` and run in that thread's recorded workspace, matching the read routes. Before, they always ran in the server's own folder, so a commit asked for a thread in another folder could land in the wrong tree.
+- **ChatGPT sign-in tolerates a small device clock skew:** identity-token expiry and not-before checks allow the same 60-second tolerance already used for ordinary network time drift, while signature, issuer, audience, subject and nonce checks remain exact. The diagnostic text still names the exact failed check when a token is genuinely invalid.
 - **Remaining long-blocking work moved off async callers (#6553):** route
   credential and certificate preflight, worktree creation, Runtime Chat relay
   and remote-control journal transactions, and the remaining session, branch,
