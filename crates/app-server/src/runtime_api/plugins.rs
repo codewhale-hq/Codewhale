@@ -680,6 +680,42 @@ async fn plugin_ui_manifest(
     Ok(None)
 }
 
+async fn plugin_ui_declaration(
+    plugin: &LoadedPlugin,
+    staged_root: &FsPath,
+) -> Result<(PathBuf, Value), ApiError> {
+    let Some((ui_root, manifest_path)) = plugin_ui_manifest(plugin, staged_root).await? else {
+        return Err(ApiError::not_found(format!(
+            "plugin '{}' declares no dsh.client UI; package.json is absent from its staged bundle and source/ directory",
+            plugin.name()
+        )));
+    };
+    let manifest_display = manifest_path
+        .strip_prefix(staged_root)
+        .map(ui_relative_display)
+        .unwrap_or_else(|_| "package.json".to_string());
+    let manifest_bytes = ui_file_bytes(&manifest_path)
+        .await
+        .map_err(|error| ui_file_refusal(plugin, &manifest_display, error))?;
+    let manifest: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+        ApiError::bad_request(format!(
+            "plugin '{}' {manifest_display} is not valid JSON: {error}",
+            plugin.name()
+        ))
+    })?;
+    if manifest
+        .get("dsh")
+        .and_then(|dsh| dsh.get("client"))
+        .is_none_or(Value::is_null)
+    {
+        return Err(ApiError::not_found(format!(
+            "plugin '{}' declares no dsh.client UI in {manifest_display}; add dsh.client and exports[\"./client\"] to expose client assets",
+            plugin.name()
+        )));
+    }
+    Ok((ui_root, manifest))
+}
+
 fn plugin_ui_base(
     state: &RuntimeApiState,
     selector: &str,
@@ -1170,35 +1206,7 @@ pub(super) async fn get_plugin_ui(
         )));
     }
     let (plugin, staged_root) = gated_plugin_ui_root(&state, &selector).await?;
-    let Some((ui_root, manifest_path)) = plugin_ui_manifest(&plugin, &staged_root).await? else {
-        return Err(ApiError::not_found(format!(
-            "plugin '{}' declares no dsh.client UI; package.json is absent from its staged bundle and source/ directory",
-            plugin.name()
-        )));
-    };
-    let manifest_display = manifest_path
-        .strip_prefix(&staged_root)
-        .map(ui_relative_display)
-        .unwrap_or_else(|_| "package.json".to_string());
-    let manifest_bytes = ui_file_bytes(&manifest_path)
-        .await
-        .map_err(|error| ui_file_refusal(&plugin, &manifest_display, error))?;
-    let manifest: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
-        ApiError::bad_request(format!(
-            "plugin '{}' {manifest_display} is not valid JSON: {error}",
-            plugin.name()
-        ))
-    })?;
-    if manifest
-        .get("dsh")
-        .and_then(|dsh| dsh.get("client"))
-        .is_none_or(Value::is_null)
-    {
-        return Err(ApiError::not_found(format!(
-            "plugin '{}' declares no dsh.client UI in {manifest_display}; add dsh.client and exports[\"./client\"] to expose client assets",
-            plugin.name()
-        )));
-    }
+    let (ui_root, manifest) = plugin_ui_declaration(&plugin, &staged_root).await?;
     let entry = match ui_client_entry(&manifest) {
         Some(raw) => {
             let relative = ui_relative_path(&raw).map_err(|reason| {
@@ -1259,10 +1267,7 @@ pub(super) async fn get_plugin_ui_asset(
         ));
     }
     let (plugin, staged_root) = gated_plugin_ui_root(&state, &selector).await?;
-    let ui_root = plugin_ui_manifest(&plugin, &staged_root)
-        .await?
-        .map(|(root, _)| root)
-        .unwrap_or(staged_root);
+    let (ui_root, _) = plugin_ui_declaration(&plugin, &staged_root).await?;
     let relative = ui_relative_path(&path).map_err(|reason| {
         ApiError::bad_request(format!(
             "plugin '{}' UI path '{path}' is invalid: {reason}",
