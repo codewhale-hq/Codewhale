@@ -2849,6 +2849,37 @@ async fn apply_command_result_inner(
             AppAction::EditProjectHooks => {
                 edit_project_hooks_from_tui(terminal, app, config);
             }
+            AppAction::OpenModelConnectionSetup => {
+                begin_first_connection_setup(app);
+                app.view_stack
+                    .push(crate::tui::account_login::ConnectionSetupView::new(
+                        app.ui_locale,
+                    ));
+            }
+            AppAction::StartAccountConnect => {
+                begin_first_connection_setup(app);
+                if app.view_stack.contains_kind(ModalKind::AccountLogin) {
+                    app.view_stack.pop_through_kind(ModalKind::AccountLogin);
+                }
+                app.view_stack
+                    .push(crate::tui::account_login::AccountLoginView::connect(
+                        app.config_profile.clone(),
+                        app.ui_locale,
+                    ));
+            }
+            AppAction::StartAccountLogin | AppAction::StartAccountLogout => {
+                if app.view_stack.top_kind() != Some(ModalKind::AccountLogin) {
+                    if app.view_stack.contains_kind(ModalKind::AccountLogin) {
+                        app.view_stack.pop_through_kind(ModalKind::AccountLogin);
+                    }
+                    app.view_stack
+                        .push(crate::tui::account_login::AccountLoginView::new(
+                            app.config_profile.clone(),
+                            matches!(action, AppAction::StartAccountLogout),
+                            app.ui_locale,
+                        ));
+                }
+            }
             AppAction::StartXaiDeviceLogin => {
                 let _switched =
                     run_xai_device_login_from_tui(terminal, app, engine_handle, config).await?;

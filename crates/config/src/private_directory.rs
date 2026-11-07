@@ -1700,17 +1700,39 @@ fn secure_windows_owner_only_handle(file: &File, inherit_to_children: bool) -> R
 
 #[cfg(windows)]
 pub(crate) fn verify_windows_owner_only_handle(file: &File) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    verify_windows_owner_only_handle_access(file, FILE_ALL_ACCESS, false)
+}
+
+#[cfg(windows)]
+pub fn verify_windows_owner_only_read_execute_handle(file: &File) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
+
+    verify_windows_owner_only_handle_access(file, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, true)
+}
+
+#[cfg(windows)]
+fn verify_windows_owner_only_handle_access(
+    file: &File,
+    expected_access: u32,
+    require_protected: bool,
+) -> Result<()> {
     use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Foundation::{
+        ERROR_SUCCESS, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE,
+    };
     use windows_sys::Win32::Security::Authorization::{
         EXPLICIT_ACCESS_W, GRANT_ACCESS, GetExplicitEntriesFromAclW, GetSecurityInfo,
         SE_FILE_OBJECT, SET_ACCESS, TRUSTEE_IS_SID,
     };
     use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, EqualSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID,
+        ACL, DACL_SECURITY_INFORMATION, EqualSid, GetSecurityDescriptorControl,
+        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
     };
-    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    };
 
     let user = CurrentWindowsUser::open()?;
     let mut owner: PSID = std::ptr::null_mut();
@@ -1734,6 +1756,18 @@ pub(crate) fn verify_windows_owner_only_handle(file: &File) -> Result<()> {
             .context("reading Codewhale-owned xAI OAuth security descriptor");
     }
     let _descriptor = WindowsLocalAllocation(descriptor.cast());
+    if require_protected {
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("reading Codewhale-owned storage DACL protection");
+        }
+        anyhow::ensure!(
+            control & SE_DACL_PROTECTED != 0,
+            "Codewhale-owned storage DACL is not protected"
+        );
+    }
     // SAFETY: `owner` is non-null; `user.sid()` is owned by `user`.
     anyhow::ensure!(
         !owner.is_null() && unsafe { EqualSid(owner, user.sid()) } != 0,
@@ -1760,13 +1794,28 @@ pub(crate) fn verify_windows_owner_only_handle(file: &File) -> Result<()> {
     // SAFETY: `count == 1` proves the first returned entry is initialized.
     let entry = unsafe { &*entries };
     let trustee_sid: PSID = entry.Trustee.ptstrName.cast();
+    let normalized_access = |access: u32| {
+        let mut normalized =
+            access & !(GENERIC_ALL | GENERIC_EXECUTE | GENERIC_READ | GENERIC_WRITE);
+        for (generic, specific) in [
+            (GENERIC_ALL, FILE_ALL_ACCESS),
+            (GENERIC_EXECUTE, FILE_GENERIC_EXECUTE),
+            (GENERIC_READ, FILE_GENERIC_READ),
+            (GENERIC_WRITE, FILE_GENERIC_WRITE),
+        ] {
+            if access & generic != 0 {
+                normalized |= specific;
+            }
+        }
+        normalized
+    };
     // SAFETY: form and null checked in this expression; sid owned by `user`.
     anyhow::ensure!(
         entry.Trustee.TrusteeForm == TRUSTEE_IS_SID
             && !trustee_sid.is_null()
             && unsafe { EqualSid(trustee_sid, user.sid()) } != 0
             && matches!(entry.grfAccessMode, SET_ACCESS | GRANT_ACCESS)
-            && entry.grfAccessPermissions == FILE_ALL_ACCESS,
+            && normalized_access(entry.grfAccessPermissions) == normalized_access(expected_access),
         "Codewhale-owned xAI OAuth DACL is not current-user-only"
     );
     Ok(())

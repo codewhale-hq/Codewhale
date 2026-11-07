@@ -2884,37 +2884,6 @@ pub fn lsp_command(app: &mut App, arg: Option<&str>) -> CommandResult {
     }
 }
 
-pub(crate) fn clear_local_account_session() -> Result<bool, String> {
-    use codewhale_secrets::account::{
-        ACCOUNT_API_BASE_ENV, AccountSessionStore, DEFAULT_ACCOUNT_API_BASE,
-        secure_account_session_secrets,
-    };
-    let secrets = secure_account_session_secrets().map_err(|error| error.to_string())?;
-    let api_base = std::env::var(ACCOUNT_API_BASE_ENV)
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_ACCOUNT_API_BASE.to_string());
-    let store = AccountSessionStore::new(secrets, None, &api_base);
-    let had = store.load().map_err(|error| error.to_string())?.is_some();
-    store.clear().map_err(|error| error.to_string())?;
-    Ok(had)
-}
-
-pub(crate) fn clear_legacy_sandbox_slot() -> Result<bool, String> {
-    let secrets = codewhale_secrets::Secrets::auto_detect();
-    let had = secrets
-        .get(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT)
-        .map_err(|error| error.to_string())?
-        .is_some_and(|value| !value.trim().is_empty());
-    if had {
-        secrets
-            .delete(codewhale_secrets::LEGACY_SANDBOX_TOKEN_SLOT)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(had)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

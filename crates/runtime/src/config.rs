@@ -5985,26 +5985,65 @@ impl Config {
         {
             return None;
         }
-        let access = self.account_model_access.read().clone()?;
-        if access.expires_at <= chrono::Utc::now().timestamp() {
+        if std::env::var(codewhale_secrets::account::ACCOUNT_API_BASE_ENV)
+            .ok()
+            .filter(|base| !base.trim().is_empty())
+            .is_some_and(|base| {
+                base.trim().trim_end_matches('/')
+                    != codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE
+            })
+        {
+            return None;
+        }
+        let access = self.account_model_access.read().clone();
+        let profile = self.account_profile.as_deref();
+        if access.as_ref().is_some_and(|access| {
+            codewhale_secrets::account::normalize_account_profile(access.profile.as_deref())
+                != codewhale_secrets::account::normalize_account_profile(profile)
+        }) {
             return None;
         }
         // Check the shared session again at use, so a late install cannot
         // resurrect a session removed by another local process.
         let secrets = codewhale_secrets::account::secure_account_session_secrets().ok()?;
-        let account = codewhale_secrets::account::AccountSessionStore::new(
+        let snapshot = codewhale_secrets::account::AccountSessionStore::new(
             secrets,
-            access.profile.as_deref(),
+            profile,
             codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE,
         )
-        .runtime_info_at(chrono::Utc::now())
+        .snapshot()
         .ok()?;
+        let now = chrono::Utc::now();
+        let account = snapshot.runtime_info_at(now).ok()?;
+        if access
+            .as_ref()
+            .is_some_and(|access| account.session_id.as_deref() != Some(access.session_id.as_str()))
+        {
+            return None;
+        }
+        if self
+            .required_account_model_owner
+            .as_ref()
+            .is_some_and(|owner| account.account_id.as_ref() != Some(owner))
+        {
+            return None;
+        }
+        if !self.session_provider_keys_only
+            && matches!(
+                account.state,
+                codewhale_secrets::account::AccountSessionState::Authenticated
+                    | codewhale_secrets::account::AccountSessionState::OfflineCached
+            )
+            && let Some(cached) = snapshot.device_access().ok()?
+            && cached.expires_at > now.timestamp()
+            && account.account_id.as_deref() == Some(cached.account_id.as_str())
+            && account.session_id.as_deref() == Some(cached.session_id.as_str())
+        {
+            return Some(cached.credential);
+        }
+        let access = access.filter(|access| access.expires_at > now.timestamp())?;
         (account.state == codewhale_secrets::account::AccountSessionState::Authenticated
-            && account.session_id.as_deref() == Some(access.session_id.as_str())
-            && self
-                .required_account_model_owner
-                .as_ref()
-                .is_none_or(|owner| account.account_id.as_ref() == Some(owner)))
+            && account.session_id.as_deref() == Some(access.session_id.as_str()))
         .then(|| access.credential.expose_secret().to_string())
     }
 

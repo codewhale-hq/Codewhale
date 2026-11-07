@@ -110,6 +110,7 @@ use codewhale_protocol::fleet::{
 };
 use codewhale_runtime::skill_state::SkillStateStore;
 
+mod account;
 mod auth;
 mod avatars;
 mod computer_display;
@@ -127,6 +128,7 @@ mod plans;
 mod plugins;
 pub(crate) mod review;
 mod secrets;
+pub use self::secrets::{SetAccountModelAccessRequest, install_account_model_access};
 pub(crate) mod sessions;
 mod targets;
 mod terminal;
@@ -201,6 +203,7 @@ pub struct RuntimeApiState {
     config: Arc<parking_lot::RwLock<Config>>,
     workspace: PathBuf,
     plugin_discovery: Arc<codewhale_plugins::PluginDiscoveryContext>,
+    plugin_ui_grants: Arc<plugins::PluginUiGrants>,
     task_manager: SharedTaskManager,
     runtime_threads: SharedRuntimeThreadManager,
     cors_origins: Vec<String>,
@@ -1639,6 +1642,7 @@ struct McpServerEntry {
     command: Option<String>,
     url: Option<String>,
     connected: bool,
+    has_connection_backoff: Option<bool>,
     enabled_tools: Vec<String>,
     disabled_tools: Vec<String>,
     always_allow_tools: Vec<String>,
@@ -2338,6 +2342,7 @@ pub async fn run_http_server(
         config: Arc::new(parking_lot::RwLock::new(config.clone())),
         workspace,
         plugin_discovery,
+        plugin_ui_grants: Arc::new(plugins::PluginUiGrants::default()),
         task_manager: task_manager.clone(),
         runtime_threads,
         cors_origins: options.cors_origins.clone(),
@@ -3288,6 +3293,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(plugins::get_plugin_ui),
         )
         .route(
+            "/v1/apps/plugins/{selector}/ui/{*path}",
+            get(plugins::get_plugin_ui_asset),
+        )
+        .route(
             "/v1/apps/plugins/{selector}/update",
             post(plugins::update_plugin_api),
         )
@@ -3302,6 +3311,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/apps/plugins/{selector}/disable",
             post(plugins::disable_plugin_api),
+        )
+        .route(
+            "/v1/apps/plugins/{selector}/restage",
+            post(plugins::restage_plugin_api),
         )
         .route(
             "/v1/apps/plugins/{selector}/revoke",
@@ -3449,10 +3462,6 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         // listener here. The response already redacts account detail for
         // unauthorized requests; it never mutates state.
         .route("/v1/runtime/info", get(runtime_info))
-        .route(
-            "/v1/apps/plugins/{selector}/ui/{*path}",
-            get(plugins::get_plugin_ui_asset),
-        )
         // Authenticates per handler: the display WS also takes a single-use
         // ticket, and client-token minting is master-token only.
         .merge(computer_display::router(
@@ -3460,6 +3469,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             state.runtime_token.clone(),
         ))
         .merge(api_routes)
+        .merge(account::routes(&state))
         .layer(cors_layer(&state.cors_origins))
         .with_state(state)
 }
@@ -7352,6 +7362,9 @@ async fn list_mcp_servers(
             connected: pool
                 .as_ref()
                 .is_some_and(|pool| pool.connected_servers().contains(&name.as_str())),
+            has_connection_backoff: pool
+                .as_ref()
+                .and_then(|pool| pool.has_connection_backoff(&name, config.timeouts, &server_cfg)),
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
             always_allow_tools: server_cfg.always_allow_tools.clone(),
@@ -7376,6 +7389,7 @@ async fn list_mcp_servers(
             connected: pool
                 .as_ref()
                 .is_some_and(|pool| pool.connected_servers().contains(&name.as_str())),
+            has_connection_backoff: None,
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
             always_allow_tools: server_cfg.always_allow_tools.clone(),
@@ -14891,6 +14905,7 @@ base_url = "http://127.0.0.1:9/v1"
             config: Arc::new(parking_lot::RwLock::new(config)),
             workspace: workspace.clone(),
             plugin_discovery: codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv(),
+            plugin_ui_grants: Arc::new(plugins::PluginUiGrants::default()),
             task_manager,
             runtime_threads,
             cors_origins: Vec::new(),

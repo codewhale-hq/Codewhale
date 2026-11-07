@@ -13,6 +13,8 @@
 //! `/plugin marketplace` command: local catalog documents only, tiers are
 //! display-only, and installs route through the same reviewed installer.
 
+use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -25,7 +27,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
+use sha2::{Digest, Sha256};
 
 use codewhale_plugins::marketplace::document::{
     CatalogInstallResolution, load_catalog_document, resolve_candidate_install,
@@ -179,6 +181,7 @@ pub(super) struct PluginUiSlotResponse {
     pub(super) slot: String,
     pub(super) base: String,
     pub(super) entry: String,
+    pub(super) revision: String,
 }
 
 enum UiFileError {
@@ -506,87 +509,52 @@ fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
     response
 }
 
-async fn ui_file_path(root: &FsPath, relative: &FsPath) -> Result<PathBuf, UiFileError> {
-    if relative.as_os_str().is_empty() {
-        return Err(UiFileError::Invalid("it is empty".into()));
-    }
-    let mut current = root.to_path_buf();
-    let mut last = None;
-    let mut components = relative.components().peekable();
-    while let Some(component) = components.next() {
-        let std::path::Component::Normal(part) = component else {
-            return Err(UiFileError::Invalid(
-                "it must be a relative path of literal components".into(),
-            ));
-        };
-        current.push(part);
-        let metadata = match tokio::fs::symlink_metadata(&current).await {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(UiFileError::Missing);
-            }
-            Err(error) => return Err(UiFileError::Internal(error.to_string())),
-        };
-        if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
-            return Err(UiFileError::Invalid(
-                "it must not traverse symbolic links".into(),
-            ));
-        }
-        if components.peek().is_some() {
-            if !metadata.is_dir() {
-                return Err(UiFileError::Missing);
-            }
-        } else {
-            last = Some(metadata);
-        }
-    }
-    let Some(metadata) = last else {
-        return Err(UiFileError::Invalid("it is empty".into()));
-    };
-    if !metadata.is_file() {
-        return Err(UiFileError::Invalid("it is not a regular file".into()));
-    }
-    let canonical =
-        tokio::fs::canonicalize(&current)
-            .await
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => UiFileError::Missing,
-                _ => UiFileError::Internal(error.to_string()),
-            })?;
-    if !canonical.starts_with(root) {
-        return Err(UiFileError::Invalid(
-            "it resolves outside the staged bundle".into(),
-        ));
-    }
-    Ok(canonical)
+#[derive(Clone)]
+struct PluginUiGrant {
+    selector: String,
+    authority: codewhale_config::PluginAuthority,
+    state_file: Arc<std::fs::File>,
+    root: PathBuf,
+    root_file: Arc<std::fs::File>,
+    ui_prefix: PathBuf,
+    file_hashes: Arc<BTreeMap<PathBuf, String>>,
+    expires: std::time::Instant,
 }
 
-async fn ui_file_bytes(path: &FsPath) -> Result<Vec<u8>, UiFileError> {
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => UiFileError::Missing,
-            _ => UiFileError::Internal(error.to_string()),
-        })?;
-    let metadata = file
-        .metadata()
-        .await
-        .map_err(|error| UiFileError::Internal(error.to_string()))?;
-    if !metadata.is_file() {
-        return Err(UiFileError::Invalid("it is not a regular file".into()));
+#[derive(Default)]
+pub(super) struct PluginUiGrants {
+    entries: parking_lot::Mutex<HashMap<String, PluginUiGrant>>,
+}
+
+impl PluginUiGrants {
+    fn insert(&self, grant: PluginUiGrant) -> String {
+        let mut entries = self.entries.lock();
+        let now = std::time::Instant::now();
+        entries.retain(|_, value| value.expires > now);
+        if entries.len() >= 256 {
+            if let Some(oldest) = entries
+                .iter()
+                .min_by_key(|(_, value)| value.expires)
+                .map(|(key, _)| key.clone())
+            {
+                entries.remove(&oldest);
+            }
+        }
+        loop {
+            let revision = format!("\"{}\"", uuid::Uuid::new_v4());
+            if !entries.contains_key(&revision) {
+                entries.insert(revision.clone(), grant);
+                return revision;
+            }
+        }
     }
-    if metadata.len() > PLUGIN_UI_MAX_BYTES {
-        return Err(UiFileError::TooLarge);
+
+    fn get(&self, revision: &str) -> Option<PluginUiGrant> {
+        let mut entries = self.entries.lock();
+        let now = std::time::Instant::now();
+        entries.retain(|_, value| value.expires > now);
+        entries.get(revision).cloned()
     }
-    let mut file = file.take(PLUGIN_UI_MAX_BYTES + 1);
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.read_to_end(&mut bytes)
-        .await
-        .map_err(|error| UiFileError::Internal(error.to_string()))?;
-    if bytes.len() as u64 > PLUGIN_UI_MAX_BYTES {
-        return Err(UiFileError::TooLarge);
-    }
-    Ok(bytes)
 }
 
 fn ui_file_refusal(plugin: &LoadedPlugin, display: &str, error: UiFileError) -> ApiError {
@@ -610,97 +578,164 @@ fn ui_file_refusal(plugin: &LoadedPlugin, display: &str, error: UiFileError) -> 
     }
 }
 
-async fn ui_staged_root(plugin: &LoadedPlugin) -> Result<PathBuf, ApiError> {
-    let Some(staged_root) = plugin.staged_root.as_deref() else {
+fn ui_root_matches(grant: &PluginUiGrant) -> Result<(), UiFileError> {
+    let metadata = std::fs::symlink_metadata(&grant.root)
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    if !metadata.is_dir() || codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
+        return Err(UiFileError::Invalid("the staged root changed".into()));
+    }
+    let (canonical, current) = codewhale_util::workspace_dir::open_workspace_directory(&grant.root)
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    if canonical != grant.root
+        || !codewhale_util::files::same_file(&grant.root_file, &current)
+            .map_err(|error| UiFileError::Internal(error.to_string()))?
+    {
+        return Err(UiFileError::Invalid("the staged root changed".into()));
+    }
+    Ok(())
+}
+
+fn verified_ui_file(grant: &PluginUiGrant, relative: &FsPath) -> Result<Vec<u8>, UiFileError> {
+    let expected = grant
+        .file_hashes
+        .get(relative)
+        .ok_or(UiFileError::Missing)?;
+    ui_root_matches(grant)?;
+    let file = codewhale_util::fs_confined::open_read(&grant.root, &grant.root.join(relative))
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => UiFileError::Missing,
+            _ => UiFileError::Invalid(error.to_string()),
+        })?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    if metadata.len() > PLUGIN_UI_MAX_BYTES {
+        return Err(UiFileError::TooLarge);
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(PLUGIN_UI_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    if bytes.len() as u64 > PLUGIN_UI_MAX_BYTES {
+        return Err(UiFileError::TooLarge);
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"codewhale-plugin-file-bytes-v1\0");
+    hash.update(&bytes);
+    let actual = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual != *expected {
+        return Err(UiFileError::Invalid(
+            "the file no longer matches its reviewed bytes".into(),
+        ));
+    }
+    ui_root_matches(grant)?;
+    Ok(bytes)
+}
+
+fn admit_ui_grant(state: &RuntimeApiState, grant: &PluginUiGrant) -> Result<(), ApiError> {
+    if grant.expires <= std::time::Instant::now() {
+        return Err(ui_stale_revision());
+    }
+    let registry = registry_for_state(state);
+    if !registry
+        .get(&grant.selector)
+        .is_some_and(LoadedPlugin::active)
+        || registry.authority_for(&grant.selector).as_ref() != Some(&grant.authority)
+    {
+        return Err(ui_stale_revision());
+    }
+    codewhale_plugins::registry::capture_plugin_state_authority(
+        &grant.authority,
+        Some(&grant.state_file),
+    )
+    .map_err(|_| ui_stale_revision())?;
+    ui_root_matches(grant).map_err(|_| ui_stale_revision())?;
+    Ok(())
+}
+
+fn ui_stale_revision() -> ApiError {
+    ApiError {
+        status: StatusCode::PRECONDITION_FAILED,
+        message: "plugin UI authorization has expired or changed; reopen the plugin".into(),
+        code: None,
+    }
+}
+
+fn prepare_plugin_ui(
+    state: &RuntimeApiState,
+    selector: &str,
+) -> Result<(String, PluginUiGrant), ApiError> {
+    let registry = registry_for_state(state);
+    let plugin = registry
+        .get(selector)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))?;
+    if !plugin.active() {
         return Err(ApiError::bad_request(format!(
-            "plugin '{}' has no staged runtime snapshot; review, trust and enable it to stage its files",
+            "plugin '{}' must be active before loading its client UI",
             plugin.name()
         )));
-    };
-    let root = tokio::fs::canonicalize(staged_root)
-        .await
-        .map_err(|error| {
-            ApiError::not_found(format!(
-                "plugin '{}' staged runtime snapshot is unavailable: {error}",
-                plugin.name()
-            ))
-        })?;
-    let metadata = tokio::fs::metadata(&root).await.map_err(|error| {
-        ApiError::not_found(format!(
-            "plugin '{}' staged runtime snapshot is unavailable: {error}",
+    }
+    let staged_root = plugin.staged_root.as_ref().ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "plugin '{}' has no staged runtime snapshot",
             plugin.name()
         ))
     })?;
-    if !metadata.is_dir() {
-        return Err(ApiError::not_found(format!(
-            "plugin '{}' staged runtime snapshot is not a directory",
-            plugin.name()
-        )));
+    let authority = registry
+        .authority_for(selector)
+        .ok_or_else(|| ApiError::bad_request("plugin UI has no reviewed authority"))?;
+    let state_file = codewhale_plugins::registry::capture_plugin_state_authority(&authority, None)
+        .map_err(|_| ui_stale_revision())?;
+    codewhale_plugins::registry::verify_plugin_authority(&authority)
+        .map_err(|_| ui_stale_revision())?;
+    let validated =
+        codewhale_plugins::manifest::PluginManifest::validate_from_path(&authority.staged_manifest)
+            .map_err(|_| ui_stale_revision())?;
+    if validated.content_hash != authority.content_hash
+        || validated.capability_hash != authority.capability_hash
+    {
+        return Err(ui_stale_revision());
     }
-    Ok(root)
-}
-
-async fn gated_plugin_ui_root(
-    state: &RuntimeApiState,
-    selector: &str,
-) -> Result<(LoadedPlugin, PathBuf), ApiError> {
-    let plugin = find_plugin(state, selector)?;
-    if !plugin.trusted() {
-        return Err(ApiError::bad_request(format!(
-            "plugin '{}' is not trusted; review its capabilities and trust it before loading its client UI",
-            plugin.name()
-        )));
+    let metadata = std::fs::symlink_metadata(staged_root).map_err(|_| ui_stale_revision())?;
+    if !metadata.is_dir() || codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
+        return Err(ui_stale_revision());
     }
-    if !plugin.enabled {
-        return Err(ApiError::bad_request(format!(
-            "plugin '{}' is disabled; enable it after trust before loading its client UI",
-            plugin.name()
-        )));
+    let (root, root_file) = codewhale_util::workspace_dir::open_workspace_directory(staged_root)
+        .map_err(|_| ui_stale_revision())?;
+    if root != validated.canonical_root {
+        return Err(ui_stale_revision());
     }
-    let root = ui_staged_root(&plugin).await?;
-    Ok((plugin, root))
-}
-
-async fn plugin_ui_manifest(
-    plugin: &LoadedPlugin,
-    staged_root: &FsPath,
-) -> Result<Option<(PathBuf, PathBuf)>, ApiError> {
+    let mut grant = PluginUiGrant {
+        selector: selector.to_string(),
+        authority,
+        state_file: Arc::new(state_file),
+        root,
+        root_file: Arc::new(root_file),
+        ui_prefix: PathBuf::new(),
+        file_hashes: Arc::new(validated.file_hashes),
+        expires: std::time::Instant::now() + std::time::Duration::from_secs(3600),
+    };
+    let mut found = None;
     for candidate in ["package.json", "source/package.json"] {
         let relative = FsPath::new(candidate);
-        let display = ui_relative_display(relative);
-        match ui_file_path(staged_root, relative).await {
-            Ok(path) => {
-                let root = path.parent().unwrap_or(staged_root).to_path_buf();
-                return Ok(Some((root, path)));
-            }
-            Err(UiFileError::Missing) => {}
-            Err(error) => return Err(ui_file_refusal(plugin, &display, error)),
+        if grant.file_hashes.contains_key(relative) {
+            let bytes = verified_ui_file(&grant, relative)
+                .map_err(|error| ui_file_refusal(&plugin, candidate, error))?;
+            found = Some((relative.to_path_buf(), bytes));
+            break;
         }
     }
-    Ok(None)
-}
-
-async fn plugin_ui_declaration(
-    plugin: &LoadedPlugin,
-    staged_root: &FsPath,
-) -> Result<(PathBuf, Value), ApiError> {
-    let Some((ui_root, manifest_path)) = plugin_ui_manifest(plugin, staged_root).await? else {
-        return Err(ApiError::not_found(format!(
-            "plugin '{}' declares no dsh.client UI; package.json is absent from its staged bundle and source/ directory",
-            plugin.name()
-        )));
-    };
-    let manifest_display = manifest_path
-        .strip_prefix(staged_root)
-        .map(ui_relative_display)
-        .unwrap_or_else(|_| "package.json".to_string());
-    let manifest_bytes = ui_file_bytes(&manifest_path)
-        .await
-        .map_err(|error| ui_file_refusal(plugin, &manifest_display, error))?;
-    let manifest: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+    let (manifest_path, bytes) = found.ok_or_else(|| ApiError::not_found(format!("plugin '{}' declares no dsh.client UI; package.json is absent from its staged bundle and source/ directory", plugin.name())).with_code("plugin_ui_not_declared"))?;
+    let manifest: Value = serde_json::from_slice(&bytes).map_err(|error| {
         ApiError::bad_request(format!(
-            "plugin '{}' {manifest_display} is not valid JSON: {error}",
-            plugin.name()
+            "plugin '{}' {} is not valid JSON: {error}",
+            plugin.name(),
+            ui_relative_display(&manifest_path)
         ))
     })?;
     if manifest
@@ -708,12 +743,23 @@ async fn plugin_ui_declaration(
         .and_then(|dsh| dsh.get("client"))
         .is_none_or(Value::is_null)
     {
-        return Err(ApiError::not_found(format!(
-            "plugin '{}' declares no dsh.client UI in {manifest_display}; add dsh.client and exports[\"./client\"] to expose client assets",
-            plugin.name()
-        )));
+        return Err(ApiError::not_found(format!("plugin '{}' declares no dsh.client UI in {}; add dsh.client and exports[\"./client\"] to expose client assets", plugin.name(), ui_relative_display(&manifest_path))).with_code("plugin_ui_not_declared"));
     }
-    Ok((ui_root, manifest))
+    grant.ui_prefix = manifest_path
+        .parent()
+        .unwrap_or(FsPath::new(""))
+        .to_path_buf();
+    let raw = ui_client_entry(&manifest).unwrap_or_else(|| "client.js".into());
+    let relative = ui_relative_path(&raw).map_err(|reason| {
+        ApiError::bad_request(format!(
+            "plugin '{}' dsh.client entry '{raw}' is invalid: {reason}",
+            plugin.name()
+        ))
+    })?;
+    verified_ui_file(&grant, &grant.ui_prefix.join(&relative))
+        .map_err(|error| ui_file_refusal(&plugin, &ui_relative_display(&relative), error))?;
+    admit_ui_grant(state, &grant)?;
+    Ok((ui_relative_display(&relative), grant))
 }
 
 fn plugin_ui_base(
@@ -874,7 +920,7 @@ async fn run_plugin_mutation(
     })
 }
 
-/// Run a registry state mutation (`trust`/`enable`/`disable`/`revoke`)
+/// Run a registry state mutation (`trust`/`enable`/`restage`/`disable`/`revoke`)
 /// against a fresh registry, then invalidate the MCP pool. Trust is the only
 /// one with a precondition beyond the registry's own checks: the request
 /// token must match the bundle's review token.
@@ -901,6 +947,7 @@ async fn run_registry_mutation(
     let action = match mutation {
         RegistryMutation::Trust { .. } => "trusted",
         RegistryMutation::Enable => "enabled",
+        RegistryMutation::Restage => "restaged",
         RegistryMutation::Disable => "disabled",
         RegistryMutation::Revoke => "trust-revoked",
     };
@@ -909,6 +956,7 @@ async fn run_registry_mutation(
     let result = match mutation {
         RegistryMutation::Trust { .. } => registry.trust(selector),
         RegistryMutation::Enable => registry.enable(selector),
+        RegistryMutation::Restage => registry.restage(selector),
         RegistryMutation::Disable => registry.disable(selector),
         RegistryMutation::Revoke => registry.revoke_trust(selector),
     };
@@ -956,6 +1004,7 @@ async fn run_registry_mutation(
 enum RegistryMutation<'a> {
     Trust { token: &'a str },
     Enable,
+    Restage,
     Disable,
     Revoke,
 }
@@ -1205,83 +1254,79 @@ pub(super) async fn get_plugin_ui(
             "slot '{slot}' is not supported; supported slot: 'customize.plugins.detail'"
         )));
     }
-    let (plugin, staged_root) = gated_plugin_ui_root(&state, &selector).await?;
-    let (ui_root, manifest) = plugin_ui_declaration(&plugin, &staged_root).await?;
-    let entry = match ui_client_entry(&manifest) {
-        Some(raw) => {
-            let relative = ui_relative_path(&raw).map_err(|reason| {
-                ApiError::bad_request(format!(
-                    "plugin '{}' dsh.client entry '{raw}' is invalid: {reason}",
-                    plugin.name()
-                ))
-            })?;
-            match ui_file_path(&ui_root, &relative).await {
-                Ok(_) => ui_relative_display(&relative),
-                Err(UiFileError::Missing) => {
-                    return Err(ApiError::not_found(format!(
-                        "plugin '{}' dsh.client entry '{raw}' does not exist in its staged bundle; update the plugin or fix exports[\"./client\"]",
-                        plugin.name()
-                    )));
-                }
-                Err(error) => {
-                    return Err(ui_file_refusal(
-                        &plugin,
-                        &ui_relative_display(&relative),
-                        error,
-                    ));
-                }
-            }
-        }
-        None => {
-            let fallback = PathBuf::from("client.js");
-            match ui_file_path(&ui_root, &fallback).await {
-                Ok(_) => ui_relative_display(&fallback),
-                Err(UiFileError::Missing) => {
-                    return Err(ApiError::not_found(format!(
-                        "plugin '{}' declares dsh.client but has no client entry; set exports[\"./client\"] or add client.js to the staged bundle",
-                        plugin.name()
-                    )));
-                }
-                Err(error) => {
-                    return Err(ui_file_refusal(
-                        &plugin,
-                        &ui_relative_display(&fallback),
-                        error,
-                    ));
-                }
-            }
-        }
-    };
+    let state_for_prepare = state.clone();
+    let selector_for_prepare = selector.clone();
+    let (entry, grant) = tokio::task::spawn_blocking(move || {
+        prepare_plugin_ui(&state_for_prepare, &selector_for_prepare)
+    })
+    .await
+    .map_err(|_| ApiError::internal("plugin UI preparation failed"))??;
     let base = plugin_ui_base(&state, &selector, &headers, &uri)?;
-    Ok(Json(PluginUiSlotResponse { slot, base, entry }))
+    let revision = state.plugin_ui_grants.insert(grant);
+    Ok(Json(PluginUiSlotResponse {
+        slot,
+        base,
+        entry,
+        revision,
+    }))
 }
 
 pub(super) async fn get_plugin_ui_asset(
     State(state): State<RuntimeApiState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((selector, path)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     if !peer.ip().is_loopback() {
         return Err(ApiError::forbidden(
             "plugin UI assets are available only from loopback",
         ));
     }
-    let (plugin, staged_root) = gated_plugin_ui_root(&state, &selector).await?;
-    let (ui_root, _) = plugin_ui_declaration(&plugin, &staged_root).await?;
-    let relative = ui_relative_path(&path).map_err(|reason| {
-        ApiError::bad_request(format!(
-            "plugin '{}' UI path '{path}' is invalid: {reason}",
-            plugin.name()
-        ))
+    let mut values = headers.get_all(header::IF_MATCH).iter();
+    let first = values.next().ok_or_else(|| ApiError {
+        status: StatusCode::PRECONDITION_REQUIRED,
+        message: "plugin UI revision is required".into(),
+        code: None,
     })?;
-    let display = ui_relative_display(&relative);
-    let staged_path = ui_file_path(&ui_root, &relative)
-        .await
-        .map_err(|error| ui_file_refusal(&plugin, &display, error))?;
-    let bytes = ui_file_bytes(&staged_path)
-        .await
-        .map_err(|error| ui_file_refusal(&plugin, &display, error))?;
-    Ok(ui_asset_response(bytes, ui_content_type(&relative)))
+    if values.next().is_some() {
+        return Err(ui_stale_revision());
+    }
+    let revision = first.to_str().map_err(|_| ui_stale_revision())?.to_string();
+    let grant = state
+        .plugin_ui_grants
+        .get(&revision)
+        .ok_or_else(ui_stale_revision)?;
+    if grant.selector != selector || grant.authority.workspace != state.workspace {
+        return Err(ui_stale_revision());
+    }
+    let relative = ui_relative_path(&path).map_err(|reason| {
+        ApiError::bad_request(format!("plugin UI path '{path}' is invalid: {reason}"))
+    })?;
+    let content_type = ui_content_type(&relative);
+    let state_for_asset = state.clone();
+    let bytes = tokio::task::spawn_blocking(move || {
+        codewhale_plugins::registry::verify_plugin_authority(&grant.authority)
+            .map_err(|_| ui_stale_revision())?;
+        let bytes = verified_ui_file(&grant, &grant.ui_prefix.join(&relative)).map_err(
+            |error| match error {
+                UiFileError::Missing => {
+                    ApiError::not_found("plugin UI file is not in the reviewed bundle")
+                }
+                UiFileError::TooLarge => {
+                    ApiError::payload_too_large("plugin UI file exceeds the 8 MiB limit")
+                }
+                _ => ui_stale_revision(),
+            },
+        )?;
+        admit_ui_grant(&state_for_asset, &grant)?;
+        if state_for_asset.plugin_ui_grants.get(&revision).is_none() {
+            return Err(ui_stale_revision());
+        }
+        Ok::<_, ApiError>(bytes)
+    })
+    .await
+    .map_err(|_| ApiError::internal("plugin UI read failed"))??;
+    Ok(ui_asset_response(bytes, content_type))
 }
 
 /// `POST /v1/apps/plugins/install`
@@ -1397,6 +1442,15 @@ pub(super) async fn enable_plugin_api(
 ) -> Result<Json<PluginActionResponse>, ApiError> {
     Ok(Json(
         run_registry_mutation(&state, &selector, RegistryMutation::Enable).await?,
+    ))
+}
+
+pub(super) async fn restage_plugin_api(
+    State(state): State<RuntimeApiState>,
+    Path(selector): Path<String>,
+) -> Result<Json<PluginActionResponse>, ApiError> {
+    Ok(Json(
+        run_registry_mutation(&state, &selector, RegistryMutation::Restage).await?,
     ))
 }
 

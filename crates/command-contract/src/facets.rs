@@ -994,6 +994,11 @@ pub trait CommandPluginContext {
     /// Mutation: enable a bundle. Success means enabled; re-read `detail` for
     /// the post-mutation compatibility note.
     fn enable(&mut self, selector: &str) -> Result<(), String>;
+    #[doc = "Restore a missing stage from bytes matching the current trust receipt."]
+    fn restage(&mut self, selector: &str) -> Result<(), String> {
+        let _ = selector;
+        Err("Plugin restaging is not available in this host.".to_string())
+    }
     /// Mutation: disable a bundle.
     fn disable(&mut self, selector: &str) -> Result<(), String>;
     /// Mutation: revoke trust.

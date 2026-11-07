@@ -337,6 +337,7 @@ pub(crate) enum OnboardingKeyRoute {
     Quit,
     /// Hand the key to the provider picker on the view stack.
     ProviderPicker,
+    AccountLogin,
     /// Take the advertised offline exit (#3927). Reachable from Provider
     /// setup even while the provider picker owns the screen, so the choice is
     /// never hidden behind a modal the user cannot satisfy.

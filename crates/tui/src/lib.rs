@@ -147,6 +147,11 @@ enum Commands {
     SessionDiagnostics(SessionDiagnosticsArgs),
     #[command(about = "Install a local, GitHub or version-pinned npm plugin bundle")]
     Install { source: String },
+    #[command(about = "Inspect or restage reviewed plugin bundles")]
+    Plugins {
+        #[command(subcommand)]
+        command: PluginsCommand,
+    },
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge)
@@ -261,6 +266,24 @@ enum Commands {
         /// Fork the most recent session in this workspace without a picker
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum PluginsCommand {
+    #[command(about = "Inspect plugin status and diagnostics")]
+    Status {
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Restore an eligible reviewed plugin snapshot")]
+    Restage {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -2003,13 +2026,18 @@ fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
     // every roster read in this process.
     codewhale_engine::fleet::roster::set_project_agent_profiles_enabled(!cli.no_project_config);
     let workspace = resolve_workspace(&cli);
+    let inspect_plugin_cli = matches!(cli.command.as_ref(), Some(Commands::Plugins { .. }));
     let mut plugin_discovery = None;
     let mut plugin_registry = None;
     let (cli, command) = prepare_cli_startup(
         cli,
         || {
             let discovery = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
-            plugin_registry = Some(discovery.registry_for_workspace(&workspace));
+            plugin_registry = Some(if inspect_plugin_cli {
+                discovery.inspect_registry_for_workspace(&workspace)
+            } else {
+                discovery.registry_for_workspace(&workspace)
+            });
             plugin_discovery = Some(discovery);
         },
         || warn_on_workspace_dotenv_result(&workspace),
@@ -2142,6 +2170,7 @@ fn diagnostic_worker_count(command: Option<&Commands>) -> Option<usize> {
         ) => true,
         // Only the read-only status report; mutating setup keeps defaults.
         Some(Commands::Setup(args)) => args.status,
+        Some(Commands::Plugins { .. }) => true,
         _ => false,
     };
     capped.then_some(DIAGNOSTIC_WORKER_CAP)
@@ -2271,6 +2300,12 @@ fn telemetry_command_is_read_only(command: Option<&Commands>) -> bool {
                 | Commands::Receipts { .. }
         )
     ) || matches!(command, Some(Commands::Setup(args)) if args.status)
+        || matches!(
+            command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Status { .. }
+            })
+        )
 }
 
 /// Resolve the emit predicate and arm, once, before anything can record.
@@ -2564,6 +2599,14 @@ async fn run_async_main_dispatch(
                 )
                 .await
             }
+            Commands::Plugins { command } => tokio::task::spawn_blocking(move || {
+                let _config = load_structural_config_from_cli(&cli)?;
+                let workspace = resolve_workspace(&cli);
+                let registry = plugin_discovery.inspect_registry_for_workspace(&workspace);
+                run_plugins_cli(command, registry)
+            })
+            .await
+            .context("Plugin command failed to finish")?,
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
@@ -3164,6 +3207,7 @@ fn prepare_cli_startup(
     let command = cli.command.clone();
     let should_load_dotenv = match command.as_ref() {
         Some(Commands::Doctor(args)) => args.probe_api || args.probe_local,
+        Some(Commands::Plugins { .. }) => false,
         _ => true,
     };
     if should_load_dotenv {
@@ -9096,6 +9140,182 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
             .to_string(),
     );
     lines
+}
+
+fn plugin_cli_text(value: &str) -> String {
+    use crate::commands::groups::plugins::render::{ReviewTextContext, escape_review_text};
+    escape_review_text(value, ReviewTextContext::Plain)
+}
+
+fn plugin_cli_diagnostic(
+    diagnostic: &codewhale_plugins::types::PluginDiagnostic,
+) -> serde_json::Value {
+    use codewhale_plugins::types::PluginDiagnosticLevel;
+    let level = match diagnostic.level {
+        PluginDiagnosticLevel::Warning => "warning",
+        PluginDiagnosticLevel::Error => "error",
+    };
+    serde_json::json!({
+        "level": level,
+        "code": diagnostic.code,
+        "message": plugin_cli_text(&diagnostic.message),
+        "path": diagnostic.path.as_ref().map(|path| plugin_cli_text(&path.to_string_lossy())),
+    })
+}
+
+fn plugin_cli_record(plugin: &codewhale_plugins::types::LoadedPlugin) -> serde_json::Value {
+    serde_json::json!({
+        "name": plugin_cli_text(plugin.name()),
+        "id": plugin_cli_text(plugin.id.as_str()),
+        "version": plugin_cli_text(&plugin.manifest.plugin.version),
+        "source": plugin_cli_text(&plugin.canonical_root.to_string_lossy()),
+        "scope": plugin.scope.as_str(),
+        "origin": plugin.origin.as_str(),
+        "state": plugin.state_label(),
+        "trust": plugin.trust_status.as_str(),
+        "enabled": plugin.enabled,
+        "active": plugin.active(),
+        "staged": plugin.staged_root.is_some(),
+        "applicable": plugin.applicable,
+        "compatibility": plugin.compatibility().as_str(),
+        "content_hash": plugin.content_hash,
+        "capability_hash": plugin.capability_hash,
+        "diagnostics": plugin.diagnostics.iter().map(plugin_cli_diagnostic).collect::<Vec<_>>(),
+    })
+}
+
+fn print_plugin_cli_diagnostic(diagnostic: &codewhale_plugins::types::PluginDiagnostic) {
+    use codewhale_plugins::types::PluginDiagnosticLevel;
+    let level = match diagnostic.level {
+        PluginDiagnosticLevel::Warning => "warning",
+        PluginDiagnosticLevel::Error => "error",
+    };
+    let path = diagnostic
+        .path
+        .as_ref()
+        .map(|path| plugin_cli_text(&path.to_string_lossy()))
+        .unwrap_or_else(|| "-".to_string());
+    println!(
+        "    level={} code={} message={} path={}",
+        level,
+        diagnostic.code,
+        plugin_cli_text(&diagnostic.message),
+        path
+    );
+}
+
+fn run_plugins_cli(
+    command: PluginsCommand,
+    mut registry: Arc<codewhale_plugins::PluginRegistry>,
+) -> Result<()> {
+    use codewhale_localization::{MessageId, resolve_locale, tr};
+    let settings = codewhale_runtime::settings::Settings::load_read_only().unwrap_or_default();
+    let locale = resolve_locale(&settings.locale);
+    match command {
+        PluginsCommand::Status { name, json } => {
+            let plugins = match name.as_deref() {
+                Some(name) => vec![registry.get(name).ok_or_else(|| {
+                    anyhow!(
+                        tr(locale, MessageId::CmdPluginBundleNotFound)
+                            .replace("{name}", &plugin_cli_text(name))
+                    )
+                })?],
+                None => registry.list(),
+            };
+            if json {
+                let records = plugins
+                    .iter()
+                    .map(|plugin| plugin_cli_record(plugin))
+                    .collect::<Vec<_>>();
+                let diagnostics = registry
+                    .diagnostics()
+                    .iter()
+                    .map(plugin_cli_diagnostic)
+                    .collect::<Vec<_>>();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "plugins": records,
+                        "diagnostics": diagnostics,
+                    }))?
+                );
+            } else {
+                if plugins.is_empty() {
+                    println!("{}", tr(locale, MessageId::CmdPluginBundleNoneFound));
+                } else {
+                    println!(
+                        "{}",
+                        tr(locale, MessageId::CmdPluginBundleListHeader)
+                            .replace("{count}", &plugins.len().to_string())
+                    );
+                }
+                for plugin in plugins {
+                    println!(
+                        "  name={} id={} version={} scope={} origin={} state={} trust={} enabled={} active={} staged={} applicable={} compatibility={}",
+                        plugin_cli_text(plugin.name()),
+                        plugin_cli_text(plugin.id.as_str()),
+                        plugin_cli_text(&plugin.manifest.plugin.version),
+                        plugin.scope.as_str(),
+                        plugin.origin.as_str(),
+                        plugin.state_label(),
+                        plugin.trust_status.as_str(),
+                        plugin.enabled,
+                        plugin.active(),
+                        plugin.staged_root.is_some(),
+                        plugin.applicable,
+                        plugin.compatibility().as_str()
+                    );
+                    println!(
+                        "    source={} content_hash={} capability_hash={}",
+                        plugin_cli_text(&plugin.canonical_root.to_string_lossy()),
+                        plugin.content_hash,
+                        plugin.capability_hash
+                    );
+                    for diagnostic in &plugin.diagnostics {
+                        print_plugin_cli_diagnostic(diagnostic);
+                    }
+                }
+                if !registry.diagnostics().is_empty() {
+                    println!(
+                        "{}",
+                        tr(locale, MessageId::CmdPluginBundleDiagnosticsHeader)
+                            .replace("{count}", &registry.diagnostics().len().to_string())
+                    );
+                    for diagnostic in registry.diagnostics() {
+                        print_plugin_cli_diagnostic(diagnostic);
+                    }
+                }
+            }
+        }
+        PluginsCommand::Restage { name, json } => {
+            Arc::make_mut(&mut registry)
+                .restage(&name)
+                .map_err(|error| {
+                    anyhow!(
+                        tr(locale, MessageId::CmdPluginActionFailed)
+                            .replace("{error}", &plugin_cli_text(&error))
+                    )
+                })?;
+            let name = plugin_cli_text(&name);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "name": name,
+                        "action": "restaged",
+                    }))?
+                );
+            } else {
+                println!(
+                    "{}",
+                    tr(locale, MessageId::CmdPluginBundleMutationSuccess)
+                        .replace("{name}", &name)
+                        .replace("{action}", "restaged")
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {

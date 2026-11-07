@@ -443,6 +443,27 @@ the Runtime token (or an explicitly insecure loopback server); the public
 bootstrap response remains usable but reports `signed_out`. Signed-out local
 Work remains supported and never allocates cloud compute implicitly.
 
+The native host account routes below require the configured master token in
+the Authorization header. Browser/mobile device sessions and insecure mode do
+not authorize them. Responses use `Cache-Control: private, no-store`. These
+routes are excluded from the desktop renderer's Engine request allowlist.
+
+| Route | Native host operation |
+| --- | --- |
+| `GET /v1/account/status` | Token-free account state, exact API origin/profile, opaque revision and whether legacy import is permitted. |
+| `POST /v1/account/claim` | Renew a login claim only for the supplied `expectedRevision`, preserving existing account identity. |
+| `DELETE /v1/account/claim` | Cancel exactly the supplied `expectedRevision`; a newer claim is preserved. |
+| `POST /v1/account/import` | Adopt the host's completed browser authorization with `expectedRevision` and `auth`; legacy import requires pristine storage, while explicit sign-in supplies `replaceExisting`. |
+| `POST /v1/account/lease` | Return a short-lived access credential to native main memory; Rust owns refresh and durable custody. Optional `rejectedAccessToken` requests renewal only if that credential is still current. No refresh token is returned. |
+| `DELETE /v1/account/session` | Sign out exactly the supplied `expectedRevision`, preserving provider credentials and local work. A changed revision returns conflict rather than signing out another account. |
+
+The lease is sensitive native-host transport, separate from the token-free
+runtime receipt above. Native clients retain it only in main memory and fence
+responses by Engine connection and account/session identity. Shared account
+records use revision nonces and signed-out tombstones so cancelled or stale
+login completion cannot restore an account after logout. Older authenticated
+records remain readable; older binaries fail closed on signed-out tombstones.
+
 The `--stdio` control transport uses newline-delimited RPC. Request IDs are
 strings or signed 64-bit integers. Output omits `jsonrpc`; input also accepts
 unknown input fields, as the pinned Codex decoder does. Complete `initialize`

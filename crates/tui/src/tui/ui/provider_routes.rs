@@ -68,6 +68,9 @@ pub(crate) fn onboarding_key_route(
     if onboarding == OnboardingState::None {
         return OnboardingKeyRoute::Legacy;
     }
+    if top_kind == Some(ModalKind::AccountLogin) {
+        return OnboardingKeyRoute::AccountLogin;
+    }
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return OnboardingKeyRoute::Quit;
     }
@@ -100,6 +103,17 @@ pub(crate) fn back_from_provider_onboarding(app: &mut App) {
         OnboardingState::Welcome
     };
     app.status_message = None;
+}
+
+pub(crate) fn begin_first_connection_setup(app: &mut App) {
+    if app.onboarding == OnboardingState::None
+        && app.onboarding_needs_api_key
+        && !app.startup_route_configured
+    {
+        app.onboarding = OnboardingState::Provider;
+        app.onboarding_missing_key_recovery = true;
+        app.onboarding_provider = app.api_provider;
+    }
 }
 
 pub(crate) fn complete_provider_picker_onboarding(app: &mut App, provider: ProviderKind) {

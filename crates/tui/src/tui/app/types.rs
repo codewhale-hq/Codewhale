@@ -570,6 +570,10 @@ pub enum AppAction {
     OpenDs4Setup,
     /// Run the xAI/Grok device-code flow with the TUI temporarily suspended.
     StartXaiDeviceLogin,
+    OpenModelConnectionSetup,
+    StartAccountConnect,
+    StartAccountLogin,
+    StartAccountLogout,
     /// Run native ChatGPT PKCE sign-in with the TUI temporarily suspended.
     StartChatgptPkceLogin,
     StartChatgptRevoke,

@@ -23,11 +23,12 @@ until the matching tag, packages, checksums, and release assets exist.
   available; full-tool turns, subscriptions, bidirectional interactions, durable
   settlements, TCP WebSocket and the complete SDK remain unfinished.
 - **DSH plugins and MCP lifecycle:** compatibility with unmodified DeepSeek
-  Harness plugins remains in progress. Automatic restoration of a missing
-  runtime snapshot is unfinished and may only use canonical source bytes that
-  still match its receipt. Existing mismatched or tampered snapshots refuse
-  and require review. Authenticated DSH UI asset transport and revocation,
-  and an end-to-end published-plugin journey remain unfinished.
+  Harness plugins remains in progress. The source candidate restores missing
+  runtime snapshots only from canonical bytes matching the current review,
+  generation and policy. Existing mismatched or tampered snapshots refuse
+  and require review. Native lifecycle qualification, authenticated DSH UI
+  transport and revocation in Electron, and an end-to-end published-plugin
+  journey remain unfinished.
   Downgrading a newly saved plugin marketplace catalog remains unqualified.
 - **ChatGPT sign-in on Windows:** the reported 0.10.2 post-browser identity
   verification failure has not been confirmed resolved in the reporter's
@@ -58,6 +59,18 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **Inspect and repair plugin snapshots:** `codew plugins status [name]
+  [--json]` reports bundle state and diagnostics without changing plugin
+  stores. Runtime loading restores a missing snapshot only from bytes matching
+  its enabled review and policy; `codew plugins restage <name>` or
+  `/plugin restage <name>` retries explicitly. Recovery preserves review and
+  generation and refuses an existing changed snapshot. Native and published
+  plugin qualification remains open for this source candidate.
+- **Shared optional account sign-in:** `/connect` offers Codewhale sign-in or
+  on-computer provider setup. Desktop and terminal use the same profile-scoped
+  Rust account session; sign-in preserves the selected model and local keys.
+  Ordinary logout removes the account session, while `logout --all` explicitly
+  clears saved model credentials. Real sign-in acceptance remains open.
 - **Refresh model catalogs during use:** Runtime provider refresh now checks
   public Models.dev metadata alongside the exact provider's model list;
   `force_catalog=true` bypasses the public cache TTL and retry backoff.
@@ -72,7 +85,7 @@ until the matching tag, packages, checksums, and release assets exist.
   Codewhale. See [provider setup](docs/PROVIDERS.md).
 - **Worktrees for parallel workspaces:** `GET /v1/worktrees` lists a repository's worktrees, `POST /v1/worktrees` creates a branch and its own checkout under `<repository>/.codewhale/worktrees/` through the existing lane provisioning, and `POST /v1/worktrees/remove` archives a clean managed one without `--force`, keeping the branch. A client starts a thread in the new folder, so several agents can work on one project without sharing files. (codewhale-hq/codewhale-app#3500)
 - **Thread-scoped snapshots:** `GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept `?thread_id=` and act on that thread's workspace under the same restore admission rule. (codewhale-hq/codewhale-app#3500)
-- **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine exposes a trusted and enabled plugin's client entry and assets through two loopback-only, read-only routes with bounded sizes, confined paths and safe MIME/no-store responses; no other plugin route gains an unauthenticated path. (#2, #3)
+- **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine's loopback UI descriptor and asset routes require runtime and workspace authorization; exact asset bytes also require the current opaque grant. Responses keep bounded sizes, confined paths and safe MIME/no-store behavior. The desktop host binds grants to individual plugin frames; real Electron transport and teardown qualification remains open. (#2, #3)
 - **Present final files:** the read-only `present` tool takes 1–32 existing
   workspace files, streams their SHA-256 and byte counts, and returns an
   auditable handoff receipt without copying, moving or uploading them. It is
@@ -163,6 +176,10 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Changed
 
+- **Brighter terminal working states:** the Ocean palette has stronger accents,
+  and active work uses a restrained left-to-right text sweep. Quiet and
+  reduced-motion settings keep stable working indicators. The shared
+  `codewhale-ratatui` kit carries the same palette and motion updates.
 - **Managed ACP requirements outrank Full Access:** when organization
   requirements manage approval policy, ACP no longer lets `--full-access`
   override them. The TUI already locked YOLO this way; ACP now matches.

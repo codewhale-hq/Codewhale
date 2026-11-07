@@ -62,6 +62,7 @@ pub enum ModalKind {
     Config,
     ModelPicker,
     ProviderPicker,
+    AccountLogin,
     ModePicker,
     FleetRoster,
     FleetSetup,
@@ -710,6 +711,20 @@ pub enum ExtensionMenuVerb {
 
 #[derive(Debug, Clone)]
 pub enum ViewEvent {
+    AccountModelSelected {
+        access: codewhale_runtime::config::AccountModelAccess,
+        api_base: String,
+        account_id: String,
+        expected_revision: String,
+        model: String,
+    },
+    AccountConnectionChoice {
+        account: Option<bool>,
+    },
+    AccountOperationCompleted {
+        signing_out: bool,
+        outcome: crate::tui::account_login::AccountOperationOutcome,
+    },
     CommandPaletteSelected {
         action: CommandPaletteAction,
     },

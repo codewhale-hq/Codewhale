@@ -1086,6 +1086,15 @@ fn empty_bracketed_paste_attaches_the_clipboard_image() {
 /// One representative terminal encoding per shell binding.
 fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
     match id {
+        ShellBindingId::AccountLoginSelect => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ShellBindingId::AccountLoginNext => KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        ShellBindingId::AccountLoginOpenBrowser => {
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)
+        }
+        ShellBindingId::AccountLoginCopyLink => {
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)
+        }
+        ShellBindingId::AccountLoginCancel => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         ShellBindingId::TerminalNew => KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
         ShellBindingId::TerminalNext => KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
         ShellBindingId::TerminalPrevious => KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),

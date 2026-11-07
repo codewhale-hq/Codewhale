@@ -779,11 +779,17 @@ mod tests {
         assert!(!message.contains("Daytona"), "{message}");
         assert!(!message.contains("set-slot"), "{message}");
 
-        assert!(
-            execute("/login", &mut app)
-                .message
-                .expect("login status")
-                .contains("Codewhale login")
+        assert_eq!(
+            execute("/login", &mut app).action,
+            Some(AppAction::StartAccountLogin)
+        );
+        assert_eq!(
+            execute("/login account", &mut app).action,
+            Some(AppAction::StartAccountLogin)
+        );
+        assert_eq!(
+            execute("/logout", &mut app).action,
+            Some(AppAction::StartAccountLogout)
         );
         let key = execute("/login key", &mut app);
         assert!(!key.is_error);
@@ -802,12 +808,15 @@ mod tests {
 
         assert_eq!(
             execute("/connect", &mut app).action,
-            Some(AppAction::OpenProviderPicker)
+            Some(AppAction::OpenModelConnectionSetup)
         );
         let connect = execute("/connect nothing-enabled", &mut app);
         assert!(connect.is_error);
         let err = connect.message.expect("usage");
-        assert!(err.contains("Usage: /connect [<provider>]"), "{err}");
+        assert!(
+            err.contains("Usage: /connect [account|<provider>]"),
+            "{err}"
+        );
         assert!(err.contains("`/login`"), "{err}");
         assert!(execute("/disconnect", &mut app).is_error);
         assert!(execute("/disconnect nothing-enabled", &mut app).is_error);

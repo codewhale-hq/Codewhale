@@ -845,6 +845,7 @@ name = "codewhale-account-cli"
 version = "0.10.3"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "codewhale-config",
  "codewhale-release",
@@ -888,6 +889,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "codewhale-account-cli",
  "codewhale-agent",
  "codewhale-agent-contract",
  "codewhale-app-server-protocol",
@@ -1639,6 +1641,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1765,6 +1768,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "codewhale-account-cli",
  "codewhale-agent-contract",
  "codewhale-app-server",
  "codewhale-build-support",

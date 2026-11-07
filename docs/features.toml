@@ -744,7 +744,7 @@ owner = "crates/tui/src/commands/groups/core/home.rs"
 [[feature]]
 id = "account-login"
 name = "Account login"
-summary = "/login signs in to an optional Codewhale account; plugin providers connect with /connect."
+summary = "Cancellable account sign-in inside the TUI; account sign-out preserves local model connections and work."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/config.rs"

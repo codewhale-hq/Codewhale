@@ -67,7 +67,7 @@ impl CommandGroup for PluginsCommands {
 pub(in crate::commands) const PLUGINS_INFO: CommandInfo = CommandInfo {
     name: "plugin",
     aliases: &["plugins", "extensions"],
-    usage: "/plugin [list|show|suggest|validate|export|install|import|update|uninstall|trust|enable|disable|revoke|reload|doctor|tools|marketplace|dismissals]",
+    usage: "/plugin [list|status|show|suggest|validate|export|install|import|update|uninstall|trust|enable|restage|disable|revoke|reload|doctor|tools|marketplace|dismissals]",
     description_key: "cmd_plugin_description",
 };
 
@@ -150,7 +150,10 @@ pub(super) fn plugins(
         [] => CommandResult::action(AppAction::OpenExtensions {
             tab: crate::tui::views::extensions::ExtensionsTab::Plugins,
         }),
-        ["list"] => list_bundles_and_legacy_tools(presentation, plugin),
+        ["list"] | ["status"] => list_bundles_and_legacy_tools(presentation, plugin),
+        ["status", selector] => show_bundle(presentation, plugin, selector),
+        ["restage"] => CommandResult::error("Usage: /plugin restage <name>"),
+        ["restage", selector] => mutate_bundle(presentation, plugin, selector, Mutation::Restage),
         ["help"] => CommandResult::message(format!(
             "{}\n\n/plugin import kimi [list]\n/plugin import kimi approve <name> <content-hash>\n{}\n{}",
             translate(presentation, "cmd_plugin_bundle_usage"),
@@ -985,6 +988,7 @@ fn network_denied_message(host: &str) -> String {
 enum Mutation<'a> {
     Trust(&'a str),
     Enable,
+    Restage,
     Disable,
     Revoke,
 }
@@ -1010,6 +1014,7 @@ fn mutate_bundle(
     let result = match mutation {
         Mutation::Trust(token) => plugin.trust(selector, token).map(|()| "trusted"),
         Mutation::Enable => plugin.enable(selector).map(|()| "enabled"),
+        Mutation::Restage => plugin.restage(selector).map(|()| "restaged"),
         Mutation::Disable => plugin.disable(selector).map(|()| "disabled"),
         Mutation::Revoke => plugin.revoke_trust(selector).map(|()| "trust-revoked"),
     };

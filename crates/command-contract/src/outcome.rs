@@ -129,6 +129,10 @@ pub enum ConfigAction {
     /// A permission rule was safely removed; the host reloads active rules.
     PermissionRulesChanged,
     // Auth flows (no host observation needed).
+    OpenModelConnectionSetup,
+    StartAccountConnect,
+    StartAccountLogin,
+    StartAccountLogout,
     StartXaiDeviceLogin,
     StartClaudeLogin,
     StartClaudeRevoke,

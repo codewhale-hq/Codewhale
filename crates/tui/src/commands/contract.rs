@@ -191,7 +191,7 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
         "cmd_color_description" => MessageId::CmdColorDescription,
         "cmd_compact_description" => MessageId::CmdCompactDescription,
         "cmd_config_description" => MessageId::CmdConfigDescription,
-        "cmd_connect_description" => MessageId::CmdConnectDescription,
+        "cmd_connect_description" => MessageId::ConnectionSetupTitle,
         "cmd_disconnect_description" => MessageId::CmdDisconnectDescription,
         "cmd_constitution_description" => MessageId::CmdConstitutionDescription,
         "cmd_context_description" => MessageId::CmdContextDescription,
@@ -4524,6 +4524,15 @@ impl CommandPluginContext for PluginAdapter<'_> {
         // Rediscover, as install and reload do: an in-place enable keeps the
         // pinned Native selection, so a host plugin enabled after a preset
         // catalog was already active would never be activated.
+        let workspace = app.workspace.clone();
+        app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
+        app.refresh_skill_cache();
+        Ok(())
+    }
+
+    fn restage(&mut self, selector: &str) -> Result<(), String> {
+        let mut app = self.host.app.borrow_mut();
+        std::sync::Arc::make_mut(&mut app.plugin_registry).restage(selector)?;
         let workspace = app.workspace.clone();
         app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
         app.refresh_skill_cache();

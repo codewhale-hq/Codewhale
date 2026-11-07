@@ -428,12 +428,14 @@ equivalent is unset.
 
 ### Account provider keys
 
-New Codewhale accounts are not open, and this guide does not recommend storing
-provider keys in an account. Keep keys on your machine with `/provider` or
-`codewhale auth set --provider <provider>`; local keys and local models never
-need an account.
+`/connect` offers Continue with Codewhale or Connect on this computer. The
+account path signs in and lists usable model connections reported by the
+account service. When none are ready, it offers retry or on-computer setup.
+Sign-in alone does not supply model access or change the selected model.
+Local provider keys and local models never need an account; use `/provider`
+or `codewhale auth set --provider <provider>` to manage them.
 
-If you already have an account, these commands manage keys saved there:
+For an account that supports saved provider keys, these commands manage them:
 
 ```bash
 codewhale account keys list              # configured status, never secret values
@@ -443,9 +445,12 @@ codewhale account keys remove deepseek   # remove the account's saved key
 Login never uploads local keys, and removing an account key does not change
 local copies or revoke the key at the provider.
 
-The account session is separate from provider keys. `codewhale account status`
-inspects it; `codewhale account logout` removes it for the selected `--profile`
-without removing your provider keys. Account sessions use the private `0600`
+The account session is separate from provider keys. `/login` signs in inside
+the TUI; `codewhale login` does so from the shell. `codewhale account status`
+inspects it. `/logout`, `codewhale logout` and `codewhale account logout` remove
+only the account session for the selected `--profile`. The explicit
+`codewhale logout --all` action also clears saved model credentials.
+Account sessions use the private `0600`
 Codewhale secrets file, scoped to the profile and account API origin; they do
 not use the OS keychain. The older `codewhale cloud ...` spelling remains an
 alias for account commands.

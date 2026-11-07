@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+chrono.workspace = true
 codewhale-config = { path = "../config", version = "0.10.3" }
 codewhale-release = { path = "../release", version = "0.10.3" }
 codewhale-runtime = { path = "../runtime", version = "0.10.3" }

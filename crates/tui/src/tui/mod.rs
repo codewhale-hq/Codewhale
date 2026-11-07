@@ -11,6 +11,7 @@
 
 // === Submodules ===
 
+pub(crate) mod account_login;
 pub mod active_cell;
 pub(crate) mod agent_details;
 pub(crate) mod agent_focus;

@@ -1397,6 +1397,7 @@ async fn build_test_server(
         plugin_discovery: overrides
             .plugin_discovery
             .unwrap_or_else(codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv),
+        plugin_ui_grants: Arc::new(super::plugins::PluginUiGrants::default()),
         task_manager: manager,
         runtime_threads: runtime_threads.clone(),
         cors_origins: Vec::new(),

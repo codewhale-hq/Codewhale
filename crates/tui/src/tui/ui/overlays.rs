@@ -232,6 +232,23 @@ pub(crate) async fn cycle_permission_posture(
 /// Either way the picker opens on the navigable list (#4763): onboarding never
 /// drops a user straight into a key/OAuth prompt for a route they were not
 /// shown.
+pub(crate) async fn open_model_connection_setup(
+    app: &mut App,
+    config: &Config,
+    engine_handle: &EngineHandle,
+    recover_configured_route: bool,
+) {
+    if recover_configured_route {
+        open_onboarding_provider_picker(app, config, engine_handle, true).await;
+    } else if app.view_stack.is_empty() {
+        app.view_stack
+            .push(crate::tui::account_login::ConnectionSetupView::new(
+                app.ui_locale,
+            ));
+        app.needs_redraw = true;
+    }
+}
+
 pub(crate) async fn open_onboarding_provider_picker(
     app: &mut App,
     config: &Config,

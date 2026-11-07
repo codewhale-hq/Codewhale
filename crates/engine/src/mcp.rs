@@ -4524,6 +4524,29 @@ impl McpPool {
         self.server_allowed(name) && self.needs_auth_servers.contains(name)
     }
 
+    pub fn has_connection_backoff(
+        &self,
+        name: &str,
+        timeouts: McpTimeouts,
+        server: &McpServerConfig,
+    ) -> Option<bool> {
+        let current = self.config.servers.get(name)?;
+        if !self.server_allowed(name)
+            || !server.is_enabled()
+            || !current.is_enabled()
+            || self.connecting.contains(name)
+            || self
+                .connections
+                .get(name)
+                .is_some_and(McpConnection::is_transport_ready)
+            || mcp_configured_server_identity(self.config.timeouts, name, current)
+                != mcp_configured_server_identity(timeouts, name, server)
+        {
+            return None;
+        }
+        Some(self.connect_backoff.contains_key(name))
+    }
+
     /// The needs-auth server that owns a model tool name (`mcp_<server>_…`),
     /// if any: the server the model is trying to reach with a real tool name
     /// from a catalog built before its login lapsed. Longest configured name

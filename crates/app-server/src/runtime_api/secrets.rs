@@ -83,12 +83,12 @@ fn account_model_access_receipt(config: &codewhale_runtime::config::Config) -> V
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct SetAccountModelAccessRequest {
-    api_base: String,
-    session_id: String,
-    expected_session_id: Option<String>,
-    key: String,
-    expires_at: i64,
+pub struct SetAccountModelAccessRequest {
+    pub api_base: String,
+    pub session_id: String,
+    pub expected_session_id: Option<String>,
+    pub key: String,
+    pub expires_at: i64,
 }
 
 #[derive(Deserialize)]
@@ -124,7 +124,7 @@ pub(super) async fn set_account_model_access(
     .map_err(|_| ApiError::internal("account access update failed"))?
 }
 
-fn install_account_model_access(
+pub fn install_account_model_access(
     config: &codewhale_runtime::config::Config,
     profile: Option<&str>,
     request: SetAccountModelAccessRequest,
@@ -197,7 +197,11 @@ fn install_account_model_access(
             .provider_config_for(&identity)
             .is_some_and(|entry| entry.auth.is_some() || entry.api_key_env.is_some())
         || !credential_writeability(&existing, &identity).writable
-        || codewhale_engine::provider_readiness::has_api_key_for(&existing, &identity)
+        || !matches!(
+            codewhale_runtime::config::resolve_credential_source(&existing, &identity).source,
+            codewhale_runtime::credentials::CredentialSource::Missing { .. }
+                | codewhale_runtime::credentials::CredentialSource::AccountSession
+        )
     {
         return Err(ApiError::conflict(
             "This Codewhale route already has its own credential.",

@@ -82,6 +82,7 @@ doctest = false
 codewhale-ratatui = { path = "../../vendor/codewhale-ratatui", version = "0.2.0" }
 codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
 anyhow.workspace = true
+codewhale-account-cli = { path = "../account-cli", version = "0.10.3" }
 codewhale-agent-contract = { path = "../agent-contract", version = "0.10.3" }
 codewhale-app-server = { path = "../app-server", version = "0.10.3" }
 codewhale-engine = { path = "../engine", version = "0.10.3" }
