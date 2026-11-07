@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "5ead6be3ec5b1730893243868812b86dbb9bb4dbc372dca6c4abfb17099dcb7c"
+    "sha256": "e7100570a303fea7a936cbb79cdbd1ff6d25a88e5bfb67054a5f18b54fa30868"
   },
   "features": [
     {
@@ -673,7 +673,7 @@
     {
       "id": "plugins",
       "name": "Plugins",
-      "summary": "Installs, reviews and trusts plugin bundles, including the first-party marketplace.",
+      "summary": "Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -979,7 +979,7 @@
     {
       "id": "account-login",
       "name": "Account login",
-      "summary": "/login signs in to an optional Codewhale account; plugin providers connect with /connect.",
+      "summary": "Cancellable account sign-in inside the TUI; account sign-out preserves local model connections and work.",
       "status": "stable",
       "surfaces": {
         "tui": "stable"

@@ -79,13 +79,18 @@ impl Role {
         matches!(self, Role::DiffAddedTint | Role::DiffRemovedTint)
     }
 
-    /// Whether this role is painted as a background: the five grounds and
-    /// the content tints.
+    /// Whether this role is painted as a background: the grounds, primary
+    /// action fill and content tints.
     #[must_use]
     pub const fn is_ground(self) -> bool {
         matches!(
             self,
-            Role::Sidebar | Role::Background | Role::Surface | Role::Hover | Role::Selected
+            Role::Sidebar
+                | Role::Background
+                | Role::Surface
+                | Role::Hover
+                | Role::Selected
+                | Role::Primary
         ) || self.is_content_tint()
     }
 
@@ -602,8 +607,8 @@ mod tests {
         }
         assert_eq!(
             collapsed,
-            ["Dark Surface=Hover", "Light Background=Surface"],
-            "Panel edges raised cards where Surface=Background; nothing paints Hover yet"
+            ["Dark Background=Surface", "Light Sidebar=Surface"],
+            "Raised panels add edges when Surface=Background; workbench separates its sidebar"
         );
     }
 
@@ -632,7 +637,6 @@ mod tests {
                     for (ink, floor) in [
                         (Role::Foreground, 4.5),
                         (Role::Muted, 4.5),
-                        (Role::Primary, 4.5),
                         (Role::Accent, 4.5),
                         (Role::Live, 4.5),
                         (Role::Attention, 4.5),
@@ -787,11 +791,11 @@ mod tests {
     }
 
     #[test]
-    fn nineteen_roles_two_of_them_derived() {
+    fn nineteen_roles_one_of_them_derived() {
         assert_eq!(Role::COUNT, 19);
         assert_eq!(Role::ALL.len(), 19);
         let derived: Vec<Role> = Role::ALL.into_iter().filter(|r| r.is_derived()).collect();
-        assert_eq!(derived, [Role::Hint, Role::Dim]);
+        assert_eq!(derived, [Role::Hint]);
         for role in Role::ALL {
             assert_eq!(role.token_name().is_none(), role.is_derived(), "{role:?}");
         }

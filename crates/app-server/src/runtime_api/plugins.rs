@@ -745,6 +745,27 @@ fn prepare_plugin_ui(
     {
         return Err(ApiError::not_found(format!("plugin '{}' declares no dsh.client UI in {}; add dsh.client and exports[\"./client\"] to expose client assets", plugin.name(), ui_relative_display(&manifest_path))).with_code("plugin_ui_not_declared"));
     }
+    let conversion_path = FsPath::new("CONVERSION.json");
+    if grant.file_hashes.contains_key(conversion_path) {
+        let bytes = verified_ui_file(&grant, conversion_path)
+            .map_err(|error| ui_file_refusal(&plugin, "CONVERSION.json", error))?;
+        let conversion: Value = serde_json::from_slice(&bytes).map_err(|_| {
+            ApiError::bad_request("plugin UI conversion report is invalid")
+                .with_code("plugin_ui_unsupported")
+        })?;
+        if conversion.get("schema").and_then(Value::as_str)
+            == Some("codewhale.plugin-conversion.v1")
+            && conversion
+                .pointer("/source/dialect")
+                .and_then(Value::as_str)
+                == Some("dsh")
+        {
+            return Err(ApiError::bad_request(
+                "this DSH client UI was not converted and is not supported by Codewhale yet",
+            )
+            .with_code("plugin_ui_unsupported"));
+        }
+    }
     grant.ui_prefix = manifest_path
         .parent()
         .unwrap_or(FsPath::new(""))

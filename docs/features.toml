@@ -532,7 +532,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Installs, reviews and trusts plugin bundles, including the first-party marketplace."
+summary = "Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"

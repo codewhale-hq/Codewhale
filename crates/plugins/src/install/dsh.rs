@@ -654,7 +654,7 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
     let mut notes = Vec::new();
     if declares_client(&manifest) {
         notes.push(
-            "package declares `dsh.client`; its UI half was not converted and stays off until Codewhale has a renderer that can keep plugin UI off the network (WebKit restrictions do not stop WebRTC)"
+            "package declares `dsh.client`; its UI half was not converted and remains disabled because the DSH client runtime is not supported"
                 .to_string(),
         );
     }
@@ -1935,7 +1935,7 @@ fn native_composition_files(
                             )),
                             kind: "client".into(),
                             outcome: "skipped".into(),
-                            reason: "Plugin-provided UI is not imported or run by Codewhale."
+                            reason: "Client UI was not converted; the DSH client runtime is not supported."
                                 .into(),
                             layer: None,
                             patch: None,

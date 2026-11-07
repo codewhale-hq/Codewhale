@@ -23,11 +23,14 @@ until the matching tag, packages, checksums, and release assets exist.
   available; full-tool turns, subscriptions, bidirectional interactions, durable
   settlements, TCP WebSocket and the complete SDK remain unfinished.
 - **DSH plugins and MCP lifecycle:** compatibility with unmodified DeepSeek
-  Harness plugins remains in progress. Automatic restoration of a missing
-  runtime snapshot is unfinished and may only use canonical source bytes that
-  still match its receipt. Existing mismatched or tampered snapshots refuse
-  and require review. Authenticated DSH UI asset transport and revocation,
-  and an end-to-end published-plugin journey remain unfinished.
+  Harness plugins remains in progress. The source candidate restores missing
+  runtime snapshots only from canonical bytes matching the current review,
+  generation and policy. Existing mismatched or tampered snapshots refuse
+  and require review. Native lifecycle qualification, authenticated DSH UI
+  transport and revocation in Electron, and an end-to-end published-plugin
+  journey remain unfinished.
+  Imported DSH client UIs refuse descriptor and asset grants; their supported
+  Native and MCP contributions retain their existing lifecycle.
   Downgrading a newly saved plugin marketplace catalog remains unqualified.
 - **ChatGPT sign-in on Windows:** the reported 0.10.2 post-browser identity
   verification failure has not been confirmed resolved in the reporter's
@@ -58,6 +61,22 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **Inspect and repair plugin snapshots:** `codew plugins status [name]
+  [--json]` reports bundle state and diagnostics without changing plugin
+  stores. Runtime loading restores a missing snapshot only from bytes matching
+  its enabled review and policy; `codew plugins restage <name>` or
+  `/plugin restage <name>` retries explicitly. Recovery preserves review and
+  generation and refuses an existing changed snapshot. Isolated macOS checks
+  exercised the published Code Review 1.0.8 Native status lifecycle and official
+  filesystem MCP reconnect; live review execution and other plugins remain
+  unqualified.
+- **Shared optional account sign-in:** `/connect` offers Codewhale sign-in or
+  on-computer provider setup. Desktop and terminal use the same profile-scoped
+  Rust account session; sign-in preserves the selected model and local keys.
+  Ordinary logout removes the account session, while `logout --all` explicitly
+  clears saved model credentials. Startup prompts keep missing-model setup
+  visible instead of covering it with the optional working-agreement checkpoint.
+  Real sign-in acceptance remains open.
 - **Refresh model catalogs during use:** Runtime provider refresh now checks
   public Models.dev metadata alongside the exact provider's model list;
   `force_catalog=true` bypasses the public cache TTL and retry backoff.
@@ -72,7 +91,7 @@ until the matching tag, packages, checksums, and release assets exist.
   Codewhale. See [provider setup](docs/PROVIDERS.md).
 - **Worktrees for parallel workspaces:** `GET /v1/worktrees` lists a repository's worktrees, `POST /v1/worktrees` creates a branch and its own checkout under `<repository>/.codewhale/worktrees/` through the existing lane provisioning, and `POST /v1/worktrees/remove` archives a clean managed one without `--force`, keeping the branch. A client starts a thread in the new folder, so several agents can work on one project without sharing files. (codewhale-hq/codewhale-app#3500)
 - **Thread-scoped snapshots:** `GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept `?thread_id=` and act on that thread's workspace under the same restore admission rule. (codewhale-hq/codewhale-app#3500)
-- **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine exposes a trusted and enabled plugin's client entry and assets through two loopback-only, read-only routes with bounded sizes, confined paths and safe MIME/no-store responses; no other plugin route gains an unauthenticated path. (#2, #3)
+- **Reviewed plugin UI assets (preview):** native plugin bundles with supported client entries can expose reviewed assets through the Engine's loopback descriptor and asset routes. Runtime and workspace authorization are required; exact asset bytes also require the current opaque grant. Responses keep bounded sizes, confined paths and safe MIME/no-store behavior. The desktop host binds grants to individual plugin frames; real Electron transport and teardown qualification remains open. Imported DSH client halves remain unsupported and refuse UI grants. (#2, #3)
 - **Present final files:** the read-only `present` tool takes 1–32 existing
   workspace files, streams their SHA-256 and byte counts, and returns an
   auditable handoff receipt without copying, moving or uploading them. It is
@@ -163,6 +182,10 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Changed
 
+- **Brighter terminal working states:** the Ocean palette has stronger accents,
+  and active work uses a restrained left-to-right text sweep. Quiet and
+  reduced-motion settings keep stable working indicators. The shared
+  `codewhale-ratatui` kit carries the same palette and motion updates.
 - **Managed ACP requirements outrank Full Access:** when organization
   requirements manage approval policy, ACP no longer lets `--full-access`
   override them. The TUI already locked YOLO this way; ACP now matches.
@@ -194,7 +217,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 - **`codewhale-tui-kit` crate (internal):** terminal rendering helpers (markdown, diff, text width, paste burst, OSC-8, streaming) move out of `codewhale-tui` into a new crate, and `syntect` is no longer a direct `codewhale-tui` dependency. No behavior change. (S52, #5316)
 
-- **Terminal kit on design tokens 2.3.0:** the vendored `codewhale-ratatui` now follows design tokens 2.3.0: an `Accent` role carries the one blue for links, focus and selection, and `Primary` is the ink of filled actions (upstream codewhale-hq/codewhale-ratatui 528a9c4). The built-in TUI themes keep their colours; only surfaces drawn in the kit's own roles take the 2.3.0 values.
+- **Terminal kit on design tokens 5.0.0:** the vendored `codewhale-ratatui` reuses the current shared blue, Ocean grounds and contrast-checked state colors (upstream codewhale-hq/codewhale-ratatui 8311b65). Primary actions use blue fill with white text; raised panels keep a visible edge where 256-color backgrounds collapse. Built-in TUI palettes retain their own overrides, and existing working-motion and reduced-motion guards remain in place.
 - **Fleet workers run the same Codewhale:** `codewhale fleet run` and Runtime API Fleet runs (`POST /v1/fleet/runs`) now start workers from the running `codewhale` binary instead of whichever `codewhale` is first on `PATH`, so they work with a minimal `PATH` and never pick up a stale copy. `CODEWHALE_FLEET_CODEWHALE_BINARY` still overrides it. (#7119)
 - **Switching provider lands on its current model:** `/provider stepfun` now selects Step 5 Preview instead of the older Step 3.7 Flash; a model you saved for a provider is still kept. `/model` now lists the current provider's own models (bundled and live, newest first, up to 20) instead of only the selected one. Search also matches ids typed without separators (`step5`). While you search, Shift+P and Shift+F type their letters rather than pinning or adding to Fleet, so `Step-5-Preview` can be typed in full; Ctrl+P and Ctrl+F pin or add the highlighted row at any time.
 - **First run without a key:** `/provider` now opens on the full provider list (DeepSeek and the other cloud providers) when only a keyless local runtime is set up, no longer shows a disabled Antigravity row that was never configured, and Shift+A toggles the view like `a`. A local Ollama model that is not loaded yet is loaded before the first turn, so the route uses its real context window (for example 32K for `qwen3:4b`) instead of an 8K fallback that refused the second message with "~5120 tokens usable"; the footer's context reading follows the same window. The TUI resolves an unknown Ollama default to an installed chat model on startup. If the daemon or chat model appears later, selecting `/provider ollama` retries discovery. Embedding-only tags keep the model unresolved. An installed Ollama model is listed in `/model` and `GET /v1/providers/ollama/models` once its own catalog has answered, even when another provider is active. (#7113, #7114, #7116)
@@ -257,15 +280,27 @@ until the matching tag, packages, checksums, and release assets exist.
   generation or trust receipt. The macOS stale-enable check passed (1/1);
   a separate Linux run reported 202 passed and one ignored on an earlier base
   with matching plugin files and lockfile. Snapshot checking is point-in-time;
-  automatic restoration is unfinished and filesystem races remain open. A
-  stage-disappearance regression and the final candidate remain unqualified.
+  missing-stage recovery reuses the current receipt and policy. Filesystem
+  race coverage and final-candidate native qualification remain open.
 - **Plugin status and UI admission:** an enabled, trusted plugin whose reviewed
   runtime snapshot is missing or invalid now reports
   `runtime-snapshot-unavailable`. Both plugin UI metadata and assets require a
   declared DSH client; ordinary plugins cannot expose staged files through the
-  client UI route. Automatic restoration of missing snapshots from
-  receipt-matching canonical source and authenticated DSH asset transport
-  remain work in progress; existing modified snapshots require review.
+  client UI route. Missing snapshots recover only from receipt-matching
+  canonical source; authenticated assets require an exact current grant.
+  Native and Electron qualification remains open; existing modified snapshots
+  require review.
+- **DSH package-directory imports:** the existing offline reviewer uses npm's
+  version-range parser with the pinned DeepSeek host's prerelease policy, and
+  bare self-package exports resolve inside the selected package directory.
+  Invalid or incompatible ranges and paths outside the reviewed package still
+  refuse. Real published-plugin activation remains unqualified.
+- **Coordination lock diagnostics (#7232):** stale lock-file contents no longer
+  identify an owner PID. A refused legacy admission keeps its reason in Work
+  and shows one notice per cause instead of repeating cleanup warnings on
+  every sidebar refresh. Legacy migration still requires the actual holder to
+  exit and the refused owning Runtime to restart; locks and retained state
+  remain protected.
 - **A local proxy that stops mid-session no longer strands the session (#7231):** the model, catalog, search, vision, finance, MCP-registry, profile and remote-control clients watch a loopback proxy port and go direct while it refuses connections, then resume proxying when it returns. Only a definite refusal from every resolved address changes the route; remote proxies, `NO_PROXY` matches, credentials and the existing precedence are unchanged. Set `CODEWHALE_LOCAL_PROXY_FALLBACK=0` to keep the old build-time snapshot.
 - **Proxy diagnostic privacy ([#7233](https://github.com/codewhale-hq/codewhale/issues/7233)):** malformed MCP proxy warnings omit configured values; local-proxy log labels mask userinfo and omit URL paths, queries and fragments. Routing is unchanged. All 23 existing proxy tests passed on macOS; runtime log capture and other platforms remain unqualified. Thanks [@SparkofSpike](https://github.com/SparkofSpike) for the report.
 - **Fork, undo and retry work after a workspace drift notice (#7234):** the history-boundary walks now treat a whole `<context_update>` envelope as engine-owned, so a session that received one can be cut at every saved turn. A person quoting a notice or a truncated envelope still counts as their own prompt.

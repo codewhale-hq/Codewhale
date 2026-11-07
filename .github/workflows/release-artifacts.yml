@@ -359,12 +359,12 @@ jobs:
           bin_dir="target/${{ matrix.target }}/dist"
           "${bin_dir}/${{ matrix.cli_binary }}" --version
           "${bin_dir}/${{ matrix.shim_binary }}" --version
-      - name: Windows Terminal clipboard acceptance
+      - name: Windows Terminal clipboard-to-draft acceptance
         if: matrix.platform == 'windows-x64'
         timeout-minutes: 5
         shell: pwsh
         run: node scripts/release/windows-terminal-clipboard.mjs "target/${{ matrix.target }}/dist/codewhale.exe" "${{ runner.temp }}/windows-clipboard"
-      - name: Retain Windows Terminal clipboard evidence
+      - name: Retain Windows Terminal clipboard-to-draft evidence
         if: ${{ !cancelled() && matrix.platform == 'windows-x64' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

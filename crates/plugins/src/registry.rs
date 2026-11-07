@@ -679,22 +679,31 @@ impl PluginRegistry {
         let Some(state_path) = self.state_path.clone() else {
             return;
         };
-        let candidates = self.plugins.values().filter_map(|plugin| {
-            if !plugin.enabled || !plugin.trusted() || !plugin.applicable
-                || !plugin.inventory.can_activate_supported_components()
-                || plugin.diagnostics.iter().any(|item| item.level == PluginDiagnosticLevel::Error)
-            {
-                return None;
-            }
-            let destination = runtime_stage_path(&state_path, &plugin.id, &plugin.content_hash);
-            match fs::symlink_metadata(&destination) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Some(plugin.id.as_str().to_string())
+        let candidates = self
+            .plugins
+            .values()
+            .filter_map(|plugin| {
+                if !plugin.enabled
+                    || !plugin.trusted()
+                    || !plugin.applicable
+                    || !plugin.inventory.can_activate_supported_components()
+                    || plugin
+                        .diagnostics
+                        .iter()
+                        .any(|item| item.level == PluginDiagnosticLevel::Error)
+                {
+                    return None;
                 }
-                Ok(_) if plugin.staged_root.is_none() => Some(plugin.id.as_str().to_string()),
-                _ => None,
-            }
-        }).collect::<Vec<_>>();
+                let destination = runtime_stage_path(&state_path, &plugin.id, &plugin.content_hash);
+                match fs::symlink_metadata(&destination) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        Some(plugin.id.as_str().to_string())
+                    }
+                    Ok(_) if plugin.staged_root.is_none() => Some(plugin.id.as_str().to_string()),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         for selector in candidates {
             if let Err(error) = self.restage_inner(&selector, true) {
                 tracing::warn!(plugin = %selector, %error, "reviewed plugin runtime snapshot was not restored");

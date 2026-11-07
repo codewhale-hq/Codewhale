@@ -122,12 +122,19 @@ the `agent/created` hook fires only for children the same plugin starts.
 
 ## Plugin UI (`dsh.client`)
 
-Not supported. The DSH import receipt says so: the UI half of a package is not
-converted and stays off until Codewhale has a renderer that can keep plugin UI
-off the network. A macOS probe showed WebRTC traffic leaving a WebKit view
-despite every available restriction (content rules, CSP, an opaque sandboxed
-frame and a restrictive Permissions-Policy), so a process-level boundary is
-required first.
+Imported DSH client UIs are not supported. The Engine refuses their client
+descriptor and asset grants when the reviewed conversion report identifies a
+DSH import; the plugin's supported Native and MCP contributions keep their
+existing lifecycle. Code Review 1.0.8's client decorates global command
+candidates through DSH services that the current detail-slot renderer does
+not provide.
+
+The selected Electron host's reviewed asset transport and isolated frame do
+not establish compatibility with those services. Its real network containment
+and revocation still need qualification. An earlier macOS WebKit probe found
+WebRTC traffic despite content rules, CSP, an opaque sandboxed frame and a
+restrictive Permissions-Policy; that historical result does not qualify the
+current Electron/Chromium host.
 
 ## Containment
 
