@@ -24489,7 +24489,20 @@ async fn thread_notices_serve_list_and_ack() -> Result<()> {
 #[tokio::test]
 async fn provider_models_refresh_uses_exact_configured_route_without_switching() -> Result<()> {
     let _env = codewhale_engine::test_support::lock_test_env();
+    let _live = codewhale_engine::provider_lake::lock_live_snapshot();
+    codewhale_engine::provider_lake::clear_live_snapshot();
     let root = tempfile::tempdir()?;
+    let catalog_path = root.path().join("models-dev.json");
+    fs::write(
+        &catalog_path,
+        json!({"models": {}, "providers": {"togetherai": {"id": "togetherai", "models": {
+            "catalog-refresh-only": {"id": "catalog-refresh-only", "modalities": {"input": ["text"], "output": ["text"]}}
+        }}}}).to_string(),
+    )?;
+    let _catalog = codewhale_engine::test_support::EnvVarGuard::set(
+        "CODEWHALE_MODELS_DEV_PATH",
+        &catalog_path,
+    );
     let _home = codewhale_engine::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
     let _cli =
         codewhale_engine::test_support::EnvVarGuard::remove(codewhale_config::CLI_API_KEY_ENV);
@@ -24549,7 +24562,7 @@ api_key = "refresh-fixture-key"
     }
     let response = client
         .post(format!(
-            "http://{addr}/v1/providers/custom/models/refresh?model_provider_id=second"
+            "http://{addr}/v1/providers/custom/models/refresh?model_provider_id=second&force_catalog=true"
         ))
         .send()
         .await?;
@@ -24557,6 +24570,9 @@ api_key = "refresh-fixture-key"
     let receipt: Value = response.json().await?;
     assert_eq!(receipt["outcome"], "updated");
     assert_eq!(receipt["model_count"], 1);
+    assert_eq!(receipt["public_catalog"]["freshness"], "live");
+    assert_eq!(receipt["public_catalog"]["outcome"], "updated");
+    assert!(receipt["public_catalog"]["error"].is_null());
     assert!(!receipt.to_string().contains("refresh-fixture-key"));
     let catalog: Value = client
         .get(format!(
@@ -24575,6 +24591,7 @@ api_key = "refresh-fixture-key"
     );
     assert_eq!(get_config(&client, &addr).await["provider"], "first");
     handle.abort();
+    codewhale_engine::provider_lake::clear_live_snapshot();
     Ok(())
 }
 

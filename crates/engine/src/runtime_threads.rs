@@ -84,7 +84,7 @@ const AGENT_MAIL_OWNER_FILE: &str = "owner.json";
 /// across all of them is what lets a switch adopt an existing store (#6207);
 /// `adoptable_empty_store_reports_nothing_to_abandon` pins this list against
 /// `open` by asserting each directory is load-bearing on its own.
-const RUNTIME_STORE_WORK_DIRS: [&str; 7] = [
+const RUNTIME_STORE_WORK_DIRS: [&str; 8] = [
     "threads",
     "turns",
     "items",
@@ -92,6 +92,7 @@ const RUNTIME_STORE_WORK_DIRS: [&str; 7] = [
     "goals",
     "agent-mail",
     "turn-operations",
+    "job-operations",
 ];
 const TURN_OPERATION_BINDING_SCHEMA_VERSION: u32 = 2;
 const RUNTIME_USAGE_PARTITION_SUMMARY: &str = "Provider usage receipt partition";
@@ -1586,6 +1587,7 @@ pub struct RuntimeThreadStore {
     goal_mutation: Arc<parking_lot::Mutex<()>>,
     mail_dir: PathBuf,
     turn_operations_dir: PathBuf,
+    job_operations_dir: PathBuf,
     owner_id: String,
     state_path: PathBuf,
     event_lock_path: PathBuf,
@@ -1665,6 +1667,7 @@ impl RuntimeThreadStore {
         let goals_dir = root.join("goals");
         let mail_dir = root.join("agent-mail");
         let turn_operations_dir = root.join("turn-operations");
+        let job_operations_dir = root.join("job-operations");
         ensure_runtime_store_dir(&threads_dir)?;
         ensure_runtime_store_dir(&turns_dir)?;
         ensure_runtime_store_dir(&items_dir)?;
@@ -1672,6 +1675,7 @@ impl RuntimeThreadStore {
         ensure_runtime_store_dir(&goals_dir)?;
         ensure_runtime_store_dir(&mail_dir)?;
         ensure_runtime_store_dir(&turn_operations_dir)?;
+        ensure_runtime_store_dir(&job_operations_dir)?;
         let state_path = root.join("state.json");
         let owner_path = root.join(AGENT_MAIL_OWNER_FILE);
         let event_lock_path = root.join(EVENT_TRANSACTION_LOCK_FILE);
@@ -1689,6 +1693,7 @@ impl RuntimeThreadStore {
             goals_dir,
             mail_dir,
             turn_operations_dir,
+            job_operations_dir,
             owner_id,
             state_path,
             event_lock_path,
@@ -1745,6 +1750,7 @@ impl RuntimeThreadStore {
             goals_dir: root.join("goals"),
             mail_dir: root.join("agent-mail"),
             turn_operations_dir: root.join("turn-operations"),
+            job_operations_dir: root.join("job-operations"),
             owner_id: String::new(),
             state_path: root.join("state.json"),
             event_lock_path: root.join(EVENT_TRANSACTION_LOCK_FILE),
@@ -5975,6 +5981,7 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
     }
 }
 
+pub mod job_operations;
 pub mod manager;
 mod turn_artifacts;
 pub use turn_artifacts::{

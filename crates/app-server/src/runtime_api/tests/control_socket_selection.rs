@@ -12,13 +12,13 @@ fn inputs() -> codewhale_paths::daemon_socket::SocketPathInputs {
         explicit: None,
         codewhale_home_override: None,
         xdg_runtime_dir: None,
-        user_home: Some(PathBuf::from("/home/whale")),
+        user_home: Some(PathBuf::from("/cw-test-home/whale")),
         macos: false,
     }
 }
 
 fn default_socket() -> PathBuf {
-    PathBuf::from("/home/whale/.codewhale/run/daemon.sock")
+    PathBuf::from("/cw-test-home/whale/.codewhale/run/daemon.sock")
 }
 
 fn temp_root(tag: &str) -> PathBuf {
@@ -153,7 +153,7 @@ async fn the_runtime_dir_override_reaches_the_control_endpoint() -> Result<()> {
         resolved.display()
     );
     assert!(
-        resolved.starts_with(&home),
+        resolved.starts_with(codewhale_paths::resolve_root_owned_ancestors(&home)),
         "the derived endpoint stays beside the well-known one, got {}",
         resolved.display()
     );

@@ -4343,6 +4343,36 @@ impl RuntimeThreadManager {
         &self.workspace
     }
 
+    pub fn job_operation_store_id(&self) -> &str {
+        &self.store.owner_id
+    }
+
+    pub fn job_operation_store(&self) -> RuntimeThreadStore {
+        self.store.clone()
+    }
+
+    pub fn job_operation_generation(&self) -> Result<String> {
+        #[cfg(any(unix, windows))]
+        {
+            Ok(self.capture_control_owner()?.1)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            bail!("job operation owner unavailable")
+        }
+    }
+
+    pub fn validate_job_operation_thread(&self, thread: &ThreadRecord) -> Result<()> {
+        let current = self.store.load_thread(&thread.id)?;
+        anyhow::ensure!(
+            current.workspace == thread.workspace
+                && current.allow_shell == thread.allow_shell
+                && current.trust_mode == thread.trust_mode,
+            "thread workspace or shell policy changed"
+        );
+        Ok(())
+    }
+
     pub fn mcp_runtime_servers(&self, workspace: &Path) -> crate::mcp::SharedRuntimeMcpServers {
         self.runtime_mcp_servers
             .lock()
@@ -7242,34 +7272,42 @@ impl RuntimeThreadManager {
             )
             .await
         {
-            self.active.lock().await.shell_managers.remove(&thread.id);
-            let _ = self.store.remove_thread(&thread.id);
             return Err(error);
         }
         Ok(thread)
     }
 
     pub async fn discard_empty_thread(&self, thread_id: &str) -> Result<()> {
+        let _admission = self.session_checkpoint_guard().await;
         let mut active = self.active.lock().await;
         if active.engines.contains_key(thread_id) {
             bail!("cannot discard a loaded Runtime thread");
         }
-        let _thread_mutation = self.store.thread_mutation.lock();
-        let thread = self.store.load_thread(thread_id)?;
-        if thread.latest_turn_id.is_some() {
-            bail!("cannot discard a Runtime thread that owns turns");
-        }
-        // Drop the thread's shell authority with it: the manager owns any
-        // API-created jobs, and dropping the last handle kills them.
-        active.shell_managers.remove(thread_id);
+        self.store.with_job_operations(|transaction| {
+            anyhow::ensure!(
+                !transaction
+                    .list()?
+                    .iter()
+                    .any(|record| record.operation.thread_id == thread_id
+                        && !matches!(record.operation.status.as_str(), "completed" | "rejected")),
+                "thread has a running or unconfirmed job operation"
+            );
+            let _thread_mutation = self.store.thread_mutation.lock();
+            let thread = self.store.load_thread(thread_id)?;
+            if thread.latest_turn_id.is_some() {
+                bail!("cannot discard a Runtime thread that owns turns");
+            }
+            active.shell_managers.remove(thread_id);
+            self.store.remove_thread(thread_id)?;
+            Ok(())
+        })?;
         drop(active);
-        self.store.remove_thread(thread_id)?;
-        // A deleted conversation keeps no session grants behind it.
         self.take_approval_grants(thread_id);
         Ok(())
     }
 
     pub async fn delete_thread(&self, thread_id: &str) -> Result<ThreadRecord> {
+        let _admission = self.session_checkpoint_guard().await;
         let mut active = self.active.lock().await;
         if active
             .engines
@@ -7278,21 +7316,32 @@ impl RuntimeThreadManager {
         {
             bail!("thread {thread_id} already has an active turn; stop it before deleting");
         }
-        let _thread_mutation = self.store.thread_mutation.lock();
-        let thread = self.store.load_thread(thread_id)?;
-        active.lru.retain(|id| id != thread_id);
-        active.shell_managers.remove(thread_id);
-        let evicted = active.engines.remove(thread_id).map(|state| state.engine);
-        for turn in self.store.list_turns_for_thread(thread_id)? {
-            for item_id in &turn.item_ids {
-                self.store.remove_item(item_id)?;
+        let (thread, evicted) = self.store.with_job_operations(|transaction| {
+            anyhow::ensure!(
+                !transaction
+                    .list()?
+                    .iter()
+                    .any(|record| record.operation.thread_id == thread_id
+                        && !matches!(record.operation.status.as_str(), "completed" | "rejected")),
+                "thread has a running or unconfirmed job operation"
+            );
+            let _thread_mutation = self.store.thread_mutation.lock();
+            let thread = self.store.load_thread(thread_id)?;
+            active.lru.retain(|id| id != thread_id);
+            active.shell_managers.remove(thread_id);
+            let evicted = active.engines.remove(thread_id).map(|state| state.engine);
+            for turn in self.store.list_turns_for_thread(thread_id)? {
+                for item_id in &turn.item_ids {
+                    self.store.remove_item(item_id)?;
+                }
+                self.store.remove_turn(&turn.id)?;
             }
-            self.store.remove_turn(&turn.id)?;
-        }
-        remove_file_if_exists(&self.store.events_path(thread_id)?)?;
-        remove_file_if_exists(&self.store.goal_path(thread_id)?)?;
-        self.store.remove_seed_journal(thread_id)?;
-        self.store.remove_thread(thread_id)?;
+            remove_file_if_exists(&self.store.events_path(thread_id)?)?;
+            remove_file_if_exists(&self.store.goal_path(thread_id)?)?;
+            self.store.remove_seed_journal(thread_id)?;
+            self.store.remove_thread(thread_id)?;
+            Ok((thread, evicted))
+        })?;
         drop(active);
         if let Some(engine) = evicted {
             engine.cancel_with_reason(crate::core::engine::CancelReason::Internal);
@@ -10547,10 +10596,17 @@ impl RuntimeThreadManager {
         })();
 
         if let Err(persistence_error) = persistence {
-            let mut cleanup_errors = Vec::new();
-            if let Err(error) = self.store.remove_thread(&thread.id) {
-                cleanup_errors.push(format!("remove thread: {error}"));
+            let thread_path = self.store.thread_path(&thread.id)?;
+            match thread_path.try_exists() {
+                Ok(false) => {}
+                Ok(true) => bail!(
+                    "Fork publication could not be confirmed; retained its records for recovery: {persistence_error}"
+                ),
+                Err(error) => bail!(
+                    "Fork publication could not be checked; retained its records for recovery: {error}"
+                ),
             }
+            let mut cleanup_errors = Vec::new();
             for turn_id in saved_turn_ids.iter().rev() {
                 if let Err(error) = self.store.remove_turn(turn_id) {
                     cleanup_errors.push(format!("remove turn {turn_id}: {error}"));

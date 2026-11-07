@@ -1663,7 +1663,7 @@ mod tests {
             explicit: None,
             codewhale_home_override: None,
             xdg_runtime_dir: None,
-            user_home: Some(PathBuf::from("/home/whale")),
+            user_home: Some(PathBuf::from("/cw-test-home/whale")),
             macos: false,
         }
     }
@@ -1724,7 +1724,7 @@ mod tests {
         let resolved = resolve_socket_path(&inputs()).expect("resolve");
         assert_eq!(
             resolved,
-            PathBuf::from("/home/whale/.codewhale/run/daemon.sock")
+            PathBuf::from("/cw-test-home/whale/.codewhale/run/daemon.sock")
         );
     }
 
@@ -1734,7 +1734,7 @@ mod tests {
         let resolved = store_selected_socket_path(None, &inputs()).expect("resolve");
         assert_eq!(
             resolved,
-            PathBuf::from("/home/whale/.codewhale/run/daemon.sock")
+            PathBuf::from("/cw-test-home/whale/.codewhale/run/daemon.sock")
         );
     }
 
@@ -1742,18 +1742,18 @@ mod tests {
     #[test]
     fn distinct_stores_derive_distinct_sibling_sockets() {
         let one = store_selected_socket_path(
-            Some(Path::new("/home/whale/.local/state/one/runtime")),
+            Some(Path::new("/cw-test-home/whale/.local/state/one/runtime")),
             &inputs(),
         )
         .expect("resolve");
         let two = store_selected_socket_path(
-            Some(Path::new("/home/whale/.local/state/two/runtime")),
+            Some(Path::new("/cw-test-home/whale/.local/state/two/runtime")),
             &inputs(),
         )
         .expect("resolve");
         assert_eq!(
             one.parent().unwrap(),
-            Path::new("/home/whale/.codewhale/run")
+            Path::new("/cw-test-home/whale/.codewhale/run")
         );
         assert_eq!(one.parent().unwrap(), two.parent().unwrap());
         assert_ne!(one, two);
@@ -1766,7 +1766,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_derived_socket_is_a_pure_function_of_the_store_root() {
-        let store = Path::new("/home/whale/.local/state/one/runtime");
+        let store = Path::new("/cw-test-home/whale/.local/state/one/runtime");
         let first = store_selected_socket_path(Some(store), &inputs()).expect("resolve");
         let second = store_selected_socket_path(Some(store), &inputs()).expect("resolve");
         assert_eq!(first, second);

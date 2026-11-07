@@ -6,6 +6,8 @@
 use crate::windows_identity::{CurrentWindowsUser, WindowsLocalAllocation};
 use anyhow::{Context, Result, bail};
 #[cfg(unix)]
+use codewhale_paths::resolve_root_owned_ancestors as resolve_ancestors;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::Write as _;
@@ -570,22 +572,6 @@ fn validate_private_basename(name: &str) -> Result<()> {
         "xAI OAuth private basename must be one UTF-8 path component"
     );
     Ok(())
-}
-
-#[cfg(unix)]
-fn resolve_ancestors(directory: &Path) -> std::path::PathBuf {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let mut resolved = std::path::PathBuf::new();
-    for component in directory.components() {
-        resolved.push(component);
-        let root_owned_link = std::fs::symlink_metadata(&resolved)
-            .is_ok_and(|meta| meta.file_type().is_symlink() && meta.uid() == 0);
-        if root_owned_link && let Ok(real) = resolved.canonicalize() {
-            resolved = real;
-        }
-    }
-    resolved
 }
 
 #[cfg(unix)]

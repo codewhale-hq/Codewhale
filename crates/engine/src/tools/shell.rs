@@ -11,7 +11,7 @@
 use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
@@ -147,6 +147,10 @@ fn validate_shell_working_dir(path: &Path, inherited_session_workspace: bool) ->
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("shell launch did not start")]
+pub struct ShellLaunchNotStarted;
+
 /// Status of a shell process.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ShellStatus {
@@ -249,6 +253,32 @@ pub struct ShellJobSnapshot {
     /// intentionally hidden from session-scoped completion drains.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner_session_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellReceiptWitness {
+    pub cwd: PathBuf,
+    pub status: ShellStatus,
+    pub exit_code: Option<i64>,
+    pub owner_session_id: String,
+    pub wait_failed: bool,
+    pub terminal_confirmed: bool,
+}
+
+impl ShellReceiptWitness {
+    fn from_shell(shell: &mut BackgroundShell) -> Self {
+        let terminal_confirmed = shell.status != ShellStatus::Running
+            && !shell.wait_failed
+            && shell.terminal_exit_confirmed;
+        Self {
+            cwd: shell.working_dir.clone(),
+            status: shell.status.clone(),
+            exit_code: shell.exit_code,
+            owner_session_id: shell.owner_session_id.clone(),
+            wait_failed: shell.wait_failed,
+            terminal_confirmed,
+        }
+    }
 }
 
 /// Once-only completion event for a tracked background shell job.
@@ -1152,6 +1182,7 @@ pub struct BackgroundShell {
     /// The terminal status came from a failed `try_wait`, not an observed
     /// exit or signal. Such a run gets no execution receipt (#6689).
     wait_failed: bool,
+    terminal_exit_confirmed: bool,
 }
 
 #[derive(Clone)]
@@ -1315,6 +1346,7 @@ impl BackgroundShell {
         let completed = if let Some(ref mut child) = self.child {
             match child.try_wait() {
                 Ok(Some(status)) => {
+                    self.terminal_exit_confirmed = true;
                     self.exit_code = status.code;
                     self.status = if status.success {
                         ShellStatus::Completed
@@ -1621,7 +1653,7 @@ impl BackgroundShell {
             unregister_pending_persistent_process_group(process_group_id);
         }
         if let Some(ref mut child) = self.child {
-            match child {
+            match &mut *child {
                 ShellChild::Process(proc) => {
                     #[cfg(windows)]
                     {
@@ -1647,6 +1679,9 @@ impl BackgroundShell {
                     child.kill().context("Failed to kill process")?;
                     let _ = child.wait();
                 }
+            }
+            if child.try_wait().is_ok_and(|status| status.is_some()) {
+                self.terminal_exit_confirmed = true;
             }
         }
         self.status = ShellStatus::Killed;
@@ -1962,6 +1997,8 @@ pub fn inherited_interactive_terminal_refusal() -> Option<&'static str> {
 pub struct ShellManager {
     processes: HashMap<String, BackgroundShell>,
     stale_jobs: HashMap<String, ShellJobSnapshot>,
+    receipt_pins: HashSet<String>,
+    receipt_witnesses: HashMap<String, ShellReceiptWitness>,
     default_workspace: PathBuf,
     sandbox_manager: SandboxManager,
     sandbox_policy: ExecutionSandboxPolicy,
@@ -1994,6 +2031,28 @@ impl std::fmt::Debug for ShellManager {
 }
 
 impl ShellManager {
+    pub fn pin_job_receipt(&mut self, task_id: &str) -> Result<()> {
+        anyhow::ensure!(self.processes.contains_key(task_id), "job not tracked");
+        self.receipt_pins.insert(task_id.to_string());
+        Ok(())
+    }
+
+    pub fn job_receipt_witness(&mut self, task_id: &str) -> Option<ShellReceiptWitness> {
+        if !self.receipt_pins.contains(task_id) {
+            return None;
+        }
+        if let Some(shell) = self.processes.get_mut(task_id) {
+            shell.poll();
+            return Some(ShellReceiptWitness::from_shell(shell));
+        }
+        self.receipt_witnesses.get(task_id).cloned()
+    }
+
+    pub fn release_job_receipt(&mut self, task_id: &str) {
+        self.receipt_pins.remove(task_id);
+        self.receipt_witnesses.remove(task_id);
+    }
+
     fn require_session_owner(&self, task_id: &str, active_session_id: &str) -> Result<()> {
         let owned = self.processes.get(task_id).is_some_and(|shell| {
             !active_session_id.is_empty() && shell.owner_session_id == active_session_id
@@ -2013,6 +2072,8 @@ impl ShellManager {
         Self {
             processes: HashMap::new(),
             stale_jobs: HashMap::new(),
+            receipt_pins: HashSet::new(),
+            receipt_witnesses: HashMap::new(),
             default_workspace: workspace,
             sandbox_manager: SandboxManager::new(),
             sandbox_policy: ExecutionSandboxPolicy::default(),
@@ -2088,6 +2149,7 @@ impl ShellManager {
                 last_lifecycle_status: None,
                 last_lifecycle_bytes: 0,
                 wait_failed: false,
+                terminal_exit_confirmed: false,
             },
         );
     }
@@ -2146,6 +2208,29 @@ impl ShellManager {
         let spec =
             CommandSpec::program(program, args, cwd.to_path_buf(), timeout).with_policy(policy);
         self.sandbox_manager.prepare(&spec)
+    }
+
+    pub fn validate_background_job(
+        &self,
+        command: &str,
+        cwd: &Path,
+        timeout_ms: u64,
+        policy: &ExecutionSandboxPolicy,
+        env: &HashMap<String, String>,
+    ) -> Result<()> {
+        validate_shell_working_dir(cwd, false)?;
+        let spec = CommandSpec::shell(
+            command,
+            cwd.to_path_buf(),
+            Duration::from_millis(timeout_ms.clamp(1_000, 600_000)),
+        )
+        .with_policy(policy.clone())
+        .with_env(env.clone());
+        let prepared = self.sandbox_manager.prepare(&spec);
+        if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. }) {
+            require_native_readonly_execution(&prepared)?;
+        }
+        Ok(())
     }
 
     fn register_shell_wait(&mut self, session_id: &str) -> Arc<AtomicBool> {
@@ -2346,7 +2431,10 @@ impl ShellManager {
         codewhale_sandbox::shell_dispatcher::ShellDispatcher::log_exec(command);
 
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
-        validate_shell_working_dir(&work_dir, working_dir.is_none())?;
+        validate_shell_working_dir(&work_dir, working_dir.is_none()).map_err(|error| {
+            let message = error.to_string();
+            error.context(ShellLaunchNotStarted).context(message)
+        })?;
 
         let timeout_ms = timeout_ms.clamp(timeout_bounds_ms.0, timeout_bounds_ms.1);
 
@@ -2380,7 +2468,10 @@ impl ShellManager {
         {
             // Arbitrary code with a read-only policy needs kernel enforcement;
             // only the separately hardened argv subset may run without it.
-            require_native_readonly_execution(&exec_env)?;
+            require_native_readonly_execution(&exec_env).map_err(|error| {
+                let message = error.to_string();
+                error.context(ShellLaunchNotStarted).context(message)
+            })?;
         }
 
         if background {
@@ -2733,7 +2824,7 @@ impl ShellManager {
             origin_turn_id,
             work_lifecycle,
         } = spawn_context;
-        let task_id = format!("shell_{}", &Uuid::new_v4().to_string()[..8]);
+        let task_id = format!("shell_{}", Uuid::new_v4().simple());
         let mut spawn_guard =
             ShellSpawnIntentGuard::new(work_lifecycle, &task_id, original_command);
         // The guard owns the registration outcome: when bookkeeping could not
@@ -2791,6 +2882,7 @@ impl ShellManager {
                         pixel_width: 0,
                         pixel_height: 0,
                     })
+                    .context(ShellLaunchNotStarted)
                     .context("Failed to open PTY")?;
 
                 let mut child = exec_env
@@ -2978,6 +3070,7 @@ impl ShellManager {
             last_lifecycle_status: None,
             last_lifecycle_bytes: 0,
             wait_failed: false,
+            terminal_exit_confirmed: false,
         };
 
         #[cfg(unix)]
@@ -3755,14 +3848,20 @@ impl ShellManager {
     /// age out too: jobs launched over the Runtime API, or owned by a session
     /// that is no longer active, are never drained.
     pub fn cleanup(&mut self, max_age: Duration) {
-        self.processes.retain(|_, shell| {
+        let pins = &self.receipt_pins;
+        let witnesses = &mut self.receipt_witnesses;
+        self.processes.retain(|id, shell| {
             if shell.status == ShellStatus::Running {
                 return true;
             }
             shell.mark_finished();
-            shell
+            let retain = shell
                 .finished_at
-                .is_none_or(|finished| finished.elapsed() < max_age)
+                .is_none_or(|finished| finished.elapsed() < max_age);
+            if !retain && pins.contains(id) {
+                witnesses.insert(id.clone(), ShellReceiptWitness::from_shell(shell));
+            }
+            retain
         });
         self.enforce_finished_job_bounds();
     }
@@ -3819,7 +3918,12 @@ impl ShellManager {
             {
                 break;
             }
-            self.processes.remove(&id);
+            if let Some(mut shell) = self.processes.remove(&id)
+                && self.receipt_pins.contains(&id)
+            {
+                self.receipt_witnesses
+                    .insert(id, ShellReceiptWitness::from_shell(&mut shell));
+            }
             remaining_count -= 1;
             remaining_bytes = remaining_bytes.saturating_sub(bytes);
         }
@@ -6464,7 +6568,7 @@ impl ToolSpec for BashTool {
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             let work_lifecycle = shell_work_lifecycle_from_context(context);
-            let task_id = format!("shell_{}", &Uuid::new_v4().to_string()[..8]);
+            let task_id = format!("shell_{}", Uuid::new_v4().simple());
             let mut spawn_guard = ShellSpawnIntentGuard::new(work_lifecycle, &task_id, command);
             // Only a registered operation is observed (#6435).
             let work_lifecycle = spawn_guard.lifecycle.clone();
