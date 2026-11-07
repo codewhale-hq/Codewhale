@@ -1956,7 +1956,7 @@ fn native_entry_rule_fails_validation_when_the_host_is_enabled() {
             let errors = native_errors(&registry, name);
             assert_eq!(errors.len(), 1, "{name}: {errors:?}");
             assert!(
-                errors[0].contains(".mjs, .js or .mts"),
+                errors[0].contains(".mjs, .js, .cjs, .mts or .cts"),
                 "{name}: {errors:?}"
             );
         }

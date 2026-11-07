@@ -275,6 +275,10 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Host-provided model clients:** keep configured session isolation and
+  approval deadlines when optional credential preflight fails.
+- **Runtime SDK exports:** include the existing thread-scoped Git, snapshot,
+  worktree and job-operation capabilities in the committed schema and types.
 - **Plugin enablement revalidates its review:** enabling rechecks the staged
   snapshot and, under the existing state lock, refuses a changed review
   generation or trust receipt. The macOS stale-enable check passed (1/1);

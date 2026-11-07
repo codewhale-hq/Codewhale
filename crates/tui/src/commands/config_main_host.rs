@@ -6191,7 +6191,7 @@ context_window = 262144
     }
 
     #[test]
-    fn test_logout_clears_api_key_state() {
+    fn test_logout_starts_account_logout_without_clearing_api_key_state() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -6209,19 +6209,23 @@ context_window = 262144
         fs::write(&config_path, "api_key = \"test-key\"\n").unwrap();
 
         let mut app = create_test_app();
+        app.onboarding = OnboardingState::None;
+        app.onboarding_needs_api_key = false;
+        app.onboarding_missing_key_recovery = false;
         let result = logout_command(&mut app);
-        assert!(result.message.is_some());
-        assert_eq!(app.onboarding, OnboardingState::Provider);
-        assert!(app.onboarding_needs_api_key);
-        assert!(app.onboarding_missing_key_recovery);
-        assert_eq!(result.action, Some(AppAction::OpenProviderPicker));
+        assert!(!result.is_error);
+        assert!(result.message.is_none());
+        assert_eq!(app.onboarding, OnboardingState::None);
+        assert!(!app.onboarding_needs_api_key);
+        assert!(!app.onboarding_missing_key_recovery);
+        assert_eq!(result.action, Some(AppAction::StartAccountLogout));
 
         let updated = fs::read_to_string(config_path).unwrap();
-        assert!(!updated.contains("api_key"));
+        assert_eq!(updated, "api_key = \"test-key\"\n");
     }
 
     #[test]
-    fn logout_clears_only_exact_named_custom_provider_key() {
+    fn logout_preserves_named_custom_provider_keys() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -6245,10 +6249,15 @@ context_window = 262144
 
         let result = logout_command(&mut app);
 
-        assert!(result.message.is_some());
+        assert!(!result.is_error);
+        assert!(result.message.is_none());
+        assert_eq!(result.action, Some(AppAction::StartAccountLogout));
+        assert_eq!(app.provider_identity_for_persistence(), "custom-a");
         let updated = fs::read_to_string(config_path).unwrap();
-        assert!(!updated.contains("a-key"), "{updated}");
-        assert!(updated.contains("b-key"), "{updated}");
+        assert_eq!(
+            updated,
+            "[providers.custom-a]\napi_key = \"a-key\"\n\n[providers.custom-b]\napi_key = \"b-key\"\n"
+        );
     }
 
     #[test]

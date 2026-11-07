@@ -6806,6 +6806,7 @@ command = "echo project"
             ("get_goal", "other"),
             ("update_goal", "other"),
             ("task_shell_wait", "other"),
+            ("present", "other"),
             // Reads the skill registry, not caller-named paths, so it keeps
             // the classification it already had as a deferred tool. Making it
             // eager must not silently re-gate it.
