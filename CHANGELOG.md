@@ -26,6 +26,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Work in progress and known limits
 
+- **Terminal lifetime:** deleting a conversation does not end its terminal shells; they run until the Engine exits. Scrollback beyond the 512 KiB ring is not recoverable, and an Engine restart loses live shells (reported as a new terminal `instance`).
 - **Codex App Server compatibility:** Codewhale is working toward full Codex
   wire parity on the existing Engine. The current HTTP/SSE Runtime remains
   available; full-tool turns, subscriptions, bidirectional interactions, durable
@@ -190,6 +191,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Changed
 
+- **Thread-owned terminals (Runtime API, breaking):** Engine terminal shells now belong to the conversation that started them, so two conversations using `term-1` in one folder get separate shells instead of sharing cwd, running command and output. Clients list a thread's shells at `GET /v1/threads/{id}/terminals` and drive one at `/v1/threads/{id}/terminals/{terminal_id}/output|input|resize|kill`; a reset shell, another thread's or workspace's shell, or one from before an Engine restart answers 404 instead of attaching to a same-named shell. The name-addressed `/v1/terminal/{name}/*` routes now answer 410, and `/v1/runtime/info` advertises `thread_scoped_terminals` in place of the four `terminal_*` flags. Client input meets the thread's shell consent and sandbox-reuse guard, and a lone Ctrl-C uses the dock's confirmed interrupt. In the TUI, a new conversation starts its own `term-1` rather than reusing the previous conversation's shell, which the dock still lists.
 - **Brighter terminal working states:** the Ocean palette has stronger accents,
   and active work uses a restrained left-to-right text sweep. Quiet and
   reduced-motion settings keep stable working indicators. The shared
