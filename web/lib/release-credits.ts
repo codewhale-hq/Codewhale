@@ -20,34 +20,13 @@
 
 /** Contributors whose PRs were merged or harvested into this release. */
 export const RELEASE_CONTRIBUTORS: string[] = [
-  "@dsingal0",
-  "@shenjackyuanjie",
-  "@aboimpinto",
   "@printf033",
-  "@henrikdukefoss",
-  "@SparkofSpike",
-  "@dajiaohuang",
-  "@gaord",
-  "@Lstarsky0",
-  "@jayanthvee",
-  "@leoca",
-  "@asto18089",
-  "@LIghtJUNction",
-  "@zhuowp",
-];
-
-/**
- * Contributors whose work landed after the latest release and before the next
- * one. scripts/check-contributor-credit.py requires them here now; the release
- * cut moves them into RELEASE_CONTRIBUTORS with that release's changelog block.
- */
-export const UNRELEASED_CONTRIBUTORS: string[] = [
   "@isaacs",
-  "@Gabriel-Degret",
   "@7jrxt42BxFZo4iAnN4CX",
-  "@Lstarsky0",
-  "@gaord",
   "@SparkofSpike",
+  "@gaord",
+  "@Lstarsky0",
+  "@asto18089",
   "@Aboysky",
   "@ddlw",
   "@laozidabo",
@@ -58,18 +37,22 @@ export const UNRELEASED_CONTRIBUTORS: string[] = [
 ];
 
 /**
+ * Contributors whose work landed after the latest release and before the next
+ * one. scripts/check-contributor-credit.py requires them here now; the release
+ * cut moves them into RELEASE_CONTRIBUTORS with that release's changelog block.
+ */
+export const UNRELEASED_CONTRIBUTORS: string[] = [];
+
+/**
  * Contributors who helped with reports, reproductions, and verification.
- * Credit covers the 0.10.2 reports recorded in docs/CONTRIBUTORS.md.
+ * Credit covers the 0.10.3 candidate reports recorded in docs/CONTRIBUTORS.md.
  */
 export const RELEASE_HELPERS: string[] = [
-  "@BX166",
-  "@harryvizcaino-oss",
-  "@rafacouto",
+  "@Gabriel-Degret",
+  "@soarkit",
+  "@liuyy2",
   "@luestr",
-  "@SergiuSSoluS",
-  "@8sero",
-  "@Asteria1028",
-  "@SakuraNeko",
+  "@M-Maciej",
   "@Statter",
-  "@7jrxt42BxFZo4iAnN4CX",
+  "@eugenicum",
 ];

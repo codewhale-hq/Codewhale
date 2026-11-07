@@ -337,3 +337,26 @@ test("ThreadStore claims survive a restart: finished messages skip, an in-flight
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ─── splitMessage byte cap ───────────────────────────────────────
+
+test("splitMessage splits CJK text by bytes when a byte cap is set", () => {
+  const cjk = "横".repeat(4000); // 4000 chars = 12000 UTF-8 bytes
+  const chunks = splitMessage(cjk, 3500, 3800);
+  assert.ok(chunks.length >= 3, `expected >=3 chunks, got ${chunks.length}`);
+  for (const c of chunks) assert.ok(Buffer.byteLength(c, "utf8") <= 3800);
+  assert.equal(chunks.join(""), cjk);
+});
+
+test("splitMessage keeps short messages single under a byte cap", () => {
+  assert.deepEqual(splitMessage("hello", 3500, 3800), ["hello"]);
+  const mixed = "字".repeat(100) + "x".repeat(100); // 400 bytes
+  assert.equal(splitMessage(mixed, 3500, 3800).length, 1);
+});
+
+test("splitMessage byte cap is opt-in", () => {
+  const cjk = "横".repeat(4000);
+  const chunks = splitMessage(cjk, 3500, 0);
+  assert.equal(chunks.length, 2); // char limit only
+  assert.ok(Buffer.byteLength(chunks[0], "utf8") > 3800);
+});

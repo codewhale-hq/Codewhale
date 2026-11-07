@@ -241,6 +241,18 @@ pub(crate) fn handle_bracketed_paste(app: &mut App, text: &str) {
         // Main-input paste takes the same keyboard ownership as typed text.
         // Otherwise the visible composer command's Enter stays with the dock.
         crate::tui::work_surface::release_focus(app);
+        if text.is_empty() {
+            // A terminal that answers an image-only clipboard with an empty
+            // paste has already proven the person pressed paste; read the
+            // picture ourselves. Windows Terminal sends no event at all in
+            // that case, which is why `/attach` with no path also exists.
+            // A terminal-owned SSH paste has no readable clipboard, so it
+            // falls through instead of flashing a hint for an empty copy.
+            if !app.clipboard.requires_terminal_paste() {
+                app.paste_from_clipboard();
+            }
+            return;
+        }
         app.insert_paste_text(text);
     }
 }
@@ -338,7 +350,7 @@ pub(crate) async fn handle_setup_constitution_model_draft(
     // timeout. The loop polls constitution_draft_cell and delivers the result.
     const DRAFT_TIMEOUT: Duration = Duration::from_secs(20);
     let model_label = app.model_display_label();
-    let client = match CodewhaleClient::new(config) {
+    let client = match crate::active_route_client(config).await {
         Ok(client) => client,
         Err(err) => {
             deliver_constitution_draft_result(
@@ -414,7 +426,7 @@ pub(crate) async fn handle_fleet_profile_model_draft(
     // the wizard interactive with a drafting status.
     const DRAFT_TIMEOUT: Duration = Duration::from_secs(20);
     let model_label = app.model_display_label();
-    let client = match CodewhaleClient::new(config) {
+    let client = match crate::active_route_client(config).await {
         Ok(client) => client,
         Err(err) => {
             deliver_fleet_draft_result(
@@ -1858,6 +1870,8 @@ pub(crate) async fn handle_view_events(
                     }
                 }
                 crate::tui::views::CommandPaletteAction::InsertText { text } => {
+                    app.clear_input_recoverable();
+                    app.line_began_with_slash = text.starts_with('/');
                     app.input = text;
                     app.cursor_position = app.input.chars().count();
                     app.status_message = Some(
@@ -2568,16 +2582,19 @@ pub(crate) async fn handle_view_events(
                     .compatibility()
                     .map_or(identity.key.as_str(), |row| row.label);
                 let mut scoped = config.clone();
-                let validation = scoped
-                    .scope_to_provider_identity(&identity)
-                    .and_then(|()| {
-                        codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+                let validation = match scoped.scope_to_provider_identity(&identity) {
+                    Ok(()) => {
+                        match codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
                             &scoped,
                             &identity,
                             Some(&model),
-                        )
-                    })
-                    .and_then(|route| route.validate().map_err(|err| err.to_string()));
+                        ) {
+                            Ok(route) => route.validate_async().await,
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Err(err) => Err(err),
+                };
                 match validation {
                     Ok(validated) => {
                         app.provider_health.record_success(
@@ -2858,7 +2875,7 @@ pub(crate) async fn handle_view_events(
                 }
             }
             ViewEvent::SetupOpenRemoteControlRequested => {
-                start_remote_control_session(app, config);
+                start_remote_control_session(app, config).await;
             }
             ViewEvent::HotbarDisableRequested => {
                 disable_hotbar(app, config);

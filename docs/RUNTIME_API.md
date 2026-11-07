@@ -1762,8 +1762,8 @@ Once the response is `200`, every end the server chooses is a final
 stream](#ending-and-resuming-a-thread-stream).
 
 **Snapshots** (side-git restore point listing + restore)
-- `GET /v1/snapshots?limit=20`
-- `POST /v1/snapshots/{id}/restore`
+- `GET /v1/snapshots?limit=20&thread_id=`
+- `POST /v1/snapshots/{id}/restore?thread_id=`
 
 `/v1/snapshots` lists recent side-git restore points for the runtime workspace.
 `limit` defaults to `20` and must be between `1` and `100`. `POST
@@ -1772,7 +1772,11 @@ returns `{"restored": "<snapshot-id>"}`. It is the direct operator surface for
 the server's own workspace (the same action as the TUI's `/restore <N>`): it is
 gated by the Runtime API bearer token, not by any thread's trust flag, and it
 is refused with `409` while a turn is active in an overlapping workspace (see
-below). A `pre-restore:` safety snapshot is taken first.
+below). A `pre-restore:` safety snapshot is taken first. With `thread_id`
+(capability `thread_scoped_snapshots`) both routes act on that thread's
+recorded workspace instead, under the same admission rule; an unknown thread
+answers `404` and a missing or changed workspace `409`
+`thread_workspace_unavailable`.
 
 ```json
 [
@@ -1791,7 +1795,7 @@ admission rule and one safety net, and they differ in scope and trust.
 
 | Route | Scope | Trust | Forks the thread |
 | --- | --- | --- | --- |
-| `POST /v1/snapshots/{id}/restore` | whole server workspace | bearer token only (operator action) | no |
+| `POST /v1/snapshots/{id}/restore` | whole server workspace, or the `thread_id` workspace | bearer token only (operator action) | no |
 | `POST /v1/threads/{id}/patch-undo` | the files the dropped turns changed | thread `trust_mode` or `auto_approve` when files would change | yes |
 | `POST /v1/threads/{id}/file-revert` | exactly one regular file | thread `trust_mode` or `auto_approve`, always | no |
 
@@ -2394,6 +2398,30 @@ LFS, keep working.
   `set_upstream` is given, must name a configured remote);
   `POST /v1/git/branch`
   `{ "name", "create"? }`
+- Every write above also takes `?thread_id=` (capability
+  `thread_scoped_git_writes`) and then runs in that thread's recorded
+  workspace instead of the server's, the same scope the read routes use. A
+  thread whose workspace is missing or changed answers `409`
+  `thread_workspace_unavailable`.
+- `GET /v1/worktrees?thread_id=` — `{repository, worktrees[]}` with
+  `{path, branch, head, main, managed, locked, prunable}` from
+  `git worktree list --porcelain`; `managed` marks the ones under
+  `<repository>/.codewhale/worktrees/`. Capability `worktrees`.
+- `POST /v1/worktrees?thread_id=` `{ "branch", "base"? }` — validates the
+  branch with `check-ref-format`, refuses a branch already checked out
+  elsewhere (`409 branch_checked_out`) or an existing folder
+  (`409 worktree_exists`), adds `/.codewhale/worktrees/` to the repository's
+  `info/exclude` so the main checkout stays clean, and runs
+  `git worktree add -b <branch> -- <repository>/.codewhale/worktrees/<slug> <base>`
+  (`base` defaults to the main checkout's `HEAD`). Answers `201`
+  `{path, branch, base, head, repository}`. A client then creates a thread
+  with `workspace: path`.
+- `POST /v1/worktrees/remove?thread_id=` `{ "path" }` — archives a managed
+  worktree: refuses unmanaged or main worktrees (`403`), a locked one
+  (`409 worktree_locked`), active turns in it (`409 worktree_busy`) and
+  uncommitted or untracked changes (`409 worktree_dirty` with `files[]`),
+  then runs `git worktree remove` without `--force`. The branch and its
+  commits stay. A worktree whose folder is already gone is removed with `--force` for that exact path; other prunable worktrees are untouched.
 
 Diffs and precondition token reads run through the hardened review command
 (filters, fsmonitor, hooks, lazy fetches and replace-objects neutralized).

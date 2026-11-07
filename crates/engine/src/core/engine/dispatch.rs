@@ -354,7 +354,7 @@ pub(super) fn stamp_tool_result_approval(result: &mut ToolResult, approval: Tool
 ///
 /// Only a result the engine stamped (`metadata.approval.model_visible`) loses
 /// a note, and only that decision's exact note text followed by a blank line
-/// (or nothing). Output that merely begins with "[approval] " — from a
+/// (or nothing). Output that merely begins with "\[approval\] " — from a
 /// command, a file, or anything else a tool read — is shown whole, so
 /// injected text cannot hide tool output from the person.
 pub fn content_without_approval_note(result: &ToolResult) -> &str {

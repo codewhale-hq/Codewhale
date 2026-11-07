@@ -825,11 +825,6 @@ pub(super) fn append_usage_source_record(
     if !record.permits_replacement(turn.source_usage_records.get(&key))? {
         return Ok(false);
     }
-    if !turn.source_usage_records.contains_key(&key)
-        && turn.routed_usage_source_ids.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN
-    {
-        bail!("Runtime source receipt capacity reached; update retained without acknowledgement");
-    }
     if !turn.routed_usage_source_ids.contains(&key) {
         turn.routed_usage_source_ids.push(key.clone());
     }
@@ -840,53 +835,6 @@ pub(super) fn append_usage_source_record(
         .schema_version
         .max(SOURCE_ACCOUNTING_RUNTIME_SCHEMA_VERSION);
     Ok(true)
-}
-
-fn append_owned_usage_source_record(
-    store: &RuntimeThreadStore,
-    turn: &mut TurnRecord,
-    record: &RuntimeUsageRecord,
-) -> Result<bool> {
-    let key = routed_usage_source_fingerprint(&record.source_id);
-    if record.settlement.is_none()
-        || turn.source_usage_records.contains_key(&key)
-        || turn.routed_usage_source_ids.len() < MAX_ROUTED_USAGE_RECORDS_PER_TURN
-        || turn.routing_settlement
-        || !turn.source_accounting
-        || turn.source_usage_records.len() != turn.routed_usage_source_ids.len()
-    {
-        return append_usage_source_record(turn, record);
-    }
-    anyhow::ensure!(
-        turn.source_usage_origin_turn_id.as_deref() == Some(turn.id.as_str()),
-        "inherited native usage cannot admit an original-owner partition"
-    );
-    store.load_thread(&turn.thread_id)?;
-    let partition_id = runtime_usage_partition_id(&turn.id, &record.source_id)?;
-    let mut partition = if store.turn_path(&partition_id)?.exists() {
-        let partition = store.load_turn(&partition_id)?;
-        anyhow::ensure!(
-            partition.thread_id == turn.thread_id
-                && runtime_usage_partition_parent(&partition) == Some(turn.id.as_str())
-                && partition.source_usage_origin_turn_id.as_deref() == Some(partition.id.as_str())
-                && partition
-                    .source_usage_records
-                    .keys()
-                    .all(|current| current == &key),
-            "Runtime usage partition belongs to another source or original owner"
-        );
-        partition
-    } else {
-        let mut partition = unaccepted_usage_turn(&turn.thread_id, &partition_id);
-        partition.input_summary = RUNTIME_USAGE_PARTITION_SUMMARY.to_string();
-        partition.created_at = turn.created_at;
-        partition.status = RuntimeTurnStatus::Completed;
-        partition.error = None;
-        partition
-    };
-    append_usage_source_record(&mut partition, record)?;
-    store.save_turn(&partition)?;
-    Ok(false)
 }
 
 pub(super) fn append_routed_usage_record(
@@ -928,17 +876,6 @@ pub(super) fn append_routed_usage_record(
     {
         return false;
     }
-    if turn.routed_usage_source_ids.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN {
-        // Stop admitting new records once both the record and exact-dedupe
-        // ledgers reach their shared bound. Retaining the first accepted set
-        // makes replay idempotent; one explicit incompleteness marker is safer
-        // than evicting fingerprints and later counting a replay twice.
-        if turn.routed_usage_dropped_records == 0 {
-            turn.routed_usage_dropped_records = 1;
-            return true;
-        }
-        return false;
-    }
     turn.routed_usage_source_ids.push(source_fingerprint);
     turn.routed_usage.push(EffectiveRouteUsage {
         route: usage.route.sanitized_for_persistence(),
@@ -957,13 +894,6 @@ pub(super) fn append_routed_usage_drop_record(
         .iter()
         .any(|persisted| persisted == &source_fingerprint)
     {
-        return false;
-    }
-    if turn.routed_usage_source_ids.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN {
-        if turn.routed_usage_dropped_records == 0 {
-            turn.routed_usage_dropped_records = 1;
-            return true;
-        }
         return false;
     }
     turn.routed_usage_source_ids
@@ -989,13 +919,6 @@ pub(super) fn append_decision_receipt(
         .iter()
         .any(|old| old.source_id == receipt.source_id)
     {
-        return false;
-    }
-    if turn.decision_receipts.len() >= MAX_ROUTED_USAGE_RECORDS_PER_TURN {
-        if turn.routed_usage_dropped_records == 0 {
-            turn.routed_usage_dropped_records = 1;
-            return true;
-        }
         return false;
     }
     turn.decision_receipts.push(receipt);
@@ -1678,14 +1601,15 @@ pub(super) fn requested_provider_identity(
 /// Resolve and client-preflight `identity` for `model` (`None` or `auto`
 /// selects the provider's default route). A provider whose route does not
 /// resolve, or whose credentials cannot build a client, is not ready.
-pub(super) fn ready_provider_route(
+pub(super) async fn ready_provider_route(
     config: &Config,
     identity: &ProviderIdentity,
     model: Option<&str>,
 ) -> Result<crate::route_runtime::ResolvedRuntimeRoute> {
     let model = model.filter(|model| !model.trim().eq_ignore_ascii_case("auto"));
     resolve_runtime_thread_route_for_identity(config, identity, model)?
-        .preflight()
+        .preflight_async()
+        .await
         .map_err(|reason| anyhow!("provider '{}' is not ready: {reason}", identity.key))
 }
 
@@ -8264,7 +8188,8 @@ impl RuntimeThreadManager {
                             .then_some(current_model)
                     });
                     let route =
-                        ready_provider_route(&config, &identity, requested_model.as_deref())?;
+                        ready_provider_route(&config, &identity, requested_model.as_deref())
+                            .await?;
                     let model = match requested_model {
                         Some(model) if model.trim().eq_ignore_ascii_case("auto") => model,
                         _ => route.model.clone(),
@@ -11820,7 +11745,7 @@ impl RuntimeThreadManager {
                         append_decision_receipt(&mut turn, receipt);
                     }
                     for record in background_usage.records.iter().cloned() {
-                        match append_owned_usage_source_record(&self.store, &mut turn, &record) {
+                        match append_usage_source_record(&mut turn, &record) {
                             Ok(_) => {
                                 if record.has_native_producer() {
                                     drained_native_usage.push(record);
@@ -13012,7 +12937,12 @@ impl RuntimeThreadManager {
                     None if thread.model.trim().eq_ignore_ascii_case("auto") => {
                         thread.model.clone()
                     }
-                    None => ready_provider_route(&cfg_snapshot, identity, None)?.model.clone(),
+                    None => {
+                        ready_provider_route(&cfg_snapshot, identity, None)
+                            .await?
+                            .model
+                            .clone()
+                    }
                 }
             }
             None => req.model.as_deref().unwrap_or(&thread.model).to_string(),
@@ -13325,7 +13255,8 @@ impl RuntimeThreadManager {
         };
         let route = if client_preflight_required || turn_provider.is_some() || req.account_model_owner.is_some() {
             route
-                .preflight()
+                .preflight_async()
+                .await
                 .map_err(|reason| anyhow!("Failed to validate runtime thread route: {reason}"))?
         } else {
             route
@@ -13910,7 +13841,8 @@ source_usage_records: Default::default(),
         let route = self.resolved_route_for_thread(&self.read_config(), &thread)?;
         let route = if client_preflight_required {
             route
-                .preflight()
+                .preflight_async()
+                .await
                 .map_err(|reason| anyhow!("Failed to validate runtime thread route: {reason}"))?
         } else {
             route
@@ -15293,7 +15225,7 @@ source_usage_records: Default::default(),
         }
         let _turn_mutation = self.store.turn_mutation.lock();
         let mut turn = self.store.load_turn(turn_id)?;
-        match append_owned_usage_source_record(&self.store, &mut turn, record) {
+        match append_usage_source_record(&mut turn, record) {
             Ok(changed) => {
                 if changed {
                     self.store.save_turn(&turn)?;
@@ -15388,7 +15320,7 @@ source_usage_records: Default::default(),
                 if turn.thread_id != source_thread {
                     return false;
                 }
-                match append_owned_usage_source_record(&store, &mut turn, &record) {
+                match append_usage_source_record(&mut turn, &record) {
                     Ok(_) => store.save_turn(&turn).is_ok(),
                     Err(error) => {
                         tracing::warn!(%error, "durable Runtime usage correction refused");
@@ -17335,10 +17267,7 @@ source_usage_records: Default::default(),
                             && let Some(source) = receipt["source_id"].as_str()
                         {
                             let fingerprint = routed_usage_source_fingerprint(source);
-                            if !turn.routed_usage_source_ids.contains(&fingerprint)
-                                && turn.routed_usage_source_ids.len()
-                                    < MAX_ROUTED_USAGE_RECORDS_PER_TURN
-                            {
+                            if !turn.routed_usage_source_ids.contains(&fingerprint) {
                                 turn.routed_usage_source_ids.push(fingerprint);
                             }
                         }
@@ -17689,7 +17618,7 @@ source_usage_records: Default::default(),
             }
             let mut drained_native_usage = Vec::new();
             for record in background_usage.records {
-                match append_owned_usage_source_record(&self.store, &mut turn, &record) {
+                match append_usage_source_record(&mut turn, &record) {
                     Ok(_) => {
                         if record.has_native_producer() {
                             drained_native_usage.push(record);

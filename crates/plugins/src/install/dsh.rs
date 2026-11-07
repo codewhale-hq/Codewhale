@@ -529,6 +529,118 @@ pub struct LoadedBundle {
     pub outcomes: Vec<DshOutcome>,
 }
 
+fn host_node_platform() -> Option<&'static str> {
+    match std::env::consts::OS {
+        "macos" => Some("darwin"),
+        "windows" => Some("win32"),
+        "linux" => Some("linux"),
+        _ => None,
+    }
+}
+
+fn node_platform(name: &str) -> Option<&'static str> {
+    match name {
+        "darwin" | "macos" => Some("darwin"),
+        "win32" | "windows" => Some("win32"),
+        "linux" => Some("linux"),
+        _ => None,
+    }
+}
+
+fn target_dsh_version() -> Result<semver::Version> {
+    let receipt: Json = serde_json::from_slice(crate::activation::DSH_COMPATIBILITY)
+        .map_err(|_| anyhow::Error::msg("The pinned DSH compatibility receipt is unreadable."))?;
+    let version = receipt
+        .get("target_dsh_version")
+        .and_then(Json::as_str)
+        .ok_or_else(|| {
+            anyhow::Error::msg("The pinned DSH compatibility receipt lacks `target_dsh_version`.")
+        })?;
+    semver::Version::parse(version).map_err(|_| {
+        anyhow::Error::msg(
+            "The pinned DSH compatibility receipt has an invalid `target_dsh_version`.",
+        )
+    })
+}
+
+fn admit_host_compatibility(manifest: &Value) -> Result<()> {
+    if let Some(declared) = manifest
+        .get("engines")
+        .and_then(|engines| engines.get("dsh"))
+    {
+        let Some(range) = declared.str() else {
+            return refuse(
+                "incompatible-version: `engines.dsh` must be a string semver range; author the supported DSH range or remove the field.",
+            );
+        };
+        let requirement = semver::VersionReq::parse(range).map_err(|_| {
+            anyhow::Error::msg(format!(
+                "incompatible-version: `engines.dsh` value `{}` is not a valid semver range.",
+                refusal_text(range)
+            ))
+        })?;
+        let target = target_dsh_version()?;
+        require(
+            requirement.matches(&target),
+            &format!(
+                "incompatible-version: this bundle requires DSH `{}`, but this Codewhale host targets DSH {target}; import a bundle built for that host or update the host.",
+                refusal_text(range)
+            ),
+        )?;
+    }
+    if let Some(declared) = manifest
+        .get("dsh")
+        .and_then(|dsh| dsh.get("bundle"))
+        .and_then(|bundle| bundle.get("platforms"))
+    {
+        let Value::Seq(items) = declared else {
+            return refuse(
+                "unsupported-platform: `dsh.bundle.platforms` must be a non-empty list of Node platform names (darwin/macos, win32/windows, linux).",
+            );
+        };
+        require(
+            !items.is_empty(),
+            "unsupported-platform: `dsh.bundle.platforms` must be a non-empty list of Node platform names (darwin/macos, win32/windows, linux).",
+        )?;
+        let mut platforms = Vec::new();
+        for item in items {
+            let Some(name) = item.str() else {
+                return refuse(
+                    "unsupported-platform: every `dsh.bundle.platforms` entry must be a Node platform name (darwin/macos, win32/windows, linux).",
+                );
+            };
+            let Some(platform) = node_platform(name) else {
+                return refuse(format!(
+                    "unsupported-platform: `{}` is not a supported Node platform name; use darwin/macos, win32/windows or linux.",
+                    refusal_text(name)
+                ));
+            };
+            platforms.push(platform);
+        }
+        let host = host_node_platform().ok_or_else(|| {
+            anyhow::Error::msg(format!(
+                "unsupported-platform: Codewhale cannot verify host platform `{}` against the bundle's declared platforms.",
+                std::env::consts::OS
+            ))
+        })?;
+        require(
+            platforms.contains(&host),
+            &format!(
+                "unsupported-platform: this bundle declares only {}; this host is {host}.",
+                platforms.join(", ")
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn declares_client(manifest: &Value) -> bool {
+    manifest
+        .get("dsh")
+        .and_then(|dsh| dsh.get("client"))
+        .is_some_and(|client| !matches!(client, Value::Null))
+}
+
 pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
     let manifest_bytes = read_file(&package.contained(Path::new("package.json"))?, MAX_DOCUMENT)
         .map_err(|_| {
@@ -542,12 +654,9 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
         matches!(bundle, Some(Value::Map(_))),
         "Not a DSH bundle package: package.json lacks `dsh.bundle.patch`.",
     )?;
+    admit_host_compatibility(&manifest)?;
     let mut notes = Vec::new();
-    if manifest
-        .get("dsh")
-        .and_then(|dsh| dsh.get("client"))
-        .is_some_and(|client| !matches!(client, Value::Null))
-    {
+    if declares_client(&manifest) {
         notes.push(
             "package declares `dsh.client`; its UI half was not converted and stays off until Codewhale has a renderer that can keep plugin UI off the network (WebKit restrictions do not stop WebRTC)"
                 .to_string(),
@@ -1457,6 +1566,7 @@ impl OutputFiles {
 
 /// Walk a contained directory without following links, bounded.
 pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>) -> Result<()> {
+    let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut pending = vec![root.to_path_buf()];
     let mut visited = 0usize;
     while let Some(directory) = pending.pop() {
@@ -1470,10 +1580,23 @@ pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>)
             )?;
             let path = child.path();
             let metadata = fs::symlink_metadata(&path)?;
-            require(
-                !codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata),
-                "Source paths must not contain links or reparse points.",
-            )?;
+            if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
+                let dependency_link = path
+                    .strip_prefix(root)
+                    .unwrap_or(path.as_path())
+                    .components()
+                    .any(|part| part.as_os_str().to_str() == Some("node_modules"));
+                let contained_file = dependency_link
+                    && fs::canonicalize(&path).is_ok_and(|target| {
+                        target.starts_with(&canonical_root)
+                            && fs::metadata(&target).is_ok_and(|target| target.is_file())
+                    });
+                require(
+                    contained_file,
+                    "Source paths must not contain links or reparse points.",
+                )?;
+                continue;
+            }
             visit(&path, metadata.is_dir())?;
             if metadata.is_dir() {
                 pending.push(path);
@@ -1648,6 +1771,7 @@ fn native_composition_files(
     mut document: Json,
     output: &mut OutputFiles,
     client_outcomes: &mut Vec<DshOutcome>,
+    ui: bool,
 ) -> Result<Vec<String>> {
     fn modules(rows: &[Value], names: &mut Vec<String>) -> Result<()> {
         for row in rows {
@@ -1673,7 +1797,7 @@ fn native_composition_files(
     }
     let mut names = Vec::new();
     modules(entries, &mut names)?;
-    if names.is_empty() {
+    if names.is_empty() && !ui {
         return Ok(names);
     }
     // Portable-only import keeps absent foreign rows visible as manual ports.
@@ -1692,16 +1816,16 @@ fn native_composition_files(
             _ => unresolved.push(name),
         }
     }
-    if paths.is_empty()
-        && !names.iter().any(|name| {
+    let native_graph = !paths.is_empty()
+        || names.iter().any(|name| {
             name == presets::AGENT_PRESETS
                 || (host_hook_bridge(name)
                     && !matches!(name.as_str(), DSH_MCP_CLIENT | DSH_SKILL_FILESYSTEM))
-        })
-    {
+        });
+    if !native_graph && !ui {
         return Ok(Vec::new());
     }
-    if !unresolved.is_empty() {
+    if native_graph && !unresolved.is_empty() {
         return refuse(format!(
             "Native composition contains an unsupported or missing row with no exact admitted module ({}); no partial graph was installed.",
             refusal_list(unresolved.iter().map(|name| refusal_text(name)))
@@ -1709,6 +1833,8 @@ fn native_composition_files(
     }
     let mut files = serde_json::Map::new();
     walk_files(&package.root, |path, is_dir| {
+        let relative = relative_slash(path, &package.root);
+        let dependency = relative.split('/').any(|part| part == "node_modules");
         let lower = path
             .file_name()
             .unwrap_or_default()
@@ -1718,18 +1844,25 @@ fn native_composition_files(
             .extension()
             .map(|ext| ext.to_string_lossy().to_ascii_lowercase());
         require(
-            (!lower.starts_with('.') || lower == ".agent-presets")
+            (dependency || !lower.starts_with('.') || lower == ".agent-presets")
                 && !matches!(
                     lower.as_str(),
-                    "credentials" | "credentials.json" | "secrets.json" | "id_rsa" | "id_ed25519"
+                    "credentials"
+                        | "credentials.json"
+                        | "secrets.json"
+                        | "id_rsa"
+                        | "id_ed25519"
+                        | ".env"
+                        | ".npmrc"
+                        | ".netrc"
+                        | ".git"
                 )
                 && !matches!(suffix.as_deref(), Some("pem" | "key" | "p12" | "pfx")),
-            "Package a closed Native source without hidden files, repository metadata or credential files.",
+            "Package a closed Native source without credential files or repository metadata; hidden dependency files are admitted only under node_modules.",
         )?;
         if is_dir {
             return Ok(());
         }
-        let relative = relative_slash(path, &package.root);
         let bytes = read_file(
             &package.contained(Path::new(&relative))?,
             output.remaining(),
@@ -1768,11 +1901,7 @@ fn native_composition_files(
                         anyhow::Error::msg("Configuration and skill entrypoints must be UTF-8.")
                     })?;
                     let manifest = parse_json(text)?;
-                    if manifest
-                        .get("dsh")
-                        .and_then(|dsh| dsh.get("client"))
-                        .is_some_and(|client| !matches!(client, Value::Null))
-                    {
+                    if declares_client(&manifest) {
                         client_outcomes.push(DshOutcome {
                             row: Some(refusal_text(&name)),
                             package: Some(refusal_text(
@@ -1791,6 +1920,9 @@ fn native_composition_files(
             }
             directory = parent.parent();
         }
+    }
+    if !native_graph {
+        return Ok(Vec::new());
     }
     let mut selected = Vec::new();
     for name in &names {
@@ -1874,12 +2006,14 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
     let loaded = load_bundle(&package)?;
     let mut output_files = OutputFiles::default();
     let mut client_outcomes = Vec::new();
+    let ui = declares_client(&loaded.manifest);
     let native_rows = native_composition_files(
         &package,
         &loaded.entries,
         loaded.composition,
         &mut output_files,
         &mut client_outcomes,
+        ui,
     )?;
     let requires_native = !native_rows.is_empty();
     let mut notes = loaded.notes;
@@ -1982,7 +2116,7 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
                     .to_string();
         }
     }
-    if output_files.files.is_empty() && components.servers.is_empty() {
+    if !ui && output_files.files.is_empty() && components.servers.is_empty() {
         let skipped = refusal_list(
             outcomes
                 .iter()

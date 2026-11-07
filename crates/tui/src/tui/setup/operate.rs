@@ -31,9 +31,8 @@ impl SetupOperateFacts {
             .admitted_provider_identity()
             .ok()
             .filter(|identity| config.verify_provider_identity(identity).is_ok());
-        let subagents_enabled = identity.map_or(false, |identity| {
-            config.subagents_enabled_for_provider(identity)
-        });
+        let subagents_enabled =
+            identity.is_some_and(|identity| config.subagents_enabled_for_provider(identity));
         let max_subagents =
             identity.map_or(0, |identity| config.max_subagents_for_provider(identity));
         let launch_concurrency = identity.map_or(0, |identity| {

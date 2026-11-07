@@ -221,7 +221,7 @@ pub async fn plan_turn_route(
         }
     };
     let turn_route = if request.preflight_required {
-        match turn_route.preflight() {
+        match turn_route.preflight_async().await {
             Ok(route) => route,
             Err(err) => {
                 return Err(settle_failed_parent_route(

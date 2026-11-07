@@ -444,103 +444,10 @@ pub(crate) fn canonical_zai_model_id(model: &str) -> Option<&'static str> {
 pub(crate) fn canonical_openrouter_recent_model_id(model: &str) -> Option<&'static str> {
     let normalized = model.trim().to_ascii_lowercase();
     let normalized = normalized.replace(['_', ' '], "-");
-    match normalized.as_str() {
-        OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL
-        | "trinity"
-        | "trinity-large-thinking"
-        | "arcee-trinity"
-        | "arcee-trinity-large-thinking" => Some(OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL),
-        OPENROUTER_GEMMA_4_31B_MODEL | "gemma-4-31b" | "gemma-4-31b-it" => {
-            Some(OPENROUTER_GEMMA_4_31B_MODEL)
-        }
-        OPENROUTER_GEMMA_4_26B_A4B_MODEL | "gemma-4-26b-a4b" | "gemma-4-26b-a4b-it" => {
-            Some(OPENROUTER_GEMMA_4_26B_A4B_MODEL)
-        }
-        OPENROUTER_GLM_5_1_MODEL | "glm-5.1" | "glm-5-1" | "zai-glm-5.1" | "zai-glm-5-1" => {
-            Some(OPENROUTER_GLM_5_1_MODEL)
-        }
-        OPENROUTER_GLM_5_2_MODEL | "glm-5.2" | "glm-5-2" | "zai-glm-5.2" | "zai-glm-5-2" => {
-            Some(OPENROUTER_GLM_5_2_MODEL)
-        }
-        OPENROUTER_GLM_5_3_FLASH_MODEL
-        | "glm-5.3-flash"
-        | "glm-5-3-flash"
-        | "zai-glm-5.3-flash"
-        | "zai-glm-5-3-flash" => Some(OPENROUTER_GLM_5_3_FLASH_MODEL),
-        OPENROUTER_GLM_5_3_MODEL | "glm-5.3" | "glm-5-3" | "zai-glm-5.3" | "zai-glm-5-3" => {
-            Some(OPENROUTER_GLM_5_3_MODEL)
-        }
-        OPENROUTER_KIMI_K2_7_CODE_MODEL
-        | "kimi"
-        | "kimi-k2"
-        | "kimi-k2.7"
-        | "kimi-k2-7"
-        | "kimi-k2.7-code"
-        | "kimi-k2-7-code"
-        | "kimi-code"
-        | "moonshot-kimi-k2.7-code"
-        | "openrouter-kimi-k2.7-code" => Some(OPENROUTER_KIMI_K2_7_CODE_MODEL),
-        OPENROUTER_KIMI_K2_6_MODEL | "kimi-k2.6" | "kimi-k2-6" | "moonshot-kimi-k2.6" => {
-            Some(OPENROUTER_KIMI_K2_6_MODEL)
-        }
-        OPENROUTER_MINIMAX_M3_MODEL | "minimax-m3" | "minimax-m-3" => {
-            Some(OPENROUTER_MINIMAX_M3_MODEL)
-        }
-        OPENROUTER_MINIMAX_M2_7_MODEL
-        | "minimax-2.7"
-        | "minimax-2-7"
-        | "minimax-m2.7"
-        | "minimax-m2-7"
-        | "minimax-m-2.7"
-        | "minimax-m-2-7" => Some(OPENROUTER_MINIMAX_M2_7_MODEL),
-        OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL
-        | "nemotron-3-nano-omni"
-        | "nemotron-3-nano-omni-reasoning" => Some(OPENROUTER_NEMOTRON_3_NANO_OMNI_MODEL),
-        OPENROUTER_QWEN_3_6_35B_A3B_MODEL
-        | "qwen3.6-35b-a3b"
-        | "qwen-3.6-35b-a3b"
-        | "qwen3-6-35b-a3b" => Some(OPENROUTER_QWEN_3_6_35B_A3B_MODEL),
-        OPENROUTER_QWEN_3_6_FLASH_MODEL | "qwen3.6-flash" | "qwen-3.6-flash" => {
-            Some(OPENROUTER_QWEN_3_6_FLASH_MODEL)
-        }
-        OPENROUTER_QWEN_3_6_MAX_PREVIEW_MODEL
-        | "qwen3.6-max-preview"
-        | "qwen-3.6-max-preview"
-        | "qwen-max-preview" => Some(OPENROUTER_QWEN_3_6_MAX_PREVIEW_MODEL),
-        OPENROUTER_QWEN_3_6_27B_MODEL | "qwen3.6-27b" | "qwen-3.6-27b" | "qwen3-6-27b" => {
-            Some(OPENROUTER_QWEN_3_6_27B_MODEL)
-        }
-        OPENROUTER_QWEN_3_6_PLUS_MODEL | "qwen3.6-plus" | "qwen-3.6-plus" => {
-            Some(OPENROUTER_QWEN_3_6_PLUS_MODEL)
-        }
-        OPENROUTER_QWEN_3_7_PLUS_MODEL | "qwen3.7-plus" | "qwen-3.7-plus" => {
-            Some(OPENROUTER_QWEN_3_7_PLUS_MODEL)
-        }
-        OPENROUTER_QWEN_3_7_MAX_MODEL | "qwen3.7-max" | "qwen-3.7-max" => {
-            Some(OPENROUTER_QWEN_3_7_MAX_MODEL)
-        }
-        OPENROUTER_QWEN_3_8_FLASH_MODEL | "qwen3.8-flash" | "qwen-3.8-flash" => {
-            Some(OPENROUTER_QWEN_3_8_FLASH_MODEL)
-        }
-        OPENROUTER_TENCENT_HY3_PREVIEW_MODEL
-        | "hy3-preview"
-        | "tencent-hy3-preview"
-        | "hy3"
-        | "hunyuan"
-        | "tencent-hunyuan"
-        | "hunyuan-hy3" => Some(OPENROUTER_TENCENT_HY3_PREVIEW_MODEL),
-        OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL
-        | "mimo-v2.5-pro"
-        | "mimo-v2-5-pro"
-        | "xiaomi-mimo-v2.5-pro"
-        | "xiaomi-mimo-v2-5-pro" => Some(OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL),
-        OPENROUTER_XIAOMI_MIMO_V2_5_MODEL
-        | "mimo-v2.5"
-        | "mimo-v2-5"
-        | "xiaomi-mimo-v2.5"
-        | "xiaomi-mimo-v2-5" => Some(OPENROUTER_XIAOMI_MIMO_V2_5_MODEL),
-        _ => None,
-    }
+    crate::catalog::reviewed::compatibility_alias(
+        "canonical_openrouter_recent_model_id",
+        &normalized,
+    )
 }
 
 /// Canonical id resolution for OrcaRouter's own auto-routing model.

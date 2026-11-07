@@ -1815,6 +1815,7 @@ pub trait CommandSessionControlContext {
 pub struct ExportMetadata {
     /// Host-truncated session id, or the baseline `unsaved` fallback.
     pub session_label: String,
+    pub title: Option<String>,
     pub provider: String,
     pub model: String,
     pub mode: String,
@@ -2002,6 +2003,8 @@ pub trait CommandSessionExportContext {
     /// check, `..` rejection, workspace canonicalization and rebasing, filename
     /// requirement). Errors are returned unwrapped (D7).
     fn resolve_export_path(&self, raw: &str) -> Result<PathBuf, String>;
+
+    fn default_export_path(&self, file_name: &str) -> Result<PathBuf, String>;
 
     /// Write the rendered export to a resolved destination with the baseline
     /// protection checks. Errors are returned unwrapped; the handler wraps them

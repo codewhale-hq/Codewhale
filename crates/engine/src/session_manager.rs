@@ -6329,7 +6329,7 @@ impl SessionManager {
         self.cleanup_old_sessions_keeping(None)
     }
 
-    /// As [`Self::cleanup_old_sessions`], but never touches `keep` — the
+    /// As `Self::cleanup_old_sessions`, but never touches `keep` — the
     /// session being resumed at boot. Without this, a background cleanup that
     /// races session restore can retire the just-resumed session when 50+
     /// newer records exist (its `updated_at` is not bumped until first save).

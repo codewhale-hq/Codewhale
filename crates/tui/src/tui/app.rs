@@ -1601,6 +1601,10 @@ pub struct App {
     /// so the replacement shell can be removed or promoted as one unit.
     pub work_surface: crate::tui::work_surface::WorkSurfaceState,
     pub pet_watch: crate::tui::pet_watch::PetWatch,
+    /// Cell-rendered previews of the images attached to this draft. Decoded
+    /// off-thread; painting only ever reads a ready thumbnail. Boxed so the
+    /// cache's channels and maps do not grow every `App` on the stack.
+    pub attachment_preview: Box<crate::tui::image_preview::ThumbnailCache>,
     /// Goal sub-state.
     pub goal: HostGoalState,
     /// Session sub-state (cost, tokens, telemetry).
@@ -1680,6 +1684,9 @@ pub struct App {
     /// Used by `enter_with_double_tap()` / `double_tap_window_open()` to
     /// detect a second Enter inside [`Self::DOUBLE_TAP_WINDOW`].
     pub last_enter_instant: Option<Instant>,
+    /// When the clipboard paste last ran, so a terminal that reports both the
+    /// press and the release of Ctrl+V pastes once instead of twice.
+    pub last_clipboard_paste: Option<Instant>,
     /// Whether the once-per-turn provider-wait incident (#3095) has already
     /// been logged for the current turn.
     pub provider_wait_incident_logged: bool,

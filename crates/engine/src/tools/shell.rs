@@ -157,6 +157,15 @@ pub enum ShellStatus {
     TimedOut,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellTerminationCause {
+    Producer,
+    Killed,
+    TimedOut,
+    Unknown,
+}
+
 /// Result from a shell command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellResult {
@@ -208,9 +217,15 @@ pub struct ShellJobSnapshot {
     /// Explicitly backgrounded or detached from the foreground waiter.
     #[serde(default)]
     pub background: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     /// First observed terminal time; legacy snapshots cannot trigger notices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<ShellTerminationCause>,
+    #[serde(default)]
+    pub producer_reported: bool,
     pub exit_code: Option<i64>,
     pub elapsed_ms: u64,
     pub stdout_tail: String,
@@ -242,6 +257,12 @@ pub struct ShellCompletionEvent {
     pub task_id: String,
     pub command: String,
     pub status: ShellStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<ShellTerminationCause>,
+    #[serde(default)]
+    pub producer_reported: bool,
     pub exit_code: Option<i64>,
     pub duration_ms: u64,
     pub stdout_tail: String,
@@ -1084,11 +1105,13 @@ pub struct BackgroundShell {
     background: bool,
     pub exit_code: Option<i64>,
     pub started_at: Instant,
+    started_at_utc: chrono::DateTime<chrono::Utc>,
     /// When the job reached a terminal status. A finished job reports the
     /// duration it finished with; without this, `started_at.elapsed()` kept
     /// growing and `/jobs` showed "2m 07s" for a 12-second command (#5478).
     finished_at: Option<Instant>,
     finished_at_utc: Option<chrono::DateTime<chrono::Utc>>,
+    cause: Option<ShellTerminationCause>,
     last_output_at: Instant,
     last_observed_output_len: usize,
     pub sandbox_type: SandboxType,
@@ -1267,6 +1290,12 @@ impl BackgroundShell {
         if self.finished_at.is_none() && self.status != ShellStatus::Running {
             self.finished_at = Some(Instant::now());
             self.finished_at_utc = Some(chrono::Utc::now());
+            self.cause = Some(match &self.status {
+                ShellStatus::Killed => ShellTerminationCause::Killed,
+                ShellStatus::TimedOut => ShellTerminationCause::TimedOut,
+                ShellStatus::Completed | ShellStatus::Failed => ShellTerminationCause::Producer,
+                ShellStatus::Running => ShellTerminationCause::Unknown,
+            });
         }
     }
 
@@ -1713,6 +1742,8 @@ impl BackgroundShell {
             .unwrap_or((0, String::new()));
         let elapsed_since_output_ms = (self.status == ShellStatus::Running)
             .then(|| u64::try_from(self.last_output_at.elapsed().as_millis()).unwrap_or(u64::MAX));
+        let producer_reported =
+            self.cause == Some(ShellTerminationCause::Producer) && !self.wait_failed;
         ShellJobSnapshot {
             id: self.id.clone(),
             job_id: self.id.clone(),
@@ -1720,7 +1751,10 @@ impl BackgroundShell {
             cwd: self.working_dir.clone(),
             status: self.status.clone(),
             background: self.background,
+            started_at: Some(self.started_at_utc),
             finished_at: self.finished_at_utc,
+            cause: self.cause,
+            producer_reported,
             exit_code: self.exit_code,
             elapsed_ms: self.wall_millis(),
             stdout_tail,
@@ -1765,6 +1799,9 @@ impl BackgroundShell {
             task_id: snapshot.id,
             command: snapshot.command,
             status: snapshot.status,
+            started_at: snapshot.started_at,
+            cause: snapshot.cause,
+            producer_reported: snapshot.producer_reported,
             exit_code: snapshot.exit_code,
             duration_ms: snapshot.elapsed_ms,
             stdout_tail,
@@ -1999,6 +2036,11 @@ impl ShellManager {
     pub fn seed_finished_record_for_test(&mut self, id: impl Into<String>, age: Duration) {
         let now = Instant::now();
         let started_at = now.checked_sub(age).unwrap_or(now);
+        let finished_at_utc = chrono::Utc::now();
+        let started_at_utc = chrono::Duration::from_std(age)
+            .ok()
+            .and_then(|age| finished_at_utc.checked_sub_signed(age))
+            .unwrap_or(finished_at_utc);
         let id = id.into();
         self.processes.insert(
             id.clone(),
@@ -2010,8 +2052,10 @@ impl ShellManager {
                 background: true,
                 exit_code: Some(0),
                 started_at,
+                started_at_utc,
                 finished_at: Some(now),
-                finished_at_utc: Some(chrono::Utc::now()),
+                finished_at_utc: Some(finished_at_utc),
+                cause: Some(ShellTerminationCause::Producer),
                 last_output_at: now,
                 last_observed_output_len: 0,
                 sandbox_type: SandboxType::None,
@@ -2696,6 +2740,7 @@ impl ShellManager {
         // bind this operation, nothing below may publish to it (#6435).
         let work_lifecycle = spawn_guard.lifecycle.clone();
         let started = Instant::now();
+        let started_at_utc = chrono::Utc::now();
         let sandbox_type = exec_env.sandbox_type;
         let sandboxed = exec_env.is_sandboxed();
 
@@ -2893,8 +2938,10 @@ impl ShellManager {
             background: true,
             exit_code: None,
             started_at: started,
+            started_at_utc,
             finished_at: None,
             finished_at_utc: None,
+            cause: None,
             last_output_at: started,
             last_observed_output_len: 0,
             sandbox_type,
@@ -3672,7 +3719,10 @@ impl ShellManager {
                 cwd,
                 status: ShellStatus::Killed,
                 background: true,
+                started_at: None,
                 finished_at: None,
+                cause: Some(ShellTerminationCause::Unknown),
+                producer_reported: false,
                 exit_code: None,
                 elapsed_ms: 0,
                 stdout_tail: String::new(),

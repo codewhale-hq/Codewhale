@@ -1,6 +1,10 @@
 //! Codewhale TUI library — single-binary entry point.
 
-#![allow(clippy::uninlined_format_args)]
+#![allow(
+    clippy::large_enum_variant,
+    clippy::too_many_arguments,
+    clippy::uninlined_format_args
+)]
 
 use codewhale_engine::runtime_options::RuntimeOptions;
 use codewhale_engine::{
@@ -6741,12 +6745,14 @@ fn doctor_legacy_state_report(
 /// This is deliberately separate from `SessionManager::default_location()`:
 /// constructing the manager can trigger the additive legacy migration, while
 /// doctor must remain a read-only diagnostic. Session history is stored as
-/// top-level JSON files. Directories (including `checkpoints`) and symlinks
-/// observed during the scan are ignored, so the diagnostic does not
-/// intentionally traverse checkpoint internals or link targets. These checks
-/// are best-effort observations, not a race-free no-follow guarantee.
-/// A matching filename is only a regular-file counterpart check: doctor does
-/// not parse or compare session descriptors.
+/// top-level JSON files. The state and sessions roots may be links the user
+/// made to relocate state (a junction onto another volume is the supported way
+/// to keep `~/.codewhale` off the system drive on Windows), so a linked root is
+/// resolved and read through; symlink *entries* observed during the scan are
+/// still ignored, so the diagnostic does not traverse checkpoint internals or
+/// per-file link targets. These checks are best-effort observations, not a
+/// race-free no-follow guarantee. A matching filename is only a regular-file
+/// counterpart check: doctor does not parse or compare session descriptors.
 fn doctor_session_recovery_report(
     primary_root: &Path,
     legacy_root: &Path,
@@ -6910,11 +6916,15 @@ fn doctor_session_recovery_report(
 
 /// Validate a session-state directory from observed metadata.
 ///
-/// `doctor` only compares top-level filenames. It rejects a state-root or
-/// sessions-root symlink observed during inspection rather than using it for a
-/// recovery suggestion. This is a best-effort observation, not a race-free
-/// no-follow guarantee. Missing paths are normal on a fresh install and are
-/// reported as `false`.
+/// `doctor` only compares top-level filenames. A directory the user relocated
+/// behind a link is resolved and inspected as its target: a junction is the
+/// supported way to keep `~/.codewhale` off the system drive on Windows, and
+/// refusing it left the migration diagnostic unable to run on exactly the
+/// layout it reports about. Only this directory check follows the link; the
+/// enumeration below still walks the path it was handed.
+///
+/// This is a best-effort observation, not a race-free no-follow guarantee.
+/// Missing paths are normal on a fresh install and are reported as `false`.
 fn doctor_session_directory_is_safe(path: &Path, label: &str) -> std::result::Result<bool, String> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -6926,13 +6936,20 @@ fn doctor_session_directory_is_safe(path: &Path, label: &str) -> std::result::Re
             ));
         }
     };
-    if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "could not inspect {label} at {}: path is a symlink",
-            codewhale_util::utils::display_path(path)
-        ));
-    }
-    if !metadata.file_type().is_dir() {
+    let metadata = if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
+        match std::fs::metadata(path) {
+            Ok(target) => target,
+            Err(error) => {
+                return Err(format!(
+                    "could not resolve {label} at {}: {error}",
+                    codewhale_util::utils::display_path(path)
+                ));
+            }
+        }
+    } else {
+        metadata
+    };
+    if !metadata.is_dir() {
         return Err(format!(
             "could not inspect {label} at {}: path is not a directory",
             codewhale_util::utils::display_path(path)
@@ -9100,6 +9117,32 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
     .await
 }
 
+pub(crate) async fn active_route_client(
+    config: &Config,
+) -> Result<codewhale_engine::client::CodewhaleClient> {
+    use codewhale_config::ProviderKind;
+    use codewhale_config::provider::WirePolicy;
+
+    let identity = config
+        .active_provider_identity()
+        .map_err(anyhow::Error::msg)?;
+    let default_model = config.default_model();
+    let model_aware = identity.provider.provider().wire_policy() == WirePolicy::ModelAware;
+    let unresolved_local_model = identity.provider == ProviderKind::Ollama
+        && matches!(default_model.trim(), "" | "auto" | "unknown");
+    let selector = if model_aware || unresolved_local_model {
+        None
+    } else {
+        Some(default_model.as_str())
+    };
+    codewhale_engine::route_runtime::resolve_runtime_route_for_identity(config, &identity, selector)
+        .map_err(anyhow::Error::msg)?
+        .validate_async()
+        .await
+        .map(|route| route.client)
+        .map_err(anyhow::Error::msg)
+}
+
 async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
     use codewhale_config::ProviderKind;
     use codewhale_engine::client::{CodewhaleClient, SpeechSynthesisRequest};
@@ -10270,14 +10313,12 @@ async fn prepare_mounted_session(
             &identity,
             model.as_deref(),
         )
-        .and_then(|route| {
-            if move_to_launch_provider {
-                route.preflight()
-            } else {
-                Ok(route)
-            }
-        })
         .map_err(anyhow::Error::msg)?;
+        let route = if move_to_launch_provider {
+            route.preflight_async().await.map_err(anyhow::Error::msg)?
+        } else {
+            route
+        };
         if move_to_launch_provider {
             route_overrides = serde_json::json!({
                 "model_provider": identity.persisted_kind(),
@@ -15181,7 +15222,7 @@ mod doctor_legacy_state_tests {
 
     #[cfg(unix)]
     #[test]
-    fn doctor_session_recovery_rejects_a_symlinked_legacy_sessions_root() {
+    fn doctor_session_recovery_follows_a_linked_legacy_sessions_root() {
         use std::os::unix::fs::symlink;
 
         let tmp = TempDir::new().expect("tempdir");
@@ -15189,8 +15230,8 @@ mod doctor_legacy_state_tests {
         let external_sessions = tmp.path().join("external-sessions");
         fs::create_dir_all(&external_sessions).expect("external sessions");
         fs::write(
-            external_sessions.join("must-not-be-enumerated.json"),
-            b"session contents must stay unread",
+            external_sessions.join("relocated.json"),
+            b"a relocated session",
         )
         .expect("external session fixture");
         fs::create_dir_all(&legacy_root).expect("legacy root");
@@ -15199,22 +15240,17 @@ mod doctor_legacy_state_tests {
 
         let report = doctor_session_recovery_report(&primary_root, &legacy_root, false);
 
-        assert_eq!(report.status, DoctorSessionRecoveryStatus::ScanFailed);
-        assert!(report.needs_attention());
-        assert_eq!(report.legacy_session_file_count, 0);
-        assert!(report.recoverable.is_empty());
-        assert!(
-            report
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("legacy sessions root")
-                    && error.contains("path is a symlink"))
-        );
+        // A relocated state directory is the user's own; the diagnostic reads it
+        // instead of giving up, which is what a junction layout needs to migrate.
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert_eq!(report.legacy_session_file_count, 1);
+        assert_eq!(report.recoverable_file_count, 1);
+        assert_eq!(report.status, DoctorSessionRecoveryStatus::MigrationPending);
     }
 
     #[cfg(unix)]
     #[test]
-    fn doctor_session_recovery_rejects_symlinked_primary_root_and_sessions_root() {
+    fn doctor_session_recovery_follows_linked_primary_root_and_sessions_root() {
         use std::os::unix::fs::symlink;
 
         let tmp = TempDir::new().expect("tempdir");
@@ -15225,10 +15261,11 @@ mod doctor_legacy_state_tests {
         symlink(&external_primary, &primary_root).expect("symlinked primary root");
 
         let root_report = doctor_session_recovery_report(&primary_root, &legacy_root, false);
-        assert_eq!(root_report.status, DoctorSessionRecoveryStatus::ScanFailed);
-        assert!(root_report.error.as_deref().is_some_and(|error| {
-            error.contains("primary state root") && error.contains("path is a symlink")
-        }));
+        assert!(root_report.error.is_none(), "{:?}", root_report.error);
+        assert_eq!(
+            root_report.status,
+            DoctorSessionRecoveryStatus::NoLegacySessions
+        );
 
         fs::remove_file(&primary_root).expect("remove primary root symlink");
         fs::create_dir_all(&primary_root).expect("primary root");
@@ -15236,13 +15273,15 @@ mod doctor_legacy_state_tests {
             .expect("symlinked primary sessions root");
 
         let sessions_report = doctor_session_recovery_report(&primary_root, &legacy_root, false);
+        assert!(
+            sessions_report.error.is_none(),
+            "{:?}",
+            sessions_report.error
+        );
         assert_eq!(
             sessions_report.status,
-            DoctorSessionRecoveryStatus::ScanFailed
+            DoctorSessionRecoveryStatus::NoLegacySessions
         );
-        assert!(sessions_report.error.as_deref().is_some_and(|error| {
-            error.contains("primary sessions root") && error.contains("path is a symlink")
-        }));
     }
 
     #[test]

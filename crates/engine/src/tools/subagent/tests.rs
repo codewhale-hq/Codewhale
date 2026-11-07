@@ -3403,6 +3403,7 @@ async fn always_rate_limited_chat_client() -> (
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_3_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
@@ -3465,6 +3466,7 @@ async fn always_invalid_request_chat_client() -> (
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_4_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
@@ -4397,6 +4399,125 @@ fn declared_write_scope_is_normalized_and_rejects_traversal() {
         err.contains("repo-relative") || err.contains("traversal"),
         "{err}"
     );
+}
+
+/// A write-capable child that spells its target as an absolute path inside
+/// its own workspace is writing the same file the relative spelling names,
+/// and that is the path the write tool would resolve it to — the claim lane
+/// must treat both spellings alike. Absolute paths outside the workspace,
+/// `..` traversal (relative or absolute), and a symlinked ancestor that
+/// resolves outside the workspace stay refused, exactly as before.
+#[test]
+fn scoped_mutation_paths_accept_absolute_targets_inside_the_workspace() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("src")).expect("workspace tree");
+    let canonical = workspace.canonicalize().expect("canonical workspace");
+
+    // Existing target, canonical absolute spelling.
+    std::fs::write(workspace.join("src/lib.rs"), "x").expect("seed");
+    let paths = mutation_paths(
+        "write",
+        &json!({ "path": canonical.join("src/lib.rs").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute in-workspace path is admitted");
+    assert_eq!(paths, vec!["src/lib.rs".to_string()]);
+
+    // Not-yet-existing target (the write creates it), spelled through the
+    // un-canonicalized workspace path.
+    let paths = mutation_paths(
+        "write",
+        &json!({ "path": workspace.join("src/new.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute path to a file the write will create is admitted");
+    assert_eq!(paths, vec!["src/new.txt".to_string()]);
+
+    // Relative spelling is unchanged.
+    let paths = mutation_paths("write", &json!({ "path": "src/new.txt" }), &workspace)
+        .expect("relative path");
+    assert_eq!(paths, vec!["src/new.txt".to_string()]);
+
+    // The two spellings land in the same claimed scope: a child holding the
+    // `src` root admits both the relative form and the absolute form's
+    // workspace-relative equivalent.
+    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 4);
+    let child_owner = manager.insert_test_running_agent("abs_child", &workspace);
+    let claim = manager
+        .namespace_write_claim(
+            &workspace,
+            false,
+            WriteScopeClaim {
+                owner: child_owner.clone(),
+                roots: vec!["src".into()],
+                exact_files: Vec::new(),
+                contracts: Vec::new(),
+            },
+        )
+        .expect("child claim namespace");
+    manager
+        .coordination
+        .register_claim(claim, false, |_| true)
+        .expect("child claim");
+    manager
+        .validate_write_scope(&child_owner, &["src/lib.rs".into()])
+        .expect("relative spelling admitted by the claimed root scope");
+    let absolute_paths = mutation_paths(
+        "write",
+        &json!({ "path": canonical.join("src/lib.rs").to_string_lossy() }),
+        &workspace,
+    )
+    .expect("absolute spelling strips to its workspace-relative equivalent");
+    assert_eq!(absolute_paths, vec!["src/lib.rs".to_string()]);
+    manager
+        .validate_write_scope(&child_owner, &absolute_paths)
+        .expect("absolute spelling of the same target is admitted by the same scope");
+
+    // Outside the workspace: refused as before.
+    let err = mutation_paths(
+        "write",
+        &json!({ "path": tmp.path().join("escape.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect_err("absolute path outside the workspace is refused")
+    .to_string();
+    assert!(err.contains("repo-relative"), "{err}");
+
+    // Traversal: refused as before, relative or absolute.
+    for path in ["../escape.txt", "src/../../escape.txt"] {
+        let err = mutation_paths("write", &json!({ "path": path }), &workspace)
+            .expect_err("traversal is refused")
+            .to_string();
+        assert!(err.contains("traversal"), "{path}: {err}");
+    }
+    let err = mutation_paths(
+        "write",
+        &json!({ "path": workspace.join("src/../../escape.txt").to_string_lossy() }),
+        &workspace,
+    )
+    .expect_err("absolute traversal out of the workspace is refused")
+    .to_string();
+    assert!(err.contains("repo-relative"), "{err}");
+
+    // A symlinked ancestor that resolves outside the workspace stays
+    // refused: the deepest-existing walk resolves through the link, the
+    // strip fails, and the raw absolute spelling is refused by the
+    // validator — the same posture as the write boundary's real-path check.
+    let outside = tempdir().expect("outside tempdir");
+    std::fs::write(outside.path().join("outside.txt"), "x").expect("outside seed");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.path(), workspace.join("link")).expect("symlink");
+        let err = mutation_paths(
+            "write",
+            &json!({ "path": workspace.join("link/outside.txt").to_string_lossy() }),
+            &workspace,
+        )
+        .expect_err("symlink hop out of the workspace is refused")
+        .to_string();
+        assert!(err.contains("repo-relative"), "{err}");
+    }
 }
 
 #[test]
@@ -8308,6 +8429,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "memory_get",
         "memory_search",
         "notify",
+        "present",
         "project_map",
         "read",
         "read_media",
@@ -8340,6 +8462,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "memory_get",
         "memory_search",
         "notify",
+        "present",
         "project_map",
         "read",
         "read_media",
@@ -8377,6 +8500,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "memory_get",
         "memory_search",
         "notify",
+        "present",
         "project_map",
         "read",
         "read_media",
@@ -8419,6 +8543,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "memory_search",
         "note",
         "notify",
+        "present",
         "project_map",
         "read",
         "read_media",
@@ -9754,6 +9879,7 @@ async fn read_only_roles_expose_and_dispatch_lowercase_bash_only() {
             "memory_get",
             "memory_search",
             "notify",
+            "present",
             "project_map",
             "read",
             "read_media",
@@ -10695,6 +10821,33 @@ fn transient_provider_classifier_uses_typed_retryability_without_keywords() {
     let retry = retryable_subagent_provider_failure(&error, 1).expect("transient rate limit");
     assert_eq!(retry.delay, Duration::from_secs(7));
     assert_eq!(retry.checkpoint_reason, "api_rate_limited");
+    for error in [
+        LlmError::QuotaWindow {
+            message: "window".into(),
+            retry_after: Some(Duration::from_secs(2)),
+            transmission: crate::llm_client::RequestTransmission::Rejected,
+        },
+        LlmError::QuotaWindow {
+            message: "admission".into(),
+            retry_after: Some(Duration::from_secs(3600)),
+            transmission: crate::llm_client::RequestTransmission::NotDispatched,
+        },
+        LlmError::RateLimited {
+            message: "long minimum".into(),
+            retry_after: Some(Duration::from_secs(7200)),
+        },
+    ] {
+        let error = anyhow::Error::new(error);
+        assert!(engine::provider_request_refusal_proven(&error));
+        assert!(retryable_subagent_provider_failure(&error, 1).is_none());
+        assert!(matches!(
+            engine::ChildRequestRetries::default().decide(&stub_runtime(), &error),
+            Some(engine::ChildRequestRecovery::Interrupted {
+                checkpoint_reason: "api_rate_limited",
+                ..
+            })
+        ));
+    }
 }
 
 #[tokio::test]
@@ -10778,8 +10931,29 @@ async fn subagent_retries_transient_provider_header_timeout_before_succeeding() 
     );
 }
 
-#[tokio::test]
-async fn subagent_rate_limit_exhaustion_interrupts_with_checkpoint() {
+fn run_worker_fixture<F: std::future::Future<Output = ()>>(
+    fixture: impl FnOnce() -> F + Send + 'static,
+) {
+    std::thread::Builder::new()
+        .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(fixture())
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn subagent_rate_limit_exhaustion_interrupts_with_checkpoint() {
+    run_worker_fixture(subagent_rate_limit_exhaustion_interrupts_with_checkpoint_body);
+}
+
+async fn subagent_rate_limit_exhaustion_interrupts_with_checkpoint_body() {
     let tmp = tempdir().expect("tempdir");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         tmp.path().to_path_buf(),
@@ -12793,9 +12967,9 @@ fn create_isolated_worktree_reports_friendly_error_when_no_repo_found() {
     let harness = tempdir().expect("harness");
     // Keep the probe more than `git_repo_root`'s parent-search limit below
     // the temporary root. Containerized CI commonly checks the repository out
-    // at `/workspace`; a shallow `/tmp` fixture can otherwise reach `/` and
-    // correctly discover that sibling checkout instead of exercising the
-    // no-repository path.
+    // at `/workspace`; ancestors no longer adopt lone child checkouts, but
+    // keeping the walk inside the temp region means the test never depends on
+    // whatever other checkouts share its ancestry.
     let no_repo = harness
         .path()
         .join("not-a-repo")
@@ -12844,6 +13018,68 @@ fn create_isolated_worktree_rejects_ambiguous_nested_repos() {
     assert!(
         message.contains("Multiple git repositories found"),
         "expected ambiguity diagnostic, got: {message}"
+    );
+}
+
+#[test]
+fn create_isolated_worktree_ignores_unrelated_repos_above_the_workspace() {
+    // Incident shape: the workspace is not itself a repository and sits a few
+    // levels below a directory that holds unrelated checkouts. Scanning the
+    // children of every ancestor made the walk reach that directory and
+    // report the user's other projects as "multiple repositories" even
+    // though none of them contains the workspace.
+    let harness = tempdir().expect("harness");
+    for name in ["RepoA", "RepoB"] {
+        let sibling = harness.path().join(name);
+        std::fs::create_dir_all(&sibling).expect("sibling dir");
+        init_git_repo_at(&sibling);
+    }
+    let workspace = harness
+        .path()
+        .join("a")
+        .join("b")
+        .join("c")
+        .join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    let worktree_home = tempdir().expect("worktree home");
+    let request = SubAgentWorktreeRequest {
+        branch: Some("codex/agent-ancestor-scan".to_string()),
+        path: Some(worktree_home.path().join("isolated")),
+        base_ref: None,
+    };
+
+    let err = create_isolated_worktree(&workspace, &request, None, &FleetRole::Worker)
+        .expect_err("no repository contains the workspace");
+
+    let message = err.to_string();
+    assert!(
+        !message.contains("Multiple git repositories"),
+        "ancestor directories must not adopt their children's repositories, got: {message}"
+    );
+    assert!(
+        message.contains("requires a git repository") && message.contains("Tried:"),
+        "expected friendly no-repository error, got: {message}"
+    );
+    // The walk must actually reach the ancestor holding the sibling
+    // repositories. A substring check cannot prove that: every tried path
+    // starts with the harness root, so it would match even if a shrunken
+    // parent-search limit stopped the walk short of the harness root and the
+    // test passed without ever scanning their children. Require the harness
+    // root as an exact entry of the "Tried:" list instead (mirrors
+    // git_repo_root_reports_attempted_paths_when_no_repo_found).
+    let harness_root = harness
+        .path()
+        .canonicalize()
+        .expect("canonical harness root")
+        .to_string_lossy()
+        .into_owned();
+    let tried = message
+        .split_once("Tried: ")
+        .expect("friendly error should list attempted paths")
+        .1;
+    assert!(
+        tried.split(", ").any(|path| path == harness_root),
+        "walk should reach the ancestor holding the sibling repos, got: {message}"
     );
 }
 
@@ -17697,6 +17933,7 @@ async fn tool_call_then_invalid_request_chat_client() -> (
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_13_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
@@ -17978,6 +18215,7 @@ async fn denied_call_then_report_chat_client() -> (
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_14_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();
@@ -19787,6 +20025,24 @@ async fn spawn_budget_capped_worker_with_pause(
     Arc<AtomicUsize>,
     tokio::task::JoinHandle<()>,
 ) {
+    // A successful billed child response requires a real durable parent
+    // usage origin. Keep the fixture store inside its caller-owned workspace.
+    let sessions =
+        crate::session_manager::SessionManager::new(workspace.join(".budget-usage/sessions"))
+            .expect("budget fixture session store");
+    let session_id = "budget-worker-fixture-session";
+    let session = crate::session_manager::create_saved_session_with_id_and_mode(
+        session_id.to_string(),
+        &[],
+        "deepseek-v4-flash",
+        workspace,
+        0,
+        None,
+        Some("agent"),
+    );
+    sessions
+        .save_session(&session)
+        .expect("budget fixture durable origin");
     let manager = Arc::new(RwLock::new(SubAgentManager::new(
         workspace.to_path_buf(),
         2,
@@ -19808,7 +20064,11 @@ async fn spawn_budget_capped_worker_with_pause(
     {
         let mut manager = manager.write().await;
         manager.agents.insert(agent_id.clone(), agent);
-        manager.register_worker(make_worker_spec(&agent_id, workspace.to_path_buf()));
+        manager.register_worker_for_session(
+            make_worker_spec(&agent_id, workspace.to_path_buf()),
+            session_id,
+            None,
+        );
     }
 
     let (client, calls, fixture_config) =
@@ -19817,7 +20077,13 @@ async fn spawn_budget_capped_worker_with_pause(
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
-    runtime.context = ToolContext::new(workspace.to_path_buf());
+    runtime.context = ToolContext::new(workspace.to_path_buf()).with_state_namespace(session_id);
+    runtime.accounting_origin = SubAgentAccountingOrigin::capture(&runtime.context);
+    runtime.context.accounting_origin = Some(crate::cost_status::NativeUsageOrigin::session(
+        runtime.accounting_origin.cost_scope,
+        sessions.sessions_dir().to_path_buf(),
+        session_id.to_string(),
+    ));
 
     let task = SubAgentTask {
         manager_handle: Arc::clone(&manager),
@@ -19843,8 +20109,12 @@ async fn spawn_budget_capped_worker_with_pause(
     (manager, agent_id, calls, task_handle)
 }
 
-#[tokio::test]
-async fn worker_stops_with_typed_wall_time_reason() {
+#[test]
+fn worker_stops_with_typed_wall_time_reason() {
+    run_worker_fixture(worker_stops_with_typed_wall_time_reason_body);
+}
+
+async fn worker_stops_with_typed_wall_time_reason_body() {
     let tmp = tempdir().expect("tempdir");
     let (manager, agent_id, _calls, task_handle) =
         spawn_budget_capped_worker(tmp.path(), 60, 40, 120, Duration::from_millis(1)).await;
@@ -20133,9 +20403,13 @@ impl Drop for ClearRateLimitOnDrop {
     }
 }
 
-#[tokio::test]
+#[test]
+fn worker_is_not_stranded_by_transient_global_rate_limit_window() {
+    run_worker_fixture(worker_is_not_stranded_by_transient_global_rate_limit_window_body);
+}
+
 #[allow(clippy::await_holding_lock)]
-async fn worker_is_not_stranded_by_transient_global_rate_limit_window() {
+async fn worker_is_not_stranded_by_transient_global_rate_limit_window_body() {
     // Regression for a parallel-suite flake: `rate_limit_pause_blocks_subagent_spawn`
     // opens a 30s process-wide rate-limit window and closes it milliseconds
     // later. A worker whose request reached `send_with_retry` inside that
@@ -24586,6 +24860,115 @@ fn user_follow_up_to_running_child_counts_queued_until_the_loop_takes_it() {
     );
 }
 
+/// A retried follow-up on the original interrupted id reuses the existing
+/// continuation: the outcome must name the already-running successor as the
+/// target and report a real delivery without claiming a checkpoint resume.
+#[test]
+fn user_follow_up_to_running_existing_successor_reports_delivery_without_resume() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 2);
+    let (original_id, _checkpoint_handle) = manager.insert_test_interrupted_continuable_agent(
+        "paused_original",
+        tmp.path(),
+        vec![text_message("user", "prior work")],
+    );
+    let (successor_id, mut successor_input) =
+        manager.insert_test_running_agent_with_input("live_successor", tmp.path());
+    // The earlier follow-up already re-dispatched once: the continuation edge
+    // links the interrupted original to its live successor.
+    manager
+        .resume_targets
+        .insert(original_id.clone(), successor_id.clone());
+    let handle = Arc::new(RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        2,
+    )));
+    let mut runtime = stub_runtime();
+    runtime.manager = Arc::clone(&handle);
+
+    let outcome = manager
+        .continue_child_from_user(handle, Some(runtime), &original_id, "one more thing")
+        .expect("the running successor accepts the retried follow-up");
+    assert_eq!(outcome.agent_id, original_id);
+    assert_eq!(
+        outcome.target_agent_id, successor_id,
+        "the receipt must name the successor that carries the conversation"
+    );
+    assert!(
+        outcome.delivered,
+        "the text reached the successor's live input channel"
+    );
+    assert!(
+        !outcome.resumed,
+        "no fresh loop is re-dispatched when the continuation successor is already running"
+    );
+    // The message went to the live successor, not to the interrupted original.
+    let taken = successor_input.try_recv().expect("delivered live");
+    assert_eq!(taken.text, "one more thing");
+    taken.mark_taken();
+}
+
+/// A retried follow-up whose continuation successor already settled as failed
+/// must be reported as undelivered with the status named: nothing will ever
+/// answer the text, so the outcome may not claim delivery.
+#[test]
+fn user_follow_up_to_failed_existing_successor_reports_undelivered_with_status_note() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = SubAgentManager::new(tmp.path().to_path_buf(), 2);
+    let (original_id, _checkpoint_handle) = manager.insert_test_interrupted_continuable_agent(
+        "paused_original",
+        tmp.path(),
+        vec![text_message("user", "prior work")],
+    );
+    let successor_id = manager.insert_test_running_agent("dead_successor", tmp.path());
+    // Drive the successor to a failed terminal state through the durable path.
+    let mut terminal = manager.get_result(&successor_id).expect("snapshot");
+    terminal.status = SubAgentStatus::Failed("boom".to_string());
+    terminal.result = Some("partial output".to_string());
+    assert!(
+        manager
+            .finish_terminal_result(&successor_id, terminal, true, false)
+            .expect("durable worker operation")
+    );
+    // The continuation edge links the interrupted original to the failed
+    // successor, so a retry lands on the settled-successor shortcut.
+    manager
+        .resume_targets
+        .insert(original_id.clone(), successor_id.clone());
+    let handle = Arc::new(RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        2,
+    )));
+    let mut runtime = stub_runtime();
+    runtime.manager = Arc::clone(&handle);
+
+    let outcome = manager
+        .continue_child_from_user(handle, Some(runtime), &original_id, "one more thing")
+        .expect("the settled-successor shortcut answers without an error");
+    assert_eq!(outcome.agent_id, original_id);
+    assert_eq!(
+        outcome.target_agent_id, successor_id,
+        "the receipt still names the successor that owns the conversation"
+    );
+    assert!(
+        !outcome.delivered,
+        "a failed successor cannot deliver the follow-up"
+    );
+    assert!(
+        !outcome.resumed,
+        "no fresh loop is re-dispatched onto a settled successor"
+    );
+    assert!(
+        outcome.note.contains("failed") && outcome.note.contains("not delivered"),
+        "the note must name the failed status honestly: {}",
+        outcome.note
+    );
+    assert!(
+        manager.queued_follow_up_counts().is_empty(),
+        "the follow-up must not be parked as pending on any agent"
+    );
+}
+
 #[test]
 fn user_follow_up_to_cancelled_child_fails_closed_with_the_reason() {
     let tmp = tempdir().expect("tempdir");
@@ -27640,6 +28023,7 @@ mod readonly_shell_6015 {
                 jitter: None,
                 jitter_factor: None,
                 respect_retry_after: None,
+                rate_limit: Default::default(),
             });
             let mut __cw_config_init_22_value: codewhale_runtime::config::Config =
                 codewhale_runtime::config::Config::default();
@@ -28103,6 +28487,7 @@ async fn late_launch_permit_still_gets_the_full_work_budget() {
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let mut __cw_config_init_23_value: codewhale_runtime::config::Config =
             codewhale_runtime::config::Config::default();

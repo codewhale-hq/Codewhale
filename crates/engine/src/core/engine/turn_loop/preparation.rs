@@ -312,6 +312,7 @@ impl Engine {
                 input_budget_ceiling_source = input_ceiling_source,
                 remaining_input_budget_tokens = budget.available_input_tokens,
                 compaction_trigger_tokens = budget.compaction_trigger_tokens,
+                configured_compaction_trigger_tokens = self.config.compaction.token_threshold,
                 trigger = if triggered { "preflight-token-budget" } else { "none" },
                 "resolved route context budget"
             );

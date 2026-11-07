@@ -23,6 +23,12 @@
 //!   POST /v1/git/commit    — `{ "message": "…", "all": false }`
 //!   POST /v1/git/push      — `{ "remote"?, "set_upstream"?: bool }`
 //!   POST /v1/git/branch    — `{ "name": "…", "create"?: bool }`
+//!   GET  /v1/worktrees     — the repository's worktrees
+//!   POST /v1/worktrees     — `{ "branch", "base"? }` new branch + worktree
+//!                            under `<repo>/.codewhale/worktrees/`
+//!   POST /v1/worktrees/remove — `{ "path" }` archive a clean managed one
+//!
+//! Every route takes `?thread_id=` and then acts on that thread's workspace.
 //!
 //! Mutations answer with the command output tail plus a refreshed workspace
 //! status and the full `current` detail so the client re-renders in one
@@ -1864,11 +1870,12 @@ async fn mutation_response(workspace: &FsPath, run: GitRun) -> Result<Json<Value
 /// see docs/RUNTIME_API.md for that window.
 async fn guarded_write(
     state: &RuntimeApiState,
+    root: &FsPath,
     expect: Preconditions,
     args: Vec<String>,
 ) -> Result<Json<Value>, GitWriteError> {
     let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
-    let workspace = resolve_workspace(&state.workspace, true).await?;
+    let workspace = resolve_workspace(root, true).await?;
     if !expect.is_empty() {
         let root = workspace.clone();
         tokio::task::spawn_blocking(move || check_preconditions(&root, &expect))
@@ -2006,6 +2013,7 @@ fn validated_patch(patch: &str, path: &str) -> Result<(), ApiError> {
 
 async fn patch_write(
     state: &RuntimeApiState,
+    root: &FsPath,
     request: GitPathsRequest,
     apply: &[&str],
 ) -> Result<Json<Value>, GitWriteError> {
@@ -2025,7 +2033,7 @@ async fn patch_write(
     .await
     .map_err(|_| ApiError::internal("patch staging failed"))?
     .map_err(|error| ApiError::internal(format!("patch staging failed: {error}")))?;
-    let workspace = resolve_workspace(&state.workspace, false).await?;
+    let workspace = resolve_workspace(root, false).await?;
     let place = git_read_ok(&workspace, &["rev-parse", "--show-cdup", "--show-prefix"]).await?;
     let mut place = place.lines();
     let (cdup, prefix) = (
@@ -2042,17 +2050,19 @@ async fn patch_write(
     }
     args.push("--".to_string());
     args.push(file.path().to_string_lossy().into_owned());
-    let result = guarded_write(state, expect, args).await;
+    let result = guarded_write(state, root, expect, args).await;
     drop(file);
     result
 }
 
 pub(super) async fn git_stage(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
     Json(request): Json<GitPathsRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     if request.patch.is_some() {
-        return patch_write(&state, request, &["apply", "--cached"]).await;
+        return patch_write(&state, &root, request, &["apply", "--cached"]).await;
     }
     let (all, paths, expect) = paths_and_expect(request, true)?;
     let args = if all {
@@ -2060,15 +2070,17 @@ pub(super) async fn git_stage(
     } else {
         literal_path_args(&["add"], paths)
     };
-    guarded_write(&state, expect, args).await
+    guarded_write(&state, &root, expect, args).await
 }
 
 pub(super) async fn git_unstage(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
     Json(request): Json<GitPathsRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     if request.patch.is_some() {
-        return patch_write(&state, request, &["apply", "--cached", "--reverse"]).await;
+        return patch_write(&state, &root, request, &["apply", "--cached", "--reverse"]).await;
     }
     let (all, paths, expect) = paths_and_expect(request, true)?;
     let args = if all {
@@ -2082,24 +2094,34 @@ pub(super) async fn git_unstage(
     } else {
         literal_path_args(&["restore", "--staged"], paths)
     };
-    guarded_write(&state, expect, args).await
+    guarded_write(&state, &root, expect, args).await
 }
 
 pub(super) async fn git_discard(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
     Json(request): Json<GitPathsRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     if request.patch.is_some() {
-        return patch_write(&state, request, &["apply", "--reverse"]).await;
+        return patch_write(&state, &root, request, &["apply", "--reverse"]).await;
     }
     let (_, paths, expect) = paths_and_expect(request, false)?;
-    guarded_write(&state, expect, literal_path_args(&["checkout"], paths)).await
+    guarded_write(
+        &state,
+        &root,
+        expect,
+        literal_path_args(&["checkout"], paths),
+    )
+    .await
 }
 
 pub(super) async fn git_commit(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
     Json(request): Json<GitCommitRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     let message = request.message.trim();
     if message.is_empty() {
         return Err(ApiError::bad_request("message is required").into());
@@ -2117,7 +2139,7 @@ pub(super) async fn git_commit(
     }
     args.push("--message".to_string());
     args.push(message.to_string());
-    guarded_write(&state, expect, args).await
+    guarded_write(&state, &root, expect, args).await
 }
 
 /// A push target must be one of the repository's configured remotes: never an
@@ -2189,9 +2211,11 @@ async fn push_args(
 
 pub(super) async fn git_push(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
     Json(request): Json<GitPushRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let workspace = resolve_workspace(&state.workspace, true).await?;
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
+    let workspace = resolve_workspace(&root, true).await?;
     let args = push_args(&workspace, request.remote.as_deref(), request.set_upstream).await?;
     // Push stays outside the write lock: it crosses the network under a
     // 120 s bound and only moves a remote ref, never the index or worktree.
@@ -2200,8 +2224,10 @@ pub(super) async fn git_push(
 
 pub(super) async fn git_branch(
     State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
     Json(request): Json<GitBranchRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     let name = request.name.trim();
     if name.is_empty() || name.len() > MAX_BRANCH_NAME_BYTES {
         return Err(ApiError::bad_request("name is required").into());
@@ -2211,7 +2237,7 @@ pub(super) async fn git_branch(
     // Switching rewrites the worktree and index, so it shares the lock with
     // stage/discard/commit.
     let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
-    let workspace = resolve_workspace(&state.workspace, true).await?;
+    let workspace = resolve_workspace(&root, true).await?;
     state
         .runtime_threads
         .reject_active_turns_in_workspace(&workspace)
@@ -2243,6 +2269,322 @@ pub(super) async fn git_branch(
     }
     args.push(name.to_string());
     Ok(mutation_response(&workspace, git_write(&workspace, args).await?).await?)
+}
+
+// ---------------------------------------------------------------------------
+// Worktrees
+// ---------------------------------------------------------------------------
+
+const WORKTREES_DIR: &str = ".codewhale/worktrees";
+
+#[derive(Debug, Serialize)]
+pub(super) struct WorktreeRow {
+    path: String,
+    branch: Option<String>,
+    head: Option<String>,
+    main: bool,
+    managed: bool,
+    locked: bool,
+    prunable: bool,
+}
+
+fn parse_worktrees(porcelain: &str, managed_root: Option<&FsPath>) -> Vec<WorktreeRow> {
+    let mut rows = Vec::new();
+    for block in porcelain.split("\n\n") {
+        let mut path = None;
+        let mut branch = None;
+        let mut head = None;
+        let (mut locked, mut prunable, mut bare) = (false, false, false);
+        for line in block.lines() {
+            if let Some(value) = line.strip_prefix("worktree ") {
+                path = Some(value.to_string());
+            } else if let Some(value) = line.strip_prefix("HEAD ") {
+                head = Some(value.to_string());
+            } else if let Some(value) = line.strip_prefix("branch ") {
+                branch = Some(
+                    value
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(value)
+                        .to_string(),
+                );
+            } else if line == "bare" {
+                bare = true;
+            } else if line == "locked" || line.starts_with("locked ") {
+                locked = true;
+            } else if line == "prunable" || line.starts_with("prunable ") {
+                prunable = true;
+            }
+        }
+        let Some(path) = path else { continue };
+        if bare {
+            continue;
+        }
+        let main = rows.is_empty();
+        let managed =
+            !main && managed_root.is_some_and(|root| FsPath::new(&path).parent() == Some(root));
+        rows.push(WorktreeRow {
+            path,
+            branch,
+            head,
+            main,
+            managed,
+            locked,
+            prunable,
+        });
+    }
+    rows
+}
+
+async fn repository_worktrees(root: &FsPath) -> Result<(PathBuf, Vec<WorktreeRow>), ApiError> {
+    let workspace = resolve_workspace(root, true).await?;
+    let first = git_read_ok(&workspace, &["worktree", "list", "--porcelain"]).await?;
+    let main = parse_worktrees(&first, None)
+        .into_iter()
+        .next()
+        .map(|row| PathBuf::from(row.path))
+        .ok_or_else(|| ApiError::not_found("workspace has no main worktree"))?;
+    let main = resolve_workspace(&main, true).await?;
+    let managed = main.join(WORKTREES_DIR);
+    Ok((main, parse_worktrees(&first, Some(&managed))))
+}
+
+pub(super) async fn worktrees_list(
+    State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
+    let (main, rows) = repository_worktrees(&root).await?;
+    Ok(Json(json!({
+        "repository": main.to_string_lossy(),
+        "worktrees": rows,
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorktreeCreateRequest {
+    branch: String,
+    #[serde(default)]
+    base: Option<String>,
+}
+
+fn worktree_slug(branch: &str) -> String {
+    let slug: String = branch
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    slug.trim_matches(|c| c == '-' || c == '.').to_string()
+}
+
+fn coded(status: StatusCode, code: &'static str, message: impl Into<String>) -> GitWriteError {
+    GitWriteError::Coded {
+        status,
+        code,
+        message: message.into(),
+        extra: serde_json::Map::new(),
+    }
+}
+
+pub(super) async fn worktree_create(
+    State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
+    Json(request): Json<WorktreeCreateRequest>,
+) -> Result<(StatusCode, Json<Value>), GitWriteError> {
+    let branch = request.branch.trim().to_string();
+    if branch.is_empty() || branch.len() > MAX_BRANCH_NAME_BYTES {
+        return Err(ApiError::bad_request("branch is required").into());
+    }
+    let base = request
+        .base
+        .as_deref()
+        .map(str::trim)
+        .filter(|base| !base.is_empty())
+        .unwrap_or("HEAD")
+        .to_string();
+    if base.starts_with('-') || base.len() > MAX_BRANCH_NAME_BYTES {
+        return Err(ApiError::bad_request("base must be a ref").into());
+    }
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
+    let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
+    let (main, rows) = repository_worktrees(&root).await?;
+    let check = git_write(
+        &main,
+        vec![
+            "check-ref-format".to_string(),
+            "--branch".to_string(),
+            branch.clone(),
+        ],
+    )
+    .await?;
+    if !check.status_success {
+        return Err(ApiError::bad_request("branch is not a valid branch name").into());
+    }
+    if rows
+        .iter()
+        .any(|row| row.branch.as_deref() == Some(branch.as_str()))
+    {
+        return Err(coded(
+            StatusCode::CONFLICT,
+            "branch_checked_out",
+            format!("{branch} is already checked out in another worktree"),
+        ));
+    }
+    let base_check = git_read(
+        &main,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{base}^{{commit}}"),
+        ],
+    )
+    .await?;
+    if !base_check.status_success {
+        return Err(ApiError::bad_request(format!("base {base} is not a commit")).into());
+    }
+    let slug = worktree_slug(&branch);
+    if slug.is_empty() {
+        return Err(ApiError::bad_request("branch does not name a folder").into());
+    }
+    let common = git_read_ok(
+        &main,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await?;
+    let exclude = PathBuf::from(common.trim()).join("info").join("exclude");
+    let path = main.join(WORKTREES_DIR).join(&slug);
+    let spec = codewhale_lane::WorktreeProvision {
+        repo_root: main.clone(),
+        branch: branch.clone(),
+        path: path.clone(),
+        base_ref: Some(base.clone()),
+    };
+    tokio::task::spawn_blocking(move || -> Result<(), GitWriteError> {
+        if std::fs::symlink_metadata(&spec.path).is_ok() {
+            return Err(coded(
+                StatusCode::CONFLICT,
+                "worktree_exists",
+                format!("{} already exists", spec.path.display()),
+            ));
+        }
+        let line = format!("/{WORKTREES_DIR}/");
+        let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+        if !current.lines().any(|existing| existing.trim() == line) {
+            if let Some(dir) = exclude.parent() {
+                std::fs::create_dir_all(dir)
+                    .map_err(|error| ApiError::internal(format!("update info/exclude: {error}")))?;
+            }
+            let separator = if current.is_empty() || current.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            std::fs::write(&exclude, format!("{current}{separator}{line}\n"))
+                .map_err(|error| ApiError::internal(format!("update info/exclude: {error}")))?;
+        }
+        codewhale_lane::provision_worktree(&spec)
+            .map_err(|error| ApiError::bad_request(format!("{error:#}")))?;
+        Ok(())
+    })
+    .await
+    .map_err(|_| ApiError::internal("worktree creation failed"))??;
+    let head = git_read_ok(&path, &["rev-parse", "HEAD"]).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "path": path.to_string_lossy(),
+            "branch": branch,
+            "base": base,
+            "head": head.trim(),
+            "repository": main.to_string_lossy(),
+        })),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WorktreeRemoveRequest {
+    path: String,
+}
+
+pub(super) async fn worktree_remove(
+    State(state): State<RuntimeApiState>,
+    Query(scope): Query<ThreadScopeQuery>,
+    Json(request): Json<WorktreeRemoveRequest>,
+) -> Result<Json<Value>, GitWriteError> {
+    let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
+    let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
+    let (main, rows) = repository_worktrees(&root).await?;
+    let wanted = FsPath::new(request.path.trim());
+    let Some(row) = rows.iter().find(|row| FsPath::new(&row.path) == wanted) else {
+        return Err(ApiError::not_found("no worktree of this repository at that path").into());
+    };
+    if !row.managed {
+        return Err(ApiError::forbidden(
+            "only worktrees Codewhale created under .codewhale/worktrees can be archived here",
+        )
+        .into());
+    }
+    if row.locked {
+        return Err(coded(
+            StatusCode::CONFLICT,
+            "worktree_locked",
+            "the worktree is locked",
+        ));
+    }
+    let path = PathBuf::from(&row.path);
+    state
+        .runtime_threads
+        .reject_active_turns_in_workspace(&path)
+        .await
+        .map_err(|error| coded(StatusCode::CONFLICT, "worktree_busy", error.to_string()))?;
+    if !row.prunable {
+        let status = git_read_ok(
+            &path,
+            &["status", "--porcelain", "--untracked-files=normal"],
+        )
+        .await?;
+        if !status.trim().is_empty() {
+            let mut extra = serde_json::Map::new();
+            extra.insert(
+                "files".to_string(),
+                json!(
+                    status
+                        .lines()
+                        .take(50)
+                        .map(|line| line.get(3..).unwrap_or(line))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            return Err(GitWriteError::Coded {
+                status: StatusCode::CONFLICT,
+                code: "worktree_dirty",
+                message:
+                    "The worktree has uncommitted changes. Commit or discard them before archiving."
+                        .to_string(),
+                extra,
+            });
+        }
+    }
+    let mut args = vec!["worktree".to_string(), "remove".to_string()];
+    if row.prunable {
+        args.push("--force".to_string());
+    }
+    args.push("--".to_string());
+    args.push(row.path.clone());
+    let run = git_write(&main, args).await?;
+    if !run.status_success {
+        return Err(ApiError::bad_request(output_tail(&run)).into());
+    }
+    Ok(Json(
+        json!({ "ok": true, "path": row.path, "branch": row.branch, "head": row.head }),
+    ))
 }
 
 #[cfg(test)]

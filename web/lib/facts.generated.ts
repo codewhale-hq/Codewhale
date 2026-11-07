@@ -38,7 +38,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-03T01:04:10.249Z",
+  "generatedAt": "2026-11-06T11:10:45.649Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -347,6 +347,14 @@ export const FACTS: RepoFacts = {
     }
   ],
   "models": [
+    {
+      "id": "tencent/hy4",
+      "provider": "OpenRouter",
+      "contextWindow": 1048576,
+      "maxOutput": 65536,
+      "reasoning": true,
+      "addedAt": "2026-11-05"
+    },
     {
       "id": "claude-fable-5-1",
       "provider": "Anthropic",
@@ -1078,7 +1086,7 @@ export const FACTS: RepoFacts = {
   ],
   "defaultModel": "deepseek-flash",
   "nodeEngines": ">=18",
-  "toolCount": 81,
+  "toolCount": 82,
   "contributorCount": 393,
   "license": "MIT",
   "latestPublishedRelease": {

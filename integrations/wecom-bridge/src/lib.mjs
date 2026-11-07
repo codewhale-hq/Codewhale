@@ -79,6 +79,66 @@ export function stripGroupPrefix(text, { chatType, requirePrefix, prefix }) {
   });
 }
 
+/** Reduce a provider-supplied filename to a safe single path component. */
+export function sanitizeFilename(name, fallback = "upload.bin") {
+  const cleaned = String(name || "")
+    .replace(/[\\/]/g, "_")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f]/g, "")
+    .replace(/^[.\s]+/, "")
+    .replace(/[\s.]+$/, "")
+    .slice(0, 120);
+  return cleaned || fallback;
+}
+
+/**
+ * Render an error for a chat reply. WeCom SDK rejections arrive as plain
+ * objects ({errcode, errmsg}); String() on those yields "[object Object]".
+ */
+export function formatPublicError(error) {
+  if (error && typeof error === "object") {
+    if (error.errmsg != null || error.errcode != null) {
+      return `errcode=${error.errcode}: ${error.errmsg || ""}`.trim();
+    }
+    if (error.message) return String(error.message);
+    try { return JSON.stringify(error).slice(0, 300); } catch { return "unknown error"; }
+  }
+  return String(error || "unknown error");
+}
+
+/**
+ * Wrap client.replyStream with a WeCom stream lifetime policy. WeCom stream
+ * messages stop accepting updates after ~10 minutes (errcode 846608), so a
+ * long-running turn outlives its stream and every later update fails. This
+ * helper finalizes the current stream and opens a fresh one when it nears
+ * the cap, and reopens once on a rejected update.
+ */
+export function createStreamReply(client, frame, { rotateMs = 8 * 60_000, now = Date.now, genId } = {}) {
+  let streamId = genId ? genId() : `stream-${Math.random().toString(36).slice(2)}`;
+  let openedAt = now();
+  async function send(id, text, finish) {
+    await client.replyStream(frame, id, text, finish);
+  }
+  return {
+    get streamId() { return streamId; },
+    async update(text, finish = false) {
+      if (!finish && now() - openedAt > rotateMs) {
+        try { await send(streamId, `${text}\n…(continued)`, true); } catch { /* expired already */ }
+        streamId = genId ? genId() : `stream-${Math.random().toString(36).slice(2)}`;
+        openedAt = now();
+      }
+      try {
+        await send(streamId, text, finish);
+      } catch {
+        streamId = genId ? genId() : `stream-${Math.random().toString(36).slice(2)}`;
+        openedAt = now();
+        try { await send(streamId, text, finish); }
+        catch (e) { console.error("stream update failed twice", e?.errmsg || e?.message || e); }
+      }
+    }
+  };
+}
+
 /** Check if text is a natural-language approval response (Chinese or English). */
 export function isApprovalResponse(text) {
   const t = String(text || "").trim().toLowerCase();

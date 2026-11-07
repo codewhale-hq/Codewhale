@@ -103,6 +103,19 @@ usage or prices; absent or contradictory cache classes show unknown. The header
 counts retained sources, not physical requests or complete historical calls.
 The command does not issue a model request or remove accounting receipts.
 
+Published prices are frozen for DeepSeek's root, `/v1`, `/beta` and Anthropic
+endpoint variants, and for other providers' default endpoints. Each quote stays
+bound to the exact endpoint, identity, model and dispatch time when saved or replayed.
+Operator endpoint overrides do not become published pricing authorities, and
+subscription or token-plan routes remain outside money coverage. Signed cloud
+facts keep their separate route-scoping rules. Recognition as an official
+credential endpoint alone does not authorize sharing prices across regions or plans.
+
+Missing request outcomes, omitted provider usage, unverified legacy usage and
+usage corrections have distinct cost reasons. Known limitation: saved receipts
+without a frozen price are not repriced from today's catalog; their complete
+cost remains unknown even after updating the binary.
+
 ## Constitution, project instructions, and repo authority
 
 Codewhale has several instruction surfaces. They are deliberately separate so a
@@ -2852,16 +2865,37 @@ reasoning contract, and all four membership ids omit generic sampling fields.
     last-round survival contract still applies on top. The `/compact` receipt
     names the effective budget and whether operator instructions were applied,
     so you can tell the knob took effect.
-- `retry.*` (optional): retry/backoff settings for API requests:
+- `retry.*` (optional): HTTP retry settings. The following backoff fields govern
+  ordinary transport retries; HTTP 429 uses the independent policy below:
   - `[retry].enabled` (bool, default `true`)
-  - `[retry].max_retries` (int, default `3`)
+  - `[retry].max_retries` (int, default `3`): ordinary transport retries
   - `[retry].initial_delay` (float seconds, default `1.0`)
   - `[retry].max_delay` (float seconds, default `60.0`)
   - `[retry].exponential_base` (float, default `2.0`)
-  - `[retry].jitter` (bool, default `true`): randomize each backoff delay
+  - `[retry].jitter` (bool, default `true`): randomize ordinary transport backoff
   - `[retry].jitter_factor` (float, default `0.1` = ±10%; clamps to `0.0..=1.0`)
   - `[retry].respect_retry_after` (bool, default `true`): wait for a server
-    `Retry-After` header instead of the computed backoff
+    `Retry-After` preference retained for legacy retry configuration; it does not
+    disable HTTP 429 server minima
+
+  HTTP 429 recovery has its own validated `[retry.rate_limit]` fields:
+
+  - `max_attempts` (integer, default `20`, range `1..=1000`): total attempts,
+    including the first
+  - `recovery_budget_secs` (integer seconds, default `600`, range `1..=86400`)
+  - `initial_delay_secs` (integer seconds, default `5`)
+  - `max_delay_secs` (integer seconds, default `60`), with
+    `1 <= initial_delay_secs <= max_delay_secs <= 86400`
+
+  This policy always honors server minima and uses equal jitter, independently
+  of the legacy `initial_delay`, `max_delay`, `exponential_base`, `jitter`,
+  `jitter_factor` and `respect_retry_after` fields. `max_retries = 0` does not
+  disable 429 recovery; set `retry.rate_limit.max_attempts = 1` to disable only
+  automatic 429 retries, or `retry.enabled = false` to disable this HTTP retry
+  loop. A safe pre-dispatch HTTP/1.1 fallback inside a stream-opening operation
+  remains possible. The one-hour limit on actual provider pauses and automatic sleeps
+  still applies. See [HTTP rate-limit retries](rate-limit-retries.md) for the
+  budget, server-minimum and active-time boundaries.
 
   `[retry]` schedules HTTP-request retries inside the client. Each physical
   streaming request gets its own `stream.open_timeout_secs` response-header

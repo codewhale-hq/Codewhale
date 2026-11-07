@@ -530,6 +530,14 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let previewed_turn_git_snapshot = {
+            self.turn_meta_git_snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        };
+        let preview_turn_git_snapshot = self.capture_turn_meta_git_snapshot().await;
+        self.install_turn_meta_git_snapshot(preview_turn_git_snapshot);
         let mut messages = self.messages_with_turn_metadata();
         let hypothetical_user_message = self.user_text_message_from_snapshot(
             hypothetical_content.clone(),
@@ -575,6 +583,10 @@ impl Engine {
             .last_turn_meta_git_snapshot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = previewed_git_snapshot;
+        *self
+            .turn_meta_git_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = previewed_turn_git_snapshot;
         // Classification input for the provenance section: the prompt this
         // request actually carries, not the session's current one.
         let system_prompt_text =

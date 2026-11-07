@@ -730,6 +730,7 @@
             false,
             &config,
             AuthHeaderSurface::Inference,
+            None,
         )
         .unwrap()
         .no_proxy()

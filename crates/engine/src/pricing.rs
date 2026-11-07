@@ -560,7 +560,9 @@ fn is_official_default_endpoint(provider: ProviderKind, shape: &EndpointShape) -
         ProviderKind::Deepseek => {
             matches!(shape.path.as_str(), "" | "/v1" | "/beta")
         }
-        ProviderKind::DeepseekAnthropic => shape.path == "/anthropic",
+        ProviderKind::DeepseekAnthropic => {
+            matches!(shape.path.as_str(), "/anthropic" | "/anthropic/v1")
+        }
         ProviderKind::Openai => matches!(shape.path.as_str(), "" | "/v1"),
         ProviderKind::Anthropic => matches!(shape.path.as_str(), "" | "/v1"),
         _ => false,
@@ -873,6 +875,10 @@ pub enum UnpricedReason {
     /// over-count input, so the call is retained but fails closed.
     InconsistentUsage,
     MissingUsageBreakdown,
+    RequestOutcomeUnknown,
+    ProviderSuccessMissingUsage,
+    LegacyUsageUnverified,
+    UsageCorrectionUnverified,
 }
 
 impl UnpricedReason {
@@ -898,6 +904,12 @@ impl UnpricedReason {
             "missing_usage_breakdown" => Self::MissingUsageBreakdown,
             "late_usage_ledger_unavailable" => Self::LateUsageUnavailable,
             "late_usage_ledger_overflow" => Self::LateUsageOverflow,
+            "request_outcome_unknown" => Self::RequestOutcomeUnknown,
+            "provider_success_missing_usage" | "success_without_usage" => {
+                Self::ProviderSuccessMissingUsage
+            }
+            "legacy_usage_unverified" => Self::LegacyUsageUnverified,
+            "usage_correction_unverified" => Self::UsageCorrectionUnverified,
             _ => Self::UnrecordedCoverage,
         }
     }
@@ -924,6 +936,10 @@ impl UnpricedReason {
             Self::UnsupportedCurrency => MessageId::CostReasonCurrencyMissing,
             Self::InconsistentUsage => MessageId::CostReasonUsageConflict,
             Self::MissingUsageBreakdown => MessageId::CostReasonUsageBreakdown,
+            Self::RequestOutcomeUnknown => MessageId::CostReasonOutcomeUnknown,
+            Self::ProviderSuccessMissingUsage => MessageId::CostReasonProviderUsageMissing,
+            Self::LegacyUsageUnverified => MessageId::CostReasonLegacyUsageUnverified,
+            Self::UsageCorrectionUnverified => MessageId::CostReasonUsageCorrectionUnverified,
         }
     }
 
@@ -949,6 +965,10 @@ impl UnpricedReason {
             Self::UnsupportedCurrency => "unsupported_currency",
             Self::InconsistentUsage => "inconsistent_usage",
             Self::MissingUsageBreakdown => "missing_usage_breakdown",
+            Self::RequestOutcomeUnknown => "request_outcome_unknown",
+            Self::ProviderSuccessMissingUsage => "provider_success_missing_usage",
+            Self::LegacyUsageUnverified => "legacy_usage_unverified",
+            Self::UsageCorrectionUnverified => "usage_correction_unverified",
         }
     }
 

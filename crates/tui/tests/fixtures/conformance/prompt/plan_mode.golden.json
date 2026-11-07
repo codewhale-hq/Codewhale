@@ -2,9 +2,9 @@
   "system_sha256": "8ff744b8ed90564a8c4754ac79cdbaf05df69ed024cc2ec154abfe581ed72d7f",
   "system_bytes": 9183,
   "system_blocks": 5,
-  "tools_sha256": "3b6af9cf0fece185d2f7ef9bd5a3adeffc74dd13e2d4baba92b88b10e04f74a6",
-  "tools_bytes": 16075,
-  "tool_count": 13,
+  "tools_sha256": "becad1d1e060fba25f12a1cf41c413aae9ee3e174d9edf9916b9af7084210f9f",
+  "tools_bytes": 17071,
+  "tool_count": 14,
   "tool_names": [
     "bash",
     "context_archive_get",
@@ -14,13 +14,14 @@
     "file_search",
     "get_goal",
     "load_skill",
+    "present",
     "read",
     "todo_write",
     "update_goal",
     "write",
     "tool_search"
   ],
-  "prefix_sha256": "9676869a6cacb64a0b0f01441c7d5afad8d5b159f7e2b1ba3e8f40cf18b3d6ab",
+  "prefix_sha256": "2ef3f8cd0818d35d5ffe170db24598e3d94d9dbd1e44b25c327eadde18af5f9b",
   "masks": [
     "<WORKSPACE>",
     "<HOME>",

@@ -399,7 +399,7 @@ impl ChildAuthority {
                 .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
             || (name == "pandoc_convert" && input.get("output_path").is_some());
         if scope_aware_write && self.enforce_write_claim {
-            let paths = mutation_paths(name, input)?;
+            let paths = mutation_paths(name, input, &self.runtime.context.workspace)?;
             if paths.is_empty() {
                 return Err(admission_denied(format!(
                     "Write tool {name} did not expose a bounded repo-relative target for coordination"
@@ -465,7 +465,7 @@ impl ChildAuthority {
             }
         }
         let observed_paths = if scope_aware_write {
-            mutation_paths(name, input)?
+            mutation_paths(name, input, &self.runtime.context.workspace)?
         } else {
             Vec::new()
         };
@@ -1152,7 +1152,7 @@ impl ChildJob {
         }
         if matches!(
             error.downcast_ref::<LlmError>(),
-            Some(LlmError::RateLimited { .. })
+            Some(LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. })
         ) && let Some(governor) = self.authority.runtime.governor.as_ref()
         {
             governor.record_rate_limited(Instant::now());
@@ -1470,6 +1470,7 @@ pub fn provider_request_refusal_proven(error: &anyhow::Error) -> bool {
         Some(
             LlmError::ConnectError { .. }
                 | LlmError::RateLimited { .. }
+                | LlmError::QuotaWindow { .. }
                 | LlmError::QuotaExhausted(_)
                 | LlmError::AuthenticationError(_)
                 | LlmError::AuthorizationError(_)
@@ -2290,6 +2291,20 @@ impl ChildRequestRetries {
         runtime: &SubAgentRuntime,
         error: &anyhow::Error,
     ) -> Option<ChildRequestRecovery> {
+        if let Some(error @ (LlmError::QuotaWindow { .. } | LlmError::RateLimited { .. })) =
+            error.downcast_ref::<LlmError>()
+            && (matches!(error, LlmError::QuotaWindow { .. })
+                || error.suggested_retry_delay().is_some_and(|delay| {
+                    delay > codewhale_runtime::retry_status::MAX_PROVIDER_PAUSE
+                }))
+        {
+            return Some(ChildRequestRecovery::Interrupted {
+                checkpoint_reason: "api_rate_limited",
+                message: format!(
+                    "Provider quota window requires continuation after reset: {error}"
+                ),
+            });
+        }
         let transmission = error.downcast_ref::<LlmError>().map_or(
             crate::llm_client::RequestTransmission::OutcomeUnknown,
             LlmError::transmission,

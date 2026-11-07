@@ -1,7 +1,7 @@
 [
   {
     "name": "bash",
-    "description": "Execute a shell command in the workspace and return stdout and stderr. Output keeps the last 2000 lines or 50KB. An optional timeout is the seconds to wait in the foreground (default 30 seconds); a command still running then is never killed for time: it moves to the background by itself and you get its output so far, how long ago it last printed, its build phase, and a task_id, so long builds and tests need no special timeout. Call task_shell_wait directly with that task_id to read more or wait for it; do not sleep-poll with bash. In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (the narrowest wider mode that suffices) and a one-sentence justification; the approval prompt asks the user.",
+    "description": "Execute a shell command in the workspace and return stdout and stderr. Output keeps the last 2000 lines or 50KB. An optional timeout is the seconds to wait in the foreground (default 30 seconds); a command still running then is never killed for time: it moves to the background by itself and you get its output so far, how long ago it last printed, its build phase, and a task_id, so long builds and tests need no special timeout. Call task_shell_wait directly with that task_id to read more or wait for it; do not sleep-poll with bash. Before a final answer, collect every still-relevant background task with task_shell_wait (wait only when genuinely blocked) and cancel any that no longer matter. In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (the narrowest wider mode that suffices) and a one-sentence justification; the approval prompt asks the user.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -246,6 +246,36 @@
           "type": "string"
         }
       },
+      "type": "object"
+    },
+    "allowed_callers": [
+      "direct"
+    ],
+    "defer_loading": false
+  },
+  {
+    "name": "present",
+    "description": "Declare existing workspace files as final deliverables and return a handoff receipt. Read-only: the files are not modified, moved, copied, or uploaded. For each of 1-32 workspace-relative paths it records the display path, byte length, and SHA-256. Call it after finishing an artifact so the tool call is the presentation point. It does not create a delivery folder or a second artifact store.",
+    "input_schema": {
+      "properties": {
+        "files": {
+          "description": "Workspace-relative paths of existing regular files to present (1-32, no duplicates).",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array"
+        },
+        "note": {
+          "description": "Optional short note about the presented artifacts.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "files"
+      ],
       "type": "object"
     },
     "allowed_callers": [

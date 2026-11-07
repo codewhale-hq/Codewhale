@@ -1568,6 +1568,14 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // transcript erased targets registered later by the composer and modals.
     crate::tui::hover_layer::begin_frame();
     app.pet_watch.prepare_frame();
+    // Image previews decode off-thread. `poll` runs at the top of the event
+    // loop, before the draw decision, so a preview that just finished can
+    // request its own frame; this reconciles the cache with the attachment
+    // list, which is a vector comparison when the draft has not changed.
+    let attached_images = crate::tui::widgets::attachment_preview::attached_image_paths(app);
+    if !attached_images.is_empty() && !crate::tui::color_compat::ascii_safe_enabled() {
+        app.attachment_preview.track(&attached_images);
+    }
     let shell_area = session_shell_area(size);
     // Keep the view stack's focus-context texture prototype (#4823) in step
     // with the parsed setting each frame: a plain enum/theme copy, no
@@ -1759,9 +1767,32 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // back to controls-only when just one row remains). Mixed previews retain
     // up to three compact rows at the release floor.
     let preview_cap = if size.height >= 20 { 4 } else { 3 };
-    let preview_height = desired_preview_height.min(auxiliary_budget.min(preview_cap));
-    let workbar_height =
-        desired_workbar_height.min(auxiliary_budget.saturating_sub(preview_height));
+    // The image thumbnail sits between the queued-input preview and the
+    // composer. It competes for the same spare rows as the queued preview,
+    // and the queued preview wins: a draft the person typed is worth more
+    // than a picture they can still see in its own window. On a short
+    // terminal the thumbnail also gives way on its own (a quarter of the
+    // body), so the transcript never collapses to make room for it.
+    let desired_attachment_preview_height = if (mini && !mini_cfg.keep_input) || pet_main {
+        0
+    } else {
+        crate::tui::widgets::attachment_preview::AttachmentPreviewWidget::for_app(app)
+            .map(|widget| widget.desired_height(shell_area.width))
+            .unwrap_or(0)
+    };
+    let attachment_preview_height = desired_attachment_preview_height
+        .min(body_height / 4)
+        .min(auxiliary_budget.saturating_sub(desired_preview_height.min(preview_cap)));
+    let preview_height = desired_preview_height.min(
+        auxiliary_budget
+            .saturating_sub(attachment_preview_height)
+            .min(preview_cap),
+    );
+    let workbar_height = desired_workbar_height.min(
+        auxiliary_budget
+            .saturating_sub(attachment_preview_height)
+            .saturating_sub(preview_height),
+    );
 
     // Two pinned rows bracket the composer from below (SHELL-DESIGN-20260901
     // §2.0 item 3, §2.3b): the posture bar — permission · mode · live counts
@@ -1793,6 +1824,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(strip_above_height), // Tasks + To-do above transcript (`top`)
             Constraint::Min(1),                     // Chat area
             Constraint::Length(preview_height),     // Pending input preview (0 if empty)
+            Constraint::Length(attachment_preview_height), // Image thumbnail (0 if none)
             Constraint::Length(plugin_cta_height),  // Live plugin CTA (0 unless matched)
             Constraint::Length(composer_height),    // Composer
             Constraint::Length(footer_height),      // Posture bar
@@ -1801,13 +1833,14 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(strip_below_height), // Roster + To-do under the chrome (`bottom`)
         ])
         .split(body_area);
-    let strip_slot = if strip_below { 8 } else { 0 };
+    let strip_slot = if strip_below { 9 } else { 0 };
     let preview_slot = 2;
-    let plugin_cta_slot = 3;
-    let composer_slot = 4;
-    let footer_slot = 5;
-    let workbar_slot = 6;
-    let info_slot = 7;
+    let attachment_preview_slot = 3;
+    let plugin_cta_slot = 4;
+    let composer_slot = 5;
+    let footer_slot = 6;
+    let workbar_slot = 7;
+    let info_slot = 8;
 
     if matches!(
         app.view_stack.top_kind(),
@@ -1956,6 +1989,16 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     if preview_height > 0 {
         let buf = f.buffer_mut();
         pending_preview.render(body_chunks[preview_slot], buf);
+    }
+
+    // The cell thumbnail of the attached image, above the composer so the
+    // picture is visible before the turn is sent.
+    if attachment_preview_height > 0
+        && let Some(widget) =
+            crate::tui::widgets::attachment_preview::AttachmentPreviewWidget::for_app(app)
+    {
+        let area = body_chunks[attachment_preview_slot];
+        widget.render(area, f.buffer_mut());
     }
 
     if plugin_cta_height > 0 {

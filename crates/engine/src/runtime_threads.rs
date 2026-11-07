@@ -94,7 +94,6 @@ const RUNTIME_STORE_WORK_DIRS: [&str; 7] = [
     "turn-operations",
 ];
 const TURN_OPERATION_BINDING_SCHEMA_VERSION: u32 = 2;
-pub const MAX_ROUTED_USAGE_RECORDS_PER_TURN: usize = 64;
 const RUNTIME_USAGE_PARTITION_SUMMARY: &str = "Provider usage receipt partition";
 
 pub fn runtime_usage_partition_parent(turn: &TurnRecord) -> Option<&str> {
@@ -1088,9 +1087,7 @@ impl TurnRecord {
                 "Turn operation activity exceeds its bound"
             );
         }
-        if self.decision_receipts.len() > MAX_ROUTED_USAGE_RECORDS_PER_TURN
-            || self.decision_receipts.iter().any(|r| !r.is_bounded())
-        {
+        if self.decision_receipts.iter().any(|r| !r.is_bounded()) {
             bail!("Turn decision evidence exceeds its bound");
         }
         anyhow::ensure!(
@@ -1117,14 +1114,13 @@ impl TurnRecord {
             validated_record_id(origin, "native usage origin turn id")?;
         }
         anyhow::ensure!(
-            self.source_usage_records.len() <= MAX_ROUTED_USAGE_RECORDS_PER_TURN
-                && self.source_usage_records.iter().all(|(key, record)| record
-                    .settlement
-                    .is_some()
+            self.source_usage_records
+                .iter()
+                .all(|(key, record)| record.settlement.is_some()
                     && record.validate().is_ok()
                     && *key == crate::cost_status::usage_source_fingerprint(&record.source_id)
                     && self.routed_usage_source_ids.contains(key)),
-            "native source receipts exceed their bound or identity contract"
+            "native source receipts violate their identity contract"
         );
         if self.routing_settlement && self.input_summary == RUNTIME_USAGE_PARTITION_SUMMARY {
             let parent = runtime_usage_partition_parent(self)

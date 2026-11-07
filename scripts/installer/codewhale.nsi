@@ -72,6 +72,19 @@ BrandingText "${PRODUCT_NAME} Installer"
 ;--------------------------------
 Section "Install" SecInstall
   SetOutPath "$INSTDIR"
+  ClearErrors
+  FileOpen $0 "$INSTDIR\.codewhale-install" w
+  ${IfNot} ${Errors}
+    FileWrite $0 "CodeWhale"
+    FileClose $0
+  ${EndIf}
+  ${If} ${Errors}
+    DetailPrint "Could not write the CodeWhale install ownership marker to $INSTDIR."
+    IfSilent +2
+      MessageBox MB_ICONSTOP|MB_OK "CodeWhale could not record ownership of $INSTDIR. Installation has stopped."
+    SetErrorLevel 1
+    Abort
+  ${EndIf}
   File "update-user-path.ps1"
 
   SetOutPath "$INSTDIR\bin"
@@ -139,42 +152,132 @@ Section /o "Compiled extension host (Bun, opt-in)" SecCompiledHost
 SectionEnd
 !endif
 
+!macro RemoveOwnedFile FILE
+  ClearErrors
+  Delete "${FILE}"
+  ${If} ${Errors}
+    DetailPrint "Could not remove ${FILE}."
+    IntOp $R9 $R9 + 1
+  ${EndIf}
+!macroend
+
+!macro RemoveOwnedDir DIR
+  ClearErrors
+  RMDir "${DIR}"
+  ${If} ${Errors}
+    ${IfNot} ${FileExists} "${DIR}\*.*"
+      ${If} ${FileExists} "${DIR}"
+        DetailPrint "Could not remove empty directory ${DIR}."
+        IntOp $R9 $R9 + 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 Section "Uninstall"
+  StrCpy $R9 0
+  Call un.RequireOwnership
+
   ; Remove only CodeWhale's exact entry before deleting the helper. The helper
   ; handles PATH values longer than NSIS_MAX_STRLEN without truncation.
   Call un.RemoveFromUserPath
 
   ; Remove binaries, launcher, and Start Menu shortcut (single binary)
-  Delete "$INSTDIR\bin\codewhale.exe"
-  Delete "$INSTDIR\bin\codew.exe"
-  Delete "$INSTDIR\bin\codewhale.bat"
+  !insertmacro RemoveOwnedFile "$INSTDIR\bin\codewhale.exe"
+  !insertmacro RemoveOwnedFile "$INSTDIR\bin\codew.exe"
+  !insertmacro RemoveOwnedFile "$INSTDIR\bin\codewhale.bat"
   ReadRegDWORD $R0 HKCU "Software\${PRODUCT_NAME}" "CompiledHostInstalled"
   ${If} $R0 == 1
-    Delete "$INSTDIR\bin\codewhale-extension-host.exe"
-    Delete "$INSTDIR\bin\codewhale-extension-host.LICENSES.txt"
-    Delete "$INSTDIR\bin\codewhale-extension-host.relink-source.tar.gz"
-    Delete "$INSTDIR\bin\codewhale-extension-host.release.json"
+    !insertmacro RemoveOwnedFile "$INSTDIR\bin\codewhale-extension-host.exe"
+    !insertmacro RemoveOwnedFile "$INSTDIR\bin\codewhale-extension-host.LICENSES.txt"
+    !insertmacro RemoveOwnedFile "$INSTDIR\bin\codewhale-extension-host.relink-source.tar.gz"
+    !insertmacro RemoveOwnedFile "$INSTDIR\bin\codewhale-extension-host.release.json"
   ${EndIf}
-  Delete "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk"
-  RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
-  Delete "$INSTDIR\update-user-path.ps1"
-  Delete "$INSTDIR\Uninstall.exe"
-  RMDir "$INSTDIR\bin"
-  RMDir "$INSTDIR"
+  !insertmacro RemoveOwnedFile "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk"
+  !insertmacro RemoveOwnedDir "$SMPROGRAMS\${PRODUCT_NAME}"
 
-  ; Remove registry keys
-  DeleteRegValue HKCU "Software\${PRODUCT_NAME}" "InstallDir"
-  DeleteRegValue HKCU "Software\${PRODUCT_NAME}" "CompiledHostInstalled"
-  DeleteRegKey /ifempty HKCU "Software\${PRODUCT_NAME}"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
+  ${If} $R9 == 0
+    ClearErrors
+    ReadRegStr $0 HKCU "Software\${PRODUCT_NAME}" "InstallDir"
+    ${IfNot} ${Errors}
+      ClearErrors
+      DeleteRegValue HKCU "Software\${PRODUCT_NAME}" "InstallDir"
+      ${If} ${Errors}
+        DetailPrint "Could not remove the CodeWhale InstallDir registry value."
+        IntOp $R9 $R9 + 1
+      ${EndIf}
+    ${EndIf}
+    ClearErrors
+    ReadRegDWORD $0 HKCU "Software\${PRODUCT_NAME}" "CompiledHostInstalled"
+    ${IfNot} ${Errors}
+      ClearErrors
+      DeleteRegValue HKCU "Software\${PRODUCT_NAME}" "CompiledHostInstalled"
+      ${If} ${Errors}
+        DetailPrint "Could not remove the CodeWhale CompiledHostInstalled registry value."
+        IntOp $R9 $R9 + 1
+      ${EndIf}
+    ${EndIf}
+    ClearErrors
+    DeleteRegKey /ifempty HKCU "Software\${PRODUCT_NAME}"
+    ClearErrors
+    ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayName"
+    ${IfNot} ${Errors}
+      ClearErrors
+      DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
+      ${If} ${Errors}
+        DetailPrint "Could not remove the CodeWhale uninstall registration."
+        IntOp $R9 $R9 + 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $R9 == 0
+    !insertmacro RemoveOwnedFile "$INSTDIR\Uninstall.exe"
+    ${If} $R9 == 0
+      !insertmacro RemoveOwnedFile "$INSTDIR\.codewhale-install"
+    ${EndIf}
+    ${If} $R9 == 0
+      !insertmacro RemoveOwnedFile "$INSTDIR\update-user-path.ps1"
+    ${EndIf}
+  ${EndIf}
+
+  !insertmacro RemoveOwnedDir "$INSTDIR\bin"
+  !insertmacro RemoveOwnedDir "$INSTDIR"
+
+  ${If} $R9 > 0
+    DetailPrint "CodeWhale uninstall did not remove $R9 item(s)."
+    IfSilent +2
+      MessageBox MB_ICONEXCLAMATION|MB_OK "CodeWhale uninstall did not remove $R9 item(s). Check the uninstall details; if Uninstall.exe is still present, run it again, otherwise remove the remaining CodeWhale files manually."
+    SetErrorLevel 1
+  ${EndIf}
 SectionEnd
+
+Function un.RequireOwnership
+  ClearErrors
+  FileOpen $0 "$INSTDIR\.codewhale-install" r
+  ${If} ${Errors}
+    Goto un_ownership_failed
+  ${EndIf}
+  FileRead $0 $1
+  FileClose $0
+  StrCmp $1 "CodeWhale" un_ownership_ok
+
+  un_ownership_failed:
+    DetailPrint "Refusing to uninstall: $INSTDIR is not a CodeWhale-owned install root."
+    IfSilent +2
+      MessageBox MB_ICONSTOP|MB_OK "CodeWhale could not verify that $INSTDIR is its installation. No files were removed."
+    SetErrorLevel 1
+    Abort
+
+  un_ownership_ok:
+FunctionEnd
 
 Function un.RemoveFromUserPath
   ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\update-user-path.ps1" -Operation Remove -Entry "$INSTDIR\bin"' $0
   IntCmp $0 0 remove_path_done
     DetailPrint "Failed to remove CodeWhale from the current-user PATH (exit code $0)."
     IfSilent +2
-      MessageBox MB_ICONSTOP|MB_OK "CodeWhale could not safely update your user PATH. Uninstallation has stopped without replacing the existing PATH."
+      MessageBox MB_ICONSTOP|MB_OK "CodeWhale could not safely update your user PATH. Uninstallation has stopped without removing CodeWhale files or replacing the existing PATH."
     SetErrorLevel 1
     Abort
 
