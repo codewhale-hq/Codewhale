@@ -687,10 +687,13 @@ impl PluginRegistry {
                 return None;
             }
             let destination = runtime_stage_path(&state_path, &plugin.id, &plugin.content_hash);
-            if !matches!(fs::symlink_metadata(&destination), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
-                return None;
+            match fs::symlink_metadata(&destination) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Some(plugin.id.as_str().to_string())
+                }
+                Ok(_) if plugin.staged_root.is_none() => Some(plugin.id.as_str().to_string()),
+                _ => None,
             }
-            Some(plugin.id.as_str().to_string())
         }).collect::<Vec<_>>();
         for selector in candidates {
             if let Err(error) = self.restage_inner(&selector, true) {
