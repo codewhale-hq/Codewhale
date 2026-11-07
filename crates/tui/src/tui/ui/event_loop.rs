@@ -1147,7 +1147,10 @@ pub async fn run_tui(
     }
     surface_prompt_override_notices(&mut app);
 
-    if options.resume_session_id.is_none() && !app.launch.visible {
+    if options.resume_session_id.is_none()
+        && !app.launch.visible
+        && !app.onboarding_missing_key_recovery
+    {
         // The one-time Fleet intro is no longer a launch push: it appears the
         // first time the user opens `/fleet` or enters Operate (apply.rs).
         let _ = open_setup_checkpoint_if_due(&mut app, config, options.skip_onboarding);

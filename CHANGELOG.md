@@ -64,13 +64,17 @@ until the matching tag, packages, checksums, and release assets exist.
   stores. Runtime loading restores a missing snapshot only from bytes matching
   its enabled review and policy; `codew plugins restage <name>` or
   `/plugin restage <name>` retries explicitly. Recovery preserves review and
-  generation and refuses an existing changed snapshot. Native and published
-  plugin qualification remains open for this source candidate.
+  generation and refuses an existing changed snapshot. Isolated macOS checks
+  exercised the published Code Review 1.0.8 Native status lifecycle and official
+  filesystem MCP reconnect; live review execution and other plugins remain
+  unqualified.
 - **Shared optional account sign-in:** `/connect` offers Codewhale sign-in or
   on-computer provider setup. Desktop and terminal use the same profile-scoped
   Rust account session; sign-in preserves the selected model and local keys.
   Ordinary logout removes the account session, while `logout --all` explicitly
-  clears saved model credentials. Real sign-in acceptance remains open.
+  clears saved model credentials. Startup prompts keep missing-model setup
+  visible instead of covering it with the optional working-agreement checkpoint.
+  Real sign-in acceptance remains open.
 - **Refresh model catalogs during use:** Runtime provider refresh now checks
   public Models.dev metadata alongside the exact provider's model list;
   `force_catalog=true` bypasses the public cache TTL and retry backoff.
