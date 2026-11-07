@@ -58,6 +58,7 @@ codewhale-dependencies = { path = "../dependencies", version = "0.10.3" }
 codewhale-engine = { path = "../engine", version = "0.10.3" }
 codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.3" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
+codewhale-lane = { path = "../lane", version = "0.10.3" }
 codewhale-localization = { path = "../localization", version = "0.10.3" }
 codewhale-lsp = { path = "../lsp", version = "0.10.3" }
 codewhale-mcp = { path = "../mcp", version = "0.10.3" }
