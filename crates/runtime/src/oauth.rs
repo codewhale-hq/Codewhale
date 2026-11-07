@@ -2436,6 +2436,7 @@ pub const CHATGPT_OAUTH_CLIENT_ID: &str = "dynamic_agent_client";
 pub const CHATGPT_OAUTH_RESOURCE: &str = "https://api.openai.com/v1";
 pub const CHATGPT_OAUTH_SCOPE: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
+const CHATGPT_CLOCK_SKEW_LEEWAY_SECS: u64 = 60;
 
 /// Verified registration identity. The client ID also binds the selected workspace.
 /// One active registration is supported; use CODEWHALE_CHATGPT_NEW_ACCOUNT=1
@@ -2579,7 +2580,7 @@ fn verify_chatgpt_jwt<T: serde::de::DeserializeOwned + Clone>(
     validation.set_audience(&[audience]);
     validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
     validation.validate_nbf = true;
-    validation.leeway = 0;
+    validation.leeway = CHATGPT_CLOCK_SKEW_LEEWAY_SECS;
     let claims = decode::<Value>(token, &key, &validation)
         .map_err(|error| match error.kind() {
             ErrorKind::InvalidSignature => {
@@ -8384,6 +8385,12 @@ consent_version = 1
             let error = verify(&signer.token(changed)).unwrap_err().to_string();
             assert!(error.contains(expected), "invalid {field}: {error}");
         }
+        let mut skewed = claims.clone();
+        skewed["nbf"] = Value::from(now_unix_secs().unwrap() + 15);
+        assert!(
+            verify(&signer.token(skewed)).is_ok(),
+            "a small clock skew must not reject a valid identity token"
+        );
         for required in ["iss", "aud", "exp", "sub", "nonce"] {
             let mut changed = claims.clone();
             changed.as_object_mut().unwrap().remove(required);

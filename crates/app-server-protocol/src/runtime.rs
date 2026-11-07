@@ -112,6 +112,17 @@ pub struct RuntimeCapabilities {
     pub thread_patch_undo_turn_id: bool,
     #[serde(default)]
     pub thread_scoped_reads: bool,
+    /// Git stage, unstage, discard, commit, push and branch accept
+    /// `?thread_id=` and act on that thread's workspace.
+    #[serde(default)]
+    pub thread_scoped_git_writes: bool,
+    /// `GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept
+    /// `?thread_id=` and act on that thread's workspace.
+    #[serde(default)]
+    pub thread_scoped_snapshots: bool,
+    /// `GET`/`POST /v1/worktrees` and `POST /v1/worktrees/remove`.
+    #[serde(default)]
+    pub worktrees: bool,
     /// Explicit per-thread shell opt-in is checked against loaded policy and
     /// cannot broaden a conversation while it has an active turn.
     #[serde(default)]
@@ -523,6 +534,9 @@ mod tests {
             thread_idle_precondition: true,
             thread_patch_undo_turn_id: true,
             thread_scoped_reads: true,
+            thread_scoped_git_writes: true,
+            thread_scoped_snapshots: true,
+            worktrees: true,
             thread_shell_consent: true,
             turns: true,
             turn_operation_idempotency: true,

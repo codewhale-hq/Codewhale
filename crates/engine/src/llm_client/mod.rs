@@ -22,9 +22,11 @@
 //! }, None).await;
 //! ```
 
+pub mod rate_limit;
+
 use anyhow::Result;
 use codewhale_models::{MessageRequest, MessageResponse, StreamEvent};
-use codewhale_runtime::config::RetryPolicy;
+use codewhale_runtime::config::{RateLimitRetryPolicy, RetryPolicy};
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -401,6 +403,12 @@ pub enum LlmError {
         message: String,
         retry_after: Option<Duration>,
     },
+    /// A quota window requiring caller policy or user action rather than a short retry.
+    QuotaWindow {
+        message: String,
+        retry_after: Option<Duration>,
+        transmission: RequestTransmission,
+    },
 
     /// The provider explicitly reported that the account's plan quota is exhausted.
     ///
@@ -452,6 +460,14 @@ pub enum LlmError {
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            LlmError::QuotaWindow {
+                message,
+                retry_after,
+                ..
+            } => write!(
+                f,
+                "Rate limit exceeded: {message}; quota window reset in {retry_after:?}; automatic retry stopped"
+            ),
             LlmError::RateLimited { message, .. } => write!(f, "Rate limit exceeded: {message}"),
             LlmError::QuotaExhausted(error) => {
                 write!(f, "Provider plan quota exhausted: {}", error.message)
@@ -483,9 +499,32 @@ impl std::fmt::Display for LlmError {
 impl std::error::Error for LlmError {}
 
 impl LlmError {
+    fn for_recovery_budget(self, remaining: Duration) -> Self {
+        if let Self::RateLimited {
+            message,
+            retry_after: Some(minimum),
+        } = self
+        {
+            if minimum >= remaining || minimum > codewhale_runtime::retry_status::MAX_PROVIDER_PAUSE
+            {
+                return Self::QuotaWindow {
+                    message,
+                    retry_after: Some(minimum),
+                    transmission: RequestTransmission::Rejected,
+                };
+            }
+            return Self::RateLimited {
+                message,
+                retry_after: Some(minimum),
+            };
+        }
+        self
+    }
+
     pub fn transmission(&self) -> RequestTransmission {
         match self {
             Self::ConnectError { .. } => RequestTransmission::NotDispatched,
+            Self::QuotaWindow { transmission, .. } => *transmission,
             Self::RateLimited { .. }
             | Self::QuotaExhausted(_)
             | Self::AuthenticationError(_)
@@ -523,7 +562,8 @@ impl LlmError {
     /// provides a Retry-After header.
     pub fn suggested_retry_delay(&self) -> Option<Duration> {
         match self {
-            LlmError::RateLimited { retry_after, .. } => *retry_after,
+            LlmError::RateLimited { retry_after, .. }
+            | LlmError::QuotaWindow { retry_after, .. } => *retry_after,
             _ => None,
         }
     }
@@ -564,7 +604,6 @@ impl LlmError {
                 message: body.to_string(),
             };
         }
-        let body_retry_after = body_retry_after.filter(|delay| *delay <= PROVIDER_RETRY_HINT_MAX);
         let quota_code = explicit_quota_code(body).or_else(|| explicit_quota_code_marker(body));
         if let Some(error) = quota_code
             .as_deref()
@@ -585,7 +624,7 @@ impl LlmError {
         match status {
             429 => LlmError::RateLimited {
                 message: body.to_string(),
-                retry_after: retry_after.or(body_retry_after),
+                retry_after: retry_after.max(body_retry_after),
             },
             401 => Self::authentication_error(body),
             403 => {
@@ -1235,6 +1274,7 @@ impl From<serde_json::Error> for LlmError {
 /// - `retryable_status_codes`: [429, 499, 500, 502, 503, 504]
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
+    pub rate_limit: RateLimitRetryPolicy,
     pub operation: RetryOperation,
     /// Whether retry logic is enabled
     pub enabled: bool,
@@ -1273,6 +1313,7 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
+            rate_limit: RateLimitRetryPolicy::default(),
             operation: RetryOperation::Inference,
             enabled: true,
             max_retries: 3,
@@ -1372,6 +1413,7 @@ impl RetryConfig {
 impl From<RetryPolicy> for RetryConfig {
     fn from(policy: RetryPolicy) -> Self {
         Self {
+            rate_limit: policy.rate_limit,
             enabled: policy.enabled,
             max_retries: policy.max_retries,
             initial_delay: policy.initial_delay,
@@ -1389,6 +1431,7 @@ impl From<RetryPolicy> for RetryConfig {
 impl From<RetryConfig> for RetryPolicy {
     fn from(config: RetryConfig) -> Self {
         Self {
+            rate_limit: config.rate_limit,
             enabled: config.enabled,
             max_retries: config.max_retries,
             initial_delay: config.initial_delay,
@@ -1791,7 +1834,7 @@ pub fn observe_transport_attempt() {
 /// Raw errors remain intact in the original result and diagnostic/log paths.
 pub fn retry_reason_summary(error: &LlmError) -> String {
     match error {
-        LlmError::RateLimited { .. } => "rate limited".into(),
+        LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. } => "rate limited".into(),
         LlmError::ServerError { status, .. } => format!("upstream {status}"),
         LlmError::NetworkError(_) => "network error; request outcome unknown".into(),
         LlmError::ConnectError { .. } => "connection failed before dispatch".into(),
@@ -1860,148 +1903,132 @@ where
     // If retries are disabled, just run once
     if !config.enabled {
         return operation().await.map_err(|e| RetryError {
-            last_error: e,
+            last_error: e
+                .for_recovery_budget(Duration::from_secs(config.rate_limit.recovery_budget_secs)),
             attempts: 1,
             total_time: Duration::ZERO,
         });
     }
 
     let start_time = Instant::now();
-    let total_timeout = if config.total_timeout > 0.0 {
-        Some(Duration::from_secs_f64(config.total_timeout))
-    } else {
-        None
-    };
-
-    let mut last_error: Option<LlmError> = None;
-
-    // Attempt 0 is the first try, then up to max_retries additional attempts
-    for attempt in 0..=config.max_retries {
-        // Check total timeout
-        if let Some(timeout) = total_timeout
-            && start_time.elapsed() >= timeout
+    let mut attempts = 0u32;
+    let mut transport_retries = 0u32;
+    let mut rate_retries = 0u32;
+    let mut recovery_started: Option<tokio::time::Instant> = None;
+    let mut last_error = None;
+    rate_limit::note_recovery_started(None);
+    loop {
+        if config.total_timeout > 0.0 && start_time.elapsed().as_secs_f64() >= config.total_timeout
         {
-            let error = last_error.unwrap_or(LlmError::Timeout(timeout));
-            observe_transport_stopped(attempt.saturating_sub(1), &error, true).await;
+            let error = last_error.take().unwrap_or_else(|| {
+                LlmError::Timeout(Duration::from_secs_f64(config.total_timeout))
+            });
+            observe_transport_stopped(attempts.saturating_sub(1), &error, true).await;
             return Err(RetryError {
                 last_error: error,
-                attempts: attempt,
+                attempts,
                 total_time: start_time.elapsed(),
             });
         }
-
-        if attempt > 0 {
+        if recovery_started.is_some_and(|started| {
+            started.elapsed() >= Duration::from_secs(config.rate_limit.recovery_budget_secs)
+        }) && let Some(error) = last_error.take()
+        {
+            observe_transport_stopped(attempts.saturating_sub(1), &error, true).await;
+            return Err(RetryError {
+                last_error: error,
+                attempts,
+                total_time: start_time.elapsed(),
+            });
+        }
+        if attempts > 0 {
             observe_transport_attempt();
         }
+        attempts = attempts.saturating_add(1);
+        rate_limit::new_attempt();
         match operation().await {
             Ok(result) => {
-                if attempt > 0 {
+                if attempts > 1 {
                     observe_transport_status(format!(
-                        "Retry recovery: transport request recovered after {attempt} retries"
+                        "Retry recovery: HTTP operation recovered after {attempts} attempts"
                     ))
                     .await;
                 }
                 return Ok(result);
             }
-            Err(err) => {
-                // Non-retryable errors fail immediately
-                if !err.is_retryable_for(config.operation) {
-                    observe_transport_stopped(attempt, &err, false).await;
-                    return Err(RetryError {
-                        last_error: err,
-                        attempts: attempt + 1,
-                        total_time: start_time.elapsed(),
+            Err(mut err) => {
+                let rate_limited = matches!(
+                    err,
+                    LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }
+                );
+                let mut stop = !err.is_retryable_for(config.operation);
+                let delay = if rate_limited {
+                    let started = *recovery_started.get_or_insert_with(tokio::time::Instant::now);
+                    rate_limit::note_recovery_started(Some(started));
+                    let local = rate_limit::retry_delay(&config.rate_limit, rate_retries);
+                    rate_retries = rate_retries.saturating_add(1);
+                    let minimum = err.suggested_retry_delay().unwrap_or_default();
+                    let delay = local.max(minimum).saturating_add(if minimum.is_zero() {
+                        Duration::ZERO
+                    } else {
+                        local.div_f64(2.0)
                     });
-                }
-
-                // Last attempt - no more retries
-                if attempt >= config.max_retries {
-                    observe_transport_stopped(attempt, &err, true).await;
-                    return Err(RetryError {
-                        last_error: err,
-                        attempts: attempt + 1,
-                        total_time: start_time.elapsed(),
-                    });
-                }
-
-                // Calculate delay
-                // Use server's Retry-After if available and configured
-                let base_delay = config.delay_for_attempt(attempt);
-                let delay = if config.respect_retry_after {
-                    err.suggested_retry_delay().unwrap_or(base_delay)
+                    let remaining = Duration::from_secs(config.rate_limit.recovery_budget_secs)
+                        .saturating_sub(started.elapsed());
+                    stop |= attempts >= config.rate_limit.max_attempts
+                        || delay >= remaining
+                        || delay > codewhale_runtime::retry_status::MAX_PROVIDER_PAUSE;
+                    err = err.for_recovery_budget(remaining);
+                    delay
                 } else {
-                    base_delay
+                    stop |= transport_retries >= config.max_retries;
+                    let delay = config.delay_for_attempt(transport_retries);
+                    transport_retries = transport_retries.saturating_add(1);
+                    delay.max(if config.respect_retry_after {
+                        err.suggested_retry_delay().unwrap_or_default()
+                    } else {
+                        Duration::ZERO
+                    })
                 };
-
-                // Notify callback if provided
-                if let Some(ref cb) = callback {
-                    cb(&err, attempt, delay);
+                stop |= recovery_started.is_some_and(|started| {
+                    delay
+                        >= Duration::from_secs(config.rate_limit.recovery_budget_secs)
+                            .saturating_sub(started.elapsed())
+                });
+                stop |= recovery_started.is_some() && attempts >= config.rate_limit.max_attempts;
+                stop |= config.total_timeout > 0.0
+                    && start_time.elapsed().saturating_add(delay).as_secs_f64()
+                        >= config.total_timeout;
+                if stop {
+                    observe_transport_stopped(attempts.saturating_sub(1), &err, true).await;
+                    return Err(RetryError {
+                        last_error: err,
+                        attempts,
+                        total_time: start_time.elapsed(),
+                    });
                 }
-
+                if let Some(ref cb) = callback {
+                    cb(&err, attempts - 1, delay);
+                }
                 observe_transport_status(format!(
-                    "Retry attempt: transport {}/{}; {}; waiting {:.2}s",
-                    attempt + 1,
-                    config.max_retries,
+                    "Retry attempt: HTTP {attempts}; {}; waiting {:.2}s",
                     retry_reason_summary(&err),
-                    delay.as_secs_f64(),
+                    delay.as_secs_f64()
                 ))
                 .await;
                 last_error = Some(err);
-
-                // Wait before retrying
-                tokio::time::sleep(delay).await;
+                rate_limit::wait(delay).await;
             }
         }
     }
-
-    // Should not reach here, but handle gracefully
-    Err(RetryError {
-        last_error: last_error.unwrap_or(LlmError::Other("Unknown retry error".to_string())),
-        attempts: config.max_retries + 1,
-        total_time: start_time.elapsed(),
-    })
 }
 
 // === Utility Functions ===
 
-/// The longest a `Retry-After` value is ever believed. A server (or a proxy
-/// in front of it) can send an arbitrarily large delay; without a ceiling a
-/// single `Retry-After: 86400` would wedge the turn for a day. One hour is
-/// well past any legitimate rate-limit window.
-const RETRY_AFTER_MAX: Duration = Duration::from_secs(3600);
-
-/// Parses the Retry-After header value into a Duration.
-///
-/// Supports both:
-/// - Seconds as integer: "120" -> 120 seconds
-/// - HTTP-date format: "Wed, 21 Oct 2015 07:28:00 GMT" (not implemented, returns None)
-///
-/// The value is server-controlled, so this never panics and never returns an
-/// unbounded delay: negative / NaN / infinite / absurd floats are rejected
-/// (`Duration::from_secs_f64` panics on a negative — a remote-triggerable
-/// crash before this guard), and any result is clamped to [`RETRY_AFTER_MAX`].
+/// Parse numeric seconds or an HTTP-date. Long server minima are preserved;
+/// the independent recovery budget parks the operation instead of retrying early.
 pub fn parse_retry_after(value: &str) -> Option<Duration> {
-    // Try parsing as seconds
-    if let Ok(seconds) = value.parse::<u64>() {
-        return Some(Duration::from_secs(seconds).min(RETRY_AFTER_MAX));
-    }
-
-    // Try parsing as float seconds. Only a finite, non-negative value is a
-    // meaningful delay; everything else (`-5`, `nan`, `inf`) is "no usable
-    // hint". Clamp to the ceiling BEFORE `from_secs_f64` so an out-of-range
-    // float can never reach its overflow-panic path, while keeping the
-    // sub-second precision a legitimate `1.5` carries.
-    if let Ok(seconds) = value.parse::<f64>()
-        && seconds.is_finite()
-        && seconds >= 0.0
-    {
-        let clamped = seconds.min(RETRY_AFTER_MAX.as_secs_f64());
-        return Some(Duration::from_secs_f64(clamped));
-    }
-
-    // HTTP-date format not supported yet
-    // Could use chrono or httpdate crate if needed
-    None
+    rate_limit::server_delay(value)
 }
 
 /// Extracts Retry-After duration from response headers
@@ -2012,8 +2039,6 @@ pub fn extract_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Durat
         .and_then(parse_retry_after)
 }
 
-const PROVIDER_RETRY_HINT_MAX: Duration = Duration::from_secs(120);
-
 pub fn retry_delay_from_error_body(body: &str) -> Option<Duration> {
     static HINTS: std::sync::OnceLock<[regex::Regex; 2]> = std::sync::OnceLock::new();
     let [structured, prose] = HINTS.get_or_init(|| {
@@ -2022,15 +2047,13 @@ pub fn retry_delay_from_error_body(body: &str) -> Option<Duration> {
             regex::Regex::new(r"(?i)retry in\s+(\d+(?:\.\d+)?)\s*s").unwrap(),
         ]
     });
-    structured
-        .captures(body)
-        .or_else(|| prose.captures(body))
-        .and_then(|captures| captures.get(1))
-        .and_then(|value| value.as_str().parse::<f64>().ok())
-        .filter(|seconds| {
-            seconds.is_finite() && (0.0..=PROVIDER_RETRY_HINT_MAX.as_secs_f64()).contains(seconds)
-        })
-        .map(Duration::from_secs_f64)
+    [structured, prose]
+        .into_iter()
+        .flat_map(|pattern| pattern.captures_iter(body))
+        .filter_map(|captures| captures.get(1))
+        .filter_map(|value| value.as_str().parse::<f64>().ok())
+        .filter_map(|seconds| Duration::try_from_secs_f64(seconds).ok())
+        .max()
 }
 
 #[cfg(test)]
@@ -2438,12 +2461,12 @@ mod tests {
         assert_eq!(parse_retry_after("-inf"), None);
         // Absurdly large values clamp to the ceiling rather than overflowing
         // or wedging the turn for a day.
-        assert_eq!(parse_retry_after("1e300"), Some(RETRY_AFTER_MAX));
-        assert_eq!(parse_retry_after("86400"), Some(RETRY_AFTER_MAX));
+        assert_eq!(parse_retry_after("1e300"), None);
+        assert_eq!(parse_retry_after("86400"), Some(Duration::from_secs(86400)));
         assert_eq!(
             parse_retry_after("999999999999"),
-            Some(RETRY_AFTER_MAX),
-            "integer path is clamped too"
+            Some(Duration::from_secs(999999999999)),
+            "valid long minima are preserved"
         );
         // A normal value still passes through untouched.
         assert_eq!(parse_retry_after("30"), Some(Duration::from_secs(30)));
@@ -2452,6 +2475,7 @@ mod tests {
     #[test]
     fn test_retry_policy_conversion() {
         let policy = RetryPolicy {
+            rate_limit: RateLimitRetryPolicy::default(),
             enabled: true,
             max_retries: 5,
             initial_delay: 2.0,
