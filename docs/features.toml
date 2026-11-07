@@ -1013,3 +1013,12 @@ surfaces = { tui = "partial" }
 since = "unreleased"
 docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
 owner = "crates/tui/src/commands/contract/debug_diagnostics.rs"
+
+[[feature]]
+id = "rate-limit-recovery"
+name = "Bounded HTTP rate-limit retries"
+summary = "Bound HTTP transport retries for 429 independently of network retries and honor provider reset minima."
+status = "experimental"
+surfaces = { tui = "preview", web = "partial", api = "partial" }
+owner = "crates/engine/src/llm_client/rate_limit.rs"
+docs = "docs/rate-limit-retries.md"

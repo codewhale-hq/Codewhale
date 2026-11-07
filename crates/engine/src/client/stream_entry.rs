@@ -320,7 +320,12 @@ where
     F: Fn(StreamHttpPolicy) -> Fut,
     Fut: Future<Output = Result<reqwest::Response>>,
 {
-    match tokio::time::timeout(open_req.open_timeout, attempt(open_req.policy)).await {
+    match crate::llm_client::rate_limit::active_timeout(
+        open_req.open_timeout,
+        attempt(open_req.policy),
+    )
+    .await
+    {
         Ok(Ok(response)) => return Ok(response),
         Ok(Err(err)) => {
             if !should_retry_error_with_h1(open_req.policy, &err) {
@@ -336,7 +341,9 @@ where
     }
     let h1_req = open_req.clone().with_h1_only();
     crate::llm_client::observe_transport_attempt();
-    match tokio::time::timeout(h1_req.open_timeout, attempt(h1_req.policy)).await {
+    match crate::llm_client::rate_limit::active_timeout(h1_req.open_timeout, attempt(h1_req.policy))
+        .await
+    {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(err)) => Err(h1_fallback_error(err)),
         Err(_) => Err(anyhow::Error::new(LlmError::NetworkError(format!(

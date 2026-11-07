@@ -1174,6 +1174,7 @@ dependencies = [
  "futures-util",
  "globset",
  "htmd",
+ "http",
  "ignore",
  "image",
  "jsonschema",

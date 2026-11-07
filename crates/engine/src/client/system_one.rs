@@ -515,7 +515,9 @@ pub fn router_failure_from_error(error: &anyhow::Error) -> AutoRouterFailure {
         return AutoRouterFailure::Transport;
     };
     match error {
-        LlmError::RateLimited { .. } => AutoRouterFailure::Http { status: 429 },
+        LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. } => {
+            AutoRouterFailure::Http { status: 429 }
+        }
         LlmError::ServerError { status, .. } | LlmError::InvalidRequest { status, .. } => {
             AutoRouterFailure::Http { status: *status }
         }

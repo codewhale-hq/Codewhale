@@ -33,6 +33,13 @@ pub fn envelope_for_llm_error(error: anyhow::Error, display_message: String) -> 
 impl From<LlmError> for ErrorEnvelope {
     fn from(value: LlmError) -> Self {
         match value {
+            LlmError::QuotaWindow { message, .. } => Self::new(
+                ErrorCategory::RateLimit,
+                ErrorSeverity::Error,
+                false,
+                "llm_quota_window",
+                message,
+            ),
             LlmError::RateLimited { message, .. } => Self::new(
                 ErrorCategory::RateLimit,
                 ErrorSeverity::Warning,
