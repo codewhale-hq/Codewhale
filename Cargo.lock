@@ -900,6 +900,7 @@ dependencies = [
  "codewhale-error-taxonomy",
  "codewhale-execpolicy",
  "codewhale-hooks",
+ "codewhale-lane",
  "codewhale-localization",
  "codewhale-lsp",
  "codewhale-mcp",

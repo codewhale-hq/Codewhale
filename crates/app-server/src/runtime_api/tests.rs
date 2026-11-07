@@ -9284,14 +9284,14 @@ fn snapshots_endpoint_lists_workspace_snapshots() -> Result<()> {
     fs::write(workspace.join("a.txt"), "v2")?;
     repo.snapshot("post-turn:1")?;
 
-    let snapshots = snapshot_entries_for_workspace(&workspace, SnapshotsQuery { limit: Some(1) })
+    let snapshots = snapshot_entries_for_workspace(&workspace, SnapshotsQuery { limit: Some(1), thread_id: None })
         .expect("snapshot listing should succeed");
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].label, "post-turn:1");
     assert!(snapshots[0].id.len() >= 8);
     assert!(snapshots[0].timestamp > 0);
 
-    let bad_limit = snapshot_entries_for_workspace(&workspace, SnapshotsQuery { limit: Some(101) })
+    let bad_limit = snapshot_entries_for_workspace(&workspace, SnapshotsQuery { limit: Some(101), thread_id: None })
         .expect_err("limit above cap should fail");
     assert_eq!(bad_limit.status, StatusCode::BAD_REQUEST);
     Ok(())
