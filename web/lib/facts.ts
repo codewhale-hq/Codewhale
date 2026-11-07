@@ -57,10 +57,11 @@ function isModelFact(value: unknown): value is ModelFact {
   );
 }
 
-function isPublishedRelease(value: unknown): value is PublishedReleaseFact {
+export function isPublishedRelease(value: unknown): value is PublishedReleaseFact {
   if (!isRecord(value)) return false;
   return (
     typeof value.tag === "string" &&
+    /^v\d+\.\d+\.\d+$/.test(value.tag) &&
     typeof value.version === "string" &&
     value.tag === `v${value.version}` &&
     typeof value.publishedAt === "string" &&
@@ -110,7 +111,7 @@ export function isRepoFacts(value: unknown): value is RepoFacts {
   );
 }
 
-function newestPublishedRelease(
+export function newestPublishedRelease(
   build: PublishedReleaseFact | null,
   cached: PublishedReleaseFact | null,
 ): PublishedReleaseFact | null {

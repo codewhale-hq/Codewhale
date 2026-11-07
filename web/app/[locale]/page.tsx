@@ -4,7 +4,7 @@ import Link from "next/link";
 import { HeroInstall } from "@/components/hero-install";
 import { Icon } from "@/components/icon";
 import { Section } from "@/components/page-header";
-import { Status } from "@/components/status-badge";
+import { ReleaseUpdates } from "@/components/release-updates";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { WhaleLive } from "@/components/whale-live";
 import { getFacts } from "@/lib/facts";
@@ -17,10 +17,11 @@ import { DISCORD_URL } from "@/lib/i18n/links";
 import { serializeJsonLd } from "@/lib/json-ld";
 import { TERMINAL_SCREENSHOT } from "@/lib/media-manifest";
 import { buildSoftwareApplicationJsonLd } from "@/lib/software-application-schema";
+import { getReleaseUpdates } from "@/lib/release-updates";
 
-// Revalidate against source-proven runtime facts without giving up static edge
-// caching. `getFacts()` rejects legacy or older KV snapshots.
-export const revalidate = 300;
+// Resolve published releases at request time; source fetches cache for five
+// minutes. `getFacts()` rejects legacy or older KV snapshots.
+export const dynamic = "force-dynamic";
 
 /**
  * The whale-road homepage: the promise, capabilities and reading
@@ -40,8 +41,9 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const { locale } = await params;
   const d = getHome(locale);
   const facts = await getFacts();
+  const updates = await getReleaseUpdates(facts.latestPublishedRelease);
   const sourceVersion = facts.version ?? "unknown";
-  const publishedRelease = facts.latestPublishedRelease;
+  const publishedRelease = updates.terminal.release;
   const sourceIsPublished = publishedRelease?.version === sourceVersion;
   const showPromo = Date.now() < Date.parse(PARTNER_PROMO.endsAt);
 
@@ -111,11 +113,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             data-source-state={sourceIsPublished ? "published release" : "source candidate"}
             data-source-state-label={sourceIsPublished ? d.publishedRelease : d.sourceCandidate}
           >
-            <Status tone={publishedRelease ? "ready" : "idle"}>
-              {publishedRelease
-                ? <a href={publishedRelease.url}>{fill(d.latestRelease, { tag: publishedRelease.tag })}</a>
-                : d.releaseUnavailable}
-            </Status>
+            <Link href={`/${locale}/changelog`} className="section-link">{getChrome(locale).footerChangelog}</Link>
             <span>{facts.license ?? "MIT"}</span>
           </div>
         </div>
@@ -123,6 +121,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
 
       {/* PAPER — models, connections, and the getting-started path. */}
       <div className="home-body">
+        <ReleaseUpdates key={`${locale}:${updates.fetchedAt}`} locale={locale} initial={updates} />
         <Section
           id="home-capabilities"
           className="home-section"

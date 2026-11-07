@@ -83,7 +83,9 @@ describe("public website copy contracts", () => {
     expect(homepage).toContain("facts.latestPublishedRelease");
     // The machine-readable source-state attribute stays a literal.
     expect(homepage).toContain('data-source-state={sourceIsPublished ? "published release" : "source candidate"}');
-    expect(homepage).toContain("publishedRelease.url");
+    expect(homepage).toContain("getReleaseUpdates(facts.latestPublishedRelease)");
+    expect(homepage).toContain("initial={updates}");
+    expect(readFileSync(new URL("../components/release-updates.tsx", import.meta.url), "utf8")).toContain("href={release.url}");
     // The visible wording moved into the dictionary layer (#4934). Assert the
     // rendered contract — the EN reference value plus the page's use of it —
     // instead of a raw TSX string, and hold every locale to a real value.

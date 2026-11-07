@@ -7,11 +7,11 @@ import type { ChangelogDict } from "../types";
 export const changelog: ChangelogDict = {
   metaTitle: "更新日志 · Codewhale",
   metaDescription:
-    "Codewhale 发布记录：最新已发布版本、尚未发布的源码候选版，以及每个版本的说明，均取自仓库中的 CHANGELOG.md。",
+    "Codewhale 与 Computer Use 插件的发布说明、已发布版本和后续改动。",
   kicker: "发布记录",
   title: "改了什么，在哪个版本。",
   lead:
-    "页面顶部是两个事实：最新发布的版本，以及源码树当前声明的版本。下面的内容逐节来自仓库自己的 CHANGELOG.md。",
+    "正式发布与即将推出的改动。",
   publishedLabel: "最新已发布版本",
   publishedValue: "{tag} · 发布于 {date}",
   candidateLabel: "源码候选版",

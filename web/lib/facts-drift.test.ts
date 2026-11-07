@@ -34,6 +34,8 @@ function installGitHubFixture(
         return response(
           JSON.stringify({
             tag_name: "v0.9.0",
+            draft: false,
+            prerelease: false,
             published_at: "2026-07-16T20:05:39Z",
             html_url: releaseHtmlUrl,
           }),
