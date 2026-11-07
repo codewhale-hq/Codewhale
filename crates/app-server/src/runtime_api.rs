@@ -3284,6 +3284,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(plugins::get_plugin).delete(plugins::uninstall_plugin_api),
         )
         .route(
+            "/v1/apps/plugins/{selector}/ui",
+            get(plugins::get_plugin_ui),
+        )
+        .route(
             "/v1/apps/plugins/{selector}/update",
             post(plugins::update_plugin_api),
         )
@@ -3445,10 +3449,6 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         // listener here. The response already redacts account detail for
         // unauthorized requests; it never mutates state.
         .route("/v1/runtime/info", get(runtime_info))
-        .route(
-            "/v1/apps/plugins/{selector}/ui",
-            get(plugins::get_plugin_ui),
-        )
         .route(
             "/v1/apps/plugins/{selector}/ui/{*path}",
             get(plugins::get_plugin_ui_asset),
