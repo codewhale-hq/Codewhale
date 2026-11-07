@@ -98,6 +98,17 @@ export default async function ProductPage({ params }: { params: Promise<{ locale
           </div>
         </Section>
 
+        <Section id="product-workflows" layout="split" title={t(PRODUCT_COPY.workHeading)} scope={t(PRODUCT_COPY.workLede)}>
+          <dl className="ruled-list">
+            {PRODUCT_COPY.workPatterns.map((pattern) => (
+              <div key={pattern.href}>
+                <dt>{t(pattern.title)}</dt>
+                <dd>{t(pattern.body)} <Link className="section-link" href={pattern.href.startsWith("/") ? `/${locale}${pattern.href}` : pattern.href}><code>{pattern.command}</code></Link></dd>
+              </div>
+            ))}
+          </dl>
+        </Section>
+
         <Section
           id="product-surfaces"
           layout="split"

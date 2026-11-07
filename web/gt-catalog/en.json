@@ -168,7 +168,7 @@
     "themeDark": "dark",
     "themeAria": "Theme: {mode} (click to cycle)",
     "themeTitle": "Theme · auto / light / dark",
-    "footerTagline": "The open-source coding agent for your terminal and the models you choose.",
+    "footerTagline": "Build apps and automate work with an open-source agent and the models you choose.",
     "footerProduct": "Product",
     "footerProject": "Project",
     "footerDocs": "Docs",
@@ -192,14 +192,14 @@
     "partialBadge": "(partial)"
   },
   "home": {
-    "metaTitle": "Codewhale: an open-source coding agent",
-    "metaDescription": "Codewhale is an open-source coding agent for your terminal. Read, edit and test projects with your own hosted or local models.",
-    "heroTitle": "The open-source coding agent for any model",
-    "heroIntro": "{brand} reads your project, edits files and runs your tests from your terminal. Connect a hosted or local model, and choose which actions need your approval.",
+    "metaTitle": "Codewhale · Build apps. Automate work.",
+    "metaDescription": "Build apps, fix code and automate work with an open-source agent in your terminal. Choose hosted or local models. Help build Codewhale with code, docs and feedback.",
+    "heroTitle": "Build apps. Automate work.",
+    "heroIntro": "{brand} is an open-source agent that builds software and automates work with your choice of models. Run it in your terminal, coordinate a Fleet, or add Computer Use for work across Mac apps.",
     "getCodewhale": "Install Codewhale",
     "heroInstallAria": "Install command",
     "exploreProduct": "Explore Codewhale",
-    "shotPreview": "Terminal preview",
+    "shotPreview": "Local terminal demo",
     "screenshotAlt": "Codewhale v{version}: a captured terminal view with the conversation, message composer and session controls.",
     "latestRelease": "Latest release {tag}",
     "releaseUnavailable": "Release status unavailable",
@@ -207,29 +207,29 @@
     "currentSource": "Source",
     "sourceCandidate": "Unreleased",
     "publishedRelease": "released",
-    "gainHeading": "Build and automate from your terminal",
-    "gainLede": "Describe what you want to build or automate. Codewhale can edit files, run commands and check the result, with access you control.",
+    "gainHeading": "Put your ideas to work",
+    "gainLede": "Start with a project and the result you need. Codewhale can read the files, make changes and run commands to check its work.",
     "gain": [
       [
-        "Build apps and tools",
-        "Create an app, add a feature or write a script. Codewhale can work through the project files, run the code and test what it builds."
+        "Build and repair software",
+        "Add a feature, trace a bug or write a useful tool. Work through the changes with an agent that can edit the project and run its checks."
       ],
       [
-        "Automate the work you repeat",
-        "Run workflows from your terminal, scripts or CI. For larger tasks, delegate parts of the work to a Fleet of agents with different models."
+        "Automate work you repeat",
+        "Turn a repeated task into a script or run it with codewhale exec. For larger jobs, give parts of the work to a Fleet of agents with different models."
       ],
       [
         "Connect the tools you use",
-        "Add tools through plugins and MCP servers, or use APIs from your own scripts. Each service needs its own setup and authentication."
+        "Bring in tools through plugins and MCP servers. Connect the services your work needs, with access and authentication you configure."
       ]
     ],
     "chapterModels": "Your models",
     "modelsHeading": "Use the models you choose",
-    "modelsBody": "Connect your provider accounts, an OpenAI-compatible endpoint, or local and self-hosted models. Pick a model for the session and for each agent in a Fleet.",
+    "modelsBody": "Keep the choice of model in your hands. Use a supported provider, an OpenAI-compatible endpoint or a local model, and choose a different model for each agent in a Fleet.",
     "modelsFacts": [
       [
         "Your API accounts",
-        "Connect providers such as DeepSeek, OpenAI, Anthropic or Google with your own keys. The default, deepseek-flash, now runs DeepSeek-V4.1-Flash."
+        "Use your own API keys with providers such as DeepSeek, OpenAI, Anthropic and Google. Your provider bills the model usage."
       ],
       [
         "Your gateway",
@@ -237,21 +237,21 @@
       ],
       [
         "Your inference",
-        "Run local or self-hosted models with Ollama, vLLM or SGLang."
+        "Connect Ollama on your machine, or a self-hosted endpoint such as vLLM or SGLang."
       ],
       [
         "Your ChatGPT plan",
-        "Sign in with codewhale auth chatgpt to use a ChatGPT plan instead of an API key. Experimental."
+        "Experimental: connect an eligible ChatGPT plan with codewhale auth chatgpt."
       ]
     ],
     "modelsLink": "Browse models and providers",
-    "startHeading": "Get started",
+    "startHeading": "Start with one useful task",
     "startLede": "Install Codewhale, connect a model and open a project folder. You can add plugins and more agents as you need them.",
     "startGuideLink": "Follow the getting-started guide",
     "startVocabularyLink": "Look up a term",
     "chapterAvailability": "Where it runs",
     "availabilityHeading": "Available now and in development",
-    "availabilityLede": "The terminal and local browser client are available now. A native desktop app and a rebuilt hosted web app are in development.",
+    "availabilityLede": "Install on macOS, Linux or Windows. Work in your terminal, or run codewhale web for a local browser view. Desktop and hosted web apps are in development.",
     "availability": [
       [
         "Terminal and local browser",
@@ -288,7 +288,7 @@
       ],
       [
         "Browser and computer · preview",
-        "Use browser tools and the Computer Use plugin for work in apps and websites, with the access you grant."
+        "Add browser tools or the Computer Use plugin to work in apps and websites. Computer Use on macOS needs system permissions; other platforms remain experimental."
       ],
       [
         "Sessions you can return to",
@@ -306,10 +306,10 @@
     "binaries": "Binaries",
     "chinaMirrors": "China mirrors",
     "installGuideLink": "Read the install guide",
-    "communityHeading": "Contribute to Codewhale",
-    "communityBody": "{count} people have built Codewhale. Report a bug, improve the docs or contribute code on GitHub.",
+    "communityHeading": "Help build an agent you want to use",
+    "communityBody": "Join {count} contributors making Codewhale better. Start with something you care about: a bug, a clearer guide, a translation or a feature. You do not need to write Rust to help.",
     "communityLinksAria": "Community links",
-    "contribute": "Contribute on GitHub"
+    "contribute": "Find your first contribution"
   },
   "docs-guide": {
     "metaTitle": "Start your first task · Codewhale Docs",
@@ -2048,15 +2048,15 @@
     "allReleasesLink": "All releases"
   },
   "computer-use": {
-    "metaTitle": "Computer Use · Preview · Codewhale",
-    "metaDescription": "Preview: download and set up Codewhale Computer Use for Mac. Background app control, permission setup, and human Pause and Stop controls.",
+    "metaTitle": "Computer Use · Mac beta · Codewhale",
+    "metaDescription": "Let an agent work in Mac apps while you keep using your computer. Download the notarized Computer Use helper and connect a compatible MCP host.",
     "title": "Computer Use",
-    "lead": "Let Codewhale work across your apps while you keep working. Trust it once on this Mac and stop computer use whenever you want.",
+    "lead": "Let an agent work in Mac apps while you keep using your computer. Connect Computer Use to Codewhale or another compatible MCP host, and pause or stop it whenever you need.",
     "publisher": "By Codewhale",
     "download": "Download for Mac",
     "downloadZip": "ZIP archive (used by the in-app updater)",
     "requirements": "macOS 13.5 or later · Apple silicon and Intel",
-    "included": "One app download. No separate Node installation or compiler required.",
+    "included": "The Mac helper includes its runtime. Connect it to Computer Use in your MCP host; host setup is separate.",
     "pendingTitle": "Mac download in preparation",
     "pendingBody": "The public installer will appear here after Apple notarization and release checks are complete.",
     "unavailableTitle": "Download availability could not be checked",
@@ -2074,18 +2074,18 @@
         "body": "Use the setup buttons to open Accessibility and Screen Recording in System Settings. You choose which permissions to grant."
       },
       {
-        "title": "Enable Computer Use",
-        "body": "In Codewhale’s Connectors settings, install or update Computer Use, then review and enable it. Ask it to work in an app. On first use, choose Trust until revoked in the native helper; that trust carries across apps, models, and tasks."
+        "title": "Connect your agent",
+        "body": "In Codewhale, install Computer Use with /plugin marketplace install codewhale computer-use, then review and enable the plugin. Other compatible MCP hosts connect to the helper using the setup guide. The helper and host plugin are separate pieces."
       }
     ],
     "controlsTitle": "Stay in control",
-    "controlsBody": "The compact Codewhale control names the app in use. Pause suspends computer use; Stop computer use ends all current computer sessions. In Settings, choose Turn off under Remembered access to remove the connection’s saved access. Ask for a live preview when you want to watch.",
+    "controlsBody": "After you grant the macOS permissions, standard mode works without per-app prompts. Apps you deny stay off limits; Pause suspends computer use and Stop computer use ends current sessions. Strict approval is optional. Request a live preview when you want to watch.",
     "updateTitle": "Updates when you choose",
     "updateBody": "Choose Check for updates from the app. Before installing an update, it checks the download, Codewhale signature, and Apple notarization, and keeps the previous app for recovery.",
     "help": "Setup and troubleshooting",
     "notes": "Release notes",
     "demo": "See the background check",
-    "source": "Source and other platforms",
-    "platforms": "This download is for Mac. Windows and Linux currently use the source plugin and host-side setup."
+    "source": "Other hosts and platforms",
+    "platforms": "The Mac helper is a beta, and the marketplace plugin supports Mac. Published releases also include an unsigned experimental Windows x64 preview; Linux requires experimental source or Docker setup. Windows and Linux input uses the shared desktop."
   }
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Website:** restored the ocean blues and gradient actions, brought Operate, Fleet, Workflows and Computer Use into the product story, corrected Computer Use setup guidance, and added direct paths to contribute bug reports, documentation, translations and code.
+
 ## [0.10.3] - 2026-11-06
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release

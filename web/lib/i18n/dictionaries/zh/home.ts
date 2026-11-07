@@ -3,14 +3,14 @@ import type { HomeDict } from "../types";
 /** Simplified Chinese home copy: useful work with chosen models and connected tools. */
 
 export const home: HomeDict = {
-  metaTitle: "Codewhale：开源编程智能体",
-  metaDescription: "Codewhale 是终端里的开源编程智能体。用你选择的托管模型或本地模型读取、修改和测试项目。",
-  heroTitle: "适用于任意模型的开源编程智能体",
-  heroIntro: "{brand} 在终端里读取你的项目、编辑文件并运行测试。连接托管模型或本地模型，并选择哪些操作需要你批准。",
+  metaTitle: "Codewhale · 构建应用，自动完成工作",
+  metaDescription: "在终端里用开源智能体构建应用、修复代码并自动完成工作。选择托管或本地模型，通过代码、文档和反馈一起改进 Codewhale。",
+  heroTitle: "构建应用，自动完成工作",
+  heroIntro: "{brand} 是开源智能体，用你选择的模型构建软件、自动完成工作。在终端里使用，组建 Fleet 智能体团队，或添加 Computer Use 操作 Mac 应用。",
   getCodewhale: "安装 Codewhale",
   heroInstallAria: "安装命令",
   exploreProduct: "探索 Codewhale",
-  shotPreview: "终端预览",
+  shotPreview: "本地终端演示",
   screenshotAlt:
     "Codewhale v{version} 的终端实录画面，包含对话、消息输入框与会话控制。",
   latestRelease: "最新发布 {tag}",
@@ -19,12 +19,12 @@ export const home: HomeDict = {
   currentSource: "源码",
   sourceCandidate: "未发布",
   publishedRelease: "已发布",
-  gainHeading: "在终端里构建与自动化",
-  gainLede: "描述你想构建或自动完成的工作。Codewhale 可以编辑文件、运行命令并检查结果，访问权限由你控制。",
+  gainHeading: "把想法变成成果",
+  gainLede: "打开项目，说出你需要的结果。Codewhale 可以读取文件、修改内容，并运行命令检查自己的工作。",
   gain: [
     [
-      "构建应用和工具",
-      "创建应用、添加功能或编写脚本。Codewhale 可以处理项目文件、运行代码并测试构建结果。"
+      "构建与修复软件",
+      "添加功能、排查问题，或编写实用工具。与能修改项目并运行检查的智能体一起完成工作。"
     ],
     [
       "让重复工作自动完成",
@@ -32,7 +32,7 @@ export const home: HomeDict = {
     ],
     [
       "连接你常用的工具",
-      "通过插件和 MCP 服务器添加工具，或在自己的脚本中调用 API。每项服务都需要单独配置和身份验证。"
+      "通过插件和 MCP 服务器接入工作所需的工具与服务。访问范围和身份验证由你配置。"
     ]
   ],
   chapterModels: "你的模型",
@@ -42,7 +42,7 @@ export const home: HomeDict = {
   modelsFacts: [
     [
       "你的 API 账户",
-      "使用自己的密钥连接 DeepSeek、OpenAI、Anthropic、Google 等提供商。默认模型 deepseek-flash 现已由 DeepSeek-V4.1-Flash 提供。"
+      "使用自己的 API 密钥连接 DeepSeek、OpenAI、Anthropic、Google 等提供商。模型用量由提供商计费。"
     ],
     [
       "你的网关",
@@ -54,17 +54,17 @@ export const home: HomeDict = {
     ],
     [
       "你的 ChatGPT 套餐",
-      "运行 codewhale auth chatgpt 登录，即可用 ChatGPT 套餐代替 API 密钥。实验功能。"
+      "实验功能：运行 codewhale auth chatgpt，连接符合条件的 ChatGPT 套餐。"
     ]
   ],
   modelsLink: "浏览模型与提供商",
-  startHeading: "开始使用",
+  startHeading: "从一件有用的任务开始",
   startLede: "安装 Codewhale，连接模型，然后打开项目文件夹。需要时，再添加插件或更多智能体。",
   startGuideLink: "按照新手指引操作",
   startVocabularyLink: "查名词",
   chapterAvailability: "在哪里运行",
   availabilityHeading: "当前可用与开发中的功能",
-  availabilityLede: "终端和本地浏览器客户端现已可用。原生桌面应用与重建中的托管网页应用正在开发。",
+  availabilityLede: "在 macOS、Linux 或 Windows 上安装。在终端里工作，或运行 codewhale web 打开本地浏览器界面。桌面应用和托管网页应用仍在开发。",
   availability: [
     [
       "终端与本地浏览器",
@@ -101,7 +101,7 @@ export const home: HomeDict = {
     ],
     [
       "浏览器与电脑操作 · 预览",
-      "使用浏览器工具和 Computer Use 插件，在你授予的访问范围内操作应用与网站。"
+      "添加浏览器工具或 Computer Use 插件，操作应用与网站。macOS 上的 Computer Use 需要系统权限；其他平台仍为实验支持。"
     ],
     [
       "随时接着做的会话",
@@ -119,8 +119,8 @@ export const home: HomeDict = {
   binaries: "预编译包",
   chinaMirrors: "中国镜像",
   installGuideLink: "阅读安装指南",
-  communityHeading: "为 Codewhale 做贡献",
-  communityBody: "已有 {count} 人参与构建 Codewhale。在 GitHub 上报告问题、改进文档或贡献代码。",
+  communityHeading: "一起构建你想用的智能体",
+  communityBody: "加入 {count} 位贡献者，一起改进 Codewhale。从你关心的地方开始：一个问题、一段更清楚的说明、一份翻译或一项功能。不写 Rust，也能帮上忙。",
   communityLinksAria: "社区链接",
-  contribute: "在 GitHub 上参与贡献",
+  contribute: "找到你的第一次贡献",
 };

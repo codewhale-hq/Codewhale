@@ -42,8 +42,8 @@ export const PRODUCT_COPY = {
     zh: "构建应用，自动化工作流",
   },
   lede: {
-    en: "Codewhale is an open-source coding agent that reads files, writes code and runs commands in your terminal. Connect a hosted or local model and choose which actions need approval.",
-    zh: "Codewhale 是终端里的开源编程智能体，可以读取文件、编写代码并运行命令。连接托管模型或本地模型，并选择哪些操作需要批准。",
+    en: "Codewhale brings files, commands, model teams and connected tools into one open-source agent. Start in your terminal or local browser, and add the capabilities your task needs.",
+    zh: "Codewhale 把文件、命令、模型团队与已连接的工具集中在一个开源智能体中。从终端或本地浏览器开始，按任务需要添加能力。",
   },
 
   gainHeading: { en: "What you can build and automate", zh: "可以构建与自动化的工作" },
@@ -70,6 +70,59 @@ export const PRODUCT_COPY = {
       },
     },
   ] satisfies ProductRow[],
+
+  workHeading: { en: "Give the job to a team you choose", zh: "把任务交给你选择的团队" },
+  workLede: {
+    en: "Start with a task, then bring in specialists or save the process for next time. Plans, models and permissions stay visible as the work grows.",
+    zh: "从一个任务开始，按需加入专业智能体，或保存流程供下次使用。工作扩大时，计划、模型与权限依然清楚可见。",
+  },
+  workPatterns: [
+    {
+      title: { en: "Keep a bigger job moving with Operate", zh: "用 Operate 推进较大的任务" },
+      body: {
+        en: "Give Codewhale an objective. Operate emphasizes planning, delegation and verification while using the same tools and permissions as Work.",
+        zh: "把目标交给 Codewhale。Operate 注重计划、委派与验证，使用与 Work 相同的工具，遵循相同的权限。",
+      },
+      href: "/docs/modes",
+      command: "/mode operate",
+    },
+    {
+      title: { en: "Put different models on the same team", zh: "让不同模型在同一个团队协作" },
+      body: {
+        en: "Choose one model to investigate, another to build and a third to review. Save the roles and model choices as a Fleet you can use again.",
+        zh: "选择一个模型调查、另一个实现，再由第三个审阅。把角色与模型选择保存为 Fleet，以后继续使用。",
+      },
+      href: "/docs/fleet",
+      command: "/fleet setup",
+    },
+    {
+      title: { en: "Turn a process into a reusable Workflow", zh: "把流程变成可复用的 Workflow" },
+      body: {
+        en: "Connect named steps, parallel branches and review gates. For example, have code, test and docs reviewers work in parallel, then combine their findings.",
+        zh: "连接具名步骤、并行分支与审阅关卡。例如，让代码、测试与文档审阅者并行工作，再汇总他们的发现。",
+      },
+      href: "https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/AUTOMATIC_WORKFLOWS.md",
+      command: "codewhale workflow run",
+    },
+    {
+      title: { en: "Teach Codewhale how you work", zh: "让 Codewhale 学习你的工作方式" },
+      body: {
+        en: "Write a Markdown skill for your review checklist or report format. Bundle skills and connected tools into a plugin, and share it with other people.",
+        zh: "用 Markdown 技能记录审阅清单或报告格式。把技能和已连接的工具打包为插件，与他人分享。",
+      },
+      href: "/docs/skills",
+      command: "SKILL.md",
+    },
+    {
+      title: { en: "See which model did what", zh: "查看哪个模型做了什么" },
+      body: {
+        en: "Inspect the next primary request with /preview-request. Review recorded actions and approvals with /receipts, and use /undo for recorded file changes.",
+        zh: "用 /preview-request 检查下一次主要请求，用 /receipts 查看已记录的操作与审批，并用 /undo 撤回已记录的文件改动。",
+      },
+      href: "/docs/review",
+      command: "/receipts",
+    },
+  ],
 
   availabilityHeading: { en: "Available now and in development", zh: "已可使用和正在开发的版本" },
   availabilityLede: {

@@ -13,7 +13,7 @@
 /* ---------- paper: the hero ---------- */
 .home-hero {
   position: relative;
-  padding-block: clamp(2.5rem, 6vw, 4.5rem) 0;
+  padding-block: clamp(2.5rem, 4vw, 3.5rem) 0;
   background: var(--bg);
 }
 
@@ -28,8 +28,8 @@
 
 .home-hero-copy {
   display: grid;
-  gap: var(--space-5);
-  padding-bottom: clamp(2rem, 4vw, 3rem);
+  gap: var(--space-4);
+  padding-bottom: clamp(1.5rem, 3vw, 2.5rem);
   min-width: 0;
 }
 
@@ -38,7 +38,7 @@
    English; hyphenation lets German compounds break at syllables. */
 .home-title {
   max-width: 9.5em;
-  font-size: clamp(2.5rem, 1.4rem + 3.6vw, 4.5rem);
+  font-size: clamp(2.5rem, 1.4rem + 3.6vw, 4rem);
   hyphens: auto;
   font-weight: 650;
   line-height: 0.98;
@@ -52,7 +52,7 @@
 .home-lede {
   max-width: var(--home-measure);
   color: var(--muted);
-  font-size: clamp(1.0625rem, 1rem + 0.35vw, 1.25rem);
+  font-size: clamp(1.0625rem, 1rem + 0.2vw, 1.125rem);
   line-height: 1.55;
   text-wrap: pretty;
 }
@@ -71,7 +71,7 @@
   line-break: strict;
 }
 
-.home-hero-copy .hero-install { max-width: 32rem; margin-top: var(--space-2); }
+.home-hero-copy .hero-install { max-width: 35rem; margin-top: var(--space-2); }
 .home-hero-copy .actions { margin-top: calc(var(--space-2) * -1); }
 
 /* The whale rests on the terminal: its lowest point meets the frame's top
@@ -257,4 +257,18 @@
 
 @media (forced-colors: active) {
   .home-install::before { background: CanvasText; }
+}
+
+.home-body > .home-section.home-computer-use {
+  padding: clamp(1.25rem, 3vw, 2.5rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sheet);
+  background: var(--surface);
+}
+.home-community .dir-desc {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-ui);
+  line-height: 1.55;
 }

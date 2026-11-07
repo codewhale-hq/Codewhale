@@ -7,20 +7,18 @@ import { Icon } from "@/components/icon";
 import { InstallCodeBlock } from "@/components/install-code-block";
 import { Section } from "@/components/page-header";
 import { Status, type StatusTone } from "@/components/status-badge";
-import { TerminalCapture } from "@/components/terminal-capture";
+import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { WhaleLive } from "@/components/whale-live";
 import { getFacts } from "@/lib/facts";
 import { compareVersions } from "@/lib/features";
+import { CONTRIBUTION_PATHS } from "@/lib/content/contributing";
 import { GETTING_STARTED_STEPS } from "@/lib/content/getting-started";
+import { PLUGINS_COPY } from "@/lib/content/plugins";
+import { PRODUCT_COPY } from "@/lib/content/product";
 import { PARTNER_PROMO } from "@/lib/content/partner-promo";
 import { RELEASE_HIGHLIGHTS } from "@/lib/content/release-highlights";
 import { fill, getChrome, getHome, pickText, splitToken } from "@/lib/i18n/dictionaries";
-import {
-  DISCORD_URL,
-  REPO_ISSUES_URL,
-  REPO_RELEASES_URL,
-  REPO_URL,
-} from "@/lib/i18n/links";
+import { DISCORD_URL } from "@/lib/i18n/links";
 import { serializeJsonLd } from "@/lib/json-ld";
 import { TERMINAL_SCREENSHOT } from "@/lib/media-manifest";
 import { buildSoftwareApplicationJsonLd } from "@/lib/software-application-schema";
@@ -94,8 +92,8 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
                 {d.getCodewhale}
               </Link>
-              <Link href={`/${locale}/product`} className="btn btn-ghost btn-lg">
-                {d.exploreProduct}
+              <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
+                {d.contribute}
                 <Icon name="arrow-right" className="icon icon-flip" />
               </Link>
             </div>
@@ -108,16 +106,15 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
 
       <figure className="home-terminal figure">
         <div className="figure-frame" dir="ltr">
-          <TerminalCapture
-            frame="home"
+          <NativeTerminalGallery
+            locale={locale}
+            defaultFrame="home"
             regionLabel={d.shotPreview}
             label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
           />
         </div>
         <figcaption className="figure-caption">
-          {TERMINAL_SCREENSHOT.version === publishedRelease?.version
-            ? `${d.shotPreview} · v${TERMINAL_SCREENSHOT.version}`
-            : `${d.shotPreview} · ${d.sourceCandidate} v${TERMINAL_SCREENSHOT.version}`}
+          {`${d.shotPreview} · ${d.sourceCandidate} v${TERMINAL_SCREENSHOT.version}`}
         </figcaption>
       </figure>
 
@@ -128,7 +125,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
       >
         <Status tone={publishedRelease ? "ready" : "idle"}>
           {publishedRelease
-            ? fill(d.latestRelease, { tag: publishedRelease.tag })
+            ? <a href={publishedRelease.url}>{fill(d.latestRelease, { tag: publishedRelease.tag })}</a>
             : d.releaseUnavailable}
         </Status>
         <span>{`${sourceIsPublished ? d.currentSource : d.sourceCandidate} v${sourceVersion}`}</span>
@@ -142,17 +139,33 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           id="home-capabilities"
           layout="split"
           className="home-section"
-          title={d.gainHeading}
-          scope={d.gainLede}
+          title={pickText(PRODUCT_COPY.workHeading, locale)}
+          scope={pickText(PRODUCT_COPY.workLede, locale)}
           link={<Link href={`/${locale}/features`} className="section-link">{getChrome(locale).navFeatures}</Link>}
         >
           <dl className="ruled-list">
-            {d.gain.map(([name, description], index) => (
-              <div key={name}>
-                <dt>{name}</dt>
-                <dd>{description} <Link className="section-link" href={`/${locale}/docs/${["tools", "fleet", "mcp"][index]}`}>{getChrome(locale).navDocs}</Link></dd>
+            {PRODUCT_COPY.workPatterns.map((pattern) => (
+              <div key={pattern.href}>
+                <dt>{pickText(pattern.title, locale)}</dt>
+                <dd>{pickText(pattern.body, locale)} <Link className="section-link" href={pattern.href.startsWith("/") ? `/${locale}${pattern.href}` : pattern.href}><code>{pattern.command}</code></Link></dd>
               </div>
             ))}
+          </dl>
+        </Section>
+
+        <Section
+          id="home-computer-use"
+          layout="split"
+          className="home-section home-computer-use"
+          title={pickText(PLUGINS_COPY.cuTitle, locale)}
+          scope={pickText(PLUGINS_COPY.cuLead, locale)}
+          link={<Link href={`/${locale}/computer-use`} className="section-link">{pickText(PLUGINS_COPY.cuTitle, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+        >
+          <dl className="ruled-list">
+            {[0, 1, 6].map((index) => {
+              const feature = PLUGINS_COPY.cuFeatures[index];
+              return <div key={feature.title.en}><dt>{pickText(feature.title, locale)}</dt><dd>{pickText(feature.detail, locale)}</dd></div>;
+            })}
           </dl>
         </Section>
 
@@ -179,6 +192,39 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           </dl>
         </Section>
 
+        <section className="home-section home-community" aria-labelledby="home-community">
+          <div className="section-split">
+            <div className="section-head-text">
+              <h2 className="section-title" id="home-community">{d.communityHeading}</h2>
+              <p className="section-scope">{fill(d.communityBody, { count: facts.contributorCount })}</p>
+              <Link href={`/${locale}/contribute`} className="section-link">{d.contribute}<Icon name="arrow-right" className="icon icon-flip" /></Link>
+            </div>
+            <nav aria-label={d.communityLinksAria}>
+              <ul className="dir-list" role="list">
+                {CONTRIBUTION_PATHS.map((path) => (
+                  <li key={path.href}>
+                    <a href={path.href} className="dir-row">
+                      <span className="dir-mark" aria-hidden="true"><Icon name={path.icon} /></span>
+                      <span className="dir-text">
+                        <span className="dir-title">{pickText(path.title, locale)}</span>
+                        <span className="dir-desc">{pickText(path.body, locale)}</span>
+                      </span>
+                      <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
+                    </a>
+                  </li>
+                ))}
+                <li>
+                  <a href={DISCORD_URL} className="dir-row">
+                    <span className="dir-mark" aria-hidden="true"><Icon name="message" /></span>
+                    <span className="dir-text"><span className="dir-title">Discord</span></span>
+                    <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
+                  </a>
+                </li>
+              </ul>
+            </nav>
+          </div>
+        </section>
+
         {showPromo && (
           <section className="home-section home-promo" aria-labelledby="home-promo-title">
             <a href={PARTNER_PROMO.href} rel="sponsored" className="home-promo-card">
@@ -203,28 +249,6 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             </a>
           </section>
         )}
-
-        <Section
-          id="home-surfaces"
-          layout="split"
-          className="home-section"
-          title={d.surfacesHeading}
-          link={
-            <Link href={`/${locale}/runtime`} className="section-link">
-              {d.runtimeLink}
-              <Icon name="arrow-right" className="icon icon-flip" />
-            </Link>
-          }
-        >
-          <dl className="ruled-list">
-            {d.surfaces.map(([name, description]) => (
-              <div key={name}>
-                <dt>{name}</dt>
-                <dd>{description}</dd>
-              </div>
-            ))}
-          </dl>
-        </Section>
 
         {/* The start is a real sequence, so its steps keep their numbers. */}
         <Section
@@ -288,62 +312,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           </Section>
         )}
 
-        {/* COMMUNITY */}
-        <section className="home-section" aria-labelledby="home-community">
-          <div className="section-split">
-            <div className="section-head-text">
-              <h2 className="section-title" id="home-community">{d.communityHeading}</h2>
-              <p className="section-scope">{fill(d.communityBody, { count: facts.contributorCount })}</p>
-            </div>
-            <nav aria-label={d.communityLinksAria}>
-              <ul className="dir-list" role="list">
-                <li>
-                  <a href={REPO_URL} className="dir-row">
-                    <span className="dir-mark" aria-hidden="true"><Icon name="github" /></span>
-                    <span className="dir-text"><span className="dir-title">GitHub</span></span>
-                    <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
-                  </a>
-                </li>
-                <li>
-                  <a href={REPO_ISSUES_URL} className="dir-row">
-                    <span className="dir-mark" aria-hidden="true"><Icon name="alert" /></span>
-                    <span className="dir-text"><span className="dir-title">Issues</span></span>
-                    <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
-                  </a>
-                </li>
-                <li>
-                  <a href={DISCORD_URL} className="dir-row">
-                    <span className="dir-mark" aria-hidden="true"><Icon name="message" /></span>
-                    <span className="dir-text"><span className="dir-title">Discord</span></span>
-                    <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
-                  </a>
-                </li>
-                <li>
-                  <Link href={`/${locale}/contribute`} className="dir-row">
-                    <span className="dir-mark" aria-hidden="true"><Icon name="git-pull-request" /></span>
-                    <span className="dir-text"><span className="dir-title">{d.contribute}</span></span>
-                    <span className="dir-action" aria-hidden="true"><Icon name="chevron-right" className="icon icon-flip" /></span>
-                  </Link>
-                </li>
-                <li>
-                  {publishedRelease ? (
-                    <a href={publishedRelease.url} className="dir-row">
-                      <span className="dir-mark" aria-hidden="true"><Icon name="package" /></span>
-                      <span className="dir-text"><span className="dir-title">{publishedRelease.tag}</span></span>
-                      <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
-                    </a>
-                  ) : (
-                    <a href={REPO_RELEASES_URL} className="dir-row">
-                      <span className="dir-mark" aria-hidden="true"><Icon name="package" /></span>
-                      <span className="dir-text"><span className="dir-title">Releases</span></span>
-                      <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
-                    </a>
-                  )}
-                </li>
-              </ul>
-            </nav>
-          </div>
-        </section>
+
       </div>
 
       {/* THE SEA AGAIN — the install command where the page ends; the water

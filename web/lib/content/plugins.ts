@@ -15,26 +15,26 @@ export const PLUGINS_COPY = {
   marketplaceCta: { en: "Browse the Codewhale catalog", zh: "浏览 Codewhale 目录" },
   docsCta: { en: "Plugin authoring guide", zh: "插件编写指南" },
 
-  cuLabel: { en: "First-party plugin · macOS preview", zh: "官方插件 · macOS 预览" },
-  cuTitle: { en: "Control apps with Computer Use", zh: "使用 Computer Use 操作应用" },
+  cuLabel: { en: "First-party plugin · macOS beta", zh: "官方插件 · macOS 测试版" },
+  cuTitle: { en: "Let an agent work in your apps", zh: "让智能体在应用中替你操作" },
   cuLead: {
-    en: "Computer Use is a preview. The agent reads app controls, types and clicks, and records actions; Windows, Linux and HarmonyOS backends remain experimental and source-only.",
-    zh: "Computer Use 是预览功能。智能体读取应用控件、输入与点击，并记录操作；Windows、Linux 与 HarmonyOS 后端仍为实验性、仅提供源码。",
+    en: "Let an agent work in Mac apps while you keep using your computer. Connect the Computer Use helper and plugin to Codewhale or another compatible MCP host.",
+    zh: "智能体在 Mac 应用中后台操作，你可以继续使用电脑。将 Computer Use 助手和插件连接到 Codewhale 或其他兼容 MCP 的宿主。",
   },
   cuInstall: { en: "/plugin marketplace install codewhale computer-use", zh: "/plugin marketplace install codewhale computer-use" },
   cuFeatures: [
     {
       title: { en: "Works in the background", zh: "后台工作" },
       detail: {
-        en: "On macOS the agent drives a selected app without moving your pointer or taking focus, so you keep using the machine. Foreground control is a separate, explicit grant.",
-        zh: "在 macOS 上，代理驱动指定应用时不会移动你的指针或抢占焦点，你可以继续使用电脑。前台控制是独立的显式授权。",
+        en: "On macOS the agent can type, click and scroll in a selected app without moving your pointer or taking focus. Some apps and dialogs need foreground interaction.",
+        zh: "在 macOS 上，智能体可在选定应用中输入、点击和滚动，无需移动你的指针或抢占焦点。部分应用和对话框需要前台操作。",
       },
     },
     {
       title: { en: "Read app controls", zh: "读取应用控件" },
       detail: {
-        en: "The accessibility tree (macOS AX, Windows UIA, Linux AT-SPI) returns controls, values, and advertised actions, so a text-only model can drive an app without screenshots.",
-        zh: "无障碍树（macOS AX、Windows UIA、Linux AT-SPI）返回控件、值与可执行动作，因此纯文本模型无需截图也能驱动应用。",
+        en: "Accessible controls expose buttons, fields and their values, so a text-only model can operate supported apps. Screenshots remain available when the task needs them.",
+        zh: "无障碍控件提供按钮、输入框及其当前值，让纯文本模型也能操作支持的应用。任务需要时，仍可使用截图。",
       },
     },
     {
@@ -45,17 +45,17 @@ export const PLUGINS_COPY = {
       },
     },
     {
-      title: { en: "Connect remote computers", zh: "连接远程计算机" },
+      title: { en: "Explore remote computers · experimental", zh: "尝试远程计算机 · 实验功能" },
       detail: {
-        en: "Control the local machine, registered SSH hosts (the remote agent installs itself), or HarmonyOS devices over hdc. Every receipt names the computer it happened on.",
-        zh: "控制本机、已注册的 SSH 主机（远程代理自动安装）或通过 hdc 连接的 HarmonyOS 设备。每条回执都标明它发生在哪台计算机上。",
+        en: "Experimental routes reach registered SSH hosts, disposable Docker desktops and HarmonyOS devices over hdc. These need separate setup; Mac background-control guarantees do not apply to their shared desktops.",
+        zh: "实验性连接可访问已注册的 SSH 主机、一次性 Docker 桌面及通过 hdc 连接的 HarmonyOS 设备。这些连接需要单独设置，其共享桌面不具备 Mac 后台操作的保证。",
       },
     },
     {
       title: { en: "Manage system permissions", zh: "管理系统权限" },
       detail: {
-        en: "Accessibility and Screen Recording grants stay in System Settings under your control. The agent tells you once what is missing instead of opening dialogs.",
-        zh: "辅助功能与屏幕录制权限保留在系统设置中，由你掌控。代理只会告诉你一次缺少什么，不会弹出对话框。",
+        en: "You grant Accessibility and Screen Recording in macOS System Settings. Standard mode then works without per-app prompts; denied apps, Pause and Stop still apply, and strict approval is optional.",
+        zh: "由你在 macOS 系统设置中授予辅助功能和屏幕录制权限。标准模式随后无需逐个应用询问；禁用的应用、Pause 和 Stop 仍然有效，也可选择严格审批模式。",
       },
     },
     {
@@ -68,21 +68,21 @@ export const PLUGINS_COPY = {
     {
       title: { en: "Automate a separate browser profile", zh: "在独立浏览器配置中自动操作" },
       detail: {
-        en: "The agent drives a Chromium-family browser over the DevTools protocol in its own profile, clicking by CSS selector or page pixel. It never attaches to your profile, tabs, or logins.",
-        zh: "代理通过 DevTools 协议在自己的配置文件中驱动 Chromium 系浏览器，按 CSS 选择器或页面像素点击。它绝不会连接你的配置文件、标签页或登录信息。",
+        en: "Browse, fill forms and capture pages in a separate Chromium profile. Computer Use leaves your personal browser tabs and logins alone; signed-in Chrome uses the separate Chromewhale connector.",
+        zh: "在独立的 Chromium 配置中浏览网页、填写表单并截图。Computer Use 不会操作你的个人浏览器标签页和登录信息；使用已登录的 Chrome 需另行连接 Chromewhale。",
       },
     },
     {
-      title: { en: "Preview, stop and replay sessions", zh: "预览、停止与回放会话" },
+      title: { en: "Preview and record your work", zh: "预览并录制操作过程" },
       detail: {
-        en: "A live preview shows the bound app while a session works, and list_sessions names every live session. The stop switch halts input, trajectories record every call (refusals included) for replay, and a launch-time grant fixes what a session may call.",
-        zh: "会话工作时，实时预览显示所绑定的应用；list_sessions 列出每个活动会话。停止开关终止输入，轨迹记录每一次调用（包括被拒绝的调用）以供重放，启动时的授权固定会话可调用的范围。",
+        en: "Request a live app preview or record a local Mac demonstration with ScreenCaptureKit. Capture starts only when requested; Pause and Stop remain available from the helper.",
+        zh: "按需打开应用实时预览，或用 ScreenCaptureKit 录制本地 Mac 演示。只有请求后才会开始采集，助手中的 Pause 和 Stop 控件始终可用。",
       },
     },
   ],
   cuToolsNote: {
-    en: "36 MCP tools: observation, actions, screenshots and zoom, keyboard and pointer, clipboard, recording, browser control over CDP, window frames, the installed-app catalog, sessions and computer switching.",
-    zh: "36 个 MCP 工具：观察、操作、截图与缩放、键盘与指针、剪贴板、录制、基于 CDP 的浏览器控制、窗口边框、已安装应用目录、会话以及计算机切换。",
+    en: "The marketplace plugin is available for Mac. GitHub releases also offer an unsigned experimental Windows preview; Linux remains experimental source and Docker setup. Other platforms do not provide Mac-style background input.",
+    zh: "市场插件适用于 Mac。GitHub 发布页另有未签名的 Windows 实验性预览包；Linux 仍需实验性源码或 Docker 设置。其他平台不提供 Mac 式后台输入。",
   },
 
   catalogLabel: { en: "First-party catalog", zh: "官方目录" },

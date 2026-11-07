@@ -192,14 +192,14 @@
     "partialBadge": "(部分)"
   },
   "home": {
-    "metaTitle": "Codewhale：开源编程智能体",
-    "metaDescription": "Codewhale 是终端里的开源编程智能体。用你选择的托管模型或本地模型读取、修改和测试项目。",
-    "heroTitle": "适用于任意模型的开源编程智能体",
-    "heroIntro": "{brand} 在终端里读取你的项目、编辑文件并运行测试。连接托管模型或本地模型，并选择哪些操作需要你批准。",
+    "metaTitle": "Codewhale · 构建应用，自动完成工作",
+    "metaDescription": "在终端里用开源智能体构建应用、修复代码并自动完成工作。选择托管或本地模型，通过代码、文档和反馈一起改进 Codewhale。",
+    "heroTitle": "构建应用，自动完成工作",
+    "heroIntro": "{brand} 是开源智能体，用你选择的模型构建软件、自动完成工作。在终端里使用，组建 Fleet 智能体团队，或添加 Computer Use 操作 Mac 应用。",
     "getCodewhale": "安装 Codewhale",
     "heroInstallAria": "安装命令",
     "exploreProduct": "探索 Codewhale",
-    "shotPreview": "终端预览",
+    "shotPreview": "本地终端演示",
     "screenshotAlt": "Codewhale v{version} 的终端实录画面，包含对话、消息输入框与会话控制。",
     "latestRelease": "最新发布 {tag}",
     "releaseUnavailable": "发布状态暂不可用",
@@ -207,12 +207,12 @@
     "currentSource": "源码",
     "sourceCandidate": "未发布",
     "publishedRelease": "已发布",
-    "gainHeading": "在终端里构建与自动化",
-    "gainLede": "描述你想构建或自动完成的工作。Codewhale 可以编辑文件、运行命令并检查结果，访问权限由你控制。",
+    "gainHeading": "把想法变成成果",
+    "gainLede": "打开项目，说出你需要的结果。Codewhale 可以读取文件、修改内容，并运行命令检查自己的工作。",
     "gain": [
       [
-        "构建应用和工具",
-        "创建应用、添加功能或编写脚本。Codewhale 可以处理项目文件、运行代码并测试构建结果。"
+        "构建与修复软件",
+        "添加功能、排查问题，或编写实用工具。与能修改项目并运行检查的智能体一起完成工作。"
       ],
       [
         "让重复工作自动完成",
@@ -220,7 +220,7 @@
       ],
       [
         "连接你常用的工具",
-        "通过插件和 MCP 服务器添加工具，或在自己的脚本中调用 API。每项服务都需要单独配置和身份验证。"
+        "通过插件和 MCP 服务器接入工作所需的工具与服务。访问范围和身份验证由你配置。"
       ]
     ],
     "chapterModels": "你的模型",
@@ -229,7 +229,7 @@
     "modelsFacts": [
       [
         "你的 API 账户",
-        "使用自己的密钥连接 DeepSeek、OpenAI、Anthropic、Google 等提供商。默认模型 deepseek-flash 现已由 DeepSeek-V4.1-Flash 提供。"
+        "使用自己的 API 密钥连接 DeepSeek、OpenAI、Anthropic、Google 等提供商。模型用量由提供商计费。"
       ],
       [
         "你的网关",
@@ -241,17 +241,17 @@
       ],
       [
         "你的 ChatGPT 套餐",
-        "运行 codewhale auth chatgpt 登录，即可用 ChatGPT 套餐代替 API 密钥。实验功能。"
+        "实验功能：运行 codewhale auth chatgpt，连接符合条件的 ChatGPT 套餐。"
       ]
     ],
     "modelsLink": "浏览模型与提供商",
-    "startHeading": "开始使用",
+    "startHeading": "从一件有用的任务开始",
     "startLede": "安装 Codewhale，连接模型，然后打开项目文件夹。需要时，再添加插件或更多智能体。",
     "startGuideLink": "按照新手指引操作",
     "startVocabularyLink": "查名词",
     "chapterAvailability": "在哪里运行",
     "availabilityHeading": "当前可用与开发中的功能",
-    "availabilityLede": "终端和本地浏览器客户端现已可用。原生桌面应用与重建中的托管网页应用正在开发。",
+    "availabilityLede": "在 macOS、Linux 或 Windows 上安装。在终端里工作，或运行 codewhale web 打开本地浏览器界面。桌面应用和托管网页应用仍在开发。",
     "availability": [
       [
         "终端与本地浏览器",
@@ -288,7 +288,7 @@
       ],
       [
         "浏览器与电脑操作 · 预览",
-        "使用浏览器工具和 Computer Use 插件，在你授予的访问范围内操作应用与网站。"
+        "添加浏览器工具或 Computer Use 插件，操作应用与网站。macOS 上的 Computer Use 需要系统权限；其他平台仍为实验支持。"
       ],
       [
         "随时接着做的会话",
@@ -306,10 +306,10 @@
     "binaries": "预编译包",
     "chinaMirrors": "中国镜像",
     "installGuideLink": "阅读安装指南",
-    "communityHeading": "为 Codewhale 做贡献",
-    "communityBody": "已有 {count} 人参与构建 Codewhale。在 GitHub 上报告问题、改进文档或贡献代码。",
+    "communityHeading": "一起构建你想用的智能体",
+    "communityBody": "加入 {count} 位贡献者，一起改进 Codewhale。从你关心的地方开始：一个问题、一段更清楚的说明、一份翻译或一项功能。不写 Rust，也能帮上忙。",
     "communityLinksAria": "社区链接",
-    "contribute": "在 GitHub 上参与贡献"
+    "contribute": "找到你的第一次贡献"
   },
   "docs-guide": {
     "metaTitle": "开始第一个任务 · Codewhale 文档",
@@ -2048,15 +2048,15 @@
     "allReleasesLink": "全部版本"
   },
   "computer-use": {
-    "metaTitle": "Computer Use · 预览 · Codewhale",
-    "metaDescription": "预览功能：下载并设置 Mac 版 Codewhale Computer Use。提供应用后台操作、权限设置，以及由用户控制的暂停和停止功能。",
+    "metaTitle": "Computer Use · Mac 测试版 · Codewhale",
+    "metaDescription": "智能体在 Mac 应用中后台操作，你可以继续使用电脑。下载经过 Apple 公证的 Computer Use 助手，并连接兼容的 MCP 宿主。",
     "title": "Computer Use",
-    "lead": "你继续自己的工作，让 Codewhale 在各个应用间帮你操作。在这台 Mac 上授权一次，随时都能停止电脑操作。",
+    "lead": "智能体在 Mac 应用中后台操作，你可以继续使用电脑。将 Computer Use 连接到 Codewhale 或其他兼容 MCP 的宿主，需要时随时暂停或停止。",
     "publisher": "由 Codewhale 开发",
     "download": "下载 Mac 版",
     "downloadZip": "ZIP 压缩包（供应用内更新使用）",
     "requirements": "macOS 13.5 或更高版本 · Apple 芯片与 Intel",
-    "included": "只需下载一个应用，无需另行安装 Node 或编译器。",
+    "included": "Mac 助手自带运行环境。请在 MCP 宿主中连接 Computer Use；宿主需要单独设置。",
     "pendingTitle": "Mac 下载包准备中",
     "pendingBody": "完成 Apple 公证和发布检查后，正式安装包将在此提供。",
     "unavailableTitle": "暂时无法查询下载状态",
@@ -2074,18 +2074,18 @@
         "body": "通过设置按钮打开系统设置中的“辅助功能”和“屏幕录制”。由你决定授予哪些权限。"
       },
       {
-        "title": "启用 Computer Use",
-        "body": "在 Codewhale 的 Connectors 设置中安装或更新 Computer Use，然后审查并启用它。请它在应用中执行任务。首次使用时，在原生助手中选择 Trust until revoked；之后切换应用、模型或任务时，这份信任都会继续有效。"
+        "title": "连接智能体",
+        "body": "在 Codewhale 中运行 /plugin marketplace install codewhale computer-use，审阅并启用插件。其他兼容 MCP 的宿主可按设置指南连接助手。助手与宿主插件是两个独立部分。"
       }
     ],
     "controlsTitle": "随时掌握控制权",
-    "controlsBody": "操作目标应用旁会显示小巧的 Codewhale 控件。Pause 暂停电脑操作，Stop computer use 结束所有当前电脑会话。在 Settings 的 Remembered access 中选择 Turn off，即可撤销 Codewhale 的访问权限。想观看操作过程时，再请求打开实时预览。",
+    "controlsBody": "授予 macOS 权限后，标准模式无需逐个应用询问。你禁用的应用仍不可访问；Pause 暂停电脑操作，Stop computer use 结束当前会话。也可选择严格审批模式。想观看操作过程时，再请求打开实时预览。",
     "updateTitle": "由你决定何时更新",
     "updateBody": "在应用中选择 Check for updates。安装更新前，助手会校验下载文件、Codewhale 签名和 Apple 公证，并保留旧版应用以便恢复。",
     "help": "设置与故障排查",
     "notes": "版本说明",
     "demo": "查看后台检查演示",
-    "source": "源码与其他平台",
-    "platforms": "此下载适用于 Mac。Windows 和 Linux 目前通过源码插件及宿主端设置使用。"
+    "source": "其他宿主与平台",
+    "platforms": "Mac 助手为测试版，市场插件支持 Mac。已发布版本另含未签名的 Windows x64 实验性预览包；Linux 需要实验性源码或 Docker 设置。Windows 和 Linux 的输入使用共享桌面。"
   }
 }
