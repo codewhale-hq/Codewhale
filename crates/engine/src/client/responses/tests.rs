@@ -85,6 +85,7 @@ fn test_codex_config(server: &MockServer) -> Config {
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let __cw_config_init_0_2 = Some(ProvidersConfig {
             openai_codex: ProviderConfig {
@@ -155,7 +156,7 @@ async fn responses_stream_retries_rate_limited_request() {
 }
 
 #[tokio::test]
-async fn responses_stream_does_not_replay_transient_server_error() {
+async fn responses_stream_does_not_replay_unknown_server_outcome() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
@@ -190,7 +191,7 @@ async fn responses_stream_does_not_replay_transient_server_error() {
 }
 
 #[tokio::test]
-async fn responses_stream_does_not_replay_upstream_499() {
+async fn responses_stream_does_not_replay_unknown_upstream_499_outcome() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
@@ -434,6 +435,7 @@ async fn chatgpt_http_usage_limit_is_not_retried() {
         crate::llm_client::LlmError::QuotaExhausted(_)
     ));
     assert!(!typed.is_retryable());
+    assert!(typed.to_string().contains("ChatGPT Settings > Usage"));
 }
 
 #[tokio::test]
