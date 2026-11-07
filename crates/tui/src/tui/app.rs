@@ -1020,6 +1020,7 @@ impl Default for ComposerState {
 
 /// Viewport/scroll state — fields related to transcript scrolling and caching.
 pub struct ViewportState {
+    pub(crate) working_glow_visible: bool,
     /// Per-draw copy of the owning backend's negotiated capability facts.
     /// Unavailable outside a backend draw; never redetect or infer depth.
     pub(crate) ocean_caps: Option<codewhale_ratatui::Caps>,
@@ -1095,6 +1096,7 @@ pub struct ViewportState {
 impl Default for ViewportState {
     fn default() -> Self {
         Self {
+            working_glow_visible: false,
             ocean_caps: None,
             ocean_semantic_surfaces: Vec::new(),
             transcript_scroll: TranscriptScroll::to_bottom(),
