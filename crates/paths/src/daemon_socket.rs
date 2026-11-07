@@ -54,6 +54,11 @@ pub enum DaemonSocketError {
     /// `CODEWHALE_HOME` is set but not a usable absolute path.
     #[error("invalid CODEWHALE_HOME override: {0}")]
     InvalidHomeOverride(String),
+    #[error("cannot use {variable} for the runtime endpoint: {reason}")]
+    InvalidRuntimeRoot {
+        variable: &'static str,
+        reason: &'static str,
+    },
     /// Unix socket paths are limited to roughly one hundred bytes.
     #[error("daemon socket path {} is {len} bytes; this platform allows at most {max}", path.display())]
     PathTooLong {
@@ -110,7 +115,7 @@ pub enum DaemonSocketError {
 }
 
 /// Inputs to [`resolve_socket_path`], separated from the environment so the
-/// precedence rules are a pure, testable function.
+/// precedence rules can be verified independently of process-wide variables.
 #[derive(Debug, Clone, Default)]
 pub struct SocketPathInputs {
     /// `--socket-path`.
@@ -133,30 +138,79 @@ impl SocketPathInputs {
         let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
+        let user_home = crate::user_home();
         Ok(Self {
             explicit,
             codewhale_home_override,
             xdg_runtime_dir,
-            user_home: crate::user_home(),
+            user_home,
             macos: cfg!(target_os = "macos"),
         })
     }
 }
 
-/// Apply the precedence rules documented at the module level and enforce the
-/// kernel's path-length limit.
+fn implicit_endpoint_root(
+    _variable: &'static str,
+    root: PathBuf,
+) -> Result<PathBuf, DaemonSocketError> {
+    #[cfg(unix)]
+    {
+        if !root.is_absolute()
+            || root
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(DaemonSocketError::InvalidRuntimeRoot {
+                variable: _variable,
+                reason: "expected an absolute directory path without '..' components",
+            });
+        }
+        let root = crate::resolve_root_owned_ancestors(&root);
+        for ancestor in root.ancestors() {
+            match std::fs::symlink_metadata(ancestor) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(DaemonSocketError::InvalidRuntimeRoot {
+                        variable: _variable,
+                        reason: "a non-system symbolic link is not allowed",
+                    });
+                }
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(DaemonSocketError::Io {
+                        context: "cannot inspect runtime endpoint directory",
+                        path: ancestor.to_path_buf(),
+                        source: error,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(root)
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(root)
+    }
+}
+
+/// Apply the precedence rules documented at the module level, shortening only
+/// implicit endpoints to leave room for store-specific control sockets.
 pub fn resolve_socket_path(inputs: &SocketPathInputs) -> Result<PathBuf, DaemonSocketError> {
     let path = if let Some(explicit) = inputs.explicit.clone() {
         explicit
     } else if let Some(home) = inputs.codewhale_home_override.clone() {
-        home.join("run").join(DAEMON_SOCKET_FILE_NAME)
+        implicit_endpoint_root("CODEWHALE_HOME", home)?
+            .join("run")
+            .join(DAEMON_SOCKET_FILE_NAME)
     } else if let Some(runtime_dir) = inputs.xdg_runtime_dir.clone() {
-        runtime_dir.join("codewhale").join(DAEMON_SOCKET_FILE_NAME)
+        implicit_endpoint_root("XDG_RUNTIME_DIR", runtime_dir)?
+            .join("codewhale")
+            .join(DAEMON_SOCKET_FILE_NAME)
     } else {
         let user_home = inputs
             .user_home
             .clone()
             .ok_or(DaemonSocketError::RuntimeDirUnavailable)?;
+        let user_home = implicit_endpoint_root("HOME", user_home)?;
         if inputs.macos {
             user_home
                 .join("Library")
@@ -170,6 +224,13 @@ pub fn resolve_socket_path(inputs: &SocketPathInputs) -> Result<PathBuf, DaemonS
                 .join(DAEMON_SOCKET_FILE_NAME)
         }
     };
+    #[cfg(unix)]
+    if inputs.explicit.is_none() {
+        let store_name = format!("store-{}.sock", "0".repeat(DERIVED_STORE_HASH_BYTES * 2));
+        if path.with_file_name(store_name).as_os_str().len() > MAX_SOCKET_PATH_BYTES {
+            return Ok(short_socket_directory(&path).join(DAEMON_SOCKET_FILE_NAME));
+        }
+    }
     let len = path.as_os_str().len();
     if len > MAX_SOCKET_PATH_BYTES {
         return Err(DaemonSocketError::PathTooLong {
@@ -179,6 +240,25 @@ pub fn resolve_socket_path(inputs: &SocketPathInputs) -> Result<PathBuf, DaemonS
         });
     }
     Ok(path)
+}
+
+#[cfg(unix)]
+fn short_socket_directory(scope: &Path) -> PathBuf {
+    use sha2::Digest as _;
+
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"Codewhale/short-socket/v1\0");
+    digest.update(scope.as_os_str().as_encoded_bytes());
+    let suffix: String = digest.finalize()[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let root = if cfg!(target_os = "macos") {
+        "/private/tmp"
+    } else {
+        "/tmp"
+    };
+    PathBuf::from(root).join(format!("codewhale-{suffix}"))
 }
 
 /// The socket path this host would use with no explicit override.

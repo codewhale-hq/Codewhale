@@ -38,6 +38,9 @@
         "title": "安装到自有目录",
         "blocks": [
           {
+            "p": "按照[双文件插件教程](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md)编写并分享技能。"
+          },
+          {
             "code": "/skill install --project <spec>\n/skill install --global <spec>\n/skill trust --project <name>",
             "lang": "Codewhale"
           },
@@ -168,7 +171,7 @@
     "themeDark": "深色",
     "themeAria": "主题：{mode}（点击切换）",
     "themeTitle": "主题 · 自动 / 浅色 / 深色",
-    "footerTagline": "面向终端、可搭配你所选模型的开源编程智能体。",
+    "footerTagline": "构建应用，自动完成工作。",
     "footerProduct": "产品",
     "footerProject": "项目",
     "footerDocs": "文档",
@@ -192,14 +195,14 @@
     "partialBadge": "(部分)"
   },
   "home": {
-    "metaTitle": "Codewhale：开源编程智能体",
-    "metaDescription": "Codewhale 是终端里的开源编程智能体。用你选择的托管模型或本地模型读取、修改和测试项目。",
-    "heroTitle": "适用于任意模型的开源编程智能体",
-    "heroIntro": "{brand} 在终端里读取你的项目、编辑文件并运行测试。连接托管模型或本地模型，并选择哪些操作需要你批准。",
+    "metaTitle": "Codewhale · 你电脑上的开源智能体",
+    "metaDescription": "在终端里用开源智能体构建应用、修复代码并自动完成工作。选择托管或本地模型，通过代码、文档和反馈一起改进 Codewhale。",
+    "heroTitle": "你电脑上的开源智能体",
+    "heroIntro": "在终端中用 {brand} 开发软件、运行可复用的工作流。添加 Computer Use，即可在 Mac 应用中执行任务。",
     "getCodewhale": "安装 Codewhale",
     "heroInstallAria": "安装命令",
     "exploreProduct": "探索 Codewhale",
-    "shotPreview": "终端预览",
+    "shotPreview": "本地终端演示",
     "screenshotAlt": "Codewhale v{version} 的终端实录画面，包含对话、消息输入框与会话控制。",
     "latestRelease": "最新发布 {tag}",
     "releaseUnavailable": "发布状态暂不可用",
@@ -207,12 +210,12 @@
     "currentSource": "源码",
     "sourceCandidate": "未发布",
     "publishedRelease": "已发布",
-    "gainHeading": "在终端里构建与自动化",
-    "gainLede": "描述你想构建或自动完成的工作。Codewhale 可以编辑文件、运行命令并检查结果，访问权限由你控制。",
+    "gainHeading": "把想法变成成果",
+    "gainLede": "打开项目，说出你需要的结果。Codewhale 可以读取文件、修改内容，并运行命令检查自己的工作。",
     "gain": [
       [
-        "构建应用和工具",
-        "创建应用、添加功能或编写脚本。Codewhale 可以处理项目文件、运行代码并测试构建结果。"
+        "构建与修复软件",
+        "添加功能、排查问题，或编写实用工具。与能修改项目并运行检查的智能体一起完成工作。"
       ],
       [
         "让重复工作自动完成",
@@ -220,16 +223,16 @@
       ],
       [
         "连接你常用的工具",
-        "通过插件和 MCP 服务器添加工具，或在自己的脚本中调用 API。每项服务都需要单独配置和身份验证。"
+        "通过插件和 MCP 服务器接入工作所需的工具与服务。访问范围和身份验证由你配置。"
       ]
     ],
     "chapterModels": "你的模型",
     "modelsHeading": "使用你选择的模型",
-    "modelsBody": "连接你的提供商账户、OpenAI 兼容端点，或本地及自托管模型。为会话选择模型，也可以为 Fleet 中的每个智能体分别选择模型。",
+    "modelsBody": "使用提供商 API 密钥、OpenAI 兼容端点或本地模型。",
     "modelsFacts": [
       [
         "你的 API 账户",
-        "使用自己的密钥连接 DeepSeek、OpenAI、Anthropic、Google 等提供商。默认模型 deepseek-flash 现已由 DeepSeek-V4.1-Flash 提供。"
+        "使用自己的 API 密钥连接 DeepSeek、OpenAI、Anthropic、Google 等提供商。模型用量由提供商计费。"
       ],
       [
         "你的网关",
@@ -241,17 +244,17 @@
       ],
       [
         "你的 ChatGPT 套餐",
-        "运行 codewhale auth chatgpt 登录，即可用 ChatGPT 套餐代替 API 密钥。实验功能。"
+        "实验功能：运行 codewhale auth chatgpt，连接符合条件的 ChatGPT 套餐。"
       ]
     ],
     "modelsLink": "浏览模型与提供商",
-    "startHeading": "开始使用",
+    "startHeading": "从一件有用的任务开始",
     "startLede": "安装 Codewhale，连接模型，然后打开项目文件夹。需要时，再添加插件或更多智能体。",
     "startGuideLink": "按照新手指引操作",
     "startVocabularyLink": "查名词",
     "chapterAvailability": "在哪里运行",
     "availabilityHeading": "当前可用与开发中的功能",
-    "availabilityLede": "终端和本地浏览器客户端现已可用。原生桌面应用与重建中的托管网页应用正在开发。",
+    "availabilityLede": "在 macOS、Linux 或 Windows 上安装。在终端里工作，或运行 codewhale web 打开本地浏览器界面。桌面应用和托管网页应用仍在开发。",
     "availability": [
       [
         "终端与本地浏览器",
@@ -288,7 +291,7 @@
       ],
       [
         "浏览器与电脑操作 · 预览",
-        "使用浏览器工具和 Computer Use 插件，在你授予的访问范围内操作应用与网站。"
+        "添加浏览器工具或 Computer Use 插件，操作应用与网站。macOS 上的 Computer Use 需要系统权限；其他平台仍为实验支持。"
       ],
       [
         "随时接着做的会话",
@@ -306,10 +309,10 @@
     "binaries": "预编译包",
     "chinaMirrors": "中国镜像",
     "installGuideLink": "阅读安装指南",
-    "communityHeading": "为 Codewhale 做贡献",
-    "communityBody": "已有 {count} 人参与构建 Codewhale。在 GitHub 上报告问题、改进文档或贡献代码。",
+    "communityHeading": "参与 Codewhale",
+    "communityBody": "已有 {count} 位贡献者。代码、文档、翻译和技能都欢迎。",
     "communityLinksAria": "社区链接",
-    "contribute": "在 GitHub 上参与贡献"
+    "contribute": "参与贡献"
   },
   "docs-guide": {
     "metaTitle": "开始第一个任务 · Codewhale 文档",
@@ -801,7 +804,7 @@
             "codeTerms": true
           },
           {
-            "p": "密钥、服务端点、提供商选择、MCP 服务器、钩子、技能和额外的说明文件，始终来自你自己的配置，因此克隆下来的仓库无法让 Codewhale 指向它自己的服务器或文件。启动时加上 `--no-project-config`，可以在这一次运行中忽略仓库的配置文件。"
+            "p": "提供商密钥、服务端点及提供商选择来自你自己的配置。在用户设置中信任工作区后，MCP 服务器也可来自 `.codewhale/mcp.json`；项目条目覆盖同名的全局条目。信任仓库前，请审阅这些可执行权限。参阅 [MCP 配置](/docs/mcp#config)。"
           },
           {
             "p": "项目说明——智能体在这个仓库里应该如何工作——请写在 `AGENTS.md` 中。运行 `/init` 即可生成一份。"
@@ -840,14 +843,14 @@
         "title": "在 Fleet 中保存角色",
         "blocks": [
           {
-            "p": "Fleet 是 Codewhale 可以分派工作的角色列表，以及每个角色使用的模型。在会话中配置一次即可："
+            "p": "Fleet 保存可复用的角色和模型选择。先连接模型，再在会话中创建角色配置："
           },
           {
             "code": "/fleet setup\n/fleet\n/fleet saved",
             "lang": "Codewhale"
           },
           {
-            "p": "`/fleet setup` 会带你选定一个角色、它使用的模型（或“沿用会话的模型”），以及保存位置：当前项目，或者对所有仓库都生效的个人配置。写入之前你会看到完整的文件内容。`/fleet` 显示当前所选 Fleet 的成员，`/fleet saved` 用于在已命名的 Fleet 之间切换。"
+            "p": "`/fleet setup` 每次保存一个角色配置。选择模型或沿用会话路由，再选择当前项目或个人配置。保存前先审阅完整文件。`/fleet` 显示当前团队；`/fleet saved` 用于切换已有的具名团队。接着用自然语言交代任务，并用 `/fleet workers` 查看该会话的智能体。"
           },
           {
             "p": "Fleet 只决定由谁来做。一个智能体能读、能写、能运行什么，仍然取决于你的工作区信任、[审批设置](/docs/modes)和沙箱。"
@@ -859,17 +862,17 @@
         "title": "编写工作流",
         "blocks": [
           {
-            "p": "工作流是放在仓库 `workflows/` 文件夹中的一个 JavaScript 文件。它只描述步骤，本身不干活。下面这个例子先并行审查两个部分，再汇总结论。把它保存为 `workflows/docs_readiness.workflow.js`："
+            "p": "保存的 Workflow 描述智能体可以重复执行的流程。创建 `workflows/` 文件夹，将这个声明式示例保存为 `workflows/docs_readiness.workflow.js`。它先并行审查两个部分，再汇总结论。请把 `src` 和 `docs` 换成你的项目中确实存在的目录："
           },
           {
             "code": "export default workflow({\n  \"id\": \"docs-readiness\",\n  \"goal\": \"Review the docs and code for gaps, then summarize the next edit\",\n  \"nodes\": [\n    {\n      \"branch\": {\n        \"id\": \"parallel-review\",\n        \"parallel\": true,\n        \"children\": [\n          { \"agent\": { \"id\": \"code-review\", \"prompt\": \"Inspect src/ for undocumented behavior.\",\n                       \"agent_type\": \"review\", \"mode\": \"read_only\", \"file_scope\": [\"src\"] } },\n          { \"agent\": { \"id\": \"docs-review\", \"prompt\": \"Inspect docs/ for stale or missing steps.\",\n                       \"agent_type\": \"review\", \"mode\": \"read_only\", \"file_scope\": [\"docs\"] } }\n        ]\n      }\n    },\n    {\n      \"reduce\": {\n        \"id\": \"summary\",\n        \"inputs\": [\"code-review\", \"docs-review\"],\n        \"prompt\": \"Combine the findings into the safest next edit.\"\n      }\n    }\n  ]\n});",
             "lang": "workflows/docs_readiness.workflow.js"
           },
           {
-            "p": "可用的步骤类型有 `agent`、`branch`、`sequence`、`reduce`、`loop_until`、`cond`、`expand` 和 `teacher_review`。工作流文件本身不能访问文件、shell 或网络，`import`、`fetch`、`eval` 和 `async` 都会被拒绝。真正干活的是它启动的智能体，它们按你平常的权限运行。"
+            "p": "这种声明式写法支持 `agent`、`branch`、`sequence`、`reduce`、`loop_until`、`cond`、`expand` 和 `teacher_review`。它会编译成经过验证的计划，拒绝 `import`、`fetch`、`eval`、`async` 等语法与调用。高级命令式 JavaScript 可在沙箱中通过异步 `task()` 和 `parallel()` 协调工作，但仍不能直接访问文件、shell 或网络；这些操作由智能体按当前策略执行。"
           },
           {
-            "note": "一次运行最多可启动 1,000 个智能体，同时工作的最多 16 个，其余排队等待。循环必须声明 `max_iterations`。"
+            "note": "Workflow 默认最多同时运行 16 个智能体；已接纳的工作等待空闲位置。默认不限制累计子智能体数量或计划结构深度，可用正数的 `[workflow] max_children` 或 `max_depth` 设置上限。运行时的智能体接纳和委派限制另行生效。循环必须声明 `max_iterations`。"
           }
         ]
       },
@@ -878,17 +881,17 @@
         "title": "运行",
         "blocks": [
           {
-            "code": "codewhale workflow run docs-readiness --runtime inline\ncodewhale workflow run docs-readiness --goal \"prepare the 1.2 release\" --verify",
+            "code": "codewhale workflow run docs-readiness --runtime inline",
             "lang": "终端"
           },
           {
-            "p": "Codewhale 会根据名字找到 `workflows/docs_readiness.workflow.js`，检查后启动。`--runtime inline` 在当前终端中运行；默认的 `tmux` 则在一个独立的 tmux 会话中运行，关闭终端后也会继续。`--verify` 会在成功完成后运行验证关卡，`--fleet <name>` 则使用指定的 Fleet 而不是内置角色。"
+            "p": "该命令找到 `workflows/docs_readiness.workflow.js`，验证后启动需要模型的运行，因此请先连接提供商。`--runtime inline` 在当前终端等待完成。默认后端要求主机已安装 `tmux`，并在独立会话中运行。启动时加上 `--verify`，可在成功完成后执行已配置的验证关卡；`--fleet <name>` 选择已有的具名 Fleet。"
           },
           {
             "p": "如果不想动到当前的工作副本，加上 `--worktree-repo . --branch <name>`：这次运行会拥有自己的 git 工作树和分支。"
           },
           {
-            "p": "在会话中，`/workflow` 用于启动工作流，`/workflows` 用于列出或取消本会话中的运行。"
+            "p": "在会话中，`/workflow <objective>` 只起草方案，不执行。要审阅这个已保存的文件，请用 `/workflow run workflows/docs_readiness.workflow.js`；等待审阅完成，再用 `/workflow confirm` 启动已审阅的方案。`/workflow status` 读取运行状态，`/workflow cancel <run-id>` 取消运行，`/workflows` 打开会话运行面板。"
           }
         ]
       },
@@ -904,7 +907,7 @@
             "lang": "终端"
           },
           {
-            "p": "`lane list`、`lane status` 和 `lane interrupt` 都支持 `--json`，会输出一份机器可读的回执。在会话中，`/lane` 提供同样的操作，结果也完全一致。"
+            "p": "`lane list`、`lane status` 和 `lane interrupt` 支持 `--json`。会话内可用 `/lane list`、`/lane status <lane-id>` 或 `/lane interrupt <lane-id>`；查看日志和连接 tmux 使用上面的 shell 命令。斜杠读取显示最近记录的状态，CLI list/status 则会核对后端退出情况。斜杠 interrupt 先返回排队回执，再返回最终结果。"
           }
         ]
       },
@@ -916,11 +919,11 @@
             "p": "如果你手上是一串彼此独立的任务，而不是一套计划，就把它们写成任务文件，作为一次 Fleet 运行来执行。每个任务写明目标、角色和允许写入的路径。完整的 `tasks.json` 示例见[教程](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/FLEET_WORKFLOW_TUTORIAL.md)。"
           },
           {
-            "code": "codewhale fleet init\ncodewhale fleet run tasks.json --max-workers 4\ncodewhale fleet status\ncodewhale fleet logs <worker-id>\ncodewhale fleet resume <run-id>\ncodewhale fleet stop --all",
+            "code": "codewhale fleet init\ncodewhale fleet run tasks.json --check\ncodewhale fleet run tasks.json --max-workers 4\ncodewhale fleet status\ncodewhale fleet logs <worker-id>\ncodewhale fleet resume <run-id>\ncodewhale fleet stop --all",
             "lang": "终端"
           },
           {
-            "p": "`fleet status` 会根据当前工作区的运行记录，统计排队中、运行中、已完成和失败的工作。笔记本休眠或管理进程退出后，`fleet resume` 能接着原来的运行继续，而不会新开一次。如果只想看挂在当前会话上的智能体，用 `/fleet workers`（或 `/subagents`）。"
+            "p": "`fleet run --check` 只验证，不创建运行；去掉 `--check` 才启动前台管理进程。运行期间，在另一个终端查看状态和操作控制。中断后，`fleet resume <run-id>` 核对过期租约并报告状态，不会重启管理进程或启动排队工作。若要明确重试某个智能体，先 inspect，再用 `codewhale fleet restart <worker-id>`，它会为该次运行启动管理进程。`/fleet workers` 和 `/subagents` 显示当前会话智能体，不显示这些持久运行。"
           }
         ]
       }
@@ -946,27 +949,74 @@
   },
   "docs-mcp": {
     "metaTitle": "用 MCP 连接工具 · Codewhale 文档",
-    "metaDescription": "添加 Model Context Protocol 服务器让 Codewhale 使用更多工具，登录远程服务器，把 Codewhale 本身作为 MCP 服务器运行，并试用代码模式。",
+    "metaDescription": "连接本地和远程 MCP 服务器，了解认证与插件兼容范围，并排查工具未显示的问题。",
     "bodyClassName": "text-ink-soft leading-[1.9] tracking-wide",
     "title": "用 MCP 连接工具",
-    "lede": "MCP 服务器能为 Codewhale 带来更多工具——数据库、问题跟踪系统、浏览器等。你可以添加一个由 Codewhale 替你启动的本地服务器，也可以通过 URL 添加远程服务器。这些工具与内置工具走同一套审批流程。",
+    "lede": "通过 Model Context Protocol 连接本地工具服务器或远程服务。Codewhale 会发现服务器提供的工具，并在使用时执行你的工具权限和审批规则。",
     "sections": [
       {
         "id": "add",
-        "title": "添加服务器",
+        "title": "试用 Cloudflare Docs 服务器",
         "blocks": [
           {
-            "code": "codewhale mcp add git --command \"uvx\" --arg \"mcp-server-git\"\ncodewhale mcp add docs --url \"https://example.com/mcp\"\ncodewhale mcp list\ncodewhale mcp validate",
+            "p": "公开的 [Cloudflare 文档服务器](https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/)提供文档搜索和 Pages 迁移到 Workers 的指南。[查看官方源码](https://github.com/cloudflare/mcp-server-cloudflare/tree/main/apps/docs-vectorize)。无需凭据即可添加："
+          },
+          {
+            "code": "codewhale mcp add cloudflare-docs --url \"https://docs.mcp.cloudflare.com/mcp\"\ncodewhale mcp tools cloudflare-docs",
             "lang": "终端"
           },
           {
-            "p": "`--command` 通过 stdio 启动本地服务器，每个参数用一个 `--arg`。`--url` 通过 Streamable HTTP 连接远程服务器，必要时回退到旧版 SSE。`mcp validate` 会检查配置文件以及你标记为必需的服务器。"
+            "p": "工具列表应包含 `search_cloudflare_documentation` 和 `migrate_pages_to_workers_guide`。如果 TUI 会话已在运行，请在其中执行 `/mcp reload`，把新配置加载到该会话。"
+          },
+          {
+            "note": "2026 年 11 月 7 日使用已发布的 CLI v0.10.2 检查：两条命令均成功退出，无需凭据即可列出上述两个工具。这验证了配置和发现流程，没有执行工具。[发布版指南](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MCP.md)对应此版本；[main 源码指南](https://github.com/codewhale-hq/Codewhale/blob/main/docs/MCP.md)可能包含尚未发布的变更。"
           },
           {
             "p": "在会话中，`/mcp` 会打开 MCP 管理器：显示每个服务器的状态、传输方式、超时设置、错误信息和已发现的工具。同样的操作在那里也能完成，例如 `/mcp add stdio <name> <command>` 和 `/mcp add http <name> <url>`。"
           },
           {
-            "note": "MCP 服务器以你的权限运行。只添加你信任的服务器，就像只安装你信任的程序一样。"
+            "note": "本地 MCP 服务器以 Codewhale 进程的权限运行；远程调用使用你授予该服务的访问权限。只添加你信任的服务器。"
+          }
+        ]
+      },
+      {
+        "id": "compatibility",
+        "title": "可以连接哪些服务器",
+        "blocks": [
+          {
+            "rows": [
+              [
+                "本地 stdio",
+                "Codewhale 启动 `--command` 指定的程序，每个参数用一个 `--arg`。请先安装服务器及其所需运行时。"
+              ],
+              [
+                "远程 HTTP / SSE",
+                "`--url` 使用 Streamable HTTP，并可回退到旧版 SSE。旧版 SSE 端点可设置 `--transport sse`。远程配置不需要 `command`。"
+              ],
+              [
+                "直接配置的远程认证",
+                "你自己的 MCP 配置可以使用环境变量请求头、bearer token 或 OAuth。OAuth 需要服务器提供兼容的认证元数据和客户端注册方式。"
+              ],
+              [
+                "插件提供的 MCP",
+                "经过审查并启用的插件可以提供 stdio 或远程 MCP 服务器。插件 MCP 支持基于环境变量的认证，但不支持插件提供的 MCP OAuth。"
+              ],
+              [
+                "工具、资源与提示词",
+                "Codewhale 发现服务器实际声明的能力。只有服务器实现了资源、模板或提示词功能，才能使用这些功能。"
+              ],
+              [
+                "可选扩展与 MCP Apps",
+                "尚不提供通用的 MCP Apps 界面支持。支持基本 MCP 传输不等于兼容所有可选扩展或服务器。"
+              ],
+              [
+                "服务器要求",
+                "每个服务器都有自己的操作系统、程序、浏览器、依赖和账号要求。本地服务器运行在承载 Codewhale 的电脑上；Computer Use 有其独立的平台限制。"
+              ]
+            ]
+          },
+          {
+            "p": "直接添加 MCP 不需要插件。[插件](/plugins)可以把 MCP 工具、指令和其他组件打包在一起；各组件仍需要兼容的依赖、审查和权限。"
           }
         ]
       },
@@ -975,11 +1025,14 @@
         "title": "登录远程服务器",
         "blocks": [
           {
-            "p": "使用 OAuth 的服务器，先用 URL 添加再登录。使用 bearer token 的服务器，把令牌放在环境变量里，而不是写进配置文件："
+            "p": "直接配置 OAuth 服务器时，先添加它的真实 URL，再用你设置的服务器名称登录："
           },
           {
-            "code": "codewhale mcp login docs\ncodewhale mcp add tracker --url \"https://example.com/mcp\" --bearer-token-env-var TRACKER_TOKEN",
+            "code": "codewhale mcp login <server>\ncodewhale mcp logout <server>",
             "lang": "终端"
+          },
+          {
+            "p": "使用 bearer token 时，添加服务器时指定 `--bearer-token-env-var TOKEN_NAME`，并在启动 Codewhale 的环境中设置该变量。`env_headers` 把请求头名称映射到环境变量名。字面量 `headers` 不会展开 `${TOKEN_NAME}`。插件 MCP 不能使用 OAuth；需要 OAuth 时，请直接配置该服务器。"
           },
           {
             "p": "显式设置的 Authorization 请求头始终优先：先应用配置中的请求头，其次是 bearer token 环境变量，最后才是已保存的 OAuth 登录。`codewhale mcp logout <name>` 会删除本机保存的登录信息；提供商那边的授权可能仍然有效，需要到提供商处撤销。"
@@ -991,14 +1044,20 @@
         "title": "编辑配置文件",
         "blocks": [
           {
-            "p": "服务器配置保存在 `~/.codewhale/mcp.json`，`codewhale mcp init` 会生成一个初始文件。其他客户端使用的 `mcpServers` 键同样可用，现成的配置可以直接粘贴进来。"
+            "p": "全局服务器配置保存在 `~/.codewhale/mcp.json`；如果该文件不存在，仍会读取旧版 `~/.deepseek/mcp.json`。`codewhale mcp init` 会生成初始文件。可用绝对路径 `mcp_config_path` 或 `CODEWHALE_MCP_CONFIG` 覆盖默认位置。环境变量也接受 `DEEPSEEK_MCP_CONFIG`；两者都设置时，Codewhale 名称优先。"
           },
           {
-            "code": "{\n  \"servers\": {\n    \"example\": {\n      \"command\": \"node\",\n      \"args\": [\"./path/to/your-mcp-server.js\"],\n      \"env\": {},\n      \"disabled\": false\n    }\n  }\n}",
+            "code": "{\n  \"servers\": {\n    \"cloudflare-docs\": {\n      \"url\": \"https://docs.mcp.cloudflare.com/mcp\"\n    }\n  }\n}",
             "lang": "mcp.json"
           },
           {
-            "p": "修改文件后，在会话中运行 `/mcp reload` 即可，无需重启。服务器只在某个回合需要它的工具时才启动；如果希望它在启动时就连接，把它标记为 `\"required\": true`。"
+            "p": "`servers` 和别名 `mcpServers` 二选一，不要在同一文件中同时使用。`env_http_headers` 是 `env_headers` 的别名。请按服务器文档调整命令、参数和认证字段，不要假定所有客户端的配置格式都能直接互换。"
+          },
+          {
+            "p": "受信任的工作区可以提供 `.codewhale/mcp.json`，其中同名服务器会覆盖全局配置；仓库不能自行授予信任，也不能覆盖你的全局配置路径。全局或受信任项目中的显式配置，优先于标识冲突的插件服务器。"
+          },
+          {
+            "p": "修改后在 TUI 中运行 `/mcp reload` 即可，无需重启。默认情况下，已启用且获准的服务器会在会话启动时连接。用户配置的服务器可设置 `\"lazy\": true` 按需连接；设置 `\"required\": true` 后仍会在启动时连接。插件 MCP 清单没有 lazy 选项。无界面的运行时在配置变更后需要重启。"
           }
         ]
       },
@@ -1007,10 +1066,44 @@
         "title": "找到这些工具",
         "blocks": [
           {
-            "p": "每个工具在模型眼中的名字是 `mcp_<server>_<tool>`：名为 `git` 的服务器提供的 `status` 工具，就叫 `mcp_git_status`。`codewhale mcp tools <server>` 会列出某个服务器提供的工具。连接失败或已禁用的服务器，其工具永远不会显示为可用。"
+            "p": "每个工具在模型眼中的名字是 `mcp_<server>_<tool>`。本例中的文档搜索是 `mcp_cloudflare-docs_search_cloudflare_documentation`。`codewhale mcp tools <server>` 在自己的进程中列出发现的工具，不会把连接附加到正在运行的会话。"
           },
           {
-            "p": "MCP 工具遵循你的[审批设置](/docs/modes)：在策略允许时，列出和读取服务器的资源与提示词无需确认；有副作用的工具会先征求你的同意。Full Access 也不会绕过仓库规则或托管策略。"
+            "p": "MCP 工具遵循你的[审批设置](/docs/modes)、允许/拒绝规则及网络策略。调用前是否询问，取决于策略与权限姿态。Full Access 不会绕过仓库规则或托管策略。"
+          }
+        ]
+      },
+      {
+        "id": "troubleshooting",
+        "title": "工具没有出现时",
+        "blocks": [
+          {
+            "rows": [
+              [
+                "检查配置",
+                "`codewhale doctor` 提供静态路径和配置诊断。终端中的 `codewhale mcp validate` 会在独立进程中连接已启用且获准的服务器，属于实际连接检查。"
+              ],
+              [
+                "刷新当前会话",
+                "TUI 中的 `/mcp validate` 只显示上次快照，不会重新连接。配置变更后使用 `/mcp reload`；单个服务器可用 `/mcp retry <name>`。"
+              ],
+              [
+                "已连接但缺少工具",
+                "检查 `codewhale mcp tools <server>`、服务器声明的工具、`enabled_tools` / `disabled_tools`，以及会话的允许/拒绝规则。传输已连接不代表某个工具可用或已获准。"
+              ],
+              [
+                "需要认证",
+                "直接配置的 OAuth 服务器可运行 `/mcp login <name>`。令牌认证请检查变量是否存在于 Codewhale 的启动环境中。在一个进程中登录成功，不会把该进程的连接附加到另一个进程。"
+              ],
+              [
+                "本地命令失败",
+                "检查服务器程序、参数、工作目录和运行时。Windows 上的包运行器可能需要使用 `.cmd` 名称。请遵循服务器提供方的操作系统和依赖说明。"
+              ],
+              [
+                "插件服务器缺失",
+                "检查所属插件的审查、信任和启用状态。MCP 设置不能激活不受信任的插件，也不能绕过被拒绝的清单。"
+              ]
+            ]
           }
         ]
       },
@@ -1019,14 +1112,14 @@
         "title": "把 Codewhale 作为 MCP 服务器运行",
         "blocks": [
           {
-            "p": "其他 MCP 客户端可以把 Codewhale 作为工具服务器。默认仅暴露只读的 `file_read` 和 `search` 工具。"
+            "p": "支持 Codewhale 声明的 MCP 协议版本的客户端，可以把它作为 stdio 工具服务器启动。默认仅暴露只读的 `file_read` 和 `search` 工具。"
           },
           {
             "code": "codewhale mcp add-self\ncodewhale mcp tools codewhale",
             "lang": "终端"
           },
           {
-            "p": "`add-self` 注册通过 stdio 运行的 `codewhale serve --mcp`；`codewhale mcp-server` 是等价入口。除非操作者在服务器配置中明确允许，否则不会提供写入工具。[Runtime API](/docs/runtime-api) HTTP 是单独的传输方式。"
+            "p": "`add-self` 注册 `codewhale serve --mcp`；`codewhale mcp-server` 是等价入口。这个服务器从旧版路径 `~/.deepseek/mcp_server.toml` 读取独立的 `[server]` 设置，而不是客户端的 `mcp.json`。写入或 shell 工具需要显式列出，并设置 `require_approval = false`；这里没有交互式审批通道。[Runtime API](/docs/runtime-api) HTTP 与 MCP 分开。"
           }
         ]
       },
@@ -1034,6 +1127,9 @@
         "id": "code-mode",
         "title": "用代码模式组合工具调用（实验性）",
         "blocks": [
+          {
+            "note": "本节依据 main 候选版本的源码，可能包含比已发布 v0.10.2 更新的行为。"
+          },
           {
             "p": "代码模式让模型写一段简短的 JavaScript 程序，在其中调用多个工具、循环和筛选结果，而不必把每次调用都作为单独的一步。只有程序的最终结果会返回给模型，长时间的查找因此更紧凑。它默认开启——`execute_tools` 从第一条请求起就会提供——MCP 和插件工具与内置工具一样可以在程序中组合调用。关闭它并不会移除代码模式：`execute_tools` 会恢复为延迟加载，模型仍可通过 `tool_search` 找到它。要关闭它，可以只在一次会话中关闭，也可以在配置中关闭："
           },
@@ -1125,7 +1221,7 @@
               ],
               [
                 "Auto-Review",
-                "从不停下来问你。能确证安全的调用直接执行；发布类操作和破坏性的后台操作一律拦截；其余调用交给一次独立的模型审查。高风险调用和审查失败的调用会被拒绝，而不是执行。"
+                "自动审查工具调用，但仍可能请你作出选择。能确证安全的调用直接执行；发布类操作和破坏性的后台操作一律拦截；其余调用交给一次独立的模型审查。高风险调用和审查失败的调用会被拒绝，而不是执行。"
               ],
               [
                 "Full Access",
@@ -1553,7 +1649,7 @@
             "p": "如果两个子智能体会修改同一个仓库，请让它们各自在自己的工作树里工作。Codewhale 会在你的仓库旁边的 `.codewhale-worktrees/` 下，为该智能体创建新的 git 工作树和分支；在你合并之前，你的工作副本保持干净。"
           },
           {
-            "p": "工作树只是隔离，不代表授权：需要写入的智能体仍然要有可写的角色，以及允许修改的路径。两个智能体如果声明要改同一批文件，会在任何一方动手之前就被拦下。"
+            "p": "工作树只是隔离，不代表授权：写入者仍需可写角色和允许修改的路径。如果新写入声明与同一工作副本中的活动声明重叠，宿主会拒绝新申请，不会回退或暂停已在工作的写入者。"
           }
         ]
       },
@@ -1569,7 +1665,7 @@
             "p": "`/subagents`（与 `/fleet workers` 是同一个视图）会列出挂在本次会话上的智能体，以及每个智能体正在做什么。选中一个即可阅读它的对话记录。"
           },
           {
-            "p": "子智能体遵循你的[审批设置](/docs/modes)。在 Ask 下，需要审批的调用会像普通提示一样出现在你的会话里，智能体则在一旁等待；在 Auto-Review 下，每个被拦下的调用都会经过同样的独立审查，不会打扰你。凡是不是由你亲自做出的决定，都会写进该智能体的对话记录。"
+            "p": "子智能体遵循你的[审批设置](/docs/modes)，并可能受到更严格的限制。在 Ask 下，需要审批的调用会出现在你的会话中，智能体等待回应。Auto-Review 按策略处理工具审批，并在适用时进行独立审查；被策略拦截或审查失败的调用会被拒绝。可在子智能体对话记录中查看决定和拒绝原因。操作系统及已连接服务的权限仍可能需要你处理。"
           }
         ]
       },
@@ -1585,16 +1681,16 @@
               ],
               [
                 "排队加运行",
-                "最多 1,024 个；超出的启动请求会排队等待。"
+                "默认最多接纳 1,024 个，可用 `[subagents] max_admitted` 配置。已接纳的智能体等待执行位置；超过接纳上限的新启动请求会被拒绝。"
               ],
               [
                 "嵌套",
-                "子智能体也可以再启动子智能体，默认最多三层，绝不超过八层。"
+                "默认没有产品层级深度上限。可用 `[subagents] max_depth` 设置你选择的上限；子智能体请求不能放宽继承的限制。"
               ]
             ]
           },
           {
-            "p": "这些只是上限，不是目标。少量边界清晰的智能体加一份清楚的汇总，胜过一大堆彼此重叠的智能体。如果工作需要在重启或笔记本休眠后继续，请改用 [Fleet 运行](/docs/fleet)。"
+            "p": "这些是容量控制，不是目标，请明确每个智能体的范围。持久的 [Fleet 运行](/docs/fleet)会在管理进程退出后保留记录，但恢复需要明确操作：核对过期租约、检查结果，再决定是否重启某个智能体。机器休眠时不会继续执行。"
           }
         ]
       }
@@ -1748,9 +1844,6 @@
           },
           {
             "p": "也可以在 Codewhale 里连接：按 F3（或输入 `/provider`），选择提供商，粘贴密钥，再选一个模型。"
-          },
-          {
-            "note": "在 v0.10.0 中，`auth set --provider deepseek` 还会把默认模型切换为 DeepSeek Pro。想换回更快、更便宜的模型，运行 `/model` 即可。通过 F3 连接则会保留你当前的模型。"
           }
         ]
       },
@@ -1789,7 +1882,7 @@
             "p": "`codewhale auth list` 会列出 Codewhale 支持的所有提供商，以及每个提供商是否已有密钥。所有提供商的用法都一样：`codewhale auth set --provider <name>`，或者设置该提供商的环境变量。"
           },
           {
-            "p": "本地运行器——Ollama、vLLM 和 SGLang——默认不需要密钥，你的提示词也不会离开本机。先启动运行器，再选择它："
+            "p": "本地 Ollama、vLLM 和 SGLang 服务默认无需 API 密钥。使用本机模型时，请连接回环地址，再选择该服务提供的准确模型标签："
           },
           {
             "code": "codewhale auth list\ncodewhale --provider ollama --model <model-tag>",
@@ -2021,10 +2114,10 @@
   },
   "changelog": {
     "metaTitle": "更新日志 · Codewhale",
-    "metaDescription": "Codewhale 发布记录：最新已发布版本、尚未发布的源码候选版，以及每个版本的说明，均取自仓库中的 CHANGELOG.md。",
+    "metaDescription": "Codewhale 与 Computer Use 插件的发布说明、已发布版本和后续改动。",
     "kicker": "发布记录",
     "title": "改了什么，在哪个版本。",
-    "lead": "页面顶部是两个事实：最新发布的版本，以及源码树当前声明的版本。下面的内容逐节来自仓库自己的 CHANGELOG.md。",
+    "lead": "正式发布与即将推出的改动。",
     "publishedLabel": "最新已发布版本",
     "publishedValue": "{tag} · 发布于 {date}",
     "candidateLabel": "源码候选版",
@@ -2048,15 +2141,15 @@
     "allReleasesLink": "全部版本"
   },
   "computer-use": {
-    "metaTitle": "Computer Use · 预览 · Codewhale",
-    "metaDescription": "预览功能：下载并设置 Mac 版 Codewhale Computer Use。提供应用后台操作、权限设置，以及由用户控制的暂停和停止功能。",
+    "metaTitle": "Computer Use · Mac 测试版 · Codewhale",
+    "metaDescription": "智能体在 Mac 应用中后台操作，你可以继续使用电脑。下载经过 Apple 公证的 Computer Use 助手，并连接兼容的 MCP 宿主。",
     "title": "Computer Use",
-    "lead": "你继续自己的工作，让 Codewhale 在各个应用间帮你操作。在这台 Mac 上授权一次，随时都能停止电脑操作。",
+    "lead": "让智能体在 Mac 应用中工作，你可以继续使用电脑。",
     "publisher": "由 Codewhale 开发",
     "download": "下载 Mac 版",
     "downloadZip": "ZIP 压缩包（供应用内更新使用）",
     "requirements": "macOS 13.5 或更高版本 · Apple 芯片与 Intel",
-    "included": "只需下载一个应用，无需另行安装 Node 或编译器。",
+    "included": "Mac 助手自带运行环境。请在 MCP 宿主中连接 Computer Use；宿主需要单独设置。",
     "pendingTitle": "Mac 下载包准备中",
     "pendingBody": "完成 Apple 公证和发布检查后，正式安装包将在此提供。",
     "unavailableTitle": "暂时无法查询下载状态",
@@ -2074,18 +2167,30 @@
         "body": "通过设置按钮打开系统设置中的“辅助功能”和“屏幕录制”。由你决定授予哪些权限。"
       },
       {
-        "title": "启用 Computer Use",
-        "body": "在 Codewhale 的 Connectors 设置中安装或更新 Computer Use，然后审查并启用它。请它在应用中执行任务。首次使用时，在原生助手中选择 Trust until revoked；之后切换应用、模型或任务时，这份信任都会继续有效。"
+        "title": "连接智能体",
+        "body": "选择下方适用于你的 CLI 版本的 Codewhale 设置方式。其他兼容 MCP 的宿主请参阅仓库中的设置指南。"
       }
     ],
     "controlsTitle": "随时掌握控制权",
-    "controlsBody": "操作目标应用旁会显示小巧的 Codewhale 控件。Pause 暂停电脑操作，Stop computer use 结束所有当前电脑会话。在 Settings 的 Remembered access 中选择 Turn off，即可撤销 Codewhale 的访问权限。想观看操作过程时，再请求打开实时预览。",
+    "controlsBody": "授予 macOS 权限后，标准模式无需逐个应用询问。你禁用的应用仍不可访问；Pause 暂停电脑操作，Stop computer use 结束当前会话。也可选择严格审批模式。想观看操作过程时，再请求打开实时预览。",
     "updateTitle": "由你决定何时更新",
     "updateBody": "在应用中选择 Check for updates。安装更新前，助手会校验下载文件、Codewhale 签名和 Apple 公证，并保留旧版应用以便恢复。",
     "help": "设置与故障排查",
     "notes": "版本说明",
     "demo": "查看后台检查演示",
-    "source": "源码与其他平台",
-    "platforms": "此下载适用于 Mac。Windows 和 Linux 目前通过源码插件及宿主端设置使用。"
+    "source": "在 GitHub 上查看",
+    "platforms": "Mac 助手为测试版，市场插件支持 Mac。已发布版本另含未签名的 Windows x64 实验性预览包；Linux 需要实验性源码或 Docker 设置。Windows 和 Linux 的输入使用共享桌面。",
+    "connectTitle": "连接 Codewhale",
+    "connectVersion": "Codewhale 0.10.2 内置较旧的 Computer Use 插件，安装目录中的同名条目不会将其升级。请通过 MCP 直接连接已安装的 Mac 助手。",
+    "connectLimit": "直接连接 MCP 只添加工具，不包含插件技能。请勿与旧版内置插件同时使用；如果该插件已启用，请先运行 /plugin disable computer-use。",
+    "connectRuntime": "应用自带 Node，无需另行安装。如果应用安装在其他位置，请将 APP 设为实际应用包路径。",
+    "connectReload": "在正在运行的终端会话中执行 /mcp reload，切换到 Operate，然后输入：",
+    "connectPrompt": "使用 request_access 检查 Computer Use 权限。不要发送任何输入。",
+    "connectExpected": "检查回复中的 via: app、助手版本及缺少的权限。如果找不到助手，请停止并按设置提示操作。此步骤仅检查连接和权限。",
+    "connectGuide": "MCP 设置指南",
+    "contributeTitle": "一起改进 Computer Use",
+    "contributeBody": "完善文档，或测试应用操作流程并分享可复现的结果。",
+    "contributeGuide": "贡献指南",
+    "contributeIssue": "报告问题"
   }
 }

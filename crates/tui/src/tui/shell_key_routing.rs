@@ -55,6 +55,7 @@ pub enum Focus {
 pub enum FocusScope {
     TerminalPanel,
     RoutePicker,
+    AccountLogin,
     PetHabitat,
     Pet,
     /// Only the sandbox-elevation decision card.
@@ -79,6 +80,7 @@ impl FocusScope {
     pub fn admits(self, focus: Focus) -> bool {
         match self {
             Self::TerminalPanel => focus == Focus::TerminalPanel,
+            Self::AccountLogin => focus == Focus::Modal(ModalKind::AccountLogin),
             Self::RoutePicker => matches!(
                 focus,
                 Focus::Modal(ModalKind::ProviderPicker | ModalKind::ModelPicker)
@@ -110,6 +112,11 @@ impl FocusScope {
 /// Stable binding ids shared by handlers, footer hints, and help catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellBindingId {
+    AccountLoginOpenBrowser,
+    AccountLoginCopyLink,
+    AccountLoginCancel,
+    AccountLoginSelect,
+    AccountLoginNext,
     TerminalNew,
     TerminalNext,
     TerminalPrevious,
@@ -173,6 +180,21 @@ impl ShellBinding {
     #[must_use]
     pub fn matches(&self, key: &KeyEvent) -> bool {
         match self.id {
+            ShellBindingId::AccountLoginSelect => {
+                key.code == KeyCode::Enter && key.modifiers.is_empty()
+            }
+            ShellBindingId::AccountLoginNext => {
+                matches!(key.code, KeyCode::Down | KeyCode::Tab) && key.modifiers.is_empty()
+            }
+            ShellBindingId::AccountLoginOpenBrowser => {
+                key.code == KeyCode::Char('o') && key.modifiers.is_empty()
+            }
+            ShellBindingId::AccountLoginCopyLink => {
+                key.code == KeyCode::Char('c') && key.modifiers.is_empty()
+            }
+            ShellBindingId::AccountLoginCancel => {
+                key.code == KeyCode::Esc && key.modifiers.is_empty()
+            }
             ShellBindingId::TerminalNew => {
                 key.code == KeyCode::Char('n') && key.modifiers == KeyModifiers::CONTROL
             }
@@ -259,6 +281,36 @@ pub fn route(focus: Focus, key: &KeyEvent) -> Option<ShellBindingId> {
 
 /// Canonical shell bindings. Handlers and chrome read from here.
 pub const SHELL_BINDINGS: &[ShellBinding] = &[
+    ShellBinding {
+        id: ShellBindingId::AccountLoginSelect,
+        catalog_chord: "Enter",
+        footer_chord: "Enter",
+        focus: FocusScope::AccountLogin,
+    },
+    ShellBinding {
+        id: ShellBindingId::AccountLoginNext,
+        catalog_chord: "Down / Tab",
+        footer_chord: "↓/Tab",
+        focus: FocusScope::AccountLogin,
+    },
+    ShellBinding {
+        id: ShellBindingId::AccountLoginOpenBrowser,
+        catalog_chord: "o",
+        footer_chord: "o",
+        focus: FocusScope::AccountLogin,
+    },
+    ShellBinding {
+        id: ShellBindingId::AccountLoginCopyLink,
+        catalog_chord: "c",
+        footer_chord: "c",
+        focus: FocusScope::AccountLogin,
+    },
+    ShellBinding {
+        id: ShellBindingId::AccountLoginCancel,
+        catalog_chord: "Esc",
+        footer_chord: "Esc",
+        focus: FocusScope::AccountLogin,
+    },
     ShellBinding {
         id: ShellBindingId::TerminalNew,
         catalog_chord: "Ctrl+N",

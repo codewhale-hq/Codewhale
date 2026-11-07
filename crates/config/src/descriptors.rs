@@ -234,7 +234,9 @@ mod tests {
             assert!(!row.default_model.is_empty(), "{}", row.id);
             assert!(matches!(
                 row.discovery,
-                DescriptorDiscovery::ModelsEndpoint | DescriptorDiscovery::PublicModelsEndpoint
+                DescriptorDiscovery::ModelsEndpoint
+                    | DescriptorDiscovery::PublicModelsEndpoint
+                    | DescriptorDiscovery::None
             ));
             assert_eq!(row.wire, DescriptorWire::OpenaiCompatible);
         }
@@ -436,6 +438,6 @@ mod tests {
         // reusing its name; compatible-host lookup remains separately scoped.
         assert!(provider_descriptor("openai").is_none());
         assert!(provider_descriptor("deepseek").is_none());
-        assert_eq!(bundled_provider_descriptors().len(), 14);
+        assert_eq!(bundled_provider_descriptors().len(), 15);
     }
 }

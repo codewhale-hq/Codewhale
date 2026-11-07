@@ -10,31 +10,55 @@ import type { DocsMcpDict } from "../types";
 export const docsMcp: DocsMcpDict = {
   metaTitle: "Connect tools with MCP · Codewhale Docs",
   metaDescription:
-    "Add Model Context Protocol servers so Codewhale can use more tools, sign in to remote servers, run Codewhale itself as an MCP server, and try code mode.",
+    "Connect local and remote MCP servers, understand authentication and plugin compatibility, and troubleshoot missing tools.",
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Connect tools with MCP",
   lede:
-    "MCP servers give Codewhale more tools — a database, an issue tracker, a browser. Add a local server that Codewhale starts for you, or a remote server by URL. Its tools then go through the same approvals as built-in ones.",
+    "Connect a local tool server or a remote service through Model Context Protocol. Codewhale discovers its tools and applies your tool permissions and approvals when you use them.",
   sections: [
     {
       id: "add",
-      title: "Add a server",
+      title: "Try the Cloudflare Docs server",
       blocks: [
         {
-          code: `codewhale mcp add git --command "uvx" --arg "mcp-server-git"
-codewhale mcp add docs --url "https://example.com/mcp"
-codewhale mcp list
-codewhale mcp validate`,
+          p: "The public [Cloudflare Documentation server](https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/) provides documentation search and a Pages-to-Workers migration guide. [View its official source](https://github.com/cloudflare/mcp-server-cloudflare/tree/main/apps/docs-vectorize). Add it without credentials:",
+        },
+        {
+          code: `codewhale mcp add cloudflare-docs --url "https://docs.mcp.cloudflare.com/mcp"
+codewhale mcp tools cloudflare-docs`,
           lang: "Terminal",
         },
         {
-          p: "`--command` starts a local server over stdio; repeat `--arg` for each argument. `--url` connects to a remote server over Streamable HTTP, with legacy SSE as a fallback. `mcp validate` checks the config and the servers you require.",
+          p: "The tool list should include `search_cloudflare_documentation` and `migrate_pages_to_workers_guide`. In an existing TUI session, run `/mcp reload` to load the new configuration into that session.",
+        },
+        {
+          note: "Checked on November 7, 2026 with published CLI v0.10.2: both commands exited successfully and listed those two tools without credentials. This checked setup and discovery, not tool execution. The [released guide](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MCP.md) describes that version; the [main source guide](https://github.com/codewhale-hq/Codewhale/blob/main/docs/MCP.md) may include unreleased changes.",
         },
         {
           p: "Inside a session, `/mcp` opens the MCP manager: each server's state, transport, timeouts, errors, and discovered tools. The same actions are available there, for example `/mcp add stdio <name> <command>` and `/mcp add http <name> <url>`.",
         },
         {
-          note: "An MCP server runs with your permissions. Add only servers you trust, as you would any program you install.",
+          note: "Local MCP servers run with the permissions of the Codewhale process; remote calls use the access you grant that service. Add only servers you trust.",
+        },
+      ],
+    },
+    {
+      id: "compatibility",
+      title: "What can connect",
+      blocks: [
+        {
+          rows: [
+            ["Local stdio", "Codewhale starts the executable you configure with `--command`; repeat `--arg` for its arguments. Install the server and its required runtime first."],
+            ["Remote HTTP / SSE", "Use `--url` for Streamable HTTP, with legacy SSE fallback. A legacy SSE endpoint can use `--transport sse`. A remote entry does not need `command`."],
+            ["Direct remote authentication", "Your own MCP configuration can use environment-backed headers, bearer tokens or OAuth. OAuth needs compatible server metadata and client registration."],
+            ["Plugin-contributed MCP", "A reviewed, enabled plugin can supply stdio or remote MCP servers. Plugin MCP supports environment-backed authentication, but plugin-contributed MCP OAuth is unsupported."],
+            ["Tools, resources and prompts", "Codewhale discovers what the server actually advertises. Resources, templates and prompts are available when the server implements them."],
+            ["Optional extensions and MCP Apps", "General MCP Apps UI support is not available. Basic MCP transport support does not guarantee support for every optional extension or server."],
+            ["Server requirements", "Each server keeps its own OS, executable, browser, dependency and account requirements. A local server runs on the computer hosting Codewhale; Computer Use has its own platform limits."],
+          ],
+        },
+        {
+          p: "A direct MCP entry does not require a plugin. [Plugins](/plugins) can package MCP tools with instructions and other components; each component still needs compatible dependencies, review and permissions.",
         },
       ],
     },
@@ -43,12 +67,15 @@ codewhale mcp validate`,
       title: "Sign in to a remote server",
       blocks: [
         {
-          p: "For a server that uses OAuth, add it by URL and log in. For a bearer token, keep the token in an environment variable instead of the config file:",
+          p: "For a directly configured OAuth server, add its real URL, then log in using the name you gave it:",
         },
         {
-          code: `codewhale mcp login docs
-codewhale mcp add tracker --url "https://example.com/mcp" --bearer-token-env-var TRACKER_TOKEN`,
+          code: `codewhale mcp login <server>
+codewhale mcp logout <server>`,
           lang: "Terminal",
+        },
+        {
+          p: "For a bearer token, use `--bearer-token-env-var TOKEN_NAME` when adding the server, and set that variable in the environment launching Codewhale. `env_headers` maps header names to environment variable names. Literal `headers` values do not expand `${TOKEN_NAME}`. Plugin MCP entries cannot use OAuth; configure that server directly instead.",
         },
         {
           p: "An explicit Authorization header always wins: headers from config apply first, then the bearer-token variable, then a stored OAuth login. `codewhale mcp logout <name>` removes the stored login on this machine; the provider may keep its own grant until you revoke it there.",
@@ -60,23 +87,26 @@ codewhale mcp add tracker --url "https://example.com/mcp" --bearer-token-env-var
       title: "Edit the config file",
       blocks: [
         {
-          p: "Servers live in `~/.codewhale/mcp.json`. `codewhale mcp init` writes a starter file. The `mcpServers` key used by other clients works too, so you can paste an existing entry.",
+          p: "Global servers live in `~/.codewhale/mcp.json`; the legacy `~/.deepseek/mcp.json` is read when the Codewhale file is absent. `codewhale mcp init` writes a starter file. Use an absolute `mcp_config_path` or `CODEWHALE_MCP_CONFIG` to override it. The environment also accepts `DEEPSEEK_MCP_CONFIG`; the Codewhale name wins when both are set.",
         },
         {
           code: `{
   "servers": {
-    "example": {
-      "command": "node",
-      "args": ["./path/to/your-mcp-server.js"],
-      "env": {},
-      "disabled": false
+    "cloudflare-docs": {
+      "url": "https://docs.mcp.cloudflare.com/mcp"
     }
   }
 }`,
           lang: "mcp.json",
         },
         {
-          p: "After editing the file, run `/mcp reload` in the session; no restart is needed. A server starts only when a turn needs one of its tools, unless you mark it `\"required\": true` to connect at startup.",
+          p: "Use either `servers` or its `mcpServers` alias, never both in one file. `env_http_headers` is an alias for `env_headers`. Adapt the server's documented command, arguments and auth fields rather than assuming every client's configuration format is interchangeable.",
+        },
+        {
+          p: "A trusted workspace can add `.codewhale/mcp.json`. Its entries override same-named global servers; the repository cannot grant itself that trust or override your global config path. Explicit global or trusted-project entries win over a colliding plugin server identity.",
+        },
+        {
+          p: "After editing, run `/mcp reload` in the TUI; no restart is needed. Enabled, allowed servers connect at session start by default. Set `\"lazy\": true` on a user-configured server to connect on demand; `\"required\": true` still connects it at startup. Plugin MCP servers have no lazy manifest option. Headless runtimes need a restart after config changes.",
         },
       ],
     },
@@ -85,10 +115,26 @@ codewhale mcp add tracker --url "https://example.com/mcp" --bearer-token-env-var
       title: "Find the tools",
       blocks: [
         {
-          p: "Each tool appears to the model as `mcp_<server>_<tool>`: a server named `git` with a `status` tool becomes `mcp_git_status`. `codewhale mcp tools <server>` lists what a server offers. A server that fails to connect or is disabled never shows up as an available tool.",
+          p: "Each tool appears to the model as `mcp_<server>_<tool>`. For this example, documentation search is `mcp_cloudflare-docs_search_cloudflare_documentation`. `codewhale mcp tools <server>` lists discovered tools in its own process; it does not attach those connections to a running session.",
         },
         {
-          p: "MCP tools follow your [approval setting](/docs/modes): listing and reading a server's resources and prompts can run without a prompt when policy allows, and tools with side effects ask first. Full Access does not override repository rules or managed policy.",
+          p: "MCP tools follow your [approval setting](/docs/modes), allow/deny rules and network policy. Whether a call asks first depends on that policy and posture. Full Access does not override repository rules or managed policy.",
+        },
+      ],
+    },
+    {
+      id: "troubleshooting",
+      title: "When tools do not appear",
+      blocks: [
+        {
+          rows: [
+            ["Check configuration", "Run `codewhale doctor` for static path and configuration diagnostics. Shell `codewhale mcp validate` connects enabled, allowed servers in a separate process; it is a live check."],
+            ["Refresh this session", "TUI `/mcp validate` shows its last snapshot without reconnecting. Use `/mcp reload` after config changes, or `/mcp retry <name>` for one server."],
+            ["Connected, but missing a tool", "Check `codewhale mcp tools <server>`, the server's advertised tools, `enabled_tools` / `disabled_tools`, and the session's allow/deny rules. A connected transport alone does not mean a tool is available or permitted."],
+            ["Authentication required", "For a direct OAuth server, run `/mcp login <name>`. For token auth, check that the variable is present in Codewhale's launch environment. A successful login in one process does not attach its transport to another."],
+            ["Local command fails", "Check the server's executable, arguments, working directory and runtime. On Windows, package runners may need their `.cmd` name. Follow the server vendor's OS and dependency instructions."],
+            ["Plugin server is absent", "Check the owning plugin's review, trust and enabled state. MCP settings cannot activate an untrusted plugin or bypass a rejected manifest."],
+          ],
         },
       ],
     },
@@ -97,7 +143,7 @@ codewhale mcp add tracker --url "https://example.com/mcp" --bearer-token-env-var
       title: "Run Codewhale as an MCP server",
       blocks: [
         {
-          p: "Other MCP clients can use Codewhale as a tool server. By default, it exposes only read-only `file_read` and `search` tools.",
+          p: "A client supporting Codewhale's advertised MCP protocol revisions can launch it as a stdio tool server. By default, it exposes only read-only `file_read` and `search` tools.",
         },
         {
           code: `codewhale mcp add-self
@@ -105,7 +151,7 @@ codewhale mcp tools codewhale`,
           lang: "Terminal",
         },
         {
-          p: "`add-self` registers `codewhale serve --mcp` over stdio; `codewhale mcp-server` is the equivalent entry point. Write tools stay withheld unless the operator explicitly permits them in server configuration. [Runtime API](/docs/runtime-api) HTTP is a separate transport.",
+          p: "`add-self` registers `codewhale serve --mcp`; `codewhale mcp-server` is the equivalent entry point. This server reads its separate `[server]` settings from the legacy `~/.deepseek/mcp_server.toml`, not the client `mcp.json`. Write or shell tools require explicit exposure and `require_approval = false`; there is no interactive approval channel. [Runtime API](/docs/runtime-api) HTTP is separate from MCP.",
         },
       ],
     },
@@ -113,6 +159,9 @@ codewhale mcp tools codewhale`,
       id: "code-mode",
       title: "Compose tool calls with code mode (experimental)",
       blocks: [
+        {
+          note: "This section follows the main candidate's source and can include behavior newer than published v0.10.2.",
+        },
         {
           p: "Code mode lets the model write one short JavaScript program that calls several tools, loops, and filters results, instead of making each call as a separate step. Only the program's final value goes back to the model, which keeps long lookups compact. It is on by default — `execute_tools` is advertised from the first request — and MCP and plugin tools compose inside a program the same way built-in ones do. Turning it off does not remove code mode: `execute_tools` goes back to being deferred, and the model can still find it through `tool_search`. To turn it off for one session, or in config:",
         },

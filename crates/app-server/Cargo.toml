@@ -26,6 +26,7 @@ default = []
 test-support = ["codewhale-engine/test-support"]
 
 [dependencies]
+codewhale-account-cli = { path = "../account-cli", version = "0.10.3" }
 codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3" }
 anyhow.workspace = true
 axum.workspace = true

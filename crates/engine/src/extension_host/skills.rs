@@ -695,7 +695,9 @@ mod tests {
 
     #[test]
     fn reviewed_skill_root_parser_bounds_accumulation_and_parent_claims() {
-        let (_many, authority) = parser_bundle(129, 1);
+        let (many, authority) = parser_bundle(129, 1);
+        let _many_stage =
+            codewhale_plugins::test_fixture::finalize_staged_bundle(many.path()).unwrap();
         assert!(
             codewhale_plugins::discovery::load_staged_skill_root_snapshots(
                 &authority,
@@ -704,7 +706,9 @@ mod tests {
             .unwrap_err()
             .contains("candidate count")
         );
-        let (_large, authority) = parser_bundle(8, 600 * 1024);
+        let (large, authority) = parser_bundle(8, 600 * 1024);
+        let _large_stage =
+            codewhale_plugins::test_fixture::finalize_staged_bundle(large.path()).unwrap();
         assert!(
             codewhale_plugins::discovery::load_staged_skill_root_snapshots(
                 &authority,
@@ -727,6 +731,8 @@ mod tests {
         .unwrap();
         authority.content_hash = validated.content_hash;
         authority.capability_hash = validated.capability_hash;
+        let _one_stage =
+            codewhale_plugins::test_fixture::finalize_staged_bundle(one.path()).unwrap();
         let snapshots = codewhale_plugins::discovery::load_staged_skill_root_snapshots(
             &authority,
             Path::new("skills"),
@@ -765,6 +771,7 @@ mod tests {
         std::fs::write(&manifest, "schema_version = 1\n[plugin]\nname = \"bounded-skills\"\nversion = \"0.1.0\"\n[skills]\npath = \"skills\"\n[native]\npath = \"index.mjs\"\n").unwrap();
         let validated =
             codewhale_plugins::manifest::PluginManifest::validate_from_path(&manifest).unwrap();
+        let _stage = codewhale_plugins::test_fixture::finalize_staged_bundle(temp.path()).unwrap();
         let declared = codewhale_plugins::discovery::load_staged_skill_snapshots(
             &validated.canonical_root,
             &validated.content_hash,

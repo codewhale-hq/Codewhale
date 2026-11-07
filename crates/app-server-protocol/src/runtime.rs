@@ -123,6 +123,8 @@ pub struct RuntimeCapabilities {
     /// `GET`/`POST /v1/worktrees` and `POST /v1/worktrees/remove`.
     #[serde(default)]
     pub worktrees: bool,
+    #[serde(default)]
+    pub job_operations: bool,
     /// Explicit per-thread shell opt-in is checked against loaded policy and
     /// cannot broaden a conversation while it has an active turn.
     #[serde(default)]
@@ -537,6 +539,7 @@ mod tests {
             thread_scoped_git_writes: true,
             thread_scoped_snapshots: true,
             worktrees: true,
+            job_operations: true,
             thread_shell_consent: true,
             turns: true,
             turn_operation_idempotency: true,

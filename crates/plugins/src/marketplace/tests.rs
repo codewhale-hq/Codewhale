@@ -311,17 +311,19 @@ fn claude_source_object_matrix_matches_documented_forms() {
     assert!(gh.install_plan.is_supported());
     assert!(matches!(&gh.source,
         MarketplaceSourceSpec::GitHub { git_ref: Some(r), .. } if r == "v1"));
-    assert!(gh.diagnostics.iter().any(|d| d.code == "UNAPPLIED_PIN"));
+    assert!(
+        matches!(&gh.install_plan, MarketplaceInstallPlan::Supported { spec, .. } if spec == "git:github.com/a/b@v1")
+    );
 
     let url = catalog.candidate_by_name("u").unwrap();
     assert!(!url.install_plan.is_supported());
     assert!(matches!(url.source, MarketplaceSourceSpec::GitUrl { .. }));
 
     let gs = catalog.candidate_by_name("gs").unwrap();
-    assert!(gs.install_plan.is_supported());
-    assert!(matches!(&gs.source,
-        MarketplaceSourceSpec::GitHub { owner, repo, .. }
-            if owner == "a" && repo == "sub"));
+    assert!(!gs.install_plan.is_supported());
+    assert!(
+        matches!(&gs.source, MarketplaceSourceSpec::GitUrl { url } if url == "https://github.com/a/sub")
+    );
 
     let np = catalog.candidate_by_name("np").unwrap();
     assert!(!np.install_plan.is_supported());

@@ -41,6 +41,32 @@ mod platform {
         tokio::io::WriteHalf<Connection>,
     >;
 
+    fn same_socket_selection(left: &std::path::Path, right: &std::path::Path) -> bool {
+        if left == right {
+            return true;
+        }
+        #[cfg(unix)]
+        {
+            if left.file_name().is_none() || left.file_name() != right.file_name() {
+                return false;
+            }
+            match (
+                left.parent()
+                    .map(codewhale_paths::resolve_root_owned_ancestors),
+                right
+                    .parent()
+                    .map(codewhale_paths::resolve_root_owned_ancestors),
+            ) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            }
+        }
+        #[cfg(windows)]
+        {
+            false
+        }
+    }
+
     pub struct OwnerClient {
         read: BoundedLines<BufReader<tokio::io::ReadHalf<OwnerTransport>>>,
         write: tokio::io::WriteHalf<OwnerTransport>,
@@ -194,7 +220,7 @@ mod platform {
                 old.version == owner.version
                     && old.data_dir == owner.data_dir
                     && old.execution_scope == owner.execution_scope
-                    && old.socket_path == endpoint
+                    && same_socket_selection(&old.socket_path, endpoint)
                     && old.config_path == owner.config_path
                     && old.principal == owner.principal,
                 "captured stale owner belongs to another selected store/config/principal"
@@ -278,7 +304,7 @@ mod platform {
             anyhow::ensure!(
                 receipt.version == 1
                     && receipt.pid > 0
-                    && receipt.socket_path == socket_path
+                    && same_socket_selection(&receipt.socket_path, &socket_path)
                     && !receipt.lease_generation.is_empty(),
                 "selected owner receipt is invalid"
             );

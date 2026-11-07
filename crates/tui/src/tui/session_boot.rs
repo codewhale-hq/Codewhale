@@ -96,16 +96,10 @@ impl PluginBootSummary {
                 .any(|diagnostic| diagnostic.level == PluginDiagnosticLevel::Error)
             {
                 invalid += 1;
-            } else if plugin.enabled && plugin_trust_needs_setup(plugin.trust_status) {
-                // A bundle that is enabled but no longer trusted — its content
-                // or capabilities moved since the review, or it was switched on
-                // without one — is the problem this chip exists for. A disabled,
-                // never-reviewed bundle is a shipped default resting where it
-                // was shipped (every built-in starts that way), not a problem:
-                // counting it put "Plugins · Problems" in the footer of every
-                // fresh install until each built-in had been reviewed, whether
-                // or not anyone meant to enable it. Extensions still lists it
-                // with its review action.
+            } else if plugin.enabled
+                && (plugin_trust_needs_setup(plugin.trust_status)
+                    || plugin.state_label() == "unstaged")
+            {
                 needs_setup += 1;
             }
         }

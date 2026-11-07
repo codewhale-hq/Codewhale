@@ -5144,7 +5144,7 @@ fn mistral_provider_resolves_defaults_and_metadata() {
     );
     assert_eq!(
         help.credential_url,
-        Some("https://console.mistral.ai/api-keys")
+        Some("https://chat.mistral.ai/code/extensions")
     );
 
     let config: ConfigToml = toml::from_str(

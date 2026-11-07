@@ -337,6 +337,7 @@ pub(crate) enum OnboardingKeyRoute {
     Quit,
     /// Hand the key to the provider picker on the view stack.
     ProviderPicker,
+    AccountLogin,
     /// Take the advertised offline exit (#3927). Reachable from Provider
     /// setup even while the provider picker owns the screen, so the choice is
     /// never hidden behind a modal the user cannot satisfy.
@@ -644,7 +645,7 @@ const BALANCE_FETCH_COOLDOWN: Duration = Duration::from_secs(60);
 /// Shared `reqwest::Client` for balance fetches so connection pools are
 /// reused across successive background polls.
 static BALANCE_CLIENT: LazyLock<::reqwest::Client> = LazyLock::new(|| {
-    codewhale_release::tls::reqwest_client_builder()
+    codewhale_net::proxy::install_loopback_proxy(codewhale_release::tls::reqwest_client_builder())
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default()

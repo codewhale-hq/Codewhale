@@ -132,6 +132,24 @@ pub struct StoredAccountAuth {
     pub bundle: AccountAuthBundle,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[doc = "A session-bound device key held inside the shared private account record."]
+pub struct AccountDeviceAccess {
+    #[doc = "Stable device UUID scoped to the account profile and API origin."]
+    pub device_id: String,
+    #[doc = "Secret device credential; never include it in runtime receipts or diagnostics."]
+    pub credential: String,
+    #[doc = "Server identifier used to revoke this device key."]
+    pub api_key_id: String,
+    #[doc = "Account that owns the device key."]
+    pub account_id: String,
+    #[doc = "Parent authentication session that authorizes this key."]
+    pub session_id: String,
+    #[doc = "Device-key expiry as Unix seconds, bounded by the parent refresh lifetime."]
+    pub expires_at: i64,
+}
+
 /// Normalized account states exposed by the token-free Runtime API contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -222,13 +240,81 @@ pub struct AccountSessionSnapshot {
 }
 
 impl AccountSessionSnapshot {
+    #[doc = "Read validated device custody from this snapshot; the caller checks key expiry."]
+    pub fn device_access(&self) -> Result<Option<AccountDeviceAccess>, AccountSessionError> {
+        let Some(stored) = self.load()? else {
+            return Ok(None);
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(self.raw.as_deref().unwrap_or_default())
+                .map_err(AccountSessionError::UnreadableRecord)?;
+        let Some(access) = value.get("deviceAccess") else {
+            return Ok(None);
+        };
+        let access: AccountDeviceAccess = serde_json::from_value(access.clone())
+            .map_err(AccountSessionError::UnreadableRecord)?;
+        validate_device_access(&stored.bundle, &access)?;
+        Ok(Some(access))
+    }
+
+    #[doc = "Whether the captured slot contains no record, including no logout tombstone."]
+    pub fn is_pristine(&self) -> bool {
+        self.raw.is_none()
+    }
+
+    #[doc = "Project this exact captured revision into token-free account state."]
+    pub fn runtime_info_at(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<RuntimeAccountInfo, AccountSessionError> {
+        Ok(match self.load()? {
+            Some(stored) => runtime_account_info_from_stored(stored, now),
+            None => RuntimeAccountInfo::signed_out(self.api_base.clone()),
+        })
+    }
+
+    #[doc = "Hash the slot, API origin and exact record bytes into an opaque revision."]
+    pub fn fingerprint(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"codewhale-account-revision-v1\0");
+        digest.update(self.slot.as_bytes());
+        digest.update([0]);
+        digest.update(self.api_base.as_bytes());
+        digest.update([0]);
+        if let Some(raw) = &self.raw {
+            digest.update([1]);
+            digest.update(raw.as_bytes());
+        } else {
+            digest.update([0]);
+        }
+        digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
     /// Decode and validate the captured record without re-reading storage.
     pub fn load(&self) -> Result<Option<StoredAccountAuth>, AccountSessionError> {
         let Some(raw) = &self.raw else {
             return Ok(None);
         };
-        let stored: StoredAccountAuth =
+        let value: serde_json::Value =
             serde_json::from_str(raw).map_err(AccountSessionError::UnreadableRecord)?;
+        if value.get("signedOut").is_some() {
+            let signed_out: SignedOutAccount =
+                serde_json::from_value(value).map_err(AccountSessionError::UnreadableRecord)?;
+            if signed_out.schema_version != ACCOUNT_SESSION_SCHEMA_VERSION
+                || signed_out.api_base != self.api_base
+                || !signed_out.signed_out
+                || uuid::Uuid::parse_str(&signed_out.revision).is_err()
+            {
+                return Err(AccountSessionError::InvalidCredentials);
+            }
+            return Ok(None);
+        }
+        let stored: StoredAccountAuth =
+            serde_json::from_value(value).map_err(AccountSessionError::UnreadableRecord)?;
         if stored.schema_version != ACCOUNT_SESSION_SCHEMA_VERSION
             || stored.api_base != self.api_base
         {
@@ -239,6 +325,92 @@ impl AccountSessionSnapshot {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SignedOutAccount {
+    schema_version: u8,
+    api_base: String,
+    signed_out: bool,
+    revision: String,
+}
+
+fn signed_out_record(api_base: &str) -> String {
+    serde_json::json!({
+        "schemaVersion": ACCOUNT_SESSION_SCHEMA_VERSION,
+        "apiBase": api_base,
+        "signedOut": true,
+        "revision": uuid::Uuid::new_v4().to_string(),
+    })
+    .to_string()
+}
+
+fn validate_device_access(
+    bundle: &AccountAuthBundle,
+    access: &AccountDeviceAccess,
+) -> Result<(), AccountSessionError> {
+    let now = Utc::now();
+    let parent_expiry = bundle.session.as_ref().and_then(|session| {
+        (!matches!(
+            classify_session_state(session, now),
+            AccountSessionState::Expired | AccountSessionState::Revoked
+        ))
+        .then(|| parse_rfc3339(&session.refresh_expires_at))
+        .flatten()
+    });
+    let credential_valid = access
+        .credential
+        .strip_prefix(&format!("cwc_key_{}_", access.api_key_id))
+        .is_some_and(|suffix| {
+            suffix.len() == 43
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        });
+    if access.account_id.is_empty()
+        || access.session_id.is_empty()
+        || bundle.user.as_ref().map(|user| user.id.as_str()) != Some(access.account_id.as_str())
+        || bundle.session.as_ref().map(|session| session.id.as_str())
+            != Some(access.session_id.as_str())
+        || uuid::Uuid::parse_str(&access.device_id).is_err()
+        || access.expires_at <= 0
+        || parent_expiry
+            .is_none_or(|expiry| expiry <= now || access.expires_at > expiry.timestamp())
+        || !credential_valid
+        || access.api_key_id.len() != 24
+        || !access
+            .api_key_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(AccountSessionError::InvalidCredentials);
+    }
+    Ok(())
+}
+
+fn auth_record(
+    api_base: &str,
+    bundle: AccountAuthBundle,
+    previous: Option<&str>,
+) -> Result<String, AccountSessionError> {
+    let access = previous
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.get("deviceAccess").cloned())
+        .and_then(|value| serde_json::from_value::<AccountDeviceAccess>(value).ok())
+        .filter(|access| validate_device_access(&bundle, access).is_ok());
+    let mut value = serde_json::to_value(StoredAccountAuth {
+        schema_version: ACCOUNT_SESSION_SCHEMA_VERSION,
+        api_base: api_base.into(),
+        bundle,
+    })
+    .map_err(AccountSessionError::UnreadableRecord)?;
+    value["revision"] = uuid::Uuid::new_v4().to_string().into();
+    if let Some(access) = access {
+        value["deviceAccess"] =
+            serde_json::to_value(access).map_err(AccountSessionError::UnreadableRecord)?;
+    }
+    serde_json::to_string(&value).map_err(AccountSessionError::UnreadableRecord)
+}
+
 /// Locked account entry. Never reacquire its store lock from a callback.
 pub struct AccountSessionTransaction<'a> {
     raw: &'a mut Option<String>,
@@ -246,6 +418,33 @@ pub struct AccountSessionTransaction<'a> {
     api_base: &'a str,
 }
 impl AccountSessionTransaction<'_> {
+    #[doc = "Renew the revision while preserving the current authentication state."]
+    pub fn renew_revision(&mut self) -> Result<AccountSessionSnapshot, AccountSessionError> {
+        match self.load()? {
+            Some(stored) => self.replace(stored.bundle)?,
+            None => self.clear(),
+        }
+        Ok(self.snapshot())
+    }
+
+    #[doc = "Store a validated device credential inside this locked account record."]
+    pub fn set_device_access(
+        &mut self,
+        access: AccountDeviceAccess,
+    ) -> Result<(), AccountSessionError> {
+        let Some(stored) = self.load()? else {
+            return Err(AccountSessionError::InvalidCredentials);
+        };
+        validate_device_access(&stored.bundle, &access)?;
+        let raw = auth_record(self.api_base, stored.bundle, None)?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&raw).map_err(AccountSessionError::UnreadableRecord)?;
+        value["deviceAccess"] =
+            serde_json::to_value(access).map_err(AccountSessionError::UnreadableRecord)?;
+        *self.raw = Some(value.to_string());
+        Ok(())
+    }
+
     /// Capture the exact current revision without unlocking.
     pub fn snapshot(&self) -> AccountSessionSnapshot {
         AccountSessionSnapshot {
@@ -267,19 +466,12 @@ impl AccountSessionTransaction<'_> {
     /// Replace this entry on successful transaction completion.
     pub fn replace(&mut self, bundle: AccountAuthBundle) -> Result<(), AccountSessionError> {
         validate_account_auth_bundle(&bundle)?;
-        *self.raw = Some(
-            serde_json::to_string(&StoredAccountAuth {
-                schema_version: ACCOUNT_SESSION_SCHEMA_VERSION,
-                api_base: self.api_base.into(),
-                bundle,
-            })
-            .map_err(AccountSessionError::UnreadableRecord)?,
-        );
+        *self.raw = Some(auth_record(self.api_base, bundle, self.raw.as_deref())?);
         Ok(())
     }
     /// Remove this entry on successful transaction completion.
     pub fn clear(&mut self) {
-        *self.raw = None;
+        *self.raw = Some(signed_out_record(self.api_base));
     }
 }
 
@@ -311,6 +503,33 @@ impl AccountSessionStore {
         })
     }
 
+    #[doc = "Renew the shared revision to fence older login completions."]
+    pub fn begin_login(&self) -> Result<AccountSessionSnapshot, AccountSessionError> {
+        self.with_transaction(|transaction| transaction.renew_revision())
+    }
+
+    #[doc = "Read or create this profile and API origin's stable device UUID."]
+    pub fn device_id(&self) -> Result<String, AccountSessionError> {
+        let slot =
+            self.auth_slot
+                .replacen("codewhale-cloud-auth-v1-", "codewhale-device-id-v1-", 1);
+        self.secrets
+            .with_entry_transaction(&slot, |raw| {
+                let id = match raw {
+                    Some(id) if uuid::Uuid::parse_str(id).is_ok() => id.clone(),
+                    Some(_) => {
+                        return Err(SecretsError::Keyring(
+                            "Invalid Codewhale device identity".into(),
+                        ));
+                    }
+                    None => uuid::Uuid::new_v4().to_string(),
+                };
+                *raw = Some(id.clone());
+                Ok(id)
+            })
+            .map_err(AccountSessionError::from)
+    }
+
     /// Save a renewed bundle only if the captured session has not changed.
     /// Returns the exact committed revision, or None on a concurrent change.
     pub fn save_if_unchanged(
@@ -322,12 +541,7 @@ impl AccountSessionStore {
         if expected.slot != self.auth_slot || expected.api_base != self.api_base {
             return Err(AccountSessionError::InvalidCredentials);
         }
-        let raw = serde_json::to_string(&StoredAccountAuth {
-            schema_version: ACCOUNT_SESSION_SCHEMA_VERSION,
-            api_base: self.api_base.clone(),
-            bundle,
-        })
-        .map_err(AccountSessionError::UnreadableRecord)?;
+        let raw = auth_record(&self.api_base, bundle, expected.raw.as_deref())?;
         if !self
             .secrets
             .compare_exchange(&self.auth_slot, expected.raw.as_deref(), Some(&raw))?
@@ -349,9 +563,11 @@ impl AccountSessionStore {
         if expected.slot != self.auth_slot || expected.api_base != self.api_base {
             return Err(AccountSessionError::InvalidCredentials);
         }
-        Ok(self
-            .secrets
-            .compare_exchange(&self.auth_slot, expected.raw.as_deref(), None)?)
+        Ok(self.secrets.compare_exchange(
+            &self.auth_slot,
+            expected.raw.as_deref(),
+            Some(&signed_out_record(&self.api_base)),
+        )?)
     }
 
     /// Serialize an account lifecycle operation with every backend writer.
@@ -397,20 +613,15 @@ impl AccountSessionStore {
     /// Validate and save an account bundle in the selected secure-store slot.
     pub fn save(&self, bundle: AccountAuthBundle) -> Result<(), AccountSessionError> {
         validate_account_auth_bundle(&bundle)?;
-        let stored = StoredAccountAuth {
-            schema_version: ACCOUNT_SESSION_SCHEMA_VERSION,
-            api_base: self.api_base.clone(),
-            bundle,
-        };
-        let raw = serde_json::to_string(&stored).map_err(AccountSessionError::UnreadableRecord)?;
-        self.secrets.set(&self.auth_slot, &raw)?;
-        Ok(())
+        self.with_transaction(|transaction| transaction.replace(bundle))
     }
 
     /// Remove only the selected profile/origin account session.
     pub fn clear(&self) -> Result<(), AccountSessionError> {
-        self.secrets.delete(&self.auth_slot)?;
-        Ok(())
+        self.with_transaction(|transaction| {
+            transaction.clear();
+            Ok(())
+        })
     }
 
     /// Read a token-free runtime receipt at a caller-supplied clock instant.
@@ -418,10 +629,7 @@ impl AccountSessionStore {
         &self,
         now: DateTime<Utc>,
     ) -> Result<RuntimeAccountInfo, AccountSessionError> {
-        let Some(stored) = self.load()? else {
-            return Ok(RuntimeAccountInfo::signed_out(self.api_base.clone()));
-        };
-        Ok(runtime_account_info_from_stored(stored, now))
+        self.snapshot()?.runtime_info_at(now)
     }
 }
 
@@ -774,6 +982,8 @@ mod snapshot_tests {
             refresh_token: format!("refresh-{id}"),
             session: Some(AccountSession {
                 id: id.into(),
+                expires_at: "2099-01-01T00:00:00Z".into(),
+                refresh_expires_at: "2100-01-01T00:00:00Z".into(),
                 ..Default::default()
             }),
             user: Some(AccountUser {
@@ -792,7 +1002,42 @@ mod snapshot_tests {
             ))),
         ] {
             let store = AccountSessionStore::new(secrets, None, DEFAULT_ACCOUNT_API_BASE);
+            let pristine = store.snapshot().unwrap();
+            assert!(pristine.is_pristine());
+            let first_login = store.begin_login().unwrap();
+            assert!(first_login.load().unwrap().is_none());
+            store.clear().unwrap();
+            let signed_out = store.snapshot().unwrap();
+            assert!(!signed_out.is_pristine());
+            assert_ne!(pristine.fingerprint(), signed_out.fingerprint());
+            assert_ne!(first_login.fingerprint(), signed_out.fingerprint());
+            assert!(
+                store
+                    .save_if_unchanged(&pristine, bundle("late-pristine-login"))
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                store
+                    .save_if_unchanged(&first_login, bundle("late-claimed-login"))
+                    .unwrap()
+                    .is_none()
+            );
             store.save(bundle("old")).unwrap();
+            store
+                .with_transaction(|transaction| {
+                    transaction.set_device_access(AccountDeviceAccess {
+                        device_id: uuid::Uuid::new_v4().to_string(),
+                        credential: format!("cwc_key_{}_{}", "b".repeat(24), "A".repeat(43)),
+                        api_key_id: "b".repeat(24),
+                        account_id: "old".into(),
+                        session_id: "old".into(),
+                        expires_at: Utc::now().timestamp() + 3600,
+                    })
+                })
+                .unwrap();
+            store.save(bundle("old")).unwrap();
+            assert!(store.snapshot().unwrap().device_access().unwrap().is_some());
             let old = store.snapshot().unwrap();
             let other = store.clone();
             std::thread::spawn(move || other.save(bundle("new")))
@@ -810,9 +1055,11 @@ mod snapshot_tests {
                 store.load().unwrap().unwrap().bundle.user.unwrap().id,
                 "new"
             );
+            assert!(store.snapshot().unwrap().device_access().unwrap().is_none());
             let latest = store.snapshot().unwrap();
             assert!(store.clear_if_unchanged(&latest).unwrap());
             assert!(store.load().unwrap().is_none());
+            assert!(store.snapshot().unwrap().device_access().unwrap().is_none());
         }
     }
     #[test]

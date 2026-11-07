@@ -661,6 +661,9 @@ fn orcarouter_and_existing_custom_routes_own_live_catalogs() {
 }
 
 pub fn provider_owns_live_catalog(provider: ProviderKind, base_url: &str) -> bool {
+    if crate::client::model_listing_unavailable(provider, base_url) {
+        return false;
+    }
     matches!(
         provider,
         ProviderKind::Openrouter

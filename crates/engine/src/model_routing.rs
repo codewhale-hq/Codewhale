@@ -3951,7 +3951,8 @@ mod decision_router_tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            let config = decision_config(&format!("{}/api/v1", server.uri()), false, 2);
+            let mut config = decision_config(&format!("{}/api/v1", server.uri()), false, 2);
+            config.retry = Some(toml::from_str("enabled = false").unwrap());
             let selection = route(&config, "Explain the diff", "").await;
 
             assert_eq!(selection.model, "deepseek-v4-pro", "status {status}");

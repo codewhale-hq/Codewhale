@@ -39,7 +39,7 @@ static LOGIN_INFO: CommandInfo = CommandInfo {
 static CONNECT_INFO: CommandInfo = CommandInfo {
     name: "connect",
     aliases: &[],
-    usage: "/connect [<provider>]",
+    usage: "/connect [account|<provider>]",
     description_key: "cmd_connect_description",
 };
 static DISCONNECT_INFO: CommandInfo = CommandInfo {

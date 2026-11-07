@@ -53,7 +53,7 @@ impl ImageAnalyzeTool {
         config: VisionModelConfig,
         route_client: Option<CodewhaleClient>,
     ) -> Self {
-        let client = codewhale_release::tls::reqwest_client_builder()
+        let client = crate::platform_client_builder()
             // Bound only the connect handshake. A client- or request-level
             // `read_timeout` would start counting at `send()` and never
             // reset before the response headers, quietly re-introducing a

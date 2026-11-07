@@ -11,6 +11,28 @@ use std::path::{Path, PathBuf};
 
 pub mod daemon_socket;
 
+#[cfg(unix)]
+#[doc(hidden)]
+pub fn resolve_root_owned_ancestors(directory: &Path) -> PathBuf {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let mut resolved = PathBuf::new();
+    for component in directory.components() {
+        resolved.push(component);
+        if let Ok(metadata) = std::fs::symlink_metadata(&resolved)
+            && metadata.file_type().is_symlink()
+        {
+            if metadata.uid() != 0 {
+                return directory.to_path_buf();
+            }
+            if let Ok(real) = resolved.canonicalize() {
+                resolved = real;
+            }
+        }
+    }
+    resolved
+}
+
 /// Canonical Codewhale app directory name under the user home.
 pub const CODEWHALE_APP_DIR: &str = ".codewhale";
 

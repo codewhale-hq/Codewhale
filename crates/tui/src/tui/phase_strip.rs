@@ -686,6 +686,11 @@ pub struct TidelineFooter<'a> {
     /// the permission and mode chips, and the cap warning when it is owed —
     /// and nothing live. Width sheds the rest exactly as it always did.
     pub compact: bool,
+    working_glow: Option<(
+        codewhale_ratatui::Caps,
+        std::time::Duration,
+        codewhale_ratatui::MotionMode,
+    )>,
 }
 
 impl<'a> TidelineFooter<'a> {
@@ -708,6 +713,7 @@ impl<'a> TidelineFooter<'a> {
             right: None,
             ascii_safe: false,
             compact: false,
+            working_glow: None,
         }
     }
 
@@ -777,6 +783,24 @@ impl<'a> TidelineFooter<'a> {
         self
     }
 
+    pub(crate) fn working_glow(
+        mut self,
+        glow: Option<(
+            codewhale_ratatui::Caps,
+            std::time::Duration,
+            codewhale_ratatui::MotionMode,
+        )>,
+    ) -> Self {
+        self.working_glow = glow;
+        self
+    }
+
+    pub(crate) fn working_clock_visible(&self, area: Rect) -> bool {
+        self.kit()
+            .turn_clock_hitbox(area, &crate::tui::infoline::source_theme(self.ascii_safe))
+            .is_some()
+    }
+
     fn kit(&self) -> PostureBar<'_> {
         use crate::tui::infoline::ink_role;
         // Preserve every host ink in a distinct role, including the right
@@ -829,6 +853,24 @@ pub fn render_tideline_footer(
     let bar = footer.kit();
     let count_rects = bar.count_hitboxes(area, &source_theme(footer.ascii_safe));
     paint_native_row(&bar, area, buf, footer.theme, footer.ascii_safe);
+    if let Some((mut caps, elapsed, motion)) = footer.working_glow
+        && let Some((label, _)) = footer.turn_clock
+        && let Some(clock_area) = bar.turn_clock_hitbox(area, &source_theme(footer.ascii_safe))
+        && let Some(appearance) =
+            codewhale_ratatui::detect::appearance_for_background(footer.theme.footer_bg)
+    {
+        caps.appearance = appearance;
+        let theme = codewhale_ratatui::Theme::new(caps);
+        codewhale_ratatui::paint_working_glow(
+            buf,
+            clock_area,
+            label,
+            elapsed,
+            codewhale_ratatui::MotionPolicy::new(motion, &theme),
+            footer.theme.text_body,
+            footer.theme.footer_bg,
+        );
+    }
     count_rects
 }
 

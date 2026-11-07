@@ -91,58 +91,42 @@ pub(crate) fn apply_agent_complete_status_and_observer(
     }
 }
 
+const COORDINATION_LOCK_NOTICE: &str = "coordination-lock";
+
 pub(crate) fn apply_coordination_detail_projection(
     app: &mut App,
     projection: codewhale_engine::tools::subagent::CoordinationDetailProjection,
 ) {
-    // §2.6: when this process does not own the workspace coordination flock,
-    // say so on the sticky status strip. A silent "running (543s)" row on a
-    // settled turn is a lie; surface the lock loss the same way we surface
-    // other session hazards.
-    //
-    // Exception: a same-process handover. A model/provider switch spawns the
-    // new engine before the old engine's manager has dropped the flock, and
-    // flock treats the second fd in this same process as a conflict. That
-    // state self-heals on the next projection retry (#5036), and a 30-second
-    // warning blaming "another Codewhale process" would be false (owner
-    // report, 2026-08-04) — so it stays off the sticky strip.
-    if !projection.process_lock_held {
-        let note = projection
-            .process_lock_note
-            .as_deref()
-            .unwrap_or("another Codewhale process owns delegated coordination for this workspace");
-        let same_process_handover =
-            note.contains(codewhale_engine::tools::subagent::COORDINATION_SAME_PROCESS_HANDOVER);
-        // The strip is one row. The old copy opened with the diagnosis
-        // ("Delegated coordination unavailable — ") and buried the cause
-        // behind a `{note}` carrying a pid, an absolute workspace path, and an
-        // errno, so a truncated strip showed `Delegated coordination
-        // unavailable — an…` and taught the user nothing. Lead with the fact
-        // that explains it — a second session is open here — and leave the pid
-        // and path to the coordination detail view, which already renders
-        // `process_lock_note` in full.
-        let message = if note
-            .contains(codewhale_engine::tools::subagent::COORDINATION_LOCK_TIMEOUT_MARKER)
-        {
-            "Timed out claiming delegated coordination for this workspace — job rows still settle locally.".to_string()
-        } else {
-            "Another Codewhale session in this workspace owns delegated coordination — job rows still settle locally.".to_string()
-        };
-        // Demoted from sticky 30s to transient 5s — two sessions in same workspace
-        // should not feel broken; job rows still settle locally. The detail view
-        // still shows the full pid/path via `process_lock_note`.
-        let already = app
-            .status_toasts
-            .iter()
-            .any(|toast| toast.text.contains("delegated coordination"));
-        if !already && !same_process_handover {
-            app.push_status_toast(
-                message,
-                crate::tui::app::StatusToastLevel::Info,
-                Some(5_000),
-            );
+    let changed = app.coordination_detail.as_ref().is_none_or(|previous| {
+        previous.process_lock_held != projection.process_lock_held
+            || previous.process_lock_note != projection.process_lock_note
+    });
+    if changed {
+        app.retire_event_notices(COORDINATION_LOCK_NOTICE);
+        if !projection.process_lock_held {
+            let note = projection.process_lock_note.as_deref().unwrap_or_default();
+            let same_process_handover = note
+                .starts_with(codewhale_engine::tools::subagent::COORDINATION_SAME_PROCESS_HANDOVER);
+            if !same_process_handover {
+                let message = if note.starts_with(
+                    codewhale_engine::tools::subagent::COORDINATION_LOCK_TIMEOUT_MARKER,
+                ) {
+                    "Timed out claiming delegated coordination — see Work for the reason."
+                } else if note
+                    .starts_with("Runtime coordination was opened without its writer lock")
+                {
+                    "Delegated coordination is read-only — resolve the lock issue and restart this Runtime. Details in Work."
+                } else {
+                    "Delegated coordination unavailable — see Work for the reason."
+                };
+                app.push_status_toast_record(
+                    StatusToast::new(message, StatusToastLevel::Info, Some(5_000))
+                        .for_event(COORDINATION_LOCK_NOTICE),
+                );
+            }
         }
     }
+    app.needs_redraw |= changed;
     app.coordination_detail = Some(projection);
 }
 
@@ -2849,6 +2833,37 @@ async fn apply_command_result_inner(
             AppAction::EditProjectHooks => {
                 edit_project_hooks_from_tui(terminal, app, config);
             }
+            AppAction::OpenModelConnectionSetup => {
+                begin_first_connection_setup(app);
+                app.view_stack
+                    .push(crate::tui::account_login::ConnectionSetupView::new(
+                        app.ui_locale,
+                    ));
+            }
+            AppAction::StartAccountConnect => {
+                begin_first_connection_setup(app);
+                if app.view_stack.contains_kind(ModalKind::AccountLogin) {
+                    app.view_stack.pop_through_kind(ModalKind::AccountLogin);
+                }
+                app.view_stack
+                    .push(crate::tui::account_login::AccountLoginView::connect(
+                        app.config_profile.clone(),
+                        app.ui_locale,
+                    ));
+            }
+            AppAction::StartAccountLogin | AppAction::StartAccountLogout => {
+                if app.view_stack.top_kind() != Some(ModalKind::AccountLogin) {
+                    if app.view_stack.contains_kind(ModalKind::AccountLogin) {
+                        app.view_stack.pop_through_kind(ModalKind::AccountLogin);
+                    }
+                    app.view_stack
+                        .push(crate::tui::account_login::AccountLoginView::new(
+                            app.config_profile.clone(),
+                            matches!(action, AppAction::StartAccountLogout),
+                            app.ui_locale,
+                        ));
+                }
+            }
             AppAction::StartXaiDeviceLogin => {
                 let _switched =
                     run_xai_device_login_from_tui(terminal, app, engine_handle, config).await?;
@@ -3511,6 +3526,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
 
 pub(crate) fn apply_workspace_runtime_state(app: &mut App, config: &Config, workspace: PathBuf) {
     app.workspace = workspace.clone();
+    app.retire_event_notices(COORDINATION_LOCK_NOTICE);
     app.coordination_detail = None;
     app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
     for error in crate::commands::user_registry::install_plugin_registry(

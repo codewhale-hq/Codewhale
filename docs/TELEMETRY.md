@@ -4,7 +4,7 @@
 
 **Usage analytics are on by default in the current source.** The first
 interactive launch gives a localized, nonblocking disclosure naming **Codewhale
-and PostHog**, with a direct route to turn counting off. Notice version `5`
+and PostHog**, with a direct route to turn counting off. Notice version `6`
 describes this policy; displaying it is not recorded as human acceptance.
 Missing an older acceptance record does not turn a fresh installation off.
 Existing explicit opt-outs remain off across upgrades, and unreadable privacy
@@ -178,8 +178,8 @@ new fields, surfaces, and `product_usage` events.
 
 ```jsonc
 {
-  "schema_version": 3,
-  "notice_version": 5,
+  "schema_version": 4,
+  "notice_version": 6,
   "sent_at":     "2026-08-03T18:04:11Z",   // RFC3339 UTC, second precision
   "install_id":  "3f2a…",                  // uuid v4, rotates every 90 days
   "app_version": "0.9.12",
@@ -196,7 +196,7 @@ new fields, surfaces, and `product_usage` events.
 | Field | Type | Source anchor | Rule |
 |---|---|---|---|
 | `schema_version` | `u32` | const in `crates/telemetry/src/event.rs` | Bumped on any field add/remove/retype. Never reused. Pinned by a golden snapshot test. |
-| `notice_version` | `u32` | policy constant in `crates/telemetry/src/event.rs` | Exactly `5`; identifies the disclosed opt-out policy, not a human acceptance record. |
+| `notice_version` | `u32` | policy constant in `crates/telemetry/src/event.rs` | Exactly `6` for schema 4; identifies the disclosed opt-out policy, not a human acceptance record. |
 | `sent_at` | RFC3339 | `chrono::Utc::now()` | Second precision. Per-**batch** only — events carry no timestamps at all. |
 | `install_id` | uuid v4 | `crates/telemetry/src/envelope.rs` | Random, never derived, rotated every 90 days. See "Where it lives" above. |
 | `app_version` | string | `env!("CARGO_PKG_VERSION")`, as at `crates/telemetry/src/lib.rs:112` | Must match `^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$`. |
@@ -504,17 +504,16 @@ Batches are **IP-stripped at ingest**. No IP is stored, logged, or joined to `in
 **Retention: three months.** That is Cloudflare's fixed window for Analytics Engine and it is not configurable, so it is a ceiling rather than a policy — there is no setting that could make it longer.
 
 **Optional PostHog processor.** After first-party storage, an explicitly
-configured ingest may forward validated schema-v4 / notice-v6 and schema-v3 / notice-v5 batches and
+configured ingest may forward validated schema-v3 / notice-v5 batches and
 legacy schema-v2 / consent-v4 batches to
 PostHog's [batch capture API](https://posthog.com/docs/api/capture). The only
 permitted origins are `https://us.i.posthog.com` and `https://eu.i.posthog.com`.
-Legacy v1 batches cannot reach that path. PostHog receives the same bounded
+Schema-v1 and schema-v4 batches cannot reach that path in this source. PostHog receives the same bounded
 envelope and event fields, the batch timestamp as its event timestamp, and
 `codewhale:<install_id>` as its anonymous `distinct_id`. Events are named
 `codewhale_install_or_upgrade`, `codewhale_session_start`,
-`codewhale_session_end`, `codewhale_panic`, `codewhale_product_usage`,
-`codewhale_operations_summary`, `codewhale_model_usage`, or
-`codewhale_tool_usage`.
+`codewhale_session_end`, `codewhale_panic`, `codewhale_product_usage`, or
+`codewhale_operations_summary`.
 `$process_person_profile = false`, `$geoip_disable = true`, and `$ip = null`
 are fixed transport controls. No request metadata, profile identification,
 SDK, autocapture, session replay, advertising, or work content is forwarded.

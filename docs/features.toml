@@ -346,7 +346,7 @@ owner = "crates/sandbox/src"
 [[feature]]
 id = "providers"
 name = "Providers"
-summary = "Provider routes including Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates."
+summary = "Provider routes including Tinker, Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PROVIDERS.md"
@@ -360,6 +360,16 @@ status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter"
 owner = "crates/engine/src/model_routing.rs"
+
+[[feature]]
+id = "model-catalog-refresh"
+name = "Model catalog refresh"
+summary = "Refresh public model facts and exact provider rosters during use; failures retain the last good snapshot."
+status = "stable"
+surfaces = { tui = "stable", api = "stable" }
+since = "0.10.3"
+docs = "docs/CATALOG_REFRESH.md"
+owner = "crates/engine/src/models_dev_live.rs"
 
 [[feature]]
 id = "output-limit-answer-recovery"
@@ -522,7 +532,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Installs, reviews and trusts plugin bundles, including the first-party marketplace."
+summary = "Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"
@@ -734,7 +744,7 @@ owner = "crates/tui/src/commands/groups/core/home.rs"
 [[feature]]
 id = "account-login"
 name = "Account login"
-summary = "/login signs in to an optional Codewhale account; plugin providers connect with /connect."
+summary = "Cancellable account sign-in inside the TUI; account sign-out preserves local model connections and work."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/config.rs"
@@ -1013,6 +1023,16 @@ surfaces = { tui = "partial" }
 since = "unreleased"
 docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
 owner = "crates/tui/src/commands/contract/debug_diagnostics.rs"
+
+[[feature]]
+id = "local-proxy-fallback"
+name = "Local proxy fallback"
+summary = "Long-lived clients go direct while a loopback proxy port refuses connections, then resume proxying."
+status = "experimental"
+surfaces = { tui = "partial", api = "partial" }
+since = "unreleased"
+docs = "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started"
+owner = "crates/net/src/proxy.rs"
 
 [[feature]]
 id = "rate-limit-recovery"

@@ -116,7 +116,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -127,7 +127,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -845,6 +845,7 @@ name = "codewhale-account-cli"
 version = "0.10.3"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "codewhale-config",
  "codewhale-release",
@@ -888,6 +889,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
+ "codewhale-account-cli",
  "codewhale-agent",
  "codewhale-agent-contract",
  "codewhale-app-server-protocol",
@@ -1027,7 +1029,6 @@ dependencies = [
  "codewhale-release",
  "libc",
  "reqwest",
- "semver",
  "serde",
  "serde_json",
  "tempfile",
@@ -1166,7 +1167,6 @@ dependencies = [
  "codewhale-util",
  "codewhale-workflow",
  "codewhale-workflow-js",
- "crossterm",
  "cucumber",
  "dirs 7.0.0",
  "encoding_rs",
@@ -1188,17 +1188,14 @@ dependencies = [
  "portable-pty",
  "pretty_assertions",
  "proc-macro2",
- "ratatui",
  "regex",
  "reqwest",
  "ring",
  "rio-vt",
  "rmcp",
- "rquickjs",
  "rusqlite",
  "rustls",
  "schemars",
- "semver",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -1216,7 +1213,6 @@ dependencies = [
  "tokio-util",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
- "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
@@ -1443,7 +1439,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
- "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
  "uuid",
  "webbrowser",
@@ -1646,6 +1641,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1708,7 +1704,6 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "tracing",
- "wait-timeout",
 ]
 
 [[package]]
@@ -1764,7 +1759,6 @@ dependencies = [
 name = "codewhale-tui"
 version = "0.10.3"
 dependencies = [
- "ahash",
  "ansi-to-tui",
  "anyhow",
  "arboard",
@@ -1774,10 +1768,9 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "clap",
- "codewhale-agent",
+ "codewhale-account-cli",
  "codewhale-agent-contract",
  "codewhale-app-server",
- "codewhale-app-server-protocol",
  "codewhale-build-support",
  "codewhale-cloud-facts",
  "codewhale-command-contract",
@@ -1793,7 +1786,6 @@ dependencies = [
  "codewhale-localization",
  "codewhale-lsp",
  "codewhale-mcp",
- "codewhale-memory",
  "codewhale-models",
  "codewhale-net",
  "codewhale-notify",
@@ -1803,7 +1795,6 @@ dependencies = [
  "codewhale-protocol",
  "codewhale-ratatui",
  "codewhale-release",
- "codewhale-repl",
  "codewhale-runtime",
  "codewhale-sandbox",
  "codewhale-sanitize",
@@ -1816,38 +1807,27 @@ dependencies = [
  "codewhale-tui-kit",
  "codewhale-util",
  "codewhale-workflow",
- "codewhale-workflow-js",
  "colored",
  "crossterm",
  "cucumber",
  "dirs 7.0.0",
  "dotenvy",
- "encoding_rs",
  "fd-lock",
  "flate2",
  "futures-util",
- "globset",
  "htmd",
  "ignore",
  "image",
- "jsonschema",
  "libc",
- "liblzma",
- "lru",
- "oauth2",
  "objc2",
  "objc2-foundation",
  "parking_lot",
  "portable-pty",
  "pretty_assertions",
- "proc-macro2",
- "qrcode",
  "ratatui",
  "regex",
  "reqwest",
- "ring",
  "rio-vt",
- "rmcp",
  "rquickjs",
  "rusqlite",
  "rustls",
@@ -1856,24 +1836,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "shell-words",
- "shellexpand",
  "shlex 2.0.1",
- "similar",
- "syn 3.0.9",
  "tar",
  "tempfile",
- "thiserror 2.0.21",
  "tiny_http",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
- "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
- "unicode-normalization",
  "unicode-segmentation",
  "unicode-width",
  "url",
@@ -1884,7 +1857,6 @@ dependencies = [
  "windows",
  "windows-sys 0.61.2",
  "wiremock",
- "yaml-rust2",
 ]
 
 [[package]]
@@ -1974,7 +1946,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2498,7 +2470,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2639,7 +2611,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2742,7 +2714,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4594,9 +4566,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -4822,7 +4794,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "536bfad37a309d62069485248eeaba1e8d9853aaf951caaeaed0585a95346f08"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4935,7 +4907,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5216,7 +5188,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6101,9 +6073,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.7.0"
+version = "3.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
+checksum = "f8be15815186873ea063bf005011d16c356804973489e40c39116ae3a2878d1f"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6185,9 +6157,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.1",
  "fallible-iterator",
@@ -6288,7 +6260,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6344,7 +6316,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6534,7 +6506,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
 dependencies = [
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.23.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
@@ -6833,9 +6805,9 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "similar"
-version = "3.2.0"
+version = "3.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f66ca1f7aca2474dc10c942eb22feffc897735f54cd1db90138c2fddb490987"
+checksum = "d2f8bec09ae8fae0f4f265a4559a9334be3929d8504e9b536df0a41302bd1733"
 dependencies = [
  "bstr",
  "unicode-segmentation",
@@ -6883,7 +6855,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7106,10 +7078,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7131,7 +7103,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook 0.3.18",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7141,7 +7113,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7741,7 +7713,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7770,9 +7742,9 @@ checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 
 [[package]]
 name = "unicode-normalization"
-version = "0.1.25"
+version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
 dependencies = [
  "tinyvec",
 ]
@@ -8142,9 +8114,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.10"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -8249,7 +8221,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -155,6 +155,23 @@ pub(crate) fn rail_min_chat_width(idle_empty: bool) -> u16 {
     }
 }
 
+fn working_clock_has_glow(app: &App) -> bool {
+    app.motion_policy().should_request_animation_frames()
+        && app.viewport.working_glow_visible
+        && app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Full
+        && !crate::tui::pet_watch::main_view(app)
+        && app.turn_started_at.is_some()
+        && app
+            .viewport
+            .ocean_caps
+            .is_some_and(|caps| caps.depth == codewhale_ratatui::color::ColorDepth::TrueColor)
+        && matches!(
+            crate::tui::underwater::ShellPhase::from_app(app),
+            crate::tui::underwater::ShellPhase::Working
+                | crate::tui::underwater::ShellPhase::Verifying
+        )
+}
+
 pub(crate) fn status_animation_interval_ms(app: &App) -> u64 {
     if app.effective_low_motion_for_status() {
         crate::tui::display_refresh::adaptive_animation_interval_ms(true)
@@ -162,6 +179,7 @@ pub(crate) fn status_animation_interval_ms(app: &App) -> u64 {
         || !(app.is_loading
             || app.is_compacting
             || app.is_purging
+            || working_clock_has_glow(app)
             || crate::tui::subagent_routing::running_agent_count(app) > 0)
     {
         UI_QUIET_STATUS_ANIMATION_MS
@@ -249,6 +267,7 @@ pub(crate) fn should_tick_status_animation(
 ) -> bool {
     !matches!(app.motion_policy().mode(), MotionMode::Still)
         && (app.is_loading
+            || working_clock_has_glow(app)
             || has_running_agents
             || app.is_compacting
             || app.is_purging

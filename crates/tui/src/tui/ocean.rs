@@ -442,15 +442,28 @@ impl OceanRamp {
             return None;
         }
 
+        let default = *theme == codewhale_palette::UNDERWATER_UI_THEME;
         Some(Self {
             // The authored Codewhale water column: unmistakably blue all the
             // way to the floor. These restrained ocean shades sit between the
             // shell's ink surfaces and its ambient blue, so the field gains
             // depth without becoming a saturated blue panel.
-            surface: NativeRamp::SURFACE,
-            middle: NativeRamp::MIDDLE,
+            surface: if default {
+                Color::Rgb(0x0b, 0x2c, 0x53)
+            } else {
+                NativeRamp::SURFACE
+            },
+            middle: if default {
+                Color::Rgb(0x09, 0x22, 0x41)
+            } else {
+                NativeRamp::MIDDLE
+            },
             deep: NativeRamp::DEEP,
-            ambient: NativeRamp::AMBIENT,
+            ambient: if default {
+                Color::Rgb(0x2a, 0x5e, 0x91)
+            } else {
+                NativeRamp::AMBIENT
+            },
             attention: theme.warning,
             failure: theme.error_fg,
         })

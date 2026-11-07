@@ -2,7 +2,6 @@ param(
     [Parameter(Mandatory)][string]$Terminal,
     [Parameter(Mandatory)][string]$Binary,
     [Parameter(Mandatory)][string]$Workspace,
-    [Parameter(Mandatory)][string]$BaseUrl,
     [Parameter(Mandatory)][string]$Title,
     [Parameter(Mandatory)][string]$Evidence
 )
@@ -32,6 +31,7 @@ function Read-Terminal {
 function Wait-For([scriptblock]$Check, [string]$Label) {
     $deadline = [DateTime]::UtcNow.AddSeconds(45)
     while ([DateTime]::UtcNow -lt $deadline) {
+        if (Test-Path (Join-Path $Evidence 'cancel')) { throw 'Clipboard check canceled' }
         if (& $Check) { return }
         Start-Sleep -Milliseconds 200
     }
@@ -57,11 +57,11 @@ function Focus-OwnedWindow {
     Wait-For { [ClipboardFixtureWindow]::GetForegroundWindow() -eq $handle } 'owned Terminal focus'
 }
 try {
-    # All arguments are owned fixture paths; the fake key cannot reach a paid provider.
-    foreach ($arg in @($Terminal, $Binary, $Workspace, $BaseUrl, $Title)) {
+    # Reject quotes in the owned fixture arguments.
+    foreach ($arg in @($Terminal, $Binary, $Workspace, $Title)) {
         if ($arg.Contains('"')) { throw 'Unexpected quote in fixture argument' }
     }
-    $arguments = "-w new new-tab --title `"$Title`" --suppressApplicationTitle --startingDirectory `"$Workspace`" `"$Binary`" --workspace `"$Workspace`" --no-project-config --fresh --provider openai --model gpt-4o-mini --api-key clipboard-fixture-only --base-url `"$BaseUrl`""
+    $arguments = "-w new new-tab --title `"$Title`" --suppressApplicationTitle --startingDirectory `"$Workspace`" `"$Binary`" --workspace `"$Workspace`" --no-project-config --skip-onboarding --fresh"
     Write-Output 'desktop stage: starting owned Terminal'
     Start-Process -FilePath $Terminal -ArgumentList $arguments | Out-Null
     Write-Output 'desktop stage: locating owned Terminal window'
@@ -91,26 +91,31 @@ try {
     if ([System.Windows.Forms.Clipboard]::GetText() -ne $payload) { throw 'Clipboard readback mismatch' }
     Focus-OwnedWindow
     [System.Windows.Forms.SendKeys]::SendWait('+{INS}')
-    # Let every pasted line arrive before asking the independent HTTP observer
-    # whether anything was submitted prematurely.
+    # Let every pasted line arrive before stashing the exact composer text.
     Start-Sleep -Milliseconds 1800
     Capture 'pasted'
     @{ processId = $ownedPid; sessionId = (Get-Process -Id $ownedPid).SessionId; chars = $payload.Length; input = 'Windows clipboard + Shift+Insert' } |
         ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $Evidence 'pasted.json')
-    Wait-For { Test-Path (Join-Path $Evidence 'submit') } 'independent no-submit assertion'
+    Wait-For { Test-Path (Join-Path $Evidence 'stash') } 'draft stash observation'
     Focus-OwnedWindow
-    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-    Wait-For { (Read-Terminal).Contains('cw-clipboard-ok') } 'actual provider reply'
+    [System.Windows.Forms.SendKeys]::SendWait('^g')
+    Wait-For { (Read-Terminal).Contains('Draft stashed') } 'actual composer stash'
     Capture 'completed'
-    @{ enterCount = 1; renderedReply = 'cw-clipboard-ok' } | ConvertTo-Json |
+    @{ stashKey = 'Ctrl+G'; harnessSubmitKeys = 0; completedAt = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json |
         Set-Content -Encoding UTF8 (Join-Path $Evidence 'completed.json')
 } catch {
     if ($window) { try { Capture 'failure' } catch { Write-Warning $_ } }
     throw
 } finally {
-    # Retire only the portable Terminal instance proven to belong to this fixture.
-    if ($ownedPid) {
-        $process = Get-Process -Id $ownedPid -ErrorAction SilentlyContinue
-        if ($process -and $process.Path -eq $Terminal) { Stop-Process -Id $ownedPid -Force }
+    # Retire only processes at this fixture's unique portable Terminal path.
+    $stopped = @()
+    foreach ($process in @(Get-Process | Where-Object { $_.Path -eq $Terminal })) {
+        Stop-Process -InputObject $process -Force
+        if (!$process.WaitForExit(5000)) { throw 'Owned Terminal did not exit' }
+        $stopped += $process.Id
     }
+    $remaining = @(Get-Process | Where-Object { $_.Path -eq $Terminal }).Count
+    if ($remaining) { throw 'Owned Terminal is still running' }
+    @{ terminal = $Terminal; stopped = $stopped; remaining = $remaining } | ConvertTo-Json |
+        Set-Content -Encoding UTF8 (Join-Path $Evidence 'cleanup.json')
 }

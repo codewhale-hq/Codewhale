@@ -747,6 +747,32 @@ fn sha256_hex(bytes: &[u8]) -> String {
 pub const CONTEXT_UPDATE_MAX_LINES: usize = 80;
 pub const CONTEXT_UPDATE_MAX_BYTES: usize = 6_000;
 
+/// The fixed opening every [`context_update_message`] body starts with.
+///
+/// Readers that must tell the engine's drift notices from a person's own
+/// words recognize the envelope by it — see `is_context_update_envelope`.
+pub const CONTEXT_UPDATE_HEADER: &str = concat!(
+    "<context_update>\n",
+    "Session context changed since it was pinned; the pinned system ",
+    "prompt is unchanged. Delta (+ added, - removed):\n",
+);
+
+/// The fixed closing every [`context_update_message`] body ends with.
+pub const CONTEXT_UPDATE_CLOSE: &str = "</context_update>";
+
+/// True when `text` is one whole `<context_update>` envelope exactly as
+/// [`context_update_message`] renders it: the engine's fixed header, then the
+/// delta, then the fixed close, and nothing of a person's own around it.
+///
+/// The drift notice is appended to the model-visible history by the engine,
+/// between turn records, so no reconstruction from records can reproduce it —
+/// history alignments must skip it rather than read it as a user prompt. A
+/// person quoting or asking about a notice carries their own words outside the
+/// envelope, which fails either end of this check and keeps their turn whole.
+pub fn is_context_update_envelope(text: &str) -> bool {
+    text.starts_with(CONTEXT_UPDATE_HEADER) && text.ends_with(CONTEXT_UPDATE_CLOSE)
+}
+
 pub fn context_update_message(known: &str, current: &str) -> Option<String> {
     use std::collections::HashMap;
     let mut counts: HashMap<&str, i64> = HashMap::new();
@@ -782,10 +808,7 @@ pub fn context_update_message(known: &str, current: &str) -> Option<String> {
         return None;
     }
 
-    let mut out = String::from(
-        "<context_update>\nSession context changed since it was pinned; the pinned system \
-         prompt is unchanged. Delta (+ added, - removed):\n",
-    );
+    let mut out = String::from(CONTEXT_UPDATE_HEADER);
     let mut lines_written = 0usize;
     let mut truncated = 0usize;
     for (sign, group) in [("+ ", &added), ("- ", &removed)] {
@@ -807,7 +830,7 @@ pub fn context_update_message(known: &str, current: &str) -> Option<String> {
             "(+{truncated} more changed lines; re-read the files you need)\n"
         ));
     }
-    out.push_str("</context_update>");
+    out.push_str(CONTEXT_UPDATE_CLOSE);
     Some(out)
 }
 
@@ -973,6 +996,15 @@ mod tests {
         assert!(update.contains("- be kind"));
         assert!(!update.contains("- src/a.rs"));
         assert!(context_update_message(known, known).is_none());
+
+        // The recognizer answers for every body the builder can render, so a
+        // history alignment can skip the engine's notices without guessing at
+        // their shape, while a person's words around one stay their own.
+        assert!(is_context_update_envelope(&update));
+        let quoted = format!("what does this mean?\n{update}");
+        assert!(!is_context_update_envelope(&quoted));
+        let truncated = &update[..update.len() - CONTEXT_UPDATE_CLOSE.len()];
+        assert!(!is_context_update_envelope(truncated));
 
         let mut big = String::new();
         for i in 0..500 {

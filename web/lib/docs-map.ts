@@ -251,11 +251,12 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "plugins",
     label: { en: "Add plugins", zh: "添加插件" },
     description: {
-      en: "Find, install, review, and trust plugin bundles.",
-      zh: "查找、安装、审查并信任插件包。",
+      en: "Choose plugin formats, browse catalog examples, and review, trust and enable bundles.",
+      zh: "选择插件格式，浏览目录示例，并审阅、信任和启用插件包。",
     },
-    repoSource: ["docs/PLUGINS.md", "docs/PLUGIN_BUNDLES.md", "docs/EXTENSIONS.md"],
-    hasPage: false,
+    repoSource: ["docs/PLUGINS.md", "docs/PLUGIN_BUNDLES.md", "docs/PLUGIN_MARKETPLACE.md", "docs/EXTENSIONS.md"],
+    hasPage: true,
+    sitePath: "plugins",
     category: "extending",
   },
   {

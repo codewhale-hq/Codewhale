@@ -37,7 +37,7 @@ export const chrome: ChromeDict = {
   themeTitle: "主题 · 自动 / 浅色 / 深色",
 
   footerTagline:
-    "面向终端、可搭配你所选模型的开源编程智能体。",
+    "构建应用，自动完成工作。",
   footerProduct: "产品",
   footerProject: "项目",
   footerDocs: "文档",

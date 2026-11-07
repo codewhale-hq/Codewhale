@@ -7,17 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.
+
 ## [0.10.3] - 2026-11-06
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release
 until the matching tag, packages, checksums, and release assets exist.
 
+### Work in progress and known limits
+
+- **Codex App Server compatibility:** Codewhale is working toward full Codex
+  wire parity on the existing Engine. The current HTTP/SSE Runtime remains
+  available; full-tool turns, subscriptions, bidirectional interactions, durable
+  settlements, TCP WebSocket and the complete SDK remain unfinished.
+- **DSH plugins and MCP lifecycle:** compatibility with unmodified DeepSeek
+  Harness plugins remains in progress. The source candidate restores missing
+  runtime snapshots only from canonical bytes matching the current review,
+  generation and policy. Existing mismatched or tampered snapshots refuse
+  and require review. Native lifecycle qualification, authenticated DSH UI
+  transport and revocation in Electron, and an end-to-end published-plugin
+  journey remain unfinished.
+  Imported DSH client UIs refuse descriptor and asset grants; their supported
+  Native and MCP contributions retain their existing lifecycle.
+  Downgrading a newly saved plugin marketplace catalog remains unqualified.
+- **ChatGPT sign-in on Windows:** the reported 0.10.2 post-browser identity
+  verification failure has not been confirmed resolved in the reporter's
+  environment. More specific errors and clock-skew handling are not a
+  successful Windows sign-in receipt. ([#7203](https://github.com/codewhale-hq/Codewhale/issues/7203))
+- **Conversation recovery on Deepin:** scoped interrupted-reply recovery and
+  persistence checks do not establish a fix for the original whole-history
+  disappearance on Deepin 25.2.2. ([#7095](https://github.com/codewhale-hq/Codewhale/issues/7095))
+- **Windows ACP and undo:** the original Paseo approval/sandbox journey and
+  ordinary multi-turn `/undo` through Windows ConPTY remain unqualified on the
+  final candidate. macOS and simulated checks do not establish those Windows
+  results. ([#6992](https://github.com/codewhale-hq/Codewhale/issues/6992), [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970))
+- **Install and update routes:** final-candidate Windows and Linux package,
+  install, update, rollback and uninstall coverage is incomplete. Earlier
+  scoped platform receipts do not qualify the final package matrix or ordinary
+  Windows user journeys. ([#7091](https://github.com/codewhale-hq/Codewhale/issues/7091))
+- **Workspace downgrade and rollback:** compatibility with older binaries after
+  a 0.10.3 workspace migration remains unqualified. The CLI self-updater guard
+  refuses recorded targets below 0.10.3 in `codewhale update --rollback` when
+  running 0.10.3 or newer, before replacing the executable. Five isolated
+  macOS development-candidate refusal/control cases passed with fixture trees
+  unchanged. This does not provide backward-compatible rollback or qualify
+  actual workspace migration or an allowed rollback. Manual or package-manager
+  downgrades and older builds reporting the same version remain outside the guard.
+- **Long-running ZAI sessions:** scoped watchdog and recovery checks do not
+  establish a fix for the original hours-long, tool-heavy silent stall.
+  ([#6184](https://github.com/codewhale-hq/Codewhale/issues/6184))
+
 ### Added
 
-- **Task wall clock pauses for answerable human waits:** a durable task can opt into moving its wall deadline while a prompt on that run awaits a decision, bounded by a 24-hour aggregate cap and a distinct `human_wait_timeout` reason. The app-server opts in; the TUI default is unchanged. (#5898)
+- **Inspect and repair plugin snapshots:** `codew plugins status [name]
+  [--json]` reports bundle state and diagnostics without changing plugin
+  stores. Runtime loading restores a missing snapshot only from bytes matching
+  its enabled review and policy; `codew plugins restage <name>` or
+  `/plugin restage <name>` retries explicitly. Recovery preserves review and
+  generation and refuses an existing changed snapshot. Isolated macOS checks
+  exercised the published Code Review 1.0.8 Native status lifecycle and official
+  filesystem MCP reconnect; live review execution and other plugins remain
+  unqualified.
+- **Shared optional account sign-in:** `/connect` offers Codewhale sign-in or
+  on-computer provider setup. Desktop and terminal use the same profile-scoped
+  Rust account session; sign-in preserves the selected model and local keys.
+  Ordinary logout removes the account session, while `logout --all` explicitly
+  clears saved model credentials. Startup prompts keep missing-model setup
+  visible instead of covering it with the optional working-agreement checkpoint.
+  Real sign-in acceptance remains open.
+- **Refresh model catalogs during use:** Runtime provider refresh now checks
+  public Models.dev metadata alongside the exact provider's model list;
+  `force_catalog=true` bypasses the public cache TTL and retry backoff.
+  `GET /v1/providers` exposes catalog revision and freshness so clients can
+  pick up new models without repeatedly loading an unchanged catalog. The
+  runtime rechecks in the background, retains the last good snapshot on
+  failure, and preserves explicit model selections and account/route scope.
+- **Tinker beta route:** configure Thinking Machines Tinker's OpenAI-compatible
+  endpoint and a serverless model or sampler checkpoint ID. Model-list discovery,
+  key verification through that list, and cost estimates remain unavailable;
+  live conversations, tools and image input have not been qualified in
+  Codewhale. See [provider setup](docs/PROVIDERS.md).
 - **Worktrees for parallel workspaces:** `GET /v1/worktrees` lists a repository's worktrees, `POST /v1/worktrees` creates a branch and its own checkout under `<repository>/.codewhale/worktrees/` through the existing lane provisioning, and `POST /v1/worktrees/remove` archives a clean managed one without `--force`, keeping the branch. A client starts a thread in the new folder, so several agents can work on one project without sharing files. (codewhale-hq/codewhale-app#3500)
 - **Thread-scoped snapshots:** `GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept `?thread_id=` and act on that thread's workspace under the same restore admission rule. (codewhale-hq/codewhale-app#3500)
-- **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine exposes a trusted and enabled plugin's client entry and assets through two loopback-only, read-only routes with bounded sizes, confined paths and safe MIME/no-store responses; no other plugin route gains an unauthenticated path. (#2, #3)
+- **Reviewed plugin UI assets (preview):** native plugin bundles with supported client entries can expose reviewed assets through the Engine's loopback descriptor and asset routes. Runtime and workspace authorization are required; exact asset bytes also require the current opaque grant. Responses keep bounded sizes, confined paths and safe MIME/no-store behavior. The desktop host binds grants to individual plugin frames; real Electron transport and teardown qualification remains open. Imported DSH client halves remain unsupported and refuse UI grants. (#2, #3)
 - **Present final files:** the read-only `present` tool takes 1–32 existing
   workspace files, streams their SHA-256 and byte counts, and returns an
   auditable handoff receipt without copying, moving or uploading them. It is
@@ -79,7 +153,7 @@ until the matching tag, packages, checksums, and release assets exist.
 - **Change mode and permissions while the agent works:** Tab, Shift+Tab, `/mode`, the hotbar and `/config mode` no longer refuse while a turn is running. A response that is already streaming is not restarted; the change applies at the agent's next step in the same turn (before its next tool batch, at every approval gate, and before its next model request, which carries the new mode notice). The status line says so until it applies. A call still waiting for approval goes back to the model under the new posture, and a call you already approved runs only if the new posture is equal or broader. Model, thinking level and provider stay locked until the turn ends.
 - **Steering interrupts thinking:** a steer (Ctrl+Enter, or Enter twice after queueing) now closes the in-flight model request at once, whether the model is waiting on headers, reasoning, writing text or emitting a tool call, and continues the same turn with your message. Text already shown is kept as interrupted output; unfinished reasoning and partial tool calls are discarded, never run.
 - **Modern MCP client:** MCP servers now connect through the official MCP SDK (2.4) behind Codewhale's Rust broker by default (`mcp_backend = "host"`; `"rust"` stays available for one release). Servers that speak the 2026-07-28 revision are discovered with `server/discover`; other stdio and HTTP servers fall back to the legacy `initialize` handshake, and configured SSE servers keep theirs. Rust keeps process, network, credential, catalog, approval and cancellation authority.
-- **DeepSeek Harness plugins:** reviewed DSH plugins (definition API pinned to DSH 0.2.1-rc.5 in a shared compatibility table) run in the Native extension host. Tool output is validated against its declared schema, unsupported options are refused instead of ignored, and plugin commands can submit a prompt with visible plugin attribution. Terminal command receipts are kept in thread snapshots without entering model history. Changing the compatibility table invalidates earlier trust. A newly enabled plugin's tools are offered on the first turn: the turn waits up to 10 seconds for the plugin host to finish loading instead of adding them only from the next turn. Plugin UI views stay disabled, and the import receipt says why: WebKit's network restrictions do not stop WebRTC, so plugin UI waits for an isolated renderer. A plugin tool can call `ctx.sessions.flush(exec.agent.session)` to have the Engine save the conversation so far before it continues (Runtime, terminal and `exec` sessions); it reports failure instead of claiming a save. Installing a plugin whose bytes changed after review now returns a 409 conflict instead of a server error. A plugin tool can ask you a question with `ctx.userQuestions.ask` and gets back the options you picked, your own text, or a skip; the question shows like any other Codewhale question in the terminal and through the Runtime API. A plugin tool can start a child agent with `ctx.subagents.startActivation` (the `spawn` provider): the child runs through Codewhale's own sub-agent manager, needs the same approval as the model's `agent` tool, can carry an extra persona section and a narrower tool list set in its `agent/created` handler, and returns its result to the plugin.
+- **DeepSeek Harness plugins:** reviewed DSH plugins (definition API pinned to DSH 0.2.1-rc.5 in a shared compatibility table) run in the Native extension host. Tool output is validated against its declared schema, unsupported options are refused instead of ignored, and plugin commands can submit a prompt with visible plugin attribution. Terminal command receipts are kept in thread snapshots without entering model history. Changing the compatibility table invalidates earlier trust. A newly enabled plugin's tools are offered on the first turn: the turn waits up to 10 seconds for the plugin host to finish loading instead of adding them only from the next turn. The importer reports that it does not convert `dsh.client` UI; Engine routes and a desktop slot exist, but isolated end-to-end plugin UI remains unqualified, including network containment. A plugin tool can call `ctx.sessions.flush(exec.agent.session)` to have the Engine save the conversation so far before it continues (Runtime, terminal and `exec` sessions); it reports failure instead of claiming a save. Installing a plugin whose bytes changed after review now returns a 409 conflict instead of a server error. A plugin tool can ask you a question with `ctx.userQuestions.ask` and gets back the options you picked, your own text, or a skip; the question shows like any other Codewhale question in the terminal and through the Runtime API. A plugin tool can start a child agent with `ctx.subagents.startActivation` (the `spawn` provider): the child runs through Codewhale's own sub-agent manager, needs the same approval as the model's `agent` tool, can carry an extra persona section and a narrower tool list set in its `agent/created` handler, and returns its result to the plugin.
 - **MCP catalogs stay fresh:** a server's tools, resources, prompts and skills are rediscovered on their own connection when an advertised `ttlMs` expires or the server sends a list-changed notice. A tool resolved against the old catalog is refused with "retry the call", a removed tool cannot run, and a failed refresh reconnects instead of serving stale entries. Catalogs are never shared across servers, credentials or reconnects.
 - **MCP Skills extension:** servers that advertise the published Skills extension have their skills listed in `list_mcp_resources`. Listing never activates a skill, and reading a skill file is refused unless its size and sha256 digest match the listing. MCP skills do not yet join `/skills`.
 - **Updates install themselves:** release-binary installs check for a new release every 6 hours (was 1), download and checksum-verify it in the background, and apply it the next time `codewhale` starts, never during a session. One line says `Updated to v… · What's new: … · Undo: codewhale update --rollback`. Until releases are signed, the download waits for your OK (one `[y/N]` question at the next start, or `/update install`); a release with a valid Ed25519 manifest signature applies on its own. `codewhale update --rollback` puts back the version the last update replaced and keeps the rolled-back version from returning automatically. Turn it down with `codewhale config set update.mode notify` (or `off`, or `CODEWHALE_UPDATE_MODE`); an organization's root-owned `policy.toml` overrides both. Offline and rate-limited checks retry about an hour later instead of on every launch. Package-manager and desktop-app copies only get their manager's command. Builds with the release key refuse a missing or invalid signature, and re-check the staged binary against the signed manifest at start. The checksum manifest now always comes from GitHub Releases; on Linux x64 the CNB mirror can still serve the binary, but only bytes that GitHub's manifest lists.
@@ -108,6 +182,10 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Changed
 
+- **Brighter terminal working states:** the Ocean palette has stronger accents,
+  and active work uses a restrained left-to-right text sweep. Quiet and
+  reduced-motion settings keep stable working indicators. The shared
+  `codewhale-ratatui` kit carries the same palette and motion updates.
 - **Managed ACP requirements outrank Full Access:** when organization
   requirements manage approval policy, ACP no longer lets `--full-access`
   override them. The TUI already locked YOLO this way; ACP now matches.
@@ -139,7 +217,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 - **`codewhale-tui-kit` crate (internal):** terminal rendering helpers (markdown, diff, text width, paste burst, OSC-8, streaming) move out of `codewhale-tui` into a new crate, and `syntect` is no longer a direct `codewhale-tui` dependency. No behavior change. (S52, #5316)
 
-- **Terminal kit on design tokens 2.3.0:** the vendored `codewhale-ratatui` now follows design tokens 2.3.0: an `Accent` role carries the one blue for links, focus and selection, and `Primary` is the ink of filled actions (upstream codewhale-hq/codewhale-ratatui 528a9c4). The built-in TUI themes keep their colours; only surfaces drawn in the kit's own roles take the 2.3.0 values.
+- **Terminal kit on design tokens 5.0.0:** the vendored `codewhale-ratatui` reuses the current shared blue, Ocean grounds and contrast-checked state colors (upstream codewhale-hq/codewhale-ratatui 8311b65). Primary actions use blue fill with white text; raised panels keep a visible edge where 256-color backgrounds collapse. Built-in TUI palettes retain their own overrides, and existing working-motion and reduced-motion guards remain in place.
 - **Fleet workers run the same Codewhale:** `codewhale fleet run` and Runtime API Fleet runs (`POST /v1/fleet/runs`) now start workers from the running `codewhale` binary instead of whichever `codewhale` is first on `PATH`, so they work with a minimal `PATH` and never pick up a stale copy. `CODEWHALE_FLEET_CODEWHALE_BINARY` still overrides it. (#7119)
 - **Switching provider lands on its current model:** `/provider stepfun` now selects Step 5 Preview instead of the older Step 3.7 Flash; a model you saved for a provider is still kept. `/model` now lists the current provider's own models (bundled and live, newest first, up to 20) instead of only the selected one. Search also matches ids typed without separators (`step5`). While you search, Shift+P and Shift+F type their letters rather than pinning or adding to Fleet, so `Step-5-Preview` can be typed in full; Ctrl+P and Ctrl+F pin or add the highlighted row at any time.
 - **First run without a key:** `/provider` now opens on the full provider list (DeepSeek and the other cloud providers) when only a keyless local runtime is set up, no longer shows a disabled Antigravity row that was never configured, and Shift+A toggles the view like `a`. A local Ollama model that is not loaded yet is loaded before the first turn, so the route uses its real context window (for example 32K for `qwen3:4b`) instead of an 8K fallback that refused the second message with "~5120 tokens usable"; the footer's context reading follows the same window. The TUI resolves an unknown Ollama default to an installed chat model on startup. If the daemon or chat model appears later, selecting `/provider ollama` retries discovery. Embedding-only tags keep the model unresolved. An installed Ollama model is listed in `/model` and `GET /v1/providers/ollama/models` once its own catalog has answered, even when another provider is active. (#7113, #7114, #7116)
@@ -197,6 +275,39 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Host-provided model clients:** keep configured session isolation and
+  approval deadlines when optional credential preflight fails.
+- **Runtime SDK exports:** include the existing thread-scoped Git, snapshot,
+  worktree and job-operation capabilities in the committed schema and types.
+- **Plugin enablement revalidates its review:** enabling rechecks the staged
+  snapshot and, under the existing state lock, refuses a changed review
+  generation or trust receipt. The macOS stale-enable check passed (1/1);
+  a separate Linux run reported 202 passed and one ignored on an earlier base
+  with matching plugin files and lockfile. Snapshot checking is point-in-time;
+  missing-stage recovery reuses the current receipt and policy. Filesystem
+  race coverage and final-candidate native qualification remain open.
+- **Plugin status and UI admission:** an enabled, trusted plugin whose reviewed
+  runtime snapshot is missing or invalid now reports
+  `runtime-snapshot-unavailable`. Both plugin UI metadata and assets require a
+  declared DSH client; ordinary plugins cannot expose staged files through the
+  client UI route. Missing snapshots recover only from receipt-matching
+  canonical source; authenticated assets require an exact current grant.
+  Native and Electron qualification remains open; existing modified snapshots
+  require review.
+- **DSH package-directory imports:** the existing offline reviewer uses npm's
+  version-range parser with the pinned DeepSeek host's prerelease policy, and
+  bare self-package exports resolve inside the selected package directory.
+  Invalid or incompatible ranges and paths outside the reviewed package still
+  refuse. Real published-plugin activation remains unqualified.
+- **Coordination lock diagnostics (#7232):** stale lock-file contents no longer
+  identify an owner PID. A refused legacy admission keeps its reason in Work
+  and shows one notice per cause instead of repeating cleanup warnings on
+  every sidebar refresh. Legacy migration still requires the actual holder to
+  exit and the refused owning Runtime to restart; locks and retained state
+  remain protected.
+- **A local proxy that stops mid-session no longer strands the session (#7231):** the model, catalog, search, vision, finance, MCP-registry, profile and remote-control clients watch a loopback proxy port and go direct while it refuses connections, then resume proxying when it returns. Only a definite refusal from every resolved address changes the route; remote proxies, `NO_PROXY` matches, credentials and the existing precedence are unchanged. Set `CODEWHALE_LOCAL_PROXY_FALLBACK=0` to keep the old build-time snapshot.
+- **Proxy diagnostic privacy ([#7233](https://github.com/codewhale-hq/codewhale/issues/7233)):** malformed MCP proxy warnings omit configured values; local-proxy log labels mask userinfo and omit URL paths, queries and fragments. Routing is unchanged. All 23 existing proxy tests passed on macOS; runtime log capture and other platforms remain unqualified. Thanks [@SparkofSpike](https://github.com/SparkofSpike) for the report.
+- **Fork, undo and retry work after a workspace drift notice (#7234):** the history-boundary walks now treat a whole `<context_update>` envelope as engine-owned, so a session that received one can be cut at every saved turn. A person quoting a notice or a truncated envelope still counts as their own prompt.
 - **Git writes land in the right workspace:** stage, unstage, discard, commit, push and branch take `?thread_id=` and run in that thread's recorded workspace, matching the read routes. Before, they always ran in the server's own folder, so a commit asked for a thread in another folder could land in the wrong tree.
 - **ChatGPT sign-in tolerates a small device clock skew:** identity-token expiry and not-before checks allow the same 60-second tolerance already used for ordinary network time drift, while signature, issuer, audience, subject and nonce checks remain exact. The diagnostic text still names the exact failed check when a token is genuinely invalid.
 - **Remaining long-blocking work moved off async callers (#6553):** route
@@ -468,6 +579,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Contributors
 
+- **[@zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)).
 - **[@printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).
 - **[@liuyy2](https://github.com/liuyy2)** — diagnosed case-sensitive model selection collisions in the provider picker ([#7214](https://github.com/codewhale-hq/Codewhale/issues/7214)).
 - **[@isaacs](https://github.com/isaacs)** — upstream minimatch preprocessing and glob cancellation fixes reused in compatible web build dependency backports.

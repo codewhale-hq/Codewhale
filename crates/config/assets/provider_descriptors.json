@@ -1567,9 +1567,9 @@
       "wire_policy": "chat_completions",
       "credential_help": {
         "acquisition": "api_key",
-        "credential_url": "https://console.mistral.ai/api-keys",
-        "docs_url": "https://docs.mistral.ai/",
-        "guidance": "Create a Mistral API key in the Mistral Console (la Plateforme)."
+        "credential_url": "https://chat.mistral.ai/code/extensions",
+        "docs_url": "https://docs.mistral.ai/vibe/code/cli/api-keys-profiles",
+        "guidance": "Use a Vibe Code API key or a Mistral Studio API key. Plan allowances and pay-as-you-go depend on your organization."
       },
       "selectable": true,
       "retired": false,
@@ -2111,6 +2111,19 @@
   "schema": "codewhale.provider_descriptors.v2",
   "note": "One built-in and compatible-host metadata owner. Defaults are bootstrap hints; model offerings and route/auth behavior retain their existing Rust and live-catalog authorities.",
   "descriptors": [
+    {
+      "id": "tinker",
+      "label": "Thinking Machines Tinker (beta)",
+      "wire": "openai-compatible",
+      "base_url": "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1",
+      "api_key_env": "TINKER_API_KEY",
+      "default_model": "thinkingmachines/Inkling-2-Small:peft:262144:sampling-nvfp4",
+      "discovery": "none",
+      "docs_url": "https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/",
+      "credential_url": "https://tinker-docs.thinkingmachines.ai/tinker/quickstart/",
+      "guidance": "Tinker serverless and its OpenAI-compatible API are beta. Model-list and key verification are unavailable through this route; configure a documented serverless model ID. A successful model call is needed to verify access.",
+      "aliases": ["thinking-machines", "thinkingmachines"]
+    },
     {
       "id": "aicraft",
       "label": "AICraft",

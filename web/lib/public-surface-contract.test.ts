@@ -557,7 +557,6 @@ done
       label: "MIT 许可证",
       href: "https://github.com/codewhale-hq/CodeWhale/blob/main/LICENSE",
     });
-    expect(footer).toContain("href={REPO_RELEASES_URL}");
     expect(text("web/lib/i18n/links.ts")).toContain(
       'export const REPO_RELEASES_URL = `${REPO_URL}/releases`',
     );

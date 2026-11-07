@@ -1,13 +1,13 @@
-// Generated from vendor/codewhale-design/tokens.json 2.3.0 by tests/generated.rs.
+// Generated from vendor/codewhale-design/tokens.json 5.0.0 by tests/generated.rs.
 // Do not edit. Regenerate: CODEWHALE_BLESS=1 cargo test --test generated
 
 /// The design tokens version these roles were generated from.
-pub const TOKENS_VERSION: &str = "2.3.0";
+pub const TOKENS_VERSION: &str = "5.0.0";
 
 /// What a color is for. Components name roles; they never name colors.
 /// Names follow `tokens.json`, so one vocabulary covers the desktop app,
-/// the web and the terminal. Two roles the tokens do not name are
-/// derived from ones they do ([`Role::is_derived`]).
+/// the web and the terminal. Hint is derived from the token colors.
+/// See [`Role::is_derived`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Role {
     /// The deepest ground: rails and things put away.
@@ -28,7 +28,7 @@ pub enum Role {
     Border,
     /// Edges that identify a control or a decision.
     BorderStrong,
-    /// Filled actions and switches, in neutral ink.
+    /// The primary action fill.
     Primary,
     /// Ink on a `Primary` ground.
     PrimaryForeground,
@@ -42,7 +42,7 @@ pub enum Role {
     Danger,
     /// Ink one step quieter than `Muted`: asides and placeholders. Derived: `muted_foreground` receded toward `background` until it just holds 4.5:1 on every ground.
     Hint,
-    /// The quietest ink: disabled and decorative words, never the only carrier of meaning. Derived: `muted_foreground` receded toward `background` until it just holds 3:1 on every ground.
+    /// The quietest ink: disabled and decorative words, never the only carrier of meaning.
     Dim,
     /// Ground behind an added line, under `Foreground` ink: the `diff_add` token.
     DiffAddedTint,
@@ -95,7 +95,7 @@ impl Role {
             Role::Attention => Some("attention"),
             Role::Danger => Some("danger"),
             Role::Hint => None,
-            Role::Dim => None,
+            Role::Dim => Some("disabled"),
             Role::DiffAddedTint => Some("diff_add"),
             Role::DiffRemovedTint => Some("diff_remove"),
         }
@@ -111,110 +111,107 @@ impl Role {
     /// `tokens.json` does not name it.
     #[must_use]
     pub const fn is_derived(self) -> bool {
-        matches!(self, Role::Hint | Role::Dim)
+        matches!(self, Role::Hint)
     }
 }
 
 /// dark token colors, `0xRRGGBB`, indexed by [`Role::index`].
 pub(crate) const DARK: [u32; Role::COUNT] = [
-    0x191a1c, // Sidebar
-    0x202123, // Background
-    0x2a2b2e, // Surface
+    0x0d121b, // Sidebar
+    0x030508, // Background
+    0x04070c, // Surface
     0x303134, // Hover
-    0x37393d, // Selected
-    0xefeeeb, // Foreground
-    0xb8b8b4, // Muted
+    0x17191c, // Selected
+    0xe8edf2, // Foreground
+    0xa8b6c3, // Muted
     0x3b3c3f, // Border
     0x828386, // BorderStrong
-    0xe6e4df, // Primary
-    0x202123, // PrimaryForeground
-    0xa9c0de, // Accent
-    0x9ec7b2, // Live
-    0xe8b077, // Attention
-    0xe39a90, // Danger
-    0xa3a3a0, // Hint
-    0x838381, // Dim
+    0x0b48bb, // Primary
+    0xffffff, // PrimaryForeground
+    0x8fbdff, // Accent
+    0x9ecbbd, // Live
+    0xeab982, // Attention
+    0xeea59d, // Danger
+    0x8e9aa5, // Hint
+    0x848583, // Dim
     0x22392f, // DiffAddedTint
     0x45302f, // DiffRemovedTint
 ];
 
 /// dark xterm 256-color indices (16..=255 only; 0..=15 belong to the
 /// user's profile). Nearest index, except where contrast needed a move:
-/// - dark primary: 254 -> 230 (nearest lost its hue)
-/// - dark danger: 174 -> 210 (nearest failed its contrast floor)
-/// - dark hint: 247 -> 248 (nearest failed its contrast floor)
-/// - dark dim: 244 -> 245 (nearest failed its contrast floor)
-/// - dark diff_add: 236 -> 22 (the cube has no tint this faint; nearest index that keeps the hue of live)
-/// - dark diff_remove: 237 -> 52 (the cube has no tint this faint; nearest index that keeps the hue of danger)
+/// - dark live: 151 -> 115 (nearest lost its hue)
+/// - dark border_strong: 102 -> 244 (nearest shared an index with another ink)
+/// - dark diff_add: 236 -> 22 (the cube has no tint this faint; nearest index that keeps the tint's hue)
+/// - dark diff_remove: 237 -> 52 (the cube has no tint this faint; nearest index that keeps the tint's hue)
 pub(crate) const DARK_256: [u8; Role::COUNT] = [
-    234, // Sidebar
-    235, // Background
-    236, // Surface
+    233, // Sidebar
+    232, // Background
+    232, // Surface
     236, // Hover
-    237, // Selected
+    234, // Selected
     255, // Foreground
     249, // Muted
     237, // Border
-    102, // BorderStrong
-    230, // Primary
-    235, // PrimaryForeground
-    146, // Accent
-    151, // Live
+    244, // BorderStrong
+    25, // Primary
+    231, // PrimaryForeground
+    111, // Accent
+    115, // Live
     180, // Attention
-    210, // Danger
-    248, // Hint
-    245, // Dim
+    217, // Danger
+    247, // Hint
+    102, // Dim
     22, // DiffAddedTint
     52, // DiffRemovedTint
 ];
 
 /// light token colors, `0xRRGGBB`, indexed by [`Role::index`].
 pub(crate) const LIGHT: [u32; Role::COUNT] = [
-    0xf0ede8, // Sidebar
-    0xfaf8f5, // Background
-    0xffffff, // Surface
+    0xfbfaf6, // Sidebar
+    0xf7f4ec, // Background
+    0xfcfbf8, // Surface
     0xe8e5e0, // Hover
     0xdfdcd6, // Selected
-    0x28292b, // Foreground
-    0x4f504d, // Muted
+    0x1b2a35, // Foreground
+    0x4a545d, // Muted
     0xd9d5cf, // Border
     0x807c76, // BorderStrong
-    0x2e2f31, // Primary
-    0xfaf8f5, // PrimaryForeground
-    0x425c82, // Accent
-    0x3a6352, // Live
-    0x86520d, // Attention
+    0x0b48bb, // Primary
+    0xffffff, // PrimaryForeground
+    0x245bc7, // Accent
+    0x396554, // Live
+    0x84530d, // Attention
     0x9e3f36, // Danger
-    0x60615e, // Hint
-    0x7d7d7a, // Dim
+    0x5a626a, // Hint
+    0x7a7a77, // Dim
     0xd2eadd, // DiffAddedTint
     0xf8e1dd, // DiffRemovedTint
 ];
 
 /// light xterm 256-color indices (16..=255 only; 0..=15 belong to the
 /// user's profile). Nearest index, except where contrast needed a move:
-/// - light primary: 236 -> 17 (nearest lost its hue)
-/// - light accent: 60 -> 240 (nearest failed its contrast floor)
+/// - light accent: 26 -> 25 (nearest failed its contrast floor)
 /// - light live: 239 -> 23 (nearest lost its hue)
 /// - light attention: 94 -> 58 (nearest failed its contrast floor)
 /// - light danger: 131 -> 124 (nearest failed its contrast floor)
-/// - light dim: 244 -> 243 (nearest failed its contrast floor)
+/// - light hint: 241 -> 59 (nearest failed its contrast floor)
 /// - light border_strong: 244 -> 242 (nearest failed its contrast floor)
-/// - light diff_add: 253 -> 158 (the cube has no tint this faint; nearest index that keeps the hue of live)
-/// - light diff_remove: 224 -> 224 (the cube has no tint this faint; nearest index that keeps the hue of danger)
+/// - light diff_add: 253 -> 158 (the cube has no tint this faint; nearest index that keeps the tint's hue)
+/// - light diff_remove: 224 -> 224 (the cube has no tint this faint; nearest index that keeps the tint's hue)
 pub(crate) const LIGHT_256: [u8; Role::COUNT] = [
-    255, // Sidebar
-    231, // Background
+    231, // Sidebar
+    255, // Background
     231, // Surface
     254, // Hover
     253, // Selected
     235, // Foreground
-    239, // Muted
+    240, // Muted
     188, // Border
     242, // BorderStrong
-    17, // Primary
+    25, // Primary
     231, // PrimaryForeground
-    240, // Accent
+    25, // Accent
     23, // Live
     58, // Attention
     124, // Danger
@@ -229,23 +226,23 @@ pub(crate) const LIGHT_256: [u8; Role::COUNT] = [
 /// so every contrast floor holds. The diff tints are re-mixed over its own
 /// background. Truecolor only; 256 colors use `DARK_256`.
 pub(crate) const OCEAN: [u32; Role::COUNT] = [
-    0x06183c, // Sidebar
-    0x0a1f47, // Background
-    0x122957, // Surface
+    0x021030, // Sidebar
+    0x000415, // Background
+    0x01061a, // Surface
     0x162f60, // Hover
-    0x1b376b, // Selected
-    0xefeeeb, // Foreground
-    0xb8b8b4, // Muted
+    0x05173a, // Selected
+    0xe8edf2, // Foreground
+    0xa8b6c3, // Muted
     0x1e3a70, // Border
     0x828386, // BorderStrong
-    0xe6e4df, // Primary
-    0x202123, // PrimaryForeground
-    0xa9c0de, // Accent
-    0x9ec7b2, // Live
-    0xe8b077, // Attention
-    0xe39a90, // Danger
-    0xa3a3a0, // Hint
-    0x838381, // Dim
-    0x223a58, // DiffAddedTint
-    0x2d3353, // DiffRemovedTint
+    0x0b48bb, // Primary
+    0xffffff, // PrimaryForeground
+    0x8fbdff, // Accent
+    0x9ecbbd, // Live
+    0xeab982, // Attention
+    0xeea59d, // Danger
+    0x8e9aa5, // Hint
+    0x848583, // Dim
+    0x192430, // DiffAddedTint
+    0x261e2b, // DiffRemovedTint
 ];

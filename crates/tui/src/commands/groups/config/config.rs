@@ -626,16 +626,21 @@ pub(super) const MODE_USAGE: &str = "/mode [work|plan|operate|1|2|3]";
 /// `/pet` usage, shared with the registration metadata.
 pub const PET_USAGE: &str = "/pet [on|off|inspect|status|appearance|style [smooth|pixel]|language [auto|en|zh-Hans|zh-Hant|ja]|window|source|export|sound [on|off]|avatar [whale|cove|braille|pixels|particles|whale-girl|key]|action [name|live]|view [name|live]]";
 
-/// `/connect [<provider>]` — sign in to an enabled plugin provider.
 pub fn connect(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
     if raw.split_whitespace().count() > 1 {
-        return ConfigCommandResult::error("Usage: /connect [<provider>]");
+        return ConfigCommandResult::error("Usage: /connect [account|<provider>]");
     }
     let mut parts = contexts.into_parts();
     let Some(facet) = parts.login.as_deref_mut() else {
         return missing("login");
     };
+    if raw.is_empty() {
+        return ConfigCommandResult::action(ConfigAction::OpenModelConnectionSetup);
+    }
+    if matches!(raw, "account" | "codewhale") {
+        return ConfigCommandResult::action(ConfigAction::StartAccountConnect);
+    }
     let provider = (!raw.is_empty()).then_some(raw);
     let reply = facet.connect(provider);
     to_result(reply, &mut parts, &PreparedTemplates::default())
@@ -889,8 +894,6 @@ fn rail_status(facet: &dyn CommandWorkSurfaceContext) -> String {
 }
 
 /// `/login [status|account|key]`.
-/// `/login [status|account|key]`. The command composes the report; the login
-/// facet returns the typed account state and provider identity.
 pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
     let token = raw.split_whitespace().next().unwrap_or("");
@@ -899,7 +902,8 @@ pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
         return missing("login");
     };
     match token {
-        "" | "status" => {
+        "" | "account" => ConfigCommandResult::action(ConfigAction::StartAccountLogin),
+        "status" => {
             let status = facet.login_status();
             let account = match status.account {
                 CommandAccountState::SignedOut => {
@@ -923,16 +927,7 @@ pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
                 status.provider
             ))
         }
-        "key" | "provider" => ConfigCommandResult::with_message_and_action(
-            "Open the provider picker to store an API key. Account sign-in is `codewhale login`.",
-            ConfigAction::OpenProviderPicker,
-        ),
-        "account" => ConfigCommandResult::message(
-            "TUI cannot start the browser device flow without freezing the session.\n\
-             Run `codewhale login` (same as `codewhale account login`) in a terminal.\n\
-             Then `/login` to confirm the session landed."
-                .to_string(),
-        ),
+        "key" | "provider" => ConfigCommandResult::action(ConfigAction::OpenProviderPicker),
         other => ConfigCommandResult::error(format!(
             "Usage: /login [status|account|key]\nUnknown argument: {other}\n\
              To sign in to a plugin provider, use `/connect <provider>`."
@@ -940,39 +935,11 @@ pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
     }
 }
 
-/// `/logout`. The command composes the confirmation; the login facet clears the
-/// provider key, account session and internal token and reports each result.
 pub fn logout(contexts: CommandContexts<'_>, _arg: Option<&str>) -> ConfigCommandResult {
-    let mut parts = contexts.into_parts();
-    let Some(facet) = parts.login.as_deref_mut() else {
+    if contexts.into_parts().login.is_none() {
         return missing("login");
-    };
-    match facet.logout() {
-        Ok(outcome) => {
-            let mut cleared = vec![format!("provider key ({})", outcome.provider)];
-            match outcome.account {
-                Ok(true) => cleared.push("Codewhale account session".to_string()),
-                Ok(false) => {}
-                Err(error) => cleared.push(format!("account session not cleared ({error})")),
-            }
-            match outcome.legacy_sandbox {
-                Ok(true) => cleared.push("legacy sandbox token".to_string()),
-                Ok(false) => {}
-                Err(error) => cleared.push(format!("legacy sandbox token not cleared ({error})")),
-            }
-            ConfigCommandResult::with_message_and_action(
-                format!(
-                    "Cleared {}. Use `codewhale login` to sign in again, or `codewhale auth set --provider <id>` to store a provider key.",
-                    cleared.join(", ")
-                ),
-                ConfigAction::OpenProviderPicker,
-            )
-        }
-        Err(failure) => ConfigCommandResult::error(format!(
-            "Failed to clear API key for {}: {}",
-            failure.provider, failure.error
-        )),
     }
+    ConfigCommandResult::action(ConfigAction::StartAccountLogout)
 }
 
 /// `/import-claude [--apply]`.

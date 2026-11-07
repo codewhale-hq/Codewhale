@@ -110,6 +110,7 @@ use codewhale_protocol::fleet::{
 };
 use codewhale_runtime::skill_state::SkillStateStore;
 
+mod account;
 mod auth;
 mod avatars;
 mod computer_display;
@@ -127,6 +128,7 @@ mod plans;
 mod plugins;
 pub(crate) mod review;
 mod secrets;
+pub use self::secrets::{SetAccountModelAccessRequest, install_account_model_access};
 pub(crate) mod sessions;
 mod targets;
 mod terminal;
@@ -201,6 +203,7 @@ pub struct RuntimeApiState {
     config: Arc<parking_lot::RwLock<Config>>,
     workspace: PathBuf,
     plugin_discovery: Arc<codewhale_plugins::PluginDiscoveryContext>,
+    plugin_ui_grants: Arc<plugins::PluginUiGrants>,
     task_manager: SharedTaskManager,
     runtime_threads: SharedRuntimeThreadManager,
     cors_origins: Vec<String>,
@@ -1555,6 +1558,7 @@ struct RuntimeInfoResponse {
     auth_required: bool,
     transports: Vec<&'static str>,
     capabilities: RuntimeCapabilities,
+    job_operation_store_id: Option<String>,
     account: RuntimeAccountInfo,
     experimental: RuntimeExperimentalCapabilities,
     // Backward-compatible alias kept for existing clients.
@@ -1575,6 +1579,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         thread_scoped_git_writes: true,
         thread_scoped_snapshots: true,
         worktrees: true,
+        job_operations: true,
         thread_shell_consent: true,
         turns: true,
         turn_operation_idempotency: true,
@@ -1637,6 +1642,7 @@ struct McpServerEntry {
     command: Option<String>,
     url: Option<String>,
     connected: bool,
+    has_connection_backoff: Option<bool>,
     enabled_tools: Vec<String>,
     disabled_tools: Vec<String>,
     always_allow_tools: Vec<String>,
@@ -2351,6 +2357,7 @@ pub async fn run_http_server(
         config: Arc::new(parking_lot::RwLock::new(config.clone())),
         workspace,
         plugin_discovery,
+        plugin_ui_grants: Arc::new(plugins::PluginUiGrants::default()),
         task_manager: task_manager.clone(),
         runtime_threads,
         cors_origins: options.cors_origins.clone(),
@@ -2561,7 +2568,8 @@ async fn store_selected_control_socket(
     let selected_store = selected_store.to_path_buf();
     codewhale_runtime::runtime_control::owner_work(move || {
         let store_override = codewhale_engine::runtime_threads::canonical_runtime_dir_override()?;
-        let inputs = codewhale_paths::daemon_socket::SocketPathInputs::from_environment(None)?;
+        let inputs =
+            codewhale_paths::daemon_socket::SocketPathInputs::from_environment(explicit.clone())?;
         store_selected_control_socket_with(
             explicit,
             &selected_store,
@@ -3050,6 +3058,15 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             "/v1/threads/{id}/jobs",
             get(jobs::list_thread_jobs).post(jobs::create_thread_job),
         )
+        .route("/v1/job-operations", get(jobs::list_job_operations))
+        .route(
+            "/v1/threads/{id}/job-operations",
+            get(jobs::list_thread_job_operations),
+        )
+        .route(
+            "/v1/threads/{id}/job-operations/{operation_key}",
+            get(jobs::get_job_operation),
+        )
         .route("/v1/threads/{id}/jobs/{job_id}", get(jobs::get_thread_job))
         .route(
             "/v1/threads/{id}/jobs/{job_id}/output",
@@ -3287,6 +3304,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             get(plugins::get_plugin).delete(plugins::uninstall_plugin_api),
         )
         .route(
+            "/v1/apps/plugins/{selector}/ui",
+            get(plugins::get_plugin_ui),
+        )
+        .route(
+            "/v1/apps/plugins/{selector}/ui/{*path}",
+            get(plugins::get_plugin_ui_asset),
+        )
+        .route(
             "/v1/apps/plugins/{selector}/update",
             post(plugins::update_plugin_api),
         )
@@ -3301,6 +3326,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/apps/plugins/{selector}/disable",
             post(plugins::disable_plugin_api),
+        )
+        .route(
+            "/v1/apps/plugins/{selector}/restage",
+            post(plugins::restage_plugin_api),
         )
         .route(
             "/v1/apps/plugins/{selector}/revoke",
@@ -3448,14 +3477,6 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         // listener here. The response already redacts account detail for
         // unauthorized requests; it never mutates state.
         .route("/v1/runtime/info", get(runtime_info))
-        .route(
-            "/v1/apps/plugins/{selector}/ui",
-            get(plugins::get_plugin_ui),
-        )
-        .route(
-            "/v1/apps/plugins/{selector}/ui/{*path}",
-            get(plugins::get_plugin_ui_asset),
-        )
         // Authenticates per handler: the display WS also takes a single-use
         // ticket, and client-token minting is master-token only.
         .merge(computer_display::router(
@@ -3463,6 +3484,7 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             state.runtime_token.clone(),
         ))
         .merge(api_routes)
+        .merge(account::routes(&state))
         .layer(cors_layer(&state.cors_origins))
         .with_state(state)
 }
@@ -6955,6 +6977,8 @@ async fn runtime_info(
         auth_required: state.auth_required,
         transports: vec!["http", "sse"],
         capabilities,
+        job_operation_store_id: runtime_request_is_authorized(&request, &state)
+            .then(|| state.runtime_threads.job_operation_store_id().to_string()),
         account,
         experimental: RuntimeExperimentalCapabilities::default(),
         version,
@@ -7353,6 +7377,9 @@ async fn list_mcp_servers(
             connected: pool
                 .as_ref()
                 .is_some_and(|pool| pool.connected_servers().contains(&name.as_str())),
+            has_connection_backoff: pool
+                .as_ref()
+                .and_then(|pool| pool.has_connection_backoff(&name, config.timeouts, &server_cfg)),
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
             always_allow_tools: server_cfg.always_allow_tools.clone(),
@@ -7377,6 +7404,7 @@ async fn list_mcp_servers(
             connected: pool
                 .as_ref()
                 .is_some_and(|pool| pool.connected_servers().contains(&name.as_str())),
+            has_connection_backoff: None,
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
             always_allow_tools: server_cfg.always_allow_tools.clone(),
@@ -12054,6 +12082,37 @@ struct ProvidersResponse {
     /// whichever entry happens to share the generic kind.
     current_provider_id: Option<String>,
     providers: Vec<ProviderEntry>,
+    catalog_revision: String,
+    public_catalog: PublicCatalogStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicCatalogStatus {
+    freshness: codewhale_engine::models_dev_live::ModelsDevFreshness,
+    fetched_at: Option<u64>,
+    outcome: &'static str,
+    error: Option<&'static str>,
+}
+
+fn public_catalog_status() -> PublicCatalogStatus {
+    let snapshot = codewhale_engine::models_dev_live::status();
+    PublicCatalogStatus {
+        freshness: snapshot.freshness,
+        fetched_at: snapshot.fetched_at,
+        outcome: if snapshot.last_error.is_some() {
+            "failed"
+        } else {
+            "cached"
+        },
+        error: snapshot.last_error.is_some().then_some("refresh_failed"),
+    }
+}
+
+#[derive(Serialize)]
+struct RefreshProviderModelsResponse {
+    #[serde(flatten)]
+    provider: codewhale_engine::provider_lake::CatalogUpdateReceipt,
+    public_catalog: PublicCatalogStatus,
 }
 
 /// Entry in `GET /v1/providers/{id}/models`.
@@ -12739,6 +12798,7 @@ async fn list_providers(
         #[cfg(any(test, feature = "test-support"))]
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let config = state.config.read().clone();
+        let (live_generation, cloud_generation) = codewhale_engine::provider_lake::catalog_revision();
         secrets::invalidate_stale_account_catalog(&config);
         let active_identity = config.active_provider_identity().ok();
         let current = active_identity.as_ref().map_or_else(|| config.provider.clone().unwrap_or_else(|| "unavailable".into()), |identity| identity.persisted_kind().to_string());
@@ -12754,6 +12814,8 @@ async fn list_providers(
             current_provider_id: active_identity.as_ref().and_then(|identity| identity.persisted_id()).map(str::to_string),
             current,
             providers,
+            catalog_revision: format!("{live_generation}:{cloud_generation}"),
+            public_catalog: public_catalog_status(),
         }))
     })
     .await
@@ -12846,13 +12908,15 @@ async fn list_provider_models(
 #[serde(deny_unknown_fields)]
 struct RefreshProviderModelsParams {
     model_provider_id: Option<String>,
+    #[serde(default)]
+    force_catalog: bool,
 }
 
 async fn refresh_provider_models(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
     Query(params): Query<RefreshProviderModelsParams>,
-) -> Result<Json<codewhale_engine::provider_lake::CatalogUpdateReceipt>, ApiError> {
+) -> Result<Json<RefreshProviderModelsResponse>, ApiError> {
     let runtime = tokio::runtime::Handle::current();
     #[cfg(any(test, feature = "test-support"))]
     let env_ticket = codewhale_engine::test_support::env_scope_ticket();
@@ -12861,9 +12925,40 @@ async fn refresh_provider_models(
         let _membership = codewhale_engine::test_support::join_env_scope(env_ticket);
         let config = state.config.read().clone();
         let identity = provider_models_identity(&config, &id, params.model_provider_id.as_deref())?;
-        Ok(Json(runtime.block_on(
-            codewhale_engine::provider_lake::update_provider_catalog(&config, &identity),
-        )))
+        Ok(Json(runtime.block_on(async {
+            let before = public_catalog_status();
+            let (public_result, provider) = tokio::join!(
+                codewhale_engine::models_dev_live::refresh(params.force_catalog),
+                codewhale_engine::provider_lake::update_provider_catalog(&config, &identity),
+            );
+            let mut public_catalog = public_catalog_status();
+            match public_result {
+                Ok(_)
+                    if public_catalog.error.is_none()
+                        && (params.force_catalog
+                            || before.fetched_at != public_catalog.fetched_at) =>
+                {
+                    public_catalog.outcome = "updated";
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    use codewhale_engine::models_dev_live::ModelsDevRefreshError;
+                    public_catalog.outcome = "failed";
+                    public_catalog.error = Some(match error {
+                        ModelsDevRefreshError::Disabled => "fetch_disabled",
+                        ModelsDevRefreshError::Network(_) => "network",
+                        ModelsDevRefreshError::HttpStatus(_) => "http_status",
+                        ModelsDevRefreshError::InvalidResponse(_) => "invalid_response",
+                        ModelsDevRefreshError::EmptyCatalog => "empty_catalog",
+                        ModelsDevRefreshError::Io(_) => "cache_io",
+                    });
+                }
+            }
+            RefreshProviderModelsResponse {
+                provider,
+                public_catalog,
+            }
+        })))
     })
     .await
     .map_err(|_| ApiError::internal("Provider model refresh failed"))?
@@ -14826,6 +14921,7 @@ base_url = "http://127.0.0.1:9/v1"
             config: Arc::new(parking_lot::RwLock::new(config)),
             workspace: workspace.clone(),
             plugin_discovery: codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv(),
+            plugin_ui_grants: Arc::new(plugins::PluginUiGrants::default()),
             task_manager,
             runtime_threads,
             cors_origins: Vec::new(),

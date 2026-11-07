@@ -9,12 +9,13 @@
 
 DeepSeek 仍是默认提供商，但 `ProviderKind::ALL` 中的每个条目都是一等公民、可选的提供商路由。`ALL` 是目录/选择器所用的清单——每个厂商一个身份。双线协议方言种类（`*Anthropic`，例如 `deepseek-anthropic`）和 Model Studio 套餐变体保留在枚举中用于 serde 和 `provider_for_kind`，但刻意**不**作为目录行：套餐是主提供商配置（`crates/config/src/provider_kind.rs:221-226`）上的 `mode`/`base_url`，方言则是 `wire = openai|anthropic`。托管路由、通用 OpenAI 兼容端点、OpenAI Codex/ChatGPT 路由、原生 Anthropic 以及本地运行时，都在所选提供商/模型/base URL 上运行同一个终端 harness。
 
-经普通 Chat Completions 访问的主机是普通的具名提供商，而不是 `ProviderKind`：枚举变体只留给不同的*线协议*（Anthropic Messages、Codex Responses、Google 思维签名）。这类主机都是一张 `[providers.<name>]` 表，包含 base URL、模型和密钥环境变量（见 `docs/CONFIGURATION.md`）；`/provider` 与 `/setup` 为此保留了“粘贴 Base URL 和密钥”的路径。可选模型来自实时的 `GET /v1/models` 加上 Codewhale 目录，而不是编译进程序的固定名单（#5350、#6289）。
+经普通 Chat Completions 访问的主机是普通的具名提供商，而不是 `ProviderKind`：枚举变体只留给不同的*线协议*（Anthropic Messages、Codex Responses、Google 思维签名）。这类主机都是一张 `[providers.<name>]` 表，包含 base URL、模型和密钥环境变量（见 `docs/CONFIGURATION.md`）；`/provider` 与 `/setup` 为此保留了“粘贴 Base URL 和密钥”的路径。可选模型来自配置、Codewhale 目录，以及受支持时的实时 `GET /v1/models`（#5350、#6289）。
 
-已知可用的主机。这些主机以内置描述符行的形式随附在 `crates/config/assets/provider_descriptors.json` 中（由 `crates/config/src/descriptors.rs` 编译进程序）：每一行说明如何连接该主机，即线协议、base URL、密钥环境变量和别名，而模型 ID 仍以实时的 `GET /v1/models` 与 Codewhale 目录为准；示例模型只是引导用的提示。信任此处任何值之前，请先对照厂商自己的文档核实：
+内置兼容主机描述符保存在 `crates/config/assets/provider_descriptors.json`（由 `crates/config/src/descriptors.rs` 编译进程序）：每一行说明线协议、base URL、密钥环境变量和别名。模型 ID 来自配置、Codewhale 目录，以及受支持时的实时 `GET /v1/models`；示例模型只是引导提示。请对照厂商文档核实：
 
 | 主机 | Base URL | 示例模型 | API 密钥环境变量 |
 | --- | --- | --- | --- |
+| Thinking Machines Tinker（测试版） | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `thinkingmachines/Inkling-2-Small:peft:262144:sampling-nvfp4` | `TINKER_API_KEY` |
 | SenseNova | `https://token.sensenova.cn/v1` | `deepseek-v4-flash` | `SENSENOVA_API_KEY` |
 | Baseten | `https://inference.baseten.co/v1` | `deepseek-ai/DeepSeek-V4-Pro` | `BASETEN_API_KEY` |
 | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
@@ -29,6 +30,8 @@ DeepSeek 仍是默认提供商，但 `ProviderKind::ALL` 中的每个条目都�
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`、`zai-org/GLM-5.3`、`openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`、`gpt-5.4-mini`（池名称）；`anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
 | 腾讯 TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
+
+Tinker 的 OpenAI 兼容 API 和无服务器推理均为测试版。在 `/provider` 中选择 Tinker，或按英文文档配置 `[providers.tinker]`。其他公开的无服务器模型 ID 包括 `thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4` 和 `thinkingmachines/Inkling:peft:262144:sampling-nvfp4`；请手动输入所需 ID，也可以使用自己的 sampler checkpoint 路径。Codewhale 不会通过模型列表发现此路由或验证密钥；已配置模型会出现在选择器中，费用显示为未知。此通用路由目前不发送推理强度，Tinker 文档所述默认值为 0.9。实际对话、工具调用和图像输入尚未在 Codewhale 中验证。参见 [API 文档](https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/)和[模型列表](https://tinker-docs.thinkingmachines.ai/tinker/models/models_and_pricing/)。
 
 AICraft 的 OpenAI 兼容端点提供 DeepSeek、Anthropic Claude、Google Gemini、Qwen、GLM、MiniMax 和 Doubao 的模型 ID。权威来源是带上你的密钥请求 `GET https://aicraftapi.com/v1/models` 的结果：请从该列表中选择模型，而不是从上表中选。
 Tsubasa 只实现了 `GET /v1/models` 和 Chat Completions。它的两个公开模型 ID 共用 32,768 token 的上下文，小于 Codewhale 对未知模型假定的 128,000 token，因此保存后请在该路由上设置：

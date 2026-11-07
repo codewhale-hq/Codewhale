@@ -81,7 +81,7 @@ codewhale config doctor     # unknown keys, empty secrets, malformed URLs`,
           codeTerms: true,
         },
         {
-          p: "Keys, endpoints, provider choice, MCP servers, hooks, skills, and extra instruction files always come from your own config, so a cloned repository cannot point Codewhale at its own server or files. Start with `--no-project-config` to ignore a repository's file for one launch.",
+          p: "Provider keys, endpoints and provider choice come from your own config. MCP servers can also come from `.codewhale/mcp.json` after you trust the workspace in user-owned settings; project entries override same-named global entries. Review that executable authority before trusting a repository. See [MCP configuration](/docs/mcp#config).",
         },
         {
           p: "Project instructions — how an agent should work in this repository — belong in `AGENTS.md` instead. Run `/init` to create one.",

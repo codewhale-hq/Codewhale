@@ -248,6 +248,19 @@ main:has(.sea-continues:last-child) + .site-footer .site-footer-sea { background
   background: var(--sea), var(--ocean-floor);
 }
 .site-footer-sea > .horizon { position: absolute; inset: 0 0 auto; z-index: 1; }
+.sea-texture {
+  position: absolute;
+  inset: 0 0 auto;
+  height: min(22rem, 100%);
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='210' height='18'%3E%3Cg stroke='%2390b9ff' stroke-width='1' stroke-linecap='round'%3E%3Cpath d='M4 5h30M60 5h14M112 5h40M170 5h8' stroke-opacity='.12'/%3E%3Cpath d='M30 14h22M88 14h36M140 14h10M186 14h20' stroke-opacity='.08'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 210px 18px;
+  -webkit-mask-image: linear-gradient(180deg, #000, transparent);
+  mask-image: linear-gradient(180deg, #000, transparent);
+}
+@media (forced-colors: active) {
+  .sea-texture { display: none; }
+}
 
 .site-footer-main,
 .site-footer-meta {

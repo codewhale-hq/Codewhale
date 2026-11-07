@@ -170,6 +170,13 @@ fn offerings_by_provider(
 /// staleness without re-merging.
 static LIVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+pub fn catalog_revision() -> (u64, u64) {
+    (
+        LIVE_GENERATION.load(Ordering::SeqCst),
+        codewhale_config::cloud_facts::overlay::snapshot().generation,
+    )
+}
+
 type MergedCacheEntry = ((u64, u64), Arc<SharedSnapshot>);
 
 /// Memoized result of [`merged_snapshot`], tagged with the `LIVE_GENERATION`
@@ -536,10 +543,7 @@ pub fn lock_live_snapshot() -> LiveSnapshotLock {
 /// `LIVE_GENERATION`; every other call returns the cached `Arc` (the picker
 /// calls this per row, so it must be cheap).
 fn merged_snapshot() -> Arc<SharedSnapshot> {
-    let generation = (
-        LIVE_GENERATION.load(Ordering::SeqCst),
-        codewhale_config::cloud_facts::overlay::snapshot().generation,
-    );
+    let generation = catalog_revision();
     if let Ok(guard) = MERGED_CACHE.read()
         && let Some((cached_generation, cached)) = guard.as_ref()
         && *cached_generation == generation
@@ -1817,6 +1821,11 @@ pub async fn update_provider_catalog(
     let base_url = route_config.active_route_base_url();
     let fingerprint = base_url_fingerprint(&base_url);
     let mut receipt = cached_receipt(&route_config, identity);
+    if crate::client::model_listing_unavailable(identity.provider, &base_url) {
+        receipt.outcome = "skipped";
+        receipt.error = Some("provider_model_listing_unavailable");
+        return receipt;
+    }
     if identity.provider == ProviderKind::Antigravity {
         receipt.outcome = "skipped";
         receipt.error = Some("provider_retired");

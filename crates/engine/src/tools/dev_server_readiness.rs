@@ -288,6 +288,8 @@ async fn wait_for_http(
     deadline: Instant,
     context: &ToolContext,
 ) -> Result<ReadinessOutput, ToolError> {
+    // This probe always goes direct, so it must not install the loopback watch
+    // and start a probe thread it will never consult.
     let client = codewhale_release::tls::reqwest_client_builder()
         .timeout(request.timeout)
         .redirect(reqwest::redirect::Policy::none())

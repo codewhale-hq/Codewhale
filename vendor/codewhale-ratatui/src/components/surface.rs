@@ -96,11 +96,21 @@ impl<'a> Panel<'a> {
         self
     }
 
-    fn edged(&self, theme: &Theme) -> bool {
+    pub(crate) fn edged(&self, theme: &Theme) -> bool {
         match self.depth {
             Depth::Overlay => true,
-            // Light 256-color `Surface` and `Background` are both white.
-            Depth::Raised => !theme.grounds_differ(Role::Surface, Role::Background),
+            Depth::Raised => {
+                !theme.grounds_differ(Role::Surface, Role::Background)
+                    || (theme.depth() == color::ColorDepth::Ansi256
+                        && theme
+                            .bg(Role::Surface)
+                            .bg
+                            .zip(theme.bg(Role::Background).bg)
+                            .and_then(|(surface, background)| {
+                                color::contrast_ratio(surface, background)
+                            })
+                            .is_some_and(|contrast| contrast < 1.2))
+            }
             Depth::Deep | Depth::Stage => false,
         }
     }
@@ -185,7 +195,9 @@ impl<'a> Panel<'a> {
         if layout.edged {
             let edge_role = if self.focused {
                 Role::Accent
-            } else if self.depth == Depth::Overlay {
+            } else if self.depth == Depth::Overlay
+                || (self.depth == Depth::Raised && theme.depth() == color::ColorDepth::Ansi256)
+            {
                 Role::BorderStrong
             } else {
                 Role::Border
@@ -725,8 +737,9 @@ mod tests {
                 );
             }
         }
-        let light256 = Profile::Light256.theme();
-        assert!(!light256.grounds_differ(Role::Surface, Role::Background));
+        let dark256 = Profile::Dark256.theme();
+        assert!(!dark256.grounds_differ(Role::Surface, Role::Background));
+        assert!(Panel::new(Depth::Raised).edged(&Profile::Light256.theme()));
     }
 
     #[test]

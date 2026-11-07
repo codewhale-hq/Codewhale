@@ -2,16 +2,16 @@ import type { HomeDict } from "../types";
 
 /** English reference home copy: useful work with chosen models and connected tools. */
 export const home: HomeDict = {
-  metaTitle: "Codewhale: an open-source coding agent",
-  metaDescription: "Codewhale is an open-source coding agent for your terminal. Read, edit and test projects with your own hosted or local models.",
+  metaTitle: "Codewhale · An open-source agent for your computer",
+  metaDescription: "Build apps, fix code and automate work with an open-source agent in your terminal. Choose hosted or local models. Help build Codewhale with code, docs and feedback.",
 
-  heroTitle: "The open-source coding agent for any model",
-  heroIntro: "{brand} reads your project, edits files and runs your tests from your terminal. Connect a hosted or local model, and choose which actions need your approval.",
+  heroTitle: "An open-source agent for your computer",
+  heroIntro: "Build software and run repeatable workflows with {brand} in your terminal. Add Computer Use to work in Mac apps.",
   getCodewhale: "Install Codewhale",
   heroInstallAria: "Install command",
   exploreProduct: "Explore Codewhale",
 
-  shotPreview: "Terminal preview",
+  shotPreview: "Local terminal demo",
   screenshotAlt:
     "Codewhale v{version}: a captured terminal view with the conversation, message composer and session controls.",
 
@@ -22,32 +22,32 @@ export const home: HomeDict = {
   sourceCandidate: "Unreleased",
   publishedRelease: "released",
 
-  gainHeading: "Build and automate from your terminal",
+  gainHeading: "Put your ideas to work",
   gainLede:
-    "Describe what you want to build or automate. Codewhale can edit files, run commands and check the result, with access you control.",
+    "Start with a project and the result you need. Codewhale can read the files, make changes and run commands to check its work.",
   gain: [
     [
-      "Build apps and tools",
-      "Create an app, add a feature or write a script. Codewhale can work through the project files, run the code and test what it builds."
+      "Build and repair software",
+      "Add a feature, trace a bug or write a useful tool. Work through the changes with an agent that can edit the project and run its checks."
     ],
     [
-      "Automate the work you repeat",
-      "Run workflows from your terminal, scripts or CI. For larger tasks, delegate parts of the work to a Fleet of agents with different models."
+      "Automate work you repeat",
+      "Turn a repeated task into a script or run it with codewhale exec. For larger jobs, give parts of the work to a Fleet of agents with different models."
     ],
     [
       "Connect the tools you use",
-      "Add tools through plugins and MCP servers, or use APIs from your own scripts. Each service needs its own setup and authentication."
+      "Bring in tools through plugins and MCP servers. Connect the services your work needs, with access and authentication you configure."
     ]
   ],
 
   chapterModels: "Your models",
   modelsHeading: "Use the models you choose",
   modelsBody:
-    "Connect your provider accounts, an OpenAI-compatible endpoint, or local and self-hosted models. Pick a model for the session and for each agent in a Fleet.",
+    "Use provider API keys, an OpenAI-compatible endpoint or local models.",
   modelsFacts: [
     [
       "Your API accounts",
-      "Connect providers such as DeepSeek, OpenAI, Anthropic or Google with your own keys. The default, deepseek-flash, now runs DeepSeek-V4.1-Flash."
+      "Use your own API keys with providers such as DeepSeek, OpenAI, Anthropic and Google. Your provider bills the model usage."
     ],
     [
       "Your gateway",
@@ -55,16 +55,16 @@ export const home: HomeDict = {
     ],
     [
       "Your inference",
-      "Run local or self-hosted models with Ollama, vLLM or SGLang."
+      "Connect Ollama on your machine, or a self-hosted endpoint such as vLLM or SGLang."
     ],
     [
       "Your ChatGPT plan",
-      "Sign in with codewhale auth chatgpt to use a ChatGPT plan instead of an API key. Experimental."
+      "Experimental: connect an eligible ChatGPT plan with codewhale auth chatgpt."
     ]
   ],
   modelsLink: "Browse models and providers",
 
-  startHeading: "Get started",
+  startHeading: "Start with one useful task",
   startLede:
     "Install Codewhale, connect a model and open a project folder. You can add plugins and more agents as you need them.",
   startGuideLink: "Follow the getting-started guide",
@@ -73,7 +73,7 @@ export const home: HomeDict = {
   chapterAvailability: "Where it runs",
   availabilityHeading: "Available now and in development",
   availabilityLede:
-    "The terminal and local browser client are available now. A native desktop app and a rebuilt hosted web app are in development.",
+    "Install on macOS, Linux or Windows. Work in your terminal, or run codewhale web for a local browser view. Desktop and hosted web apps are in development.",
   availability: [
     [
       "Terminal and local browser",
@@ -112,7 +112,7 @@ export const home: HomeDict = {
     ],
     [
       "Browser and computer · preview",
-      "Use browser tools and the Computer Use plugin for work in apps and websites, with the access you grant."
+      "Add browser tools or the Computer Use plugin to work in apps and websites. Computer Use on macOS needs system permissions; other platforms remain experimental."
     ],
     [
       "Sessions you can return to",
@@ -134,7 +134,7 @@ export const home: HomeDict = {
 
   communityHeading: "Contribute to Codewhale",
   communityBody:
-    "{count} people have built Codewhale. Report a bug, improve the docs or contribute code on GitHub.",
+    "{count} contributors. Code, docs, translations and skills all help.",
   communityLinksAria: "Community links",
-  contribute: "Contribute on GitHub",
+  contribute: "Contribute",
 };

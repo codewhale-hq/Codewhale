@@ -217,11 +217,11 @@ describe("navigation parity and accessibility", () => {
     const reference = buildNavLinks("en", getChrome("en")).map((l) =>
       l.href.replace(/^\/en\//, ""),
     );
-    expect(reference).toEqual(["product", "features", "models", "plugins", "docs"]);
+    expect(reference).toEqual(["product", "computer-use", "models", "plugins", "docs"]);
     const moreReference = buildSecondaryNavLinks("en", getChrome("en")).map((l) =>
       l.href.replace(/^\/en\//, ""),
     );
-    expect(moreReference).toEqual(["docs/guide", "install", "ratatui", "faq", "community", "contribute"]);
+    expect(moreReference).toEqual(["features", "docs/guide", "install", "changelog", "ratatui", "faq", "community", "contribute"]);
     for (const locale of locales) {
       const links = buildNavLinks(locale, getChrome(locale));
       expect(
@@ -371,18 +371,8 @@ describe("navigation parity and accessibility", () => {
 describe("homepage integration", () => {
   const homepage = webText("app/[locale]/page.tsx");
 
-  it("renders the shared getting-started path on the homepage", () => {
-    expect(homepage).toContain('import { GettingStartedSteps } from "@/components/getting-started-steps"');
-    expect(homepage).toContain("<GettingStartedSteps locale={locale} />");
-    expect(homepage).toContain("product-start");
-    expect(homepage).toContain("/docs/guide");
-    expect(homepage).toContain("/docs/vocabulary");
-  });
-
   it("keeps the published release separate from the source candidate", () => {
     expect(homepage).toContain("facts.latestPublishedRelease");
-    // The unreleased-source label is the EN dictionary value the page renders
-    // (plain "Unreleased", per docs/design/WEB_VOICE.md).
     expect(homepage).toContain("d.sourceCandidate");
     expect(getHome("en").sourceCandidate).toBe("Unreleased");
   });

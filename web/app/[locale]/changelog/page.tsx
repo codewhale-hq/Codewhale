@@ -3,6 +3,8 @@ import { Icon } from "@/components/icon";
 import { PageHeader } from "@/components/page-header";
 import { Status } from "@/components/status-badge";
 import { EmptyState } from "@/components/surface-state";
+import { ReleaseUpdates } from "@/components/release-updates";
+import { getReleaseUpdates } from "@/lib/release-updates";
 import { CHANGELOG, type ChangelogRelease } from "@/lib/changelog.generated";
 import { changelogAnchor } from "@/scripts/changelog-lib.mjs";
 import { getFacts } from "@/lib/facts";
@@ -11,9 +13,9 @@ import { fill, getChangelog, getChrome } from "@/lib/i18n/dictionaries";
 import { REPO_RELEASES_URL, REPO_URL } from "@/lib/i18n/links";
 import { buildPageMetadata } from "@/lib/page-meta";
 
-// The two headline facts come from the facts layer, which may be refreshed
-// from the KV snapshot after deploy; the notes are build-time from CHANGELOG.md.
-export const revalidate = 300;
+// Published releases resolve at request time; the notes are build-time
+// from CHANGELOG.md and link to the complete published history.
+export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
@@ -52,7 +54,8 @@ export default async function ChangelogPage({ params }: { params: Promise<{ loca
   const t = getChangelog(locale);
   const chrome = getChrome(locale);
   const facts = await getFacts();
-  const published = facts.latestPublishedRelease;
+  const updates = await getReleaseUpdates(facts.latestPublishedRelease);
+  const published = updates.terminal.release;
   const candidate = facts.version;
   const candidateIsPublished = published !== null && candidate !== null && published.version === candidate;
 
@@ -60,28 +63,6 @@ export default async function ChangelogPage({ params }: { params: Promise<{ loca
     <>
       <PageHeader kicker={t.kicker} title={t.title} lede={t.lead} pose="write">
         <dl className="def-rows changelog-facts">
-          <div className="def-row" data-published={published ? "true" : "false"}>
-            <dt>{t.publishedLabel}</dt>
-            <dd>
-              {published ? (
-                <>
-                  <Status tone="ready">
-                    {fill(t.publishedValue, {
-                      tag: published.tag,
-                      date: formatDate(published.publishedAt, chrome.dateLocale),
-                    })}
-                  </Status>
-                  <a href={published.url} target="_blank" rel="noreferrer" className="link">
-                    {ext(t.releasePageLink)}
-                  </a>
-                </>
-              ) : (
-                <a href={REPO_RELEASES_URL} target="_blank" rel="noreferrer" className="link">
-                  {ext(t.releasesLink)}
-                </a>
-              )}
-            </dd>
-          </div>
           <div className="def-row" data-candidate={candidateIsPublished ? "published" : "unreleased"}>
             <dt>{t.candidateLabel}</dt>
             <dd>
@@ -101,6 +82,7 @@ export default async function ChangelogPage({ params }: { params: Promise<{ loca
       </PageHeader>
 
       <div className="page-body">
+        <ReleaseUpdates key={`${locale}:${updates.fetchedAt}`} locale={locale} initial={updates} showAllLink={false} />
         <div className="page-body-narrow changelog-list">
           {CHANGELOG.length === 0 ? (
             <EmptyState

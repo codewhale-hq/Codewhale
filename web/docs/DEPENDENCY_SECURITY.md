@@ -29,8 +29,8 @@ and [upstream issue and recommended depth guard](https://github.com/micromatch/b
 
 ## Minimatch globparts amplification
 
-Dependabot #244 reports [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)
-against minimatch versions below 11.0.1. The upstream report identifies
+The advisory [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249) affects
+minimatch versions below 11.0.1. The upstream report identifies
 `firstPhasePreProcess` at optimization level 2 or higher. The installed 8.0.7
 and 10.2.5 copies contain that path; the six 3.1.5 copies do not contain it.
 The broad registry advisory remains visible for all of these old versions.

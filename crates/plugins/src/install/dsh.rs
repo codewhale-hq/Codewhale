@@ -563,8 +563,8 @@ fn target_dsh_version() -> Result<semver::Version> {
     })
 }
 
-fn admit_host_compatibility(manifest: &Value) -> Result<()> {
-    if let Some(declared) = manifest
+fn admit_host_compatibility(manifest: &Value) -> Result<Option<&str>> {
+    let dsh_range = if let Some(declared) = manifest
         .get("engines")
         .and_then(|engines| engines.get("dsh"))
     {
@@ -573,21 +573,17 @@ fn admit_host_compatibility(manifest: &Value) -> Result<()> {
                 "incompatible-version: `engines.dsh` must be a string semver range; author the supported DSH range or remove the field.",
             );
         };
-        let requirement = semver::VersionReq::parse(range).map_err(|_| {
-            anyhow::Error::msg(format!(
-                "incompatible-version: `engines.dsh` value `{}` is not a valid semver range.",
-                refusal_text(range)
-            ))
-        })?;
-        let target = target_dsh_version()?;
         require(
-            requirement.matches(&target),
+            !range.trim().is_empty(),
             &format!(
-                "incompatible-version: this bundle requires DSH `{}`, but this Codewhale host targets DSH {target}; import a bundle built for that host or update the host.",
+                "incompatible-version: `engines.dsh` value `{}` is not a valid semver range.",
                 refusal_text(range)
             ),
         )?;
-    }
+        Some(range)
+    } else {
+        None
+    };
     if let Some(declared) = manifest
         .get("dsh")
         .and_then(|dsh| dsh.get("bundle"))
@@ -631,7 +627,7 @@ fn admit_host_compatibility(manifest: &Value) -> Result<()> {
             ),
         )?;
     }
-    Ok(())
+    Ok(dsh_range)
 }
 
 fn declares_client(manifest: &Value) -> bool {
@@ -654,11 +650,11 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
         matches!(bundle, Some(Value::Map(_))),
         "Not a DSH bundle package: package.json lacks `dsh.bundle.patch`.",
     )?;
-    admit_host_compatibility(&manifest)?;
+    let dsh_range = admit_host_compatibility(&manifest)?;
     let mut notes = Vec::new();
     if declares_client(&manifest) {
         notes.push(
-            "package declares `dsh.client`; its UI half was not converted and stays off until Codewhale has a renderer that can keep plugin UI off the network (WebKit restrictions do not stop WebRTC)"
+            "package declares `dsh.client`; its UI half was not converted and remains disabled because the DSH client runtime is not supported"
                 .to_string(),
         );
     }
@@ -714,7 +710,37 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
         });
     }
     let composition = json!({"version":1,"layers":raw_layers,"modules":[],"files":{}});
-    let reviewed = crate::composition_review::review(&composition).map_err(anyhow::Error::msg)?;
+    let mut review_input = composition.clone();
+    let target = if let Some(range) = dsh_range {
+        let target = target_dsh_version()?;
+        review_input["compatibility"] = json!({"range":range,"version":target.to_string()});
+        Some(target)
+    } else {
+        None
+    };
+    let reviewed = crate::composition_review::review(&review_input).map_err(anyhow::Error::msg)?;
+    if let (Some(range), Some(target)) = (dsh_range, target) {
+        match reviewed.get("compatibility").and_then(Json::as_str) {
+            Some("match") => {}
+            Some("invalid") => {
+                return refuse(format!(
+                    "incompatible-version: `engines.dsh` value `{}` is not a valid semver range.",
+                    refusal_text(range)
+                ));
+            }
+            Some("mismatch") => {
+                return refuse(format!(
+                    "incompatible-version: this bundle requires DSH `{}`, but this Codewhale host targets DSH {target}; import a bundle built for that host or update the host.",
+                    refusal_text(range)
+                ));
+            }
+            _ => {
+                return refuse(
+                    "incompatible-version: compatibility reviewer returned no valid decision.",
+                );
+            }
+        }
+    }
     let entries = reviewed
         .get("entries")
         .and_then(Json::as_array)
@@ -1909,7 +1935,7 @@ fn native_composition_files(
                             )),
                             kind: "client".into(),
                             outcome: "skipped".into(),
-                            reason: "Plugin-provided UI is not imported or run by Codewhale."
+                            reason: "Client UI was not converted; the DSH client runtime is not supported."
                                 .into(),
                             layer: None,
                             patch: None,

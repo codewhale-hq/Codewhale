@@ -1927,6 +1927,170 @@ pub(crate) async fn handle_view_events(
             ViewEvent::OpenTextPager { title, content } => {
                 open_text_pager(app, title, content);
             }
+            ViewEvent::AccountModelSelected {
+                access,
+                api_base,
+                account_id,
+                expected_revision,
+                model,
+            } => {
+                if app.reject_setting_change_while_busy(MessageId::SettingSubjectProvider) {
+                    continue;
+                }
+                begin_first_connection_setup(app);
+                let profile = app.config_profile.clone();
+                let config_for_install = config.clone();
+                let expected_session_id = config
+                    .account_model_access
+                    .read()
+                    .as_ref()
+                    .filter(|existing| existing.expires_at > chrono::Utc::now().timestamp())
+                    .map(|existing| existing.session_id.clone());
+                let result = tokio::task::spawn_blocking(move || -> Result<()> {
+                    anyhow::ensure!(
+                        api_base
+                            == codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL,
+                        "Account models require the first-party Codewhale endpoint"
+                    );
+                    let client =
+                        codewhale_account_cli::AccountClient::new(profile.as_deref(), None)?;
+                    let status = client.status()?;
+                    anyhow::ensure!(
+                        status.api_base == codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE
+                            && status.revision == expected_revision
+                            && status.account.account_id.as_deref() == Some(account_id.as_str())
+                            && status.account.session_id.as_deref()
+                                == Some(access.session_id.as_str()),
+                        "The signed-in account changed. Reconnect account models"
+                    );
+                    codewhale_app_server::runtime_api::install_account_model_access(
+                        &config_for_install,
+                        profile.as_deref(),
+                        codewhale_app_server::runtime_api::SetAccountModelAccessRequest {
+                            api_base,
+                            session_id: access.session_id,
+                            expected_session_id,
+                            key: access.credential.expose_secret().to_string(),
+                            expires_at: access.expires_at,
+                        },
+                    )
+                    .map_err(|error| anyhow::anyhow!(error.message))?;
+                    Ok(())
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))
+                .and_then(|result| result);
+                match result {
+                    Ok(()) => {
+                        let identity = config
+                            .builtin_provider_identity(ProviderKind::Codewhale)
+                            .map_err(anyhow::Error::msg)?;
+                        let switched = switch_provider(
+                            app,
+                            engine_handle,
+                            config,
+                            identity,
+                            Some(model.clone()),
+                        )
+                        .await;
+                        if switched {
+                            if app.onboarding == OnboardingState::Provider {
+                                complete_provider_picker_onboarding(app, ProviderKind::Codewhale);
+                                if app.onboarding_needs_api_key {
+                                    continue;
+                                }
+                            }
+                            app.push_status_toast(
+                                app.tr(MessageId::AccountModelsReady)
+                                    .replace("{model}", &model),
+                                StatusToastLevel::Success,
+                                Some(8_000),
+                            );
+                        }
+                    }
+                    Err(error) => app.push_status_toast(
+                        app.tr(MessageId::AccountModelsConnectFailed)
+                            .replace("{error}", &error.to_string()),
+                        StatusToastLevel::Error,
+                        Some(App::STICKY_ERROR_TTL_MS),
+                    ),
+                }
+                app.needs_redraw = true;
+            }
+            ViewEvent::AccountConnectionChoice { account } => {
+                if account.is_some() {
+                    begin_first_connection_setup(app);
+                }
+                match account {
+                    Some(true) => {
+                        app.view_stack
+                            .push(crate::tui::account_login::AccountLoginView::connect(
+                                app.config_profile.clone(),
+                                app.ui_locale,
+                            ))
+                    }
+                    Some(false) => open_provider_picker(app, config, engine_handle).await,
+                    None if app.onboarding == OnboardingState::Provider => {
+                        back_from_provider_onboarding(app)
+                    }
+                    None => {}
+                }
+                app.needs_redraw = true;
+            }
+            ViewEvent::AccountOperationCompleted {
+                signing_out,
+                outcome,
+            } => {
+                use crate::tui::account_login::AccountOperationOutcome;
+                let needs_model = !signing_out
+                    && outcome == AccountOperationOutcome::Complete
+                    && app.onboarding_needs_api_key;
+                let id = match (signing_out, outcome) {
+                    (true, AccountOperationOutcome::Complete) => MessageId::AccountLogoutSuccess,
+                    (true, AccountOperationOutcome::LocalSignOut) => MessageId::AccountLogoutLocal,
+                    (true, AccountOperationOutcome::Cancelled) => MessageId::AccountLogoutCancelled,
+                    (true, _) => MessageId::AccountLogoutFailed,
+                    (false, AccountOperationOutcome::Complete) if needs_model => {
+                        MessageId::AccountLoginNeedsModel
+                    }
+                    (false, AccountOperationOutcome::Complete) => MessageId::AccountLoginSuccess,
+                    (false, AccountOperationOutcome::Cancelled) => MessageId::AccountLoginCancelled,
+                    (false, AccountOperationOutcome::ModelCancelled) => {
+                        MessageId::AccountModelsCancelled
+                    }
+                    (false, AccountOperationOutcome::Expired) => MessageId::AccountLoginExpired,
+                    (false, _) => MessageId::AccountLoginFailed,
+                };
+                let level = match outcome {
+                    AccountOperationOutcome::Failed | AccountOperationOutcome::Expired => {
+                        StatusToastLevel::Error
+                    }
+                    AccountOperationOutcome::Complete => StatusToastLevel::Success,
+                    _ => StatusToastLevel::Info,
+                };
+                if !signing_out
+                    && matches!(
+                        outcome,
+                        AccountOperationOutcome::Cancelled
+                            | AccountOperationOutcome::ModelCancelled
+                            | AccountOperationOutcome::Expired
+                            | AccountOperationOutcome::Failed
+                    )
+                    && app.onboarding == OnboardingState::Provider
+                {
+                    app.onboarding_missing_key_recovery = true;
+                    back_from_provider_onboarding(app);
+                }
+                let message = app
+                    .tr(id)
+                    .replace("{command}", if signing_out { "/logout" } else { "/login" });
+                app.push_status_toast(message, level, Some(8_000));
+                if needs_model {
+                    begin_first_connection_setup(app);
+                    open_model_connection_setup(app, config, engine_handle, false).await;
+                }
+                app.needs_redraw = true;
+            }
             ViewEvent::CopyToClipboard { text, label } => {
                 if text.is_empty() {
                     app.status_message = Some(format!("{label} is empty"));

@@ -1,9 +1,5 @@
 //! Motion: the few things that move, and the promise that nothing else does.
 //!
-//! Motion is allowed for a change of state or for spatial continuity, and
-//! nothing else: no sweeps, dissolves, glitches or bounces. This module is
-//! that layer in a few hundred lines, instead of a dependency.
-//!
 //! - A [`MotionStep`] eases a value from where it is to a target in `0..=1`,
 //!   sampled at an instant the caller passes in. Nothing here reads a clock,
 //!   spawns a thread or waits.
@@ -23,11 +19,16 @@
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
-use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Style},
+};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     MotionMode, Paint, Role, Theme,
-    color::{ColorDepth, blend},
+    color::{ColorDepth, blend, contrast_ratio},
     glyphs, text, tokens,
 };
 
@@ -171,6 +172,67 @@ impl MotionPolicy {
 /// to blend with.
 fn can_blend(theme: &Theme) -> bool {
     theme.paints_grounds() && theme.depth() == ColorDepth::TrueColor
+}
+
+pub fn paint_working_glow(
+    buf: &mut Buffer,
+    area: Rect,
+    label: &str,
+    elapsed: Duration,
+    policy: MotionPolicy,
+    highlight: Color,
+    background: Color,
+) {
+    if !policy.allows(MotionChannel::Tint)
+        || elapsed < crate::spin::EARN_DELAY
+        || !matches!(highlight, Color::Rgb(..))
+        || !matches!(background, Color::Rgb(..))
+    {
+        return;
+    }
+    let area = area.intersection(buf.area);
+    if area.is_empty() {
+        return;
+    }
+    let label = text::display_safe(label);
+    let width = text::width(&label).min(usize::from(area.width));
+    if width == 0 {
+        return;
+    }
+    let cycle = tokens::MOTION_LOOP_BREATHE_MS as u128;
+    let phase = (elapsed - crate::spin::EARN_DELAY).as_millis() % cycle;
+    let center = phase as f32 / cycle as f32 * (width as f32 + 4.0) - 2.0;
+    let mut offset = 0usize;
+    for grapheme in label.graphemes(true) {
+        let cells = text::width(grapheme);
+        if cells == 0 {
+            continue;
+        }
+        if offset + cells > width {
+            break;
+        }
+        let cell = &mut buf[(area.x + offset as u16, area.y)];
+        let distance = (offset as f32 + (cells - 1) as f32 / 2.0 - center).abs();
+        let strength = (1.0 - distance / 2.5).max(0.0) * 0.45;
+        if strength > 0.0
+            && cell.symbol() == grapheme
+            && !grapheme.chars().all(char::is_whitespace)
+            && matches!(cell.fg, Color::Rgb(..))
+        {
+            let ground = match cell.bg {
+                Color::Rgb(..) => cell.bg,
+                _ => background,
+            };
+            let ink = blend(highlight, cell.fg, strength);
+            if let (Some(before), Some(after)) =
+                (contrast_ratio(cell.fg, ground), contrast_ratio(ink, ground))
+                && after >= before.min(4.5)
+            {
+                cell.fg = ink;
+            }
+        }
+        offset += cells;
+    }
 }
 
 /// One value easing from where it is to a target, both in `0..=1`.

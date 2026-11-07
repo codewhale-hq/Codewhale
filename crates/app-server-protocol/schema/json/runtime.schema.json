@@ -289,6 +289,25 @@
           "type": "boolean",
           "default": false
         },
+        "thread_scoped_git_writes": {
+          "type": "boolean",
+          "description": "Git stage, unstage, discard, commit, push and branch accept\n`?thread_id=` and act on that thread's workspace.",
+          "default": false
+        },
+        "thread_scoped_snapshots": {
+          "type": "boolean",
+          "description": "`GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept\n`?thread_id=` and act on that thread's workspace.",
+          "default": false
+        },
+        "worktrees": {
+          "type": "boolean",
+          "description": "`GET`/`POST /v1/worktrees` and `POST /v1/worktrees/remove`.",
+          "default": false
+        },
+        "job_operations": {
+          "type": "boolean",
+          "default": false
+        },
         "thread_shell_consent": {
           "type": "boolean",
           "description": "Explicit per-thread shell opt-in is checked against loaded policy and\ncannot broaden a conversation while it has an active turn.",
@@ -454,6 +473,10 @@
         "thread_idle_precondition",
         "thread_patch_undo_turn_id",
         "thread_scoped_reads",
+        "thread_scoped_git_writes",
+        "thread_scoped_snapshots",
+        "worktrees",
+        "job_operations",
         "thread_shell_consent",
         "turns",
         "turn_operation_idempotency",

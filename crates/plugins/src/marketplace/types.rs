@@ -195,8 +195,7 @@ pub enum MarketplaceSourceSpec {
     /// Directory path. May be relative to the catalog's own location;
     /// resolution happens at install time, not parse time.
     LocalPath { path: PathBuf },
-    /// GitHub `owner/repo`, optionally with a pinned ref or commit the
-    /// current installer cannot yet honor (recorded, warned).
+    /// GitHub `owner/repo`, optionally with a pinned ref or commit.
     GitHub {
         owner: String,
         repo: String,

@@ -14,7 +14,7 @@ export const MODELS_COPY = {
   patterns: [
     {
       title: { en: "DeepSeek", zh: "DeepSeek" },
-      detail: { en: "The default model is {model}. On 2026-10-17 DeepSeek moved deepseek-flash to DeepSeek-V4.1-Flash-1017 at the same price, and Codewhale 0.10.1 runs it without an update. Connect with a DeepSeek API key.", zh: "默认模型为 {model}。2026-10-17 起，DeepSeek 以相同价格在 deepseek-flash 上提供 DeepSeek-V4.1-Flash-1017，Codewhale 0.10.1 无需更新即可使用。用 DeepSeek API 密钥连接。" },
+      detail: { en: "Use a DeepSeek API key. The default model is {model}.", zh: "使用 DeepSeek API 密钥连接，默认模型为 {model}。" },
       reference: "DEEPSEEK_API_KEY",
     },
     {

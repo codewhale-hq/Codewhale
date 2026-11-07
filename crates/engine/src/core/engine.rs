@@ -2056,7 +2056,7 @@ impl Engine {
         let concrete_client = match route.take_preflighted_client() {
             Some(client) => Ok(client),
             None => {
-                let config = std::mem::take(&mut route.config);
+                let config = route.config.clone();
                 match CodewhaleClient::capture_candidate_preflight(config, &route.candidate).await {
                     Ok((config, captured)) => {
                         route.config = config;

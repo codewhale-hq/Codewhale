@@ -640,11 +640,10 @@ impl ReviewedPluginMcpSource {
         cwd: Option<&Path>,
     ) -> Result<ReviewedStdioLaunch> {
         self.validate_before_stdio_spawn(server_name)?;
-        let staged_root = self
-            .authority
-            .staged_manifest
-            .parent()
-            .context("reviewed plugin stage manifest has no parent")?;
+        let staged_root = codewhale_plugins::agent_plugin::plugin_root_for_manifest(
+            &self.authority.staged_manifest,
+        )
+        .context("reviewed plugin stage manifest has no bundle root")?;
         let validated = codewhale_plugins::manifest::PluginManifest::validate_from_path(
             &self.authority.staged_manifest,
         )
@@ -4525,6 +4524,29 @@ impl McpPool {
         self.server_allowed(name) && self.needs_auth_servers.contains(name)
     }
 
+    pub fn has_connection_backoff(
+        &self,
+        name: &str,
+        timeouts: McpTimeouts,
+        server: &McpServerConfig,
+    ) -> Option<bool> {
+        let current = self.config.servers.get(name)?;
+        if !self.server_allowed(name)
+            || !server.is_enabled()
+            || !current.is_enabled()
+            || self.connecting.contains(name)
+            || self
+                .connections
+                .get(name)
+                .is_some_and(McpConnection::is_transport_ready)
+            || mcp_configured_server_identity(self.config.timeouts, name, current)
+                != mcp_configured_server_identity(timeouts, name, server)
+        {
+            return None;
+        }
+        Some(self.connect_backoff.contains_key(name))
+    }
+
     /// The needs-auth server that owns a model tool name (`mcp_<server>_…`),
     /// if any: the server the model is trying to reach with a real tool name
     /// from a catalog built before its login lapsed. Longest configured name
@@ -7715,10 +7737,10 @@ fn merge_plugin_mcp_servers(
             "Native MCP namespace collides with an existing reviewed or explicit server"
         );
         if server.command.is_some() {
-            let root = authority
-                .staged_manifest
-                .parent()
-                .context("Native stage has no root")?;
+            let root = codewhale_plugins::agent_plugin::plugin_root_for_manifest(
+                &authority.staged_manifest,
+            )
+            .context("Native stage has no root")?;
             server.cwd = Some(resolve_plugin_mcp_cwd(root, server.cwd.as_deref())?);
             freeze_plugin_stdio_paths(&mut server, root)?;
         }

@@ -71,7 +71,7 @@ codewhale config doctor     # unknown keys, empty secrets, malformed URLs`,
           codeTerms: true,
         },
         {
-          p: "密钥、服务端点、提供商选择、MCP 服务器、钩子、技能和额外的说明文件，始终来自你自己的配置，因此克隆下来的仓库无法让 Codewhale 指向它自己的服务器或文件。启动时加上 `--no-project-config`，可以在这一次运行中忽略仓库的配置文件。",
+          p: "提供商密钥、服务端点及提供商选择来自你自己的配置。在用户设置中信任工作区后，MCP 服务器也可来自 `.codewhale/mcp.json`；项目条目覆盖同名的全局条目。信任仓库前，请审阅这些可执行权限。参阅 [MCP 配置](/docs/mcp#config)。",
         },
         {
           p: "项目说明——智能体在这个仓库里应该如何工作——请写在 `AGENTS.md` 中。运行 `/init` 即可生成一份。",

@@ -333,58 +333,7 @@ fn normalize_codex_source(
                 diags,
             )
         }
-        "url" | "git-subdir" => {
-            let Some(url) = field("url") else {
-                return invalid(
-                    &format!("{discriminator} source requires `url`"),
-                    value,
-                    &mut diags,
-                );
-            };
-            if let Some(rest) = url
-                .strip_prefix("https://github.com/")
-                .or_else(|| url.strip_prefix("http://github.com/"))
-            {
-                let mut parts = rest.trim_end_matches('/').split('/');
-                if let (Some(owner), Some(repo), None) = (parts.next(), parts.next(), parts.next())
-                {
-                    let repo = repo.trim_end_matches(".git");
-                    if !owner.is_empty() && !repo.is_empty() {
-                        diags.push(MarketplaceDiagnostic::warning(
-                            "UNAPPLIED_PIN",
-                            "Codewhale's GitHub installer resolves the default branch; ref/sha pins are recorded but not yet applied".to_string(),
-                            None,
-                            None,
-                        ));
-                        return (
-                            MarketplaceSourceSpec::GitHub {
-                                owner: owner.to_string(),
-                                repo: repo.to_string(),
-                                git_ref: field("ref").map(ToString::to_string),
-                                sha: field("sha").map(ToString::to_string),
-                            },
-                            MarketplaceInstallPlan::Supported {
-                                spec: format!("github:{owner}/{repo}"),
-                                source_kind: "GitHub repository".to_string(),
-                            },
-                            diags,
-                        );
-                    }
-                }
-            }
-            (
-                MarketplaceSourceSpec::GitUrl {
-                    url: url.to_string(),
-                },
-                MarketplaceInstallPlan::Unsupported {
-                    reason: format!(
-                        "{discriminator} installs of non-GitHub git URLs are not supported yet"
-                    ),
-                    raw: value.to_string(),
-                },
-                diags,
-            )
-        }
+        "url" | "git-subdir" => super::git_url_source(value),
         "npm" => {
             let Some(package) = field("package") else {
                 return invalid("npm source requires `package`", value, &mut diags);

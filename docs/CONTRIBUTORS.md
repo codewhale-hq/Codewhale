@@ -44,6 +44,7 @@ changelog or release notes, and this contributor record.
 
 **Contributions**
 
+- **[zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)).
 - **[printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).
 - **[liuyy2](https://github.com/liuyy2)** — diagnosed case-sensitive model selection collisions in the provider picker ([#7214](https://github.com/codewhale-hq/Codewhale/issues/7214)); the compatibility-preserving selection order was supplied by [SparkofSpike](https://github.com/SparkofSpike).
 - **[M-Maciej](https://github.com/M-Maciej)** — reported answerless output-limit stops in long Fleet proofs ([#6990](https://github.com/codewhale-hq/Codewhale/issues/6990)).

@@ -21,8 +21,14 @@ pub fn contained_module(package: &Package, name: &str) -> Result<PathBuf> {
         "Bare module must name one contained package export.",
     )?;
     let identity = parts[..count].join("/");
-    let root = format!("node_modules/{identity}");
-    let manifest = package.contained(Path::new(&format!("{root}/package.json")))?;
+    let own_manifest = package.contained(Path::new("package.json"))?;
+    let own_data = parse_json(&utf8(read_file(&own_manifest, MAX_DOCUMENT)?)?)?;
+    let root = if own_data.get("name").and_then(Value::str) == Some(identity.as_str()) {
+        PathBuf::new()
+    } else {
+        PathBuf::from(format!("node_modules/{identity}"))
+    };
+    let manifest = package.contained(&root.join("package.json"))?;
     let data = parse_json(&utf8(read_file(&manifest, MAX_DOCUMENT)?)?)?;
     require(
         data.get("name").and_then(Value::str) == Some(identity.as_str())
@@ -63,7 +69,7 @@ pub fn contained_module(package: &Package, name: &str) -> Result<PathBuf> {
         .strip_prefix("./")
         .filter(|path| plain_relative(path))
         .ok_or_else(|| anyhow::Error::msg("Package export must be one plain contained path."))?;
-    package.contained(Path::new(&format!("{root}/{selected}")))
+    package.contained(&root.join(selected))
 }
 
 pub(super) fn has_roster(entries: &[Value]) -> bool {

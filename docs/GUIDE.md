@@ -351,8 +351,20 @@ direct. Multi-step delegation uses a compact Workflow plan with dependencies,
 bounded scopes, and completion evidence passed between steps. Fleet configures
 and manages those same sub-agents and their roles. One bounded, independent
 task can use a direct agent; continued work reuses it through `followup`.
-`codewhale dispatch "<task>"` (running work on a Codewhale cloud computer) is
-not available: cloud computers and accounts are paused for new users.
+`codewhale dispatch "<task>"` runs work on a Codewhale cloud computer when
+your account has access. Cloud availability and admission come from the account
+service.
+
+Local work needs no Codewhale account. `/login` opens account sign-in inside
+the TUI, with a browser link and code, Copy, and Cancel. `/login status` shows
+account status; `/connect` connects a model provider or local model. Signing in
+preserves your selected model and unsent message. An account connection is
+separate from usable model access.
+
+`/logout`, `codewhale logout` and `codewhale account logout` sign out of
+Codewhale while keeping local model connections and conversations. To remove
+all saved provider credentials as well, use `codewhale logout --all`; that
+operation asks for confirmation (`--all --yes` confirms non-interactively).
 
 For trusted workspaces where you intentionally want actions to proceed without
 approval prompts, select the Full Access permission posture with `Shift+Tab`.

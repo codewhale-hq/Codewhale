@@ -257,6 +257,7 @@ impl PluginRegistry {
 
     fn apply_state(&mut self) {
         let state_path = self.state_path.clone();
+        let recovery_policy_path = self.managed_policy_path.clone();
         // Hoisted so the loop below can borrow `self.plugins` mutably: a
         // malformed policy fails closed (nothing stays enabled), a valid one
         // forbids whatever it does not allow, and an absent one forbids nothing.
@@ -292,11 +293,55 @@ impl PluginRegistry {
             if policy_forbids {
                 plugin.enabled = false;
             }
-            plugin.staged_root = state_path.as_deref().and_then(|state_path| {
-                let staged_root = runtime_stage_path(state_path, id, &plugin.content_hash);
-                staged_bundle_matches(&staged_root, &plugin.content_hash, &plugin.capability_hash)
-                    .then_some(staged_root)
-            });
+            let staged_path = state_path
+                .as_deref()
+                .map(|state_path| runtime_stage_path(state_path, id, &plugin.content_hash));
+            plugin.staged_root = staged_path
+                .as_ref()
+                .filter(|root| {
+                    staged_bundle_matches(root, &plugin.content_hash, &plugin.capability_hash)
+                })
+                .cloned();
+            if plugin.staged_root.is_some() {
+                plugin
+                    .diagnostics
+                    .retain(|item| item.code != "runtime-snapshot-recovery-failed");
+                if let (Some(state_path), Some(policy_path)) =
+                    (state_path.as_deref(), recovery_policy_path.as_deref())
+                {
+                    let key = recovery_attempt_key(state_path, policy_path, plugin);
+                    if let Ok(mut attempts) = recovery_attempts().lock() {
+                        attempts.remove(&key);
+                    }
+                }
+            }
+            plugin
+                .diagnostics
+                .retain(|diagnostic| diagnostic.code != "runtime-snapshot-unavailable");
+            if plugin.trusted() && plugin.staged_root.is_none() {
+                let message = match staged_path.as_deref().map(std::fs::symlink_metadata) {
+                    Some(Ok(metadata))
+                        if metadata.file_type().is_dir()
+                            && !metadata_is_link_or_reparse(&metadata) =>
+                    {
+                        "Plugin runtime snapshot is present but could not be verified; inspect it and review the plugin again."
+                    }
+                    Some(Ok(_)) => {
+                        "Plugin runtime snapshot entry is unsafe; inspect it and review the plugin again."
+                    }
+                    Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        "Plugin runtime snapshot path is unavailable or cannot be inspected; it may be missing or unsafe. Inspect the runtime snapshot path."
+                    }
+                    Some(Err(_)) | None => {
+                        "Plugin runtime snapshot cannot be inspected; check access to the runtime snapshot path."
+                    }
+                };
+                plugin.diagnostics.push(PluginDiagnostic::warning(
+                    "runtime-snapshot-unavailable",
+                    message,
+                    staged_path,
+                ));
+            }
             if let Some(staged_root) = plugin.staged_root.clone() {
                 match super::discovery::load_staged_skill_snapshots(
                     &staged_root,
@@ -500,6 +545,175 @@ impl PluginRegistry {
         })
     }
 
+    pub fn restage(&mut self, selector: &str) -> Result<(), String> {
+        self.restage_inner(selector, false).map(drop)
+    }
+
+    fn restage_inner(&mut self, selector: &str, automatic: bool) -> Result<bool, String> {
+        if let Some(error) = &self.state_error {
+            return Err(format!("Plugin state is fail-closed: {error}"));
+        }
+        let plugin = self
+            .get(selector)
+            .cloned()
+            .ok_or_else(|| format!("Plugin bundle `{selector}` was not found"))?;
+        if !plugin.enabled
+            || !plugin.trusted()
+            || !plugin.applicable
+            || !plugin.inventory.can_activate_supported_components()
+            || plugin
+                .diagnostics
+                .iter()
+                .any(|item| item.level == PluginDiagnosticLevel::Error)
+        {
+            return Err("Recovery requires an enabled, reviewed, applicable plugin".to_string());
+        }
+        let state_path = self
+            .state_path
+            .clone()
+            .ok_or("Plugin state is unavailable")?;
+        let policy_path = self
+            .managed_policy_path
+            .clone()
+            .filter(|path| path.is_absolute())
+            .ok_or("Managed plugin policy source is unavailable")?;
+        let key = recovery_attempt_key(&state_path, &policy_path, &plugin);
+        validate_existing_plugin_state_parent(&state_path)?;
+        let lock_file = open_state_lock(&state_lock_path(&state_path), false)?;
+        let mut lock = fd_lock::RwLock::new(lock_file);
+        let guard = lock
+            .write()
+            .map_err(|error| format!("failed to lock plugin state: {error}"))?;
+        if automatic {
+            let previous = match recovery_attempts().lock() {
+                Ok(attempts) => attempts.get(&key).cloned(),
+                Err(_) => Some("Recovery attempt status is unavailable".to_string()),
+            };
+            if let Some(reason) = previous {
+                drop(guard);
+                self.set_recovery_diagnostic(&plugin.id, &reason);
+                return Ok(false);
+            }
+        }
+        let result = (|| {
+            let current = load_state_unlocked(&state_path)?;
+            let approved = current.plugins.get(&plugin.id).is_some_and(|entry| {
+                entry.enabled
+                    && entry.generation == plugin.state_generation
+                    && entry.trust.as_ref().is_some_and(|receipt| {
+                        receipt.content_hash == plugin.content_hash
+                            && receipt.capability_hash == plugin.capability_hash
+                    })
+            });
+            if !approved {
+                return Err("Plugin state or review changed before recovery".to_string());
+            }
+            verify_recovery_policy(&policy_path, &plugin.id)?;
+            if !staged_bundle_content_matches(
+                &plugin.canonical_root,
+                &plugin.content_hash,
+                &plugin.capability_hash,
+            ) {
+                return Err("Reviewed plugin source no longer matches its receipt".to_string());
+            }
+            let staged = stage_bundle(&state_path, &plugin, StageIntent::Recovery)?;
+            if !staged_bundle_content_matches(
+                &plugin.canonical_root,
+                &plugin.content_hash,
+                &plugin.capability_hash,
+            ) || !staged_bundle_matches(&staged, &plugin.content_hash, &plugin.capability_hash)
+            {
+                return Err(
+                    "Plugin source or recovered snapshot changed during recovery".to_string(),
+                );
+            }
+            verify_recovery_policy(&policy_path, &plugin.id)?;
+            Ok(())
+        })();
+        if let Ok(mut attempts) = recovery_attempts().lock() {
+            if result.is_ok() {
+                attempts.remove(&key);
+            } else if automatic && let Err(error) = &result {
+                attempts.insert(key, error.clone());
+            }
+        }
+        drop(guard);
+        result?;
+        self.state = load_state(&state_path)?;
+        self.refresh_managed_policy();
+        if let Some(plugin) = self.plugins.get_mut(&plugin.id) {
+            plugin
+                .diagnostics
+                .retain(|item| item.code != "runtime-snapshot-recovery-failed");
+        }
+        self.apply_state();
+        if !self.get(selector).is_some_and(LoadedPlugin::active) {
+            return Err("Recovered snapshot is not active; refresh plugin state".to_string());
+        }
+        Ok(true)
+    }
+
+    fn set_recovery_diagnostic(&mut self, id: &PluginId, reason: &str) {
+        let Some(plugin) = self.plugins.get_mut(id) else {
+            return;
+        };
+        plugin
+            .diagnostics
+            .retain(|item| item.code != "runtime-snapshot-recovery-failed");
+        let path = self
+            .state_path
+            .as_deref()
+            .map(|state| runtime_stage_path(state, id, &plugin.content_hash));
+        plugin.diagnostics.push(PluginDiagnostic::warning(
+            "runtime-snapshot-recovery-failed",
+            format!("Plugin runtime snapshot could not be restored: {reason}"),
+            path,
+        ));
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub(super) fn reconcile_missing_stages(&mut self) {
+        if self.state_error.is_some() {
+            return;
+        }
+        let Some(state_path) = self.state_path.clone() else {
+            return;
+        };
+        let candidates = self
+            .plugins
+            .values()
+            .filter_map(|plugin| {
+                if !plugin.enabled
+                    || !plugin.trusted()
+                    || !plugin.applicable
+                    || !plugin.inventory.can_activate_supported_components()
+                    || plugin
+                        .diagnostics
+                        .iter()
+                        .any(|item| item.level == PluginDiagnosticLevel::Error)
+                {
+                    return None;
+                }
+                let destination = runtime_stage_path(&state_path, &plugin.id, &plugin.content_hash);
+                match fs::symlink_metadata(&destination) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        Some(plugin.id.as_str().to_string())
+                    }
+                    Ok(_) if plugin.staged_root.is_none() => Some(plugin.id.as_str().to_string()),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        for selector in candidates {
+            if let Err(error) = self.restage_inner(&selector, true) {
+                tracing::warn!(plugin = %selector, %error, "reviewed plugin runtime snapshot was not restored");
+                if let Some(id) = self.resolve_id(&selector).cloned() {
+                    self.set_recovery_diagnostic(&id, &error);
+                }
+            }
+        }
+    }
+
     pub fn trust(&mut self, selector: &str) -> Result<(), String> {
         let plugin = self
             .get(selector)
@@ -510,7 +724,7 @@ impl PluginRegistry {
             .state_path
             .as_deref()
             .ok_or_else(|| "Plugin registry has no persistence store".to_string())?;
-        stage_bundle(state_path, &plugin)?;
+        stage_bundle(state_path, &plugin, StageIntent::Review)?;
         let receipt = TrustReceipt {
             content_hash: plugin.content_hash.clone(),
             capability_hash: plugin.capability_hash.clone(),
@@ -589,7 +803,9 @@ impl PluginRegistry {
                 plugin.trust_status.as_str()
             ));
         }
-        if plugin.staged_root.is_none() {
+        if plugin.staged_root.as_deref().is_none_or(|root| {
+            !staged_bundle_matches(root, &plugin.content_hash, &plugin.capability_hash)
+        }) {
             return Err(format!(
                 "Plugin bundle `{}` has no verified Codewhale runtime snapshot; review and trust it again before enablement",
                 plugin.name()
@@ -611,7 +827,22 @@ impl PluginRegistry {
         }
         let id = plugin.id.clone();
         self.commit_state_change(|state| {
-            let entry = state.plugins.entry(id).or_default();
+            let entry = state
+                .plugins
+                .get_mut(&id)
+                .filter(|entry| {
+                    entry.generation == plugin.state_generation
+                        && entry.trust.as_ref().is_some_and(|receipt| {
+                            receipt.content_hash == plugin.content_hash
+                                && receipt.capability_hash == plugin.capability_hash
+                        })
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "Plugin bundle `{}` state or review changed; refresh plugin state and review it if needed before enabling again",
+                        plugin.name()
+                    )
+                })?;
             entry.generation = entry
                 .generation
                 .checked_add(1)
@@ -693,7 +924,7 @@ impl PluginRegistry {
         // Staging is content-addressed and idempotent, so it runs before the
         // state lock; the decision is re-derived from the locked state below.
         if same_capabilities {
-            stage_bundle(&state_path, plugin)?;
+            stage_bundle(&state_path, plugin, StageIntent::Review)?;
         }
         let id = plugin.id.clone();
         let name = plugin.name().to_string();
@@ -835,6 +1066,10 @@ fn load_state_unlocked(path: &Path) -> Result<PluginStateFile, String> {
     let Some(file) = open_existing_regular_file(path, false)? else {
         return Ok(PluginStateFile::default());
     };
+    load_state_from_file(path, file)
+}
+
+fn load_state_from_file(path: &Path, file: fs::File) -> Result<PluginStateFile, String> {
     let mut raw = String::new();
     file.take(MAX_PLUGIN_STATE_BYTES + 1)
         .read_to_string(&mut raw)
@@ -1437,6 +1672,54 @@ fn runtime_stage_path(state_path: &Path, id: &PluginId, content_hash: &str) -> P
 }
 
 fn staged_bundle_matches(root: &Path, content_hash: &str, capability_hash: &str) -> bool {
+    let Ok(finalized) = verify_finalized_stage_root(root, None) else {
+        return false;
+    };
+    staged_bundle_content_matches(root, content_hash, capability_hash)
+        && verify_finalized_stage_root(root, Some(&finalized)).is_ok()
+}
+
+pub(super) fn verify_finalized_stage_root(
+    root: &Path,
+    expected: Option<&fs::File>,
+) -> Result<fs::File, String> {
+    let metadata = fs::symlink_metadata(root)
+        .map_err(|error| format!("failed to inspect plugin runtime root: {error}"))?;
+    if !metadata.is_dir() || metadata_is_link_or_reparse(&metadata) {
+        return Err("Plugin runtime root is not an ordinary directory".to_string());
+    }
+    let (_, held) = codewhale_util::workspace_dir::open_workspace_directory(root)
+        .map_err(|error| format!("failed to retain plugin runtime root: {error}"))?;
+    if let Some(expected) = expected
+        && !codewhale_util::files::same_file(expected, &held)
+            .map_err(|error| format!("failed to identify plugin runtime root: {error}"))?
+    {
+        return Err("Plugin runtime root changed while it was read".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let metadata = held
+            .metadata()
+            .map_err(|error| format!("failed to inspect retained plugin runtime root: {error}"))?;
+        if metadata.permissions().mode() & 0o7777 != 0o500 {
+            return Err("Plugin runtime root has not been finalized read-only".to_string());
+        }
+    }
+    #[cfg(windows)]
+    codewhale_config::private_directory::verify_windows_owner_only_read_execute_handle(&held)
+        .map_err(|_| "Plugin runtime root has not been finalized read-only".to_string())?;
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err("Plugin runtime root finalization cannot be verified on this platform".to_string())
+    }
+    #[cfg(any(unix, windows))]
+    {
+        Ok(held)
+    }
+}
+
+fn staged_bundle_content_matches(root: &Path, content_hash: &str, capability_hash: &str) -> bool {
     let Some(manifest_path) = super::agent_plugin::resolve_manifest_path(root) else {
         return false;
     };
@@ -1449,7 +1732,85 @@ fn staged_bundle_matches(root: &Path, content_hash: &str, capability_hash: &str)
     })
 }
 
-fn stage_bundle(state_path: &Path, plugin: &LoadedPlugin) -> Result<PathBuf, String> {
+type RecoveryAttemptKey = (PathBuf, PathBuf, String, String, String, u64);
+
+fn recovery_attempt_key(
+    state_path: &Path,
+    policy_path: &Path,
+    plugin: &LoadedPlugin,
+) -> RecoveryAttemptKey {
+    (
+        state_path.to_path_buf(),
+        policy_path.to_path_buf(),
+        plugin.id.as_str().to_string(),
+        plugin.content_hash.clone(),
+        plugin.capability_hash.clone(),
+        plugin.state_generation,
+    )
+}
+
+fn recovery_attempts() -> &'static std::sync::Mutex<BTreeMap<RecoveryAttemptKey, String>> {
+    static ATTEMPTS: std::sync::Mutex<BTreeMap<RecoveryAttemptKey, String>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    &ATTEMPTS
+}
+
+fn verify_recovery_policy(policy_path: &Path, id: &PluginId) -> Result<(), String> {
+    match load_managed_policy(policy_path) {
+        ManagedPolicyOutcome::Absent => Ok(()),
+        ManagedPolicyOutcome::Loaded(policy) if policy.allows(id) => Ok(()),
+        ManagedPolicyOutcome::Loaded(_) => {
+            Err("Managed plugin policy forbids recovery".to_string())
+        }
+        ManagedPolicyOutcome::Invalid(_) => Err("Managed plugin policy is invalid".to_string()),
+    }
+}
+
+fn verify_recovery_path(state_path: &Path, destination: &Path) -> Result<(), String> {
+    let base = state_path
+        .parent()
+        .ok_or("Plugin state path has no parent")?;
+    let metadata = fs::symlink_metadata(base)
+        .map_err(|error| format!("Failed to inspect plugin state parent: {error}"))?;
+    if !metadata.is_dir() || metadata_is_link_or_reparse(&metadata) {
+        return Err("Plugin state parent is not an ordinary directory".to_string());
+    }
+    let base = base
+        .canonicalize()
+        .map_err(|error| format!("Failed to resolve plugin state parent: {error}"))?;
+    codewhale_util::files::reject_linked_path(&base, destination)
+        .map_err(|error| format!("Unsafe plugin runtime snapshot path: {error}"))
+}
+
+#[cfg(unix)]
+fn open_recovery_directory(path: &Path) -> Result<fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| format!("Failed to retain recovery directory: {error}"))?;
+    if !file
+        .metadata()
+        .map_err(|error| format!("Failed to inspect recovery directory: {error}"))?
+        .is_dir()
+    {
+        return Err("Recovery directory changed type".to_string());
+    }
+    Ok(file)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StageIntent {
+    Review,
+    Recovery,
+}
+
+fn stage_bundle(
+    state_path: &Path,
+    plugin: &LoadedPlugin,
+    intent: StageIntent,
+) -> Result<PathBuf, String> {
     // Resolve the state directory before deriving the content-addressed path.
     // On macOS an existing ancestor such as `/var` canonicalizes to
     // `/private/var`; when the final `state/` directory does not exist yet,
@@ -1462,23 +1823,52 @@ fn stage_bundle(state_path: &Path, plugin: &LoadedPlugin) -> Result<PathBuf, Str
         .ok_or_else(|| "plugin state path has no parent directory".to_string())?;
     ensure_private_plugin_state_directory(state_parent)?;
     let destination = runtime_stage_path(state_path, &plugin.id, &plugin.content_hash);
-    if destination.exists() {
-        if !staged_bundle_matches(&destination, &plugin.content_hash, &plugin.capability_hash) {
-            return Err(
+    if intent == StageIntent::Recovery {
+        verify_recovery_path(state_path, &destination)?;
+    }
+    match fs::symlink_metadata(&destination) {
+        Ok(metadata) => {
+            if !metadata.is_dir()
+                || metadata_is_link_or_reparse(&metadata)
+                || !staged_bundle_content_matches(
+                    &destination,
+                    &plugin.content_hash,
+                    &plugin.capability_hash,
+                )
+            {
+                return Err(
                 "Existing Codewhale plugin runtime snapshot failed content validation; remove the exact .runtime entry and review again"
                     .to_string(),
             );
+            }
+            if intent == StageIntent::Review {
+                // Trust is a mutating boundary, so it may upgrade an older verified
+                // snapshot to the finalized non-writable permission contract.
+                harden_staged_tree(&destination)?;
+            } else if !staged_bundle_matches(
+                &destination,
+                &plugin.content_hash,
+                &plugin.capability_hash,
+            ) {
+                return Err("Existing plugin runtime snapshot is not finalized".to_string());
+            }
+            return Ok(destination.canonicalize().unwrap_or(destination));
         }
-        // Trust is a mutating boundary, so it may upgrade an older verified
-        // snapshot to the finalized non-writable permission contract.
-        harden_staged_tree(&destination)?;
-        return Ok(destination.canonicalize().unwrap_or(destination));
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect plugin runtime snapshot: {error}"
+            ));
+        }
     }
 
     let parent = destination
         .parent()
         .ok_or_else(|| "plugin runtime snapshot has no parent".to_string())?;
     ensure_private_runtime_parent(state_path, parent)?;
+    if intent == StageIntent::Recovery {
+        verify_recovery_path(state_path, &destination)?;
+    }
     let temporary = parent.join(format!(".staging-{}", uuid::Uuid::new_v4().simple()));
     fs::create_dir(&temporary)
         .map_err(|e| format!("failed to create temporary plugin runtime snapshot: {e}"))?;
@@ -1486,7 +1876,8 @@ fn stage_bundle(state_path: &Path, plugin: &LoadedPlugin) -> Result<PathBuf, Str
 
     let staged = (|| {
         copy_bundle_tree(&plugin.canonical_root, &temporary)?;
-        if !staged_bundle_matches(&temporary, &plugin.content_hash, &plugin.capability_hash) {
+        if !staged_bundle_content_matches(&temporary, &plugin.content_hash, &plugin.capability_hash)
+        {
             return Err(
                 "Plugin bundle changed while Codewhale was staging it; no runtime authority was granted"
                     .to_string(),
@@ -1498,12 +1889,36 @@ fn stage_bundle(state_path: &Path, plugin: &LoadedPlugin) -> Result<PathBuf, Str
         // writable. The destination root is hardened immediately after the
         // rename, before its path is returned or persisted as authority.
         harden_staged_tree_contents(&temporary)?;
-        if let Err(error) = fs::rename(&temporary, &destination) {
+        if intent == StageIntent::Recovery {
+            verify_recovery_path(state_path, &destination)?;
+        }
+        #[cfg(unix)]
+        let recovery_root = if intent == StageIntent::Recovery {
+            Some(open_recovery_directory(&temporary)?)
+        } else {
+            None
+        };
+        if let Err(error) = super::builtin::publish_snapshot(&temporary, &destination) {
             // Another process may have won the same content-addressed race.
             // Reuse only after exact validation and hardening at this explicit
             // mutation boundary; every other rename failure remains fatal.
-            if staged_bundle_matches(&destination, &plugin.content_hash, &plugin.capability_hash) {
-                harden_staged_tree(&destination)?;
+            if fs::symlink_metadata(&destination)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata_is_link_or_reparse(&metadata))
+                && staged_bundle_content_matches(
+                    &destination,
+                    &plugin.content_hash,
+                    &plugin.capability_hash,
+                )
+            {
+                if intent == StageIntent::Review {
+                    harden_staged_tree(&destination)?;
+                } else if !staged_bundle_matches(
+                    &destination,
+                    &plugin.content_hash,
+                    &plugin.capability_hash,
+                ) {
+                    return Err("Raced plugin runtime snapshot is not finalized".to_string());
+                }
                 return destination.canonicalize().map_err(|e| {
                     format!("failed to finalize raced plugin runtime snapshot path: {e}")
                 });
@@ -1512,12 +1927,31 @@ fn stage_bundle(state_path: &Path, plugin: &LoadedPlugin) -> Result<PathBuf, Str
                 "failed to activate content-addressed plugin runtime snapshot: {error}"
             ));
         }
+        if intent == StageIntent::Recovery {
+            verify_recovery_path(state_path, &destination)?;
+        }
+        #[cfg(unix)]
+        if let Some(root) = recovery_root {
+            use std::os::unix::fs::PermissionsExt as _;
+            let published = open_recovery_directory(&destination)?;
+            if !codewhale_util::files::same_file(&root, &published)
+                .map_err(|error| format!("Failed to identify recovered snapshot: {error}"))?
+            {
+                return Err("Recovered snapshot changed before finalization".to_string());
+            }
+            root.set_permissions(fs::Permissions::from_mode(0o500))
+                .map_err(|error| format!("Failed to finalize recovered snapshot: {error}"))?;
+            verify_finalized_stage_root(&destination, Some(&root))?;
+        } else {
+            set_staged_read_only_directory(&destination)?;
+        }
+        #[cfg(not(unix))]
         set_staged_read_only_directory(&destination)?;
         destination
             .canonicalize()
             .map_err(|e| format!("failed to finalize plugin runtime snapshot path: {e}"))
     })();
-    if staged.is_err() && temporary.exists() {
+    if intent == StageIntent::Review && staged.is_err() && temporary.exists() {
         let _ = fs::remove_dir_all(&temporary);
     }
     staged
@@ -1940,7 +2374,7 @@ fn copy_bundle_directory_fd(
     Ok(())
 }
 
-fn harden_staged_tree(path: &Path) -> Result<(), String> {
+pub(super) fn harden_staged_tree(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|e| format!("failed to harden staged plugin content: {e}"))?;
     if metadata_is_link_or_reparse(&metadata) {
@@ -1964,6 +2398,52 @@ fn harden_staged_tree(path: &Path) -> Result<(), String> {
         return Err("Staged plugin content changed type before activation".to_string());
     }
     Ok(())
+}
+
+#[cfg(all(unix, any(test, feature = "test-support")))]
+pub(super) fn open_staged_fixture_target(path: &Path) -> Result<fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| format!("failed to retain staged fixture object: {error}"))
+}
+
+#[cfg(all(windows, any(test, feature = "test-support")))]
+pub(super) fn open_staged_fixture_target(path: &Path) -> Result<fs::File, String> {
+    open_windows_acl_target(path, 0x0006_0081).map_err(WindowsAclTargetOpenError::into_message)
+}
+
+#[cfg(all(not(any(unix, windows)), any(test, feature = "test-support")))]
+pub(super) fn open_staged_fixture_target(_path: &Path) -> Result<fs::File, String> {
+    Err("staged fixture permissions cannot be retained on this platform".to_string())
+}
+
+#[cfg(all(unix, any(test, feature = "test-support")))]
+pub(super) fn restore_staged_fixture_target(
+    file: &fs::File,
+    permissions: &fs::Permissions,
+) -> Result<(), String> {
+    file.set_permissions(permissions.clone())
+        .map_err(|error| format!("failed to restore staged fixture permissions: {error}"))
+}
+
+#[cfg(all(windows, any(test, feature = "test-support")))]
+pub(super) fn restore_staged_fixture_target(
+    file: &fs::File,
+    _permissions: &fs::Permissions,
+) -> Result<(), String> {
+    apply_windows_owner_only_acl(file, 0x001f_01ff, WindowsAclOwnerMode::VerifyCurrentUser)
+}
+
+#[cfg(all(not(any(unix, windows)), any(test, feature = "test-support")))]
+pub(super) fn restore_staged_fixture_target(
+    _file: &fs::File,
+    _permissions: &fs::Permissions,
+) -> Result<(), String> {
+    Err("staged fixture permissions cannot be restored on this platform".to_string())
 }
 
 fn harden_staged_tree_contents(path: &Path) -> Result<(), String> {
@@ -2391,6 +2871,9 @@ pub fn verify_plugin_component_authority(
 /// Reduce the *number* of calls instead; see `McpConnection::is_transport_ready`.
 pub fn verify_plugin_authority(authority: &PluginAuthority) -> Result<(), String> {
     verify_plugin_state_authority(authority)?;
+    let staged_root = super::agent_plugin::plugin_root_for_manifest(&authority.staged_manifest)
+        .ok_or_else(|| "Plugin authority has no staged runtime root".to_string())?;
+    let finalized = verify_finalized_stage_root(staged_root, None)?;
     for (label, manifest_path) in [
         ("reviewed source", &authority.source_manifest),
         ("Codewhale runtime snapshot", &authority.staged_manifest),
@@ -2411,13 +2894,20 @@ pub fn verify_plugin_authority(authority: &PluginAuthority) -> Result<(), String
             ));
         }
     }
-    Ok(())
+    verify_finalized_stage_root(staged_root, Some(&finalized)).map(drop)
 }
 
 /// Cheap cross-process revocation probe used while an established MCP request
 /// is in flight. Full source/stage hashing is intentionally done before each
 /// dispatch; the watcher rechecks the trusted policy source and locked state.
 pub fn verify_plugin_state_authority(authority: &PluginAuthority) -> Result<(), String> {
+    capture_plugin_state_authority(authority, None).map(drop)
+}
+
+pub fn capture_plugin_state_authority(
+    authority: &PluginAuthority,
+    expected: Option<&fs::File>,
+) -> Result<fs::File, String> {
     let policy_path = authority
         .managed_policy_source
         .as_deref()
@@ -2461,7 +2951,22 @@ pub fn verify_plugin_state_authority(authority: &PluginAuthority) -> Result<(), 
     let _guard = lock
         .read()
         .map_err(|_| "Plugin authority state could not be read safely".to_string())?;
-    let state = load_state_unlocked(&authority.state_path).map_err(|_| {
+    let state_file = open_existing_regular_file(&authority.state_path, false)
+        .map_err(|_| "Plugin authority state could not be opened safely".to_string())?
+        .ok_or_else(|| "Plugin authority state is missing".to_string())?;
+    if let Some(expected) = expected
+        && !codewhale_util::files::same_file(expected, &state_file)
+            .map_err(|_| "Plugin authority state identity could not be checked".to_string())?
+    {
+        return Err("Plugin authority state changed after UI authorization".to_string());
+    }
+    let state = load_state_from_file(
+        &authority.state_path,
+        state_file
+            .try_clone()
+            .map_err(|_| "Plugin authority state could not be read safely".to_string())?,
+    )
+    .map_err(|_| {
         "Plugin authority state is invalid; the bundle is disabled fail-closed".to_string()
     })?;
     let active = state
@@ -2481,7 +2986,7 @@ pub fn verify_plugin_state_authority(authority: &PluginAuthority) -> Result<(), 
             authority.plugin_name
         ));
     }
-    Ok(())
+    Ok(state_file)
 }
 
 #[cfg(test)]

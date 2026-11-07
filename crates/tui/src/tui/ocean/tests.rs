@@ -34,8 +34,8 @@ fn contrast_ratio(foreground: Color, background: Color) -> f64 {
 fn whale_ramp_is_perceptibly_deep_not_merely_non_equal() {
     let ramp =
         OceanRamp::for_theme(&codewhale_palette::UNDERWATER_UI_THEME).expect("underwater ramp");
-    assert_eq!(ramp.surface, Color::Rgb(0x10, 0x2a, 0x45));
-    assert_eq!(ramp.middle, Color::Rgb(0x0a, 0x1e, 0x33));
+    assert_eq!(ramp.surface, Color::Rgb(0x0b, 0x2c, 0x53));
+    assert_eq!(ramp.middle, Color::Rgb(0x09, 0x22, 0x41));
     assert_eq!(ramp.deep, Color::Rgb(0x06, 0x13, 0x20));
     assert!(
         distance(ramp.surface, ramp.deep) >= 32,

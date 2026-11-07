@@ -1064,7 +1064,7 @@ pub(crate) async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
                     .partition_point(|thread| thread.id.as_str() <= cursor)
             });
             let remaining = &loaded.threads[start..];
-            let count = limit.unwrap_or(remaining.len()).min(remaining.len());
+            let count = limit.unwrap_or(remaining.len()).max(1).min(remaining.len());
             let data = remaining[..count]
                 .iter()
                 .map(|thread| thread.id.clone())

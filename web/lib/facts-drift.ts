@@ -16,15 +16,12 @@ import { withGenerationLease, type DraftClaimLockNamespace } from "./draft-claim
 import { parseModelCatalog } from "./model-catalog.mjs";
 import { parseProviderDescriptors } from "./provider-descriptors.mjs";
 import { fetchBoundedText } from "./bounded-body";
-import type {
-  PublishedReleaseFact,
-  RepoFacts,
-} from "./facts.generated";
+import type { RepoFacts } from "./facts.generated";
 import { FACTS as BUILD_FACTS } from "./facts.generated";
-import { isRepoFacts } from "./facts";
+import { isPublishedRelease, isRepoFacts, newestPublishedRelease } from "./facts";
+import { fetchLatestPublishedRelease } from "./published-release";
 
 const RAW_ROOT = "https://raw.githubusercontent.com/codewhale-hq/CodeWhale";
-const RELEASE_TAG_ROOT = "https://github.com/codewhale-hq/CodeWhale/releases/tag";
 const KV_KEY = "facts:current";
 const LOG_KEY = "facts:drift-log";
 
@@ -105,44 +102,6 @@ function deriveSandboxBackends(source: string): string[] {
   );
   if (!marker) return [];
   return [...marker[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-}
-
-async function fetchLatestPublishedRelease(
-  ghToken?: string,
-): Promise<PublishedReleaseFact | null> {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "codewhale-web-drift",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
-  if (ghToken) headers["Authorization"] = `Bearer ${ghToken}`;
-  try {
-    const r = await fetchBoundedText("https://api.github.com/repos/codewhale-hq/CodeWhale/releases/latest", { headers });
-    if (!r.ok) return null;
-    const j = JSON.parse(r.text) as {
-      tag_name?: string;
-      published_at?: string;
-    };
-    if (
-      !j.tag_name ||
-      !/^v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(j.tag_name) ||
-      !j.published_at ||
-      !Number.isFinite(Date.parse(j.published_at))
-    ) {
-      return null;
-    }
-    return {
-      tag: j.tag_name,
-      version: j.tag_name.slice(1),
-      publishedAt: j.published_at,
-      // Built from the tag, not `html_url`: GitHub answers with the repo's
-      // canonical casing (`codewhale-hq/Codewhale`), which the exact-URL check in
-      // isRepoFacts rejects, invalidating the whole KV snapshot.
-      url: `${RELEASE_TAG_ROOT}/${j.tag_name}`,
-    };
-  } catch {
-    return null;
-  }
 }
 
 function deriveLicense(licText: string): string | null {
@@ -326,6 +285,11 @@ async function refreshFacts(kv: KVNamespace, githubToken?: string): Promise<Fact
   if (cachedRaw && Number.isFinite(cachedAt) && cachedAt > Date.parse(String(remote.sourceCommittedAt))) {
     return { ok: true, changed: false };
   }
+
+  remote.latestPublishedRelease = newestPublishedRelease(
+    remote.latestPublishedRelease,
+    isPublishedRelease(cached.latestPublishedRelease) ? cached.latestPublishedRelease : null,
+  );
 
   const diffs = diff(cached, remote);
   if (diffs.length === 0) {

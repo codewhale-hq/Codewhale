@@ -376,10 +376,7 @@ impl ManifestFormat {
     fn from_path(path: &Path) -> Result<Self, String> {
         match path.file_name().and_then(|name| name.to_str()) {
             Some(super::agent_plugin::PLUGIN_JSON_NAME)
-                if path
-                    .parent()
-                    .and_then(Path::file_name)
-                    .is_some_and(|name| name == ".claude-plugin") =>
+                if super::agent_plugin::plugin_root_for_manifest(path) != path.parent() =>
             {
                 Ok(Self::ClaudeJson)
             }

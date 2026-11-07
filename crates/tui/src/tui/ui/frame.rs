@@ -524,6 +524,65 @@ fn render_info_row(
         .style(Style::default().bg(app.ui_theme.header_bg))
         .render(area, buf);
     ratatui::widgets::Widget::render(info, area, buf);
+    if !identity_only
+        && !app.viewport.working_glow_visible
+        && app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Full
+        && !crate::tui::pet_watch::main_view(app)
+        && !app.onboarding_needs_api_key
+        && hovered != Some(InfoSegmentId::Model)
+        && !app.last_mouse_pos.is_some_and(|(x, y)| {
+            route_area.is_some_and(|route| route.x <= x && x < route.right() && route.y == y)
+        })
+        && app.motion_policy().should_request_animation_frames()
+        && matches!(
+            crate::tui::underwater::ShellPhase::from_app(app),
+            crate::tui::underwater::ShellPhase::Working
+        )
+        && matches!(
+            crate::tui::underwater::LiveActivity::from_app(app).kind(),
+            crate::tui::underwater::LiveActivityKind::Working
+                | crate::tui::underwater::LiveActivityKind::Reasoning
+        )
+        && let Some((mut caps, started)) = app.viewport.ocean_caps.zip(app.turn_started_at)
+        && caps.depth == codewhale_ratatui::color::ColorDepth::TrueColor
+        && let Some(appearance) =
+            codewhale_ratatui::detect::appearance_for_background(app.ui_theme.header_bg)
+        && app.ui_theme.header_bg != app.ui_theme.surface_bg
+        && matches!(app.ui_theme.status_working, ratatui::style::Color::Rgb(..))
+        && let Some(model_area) = model_area
+        && let Some(model) = match route_fields.as_deref() {
+            Some(fields) => fields
+                .iter()
+                .find(|field| field.kind == crate::tui::phase_strip::RouteFieldKind::Model)
+                .map(|field| field.text.as_str()),
+            None => segments
+                .iter()
+                .find(|segment| segment.id == InfoSegmentId::Model && segment.label.is_empty())
+                .map(|segment| segment.value.as_str()),
+        }
+    {
+        use unicode_width::UnicodeWidthStr as _;
+        let width = model.width().min(usize::from(model_area.width));
+        if width > 0 {
+            caps.appearance = appearance;
+            let theme = codewhale_ratatui::Theme::new(caps);
+            let mode =
+                codewhale_ratatui::MotionMode::from_settings(app.low_motion, app.fancy_animations);
+            codewhale_ratatui::paint_working_glow(
+                buf,
+                Rect {
+                    width: width as u16,
+                    ..model_area
+                },
+                model,
+                started.elapsed(),
+                codewhale_ratatui::MotionPolicy::new(mode, &theme),
+                app.ui_theme.status_working,
+                app.ui_theme.header_bg,
+            );
+            app.viewport.working_glow_visible = true;
+        }
+    }
     app.viewport.last_infoline_hitboxes = hitboxes;
     interaction_hitboxes
 }
@@ -1562,6 +1621,7 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 }
 
 pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(u16, u16)> {
+    app.viewport.working_glow_visible = false;
     app.viewport.ocean_semantic_surfaces.clear();
     let size = f.area();
     // Hover targets belong to the whole composed frame. Resetting inside the
@@ -2041,12 +2101,40 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
                 facts.hint = None;
             }
         }
+        let working_glow = if matches!(
+            crate::tui::underwater::ShellPhase::from_app(app),
+            crate::tui::underwater::ShellPhase::Working
+                | crate::tui::underwater::ShellPhase::Verifying
+        ) {
+            app.viewport
+                .ocean_caps
+                .zip(app.turn_started_at)
+                .map(|(caps, started)| {
+                    (
+                        caps,
+                        started.elapsed(),
+                        codewhale_ratatui::MotionMode::from_settings(
+                            app.low_motion,
+                            app.fancy_animations,
+                        ),
+                    )
+                })
+        } else {
+            None
+        };
         let footer = facts
             .widget(
                 &app.ui_theme,
                 crate::tui::color_compat::ascii_safe_enabled(),
             )
-            .compact(app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Compact);
+            .compact(app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Compact)
+            .working_glow(working_glow);
+        app.viewport.working_glow_visible = footer.working_clock_visible(area)
+            && working_glow.is_some_and(|(caps, _, mode)| {
+                caps.depth == codewhale_ratatui::color::ColorDepth::TrueColor && mode.animates()
+            })
+            && matches!(app.ui_theme.footer_bg, ratatui::style::Color::Rgb(..))
+            && matches!(app.ui_theme.text_body, ratatui::style::Color::Rgb(..));
         let buf = f.buffer_mut();
         Block::default()
             .style(Style::default().bg(app.ui_theme.footer_bg))

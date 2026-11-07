@@ -1147,7 +1147,10 @@ pub async fn run_tui(
     }
     surface_prompt_override_notices(&mut app);
 
-    if options.resume_session_id.is_none() && !app.launch.visible {
+    if options.resume_session_id.is_none()
+        && !app.launch.visible
+        && !app.onboarding_missing_key_recovery
+    {
         // The one-time Fleet intro is no longer a launch push: it appears the
         // first time the user opens `/fleet` or enters Operate (apply.rs).
         let _ = open_setup_checkpoint_if_due(&mut app, config, options.skip_onboarding);
@@ -2347,13 +2350,8 @@ pub(crate) async fn run_event_loop(
 
         if app.onboarding == OnboardingState::Provider && app.view_stack.top_kind().is_none() {
             let recover_configured_route = app.onboarding_recovers_configured_route();
-            open_onboarding_provider_picker(
-                app,
-                &*config,
-                &engine_handle,
-                recover_configured_route,
-            )
-            .await;
+            open_model_connection_setup(app, &*config, &engine_handle, recover_configured_route)
+                .await;
         }
 
         // Drain the version-check handle once; re-assign None so we
@@ -6349,7 +6347,7 @@ pub(crate) async fn run_event_loop(
                 // back to the list and only dismisses from the list, where
                 // `ProviderPickerDismissed` runs the same non-mutating
                 // onboarding back-transition the shell used to force.
-                OnboardingKeyRoute::ProviderPicker => {
+                OnboardingKeyRoute::ProviderPicker | OnboardingKeyRoute::AccountLogin => {
                     if key_shortcuts::is_paste_shortcut(&key)
                         && paste_provider_picker_from_clipboard(app)
                     {
@@ -6431,7 +6429,7 @@ pub(crate) async fn run_event_loop(
                         OnboardingState::Provider => {
                             let recover_configured_route =
                                 app.onboarding_recovers_configured_route();
-                            open_onboarding_provider_picker(
+                            open_model_connection_setup(
                                 app,
                                 config,
                                 &engine_handle,

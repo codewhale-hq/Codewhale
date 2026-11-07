@@ -1086,6 +1086,15 @@ fn empty_bracketed_paste_attaches_the_clipboard_image() {
 /// One representative terminal encoding per shell binding.
 fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
     match id {
+        ShellBindingId::AccountLoginSelect => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ShellBindingId::AccountLoginNext => KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        ShellBindingId::AccountLoginOpenBrowser => {
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)
+        }
+        ShellBindingId::AccountLoginCopyLink => {
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)
+        }
+        ShellBindingId::AccountLoginCancel => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         ShellBindingId::TerminalNew => KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
         ShellBindingId::TerminalNext => KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
         ShellBindingId::TerminalPrevious => KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
@@ -2409,15 +2418,9 @@ fn coordination_handover_within_this_process_does_not_toast() {
         .expect("a genuinely foreign owner still warns via transient toast");
     assert_eq!(toast.level, crate::tui::app::StatusToastLevel::Info);
     assert_eq!(toast.ttl_ms, Some(5_000));
-    // The strip is one row and truncates from the right, so the *opening* of
-    // the message has to carry the fact. The old copy opened with the
-    // diagnosis and buried the cause behind a pid, a path and an errno, which
-    // truncated to `Delegated coordination unavailable — an…`.
     assert!(
-        toast
-            .text
-            .starts_with("Another Codewhale session in this workspace"),
-        "the toast must lead with the fact that explains the state: {}",
+        toast.text.starts_with("Delegated coordination unavailable"),
+        "the toast must report unavailability without claiming a specific owner: {}",
         toast.text
     );
     assert!(

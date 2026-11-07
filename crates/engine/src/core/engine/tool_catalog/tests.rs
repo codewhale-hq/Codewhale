@@ -113,6 +113,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "get_goal",
             "update_goal",
             "task_shell_wait",
+            "present",
             "load_skill",
             "context_archive_get",
             "context_archive_search"
@@ -127,6 +128,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
         "edit",
         "file_search",
         "load_skill",
+        "present",
         "read",
         "task_shell_wait",
         "todo_write",
@@ -152,6 +154,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "get_goal",
             "update_goal",
             "task_shell_wait",
+            "present",
             "Git",
             "Run",
             "tasks",

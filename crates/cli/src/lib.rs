@@ -233,6 +233,12 @@ enum Commands {
     Init(TuiPassthroughArgs),
     #[command(about = "Install a plugin bundle without trusting or enabling it")]
     Install(TuiPassthroughArgs),
+    #[command(
+        about = "Inspect or restage reviewed plugin bundles",
+        override_usage = "codewhale plugins <COMMAND>",
+        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot"
+    )]
+    Plugins(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge).
@@ -374,17 +380,16 @@ New integrations should prefer `codewhale app-server --http` for the full Engine
         after_help = "The browser receives a one-time loopback bootstrap capability, never the Runtime token.\nThe capability is exchanged for a bounded, process-local HttpOnly, SameSite=Strict web session and then invalidated."
     )]
     Web(WebArgs),
-    /// Sign in to an existing Codewhale account; new accounts are not open.
+    /// Sign in to your Codewhale account through the browser.
     #[command(
-        after_help = "New Codewhale accounts are not open, and local use does not require one.\nKeep provider keys on this machine with /provider or `codewhale auth set --provider <provider>`.\nSigning in does not upload existing local keys."
+        after_help = "Local use does not require a Codewhale account.\nConnect a model in the TUI with /connect, or run `codewhale auth set --provider <provider>`.\nSigning in preserves your selected model and does not upload existing local keys."
     )]
     Login(LoginArgs),
-    /// Remove saved authentication state (every provider key, OAuth login,
-    /// the Codewhale account session). Asks before deleting.
+    /// Sign out of Codewhale, keeping local model connections and work.
     Logout(LogoutArgs),
     /// Manage authentication credentials and provider mode.
     Auth(AuthArgs),
-    /// Manage an existing Codewhale account; new accounts are not open.
+    /// Manage your Codewhale account and its available features.
     #[command(visible_alias = "cloud")]
     Account(codewhale_account_cli::CloudArgs),
     /// Run a task on a Codewhale cloud computer using your configured model.
@@ -1768,7 +1773,12 @@ fn remote_setup_tui_args(args: RemoteSetupArgs) -> Vec<String> {
 
 #[derive(Debug, Args)]
 struct LogoutArgs {
-    /// Delete without the confirmation prompt (required when stdin is not a terminal).
+    #[arg(
+        long,
+        help = "Remove every saved provider key, OAuth login and account session; asks before deleting"
+    )]
+    all: bool,
+    /// Skip the confirmation for --all (required with --all when stdin is not a terminal).
     #[arg(long, short = 'y', default_value_t = false)]
     yes: bool,
 }
@@ -2400,7 +2410,12 @@ fn run() -> Result<()> {
     if !inherited_listener
         && !matches!(
             cli.command.as_ref(),
-            Some(Commands::Update(_) | Commands::Uninstall { .. } | Commands::Doctor(_))
+            Some(
+                Commands::Update(_)
+                    | Commands::Uninstall { .. }
+                    | Commands::Doctor(_)
+                    | Commands::Plugins(_)
+            )
         )
         && !argv_requests_machine_output(&argv)
     {
@@ -2589,6 +2604,11 @@ fn run() -> Result<()> {
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
             run_tui_in_process(&cli, &resolved_runtime, tui_args("install", args))
         }
+        Some(Commands::Plugins(args)) => {
+            let resolved_runtime =
+                resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
+            run_tui_in_process(&cli, &resolved_runtime, tui_args("plugins", args))
+        }
         Some(Commands::Setup(args)) => {
             let resolved_runtime = if setup_is_status_report(&args) {
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides)
@@ -2713,8 +2733,12 @@ fn run() -> Result<()> {
             )
         }
         Some(Commands::Logout(args)) => {
-            confirm_logout(args.yes)?;
-            run_logout_command(&mut store, cli.profile.as_deref())
+            if args.all {
+                confirm_logout(args.yes)?;
+                run_logout_command(&mut store, cli.profile.as_deref())
+            } else {
+                codewhale_account_cli::run_account_logout(cli.profile.as_deref(), &mut store)
+            }
         }
         Some(Commands::Auth(args)) => match args.command {
             AuthCommand::PluginLogin { provider } => {
@@ -3231,8 +3255,8 @@ fn reject_legacy_login_provider_args(args: &LoginArgs) -> Result<()> {
 const LOGOUT_CONFIRM_PROMPT: &str = "This deletes every saved provider API key and OAuth login, \
 the Codewhale account session. Type 'yes' to log out: ";
 
-/// `codewhale logout` wipes every provider credential at once, so it must not
-/// run on a stray keystroke. Non-interactive callers opt in with `--yes`.
+/// `codewhale logout --all` wipes every provider credential at once, so it must
+/// not run on a stray keystroke. Non-interactive callers opt in with `--all --yes`.
 fn confirm_logout(yes: bool) -> Result<()> {
     if yes {
         return Ok(());
@@ -3240,7 +3264,7 @@ fn confirm_logout(yes: bool) -> Result<()> {
     if !io::stdin().is_terminal() {
         bail!(
             "logout would delete every saved provider key; nothing was deleted. \
-             Re-run with --yes to confirm non-interactively."
+             Re-run with --all --yes to confirm non-interactively."
         );
     }
     confirm_logout_answer(&mut io::stdin().lock(), &mut io::stderr().lock())
@@ -10124,12 +10148,14 @@ verbosity = "concise"
             "login help must describe account sign-in: {help}"
         );
         assert!(
-            help.contains("New Codewhale accounts are not open"),
-            "login help must not offer accounts that cannot be created: {help}"
+            help.contains("Local use does not require a Codewhale account"),
+            "login help must explain that local use does not require an account: {help}"
         );
         assert!(
-            help.contains("Signing in does not upload existing local keys"),
-            "login help must explain the local-key upload boundary: {help}"
+            help.contains(
+                "Signing in preserves your selected model and does not upload existing local keys"
+            ),
+            "login help must explain model preservation and the local-key upload boundary: {help}"
         );
     }
 
@@ -12491,12 +12517,26 @@ verbosity = "concise"
         let cli = parse_ok(&["codewhale", "logout", "--yes"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Logout(LogoutArgs { yes: true }))
+            Some(Commands::Logout(LogoutArgs {
+                yes: true,
+                all: false
+            }))
         ));
         let cli = parse_ok(&["codewhale", "logout"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Logout(LogoutArgs { yes: false }))
+            Some(Commands::Logout(LogoutArgs {
+                yes: false,
+                all: false
+            }))
+        ));
+        let cli = parse_ok(&["codewhale", "logout", "--all", "--yes"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Logout(LogoutArgs {
+                yes: true,
+                all: true
+            }))
         ));
     }
 

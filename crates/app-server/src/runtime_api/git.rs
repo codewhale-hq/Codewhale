@@ -2518,8 +2518,13 @@ pub(super) async fn worktree_remove(
     Query(scope): Query<ThreadScopeQuery>,
     Json(request): Json<WorktreeRemoveRequest>,
 ) -> Result<Json<Value>, GitWriteError> {
+    let admission = state.runtime_threads.session_checkpoint_guard().await;
     let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
-    let _guard = state.git_writes.try_lock().map_err(|_| busy_error())?;
+    let guard = state
+        .git_writes
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| busy_error())?;
     let (main, rows) = repository_worktrees(&root).await?;
     let wanted = FsPath::new(request.path.trim());
     let Some(row) = rows.iter().find(|row| FsPath::new(&row.path) == wanted) else {
@@ -2544,6 +2549,40 @@ pub(super) async fn worktree_remove(
         .reject_active_turns_in_workspace(&path)
         .await
         .map_err(|error| coded(StatusCode::CONFLICT, "worktree_busy", error.to_string()))?;
+    let managers = state.runtime_threads.shell_managers_snapshot().await;
+    let job_workspace = path.clone();
+    let busy = tokio::task::spawn_blocking(move || -> Result<bool, ApiError> {
+        let worktree = job_workspace.canonicalize().ok();
+        for (_, manager) in managers {
+            let mut manager = manager
+                .lock()
+                .map_err(|_| ApiError::internal("job listing failed"))?;
+            for job in manager.list_jobs() {
+                if job.stale || job.status != codewhale_engine::tools::shell::ShellStatus::Running {
+                    continue;
+                }
+                let cwd = job.cwd.canonicalize().ok();
+                if match (&worktree, cwd) {
+                    (Some(worktree), Some(cwd)) => {
+                        cwd.starts_with(worktree) || worktree.starts_with(&cwd)
+                    }
+                    _ => true,
+                } {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    })
+    .await
+    .map_err(|_| ApiError::internal("job listing failed"))??;
+    if busy {
+        return Err(coded(
+            StatusCode::CONFLICT,
+            "worktree_busy",
+            "A shell job is still running in or around this worktree. Stop it before archiving.",
+        ));
+    }
     if !row.prunable {
         let status = git_read_ok(
             &path,
@@ -2578,7 +2617,82 @@ pub(super) async fn worktree_remove(
     }
     args.push("--".to_string());
     args.push(row.path.clone());
-    let run = git_write(&main, args).await?;
+    let managers = state.runtime_threads.shell_managers_snapshot().await;
+    let generation = state
+        .runtime_threads
+        .job_operation_generation()
+        .map_err(super::jobs::operation_error)?;
+    let runtime_owner = state.runtime_threads.clone();
+    let store = state.runtime_threads.job_operation_store();
+    let runtime = tokio::runtime::Handle::current();
+    let fence_path = path.clone();
+    let run = tokio::task::spawn_blocking(move || {
+        let _admission = admission;
+        let _guard = guard;
+        store.with_job_operations(|transaction| {
+            Ok((|| -> Result<GitRun, ApiError> {
+                let worktree = fence_path.canonicalize().unwrap_or(fence_path);
+                let worktree = if cfg!(windows) {
+                    let raw = worktree
+                        .to_str()
+                        .ok_or_else(|| ApiError::internal("worktree path unavailable"))?;
+                    PathBuf::from(super::jobs::plain_windows_path(raw))
+                } else {
+                    worktree
+                };
+                for mut record in transaction.list().map_err(super::jobs::operation_error)? {
+                    let (operation, _) = super::jobs::project_operation(
+                        transaction,
+                        &mut record,
+                        &managers,
+                        &generation,
+                    )?;
+                    if !matches!(operation.status.as_str(), "completed" | "rejected")
+                        && (super::jobs::overlaps(&worktree, &operation.workspace)
+                            || super::jobs::overlaps(&worktree, &operation.cwd))
+                    {
+                        return Err(ApiError::conflict(
+                            "a workspace job is running or unconfirmed",
+                        )
+                        .with_code("worktree_busy"));
+                    }
+                }
+                for (_, manager) in &managers {
+                    let mut manager = manager
+                        .lock()
+                        .map_err(|_| ApiError::internal("job listing failed"))?;
+                    for job in manager.list_jobs() {
+                        if !job.stale
+                            && job.status == codewhale_engine::tools::shell::ShellStatus::Running
+                        {
+                            let cwd = job.cwd.canonicalize().ok().and_then(|cwd| {
+                                if cfg!(windows) {
+                                    cwd.to_str().map(|raw| {
+                                        PathBuf::from(super::jobs::plain_windows_path(raw))
+                                    })
+                                } else {
+                                    Some(cwd)
+                                }
+                            });
+                            if cwd.is_none_or(|cwd| super::jobs::overlaps(&worktree, &cwd)) {
+                                return Err(ApiError::conflict("a workspace job is still running")
+                                    .with_code("worktree_busy"));
+                            }
+                        }
+                    }
+                }
+                if runtime_owner.job_operation_generation().ok().as_deref()
+                    != Some(generation.as_str())
+                {
+                    return Err(ApiError::internal("job operation owner changed"));
+                }
+                runtime.block_on(git_write(&main, args))
+            })())
+        })
+    })
+    .await
+    .map_err(|_| ApiError::internal("worktree removal failed"))?
+    .map_err(super::jobs::operation_error)??;
     if !run.status_success {
         return Err(ApiError::bad_request(output_tail(&run)).into());
     }

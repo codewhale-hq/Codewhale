@@ -1,6 +1,6 @@
 #[test]
 fn default_active_contract_keeps_discovery_and_core_tools_eager() {
-    const EXPECTED_NATIVE: [&str; 15] = [
+    const EXPECTED_NATIVE: [&str; 16] = [
         "read",
         "write",
         "edit",
@@ -13,6 +13,7 @@ fn default_active_contract_keeps_discovery_and_core_tools_eager() {
         "get_goal",
         "update_goal",
         "task_shell_wait",
+        "present",
         "load_skill",
         "context_archive_get",
         "context_archive_search",

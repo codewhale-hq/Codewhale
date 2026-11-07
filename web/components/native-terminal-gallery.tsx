@@ -59,6 +59,14 @@ export function NativeTerminalGallery({
 
   return (
     <div className="native-terminal-gallery">
+      <div className="native-terminal-view" id={captureId} dir="ltr">
+        <TerminalCapture
+          frame={selected.id}
+          label={selected.id === "home" ? label : `${viewLabel}. ${description}${detail ? ` ${copy.detailLabel}.` : ""}`}
+          regionLabel={`${regionLabel} · ${viewLabel}`}
+          rows={detail ? panelRows : undefined}
+        />
+      </div>
       <div className="native-terminal-controls" role="group" aria-label={copy.viewsLabel}>
         {views.map((view) => (
           <button
@@ -80,14 +88,6 @@ export function NativeTerminalGallery({
         ))}
       </div>
       <p className="native-terminal-description" aria-live="polite" aria-atomic="true">{description}</p>
-      <div className="native-terminal-view" id={captureId} dir="ltr">
-        <TerminalCapture
-          frame={selected.id}
-          label={selected.id === "home" ? label : `${viewLabel}. ${description}${detail ? ` ${copy.detailLabel}.` : ""}`}
-          regionLabel={`${regionLabel} · ${viewLabel}`}
-          rows={detail ? panelRows : undefined}
-        />
-      </div>
       <div className="native-terminal-footer">
         {panelRows ? (
           <button type="button" className="btn btn-secondary btn-sm" aria-expanded={showFull} aria-controls={captureId} onClick={() => setShowFull(!showFull)}>

@@ -277,6 +277,22 @@ Then run `/plugin enable example` again. Trust and enablement are separate:
   the bundle remains inactive until reviewed again.
 - `/plugin reload` rebuilds the current workspace registry when files have
   changed on disk.
+- `/plugin status [name]` shows the existing inventory or one bundle's state
+  and diagnostics. `/plugin restage <name>` restores a missing runtime snapshot
+  only when its source still matches the enabled review and current policy.
+  It preserves the receipt and generation; an existing changed snapshot is
+  refused and needs review.
+
+Normal runtime loading also attempts that verified recovery for missing
+snapshots. A failed automatic attempt keeps its reason and requires an explicit
+retry for the same review. Recovery does not authorize changed source bytes.
+
+From a shell, `codew plugins status [name] [--json]` inspects the same captured
+plugin roots without carry-forward, cleanup or recovery writes. A built-in
+whose review needs upgrade carry-forward can therefore appear unreviewed
+until normal runtime loading. `codew plugins restage <name> [--json]` performs
+an explicit verified repair. Use `/plugin reload` in an already running
+terminal session to refresh its registry after a repair from another process.
 
 (`/plugin install`, `update`, and `uninstall` place, replace, and remove the
 bits themselves and always drop into this same review — see
@@ -286,7 +302,7 @@ same next step without installing anything. Nothing is written into the
 model's request to advertise plugins; the full offering policy is in
 [PLUGINS.md](PLUGINS.md#how-codewhale-offers-plugins).)
 
-Trust, enable, disable, revoke, and reload rebuild the current workspace's
+Trust, enable, restage, disable, revoke, and reload rebuild the current workspace's
 Skills, MCP, Commands, Agent profiles, and Hooks immediately. Each persisted
 transition advances a per-bundle generation under a stable cross-process lock.
 A generation change cancels in-flight MCP work, removes cached catalog
@@ -420,8 +436,12 @@ and renders every candidate with an honest install plan:
 - Foreign policies are visibly ignored: a Codex `INSTALLED_BY_DEFAULT` entry
   is listed with a `NO_AUTO_INSTALL` warning and nothing is installed until
   an operator runs the install verb.
-- Sources Codewhale cannot fetch (npm packages, `command:` sources, non-tarball
-  URLs) are listed as `not installable` with the reason.
+- Catalog npm package declarations, `command:` sources and non-tarball URLs
+  are listed as `not installable` with the reason. Explicit
+  `/plugin install npm:package@1.2.3` and `codewhale install npm:package@1.2.3`
+  instead fetch an exact-version npm registry tarball containing a native plugin
+  manifest. They do not run npm lifecycle scripts or install dependencies; see
+  [install sources](PLUGINS.md#sources).
 - `install` routes through the same reviewed installer as `/plugin install`:
   the bundle lands disabled and untrusted, and enters the hash-bound trust
   review before anything activates.

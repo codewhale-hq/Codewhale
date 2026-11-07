@@ -954,12 +954,12 @@ jobs:
         run: cargo build -p codewhale-cli --bin codewhale --all-features --locked
         env:
           RUSTC_WRAPPER: ${{ matrix.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
-      - name: Windows Terminal clipboard acceptance
+      - name: Windows Terminal clipboard-to-draft acceptance
         if: needs.changes.outputs.heavy == 'true' && matrix.os == 'windows-latest'
         timeout-minutes: 5
         shell: pwsh
         run: node scripts/release/windows-terminal-clipboard.mjs target/debug/codewhale.exe "${{ runner.temp }}/windows-clipboard"
-      - name: Retain Windows Terminal clipboard evidence
+      - name: Retain Windows Terminal clipboard-to-draft evidence
         if: ${{ !cancelled() && matrix.os == 'windows-latest' && needs.changes.outputs.heavy == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
