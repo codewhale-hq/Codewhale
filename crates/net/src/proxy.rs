@@ -16,39 +16,18 @@ const LOOPBACK_PROXY_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// Keeps reqwest's snapshot behaviour when set to `0`.
 const LOOPBACK_PROXY_FALLBACK_ENV: &str = "CODEWHALE_LOCAL_PROXY_FALLBACK";
 
-/// Redact the userinfo segment (`username[:password]@…` portion) from
-/// a proxy URL so it can be safely included in `tracing::warn!` output
-/// without leaking the
-/// password into the on-disk log. URLs without userinfo are returned
-/// unchanged. Garbage input (no `://` scheme separator) is also returned
-/// unchanged and therefore **not redacted**, so a caller holding a raw
-/// `user:pass@host:port` string must not log the result as if it were safe;
-/// the watcher's own callers pass a parsed `reqwest::Url`, which always has a
-/// scheme.
+/// Redact userinfo and omit paths, queries, and fragments from proxy log labels.
 fn redact_proxy_userinfo(proxy_url: &str) -> String {
     let Some(scheme_end) = proxy_url.find("://") else {
-        return proxy_url.to_string();
+        return "<invalid proxy URL>".to_string();
     };
     let after_scheme = scheme_end + 3;
-    // The userinfo segment ends at the next `@`, but only if that `@`
-    // comes before the next `/`, `?`, or `#` (otherwise the `@` is in a
-    // path / query and the URL has no userinfo at all).
     let rest = &proxy_url[after_scheme..];
-    let at_idx = rest.find('@');
-    let path_idx = rest.find(['/', '?', '#']);
-    let userinfo_end = match (at_idx, path_idx) {
-        (Some(a), Some(p)) if a < p => Some(a),
-        (Some(a), None) => Some(a),
-        _ => None,
-    };
-    if let Some(end) = userinfo_end {
-        let mut out = String::with_capacity(proxy_url.len());
-        out.push_str(&proxy_url[..after_scheme]);
-        out.push_str("***@");
-        out.push_str(&rest[end + 1..]);
-        out
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if let Some((_, host)) = authority.rsplit_once('@') {
+        format!("{}***@{host}", &proxy_url[..after_scheme])
     } else {
-        proxy_url.to_string()
+        format!("{}{authority}", &proxy_url[..after_scheme])
     }
 }
 
@@ -499,7 +478,7 @@ where
         .filter(|url| url.has_host())
         .or_else(|| reqwest::Url::parse(&format!("http://{proxy_url}")).ok());
     let Some(normalized) = normalized else {
-        tracing::warn!(target: "mcp", proxy = %redact_proxy_userinfo(&proxy_url), "ignoring malformed HTTP(S)_PROXY URL");
+        tracing::warn!(target: "mcp", "ignoring malformed HTTP(S)_PROXY URL");
         return Ok(None);
     };
     let no_proxy = normalize_no_proxy(
@@ -1057,7 +1036,7 @@ mod tests {
         let (placeholder_user, placeholder_pass) = ("PLACEHOLDER_USER", "PLACEHOLDER_PASS");
         let with_creds = format!("http://{placeholder_user}:{placeholder_pass}@proxy.example/");
         let redacted = redact_proxy_userinfo(&with_creds);
-        assert_eq!(redacted, "http://***@proxy.example/");
+        assert_eq!(redacted, "http://***@proxy.example");
         assert!(!redacted.contains(placeholder_pass));
         assert!(!redacted.contains(placeholder_user));
 
@@ -1066,18 +1045,13 @@ mod tests {
         let redacted = redact_proxy_userinfo(&with_user_only);
         assert_eq!(redacted, "https://***@proxy.example:8080");
 
-        // No userinfo segment — pass through.
         let redacted = redact_proxy_userinfo("http://proxy.example:3128/");
-        assert_eq!(redacted, "http://proxy.example:3128/");
+        assert_eq!(redacted, "http://proxy.example:3128");
 
-        // `@` appears only in the path, not as userinfo separator —
-        // must not be mistaken for credentials.
-        let redacted = redact_proxy_userinfo("http://proxy.example/path@thing");
-        assert_eq!(redacted, "http://proxy.example/path@thing");
+        let redacted =
+            redact_proxy_userinfo("http://proxy.example/path@thing?token=PLACEHOLDER#fragment");
+        assert_eq!(redacted, "http://proxy.example");
 
-        // Garbage input (no `://`) returned unchanged — the
-        // surrounding warning log is the only caller and is already
-        // handling the malformed-URL case.
-        assert_eq!(redact_proxy_userinfo("not-a-url"), "not-a-url");
+        assert_eq!(redact_proxy_userinfo("not-a-url"), "<invalid proxy URL>");
     }
 }
