@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 pub mod acp_server;
 pub mod eval;
 pub mod exec_agent;

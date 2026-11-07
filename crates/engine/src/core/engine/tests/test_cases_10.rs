@@ -606,7 +606,6 @@ async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
             expected_mode_active.insert("execute_tools");
         } else {
             expected_mode_active.remove("task_shell_wait");
-            expected_mode_active.remove("present");
         }
         assert_eq!(
             metric_tool_names(&payload, mode, "active"),

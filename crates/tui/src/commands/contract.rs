@@ -338,12 +338,23 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
     }
 
     fn branch_current_leaf_hint(&self) -> Option<String> {
-        let app = self.host.app.borrow();
-        let session_id = app.current_session_id.as_deref()?;
-        let manager = codewhale_engine::session_manager::SessionManager::default_location().ok()?;
-        let mut session = manager.load_session(session_id).ok()?;
-        session.ensure_journal();
-        session.journal.as_ref()?.leaf_id.clone()
+        let session_id = self.host.app.borrow().current_session_id.clone()?;
+        run_owner_blocking(move || {
+            let Ok(manager) = codewhale_engine::session_manager::SessionManager::default_location()
+            else {
+                return Ok(None);
+            };
+            let Ok(mut session) = manager.load_session(&session_id) else {
+                return Ok(None);
+            };
+            session.ensure_journal();
+            Ok(session
+                .journal
+                .as_ref()
+                .and_then(|journal| journal.leaf_id.clone()))
+        })
+        .ok()
+        .flatten()
     }
 
     fn branch_to(&mut self, entry_id: &str) -> Result<SessionBranchOutcome, String> {
@@ -370,129 +381,140 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
             })?
             .capture(codewhale_engine::session_manager::SessionWriteOwner::control())
             .map_err(|error| error.to_string())?;
-        let mut session = match manager.load_session(&session_id) {
-            Ok(s) => s,
-            Err(e) => return Err(format!("could not load session {session_id}: {e}")),
-        };
-        session.write_receipt = Some(source);
-        session.ensure_journal();
-        let journal_len_before = session
-            .journal
-            .as_ref()
-            .map(|j| j.entries.len())
-            .unwrap_or(0);
-        // An entry a bounded save archived (#6842) is restored, with any
-        // ancestors the journal no longer holds, before branching to it.
-        if let Err(e) = manager.restore_archived_journal_chain(&mut session, entry_id) {
-            return Err(format!(
-                "branch failed: could not restore {entry_id} from the session's journal archive: {e}"
-            ));
-        }
-        match session.journal_branch_to(entry_id) {
-            Ok(()) => {
-                let publication = manager.publish_session(&session).map_err(|error| {
-                    format!("branch could not be persisted; active conversation unchanged: {error}")
-                })?;
-                session.adopt_publication(&publication);
-                app.restore_api_messages(session.messages.clone(), &session);
-                let leaf_display = session
-                    .leaf_id
-                    .clone()
-                    .unwrap_or_else(|| "(none)".to_string());
-                app.clear_history();
-                app.session_turn_outcomes = session.turn_outcomes.clone();
-                app.session_artifacts = session.artifacts.clone();
-                app.session_context_references = session.context_references.clone();
-                app.extend_history(
-                    session
-                        .messages
-                        .iter()
-                        .flat_map(crate::tui::history::history_cells_from_message),
-                );
-                app.scroll_to_bottom();
-                Ok(SessionBranchOutcome {
-                    leaf_display,
-                    journal_entries_before: journal_len_before,
-                    sync: SessionSyncPayload {
-                        session_id: Some(session_id),
-                        messages: session.messages,
-                        system_prompt: app.system_prompt.clone(),
-                        model: app.model.clone(),
-                        workspace: app.workspace.clone(),
-                        mode: to_command_mode(app.mode),
-                    },
-                })
+        let load_id = session_id.clone();
+        let entry_id = entry_id.to_string();
+        let (mut session, publication, journal_len_before) = run_owner_blocking(move || {
+            let mut session = match manager.load_session(&load_id) {
+                Ok(s) => s,
+                Err(e) => return Err(format!("could not load session {load_id}: {e}")),
+            };
+            session.write_receipt = Some(source);
+            session.ensure_journal();
+            let journal_len_before = session
+                .journal
+                .as_ref()
+                .map(|j| j.entries.len())
+                .unwrap_or(0);
+            if let Err(e) = manager.restore_archived_journal_chain(&mut session, &entry_id) {
+                return Err(format!(
+                    "branch failed: could not restore {entry_id} from the session's journal archive: {e}"
+                ));
             }
-            Err(e) => Err(format!(
-                "branch failed: {e}. Use `/tree` to see valid entry ids."
-            )),
-        }
+            match session.journal_branch_to(&entry_id) {
+                Ok(()) => {}
+                Err(e) => {
+                    return Err(format!(
+                        "branch failed: {e}. Use `/tree` to see valid entry ids."
+                    ));
+                }
+            }
+            let publication = manager.publish_session(&session).map_err(|error| {
+                format!("branch could not be persisted; active conversation unchanged: {error}")
+            })?;
+            Ok((session, publication, journal_len_before))
+        })?;
+        session.adopt_publication(&publication);
+        app.restore_api_messages(session.messages.clone(), &session);
+        let leaf_display = session
+            .leaf_id
+            .clone()
+            .unwrap_or_else(|| "(none)".to_string());
+        app.clear_history();
+        app.session_turn_outcomes = session.turn_outcomes.clone();
+        app.session_artifacts = session.artifacts.clone();
+        app.session_context_references = session.context_references.clone();
+        app.extend_history(
+            session
+                .messages
+                .iter()
+                .flat_map(crate::tui::history::history_cells_from_message),
+        );
+        app.scroll_to_bottom();
+        Ok(SessionBranchOutcome {
+            leaf_display,
+            journal_entries_before: journal_len_before,
+            sync: SessionSyncPayload {
+                session_id: Some(session_id),
+                messages: session.messages,
+                system_prompt: app.system_prompt.clone(),
+                model: app.model.clone(),
+                workspace: app.workspace.clone(),
+                mode: to_command_mode(app.mode),
+            },
+        })
     }
 
     fn tree_body(&self) -> Result<TreeBodyProjection, String> {
-        let app = self.host.app.borrow();
         let manager = match codewhale_engine::session_manager::SessionManager::default_location() {
             Ok(m) => m,
             Err(e) => return Err(format!("could not open sessions directory: {e}")),
         };
-        if let Some(session_id) = app.current_session_id.clone() {
-            if let Ok(mut session) = manager.load_session(&session_id) {
-                session.ensure_journal();
-                if let Some(journal) = session.journal.as_ref() {
-                    let mut rendered = codewhale_runtime::session_tree::render_tree(journal);
-                    match manager.load_journal_archive(&session_id) {
-                        Ok(archived) if !archived.is_empty() => {
-                            rendered.push_str(&format!(
-                                "{} older off-branch entries are archived in {}/{}.jsonl \
-                                 (not drawn); `/branch <id>` restores one.\n",
-                                archived.len(),
-                                codewhale_engine::session_manager::JOURNAL_ARCHIVE_DIR,
-                                session_id,
-                            ));
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            rendered.push_str(&format!("journal archive could not be read: {e}\n"))
-                        }
-                    }
-                    return Ok(TreeBodyProjection::Journal { rendered });
-                }
-            }
-            if app.api_messages.is_empty() {
-                return Ok(TreeBodyProjection::EmptySession);
-            }
-            let mut rendered =
-                String::from("Active branch (linear — journal will be created on save):\n");
-            for (i, msg) in app.api_messages.iter().enumerate() {
-                let meta_index = codewhale_models::turn_classify::turn_metadata_text(msg)
-                    .filter(|_| msg.role == codewhale_models::Role::User)
-                    .map(|(index, _)| index);
-                let snippet: String = msg
-                    .content
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, b)| match b {
-                        codewhale_models::ContentBlock::Text { text, .. }
-                            if Some(index) != meta_index =>
-                        {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let short: String = snippet.chars().take(60).collect();
-                let marker = if i + 1 == app.api_messages.len() {
-                    "*"
-                } else {
-                    "●"
+        let session_id = self.host.app.borrow().current_session_id.clone();
+        let journal = match session_id {
+            Some(session_id) => run_owner_blocking(move || {
+                let Ok(mut session) = manager.load_session(&session_id) else {
+                    return Ok(None);
                 };
-                rendered.push_str(&format!("  {marker} [{i}] {}: {short}\n", msg.role));
-            }
-            Ok(TreeBodyProjection::Linear { rendered })
-        } else {
-            Ok(TreeBodyProjection::NoSession)
+                session.ensure_journal();
+                let Some(journal) = session.journal.as_ref() else {
+                    return Ok(None);
+                };
+                let mut rendered = codewhale_runtime::session_tree::render_tree(journal);
+                match manager.load_journal_archive(&session_id) {
+                    Ok(archived) if !archived.is_empty() => {
+                        rendered.push_str(&format!(
+                            "{} older off-branch entries are archived in {}/{}.jsonl \
+                                 (not drawn); `/branch <id>` restores one.\n",
+                            archived.len(),
+                            codewhale_engine::session_manager::JOURNAL_ARCHIVE_DIR,
+                            session_id,
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        rendered.push_str(&format!("journal archive could not be read: {e}\n"));
+                    }
+                }
+                Ok(Some(TreeBodyProjection::Journal { rendered }))
+            })?,
+            None => return Ok(TreeBodyProjection::NoSession),
+        };
+        if let Some(journal) = journal {
+            return Ok(journal);
         }
+        let app = self.host.app.borrow();
+        if app.api_messages.is_empty() {
+            return Ok(TreeBodyProjection::EmptySession);
+        }
+        let mut rendered =
+            String::from("Active branch (linear — journal will be created on save):\n");
+        for (i, msg) in app.api_messages.iter().enumerate() {
+            let meta_index = codewhale_models::turn_classify::turn_metadata_text(msg)
+                .filter(|_| msg.role == codewhale_models::Role::User)
+                .map(|(index, _)| index);
+            let snippet: String = msg
+                .content
+                .iter()
+                .enumerate()
+                .filter_map(|(index, b)| match b {
+                    codewhale_models::ContentBlock::Text { text, .. }
+                        if Some(index) != meta_index =>
+                    {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let short: String = snippet.chars().take(60).collect();
+            let marker = if i + 1 == app.api_messages.len() {
+                "*"
+            } else {
+                "●"
+            };
+            rendered.push_str(&format!("  {marker} [{i}] {}: {short}\n", msg.role));
+        }
+        Ok(TreeBodyProjection::Linear { rendered })
     }
 
     fn save_session(
@@ -2741,13 +2763,16 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
     }
 
     fn workspace_id(&self, workspace: &Path) -> Result<String, String> {
-        match codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(workspace) {
-            Ok(Some(id)) => Ok(id),
-            Ok(None) => {
-                Err("workspace memory requires a git repository with an origin".to_string())
+        let workspace = workspace.to_path_buf();
+        run_owner_blocking(move || {
+            match codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&workspace) {
+                Ok(Some(id)) => Ok(id),
+                Ok(None) => {
+                    Err("workspace memory requires a git repository with an origin".to_string())
+                }
+                Err(err) => Err(format!("failed to resolve workspace identity: {err}")),
             }
-            Err(err) => Err(format!("failed to resolve workspace identity: {err}")),
-        }
+        })
     }
 
     fn search(
@@ -2756,12 +2781,18 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
         query: &str,
         limit: usize,
     ) -> Result<Vec<MemoryHit>, String> {
-        let app = self.host.app.borrow();
-        let store = native_store_from_memory_path(&app.memory_path);
-        match store.search_for_workspace(workspace, query, limit) {
-            Ok(hits) => Ok(hits.into_iter().map(portable_hit).collect()),
-            Err(err) => Err(err.to_string()),
-        }
+        let store = {
+            let app = self.host.app.borrow();
+            native_store_from_memory_path(&app.memory_path)
+        };
+        let workspace = workspace.to_path_buf();
+        let query = query.to_string();
+        run_owner_blocking(
+            move || match store.search_for_workspace(&workspace, &query, limit) {
+                Ok(hits) => Ok(hits.into_iter().map(portable_hit).collect()),
+                Err(err) => Err(err.to_string()),
+            },
+        )
     }
 
     fn remember(
@@ -2769,8 +2800,10 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
         target: MemoryRememberTarget,
         note: &str,
     ) -> Result<MemoryRemembered, String> {
-        let app = self.host.app.borrow();
-        let store = native_store_from_memory_path(&app.memory_path);
+        let store = {
+            let app = self.host.app.borrow();
+            native_store_from_memory_path(&app.memory_path)
+        };
         let (scope, workspace_id) = match target {
             MemoryRememberTarget::Global => {
                 (codewhale_runtime::native_memory::MemoryScope::Global, None)
@@ -2780,13 +2813,16 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
                 Some(workspace_id),
             ),
         };
-        match store.remember_reviewed(scope, workspace_id.as_deref(), note) {
-            Ok(hit) => Ok(MemoryRemembered {
-                source: hit.source,
-                line_start: hit.line_start,
-            }),
-            Err(err) => Err(err.to_string()),
-        }
+        let note = note.to_string();
+        run_owner_blocking(move || {
+            match store.remember_reviewed(scope, workspace_id.as_deref(), &note) {
+                Ok(hit) => Ok(MemoryRemembered {
+                    source: hit.source,
+                    line_start: hit.line_start,
+                }),
+                Err(err) => Err(err.to_string()),
+            }
+        })
     }
 
     fn import(&self) -> Result<MemoryImportOutcome, String> {
@@ -2810,62 +2846,78 @@ impl CommandMemoryContext for MemoryAdapter<'_> {
     }
 
     fn get(&self, workspace: &Path, id: i64) -> Result<MemoryGetOutcome, String> {
-        let app = self.host.app.borrow();
-        let store = native_store_from_memory_path(&app.memory_path);
-        match store.get_for_workspace(workspace, id) {
+        let store = {
+            let app = self.host.app.borrow();
+            native_store_from_memory_path(&app.memory_path)
+        };
+        let workspace = workspace.to_path_buf();
+        run_owner_blocking(move || match store.get_for_workspace(&workspace, id) {
             Ok(Some(hit)) => Ok(MemoryGetOutcome::Found(portable_hit(hit))),
             Ok(None) => Ok(MemoryGetOutcome::NotFound),
             Err(err) => Err(err.to_string()),
-        }
+        })
     }
 
     fn export(&self) -> Result<MemoryExport, String> {
-        let app = self.host.app.borrow();
-        let store = native_store_from_memory_path(&app.memory_path);
-        match store.export() {
+        let store = {
+            let app = self.host.app.borrow();
+            native_store_from_memory_path(&app.memory_path)
+        };
+        run_owner_blocking(move || match store.export() {
             Ok(content) => Ok(MemoryExport { content }),
             Err(err) => Err(err.to_string()),
-        }
+        })
     }
 
     fn reindex(&self) -> Result<MemoryReindex, String> {
-        let app = self.host.app.borrow();
-        let store = native_store_from_memory_path(&app.memory_path);
-        match store.reindex() {
+        let store = {
+            let app = self.host.app.borrow();
+            native_store_from_memory_path(&app.memory_path)
+        };
+        run_owner_blocking(move || match store.reindex() {
             Ok(entry_count) => Ok(MemoryReindex { entry_count }),
             Err(err) => Err(err.to_string()),
-        }
+        })
     }
 
     fn delete(&self, scope: MemoryDeleteScope) -> Result<MemoryDelete, String> {
-        let app = self.host.app.borrow();
-        let store = native_store_from_memory_path(&app.memory_path);
-        let result = match scope {
-            MemoryDeleteScope::All => store.delete_all(None, None),
-            MemoryDeleteScope::Global => store.delete_all(
-                Some(codewhale_runtime::native_memory::MemoryScope::Global),
-                None,
-            ),
+        let store = {
+            let app = self.host.app.borrow();
+            native_store_from_memory_path(&app.memory_path)
         };
-        result.map(|()| MemoryDelete).map_err(|err| err.to_string())
+        run_owner_blocking(move || {
+            let result = match scope {
+                MemoryDeleteScope::All => store.delete_all(None, None),
+                MemoryDeleteScope::Global => store.delete_all(
+                    Some(codewhale_runtime::native_memory::MemoryScope::Global),
+                    None,
+                ),
+            };
+            result.map(|()| MemoryDelete).map_err(|err| err.to_string())
+        })
     }
 
     fn delete_workspace(&self, workspace: &Path) -> Result<MemoryDelete, String> {
-        let app = self.host.app.borrow();
-        let store = native_store_from_memory_path(&app.memory_path);
-        match codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(workspace) {
-            Ok(Some(id)) => store
-                .delete_all(
-                    Some(codewhale_runtime::native_memory::MemoryScope::Workspace),
-                    Some(&id),
-                )
-                .map(|()| MemoryDelete)
-                .map_err(|err| err.to_string()),
-            Ok(None) => {
-                Err("workspace memory requires a git repository with an origin".to_string())
+        let store = {
+            let app = self.host.app.borrow();
+            native_store_from_memory_path(&app.memory_path)
+        };
+        let workspace = workspace.to_path_buf();
+        run_owner_blocking(move || {
+            match codewhale_runtime::native_memory::NativeMemoryStore::workspace_id(&workspace) {
+                Ok(Some(id)) => store
+                    .delete_all(
+                        Some(codewhale_runtime::native_memory::MemoryScope::Workspace),
+                        Some(&id),
+                    )
+                    .map(|()| MemoryDelete)
+                    .map_err(|err| err.to_string()),
+                Ok(None) => {
+                    Err("workspace memory requires a git repository with an origin".to_string())
+                }
+                Err(err) => Err(format!("failed to resolve workspace identity: {err}")),
             }
-            Err(err) => Err(format!("failed to resolve workspace identity: {err}")),
-        }
+        })
     }
 }
 
@@ -3026,7 +3078,7 @@ fn sync_registry_to_cache(cache_dir: Option<PathBuf>) -> Result<SkillSyncOutcome
     use codewhale_skill_install::install::{SkillSyncOutcome as TuiSyncOutcome, SyncResult};
     let cache_dir =
         cache_dir.ok_or_else(|| "global skill mutations require a home directory".to_string())?;
-    let (network, max_size, registry_url) = installer_settings();
+    let (network, max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
     let result = run_async(async move {
         codewhale_skill_install::install::sync_registry(
             &network,
@@ -3143,18 +3195,22 @@ fn format_registry_error(prefix: &str, err: &anyhow::Error) -> String {
 }
 
 /// Discover the enabled visible skills for the current App state.
-fn discover_visible(app: &App) -> codewhale_skills::SkillRegistry {
-    codewhale_skills::discover_for_workspace(
-        &app.workspace,
-        Some(&app.skills_dir),
-        &app.skills_config,
-        Some(app.extension_plugin_view().as_ref()),
-    )
-    .into_enabled()
+fn discover_visible(
+    workspace: &Path,
+    skills_dir: &Path,
+    skills_config: &codewhale_runtime::config::SkillsConfig,
+    plugins: Option<&codewhale_plugins::PluginRegistry>,
+) -> codewhale_skills::SkillRegistry {
+    codewhale_skills::discover_for_workspace(workspace, Some(skills_dir), skills_config, plugins)
+        .into_enabled()
 }
 
 /// Map a TUI skill to its portable projection entry.
-fn portable_skill_entry(skill: &codewhale_skills::Skill, app: &App) -> SkillEntry {
+fn portable_skill_entry(
+    skill: &codewhale_skills::Skill,
+    locale: codewhale_localization::Locale,
+    skills_config: &codewhale_runtime::config::SkillsConfig,
+) -> SkillEntry {
     let source = match &skill.source {
         codewhale_skills::SkillSource::Native => SkillSourceKind::Native,
         codewhale_skills::SkillSource::Plugin {
@@ -3176,16 +3232,14 @@ fn portable_skill_entry(skill: &codewhale_skills::Skill, app: &App) -> SkillEntr
     });
     SkillEntry {
         name: skill.name.clone(),
-        description: skill
-            .description_for_locale(app.ui_locale.tag())
-            .to_string(),
+        description: skill.description_for_locale(locale.tag()).to_string(),
         index_note: codewhale_skills::description_index_cap_if_shortened(
-            skill.description_for_locale(app.ui_locale.tag()),
-            &app.skills_config,
+            skill.description_for_locale(locale.tag()),
+            skills_config,
         )
         .map(|cap| {
             codewhale_localization::tr(
-                app.ui_locale,
+                locale,
                 codewhale_localization::MessageId::SkillsIndexDescriptionLimit,
             )
             .replace("{limit}", &cap.to_string())
@@ -3265,36 +3319,70 @@ fn network_denied_message(host: &str) -> String {
 
 impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     fn skill_registry_projection(&self) -> SkillRegistryProjection {
-        let app = self.host.app.borrow();
-        let mode = codewhale_skills::SkillDiscoveryMode::from_config(&app.skills_config);
-        let dirs = codewhale_skills::skill_directories_for_workspace_and_dir(
-            &app.workspace,
-            &app.skills_dir,
-            mode,
-        );
-        let registry = discover_visible(&app);
-        let mode_label = match mode {
-            codewhale_skills::SkillDiscoveryMode::Compatible => "compatible",
-            codewhale_skills::SkillDiscoveryMode::CompatibleWithFlatWorkspace => {
-                "compatible (flat workspace enabled)"
-            }
-            codewhale_skills::SkillDiscoveryMode::CodeWhaleOnly => "codewhale-only",
+        let (workspace, skills_dir, skills_config, locale, plugin_view, mode_label, dirs) = {
+            let app = self.host.app.borrow();
+            let mode = codewhale_skills::SkillDiscoveryMode::from_config(&app.skills_config);
+            let dirs = codewhale_skills::skill_directories_for_workspace_and_dir(
+                &app.workspace,
+                &app.skills_dir,
+                mode,
+            );
+            let mode_label = match mode {
+                codewhale_skills::SkillDiscoveryMode::Compatible => "compatible",
+                codewhale_skills::SkillDiscoveryMode::CompatibleWithFlatWorkspace => {
+                    "compatible (flat workspace enabled)"
+                }
+                codewhale_skills::SkillDiscoveryMode::CodeWhaleOnly => "codewhale-only",
+            };
+            (
+                app.workspace.clone(),
+                app.skills_dir.clone(),
+                std::sync::Arc::clone(&app.skills_config),
+                app.ui_locale,
+                app.extension_plugin_view(),
+                mode_label.to_string(),
+                dirs.iter()
+                    .map(|dir| dir.display().to_string())
+                    .collect::<Vec<_>>(),
+            )
         };
-        SkillRegistryProjection {
-            workspace: app.workspace.display().to_string(),
-            skills_dir: app.skills_dir.display().to_string(),
-            mode_label: mode_label.to_string(),
-            bundled_status: codewhale_skills::bundled_skills_status(&app.skills_config, &registry)
+        let workspace_label = workspace.display().to_string();
+        let skills_dir_label = skills_dir.display().to_string();
+        let projected = run_owner_blocking(move || {
+            let registry = discover_visible(
+                &workspace,
+                &skills_dir,
+                &skills_config,
+                Some(plugin_view.as_ref()),
+            );
+            let bundled_status = codewhale_skills::bundled_skills_status(&skills_config, &registry)
                 .map(|status| status.inspection())
-                .unwrap_or_default(),
-            dirs: dirs.iter().map(|dir| dir.display().to_string()).collect(),
-            entries: registry
+                .unwrap_or_default();
+            let entries = registry
                 .list()
                 .iter()
-                .map(|skill| portable_skill_entry(skill, &app))
-                .collect(),
-            warnings: registry.warnings().to_vec(),
-            total: registry.len(),
+                .map(|skill| portable_skill_entry(skill, locale, &skills_config))
+                .collect::<Vec<_>>();
+            Ok((
+                bundled_status,
+                entries,
+                registry.warnings().to_vec(),
+                registry.len(),
+            ))
+        });
+        let (bundled_status, entries, warnings, total) = match projected {
+            Ok(projection) => projection,
+            Err(reason) => (Vec::new(), Vec::new(), vec![reason], 0),
+        };
+        SkillRegistryProjection {
+            workspace: workspace_label,
+            skills_dir: skills_dir_label,
+            mode_label,
+            bundled_status,
+            dirs,
+            entries,
+            warnings,
+            total,
         }
     }
 
@@ -3302,10 +3390,27 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         &mut self,
         name: &str,
     ) -> Result<SkillActivationOutcome, SkillActivationError> {
-        let registry = {
+        let (workspace, skills_dir, skills_config, plugin_view) = {
             let app = self.host.app.borrow();
-            discover_visible(&app)
+            (
+                app.workspace.clone(),
+                app.skills_dir.clone(),
+                std::sync::Arc::clone(&app.skills_config),
+                app.extension_plugin_view(),
+            )
         };
+        let registry = run_owner_blocking(move || {
+            Ok(discover_visible(
+                &workspace,
+                &skills_dir,
+                &skills_config,
+                Some(plugin_view.as_ref()),
+            ))
+        })
+        .map_err(|reason| SkillActivationError::InvocationRejected {
+            name: name.to_string(),
+            reason,
+        })?;
         if let Some(skill) = registry.get(name) {
             if !skill.invocation.user_invocable() {
                 return Err(SkillActivationError::InvocationRejected {
@@ -3364,7 +3469,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
             portable_scope(scope).unwrap_or(codewhale_skills::mutation::SkillTargetScope::Global);
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
-        let (network, max_size, registry_url) = installer_settings();
+        let (network, max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
         let outcome = run_async(async move {
             let ctx = MutationContext {
                 workspace: &workspace,
@@ -3394,7 +3499,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
-        let (network, max_size, registry_url) = installer_settings();
+        let (network, max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
         let owned_name = name.to_string();
         let scope = portable_scope(scope);
         let outcome = run_async(async move {
@@ -3481,7 +3586,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     }
 
     fn fetch_remote_registry(&mut self) -> Result<RemoteRegistryOutcome, String> {
-        let (network, _max_size, registry_url) = installer_settings();
+        let (network, _max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
         let registry = run_async(async move {
             codewhale_skill_install::install::fetch_registry(&network, &registry_url).await
         });
@@ -3502,7 +3607,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     }
 
     fn recommend_skills(&mut self, task: &str) -> Result<Vec<SkillRecommendation>, String> {
-        let (network, _max_size, registry_url) = installer_settings();
+        let (network, _max_size, registry_url) = run_owner_blocking(|| Ok(installer_settings()))?;
         let registry = run_async(async move {
             codewhale_skill_install::install::fetch_registry(&network, &registry_url).await
         });
@@ -3535,20 +3640,26 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
 
     fn run_review(&mut self) -> Result<ReviewOutcome, String> {
         let skills_dir = self.host.app.borrow().skills_dir.clone();
-        let registry = codewhale_skills::SkillRegistry::discover(&skills_dir).into_enabled();
-        let mut warnings: Vec<String> = registry.warnings().to_vec();
-        let mut skill = registry.get("review").cloned();
-
         let global_dir = codewhale_skills::default_skills_dir();
-        if skill.is_none() && global_dir != skills_dir {
-            let registry = codewhale_skills::SkillRegistry::discover(&global_dir).into_enabled();
-            if warnings.is_empty() {
-                warnings = registry.warnings().to_vec();
-            } else if !registry.warnings().is_empty() {
-                warnings.extend(registry.warnings().iter().cloned());
+        let scan_dir = skills_dir.clone();
+        let scan_global_dir = global_dir.clone();
+        let (warnings, skill) = run_owner_blocking(move || {
+            let registry = codewhale_skills::SkillRegistry::discover(&scan_dir).into_enabled();
+            let mut warnings: Vec<String> = registry.warnings().to_vec();
+            let mut skill = registry.get("review").cloned();
+
+            if skill.is_none() && scan_global_dir != scan_dir {
+                let registry =
+                    codewhale_skills::SkillRegistry::discover(&scan_global_dir).into_enabled();
+                if warnings.is_empty() {
+                    warnings = registry.warnings().to_vec();
+                } else if !registry.warnings().is_empty() {
+                    warnings.extend(registry.warnings().iter().cloned());
+                }
+                skill = registry.get("review").cloned();
             }
-            skill = registry.get("review").cloned();
-        }
+            Ok((warnings, skill))
+        })?;
 
         match skill {
             Some(skill) => {
@@ -4605,45 +4716,49 @@ impl CommandPluginContext for PluginAdapter<'_> {
     }
 
     fn legacy_scan(&self) -> Result<Option<PluginLegacyScan>, String> {
-        let app = self.host.app.borrow();
-        let Some(dir) = app
-            .legacy_plugin_tools_dir
-            .clone()
-            .or_else(default_codewhale_tools_dir)
-        else {
+        let dir = {
+            let app = self.host.app.borrow();
+            app.legacy_plugin_tools_dir
+                .clone()
+                .or_else(default_codewhale_tools_dir)
+        };
+        let Some(dir) = dir else {
             return Ok(None);
         };
-        if !dir.exists() {
-            return Ok(None);
-        }
-        let discovered = codewhale_engine::tools::plugin::scan_plugin_dir(&dir);
-        let diagnostics = discovered
-            .iter()
-            .filter(|(_, metadata)| metadata.auto_approval_ignored)
-            .map(|(path, metadata)| PluginDiagnostic {
-                level: PluginDiagnosticLevel::Warning,
-                code: "script_tool_auto_approval_ignored".to_string(),
-                message: format!(
-                    "script tool '{}': {}",
-                    metadata.name,
-                    codewhale_engine::tools::plugin::AUTO_APPROVAL_UNSUPPORTED
-                ),
-                path: Some(path.clone()),
-            })
-            .collect();
-        let tools = discovered
-            .iter()
-            .map(|(path, metadata)| portable_legacy_tool(path, metadata))
-            .collect();
-        Ok(Some(PluginLegacyScan {
-            dir,
-            tools,
-            diagnostics,
-        }))
+        run_owner_blocking(move || {
+            if !dir.exists() {
+                return Ok(None);
+            }
+            let discovered = codewhale_engine::tools::plugin::scan_plugin_dir(&dir);
+            let diagnostics = discovered
+                .iter()
+                .filter(|(_, metadata)| metadata.auto_approval_ignored)
+                .map(|(path, metadata)| PluginDiagnostic {
+                    level: PluginDiagnosticLevel::Warning,
+                    code: "script_tool_auto_approval_ignored".to_string(),
+                    message: format!(
+                        "script tool '{}': {}",
+                        metadata.name,
+                        codewhale_engine::tools::plugin::AUTO_APPROVAL_UNSUPPORTED
+                    ),
+                    path: Some(path.clone()),
+                })
+                .collect();
+            let tools = discovered
+                .iter()
+                .map(|(path, metadata)| portable_legacy_tool(path, metadata))
+                .collect();
+            Ok(Some(PluginLegacyScan {
+                dir,
+                tools,
+                diagnostics,
+            }))
+        })
     }
 
     fn managed_scan(&self, home_override: Option<&Path>) -> Result<PluginManagedScan, String> {
-        scan_managed_plugins_portable(home_override)
+        let home = home_override.map(Path::to_path_buf);
+        run_owner_blocking(move || scan_managed_plugins_portable(home.as_deref()))
     }
 
     fn dsh_preview(
@@ -4749,23 +4864,30 @@ impl CommandPluginContext for PluginAdapter<'_> {
     }
 
     fn marketplace_state(&self) -> Result<PluginMarketplaceState, String> {
-        let app = self.host.app.borrow();
-        let store = codewhale_plugins::marketplace::store::MarketplaceStore::open(
-            app.plugin_registry.state_path(),
-        )
-        .ok_or_else(|| {
-            "This plugin registry has no persistence store, so marketplace catalogs cannot be saved."
-                .to_string()
-        })?;
-        let state = store.load()?;
-        let stored = state
-            .catalogs()
-            .values()
-            .map(|entry| portable_marketplace_catalog_with_source(entry, &app.plugin_registry))
-            .collect();
-        Ok(PluginMarketplaceState {
-            official: None,
-            stored,
+        let (state_path, registry) = {
+            let app = self.host.app.borrow();
+            (
+                app.plugin_registry.state_path().map(Path::to_path_buf),
+                std::sync::Arc::clone(&app.plugin_registry),
+            )
+        };
+        run_owner_blocking(move || {
+            let store =
+                codewhale_plugins::marketplace::store::MarketplaceStore::open(state_path.as_deref())
+                    .ok_or_else(|| {
+                        "This plugin registry has no persistence store, so marketplace catalogs cannot be saved."
+                            .to_string()
+                    })?;
+            let state = store.load()?;
+            let stored = state
+                .catalogs()
+                .values()
+                .map(|entry| portable_marketplace_catalog_with_source(entry, &registry))
+                .collect();
+            Ok(PluginMarketplaceState {
+                official: None,
+                stored,
+            })
         })
     }
 

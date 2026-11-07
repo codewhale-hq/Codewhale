@@ -392,7 +392,8 @@ pub async fn run_exec_agent(
         Some(&effective_model),
     )
     .map_err(anyhow::Error::msg)?
-    .validate_for(codewhale_engine::route_runtime::RouteErrorSurface::Headless)
+    .validate_for_async(codewhale_engine::route_runtime::RouteErrorSurface::Headless)
+    .await
     .map_err(anyhow::Error::msg)?;
     let effective_identity = validated_route.identity.clone();
     let effective_provider_name = effective_identity.key.to_string();

@@ -451,9 +451,7 @@ pub(crate) fn paste_provider_picker_from_clipboard(app: &mut App) -> bool {
 }
 
 pub(crate) async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
-    use codewhale_engine::client::CodewhaleClient;
-
-    let client = CodewhaleClient::new(config)?;
+    let client = crate::active_route_client(config).await?;
     let models = tokio::time::timeout(Duration::from_secs(20), client.list_models()).await??;
     let mut ids = models.into_iter().map(|model| model.id).collect::<Vec<_>>();
     ids.sort();
@@ -821,7 +819,7 @@ async fn switch_provider_inner(
             return false;
         }
     };
-    let validated_route = match resolved_route.validate() {
+    let validated_route = match resolved_route.validate_async().await {
         Ok(route) => route,
         Err(err) => {
             app.pending_provider_switch = None;

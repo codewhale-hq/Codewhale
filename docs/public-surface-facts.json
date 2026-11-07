@@ -22,7 +22,7 @@
   "sourceCandidate": {
     "version": "0.10.3",
     "providerCount": 50,
-    "toolCount": 81,
+    "toolCount": 82,
     "sandboxBackends": [
       "seatbelt (macOS, when available)",
       "bubblewrap (Linux, default when installed and working)"
@@ -112,6 +112,7 @@
       "get_goal",
       "update_goal",
       "task_shell_wait",
+      "present",
       "load_skill",
       "context_archive_get",
       "context_archive_search"

@@ -79,6 +79,7 @@ const JOURNAL_SETUP_ERROR: &str = "Remote control could not prepare its private 
 const JOURNAL_UNTRUSTED_ERROR: &str = "The saved remote-control delivery journal could not be trusted; it was set aside. The account run may show an incomplete turn.";
 const JOURNAL_LEGACY_SCOPE_ERROR: &str = "A saved legacy remote-control delivery journal is not bound to this workspace and cannot be replayed safely; it was preserved for explicit recovery.";
 const CLASSIC_LEASE_SCOPE_ERROR: &str = "This saved session still owns an unfinished account turn in its original workspace; reconnect that workspace or create a new local session.";
+const OWNER_LOST_ERROR: &str = "Remote control lost its local delivery transaction owner.";
 
 #[cfg(test)]
 static TEST_JOURNAL_PERSIST_FAILURES: std::sync::Mutex<Vec<(PathBuf, usize)>> =
@@ -886,7 +887,41 @@ impl Default for RemoteControlController {
     }
 }
 
+fn blocking_owner_handle() -> Option<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .filter(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+}
+
 impl RemoteControlController {
+    async fn run_on_owner<T>(
+        &mut self,
+        work: impl FnOnce(&mut Self) -> T + Send + 'static,
+    ) -> Option<T>
+    where
+        T: Send + 'static,
+    {
+        let mut controller = std::mem::take(self);
+        let joined = tokio::task::spawn_blocking(move || {
+            let output =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&mut controller)));
+            (controller, output)
+        })
+        .await;
+        match joined {
+            Ok((controller, Ok(output))) => {
+                *self = controller;
+                Some(output)
+            }
+            Ok((controller, Err(payload))) => {
+                *self = controller;
+                std::panic::resume_unwind(payload)
+            }
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            Err(_) => None,
+        }
+    }
+
     /// Acquires and validates the saved-session authority before any Runtime
     /// Chat host/provider configuration is opened.
     ///
@@ -935,6 +970,51 @@ impl RemoteControlController {
                 }
                 Err(error)
             }
+        }
+    }
+
+    pub async fn prepare_remote_control_session_journal_async(
+        &mut self,
+        dir: &Path,
+        target_ref: &str,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let dir = dir.to_path_buf();
+        let target_ref = target_ref.to_string();
+        let session_id = session_id.to_string();
+        match self
+            .run_on_owner(move |controller| {
+                controller.prepare_remote_control_session_journal(&dir, &target_ref, &session_id)
+            })
+            .await
+        {
+            Some(result) => result,
+            None => Err(OWNER_LOST_ERROR.to_string()),
+        }
+    }
+
+    pub async fn configure_runtime_chat_async(
+        &mut self,
+        config: codewhale_runtime::config::Config,
+        plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
+        private_root: PathBuf,
+        target_ref: String,
+        session_id: String,
+    ) -> Result<(), String> {
+        match self
+            .run_on_owner(move |controller| {
+                controller.configure_runtime_chat(
+                    config,
+                    plugin_registry,
+                    private_root,
+                    target_ref,
+                    session_id,
+                )
+            })
+            .await
+        {
+            Some(result) => result,
+            None => Err(OWNER_LOST_ERROR.to_string()),
         }
     }
 
@@ -1091,7 +1171,22 @@ impl RemoteControlController {
     }
 
     pub fn start(&mut self, start: RemoteStart) -> Result<(), String> {
-        let result = self.start_inner(start);
+        let result = self.start_inner_on(start, None);
+        if let Err(error) = &result {
+            self.record_start_failure(error);
+        }
+        result
+    }
+
+    pub async fn start_async(&mut self, start: RemoteStart) -> Result<(), String> {
+        let runtime = tokio::runtime::Handle::current();
+        let result = match self
+            .run_on_owner(move |controller| controller.start_inner_on(start, Some(runtime)))
+            .await
+        {
+            Some(result) => result,
+            None => Err(OWNER_LOST_ERROR.to_string()),
+        };
         if let Err(error) = &result {
             self.record_start_failure(error);
         }
@@ -1109,7 +1204,11 @@ impl RemoteControlController {
         }
     }
 
-    fn start_inner(&mut self, start: RemoteStart) -> Result<(), String> {
+    fn start_inner_on(
+        &mut self,
+        start: RemoteStart,
+        runtime: Option<tokio::runtime::Handle>,
+    ) -> Result<(), String> {
         if matches!(
             self.status,
             Status::Connecting | Status::Connected | Status::Stopping
@@ -1184,7 +1283,8 @@ impl RemoteControlController {
         self.worker_tx = Some(worker_tx);
         self.event_rx = Some(event_rx);
         let runtime_chat = self.runtime_chat.clone();
-        self.worker = Some(tokio::spawn(async move {
+        let runtime = runtime.unwrap_or_else(tokio::runtime::Handle::current);
+        self.worker = Some(runtime.spawn(async move {
             let mut phase = RelayPhase::Enrolling;
             if let Err(error) =
                 relay_worker(start, runtime_chat, worker_rx, event_tx.clone(), &mut phase).await
@@ -1360,6 +1460,19 @@ impl RemoteControlController {
     }
 
     pub fn stop(&mut self) {
+        match blocking_owner_handle() {
+            Some(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(self.stop_async()));
+            }
+            None => self.stop_inner(),
+        }
+    }
+
+    pub async fn stop_async(&mut self) {
+        let _ = self.run_on_owner(Self::stop_inner).await;
+    }
+
+    fn stop_inner(&mut self) {
         if let Some(refusal) = self.stop_refusal() {
             self.status_detail = refusal;
             return;
@@ -1439,6 +1552,25 @@ impl RemoteControlController {
         self.status_detail = error.clone();
         self.ownership_blocked_until = Some(Instant::now() + OWNERSHIP_LOCK_AFTER_FAILURE);
         RemoteEvent::Failed(error)
+    }
+
+    fn has_pending_control_poll(&self) -> bool {
+        !self.deferred_delta.is_empty()
+            || self
+                .event_rx
+                .as_ref()
+                .is_some_and(|events| !events.is_empty())
+            || (self.status == Status::Failed
+                && self
+                    .ownership_blocked_until
+                    .is_some_and(|deadline| Instant::now() >= deadline))
+    }
+
+    pub async fn try_next_event_async(&mut self) -> Option<RemoteEvent> {
+        if !self.has_pending_control_poll() {
+            return None;
+        }
+        self.run_on_owner(Self::try_next_event).await.flatten()
     }
 
     pub fn try_next_event(&mut self) -> Option<RemoteEvent> {
@@ -1891,6 +2023,22 @@ impl RemoteControlController {
         self.activate_prompt_with_lease_id(run_id, turn_id, String::new())
     }
 
+    pub async fn activate_prompt_async(
+        &mut self,
+        run_id: &str,
+        turn_id: &str,
+    ) -> Result<(), String> {
+        let run_id = run_id.to_string();
+        let turn_id = turn_id.to_string();
+        match self
+            .run_on_owner(move |controller| controller.activate_prompt(&run_id, &turn_id))
+            .await
+        {
+            Some(result) => result,
+            None => Err(OWNER_LOST_ERROR.to_string()),
+        }
+    }
+
     fn activate_prompt_with_lease_id(
         &mut self,
         run_id: &str,
@@ -2004,6 +2152,21 @@ impl RemoteControlController {
         true
     }
 
+    pub async fn attach_current_local_turn_async(&mut self, turn_id: Option<&str>) -> bool {
+        if self.status != Status::Connected
+            || self.has_active_run()
+            || self.attached_run_id.is_none()
+        {
+            return false;
+        }
+        let turn_id = turn_id.map(str::to_string);
+        self.run_on_owner(move |controller| {
+            controller.attach_current_local_turn(turn_id.as_deref())
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     /// Release a dispatch-window binding when the local dispatcher becomes
     /// idle without ever producing a typed `TurnStarted`. The account-owned
     /// attachment remains connected and can accept a later web prompt; only
@@ -2017,6 +2180,15 @@ impl RemoteControlController {
         }
         self.pending_local_turn_run = None;
         true
+    }
+
+    pub async fn release_unstarted_local_turn_async(&mut self) -> bool {
+        if self.pending_local_turn_run.is_none() {
+            return false;
+        }
+        self.run_on_owner(Self::release_unstarted_local_turn)
+            .await
+            .unwrap_or(false)
     }
 
     fn begin_classic_lease(&mut self, lease: ClassicRunLease) -> Result<(), String> {
@@ -2080,6 +2252,13 @@ impl RemoteControlController {
     /// That failure is still terminal for the account-owned run.
     pub fn fail_active_dispatch(&mut self, error: &str) {
         self.fail_active_run("dispatch_failed", error);
+    }
+
+    pub async fn fail_active_dispatch_async(&mut self, error: &str) {
+        let error = error.to_string();
+        let _ = self
+            .run_on_owner(move |controller| controller.fail_active_dispatch(&error))
+            .await;
     }
 
     fn apply_attachment(&mut self, attachment: &RemoteAttachment) {
@@ -2216,6 +2395,24 @@ impl RemoteControlController {
         let envelope = bounded_session_snapshot_envelope(seq, messages);
         if self.queue_runtime_envelope(run_id, envelope) {
             self.uploaded_snapshots.insert(run_id.to_string());
+        }
+    }
+
+    pub async fn upload_snapshot_async(&mut self, run_id: &str, messages: &[Message]) {
+        if self.uploaded_snapshots.contains(run_id) {
+            return;
+        }
+        let seq = self.next_runtime_seq(run_id);
+        let envelope = bounded_session_snapshot_envelope(seq, messages);
+        let target = run_id.to_string();
+        let queued_run = target.clone();
+        if let Some(true) = self
+            .run_on_owner(move |controller| {
+                controller.queue_runtime_envelope(&queued_run, envelope)
+            })
+            .await
+        {
+            self.uploaded_snapshots.insert(target);
         }
     }
 

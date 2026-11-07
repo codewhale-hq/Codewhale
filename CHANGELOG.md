@@ -7,13 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.10.3] - Unreleased candidate
+## [0.10.3] - 2026-11-06
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release
 until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **Worktrees for parallel workspaces:** `GET /v1/worktrees` lists a repository's worktrees, `POST /v1/worktrees` creates a branch and its own checkout under `<repository>/.codewhale/worktrees/` through the existing lane provisioning, and `POST /v1/worktrees/remove` archives a clean managed one without `--force`, keeping the branch. A client starts a thread in the new folder, so several agents can work on one project without sharing files. (codewhale-hq/codewhale-app#3500)
+- **Thread-scoped snapshots:** `GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept `?thread_id=` and act on that thread's workspace under the same restore admission rule. (codewhale-hq/codewhale-app#3500)
+- **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine exposes a trusted and enabled plugin's client entry and assets through two loopback-only, read-only routes with bounded sizes, confined paths and safe MIME/no-store responses; no other plugin route gains an unauthenticated path. (#2, #3)
+- **Present final files:** the read-only `present` tool takes 1–32 existing
+  workspace files, streams their SHA-256 and byte counts, and returns an
+  auditable handoff receipt without copying, moving or uploading them. It is
+  eager in Act/Operate and Plan; the `present-handoff` feature is experimental,
+  and there is no dedicated app card yet.
+- **Truthful background jobs:** shell job snapshots and completion events now
+  carry the exact start time, a typed termination cause (`producer`, `killed`,
+  `timed_out`, `unknown`) and whether the producer reported it. A killed job is
+  no longer indistinguishable from a failed one, and the bash guidance tells the
+  model to collect or cancel live jobs before a final answer.
 - **`/export` writes HTML and JSON:** `/export file report.html` saves a self-contained page (light and dark, no scripts, a strict content-security policy, tool calls collapsed) and `report.json` a versioned, typed-block envelope. `--format md|html|json` overrides the extension, and `--no-tools` drops tool calls and results from the conversation. `/export file` with no path now writes an auto-named `codewhale-<title>-<timestamp>` file under `<codewhale home>/exports` and reports the format, line count and redactions; `~` expands and quotes keep a path with spaces together. `--force`, `--no-tools` and `--format` are accepted in any position. HTML and JSON are file-only; the clipboard and `/export turn` remain Markdown.
 - **Tencent HY4:** the stable `tencent/hy4` model is available through OpenRouter with its published multimodal, tool, reasoning and context metadata. `/provider tencent` adds the direct TokenHub route with `hy4` and `TENCENT_API_KEY`; direct availability and prices remain separate from OpenRouter, and preview/HY3 selections are preserved.
 
@@ -94,6 +107,9 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Changed
 
+- **Managed ACP requirements outrank Full Access:** when organization
+  requirements manage approval policy, ACP no longer lets `--full-access`
+  override them. The TUI already locked YOLO this way; ACP now matches.
 - **Cleaner, safer Markdown export:** headings no longer carry `Content N:` numbering, a text block that opens a message is bare, tool results show their tool name and appear under a `tool` role instead of `user`, and `Error:` appears only on an error. Tool output is now fenced, so a tool result can no longer forge a heading or a message in the transcript. A trailing `--force` is a flag rather than part of the path. `/share` now publishes the same HTML page as `/export file x.html`, still as a redacted secret gist after confirmation.
 - Internal coarse split: Runtime owns bounded owner work, Paths owns the protected socket layout, and Protocol owns shared avatar data. App Server now owns the Runtime host and control transports previously embedded in the TUI. Engine and Sandbox do not depend on App Server; the remaining Stage B boundaries stay open (#5586).
 - **Newer DeepSeek Harness plugin compatibility:** the Native host targets
@@ -180,6 +196,14 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Git writes land in the right workspace:** stage, unstage, discard, commit, push and branch take `?thread_id=` and run in that thread's recorded workspace, matching the read routes. Before, they always ran in the server's own folder, so a commit asked for a thread in another folder could land in the wrong tree.
+- **ChatGPT sign-in tolerates a small device clock skew:** identity-token expiry and not-before checks allow the same 60-second tolerance already used for ordinary network time drift, while signature, issuer, audience, subject and nonce checks remain exact. The diagnostic text still names the exact failed check when a token is genuinely invalid.
+- **Remaining long-blocking work moved off async callers (#6553):** route
+  credential and certificate preflight, worktree creation, Runtime Chat relay
+  and remote-control journal transactions, and the remaining session, branch,
+  tree, skill, plugin and memory command I/O now run on the supervised blocking
+  owner. Results are still awaited before state publication; sync APIs remain
+  where sync callers still use them.
 - **Frozen prices on DeepSeek endpoints:** published rates are captured for DeepSeek's root, `/v1`, `/beta` and Anthropic endpoint variants, and remain bound to the exact endpoint on replay. Other providers keep their existing pricing scopes; official credential aliases alone do not establish equivalent regional or plan prices. Request outcomes, missing provider usage, legacy usage and unverified corrections now have distinct cost explanations; saved receipts without a frozen quote remain unpriced.
 - **Clipboard image persistence:** the existing confined writer handles relocated user state directly, without a second filesystem fallback that bypassed its protections and exceeded the blocking-call budget.
 - **Case-sensitive model selection (#7214):** the provider picker restores the exact configured or wire model ID before trying case-insensitive compatibility matches. Thanks [@liuyy2](https://github.com/liuyy2) for the diagnosis and [@SparkofSpike](https://github.com/SparkofSpike) for the compatibility-preserving fix.
@@ -13279,7 +13303,7 @@ overflow report and `/theme` picker edge-wrapping patch in #1814.
 Older releases (v0.8.39 and earlier) are archived in [docs/CHANGELOG_ARCHIVE.md](docs/CHANGELOG_ARCHIVE.md).
 
 [Unreleased]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...HEAD
-[0.10.3]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...HEAD
+[0.10.3]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/codewhale-hq/CodeWhale/compare/v0.9.13...v0.10.0

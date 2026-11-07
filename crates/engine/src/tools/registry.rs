@@ -707,6 +707,7 @@ pub fn enforce_tool_authority(
                 | "Bash"
                 | "context_archive_get"
                 | "context_archive_search"
+                | "present"
         ) {
             return Err(ToolError::not_available(format!(
                 "{name} is outside the ACP foreground tool profile"

@@ -13,12 +13,19 @@
 //! `/plugin marketplace` command: local catalog documents only, tiers are
 //! display-only, and installs route through the same reviewed installer.
 
+use std::net::SocketAddr;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::http::uri::Authority;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::response::Response;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::io::AsyncReadExt;
 
 use codewhale_plugins::marketplace::document::{
     CatalogInstallResolution, load_catalog_document, resolve_candidate_install,
@@ -30,6 +37,9 @@ use codewhale_plugins::mutation::{
 use codewhale_plugins::types::{LoadedPlugin, PluginDiagnostic, PluginDiagnosticLevel};
 
 use super::{ApiError, RuntimeApiState};
+
+const PLUGIN_UI_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const PLUGIN_UI_SLOT: &str = "customize.plugins.detail";
 
 // ---------------------------------------------------------------------------
 // Response shapes
@@ -164,6 +174,20 @@ pub(super) struct PluginActionResponse {
     pub(super) note: Option<&'static str>,
 }
 
+#[derive(Debug, Serialize)]
+pub(super) struct PluginUiSlotResponse {
+    pub(super) slot: String,
+    pub(super) base: String,
+    pub(super) entry: String,
+}
+
+enum UiFileError {
+    Missing,
+    TooLarge,
+    Invalid(String),
+    Internal(String),
+}
+
 // ---------------------------------------------------------------------------
 // Request shapes
 // ---------------------------------------------------------------------------
@@ -177,6 +201,11 @@ pub(super) struct InstallPluginRequest {
     /// installed tree matches this reviewed content hash.
     #[serde(default)]
     pub(super) expected_content_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct PluginUiQuery {
+    pub(super) slot: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -391,6 +420,332 @@ fn find_plugin(state: &RuntimeApiState, selector: &str) -> Result<LoadedPlugin, 
         .get(selector)
         .cloned()
         .ok_or_else(|| ApiError::not_found(format!("plugin '{selector}' not found")))
+}
+
+fn ui_relative_path(raw: &str) -> Result<PathBuf, &'static str> {
+    let raw = raw.strip_prefix("./").unwrap_or(raw);
+    if raw.is_empty() {
+        return Err("it is empty");
+    }
+    if raw.starts_with('/') || raw.contains('\\') {
+        return Err("it must be a relative path without backslashes");
+    }
+    if raw.contains('\0') {
+        return Err("it contains a NUL byte");
+    }
+    let mut relative = PathBuf::new();
+    for component in FsPath::new(raw).components() {
+        match component {
+            std::path::Component::Normal(part) => relative.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => return Err("it must not contain '..'"),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err("it must be relative");
+            }
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        return Err("it is empty");
+    }
+    Ok(relative)
+}
+
+fn ui_relative_display(relative: &FsPath) -> String {
+    relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn ui_client_entry(manifest: &Value) -> Option<String> {
+    let export = manifest.get("exports")?.get("./client")?;
+    match export {
+        Value::String(target) => Some(target.clone()),
+        Value::Object(targets) => ["import", "default", "."]
+            .iter()
+            .find_map(|key| targets.get(*key).and_then(Value::as_str))
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+fn ui_content_type(path: &FsPath) -> &'static str {
+    match path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("js" | "mjs" | "cjs") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        _ => "application/octet-stream",
+    }
+}
+
+fn ui_asset_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
+    let mut response = Response::new(Body::from(bytes));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
+async fn ui_file_path(root: &FsPath, relative: &FsPath) -> Result<PathBuf, UiFileError> {
+    if relative.as_os_str().is_empty() {
+        return Err(UiFileError::Invalid("it is empty".into()));
+    }
+    let mut current = root.to_path_buf();
+    let mut last = None;
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(UiFileError::Invalid(
+                "it must be a relative path of literal components".into(),
+            ));
+        };
+        current.push(part);
+        let metadata = match tokio::fs::symlink_metadata(&current).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(UiFileError::Missing);
+            }
+            Err(error) => return Err(UiFileError::Internal(error.to_string())),
+        };
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
+            return Err(UiFileError::Invalid(
+                "it must not traverse symbolic links".into(),
+            ));
+        }
+        if components.peek().is_some() {
+            if !metadata.is_dir() {
+                return Err(UiFileError::Missing);
+            }
+        } else {
+            last = Some(metadata);
+        }
+    }
+    let Some(metadata) = last else {
+        return Err(UiFileError::Invalid("it is empty".into()));
+    };
+    if !metadata.is_file() {
+        return Err(UiFileError::Invalid("it is not a regular file".into()));
+    }
+    let canonical =
+        tokio::fs::canonicalize(&current)
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => UiFileError::Missing,
+                _ => UiFileError::Internal(error.to_string()),
+            })?;
+    if !canonical.starts_with(root) {
+        return Err(UiFileError::Invalid(
+            "it resolves outside the staged bundle".into(),
+        ));
+    }
+    Ok(canonical)
+}
+
+async fn ui_file_bytes(path: &FsPath) -> Result<Vec<u8>, UiFileError> {
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => UiFileError::Missing,
+            _ => UiFileError::Internal(error.to_string()),
+        })?;
+    let metadata = file
+        .metadata()
+        .await
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(UiFileError::Invalid("it is not a regular file".into()));
+    }
+    if metadata.len() > PLUGIN_UI_MAX_BYTES {
+        return Err(UiFileError::TooLarge);
+    }
+    let mut file = file.take(PLUGIN_UI_MAX_BYTES + 1);
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.read_to_end(&mut bytes)
+        .await
+        .map_err(|error| UiFileError::Internal(error.to_string()))?;
+    if bytes.len() as u64 > PLUGIN_UI_MAX_BYTES {
+        return Err(UiFileError::TooLarge);
+    }
+    Ok(bytes)
+}
+
+fn ui_file_refusal(plugin: &LoadedPlugin, display: &str, error: UiFileError) -> ApiError {
+    match error {
+        UiFileError::Missing => ApiError::not_found(format!(
+            "plugin '{}' has no staged file '{display}'",
+            plugin.name()
+        )),
+        UiFileError::TooLarge => ApiError::payload_too_large(format!(
+            "plugin '{}' file '{display}' exceeds the 8 MiB plugin UI limit",
+            plugin.name()
+        )),
+        UiFileError::Invalid(reason) => ApiError::bad_request(format!(
+            "plugin '{}' file '{display}' is not a readable staged file: {reason}",
+            plugin.name()
+        )),
+        UiFileError::Internal(reason) => ApiError::internal(format!(
+            "plugin '{}' file '{display}' could not be read: {reason}",
+            plugin.name()
+        )),
+    }
+}
+
+async fn ui_staged_root(plugin: &LoadedPlugin) -> Result<PathBuf, ApiError> {
+    let Some(staged_root) = plugin.staged_root.as_deref() else {
+        return Err(ApiError::bad_request(format!(
+            "plugin '{}' has no staged runtime snapshot; review, trust and enable it to stage its files",
+            plugin.name()
+        )));
+    };
+    let root = tokio::fs::canonicalize(staged_root)
+        .await
+        .map_err(|error| {
+            ApiError::not_found(format!(
+                "plugin '{}' staged runtime snapshot is unavailable: {error}",
+                plugin.name()
+            ))
+        })?;
+    let metadata = tokio::fs::metadata(&root).await.map_err(|error| {
+        ApiError::not_found(format!(
+            "plugin '{}' staged runtime snapshot is unavailable: {error}",
+            plugin.name()
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(ApiError::not_found(format!(
+            "plugin '{}' staged runtime snapshot is not a directory",
+            plugin.name()
+        )));
+    }
+    Ok(root)
+}
+
+async fn gated_plugin_ui_root(
+    state: &RuntimeApiState,
+    selector: &str,
+) -> Result<(LoadedPlugin, PathBuf), ApiError> {
+    let plugin = find_plugin(state, selector)?;
+    if !plugin.trusted() {
+        return Err(ApiError::bad_request(format!(
+            "plugin '{}' is not trusted; review its capabilities and trust it before loading its client UI",
+            plugin.name()
+        )));
+    }
+    if !plugin.enabled {
+        return Err(ApiError::bad_request(format!(
+            "plugin '{}' is disabled; enable it after trust before loading its client UI",
+            plugin.name()
+        )));
+    }
+    let root = ui_staged_root(&plugin).await?;
+    Ok((plugin, root))
+}
+
+async fn plugin_ui_manifest(
+    plugin: &LoadedPlugin,
+    staged_root: &FsPath,
+) -> Result<Option<(PathBuf, PathBuf)>, ApiError> {
+    for candidate in ["package.json", "source/package.json"] {
+        let relative = FsPath::new(candidate);
+        let display = ui_relative_display(relative);
+        match ui_file_path(staged_root, relative).await {
+            Ok(path) => {
+                let root = path.parent().unwrap_or(staged_root).to_path_buf();
+                return Ok(Some((root, path)));
+            }
+            Err(UiFileError::Missing) => {}
+            Err(error) => return Err(ui_file_refusal(plugin, &display, error)),
+        }
+    }
+    Ok(None)
+}
+
+fn plugin_ui_base(
+    state: &RuntimeApiState,
+    selector: &str,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Result<String, ApiError> {
+    let raw = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| uri.authority().map(Authority::as_str))
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "plugin UI requires a loopback Host header so the sandboxed client can build an absolute asset base",
+            )
+        })?;
+    if raw.is_empty()
+        || raw.contains('@')
+        || raw.contains('/')
+        || raw.contains('?')
+        || raw.contains('#')
+        || raw.bytes().any(|byte| byte <= b' ' || byte == 0x7f)
+    {
+        return Err(ApiError::bad_request(
+            "plugin UI Host must be a loopback authority with no credentials, path, query or fragment",
+        ));
+    }
+    let authority: Authority = raw
+        .parse()
+        .map_err(|_| ApiError::bad_request("plugin UI Host is not a valid loopback authority"))?;
+    if !super::host_header_is_loopback(raw) {
+        return Err(ApiError::bad_request(format!(
+            "plugin UI Host '{raw}' is not a loopback host; expected 127.0.0.1, [::1] or localhost"
+        )));
+    }
+    let port_specified = if let Some(rest) = raw.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((_, "")) => false,
+            Some((_, after)) if after.starts_with(':') => true,
+            _ => {
+                return Err(ApiError::bad_request(
+                    "plugin UI Host must be a loopback authority with no credentials, path, query or fragment",
+                ));
+            }
+        }
+    } else {
+        raw.contains(':')
+    };
+    let host_port = authority.port_u16().filter(|port| *port != 0);
+    if port_specified && host_port.is_none() {
+        return Err(ApiError::bad_request(
+            "plugin UI Host must carry a numeric listener port",
+        ));
+    }
+    let host = authority.host();
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    let port = host_port
+        .or_else(|| (state.bind_port != 0).then_some(state.bind_port))
+        .ok_or_else(|| ApiError::bad_request("plugin UI Host is missing the listener port"))?;
+    Ok(format!(
+        "http://{host}:{port}/v1/apps/plugins/{}/ui/",
+        urlencoding::encode(selector)
+    ))
 }
 
 /// Execute an install/update/uninstall through the reviewed mutation
@@ -789,6 +1144,139 @@ pub(super) async fn get_plugin(
     Path(selector): Path<String>,
 ) -> Result<Json<PluginDetailResponse>, ApiError> {
     Ok(Json(plugin_detail(&find_plugin(&state, &selector)?)))
+}
+
+pub(super) async fn get_plugin_ui(
+    State(state): State<RuntimeApiState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(selector): Path<String>,
+    Query(query): Query<PluginUiQuery>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Json<PluginUiSlotResponse>, ApiError> {
+    if !peer.ip().is_loopback() {
+        return Err(ApiError::forbidden(
+            "plugin UI metadata is available only from loopback",
+        ));
+    }
+    let slot = query.slot.ok_or_else(|| {
+        ApiError::bad_request(
+            "the 'slot' query parameter is required; supported slot: 'customize.plugins.detail'",
+        )
+    })?;
+    if slot.as_str() != PLUGIN_UI_SLOT {
+        return Err(ApiError::bad_request(format!(
+            "slot '{slot}' is not supported; supported slot: 'customize.plugins.detail'"
+        )));
+    }
+    let (plugin, staged_root) = gated_plugin_ui_root(&state, &selector).await?;
+    let Some((ui_root, manifest_path)) = plugin_ui_manifest(&plugin, &staged_root).await? else {
+        return Err(ApiError::not_found(format!(
+            "plugin '{}' declares no dsh.client UI; package.json is absent from its staged bundle and source/ directory",
+            plugin.name()
+        )));
+    };
+    let manifest_display = manifest_path
+        .strip_prefix(&staged_root)
+        .map(ui_relative_display)
+        .unwrap_or_else(|_| "package.json".to_string());
+    let manifest_bytes = ui_file_bytes(&manifest_path)
+        .await
+        .map_err(|error| ui_file_refusal(&plugin, &manifest_display, error))?;
+    let manifest: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+        ApiError::bad_request(format!(
+            "plugin '{}' {manifest_display} is not valid JSON: {error}",
+            plugin.name()
+        ))
+    })?;
+    if manifest
+        .get("dsh")
+        .and_then(|dsh| dsh.get("client"))
+        .is_none_or(Value::is_null)
+    {
+        return Err(ApiError::not_found(format!(
+            "plugin '{}' declares no dsh.client UI in {manifest_display}; add dsh.client and exports[\"./client\"] to expose client assets",
+            plugin.name()
+        )));
+    }
+    let entry = match ui_client_entry(&manifest) {
+        Some(raw) => {
+            let relative = ui_relative_path(&raw).map_err(|reason| {
+                ApiError::bad_request(format!(
+                    "plugin '{}' dsh.client entry '{raw}' is invalid: {reason}",
+                    plugin.name()
+                ))
+            })?;
+            match ui_file_path(&ui_root, &relative).await {
+                Ok(_) => ui_relative_display(&relative),
+                Err(UiFileError::Missing) => {
+                    return Err(ApiError::not_found(format!(
+                        "plugin '{}' dsh.client entry '{raw}' does not exist in its staged bundle; update the plugin or fix exports[\"./client\"]",
+                        plugin.name()
+                    )));
+                }
+                Err(error) => {
+                    return Err(ui_file_refusal(
+                        &plugin,
+                        &ui_relative_display(&relative),
+                        error,
+                    ));
+                }
+            }
+        }
+        None => {
+            let fallback = PathBuf::from("client.js");
+            match ui_file_path(&ui_root, &fallback).await {
+                Ok(_) => ui_relative_display(&fallback),
+                Err(UiFileError::Missing) => {
+                    return Err(ApiError::not_found(format!(
+                        "plugin '{}' declares dsh.client but has no client entry; set exports[\"./client\"] or add client.js to the staged bundle",
+                        plugin.name()
+                    )));
+                }
+                Err(error) => {
+                    return Err(ui_file_refusal(
+                        &plugin,
+                        &ui_relative_display(&fallback),
+                        error,
+                    ));
+                }
+            }
+        }
+    };
+    let base = plugin_ui_base(&state, &selector, &headers, &uri)?;
+    Ok(Json(PluginUiSlotResponse { slot, base, entry }))
+}
+
+pub(super) async fn get_plugin_ui_asset(
+    State(state): State<RuntimeApiState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path((selector, path)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    if !peer.ip().is_loopback() {
+        return Err(ApiError::forbidden(
+            "plugin UI assets are available only from loopback",
+        ));
+    }
+    let (plugin, staged_root) = gated_plugin_ui_root(&state, &selector).await?;
+    let ui_root = plugin_ui_manifest(&plugin, &staged_root)
+        .await?
+        .map(|(root, _)| root)
+        .unwrap_or(staged_root);
+    let relative = ui_relative_path(&path).map_err(|reason| {
+        ApiError::bad_request(format!(
+            "plugin '{}' UI path '{path}' is invalid: {reason}",
+            plugin.name()
+        ))
+    })?;
+    let display = ui_relative_display(&relative);
+    let staged_path = ui_file_path(&ui_root, &relative)
+        .await
+        .map_err(|error| ui_file_refusal(&plugin, &display, error))?;
+    let bytes = ui_file_bytes(&staged_path)
+        .await
+        .map_err(|error| ui_file_refusal(&plugin, &display, error))?;
+    Ok(ui_asset_response(bytes, ui_content_type(&relative)))
 }
 
 /// `POST /v1/apps/plugins/install`

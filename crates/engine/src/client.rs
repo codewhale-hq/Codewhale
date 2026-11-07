@@ -4868,7 +4868,8 @@ impl CodewhaleClient {
         let callback_scope = pause_scope.clone();
         // Non-streaming calls retain their whole-retry envelope. Streaming
         // attempts own their header wait and never carry a total body timeout.
-        let retry_future = with_retry(
+        let rate_policy = &retry_cfg.rate_limit;
+        let retry_future = crate::llm_client::rate_limit::with_recovery_clock(with_retry(
             &retry_cfg,
             || {
                 let response = attempt();
@@ -4880,27 +4881,94 @@ impl CodewhaleClient {
                     // shortened deadline) must release requests that are
                     // already waiting instead of stranding them for the whole
                     // original window.
-                    while let Some(delay) =
-                        codewhale_runtime::retry_status::rate_limit_remaining(pause_scope)
-                    {
-                        tokio::time::sleep(delay.min(RATE_LIMIT_PAUSE_RECHECK_INTERVAL)).await;
+                    let admission_started = tokio::time::Instant::now();
+                    loop {
+                        while let Some(delay) =
+                            codewhale_runtime::retry_status::rate_limit_remaining(pause_scope)
+                        {
+                            let remaining =
+                                crate::llm_client::rate_limit::remaining_recovery_budget(
+                                    rate_policy,
+                                )
+                                .min(
+                                    Duration::from_secs(rate_policy.recovery_budget_secs)
+                                        .saturating_sub(admission_started.elapsed()),
+                                );
+                            if delay >= remaining {
+                                return Err(LlmError::QuotaWindow {
+                                    message:
+                                        "Shared provider minimum exceeds the HTTP recovery budget"
+                                            .into(),
+                                    retry_after: Some(delay),
+                                    transmission:
+                                        crate::llm_client::RequestTransmission::NotDispatched,
+                                });
+                            }
+                            crate::llm_client::rate_limit::wait(
+                                delay.min(RATE_LIMIT_PAUSE_RECHECK_INTERVAL),
+                            )
+                            .await;
+                        }
+                        self.wait_for_rate_limit().await;
+                        if codewhale_runtime::retry_status::rate_limit_remaining(pause_scope)
+                            .is_some()
+                        {
+                            continue;
+                        }
+                        if crate::llm_client::rate_limit::remaining_recovery_budget(rate_policy)
+                            .is_zero()
+                        {
+                            return Err(LlmError::QuotaWindow {
+                                message: "HTTP recovery budget exhausted in admission".into(),
+                                retry_after: None,
+                                transmission: crate::llm_client::RequestTransmission::NotDispatched,
+                            });
+                        }
+                        break;
                     }
-                    self.wait_for_rate_limit().await;
                     let response = response.await?;
+                    let response =
+                        crate::llm_client::rate_limit::inspect_json_envelope_with_disclosure(
+                            self.api_provider.as_str(),
+                            response,
+                            Some((
+                                stream_entry::first_byte_timeout(self.stream_idle_timeout),
+                                self.stream_idle_timeout,
+                            )),
+                            |status, raw| self.disclosed_http_error_body(disclosure, status, raw),
+                        )
+                        .await
+                        .inspect_err(crate::llm_client::settle_outbound_http_error)?;
                     let status = response.status();
                     if status.is_success() {
                         return Ok(response);
                     }
                     let header_retry_after = extract_retry_after(response.headers());
                     let raw = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
-                    let body_retry_after = retry_delay_from_error_body(&raw);
+                    let body_retry_after = retry_delay_from_error_body(&raw)
+                        .max(crate::llm_client::rate_limit::body_delay(&raw));
                     let body = self.disclosed_http_error_body(disclosure, status.as_u16(), &raw);
-                    let error = self.http_error_with_route_context(
+                    let provider_error = crate::llm_client::rate_limit::provider_error(
+                        self.api_provider.as_str(),
+                        status.as_u16(),
+                        &raw,
+                        &body,
+                        header_retry_after,
+                    );
+                    let route_error = self.http_error_with_route_context(
                         status.as_u16(),
                         &body,
                         header_retry_after,
                         body_retry_after,
                     );
+                    let error = match (provider_error, route_error) {
+                        (
+                            Some(LlmError::QuotaExhausted(_)),
+                            route @ LlmError::QuotaExhausted(_),
+                        ) => route,
+                        (Some(native), _) => native,
+                        (None, route) => route,
+                    };
                     crate::llm_client::settle_outbound_http_error(&error);
                     Err(error)
                 }
@@ -4913,19 +4981,24 @@ impl CodewhaleClient {
                     attempt + 1,
                     delay.as_secs_f64(),
                 ));
-                if matches!(err, LlmError::RateLimited { .. }) {
+                if matches!(
+                    err,
+                    LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }
+                ) {
                     codewhale_runtime::retry_status::note_rate_limit(&callback_scope, delay);
                 }
                 codewhale_runtime::retry_status::start(attempt + 1, delay, human_reason);
             })),
-        );
+        ));
         let request_result = if let Some(total) = attempt_total {
             // The loop envelope must dominate the per-attempt total it
             // wraps: a caller-pinned budget (list_models' 30s) may exceed
             // the shared envelope, and the envelope must never strangle
             // its own attempts.
             let loop_envelope = total.max(non_streaming_request_envelope());
-            match tokio::time::timeout(loop_envelope, retry_future).await {
+            match crate::llm_client::rate_limit::active_timeout_total(loop_envelope, retry_future)
+                .await
+            {
                 Ok(result) => result,
                 Err(_elapsed) => {
                     let last = LlmError::Timeout(loop_envelope);
@@ -4950,7 +5023,9 @@ impl CodewhaleClient {
                 Ok(response)
             }
             Err(err) => {
-                if let LlmError::RateLimited { retry_after, .. } = &err.last_error {
+                if let LlmError::RateLimited { retry_after, .. }
+                | LlmError::QuotaWindow { retry_after, .. } = &err.last_error
+                {
                     codewhale_runtime::retry_status::note_rate_limit(
                         &pause_scope,
                         retry_after
@@ -4964,7 +5039,12 @@ impl CodewhaleClient {
                     codewhale_runtime::retry_status::clear();
                 }
                 self.mark_request_failure(&last).await;
-                self.maybe_probe_recovery().await;
+                if !matches!(
+                    err.last_error,
+                    LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }
+                ) {
+                    self.maybe_probe_recovery().await;
+                }
                 // Keep the structured `LlmError` downcastable so failure
                 // surfaces can classify auth/rate-limit/invalid-request
                 // instead of reporting an opaque string (#3884).
@@ -5006,20 +5086,48 @@ impl CodewhaleClient {
                 async move {
                     self.wait_for_rate_limit().await;
                     let response = response.await?;
+                    let response =
+                        crate::llm_client::rate_limit::inspect_json_envelope_with_disclosure(
+                            self.api_provider.as_str(),
+                            response,
+                            Some((
+                                stream_entry::first_byte_timeout(self.stream_idle_timeout),
+                                self.stream_idle_timeout,
+                            )),
+                            |status, raw| self.disclosed_http_error_body(disclosure, status, raw),
+                        )
+                        .await
+                        .inspect_err(crate::llm_client::settle_outbound_http_error)?;
                     let status = response.status();
                     if status.is_success() {
                         return Ok(response);
                     }
                     let header_retry_after = extract_retry_after(response.headers());
                     let raw = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
-                    let body_retry_after = retry_delay_from_error_body(&raw);
+                    let body_retry_after = retry_delay_from_error_body(&raw)
+                        .max(crate::llm_client::rate_limit::body_delay(&raw));
                     let body = self.disclosed_http_error_body(disclosure, status.as_u16(), &raw);
-                    let error = self.http_error_with_route_context(
+                    let provider_error = crate::llm_client::rate_limit::provider_error(
+                        self.api_provider.as_str(),
+                        status.as_u16(),
+                        &raw,
+                        &body,
+                        header_retry_after,
+                    );
+                    let route_error = self.http_error_with_route_context(
                         status.as_u16(),
                         &body,
                         header_retry_after,
                         body_retry_after,
                     );
+                    let error = match (provider_error, route_error) {
+                        (
+                            Some(LlmError::QuotaExhausted(_)),
+                            route @ LlmError::QuotaExhausted(_),
+                        ) => route,
+                        (Some(native), _) => native,
+                        (None, route) => route,
+                    };
                     crate::llm_client::settle_outbound_http_error(&error);
                     Err(error)
                 }
@@ -5089,7 +5197,7 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
             .bump_error(codewhale_telemetry::ErrorCounter::NetworkError);
     }
     match err {
-        LlmError::RateLimited { retry_after, .. } => {
+        LlmError::RateLimited { retry_after, .. } | LlmError::QuotaWindow { retry_after, .. } => {
             let human = if let Some(after) = retry_after {
                 format!("rate limited (Retry-After {}s)", after.as_secs())
             } else {
@@ -7071,6 +7179,7 @@ pub use chat::is_reasoning_replay_placeholder;
 
 #[cfg(test)]
 mod tests {
+    include!("client/rate_limit_tests.rs");
     include!("client/test_cases_01.rs");
 
     include!("client/test_cases_02.rs");

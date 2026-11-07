@@ -1572,6 +1572,9 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         thread_idle_precondition: true,
         thread_patch_undo_turn_id: true,
         thread_scoped_reads: true,
+        thread_scoped_git_writes: true,
+        thread_scoped_snapshots: true,
+        worktrees: true,
         thread_shell_consent: true,
         turns: true,
         turn_operation_idempotency: true,
@@ -2983,6 +2986,11 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/git/commit", post(git::git_commit))
         .route("/v1/git/push", post(git::git_push))
         .route("/v1/git/branch", post(git::git_branch))
+        .route(
+            "/v1/worktrees",
+            get(git::worktrees_list).post(git::worktree_create),
+        )
+        .route("/v1/worktrees/remove", post(git::worktree_remove))
         .route("/v1/logs", get(diagnostics::list_logs))
         .route("/v1/logs/{name}", get(diagnostics::read_log))
         .route("/v1/crashes", get(diagnostics::list_crashes))
@@ -3425,6 +3433,14 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         // listener here. The response already redacts account detail for
         // unauthorized requests; it never mutates state.
         .route("/v1/runtime/info", get(runtime_info))
+        .route(
+            "/v1/apps/plugins/{selector}/ui",
+            get(plugins::get_plugin_ui),
+        )
+        .route(
+            "/v1/apps/plugins/{selector}/ui/{*path}",
+            get(plugins::get_plugin_ui_asset),
+        )
         // Authenticates per handler: the display WS also takes a single-use
         // ticket, and client-token minting is master-token only.
         .merge(computer_display::router(
@@ -11835,6 +11851,8 @@ async fn get_usage(
 struct SnapshotsQuery {
     /// Maximum number of snapshots to return. Mirrors `/restore list [N]`.
     limit: Option<usize>,
+    /// Read that thread's workspace snapshots instead of the server's.
+    thread_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -11848,30 +11866,30 @@ async fn list_snapshots(
     State(state): State<RuntimeApiState>,
     Query(query): Query<SnapshotsQuery>,
 ) -> Result<Json<Vec<SnapshotEntry>>, ApiError> {
-    Ok(Json(snapshot_entries_for_workspace(
-        &state.workspace,
-        query,
-    )?))
+    let workspace = workspace::scoped_workspace(&state, query.thread_id.as_deref()).await?;
+    Ok(Json(snapshot_entries_for_workspace(&workspace, query)?))
 }
 
 async fn restore_snapshot(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
+    Query(scope): Query<workspace::ThreadScopeQuery>,
 ) -> Result<Json<Value>, ApiError> {
     if !snapshot_id_is_well_formed(&id) {
         return Err(ApiError::bad_request(
             "snapshot id must be the exact hexadecimal id reported by GET /v1/snapshots",
         ));
     }
+    let workspace = workspace::scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     let reservation = state
         .runtime_threads
-        .workspace_restore_guard(&state.workspace)
+        .workspace_restore_guard(&workspace)
         .await
         .map_err(map_thread_err)?;
     let restored_id = id.clone();
     tokio::task::spawn_blocking(move || {
         let _reservation = reservation;
-        restore_snapshot_for_workspace(&state.workspace, &restored_id)
+        restore_snapshot_for_workspace(&workspace, &restored_id)
     })
     .await
     .map_err(|e| ApiError::internal(format!("Restore task failed: {e}")))??;

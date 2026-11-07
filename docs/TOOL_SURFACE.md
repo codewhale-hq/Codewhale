@@ -19,7 +19,7 @@ Implementation sources:
 
 ## Default-active contract
 
-New turns start with fifteen eager native names plus synthetic `tool_search`:
+New turns start with sixteen eager native names plus synthetic `tool_search`:
 
 1. `read`
 2. `write`
@@ -33,12 +33,13 @@ New turns start with fifteen eager native names plus synthetic `tool_search`:
 10. `get_goal`
 11. `update_goal`
 12. `task_shell_wait`
-13. `load_skill`
-14. `context_archive_get`
-15. `context_archive_search`
-16. `tool_search` (synthetic, always active)
+13. `present`
+14. `load_skill`
+15. `context_archive_get`
+16. `context_archive_search`
+17. `tool_search` (synthetic, always active)
 
-The fifteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+The sixteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
 `crates/engine/src/core/engine/tool_catalog.rs`, pinned by
 `default_active_contract_keeps_discovery_and_core_tools_eager`. An authority
 boundary may remove `agent` at the maximum child depth, and Plan registers only
@@ -61,6 +62,7 @@ The direct schemas deliberately stay small:
 | `get_goal` | none | Read the active goal and its progress. |
 | `update_goal` | terminal status | Mark the goal complete or blocked. |
 | `task_shell_wait` | `task_id`, optional `wait`, `timeout_ms`, `cancel`, `gate` | Poll or stop a background shell task. Completion still arrives as a runtime event, so use it for early output, true barriers, or gate evidence. |
+| `present` | `files`, optional `note` | Declare 1–32 existing workspace files as final deliverables with a read-only SHA-256 handoff receipt; nothing is copied or moved. |
 | `load_skill` | optional `name`, `query` | Load a named skill's `SKILL.md` body and companion-file list; omit `name` or use `name="list"` to list eligible skills, or use `query` to search names and descriptions. |
 | `tool_search` | `query`, optional matching controls | Discover policy-allowed deferred tools and add selected schemas to this conversation's toolbox. |
 

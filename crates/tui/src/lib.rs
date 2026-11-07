@@ -1,6 +1,10 @@
 //! Codewhale TUI library — single-binary entry point.
 
-#![allow(clippy::uninlined_format_args)]
+#![allow(
+    clippy::large_enum_variant,
+    clippy::too_many_arguments,
+    clippy::uninlined_format_args
+)]
 
 use codewhale_engine::runtime_options::RuntimeOptions;
 use codewhale_engine::{
@@ -9113,6 +9117,32 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
     .await
 }
 
+pub(crate) async fn active_route_client(
+    config: &Config,
+) -> Result<codewhale_engine::client::CodewhaleClient> {
+    use codewhale_config::ProviderKind;
+    use codewhale_config::provider::WirePolicy;
+
+    let identity = config
+        .active_provider_identity()
+        .map_err(anyhow::Error::msg)?;
+    let default_model = config.default_model();
+    let model_aware = identity.provider.provider().wire_policy() == WirePolicy::ModelAware;
+    let unresolved_local_model = identity.provider == ProviderKind::Ollama
+        && matches!(default_model.trim(), "" | "auto" | "unknown");
+    let selector = if model_aware || unresolved_local_model {
+        None
+    } else {
+        Some(default_model.as_str())
+    };
+    codewhale_engine::route_runtime::resolve_runtime_route_for_identity(config, &identity, selector)
+        .map_err(anyhow::Error::msg)?
+        .validate_async()
+        .await
+        .map(|route| route.client)
+        .map_err(anyhow::Error::msg)
+}
+
 async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
     use codewhale_config::ProviderKind;
     use codewhale_engine::client::{CodewhaleClient, SpeechSynthesisRequest};
@@ -10283,14 +10313,12 @@ async fn prepare_mounted_session(
             &identity,
             model.as_deref(),
         )
-        .and_then(|route| {
-            if move_to_launch_provider {
-                route.preflight()
-            } else {
-                Ok(route)
-            }
-        })
         .map_err(anyhow::Error::msg)?;
+        let route = if move_to_launch_provider {
+            route.preflight_async().await.map_err(anyhow::Error::msg)?
+        } else {
+            route
+        };
         if move_to_launch_provider {
             route_overrides = serde_json::json!({
                 "model_provider": identity.persisted_kind(),

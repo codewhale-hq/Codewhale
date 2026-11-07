@@ -14982,13 +14982,26 @@ function checkedBunSpecifier(specifier, closure, caller, require3) {
     return specifier;
   }
   if (nodeModule2.isBuiltin(specifier)) return specifier.startsWith("node:") ? specifier : `node:${specifier}`;
+  const callerPath = fileURLToPath2(caller);
   const file = specifier.startsWith("file:") || specifier.startsWith(".") || isAbsolute2(specifier) ? new URL(specifier, caller) : void 0;
-  const path = file ? require3 && !specifier.startsWith("file:") ? resolve3(dirname(fileURLToPath2(caller)), specifier) : resolve3(fileURLToPath2(file)) : void 0;
-  if (!path) throw new Error("bare dependency is absent from this reviewed composition; package its reviewed relative source");
   if (file?.search || file?.hash) throw new Error('Bun does not preserve reviewed module query or fragment identity; select [extension_host] runtime = "node" for this composition');
+  let path;
+  if (file) path = require3 && !specifier.startsWith("file:") ? resolve3(dirname(callerPath), specifier) : resolve3(fileURLToPath2(file));
+  else if (require3) path = nodeModule2.createRequire(caller).resolve(specifier);
+  else path = bunResolve(specifier, dirname(callerPath), caller);
   const inside = keyIn(closure, path);
-  if (inside === void 0 || !(inside in closure.files)) throw new Error("composition import escapes the reviewed file closure");
-  return require3 ? path : file.href;
+  if (inside === void 0 || !(inside in closure.files) || !unlinkedInside(closure, inside, path)) throw new Error("composition import escapes the reviewed file closure");
+  return require3 ? path : file ? file.href : pathToFileURL3(path).href;
+}
+function bunResolve(specifier, from2, caller) {
+  const bun = globalThis.Bun;
+  if (typeof bun?.resolveSync === "function") {
+    try {
+      return bun.resolveSync(specifier, from2);
+    } catch {
+    }
+  }
+  return nodeModule2.createRequire(caller).resolve(specifier);
 }
 function keyIn(closure, path) {
   const canonical = insideKey(closure.canonicalRoot, path);
@@ -15066,11 +15079,15 @@ function installResolveHooks(modules) {
         return { url: `${SCHEME}${key}`, format: "module", shortCircuit: true };
       }
       const caller = closureAt(context.parentURL);
-      if (caller && !nodeModule2.isBuiltin(specifier) && !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("file:")) throw new Error("bare dependency is absent from this reviewed composition; package its reviewed relative source");
+      const bare = !nodeModule2.isBuiltin(specifier) && !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("file:");
       const result = nextResolve(specifier, context);
-      if (caller && result.url.startsWith("file:")) {
-        const target = closureAt(result.url);
-        if (!target || target.root !== caller.root || !(target.path in caller.receipt.files)) throw new Error("composition import escapes the reviewed file closure");
+      if (caller) {
+        if (result.url.startsWith("file:")) {
+          const target = closureAt(result.url);
+          if (!target || target.root !== caller.root || !(target.path in caller.receipt.files) || !unlinkedInside(caller.receipt, target.path, fileURLToPath2(result.url))) throw new Error("composition import escapes the reviewed file closure");
+        } else if (bare) {
+          throw new Error("composition import escapes the reviewed file closure");
+        }
       }
       return result;
     },
@@ -18055,7 +18072,7 @@ init_define_BUILTIN_MODULE_DIGESTS();
 init_lib2();
 import { createHash as createHash6 } from "node:crypto";
 import { readFileSync as readFileSync3 } from "node:fs";
-import { createRequire as createRequire3 } from "node:module";
+import { createRequire as createRequire4 } from "node:module";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 
 // node_modules/@deepseek-ai/schemastery/lib/index.mjs
@@ -18921,7 +18938,7 @@ function killHostTree() {
   }
   return realExit(0);
 }
-var { Worker } = createRequire3(import.meta.url)("node:worker_threads");
+var { Worker } = createRequire4(import.meta.url)("node:worker_threads");
 var watchdog = new Worker(
   `const { workerData } = require('node:worker_threads')
   const parent = process.ppid
