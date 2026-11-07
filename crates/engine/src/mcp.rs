@@ -4547,6 +4547,31 @@ impl McpPool {
         Some(self.connect_backoff.contains_key(name))
     }
 
+    #[must_use]
+    pub fn last_connect_error(
+        &self,
+        name: &str,
+        timeouts: McpTimeouts,
+        server: &McpServerConfig,
+    ) -> Option<&str> {
+        if self.has_connection_backoff(name, timeouts, server) != Some(true) {
+            return None;
+        }
+        let current = self.config.servers.get(name)?;
+        if current.runtime_added != server.runtime_added
+            || (current.reviewed_plugin.is_some() && current.reviewed_plugin_source().is_none())
+            || (server.reviewed_plugin.is_some() && server.reviewed_plugin_source().is_none())
+            || server
+                .reviewed_plugin_source()
+                .is_some_and(|source| source.validate_before_use(name, "inspect").is_err())
+            || runtime_servers_hash(&self.dynamic_servers.read()) != self.runtime_config_hash
+        {
+            return None;
+        }
+        let error = self.connect_backoff.get(name)?.last_error.as_str();
+        (!error.is_empty()).then_some(error)
+    }
+
     /// The needs-auth server that owns a model tool name (`mcp_<server>_…`),
     /// if any: the server the model is trying to reach with a real tool name
     /// from a catalog built before its login lapsed. Longest configured name

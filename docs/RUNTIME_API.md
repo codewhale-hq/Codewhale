@@ -2139,7 +2139,12 @@ This persisted project decision is separate from a thread’s `trust_mode` / Ful
   `capabilities.skill_detail` on `GET /v1/runtime/info`, which is the source a
   client should use rather than probing this path: a `404` here means "no such
   skill" and is indistinguishable from "no such route".
-- `GET /v1/apps/mcp/servers`
+- `GET /v1/apps/mcp/servers` — each row reports `connected` and
+  `has_connection_backoff`; while a server is cooling down after a failed
+  connect it also carries `last_error`, that attempt's diagnosis (at most 2048
+  characters). `last_error` is omitted when the server is ready or connecting,
+  when its configuration changed since the failure, and when its reviewed
+  plugin authority no longer holds.
 - `GET /v1/apps/mcp/tools?server=<optional>`
 
 Skill activation toggles are persisted under a cross-process transaction lock.

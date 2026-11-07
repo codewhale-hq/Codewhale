@@ -1640,6 +1640,8 @@ struct McpServerEntry {
     url: Option<String>,
     connected: bool,
     has_connection_backoff: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error: Option<String>,
     enabled_tools: Vec<String>,
     disabled_tools: Vec<String>,
     always_allow_tools: Vec<String>,
@@ -7380,6 +7382,10 @@ async fn list_mcp_servers(
             has_connection_backoff: pool
                 .as_ref()
                 .and_then(|pool| pool.has_connection_backoff(&name, config.timeouts, &server_cfg)),
+            last_error: pool
+                .as_ref()
+                .and_then(|pool| pool.last_connect_error(&name, config.timeouts, &server_cfg))
+                .map(|error| truncate_text(error, 2048)),
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
             always_allow_tools: server_cfg.always_allow_tools.clone(),
@@ -7405,6 +7411,7 @@ async fn list_mcp_servers(
                 .as_ref()
                 .is_some_and(|pool| pool.connected_servers().contains(&name.as_str())),
             has_connection_backoff: None,
+            last_error: None,
             enabled_tools: server_cfg.enabled_tools.clone(),
             disabled_tools: server_cfg.disabled_tools.clone(),
             always_allow_tools: server_cfg.always_allow_tools.clone(),

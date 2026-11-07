@@ -70,6 +70,10 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **MCP servers say why they are not connected:** the Runtime API's
+  `GET /v1/apps/mcp/servers` now includes a configured server's last
+  connection error while it is retrying, so the desktop and other clients can
+  show the reason instead of only "disconnected".
 - **Inspect and repair plugin snapshots:** `codew plugins status [name]
   [--json]` reports bundle state and diagnostics without changing plugin
   stores. Runtime loading restores a missing snapshot only from bytes matching
@@ -285,6 +289,9 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Fleet members:** a replayed member start now matches only within its own
+  session, so two sessions that reuse an operation key no longer receive each
+  other's agent.
 - **Plugin stages created during a registry load are checked:** a plugin whose staged copy appears while the registry is loading now goes through the same restage lock, receipt and policy checks as any other stage instead of being left unstaged; invalid bytes are still refused and stay in the failure cache.
 - **Host-provided model clients:** keep configured session isolation and
   approval deadlines when optional credential preflight fails.

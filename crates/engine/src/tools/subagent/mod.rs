@@ -4196,7 +4196,7 @@ pub struct SubAgentManager {
     /// agent id, so the task's failure text blames the route that failed.
     /// Taken when the task settles.
     rerouted_requests: HashMap<String, ReroutedRequest>,
-    member_starts: HashMap<String, (String, String)>,
+    member_starts: HashMap<(String, String), (String, String)>,
 }
 
 /// One child request waiting on a person (approvals C2). The store is the
@@ -23669,7 +23669,11 @@ pub async fn start_fleet_member(
         "prompt": &start.prompt,
     }))
     .map_err(|error| error.to_string())?;
-    if let Some((accepted, agent_id)) = manager.read().await.member_starts.get(&start.operation_key)
+    let operation_identity = (
+        runtime.context.state_namespace.clone(),
+        start.operation_key.clone(),
+    );
+    if let Some((accepted, agent_id)) = manager.read().await.member_starts.get(&operation_identity)
     {
         return if *accepted == request {
             Ok(agent_id.clone())
@@ -23703,6 +23707,6 @@ pub async fn start_fleet_member(
         .write()
         .await
         .member_starts
-        .insert(start.operation_key, (request, result.agent_id.clone()));
+        .insert(operation_identity, (request, result.agent_id.clone()));
     Ok(result.agent_id)
 }
