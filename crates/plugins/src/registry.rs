@@ -292,19 +292,40 @@ impl PluginRegistry {
             if policy_forbids {
                 plugin.enabled = false;
             }
-            plugin.staged_root = state_path.as_deref().and_then(|state_path| {
-                let staged_root = runtime_stage_path(state_path, id, &plugin.content_hash);
-                staged_bundle_matches(&staged_root, &plugin.content_hash, &plugin.capability_hash)
-                    .then_some(staged_root)
-            });
+            let staged_path = state_path
+                .as_deref()
+                .map(|state_path| runtime_stage_path(state_path, id, &plugin.content_hash));
+            plugin.staged_root = staged_path
+                .as_ref()
+                .filter(|root| {
+                    staged_bundle_matches(root, &plugin.content_hash, &plugin.capability_hash)
+                })
+                .cloned();
             plugin
                 .diagnostics
                 .retain(|diagnostic| diagnostic.code != "runtime-snapshot-unavailable");
-            if plugin.enabled && plugin.trusted() && plugin.staged_root.is_none() {
+            if plugin.trusted() && plugin.staged_root.is_none() {
+                let message = match staged_path.as_deref().map(std::fs::symlink_metadata) {
+                    Some(Ok(metadata))
+                        if metadata.file_type().is_dir()
+                            && !metadata_is_link_or_reparse(&metadata) =>
+                    {
+                        "Plugin runtime snapshot is present but could not be verified; inspect it and review the plugin again."
+                    }
+                    Some(Ok(_)) => {
+                        "Plugin runtime snapshot entry is unsafe; inspect it and review the plugin again."
+                    }
+                    Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        "Plugin runtime snapshot path is unavailable or cannot be inspected; it may be missing or unsafe. Inspect the runtime snapshot path."
+                    }
+                    Some(Err(_)) | None => {
+                        "Plugin runtime snapshot cannot be inspected; check access to the runtime snapshot path."
+                    }
+                };
                 plugin.diagnostics.push(PluginDiagnostic::warning(
                     "runtime-snapshot-unavailable",
-                    "Plugin runtime snapshot is missing or invalid; inspect it and review the plugin again.",
-                    Some(plugin.canonical_root.clone()),
+                    message,
+                    staged_path,
                 ));
             }
             if let Some(staged_root) = plugin.staged_root.clone() {
