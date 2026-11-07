@@ -64,6 +64,60 @@ fn runtime_session_fallback_retains_non_unicode_explicit_home_boundary() {
 }
 
 #[test]
+fn server_task_config_opts_tasks_into_answerable_human_waits() {
+    // The HTTP server is the one host that can deliver a decision to its
+    // tasks (`POST /v1/approvals/{id}`, the user-input endpoints), so its
+    // config must opt in explicitly; everywhere else (`from_runtime`, the
+    // TUI's private runtime) the safe default is unanswerable.
+    let cfg = server_task_config(&Config::default(), PathBuf::from("."), 2);
+    assert!(
+        cfg.human_waits_answerable,
+        "server task config must arm answerable human waits"
+    );
+}
+
+#[tokio::test]
+async fn server_task_runtime_wires_answerable_human_waits_into_the_executor() -> anyhow::Result<()>
+{
+    // The opt-in must survive every hop of its wiring: the
+    // `server_task_config` builder and `start_with_runtime_manager`'s
+    // forward into `EngineTaskExecutor`. Reverting either of those hops
+    // to the unanswerable default keeps this assertion red, so it reads
+    // the flag where it lands — the executor field the manager actually
+    // runs tasks on, built through the same `server_task_config` entry
+    // `run_http_server` uses. The `run_http_server` call site itself is
+    // not pinned: that would require booting the server.
+    let _lock = lock_test_env();
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("workspace");
+    fs::create_dir_all(&workspace)?;
+    let config = Config::default().with_legacy_root(
+        Some("runtime-api-test-key".to_string()),
+        Some("http://127.0.0.1:1/v1".to_string()),
+    );
+    let runtime_threads = Arc::new(RuntimeThreadManager::open(
+        config.clone(),
+        workspace.clone(),
+        RuntimeThreadManagerConfig::from_task_data_dir(root.path().join("runtime")),
+    )?);
+    let task_manager = TaskManager::start_with_runtime_manager(
+        server_task_config(&config, workspace, 1),
+        config,
+        runtime_threads.clone(),
+    )
+    .await?;
+    let engine = task_manager
+        .engine_executor()
+        .expect("the server task runtime must use the built-in engine executor");
+    assert!(
+        engine.answerable_waits(),
+        "the server task runtime must forward the answerable opt-in into its executor"
+    );
+    task_manager.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[test]
 fn thread_route_credential_error_is_bad_request_not_not_found() {
     let credential = map_thread_err(anyhow::anyhow!("DeepSeek API key not found"));
     assert_eq!(credential.status, StatusCode::BAD_REQUEST);
@@ -1317,6 +1371,7 @@ async fn build_test_server(
             allow_shell: false,
             trust_mode: false,
             execution_limits: codewhale_engine::task_manager::TaskExecutionLimits::default(),
+            human_waits_answerable: false,
         },
         Arc::new(MockExecutor),
     )

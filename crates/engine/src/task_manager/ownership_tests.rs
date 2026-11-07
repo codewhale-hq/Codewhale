@@ -13,6 +13,7 @@ fn config(root: &Path, scope: &str) -> TaskManagerConfig {
         allow_shell: false,
         trust_mode: false,
         execution_limits: TaskExecutionLimits::default(),
+        human_waits_answerable: false,
     }
 }
 
