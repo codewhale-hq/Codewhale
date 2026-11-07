@@ -604,12 +604,8 @@ async fn non_streaming_envelope_bounds_a_stalled_provider() {
     );
 }
 
-/// Every attempt answers 429 with an hour-long Retry-After. Honoring the
-/// header must not hand the total budget to the server: the retry loop is
-/// capped by the envelope, so a gateway answering 429 + Retry-After: 3600
-/// forever fails the turn in bounded time instead of wedging it for hours.
 #[tokio::test]
-async fn retry_after_honoring_cannot_extend_the_non_streaming_envelope() {
+async fn retry_after_beyond_recovery_budget_returns_typed_refusal() {
     let _env_lock = crate::test_support::lock_test_env();
     let _envelope = NonStreamingEnvelopeGuard::millis(2000);
     let server = MockServer::start().await;
@@ -627,11 +623,14 @@ async fn retry_after_honoring_cannot_extend_the_non_streaming_envelope() {
     let err = client
         .create_message(k3_request_fixture("deepseek-v4-pro", Some("off"), false))
         .await
-        .expect_err("unbounded Retry-After honoring must still hit the envelope");
-    assert!(
-        err.to_string().to_lowercase().contains("timed out"),
-        "the envelope must cut off the Retry-After wait; got {err:#}"
+        .expect_err("a minimum beyond recovery budget must stop without sleeping");
+    let error = err.downcast_ref::<LlmError>().expect("typed refusal");
+    assert!(matches!(error, LlmError::QuotaWindow { .. }));
+    assert_eq!(
+        error.suggested_retry_delay(),
+        Some(Duration::from_secs(3600))
     );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
     assert!(
         started.elapsed() < Duration::from_secs(30),
         "a 3600s Retry-After must not run past the envelope; took {:?}",
