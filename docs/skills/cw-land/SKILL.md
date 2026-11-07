@@ -97,9 +97,8 @@ Stage 5 of the loop: [cw-orient](../cw-orient/SKILL.md) →
    `gh api users/<handle> --jq '"\(.id)+\(.login)@users.noreply.github.com"'`.
    A clean cherry-pick keeps the author by itself. This step is the single
    owner of credit mechanics; other skills link here.
-   The `Harvested from` line is what lets `auto-close-harvested.yml` close
-   their PR with credit. Canonical human identities live in
-   `.github/AUTHOR_MAP`.
+   Close their PR by hand with a thank-you naming the commit; nothing closes a
+   PR automatically. Canonical human identities live in `.github/AUTHOR_MAP`.
 
    Whether a bot or agent also appears in a trailer no longer matters — the CI
    check that policed trailer identities was removed because it rejected
@@ -128,11 +127,10 @@ Stage 5 of the loop: [cw-orient](../cw-orient/SKILL.md) →
      `${sha}`, not `$sha:refs`, because `:r` is a history modifier.
      `maintainerCanModify` does not guarantee that the push is accepted. When
      the fork refuses it, ask on the PR. Harvesting is the last resort.
-   - **Check the contribution gate before assuming a PR is stalled.** An
-     unlisted author's workflow runs sit at `action_required` and never start,
-     so the PR looks abandoned when nobody has actually looked at it. Approve
-     the runs, then fix the cause: add them to `.github/APPROVED_CONTRIBUTORS`
-     (`all:username`), or comment `/lgtm` (PR scope) or `/lgtmi` (issue scope).
+   - **Check for runs awaiting approval before assuming a PR is stalled.** A
+     first-time contributor's workflow runs can sit at `action_required` until
+     a maintainer approves them, so the PR looks abandoned when nobody has
+     actually looked at it. Approve the runs.
 
 5. **Merging under a gate.** `AGENTS.md` ("Merging under a gate") owns this:
    the artifact must literally say PASS, the review thread outranks the check

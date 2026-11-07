@@ -14,17 +14,13 @@ could not cover by ourselves.
 - Issues are intake, not a privilege boundary. Do not auto-close good-faith
   issues because the reporter is not allowlisted. Ask for missing reproduction
   detail and leave room for maintainer triage.
-- PR gates exist for code review, CI load, and trust-boundary safety. They are
-  not a quality judgment on the contributor. Keep dry-run mode unless a
-  maintainer deliberately enables enforcement, and use warm copy when the gate
-  comments.
-- Be generous with recurring contributors. When someone repeatedly brings
-  useful reports or patches, use `/lgtmi` for issue access or `/lgtm` for PR
-  access so the automation gets out of their way.
-- Preserve contributor credit. When harvesting work, inspect the PR and linked
-  issues, keep author/co-author attribution where possible, add
-  `Harvested from PR #N by @handle`, and credit the contributor in the
-  changelog or release notes.
+- Never close or block a PR because CI is slow, flaky or red for a reason the
+  PR did not cause; maintainers rerun or fix it. No automation closes, blocks
+  or labels a contributor as unapproved.
+- Preserve contributor credit. If contributor work lands as our commit, keep
+  them as author, add `Harvested from PR #N by @handle`, credit them in the
+  changelog or release notes, and close the PR by hand with a specific
+  thank-you.
 - Make credit machine-readable. If a harvested commit cannot preserve the
   contributor as the author, add a `Co-authored-by` trailer with the GitHub
   numeric noreply address from `.github/AUTHOR_MAP` or

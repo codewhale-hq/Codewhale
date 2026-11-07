@@ -22,11 +22,8 @@ name: Main landing gate
 # catch a red landing in minutes, not to re-run the release gate on every push.
 
 on:
-  push:
-    branches: [main]
-  # Also manually runnable: GitHub does not evaluate a workflow on the push that
-  # introduces it, so the first run of this file would otherwise wait for the
-  # next landing. A maintainer can also re-run the gate after an infra outage.
+  # Manual only: run it after a landing you want checked or after an infra
+  # outage. Before pushing, run scripts/preflight.sh --check locally.
   workflow_dispatch:
 
 permissions:

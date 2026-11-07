@@ -4,22 +4,17 @@
 
 <!-- What does this change, and why? A few sentences is enough. -->
 
-## Issue
+## Related issue (optional)
 
-<!-- CI needs one line here. Replace N with a number:
-  - Closes #N    this PR finishes the issue (Fixes / Resolves also work)
-  - Refs #N      related or partial work; the issue stays open
-  - No-Issue: <one-line reason>   for typos, chores, dependency bumps
-Only write a closing word when you mean it. GitHub closes the issue even in
-"this does not close ..." and CI rejects that wording.
-Put issue numbers here rather than in `feat:` commit messages: CI requires a
-`feat:` commit that mentions #N to also add #N to CHANGELOG.md. -->
+<!-- Closes #N if this finishes it, Refs #N if related. Skip it if there is none.
+Please do not write a closing word inside a negation ("this does not close #N"):
+GitHub closes the issue anyway. -->
 
 ## How I tested it
 
 <!-- Commands you ran and what they showed. Test what you changed, for example
-`scripts/dev-test.sh tui <filter>`; the PR checks run fmt, clippy, the Linux
-suite and a Windows build for you (CONTRIBUTING.md lists them).
+`scripts/dev-test.sh tui <filter>`. A few quick checks run on your PR; if one
+fails for a reason unrelated to your change, a maintainer will deal with it.
 For visible UI changes, add a screenshot or recording. -->
 
 ## Checklist
