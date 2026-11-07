@@ -57,12 +57,13 @@ Stage 5 of the loop: [cw-orient](../cw-orient/SKILL.md) →
    `[Unreleased]`. Open contributor PRs append at its end, and an entry of
    ours there conflicts with every one of them.
 
-   **Record it in the same commit.** A user-visible `feat` or `fix` commit
+   **Record it in the same commit.** A user-visible change, usually a `feat`
+   or `fix` but also user docs, help text, defaults or security behavior,
    carries its line at the top of the matching `[Unreleased]` section (Added,
    Changed or Fixed): what changed for the user, what is still unproved,
-   `(#N)`, and for reported or contributed work
-   `Thanks [@handle](https://github.com/handle)`. Tests, refactors and docs
-   need no line. Work by someone outside the maintainers also goes on the
+   `(#N)` for a public issue or PR (never an internal tracker id), and for
+   reported or contributed work `Thanks [@handle](https://github.com/handle)`.
+   Tests, CI, refactors and internal docs need no line. Work by someone outside the maintainers also goes on the
    three credit surfaces in that commit: the CHANGELOG `### Contributors`
    block, `docs/CONTRIBUTORS.md`, and `UNRELEASED_CONTRIBUTORS` in
    `web/lib/release-credits.ts`. A contributor PR merged as itself gets that
