@@ -23,7 +23,7 @@ use crate::registry::{
     validate_existing_plugin_state_parent,
 };
 
-const MARKETPLACE_SCHEMA_VERSION: u32 = 1;
+const MARKETPLACE_SCHEMA_VERSION: u32 = 2;
 const MARKETPLACE_STATE_FILE: &str = "marketplaces.json";
 
 /// One stored catalog: the parsed result plus where the document was read
@@ -131,8 +131,32 @@ impl MarketplaceStore {
                 self.path.display()
             ));
         }
-        let state: MarketplaceState = serde_json::from_str(&raw)
+        let mut state: MarketplaceState = serde_json::from_str(&raw)
             .map_err(|e| format!("failed to parse {}: {e}", self.path.display()))?;
+        if state.schema_version == 1 {
+            for entry in state.catalogs.values_mut().filter(|entry| {
+                matches!(
+                    entry.catalog.format,
+                    super::types::MarketplaceFormat::Claude
+                        | super::types::MarketplaceFormat::Codex
+                )
+            }) {
+                for candidate in &mut entry.catalog.candidates {
+                    if candidate.install_plan.is_supported()
+                        && matches!(
+                            candidate.source,
+                            super::types::MarketplaceSourceSpec::GitHub { .. }
+                        )
+                    {
+                        candidate.install_plan = super::types::MarketplaceInstallPlan::Unsupported {
+                            reason: "Re-import this catalog to recover its original Git source, subdirectory and revision.".to_string(),
+                            raw: candidate.name.clone(),
+                        };
+                    }
+                }
+            }
+            state.schema_version = MARKETPLACE_SCHEMA_VERSION;
+        }
         if state.schema_version != MARKETPLACE_SCHEMA_VERSION {
             return Err(format!(
                 "unsupported marketplace state schema {}; expected {MARKETPLACE_SCHEMA_VERSION} at {}",

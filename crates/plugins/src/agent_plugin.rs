@@ -126,6 +126,12 @@ pub fn slugify_plugin_name(name: &str) -> Result<String, String> {
     Ok(slug)
 }
 
+const LEGACY_METADATA_MANIFESTS: [&str; 3] = [
+    ".claude-plugin/plugin.json",
+    ".plugin/plugin.json",
+    ".github/plugin/plugin.json",
+];
+
 /// Locate the manifest of a bundle directory: `plugin.json` when present,
 /// otherwise a legacy `plugin.toml`. A bundle shipping both (dual-publish for
 /// older clients) is read through its `plugin.json`.
@@ -143,21 +149,20 @@ pub fn resolve_manifest_path(root: &Path) -> Option<PathBuf> {
     if toml.is_file() {
         return Some(toml);
     }
-    let claude = root.join(".claude-plugin").join(PLUGIN_JSON_NAME);
-    claude.is_file().then_some(claude)
+    LEGACY_METADATA_MANIFESTS
+        .iter()
+        .map(|suffix| root.join(suffix))
+        .find(|path| path.is_file())
 }
 
-/// The bundle root is outside Claude's manifest-only metadata directory.
 pub fn plugin_root_for_manifest(path: &Path) -> Option<&Path> {
-    let parent = path.parent()?;
-    if path.file_name()?.to_str()? == PLUGIN_JSON_NAME
-        && parent
-            .file_name()
-            .is_some_and(|name| name == ".claude-plugin")
+    if let Some(suffix) = LEGACY_METADATA_MANIFESTS
+        .iter()
+        .find(|suffix| path.ends_with(suffix))
     {
-        parent.parent()
+        path.ancestors().nth(Path::new(suffix).components().count())
     } else {
-        Some(parent)
+        path.parent()
     }
 }
 
@@ -173,7 +178,15 @@ pub fn parse_claude_plugin_json(
     let object = value
         .as_object_mut()
         .ok_or("Claude plugin.json must be an object")?;
-    for component in ["hooks/hooks.json", ".lsp.json"] {
+    for component in [
+        "hooks/hooks.json",
+        "hooks.json",
+        ".lsp.json",
+        "lsp.json",
+        ".github/lsp.json",
+        "lsp-config/servers.json",
+        ".github/mcp.json",
+    ] {
         if root.join(component).exists() {
             return Err(format!(
                 "Claude component {component} is not supported by this importer; no partial plugin will be installed"
@@ -238,9 +251,20 @@ pub fn parse_claude_plugin_json(
         if server.get("type").and_then(serde_json::Value::as_str) == Some("http") {
             server["type"] = serde_json::json!("streamable-http");
         }
-        if server.to_string().contains("${CLAUDE_PLUGIN_ROOT}") {
+        let definition = server.to_string();
+        if [
+            "${CLAUDE_PLUGIN_ROOT}",
+            "${COPILOT_PLUGIN_ROOT}",
+            "${PLUGIN_ROOT}",
+            "${COPILOT_PLUGIN_DATA}",
+            "${CLAUDE_PLUGIN_DATA}",
+            "${PLUGIN_DATA}",
+        ]
+        .iter()
+        .any(|token| definition.contains(token))
+        {
             return Err(format!(
-                "MCP server {name} uses unsupported CLAUDE_PLUGIN_ROOT expansion; use bundle-relative command paths"
+                "MCP server {name} uses unsupported plugin root or data expansion; use bundle-relative command paths"
             ));
         }
     }
