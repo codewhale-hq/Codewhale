@@ -116,7 +116,7 @@ fn reject_linked_workspace_state_path(path: &Path) -> Result<()> {
     else {
         return Ok(());
     };
-    if codewhale_paths::user_home().is_some_and(|home| home == root) {
+    if codewhale_util::files::workspace_is_user_home(root) {
         return Ok(());
     }
     codewhale_util::files::reject_linked_path(root, path)
@@ -3298,7 +3298,7 @@ struct McpToolRoute {
 /// Model-facing name suffix of the synthetic self-serve OAuth login tool
 /// (`mcp_<server>_authenticate`). Registered by [`McpPool::to_api_tools`] for
 /// servers whose last connect failed auth-required; executed by
-/// [`McpPool::call_tool`] through the same flow `/mcp login` uses.
+/// `McpPool::call_tool` through the same flow `/mcp login` uses.
 pub const AUTHENTICATE_TOOL_NAME: &str = "authenticate";
 
 /// Result of [`McpPool::begin_authenticate_tool`]: either the shared token
@@ -7363,7 +7363,7 @@ pub fn workspace_mcp_config_path(workspace: &Path) -> PathBuf {
 /// workspace's own file, and every installed plugin's contribution. Until
 /// this existed the panel offered `e` and `d` on all three and then wrote to
 /// the global file regardless, so toggling or removing a project server
-/// failed with "MCP server '<name>' not found" — the row looked mutable and
+/// failed with "MCP server `'<name>'` not found" — the row looked mutable and
 /// was not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpServerScope {

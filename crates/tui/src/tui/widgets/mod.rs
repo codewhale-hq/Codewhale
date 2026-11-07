@@ -1,4 +1,5 @@
 pub mod agent_card;
+pub mod attachment_preview;
 pub mod key_hint;
 pub mod pending_input_preview;
 mod renderable;

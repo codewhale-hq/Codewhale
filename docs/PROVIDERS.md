@@ -61,6 +61,7 @@ against the vendor's own docs before trusting any value here:
 | Standard Compute | `https://api.stdcmpt.com/v1` | `standardcompute` (router); `deepseek/deepseek-v4-pro`, `anthropic/claude-sonnet-5.5` | `STANDARDCOMPUTE_API_KEY` |
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`, `zai-org/GLM-5.3`, `openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`, `gpt-5.4-mini` (pool names); `anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
+| Tencent TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 
 AICraft's roster spans DeepSeek, Anthropic Claude, Google Gemini, Qwen, GLM,
 MiniMax and Doubao ids on its OpenAI-compatible endpoint. The authority is
@@ -101,6 +102,27 @@ pick the route per request; a `provider/model` id such as
 providers' rates with no markup. The authority is
 `GET https://api.opper.ai/v3/compat/models` with your key.
 Docs: <https://docs.opper.ai/build/gateway/drop-in-sdks>.
+
+Tencent TokenHub is available as `/provider tencent` (aliases `tokenhub`,
+`tencent-tokenhub`, and `hunyuan`) on the existing Chat Completions transport.
+Its stable HY4 model is `hy4`; OpenRouter uses the distinct `tencent/hy4` wire
+ID. Neither rewrites an explicitly selected `hy4-preview` into the stable model.
+Tencent documents text/image input, tool calling and reasoning, with a 1M
+context, 960K maximum input and 64K maximum output. Its authenticated
+`GET /v1/models` determines account availability. If that response omits limits,
+the compatible route retains conservative defaults; set
+`providers.tencent.model_context_windows.hy4` to `1000000` to use the documented
+window without changing the limits of other models on this gateway.
+Direct cost remains unknown without a scoped user price declaration: Tencent
+rates are not borrowed from OpenRouter. No paid endpoint call was used to
+qualify this descriptor.
+[Tencent HY4 guide](https://www.tencentcloud.com/document/product/1300/80695).
+
+OpenRouter's stable `tencent/hy4` row comes from its public catalog: 1,048,576
+context tokens, 65,536 maximum output, text/image input, tools, structured output,
+and reasoning efforts `none`, `low`, and `high`. `/model hy4` resolves to that
+exact ID only on OpenRouter; existing HY3 aliases retain their old selections.
+Its prices come from OpenRouter's own scoped catalog, not Tencent's direct API.
 
 OpenCode Zen and OpenCode Go are first-class provider routes, configured like
 any other provider below; they are not part of this table. In `/provider`,

@@ -281,6 +281,7 @@ impl CodewhaleClient {
                     .to_string();
                 validate_base_url_security(&base_url, false)?;
                 let mut client = Self::new(config)?;
+                let root_cert = capture_ssl_cert_file();
                 client.http_client = Self::http_client_builder_with_auth_mode(
                     &key,
                     &HashMap::new(),
@@ -291,6 +292,7 @@ impl CodewhaleClient {
                     client.force_http1,
                     config,
                     AuthHeaderSurface::Inference,
+                    root_cert.as_ref(),
                 )?
                 .build()?;
                 client.base_url = base_url;
@@ -513,7 +515,9 @@ pub fn router_failure_from_error(error: &anyhow::Error) -> AutoRouterFailure {
         return AutoRouterFailure::Transport;
     };
     match error {
-        LlmError::RateLimited { .. } => AutoRouterFailure::Http { status: 429 },
+        LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. } => {
+            AutoRouterFailure::Http { status: 429 }
+        }
         LlmError::ServerError { status, .. } | LlmError::InvalidRequest { status, .. } => {
             AutoRouterFailure::Http { status: *status }
         }

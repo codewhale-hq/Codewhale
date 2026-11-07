@@ -1766,7 +1766,7 @@ impl ExtensionHostManager {
     }
 
     /// Attach an engine whose workspace plugin snapshot is `plugins`. Nothing
-    /// is reconciled until [`HostAttachment::sync`] or a background sync.
+    /// is reconciled until `HostAttachment::sync` or a background sync.
     #[must_use]
     pub fn attach(self: &Arc<Self>, plugins: Arc<PluginRegistry>) -> HostAttachment {
         self.retry_launch_on_attach();

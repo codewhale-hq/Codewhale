@@ -9,13 +9,24 @@
 //! access stays behind `CommandSessionExportContext` (D1). Helpers, tests, and
 //! this handler therefore carry no TUI, client, configuration, or filesystem
 //! dependency, so the slice can move to `codewhale-commands` unchanged (D8/D10).
+//!
+//! A conversation renders to Markdown here, or to a self-contained HTML page
+//! or a structured JSON document in the sibling `export_html` and
+//! `export_json` modules, all from the same sanitized projection.
+//!
+//! Known limitations: HTML and JSON omit the workspace restore-point table,
+//! which is local state with no meaning outside this machine; HTML shows
+//! message text verbatim instead of rendering its Markdown; `--no-tools`
+//! cannot filter the visible-history fallback, which carries no structured
+//! tool blocks; turn handoffs and clipboard exports are Markdown only.
 
+use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use codewhale_command_contract::facets::{
     CommandSessionExportContext, ConversationExportProjection, ExportBlock, ExportMessage,
-    HistoryEntry, RestorePointProjection, RestoreSnapshot, TranscriptProjection,
+    ExportMetadata, HistoryEntry, RestorePointProjection, RestoreSnapshot, TranscriptProjection,
     TurnHandoffProjection,
 };
 use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, CommandHandler};
@@ -34,7 +45,7 @@ pub(in crate::commands) struct ExportCmd;
 pub(in crate::commands) const CONTRACT_INFO: ContractInfo = ContractInfo {
     name: "export",
     aliases: &["daochu"],
-    usage: "/export [clipboard|file [--force] <path>|turn [clipboard|file [--force] <path>]]",
+    usage: "/export [clipboard|file [path]|turn [clipboard|file [path]]] [--format md|html|json] [--no-tools] [--force]",
     description_key: "cmd_export_description",
 };
 
@@ -73,26 +84,43 @@ pub(in crate::commands) fn export_portable(
         Ok(request) => request,
         Err(err) => return CommandResult::error(err),
     };
-    let label = match request.scope {
-        ExportScope::Conversation => "Conversation",
-        ExportScope::Turn => "Turn handoff",
-    };
-    let markdown = match request.scope {
-        ExportScope::Conversation => render_conversation(export.conversation_projection()),
-        ExportScope::Turn => sanitize_turn_handoff(&export.turn_handoff_projection()),
+    let (label, stem, document) = match request.scope {
+        ExportScope::Conversation => {
+            let projection = export.conversation_projection();
+            let stem = export_file_stem(&projection.metadata);
+            let document = render_export(projection, request.format, request.include_tools);
+            ("Conversation", stem, document)
+        }
+        ExportScope::Turn => (
+            "Turn handoff",
+            format!(
+                "codewhale-turn-{}",
+                file_timestamp(chrono::Utc::now().timestamp())
+            ),
+            sanitize_turn_handoff(&export.turn_handoff_projection()),
+        ),
     };
 
     match request.destination {
-        ExportDestination::Clipboard => copy_to_clipboard(export, label, &markdown),
+        ExportDestination::Clipboard => copy_to_clipboard(export, label, &document),
         ExportDestination::File { path, force } => {
-            let path = match export.resolve_export_path(&path) {
+            let path = match path {
+                Some(path) => export.resolve_export_path(&path),
+                None => {
+                    export.default_export_path(&format!("{stem}.{}", request.format.extension()))
+                }
+            };
+            let path = match path {
                 Ok(path) => path,
                 Err(err) => return CommandResult::error(err),
             };
-            match export.write_export_file(&path, markdown.as_bytes(), force) {
+            match export.write_export_file(&path, document.as_bytes(), force) {
                 Ok(()) => CommandResult::message(format!(
-                    "{label} exported to {}{}",
+                    "{label} exported to {} ({}, {} lines{}){}",
                     path.display(),
+                    request.format.name(),
+                    document.lines().count(),
+                    redaction_note(count_redactions(&document)),
                     if force {
                         " (overwrite explicitly allowed)"
                     } else {
@@ -108,124 +136,384 @@ pub(in crate::commands) fn export_portable(
     }
 }
 
+fn render_export(
+    projection: ConversationExportProjection,
+    format: ExportFormat,
+    include_tools: bool,
+) -> String {
+    let projection = if include_tools {
+        projection
+    } else {
+        without_tool_blocks(projection)
+    };
+    match format {
+        ExportFormat::Markdown => render_conversation(projection),
+        ExportFormat::Html => super::export_html::render(projection),
+        ExportFormat::Json => super::export_json::render(projection),
+    }
+}
+
+fn is_tool_block(block: &ExportBlock) -> bool {
+    matches!(
+        block,
+        ExportBlock::ToolCall { .. }
+            | ExportBlock::ToolResult { .. }
+            | ExportBlock::ServerToolCall { .. }
+            | ExportBlock::ToolSearchResult { .. }
+            | ExportBlock::CodeExecutionResult { .. }
+    )
+}
+
+fn without_tool_blocks(
+    mut projection: ConversationExportProjection,
+) -> ConversationExportProjection {
+    if let TranscriptProjection::Authoritative(messages) = &mut projection.transcript {
+        messages.retain_mut(|message| {
+            let before = message.blocks.len();
+            message.blocks.retain(|block| !is_tool_block(block));
+            before == message.blocks.len()
+                || message
+                    .blocks
+                    .iter()
+                    .any(|block| !matches!(block, ExportBlock::InternalReasoning))
+        });
+        projection.metadata.message_count = messages.len();
+    }
+    projection
+}
+
+fn redaction_note(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => ", 1 redaction".to_string(),
+        count => format!(", {count} redactions"),
+    }
+}
+
+/// Count the redaction markers the shared sanitizer leaves behind: `[redacted…]`
+/// for secrets and keys, `***:***@` for URL credentials, and an encoded `***`
+/// for sensitive URL query values.
+pub(in crate::commands) fn count_redactions(document: &str) -> usize {
+    ["[redacted", "***:***@", "=%2A%2A%2A"]
+        .iter()
+        .map(|marker| document.matches(marker).count())
+        .sum()
+}
+
+const EXPORT_SLUG_MAX_LEN: usize = 40;
+
+fn export_file_stem(metadata: &ExportMetadata) -> String {
+    let slug = [
+        metadata.title.as_deref(),
+        Some(metadata.session_label.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|text| slugify(&sanitize_text(text)))
+    .find(|slug| !slug.is_empty())
+    .unwrap_or_else(|| "session".to_string());
+    format!(
+        "codewhale-{slug}-{}",
+        file_timestamp(metadata.exported_at_unix)
+    )
+}
+
+fn slugify(text: &str) -> String {
+    let mut slug = String::new();
+    for ch in text.chars() {
+        if slug.len() >= EXPORT_SLUG_MAX_LEN {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.truncate(slug.trim_end_matches('-').len());
+    slug
+}
+
+fn file_timestamp(timestamp: i64) -> String {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|time| time.format("%Y%m%d-%H%M%S").to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub(super) fn tool_names(transcript: &TranscriptProjection) -> HashMap<String, String> {
+    let mut names = HashMap::new();
+    if let TranscriptProjection::Authoritative(messages) = transcript {
+        for block in messages.iter().flat_map(|message| &message.blocks) {
+            if let ExportBlock::ToolCall { id, name, .. }
+            | ExportBlock::ServerToolCall { id, name, .. } = block
+            {
+                names.insert(id.clone(), name.clone());
+            }
+        }
+    }
+    names
+}
+
+pub(super) fn role_label(message: &ExportMessage) -> String {
+    let carries_only_tool_results = message.is_user_role
+        && !message.blocks.is_empty()
+        && message.blocks.iter().all(|block| {
+            matches!(
+                block,
+                ExportBlock::ToolResult { .. }
+                    | ExportBlock::ToolSearchResult { .. }
+                    | ExportBlock::CodeExecutionResult { .. }
+            )
+        });
+    if carries_only_tool_results {
+        "tool".to_string()
+    } else {
+        inline_text(&message.role)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportScope {
     Conversation,
     Turn,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExportFormat {
+    Markdown,
+    Html,
+    Json,
+}
+
+impl ExportFormat {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "md" | "markdown" => Some(Self::Markdown),
+            "html" => Some(Self::Html),
+            "json" => Some(Self::Json),
+            _ => None,
+        }
+    }
+
+    fn from_path(path: &str) -> Self {
+        match Path::new(path).extension().and_then(|ext| ext.to_str()) {
+            Some(ext) if ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm") => {
+                Self::Html
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("json") => Self::Json,
+            _ => Self::Markdown,
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Markdown => "md",
+            Self::Html => "html",
+            Self::Json => "json",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Markdown => "Markdown",
+            Self::Html => "HTML",
+            Self::Json => "JSON",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ExportDestination {
     Clipboard,
-    File { path: String, force: bool },
+    File { path: Option<String>, force: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExportRequest {
     scope: ExportScope,
     destination: ExportDestination,
+    format: ExportFormat,
+    include_tools: bool,
+}
+
+struct Token {
+    text: String,
+    quoted: bool,
+}
+
+impl Token {
+    fn is_word(&self, word: &str) -> bool {
+        !self.quoted && self.text.eq_ignore_ascii_case(word)
+    }
+}
+
+fn tokenize(raw: &str) -> Result<Vec<Token>, String> {
+    let mut tokens = Vec::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(&first) = chars.peek() {
+        if first.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        let mut text = String::new();
+        if first == '"' || first == '\'' {
+            chars.next();
+            let mut closed = false;
+            for ch in chars.by_ref() {
+                if ch == first {
+                    closed = true;
+                    break;
+                }
+                text.push(ch);
+            }
+            if !closed {
+                return Err(export_usage("unterminated quote"));
+            }
+            if chars.peek().is_some_and(|next| !next.is_whitespace()) {
+                return Err(export_usage("unexpected text after a closing quote"));
+            }
+            tokens.push(Token { text, quoted: true });
+        } else {
+            while let Some(&ch) = chars.peek() {
+                if ch.is_whitespace() {
+                    break;
+                }
+                text.push(ch);
+                chars.next();
+            }
+            tokens.push(Token {
+                text,
+                quoted: false,
+            });
+        }
+    }
+    Ok(tokens)
 }
 
 fn parse_request(arg: Option<&str>) -> Result<ExportRequest, String> {
-    let raw = arg.unwrap_or("").trim();
-    if raw.is_empty() || raw.eq_ignore_ascii_case("clipboard") {
-        return Ok(ExportRequest {
-            scope: ExportScope::Conversation,
-            destination: ExportDestination::Clipboard,
-        });
-    }
-
-    if raw.eq_ignore_ascii_case("turn") {
-        return Ok(ExportRequest {
-            scope: ExportScope::Turn,
-            destination: ExportDestination::Clipboard,
-        });
-    }
-
-    if let Some(rest) = strip_word(raw, "turn") {
-        let rest = rest.trim();
-        if rest.is_empty() || rest.eq_ignore_ascii_case("clipboard") {
-            return Ok(ExportRequest {
-                scope: ExportScope::Turn,
-                destination: ExportDestination::Clipboard,
-            });
+    let mut tokens = tokenize(arg.unwrap_or(""))?.into_iter();
+    let mut positionals: Vec<Token> = Vec::new();
+    let mut force = false;
+    let mut include_tools = true;
+    let mut format: Option<ExportFormat> = None;
+    while let Some(token) = tokens.next() {
+        if token.quoted || !token.text.starts_with("--") {
+            positionals.push(token);
+            continue;
         }
-        let destination = if let Some(file_args) = strip_word(rest, "file") {
-            parse_file_destination(file_args)?
-        } else if rest.eq_ignore_ascii_case("file") {
-            return Err(export_usage("missing file path"));
-        } else if strip_word(rest, "clipboard").is_some() {
-            return Err(export_usage("clipboard does not accept a path"));
-        } else {
-            // Backward compatibility: `/export turn <path>`.
-            ExportDestination::File {
-                path: rest.to_string(),
-                force: false,
+        let option = token.text.to_ascii_lowercase();
+        let value = match option.as_str() {
+            "--force" => {
+                force = true;
+                continue;
+            }
+            "--no-tools" => {
+                include_tools = false;
+                continue;
+            }
+            "--format" => match tokens.next() {
+                Some(next) if next.quoted || !next.text.starts_with("--") => next.text,
+                _ => return Err(export_usage("--format needs a value: md, html, or json")),
+            },
+            _ if option.starts_with("--format=") => token.text["--format=".len()..].to_string(),
+            _ => {
+                return Err(export_usage(&format!(
+                    "unknown option `{}`",
+                    inline_text(&token.text)
+                )));
             }
         };
-        return Ok(ExportRequest {
-            scope: ExportScope::Turn,
-            destination,
-        });
+        let parsed = ExportFormat::parse(&value).ok_or_else(|| {
+            export_usage(&format!(
+                "unknown format `{}`; use md, html, or json",
+                inline_text(&value)
+            ))
+        })?;
+        if format.replace(parsed).is_some() {
+            return Err(export_usage("--format was given more than once"));
+        }
     }
 
-    if let Some(file_args) = strip_word(raw, "file") {
-        return Ok(ExportRequest {
-            scope: ExportScope::Conversation,
-            destination: parse_file_destination(file_args)?,
-        });
-    }
-    if raw.eq_ignore_ascii_case("file") {
-        return Err(export_usage("missing file path"));
-    }
-    if strip_word(raw, "clipboard").is_some() {
-        return Err(export_usage("clipboard does not accept a path"));
-    }
-
-    // Backward compatibility: `/export <path>`.
-    Ok(ExportRequest {
-        scope: ExportScope::Conversation,
-        destination: ExportDestination::File {
-            path: raw.to_string(),
-            force: false,
-        },
-    })
-}
-
-fn parse_file_destination(raw: &str) -> Result<ExportDestination, String> {
-    let trimmed = raw.trim();
-    let (force, path) = if let Some(path) = strip_word(trimmed, "--force") {
-        (true, path.trim())
-    } else if trimmed.eq_ignore_ascii_case("--force") {
-        (true, "")
+    let scope = if positionals
+        .first()
+        .is_some_and(|token| token.is_word("turn"))
+    {
+        positionals.remove(0);
+        ExportScope::Turn
     } else {
-        (false, trimmed)
+        ExportScope::Conversation
     };
-    if path.is_empty() {
-        return Err(export_usage("missing file path"));
-    }
-    Ok(ExportDestination::File {
-        path: path.to_string(),
-        force,
-    })
-}
 
-fn strip_word<'a>(value: &'a str, word: &str) -> Option<&'a str> {
-    let prefix = value.get(..word.len())?;
-    if !prefix.eq_ignore_ascii_case(word) {
-        return None;
+    let wants_file = scope == ExportScope::Conversation
+        && format.is_some_and(|format| format != ExportFormat::Markdown);
+    let destination = if positionals.is_empty() {
+        if wants_file {
+            ExportDestination::File { path: None, force }
+        } else {
+            ExportDestination::Clipboard
+        }
+    } else if positionals[0].is_word("clipboard") {
+        if positionals.len() > 1 {
+            return Err(export_usage("clipboard does not accept a path"));
+        }
+        ExportDestination::Clipboard
+    } else {
+        let path_tokens = if positionals[0].is_word("file") {
+            &positionals[1..]
+        } else {
+            &positionals[..]
+        };
+        let path = (!path_tokens.is_empty()).then(|| {
+            path_tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+        ExportDestination::File { path, force }
+    };
+    if force && destination == ExportDestination::Clipboard {
+        return Err(export_usage("--force only applies to file exports"));
     }
-    let rest = value.get(word.len()..)?;
-    rest.chars()
-        .next()
-        .is_some_and(char::is_whitespace)
-        .then_some(rest)
+
+    let format = match scope {
+        ExportScope::Turn => {
+            if format.is_some_and(|format| format != ExportFormat::Markdown) {
+                return Err(export_usage("turn handoffs are Markdown only"));
+            }
+            if !include_tools {
+                return Err(export_usage(
+                    "--no-tools applies to conversation exports, not turn handoffs",
+                ));
+            }
+            ExportFormat::Markdown
+        }
+        ExportScope::Conversation => match (&destination, format) {
+            (ExportDestination::Clipboard, Some(format)) if format != ExportFormat::Markdown => {
+                return Err(export_usage(
+                    "HTML and JSON exports need a file destination",
+                ));
+            }
+            (
+                ExportDestination::File {
+                    path: Some(path), ..
+                },
+                None,
+            ) => ExportFormat::from_path(path),
+            (_, format) => format.unwrap_or(ExportFormat::Markdown),
+        },
+    };
+
+    Ok(ExportRequest {
+        scope,
+        destination,
+        format,
+        include_tools,
+    })
 }
 
 fn export_usage(reason: &str) -> String {
-    format!(
-        "{reason}. Usage: /export [clipboard|file [--force] <path>|turn [clipboard|file [--force] <path>]]"
-    )
+    format!("{reason}. Usage: {}", CONTRACT_INFO.usage)
 }
 
 fn copy_to_clipboard(
@@ -277,6 +565,7 @@ pub(in crate::commands) fn render_conversation(projection: ConversationExportPro
         transcript,
         restore_points,
     } = projection;
+    let names = tool_names(&transcript);
     let mut out = String::new();
     out.push_str("# Codewhale conversation export\n\n");
     let _ = writeln!(
@@ -284,6 +573,9 @@ pub(in crate::commands) fn render_conversation(projection: ConversationExportPro
         "- Exported: {}",
         format_export_time(metadata.exported_at_unix)
     );
+    if let Some(title) = metadata.title.as_deref() {
+        let _ = writeln!(out, "- Title: {}", inline_text(title));
+    }
     let _ = writeln!(out, "- Session: {}", inline_text(&metadata.session_label));
     let _ = writeln!(out, "- Provider: {}", inline_text(&metadata.provider));
     let _ = writeln!(out, "- Model: {}", inline_text(&metadata.model));
@@ -294,9 +586,7 @@ pub(in crate::commands) fn render_conversation(projection: ConversationExportPro
         inline_text(&metadata.workspace_name)
     );
     let _ = writeln!(out, "- Messages: {}", metadata.message_count);
-    out.push_str(
-        "\n> Hidden instructions, internal reasoning, and reasoning signatures are omitted. Secret-like values and credential-bearing URLs are redacted as a defense in depth; review the export before sharing it.\n\n",
-    );
+    let _ = write!(out, "\n> {OMISSION_NOTE}\n\n");
 
     render_restore_summary(&mut out, &restore_points);
 
@@ -309,7 +599,7 @@ pub(in crate::commands) fn render_conversation(projection: ConversationExportPro
                 // Correlation is derived before `message` is consumed by the
                 // renderer so the render path can take ownership of its payloads.
                 let correlation = correlation_markdown(&restore_points, &message);
-                render_message(&mut out, index + 1, message);
+                render_message(&mut out, index + 1, message, &names);
                 out.push_str(&correlation);
             }
         }
@@ -317,7 +607,9 @@ pub(in crate::commands) fn render_conversation(projection: ConversationExportPro
     out
 }
 
-fn format_export_time(timestamp: i64) -> String {
+pub(super) const OMISSION_NOTE: &str = "Hidden instructions, internal reasoning, and reasoning signatures are omitted. Secret-like values and credential-bearing URLs are redacted as a defense in depth; review the export before sharing it.";
+
+pub(super) fn format_export_time(timestamp: i64) -> String {
     chrono::DateTime::from_timestamp(timestamp, 0)
         .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         .unwrap_or_else(|| "unknown".to_string())
@@ -363,7 +655,7 @@ fn render_restore_summary(out: &mut String, projection: &RestorePointProjection)
                     "| {} | `{}` | {} | {} |",
                     index + 1,
                     short_restore_id(&snapshot.id),
-                    format_snapshot_time(snapshot.timestamp_unix),
+                    format_export_time(snapshot.timestamp_unix),
                     inline_text(&snapshot.label)
                 );
             }
@@ -441,14 +733,13 @@ fn short_restore_id(id: &str) -> String {
     id.chars().take(RESTORE_POINT_ID_LEN).collect()
 }
 
-fn format_snapshot_time(timestamp: i64) -> String {
-    chrono::DateTime::from_timestamp(timestamp, 0)
-        .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn render_message(out: &mut String, index: usize, message: ExportMessage) {
-    let role = inline_text(&message.role);
+fn render_message(
+    out: &mut String,
+    index: usize,
+    message: ExportMessage,
+    names: &HashMap<String, String>,
+) {
+    let role = role_label(&message);
     let _ = writeln!(out, "## {index}. {role}\n");
     if is_internal_role(&message.role) {
         out.push_str("[internal context omitted]\n\n");
@@ -458,19 +749,31 @@ fn render_message(out: &mut String, index: usize, message: ExportMessage) {
         out.push_str("[no content]\n\n");
         return;
     }
-    for (block_index, block) in message.blocks.into_iter().enumerate() {
-        render_content_block(out, block_index + 1, block);
+    let mut after_heading = false;
+    for block in message.blocks {
+        render_content_block(out, block, names, &mut after_heading);
     }
 }
 
-fn render_content_block(out: &mut String, index: usize, block: ExportBlock) {
+fn render_content_block(
+    out: &mut String,
+    block: ExportBlock,
+    names: &HashMap<String, String>,
+    after_heading: &mut bool,
+) {
+    let headed = !matches!(
+        block,
+        ExportBlock::Text { .. } | ExportBlock::InternalReasoning
+    );
     match block {
         ExportBlock::Text { text } => {
-            let _ = writeln!(out, "### Content {index}: Text\n");
+            if std::mem::take(after_heading) {
+                out.push_str("### Text\n\n");
+            }
             push_sanitized_text(out, &text);
         }
         ExportBlock::ImageReference { url } => {
-            let _ = writeln!(out, "### Content {index}: Image attachment\n");
+            out.push_str("### Image attachment\n\n");
             let _ = writeln!(
                 out,
                 "- Reference: {}\n",
@@ -478,11 +781,10 @@ fn render_content_block(out: &mut String, index: usize, block: ExportBlock) {
             );
         }
         ExportBlock::ImageOmitted => {
-            let _ = writeln!(out, "### Content {index}: Image attachment\n");
+            out.push_str("### Image attachment\n\n");
             out.push_str("- Reference omitted (inline or local image payload)\n\n");
         }
         ExportBlock::InternalReasoning => {
-            let _ = writeln!(out, "### Content {index}: Internal reasoning\n");
             out.push_str("[internal reasoning and signature omitted]\n\n");
         }
         ExportBlock::ToolCall {
@@ -491,16 +793,15 @@ fn render_content_block(out: &mut String, index: usize, block: ExportBlock) {
             caller,
             input,
         } => {
-            let _ = writeln!(out, "### Content {index}: Tool call\n");
+            let _ = writeln!(out, "### Tool call: {}\n", inline_text(&name));
             let _ = writeln!(out, "- ID: {}", inline_text(&id));
-            let _ = writeln!(out, "- Name: {}", inline_text(&name));
             if let Some(caller) = caller {
                 let _ = writeln!(out, "- Caller type: {}", inline_text(&caller.caller_type));
                 if let Some(tool_id) = caller.tool_id.as_deref() {
                     let _ = writeln!(out, "- Caller tool ID: {}", inline_text(tool_id));
                 }
             }
-            out.push_str("\nInput:\n\n");
+            out.push('\n');
             push_json(out, input);
         }
         ExportBlock::ToolResult {
@@ -509,28 +810,33 @@ fn render_content_block(out: &mut String, index: usize, block: ExportBlock) {
             is_error,
             structured,
         } => {
-            let _ = writeln!(out, "### Content {index}: Tool result\n");
+            match names.get(&tool_use_id) {
+                Some(name) => {
+                    let _ = writeln!(out, "### Tool result: {}\n", inline_text(name));
+                }
+                None => out.push_str("### Tool result\n\n"),
+            }
             let _ = writeln!(out, "- Tool call ID: {}", inline_text(&tool_use_id));
-            let _ = writeln!(out, "- Error: {is_error}\n");
-            out.push_str("Result:\n\n");
-            push_sanitized_text(out, &content);
+            if is_error {
+                out.push_str("- Error: true\n");
+            }
+            out.push('\n');
+            push_fenced_text(out, &sanitize_text(&content));
             if let Some(blocks) = structured {
                 out.push_str("Structured result blocks:\n\n");
                 push_json(out, blocks);
             }
         }
         ExportBlock::ServerToolCall { id, name, input } => {
-            let _ = writeln!(out, "### Content {index}: Server tool call\n");
-            let _ = writeln!(out, "- ID: {}", inline_text(&id));
-            let _ = writeln!(out, "- Name: {}\n", inline_text(&name));
-            out.push_str("Input:\n\n");
+            let _ = writeln!(out, "### Server tool call: {}\n", inline_text(&name));
+            let _ = writeln!(out, "- ID: {}\n", inline_text(&id));
             push_json(out, input);
         }
         ExportBlock::ToolSearchResult {
             tool_use_id,
             content,
         } => {
-            let _ = writeln!(out, "### Content {index}: Tool-search result\n");
+            out.push_str("### Tool-search result\n\n");
             let _ = writeln!(out, "- Tool call ID: {}\n", inline_text(&tool_use_id));
             push_json(out, content);
         }
@@ -538,10 +844,13 @@ fn render_content_block(out: &mut String, index: usize, block: ExportBlock) {
             tool_use_id,
             content,
         } => {
-            let _ = writeln!(out, "### Content {index}: Code-execution result\n");
+            out.push_str("### Code-execution result\n\n");
             let _ = writeln!(out, "- Tool call ID: {}\n", inline_text(&tool_use_id));
             push_json(out, content);
         }
+    }
+    if headed {
+        *after_heading = true;
     }
 }
 
@@ -576,12 +885,26 @@ fn push_pre_sanitized_text(out: &mut String, text: &str) {
     }
 }
 
-fn push_json(out: &mut String, mut value: Value) {
+fn push_fenced_text(out: &mut String, text: &str) {
+    let body = text.trim_end();
+    if body.trim().is_empty() {
+        out.push_str("[empty text]\n\n");
+        return;
+    }
+    let fence = markdown_fence(body);
+    let _ = writeln!(out, "{fence}text\n{body}\n{fence}\n");
+}
+
+pub(super) fn redacted_json_text(mut value: Value) -> String {
     // Redact in place: the caller hands over ownership, so there is no need to
     // clone the whole payload just to redact it (F3 follow-up).
     redact_json(&mut value, None);
-    let json = serde_json::to_string_pretty(&value)
-        .unwrap_or_else(|_| "\"[structured content unavailable]\"".to_string());
+    serde_json::to_string_pretty(&value)
+        .unwrap_or_else(|_| "\"[structured content unavailable]\"".to_string())
+}
+
+fn push_json(out: &mut String, value: Value) {
+    let json = redacted_json_text(value);
     let fence = markdown_fence(&json);
     let _ = writeln!(out, "{fence}json\n{json}\n{fence}\n");
 }
@@ -608,7 +931,6 @@ fn sanitize_turn_handoff(projection: &TurnHandoffProjection) -> String {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::path::Path;
 
     /// Minimal fake facet: every delegate is deterministic and records calls.
     struct FakeExport {
@@ -683,6 +1005,13 @@ mod tests {
             self.resolve.clone()
         }
 
+        fn default_export_path(&self, file_name: &str) -> Result<PathBuf, String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("default_export_path({file_name})"));
+            self.resolve.clone()
+        }
+
         fn write_export_file(
             &self,
             path: &Path,
@@ -702,6 +1031,7 @@ mod tests {
         ConversationExportProjection {
             metadata: codewhale_command_contract::facets::ExportMetadata {
                 session_label: "sess12345678".to_string(),
+                title: None,
                 provider: "deepseek".to_string(),
                 model: "deepseek-v4".to_string(),
                 mode: "agent".to_string(),
@@ -744,14 +1074,27 @@ mod tests {
         }
     }
 
+    fn request(scope: ExportScope, destination: ExportDestination) -> ExportRequest {
+        ExportRequest {
+            scope,
+            destination,
+            format: ExportFormat::Markdown,
+            include_tools: true,
+        }
+    }
+
+    fn file_destination(path: Option<&str>, force: bool) -> ExportDestination {
+        ExportDestination::File {
+            path: path.map(str::to_string),
+            force,
+        }
+    }
+
     #[test]
     fn parser_matrix_is_exact() {
         assert_eq!(
             parse_request(None).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Conversation,
-                destination: ExportDestination::Clipboard,
-            }
+            request(ExportScope::Conversation, ExportDestination::Clipboard)
         );
         assert_eq!(
             parse_request(Some("clipboard")).unwrap().scope,
@@ -763,61 +1106,44 @@ mod tests {
         );
         assert_eq!(
             parse_request(Some("file --force reports/chat export.md")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Conversation,
-                destination: ExportDestination::File {
-                    path: "reports/chat export.md".to_string(),
-                    force: true,
-                },
-            }
+            request(
+                ExportScope::Conversation,
+                file_destination(Some("reports/chat export.md"), true)
+            )
         );
         assert_eq!(
             parse_request(Some("legacy export.md")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Conversation,
-                destination: ExportDestination::File {
-                    path: "legacy export.md".to_string(),
-                    force: false,
-                },
-            }
+            request(
+                ExportScope::Conversation,
+                file_destination(Some("legacy export.md"), false)
+            )
         );
         assert_eq!(
             parse_request(Some("turn file --force handoff.md")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Turn,
-                destination: ExportDestination::File {
-                    path: "handoff.md".to_string(),
-                    force: true,
-                },
-            }
+            request(
+                ExportScope::Turn,
+                file_destination(Some("handoff.md"), true)
+            )
         );
         assert_eq!(
             parse_request(Some("turn legacy.md")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Turn,
-                destination: ExportDestination::File {
-                    path: "legacy.md".to_string(),
-                    force: false,
-                },
-            }
+            request(
+                ExportScope::Turn,
+                file_destination(Some("legacy.md"), false)
+            )
         );
         assert_eq!(
             parse_request(Some("turn clipboard")).unwrap().destination,
             ExportDestination::Clipboard
         );
+        assert_eq!(
+            parse_request(Some("file")).unwrap().destination,
+            file_destination(None, false)
+        );
 
-        for arg in [
-            "file",
-            "file --force",
-            "clipboard extra.md",
-            "turn clipboard extra.md",
-        ] {
+        for arg in ["clipboard extra.md", "turn clipboard extra.md"] {
             assert!(parse_request(Some(arg)).is_err(), "{arg}");
         }
-        assert_eq!(
-            parse_request(Some("file")).unwrap_err(),
-            export_usage("missing file path")
-        );
         assert_eq!(
             parse_request(Some("clipboard extra.md")).unwrap_err(),
             export_usage("clipboard does not accept a path")
@@ -886,7 +1212,7 @@ mod tests {
         );
         assert!(markdown.starts_with("# Codewhale conversation export\n\n"));
         assert!(markdown.contains("## 1. system\n\n[internal context omitted]\n\n"));
-        assert!(markdown.contains("## 2. user\n\n### Content 1: Text\n\nPlease inspect this\n\n"));
+        assert!(markdown.contains("## 2. user\n\nPlease inspect this\n\n"));
         assert!(!markdown.contains("hidden policy must never export"));
     }
 
@@ -916,7 +1242,7 @@ mod tests {
 ## Restore points\n\n\
 No workspace restore points are recorded for this workspace, so nothing in this export can be correlated to a restorable workspace state. Snapshots may be disabled, or no turn has taken one yet.\n\n\
 ## 1. system\n\n[internal context omitted]\n\n\
-## 2. user\n\n### Content 1: Text\n\nPlease inspect this\n\n";
+## 2. user\n\nPlease inspect this\n\n";
 
         assert_eq!(render_conversation(projection), expected);
     }
@@ -978,12 +1304,21 @@ No workspace restore points are recorded for this workspace, so nothing in this 
             ..FakeExport::default()
         };
 
+        let lines = render_conversation(fake.conversation.clone())
+            .lines()
+            .count();
+
         let result = export_portable(&fake, Some("file transcript.md"));
 
         assert!(!result.is_error, "{:?}", result.message);
         assert_eq!(
             result.message.as_deref(),
-            Some("Conversation exported to /workspace/transcript.md")
+            Some(
+                format!(
+                    "Conversation exported to /workspace/transcript.md (Markdown, {lines} lines)"
+                )
+                .as_str()
+            )
         );
         let read = fake.calls.borrow();
         assert_eq!(read.len(), 3, "{read:?}");
@@ -1050,11 +1385,20 @@ No workspace restore points are recorded for this workspace, so nothing in this 
             ..FakeExport::default()
         };
 
+        let lines = render_conversation(fake.conversation.clone())
+            .lines()
+            .count();
+
         let result = export_portable(&fake, Some("file --force out.md"));
 
         assert_eq!(
             result.message.as_deref(),
-            Some("Conversation exported to /workspace/out.md (overwrite explicitly allowed)")
+            Some(
+                format!(
+                    "Conversation exported to /workspace/out.md (Markdown, {lines} lines) (overwrite explicitly allowed)"
+                )
+                .as_str()
+            )
         );
         let read = fake.calls.borrow();
         assert!(read[2].ends_with(", true)"), "{:?}", read[2]);
@@ -1307,6 +1651,7 @@ No workspace restore points are recorded for this workspace, so nothing in this 
 
     #[test]
     fn empty_content_and_missing_blocks_use_baseline_markers() {
+        let names = HashMap::new();
         let mut out = String::new();
         render_message(
             &mut out,
@@ -1317,79 +1662,62 @@ No workspace restore points are recorded for this workspace, so nothing in this 
                 blocks: Vec::new(),
                 prompt_snippet: None,
             },
+            &names,
         );
         assert!(out.contains("## 1. assistant\n\n[no content]\n\n"), "{out}");
 
         let mut empty_text = String::new();
         render_content_block(
             &mut empty_text,
-            1,
             ExportBlock::Text {
                 text: "   ".to_string(),
             },
+            &names,
+            &mut false,
         );
         assert!(empty_text.ends_with("[empty text]\n\n"), "{empty_text}");
     }
 
     #[test]
-    fn parser_handles_whitespace_case_and_only_leading_force() {
-        // Surrounding whitespace is trimmed, keyword matching is ASCII
-        // case-insensitive, and only a leading `--force` is honored (the
-        // baseline `strip_word` semantics).
+    fn parser_handles_whitespace_case_and_flag_positions() {
         assert_eq!(
             parse_request(Some("  clipboard  ")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Conversation,
-                destination: ExportDestination::Clipboard,
-            }
+            request(ExportScope::Conversation, ExportDestination::Clipboard)
         );
         assert_eq!(
             parse_request(Some("  TURN  ")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Turn,
-                destination: ExportDestination::Clipboard,
-            }
+            request(ExportScope::Turn, ExportDestination::Clipboard)
         );
         assert_eq!(
             parse_request(Some("  File   Report One.md  ")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Conversation,
-                destination: ExportDestination::File {
-                    path: "Report One.md".to_string(),
-                    force: false,
-                },
-            }
+            request(
+                ExportScope::Conversation,
+                file_destination(Some("Report One.md"), false)
+            )
         );
         assert_eq!(
             parse_request(Some("turn FILE --Force handoff.md")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Turn,
-                destination: ExportDestination::File {
-                    path: "handoff.md".to_string(),
-                    force: true,
-                },
-            }
+            request(
+                ExportScope::Turn,
+                file_destination(Some("handoff.md"), true)
+            )
         );
-        // A trailing `--force` is not a force flag; it becomes part of the
-        // literal path exactly like the baseline parser.
         assert_eq!(
             parse_request(Some("file out.md --force")).unwrap(),
-            ExportRequest {
-                scope: ExportScope::Conversation,
-                destination: ExportDestination::File {
-                    path: "out.md --force".to_string(),
-                    force: false,
-                },
-            }
-        );
-        // The turn branch keeps the same usage errors as the conversation one.
-        assert_eq!(
-            parse_request(Some("turn file")).unwrap_err(),
-            export_usage("missing file path")
+            request(
+                ExportScope::Conversation,
+                file_destination(Some("out.md"), true)
+            )
         );
         assert_eq!(
-            parse_request(Some("turn file --force")).unwrap_err(),
-            export_usage("missing file path")
+            parse_request(Some("turn file")).unwrap().destination,
+            file_destination(None, false)
+        );
+        assert_eq!(
+            parse_request(Some("turn file --force"))
+                .unwrap()
+                .destination,
+            file_destination(None, true)
         );
         assert_eq!(
             parse_request(Some("turn clipboard extra.md")).unwrap_err(),
@@ -1402,6 +1730,7 @@ No workspace restore points are recorded for this workspace, so nothing in this 
         let projection = ConversationExportProjection {
             metadata: codewhale_command_contract::facets::ExportMetadata {
                 session_label: "unsaved".to_string(),
+                title: None,
                 provider: "unknown".to_string(),
                 model: "unknown".to_string(),
                 mode: "agent".to_string(),
@@ -1428,41 +1757,45 @@ No workspace restore points are recorded for this workspace, so nothing in this 
 
     #[test]
     fn every_content_block_variant_renders_exactly() {
+        let names = HashMap::from([("call-1".to_string(), "fetch_url".to_string())]);
+
         // Image reference: URL credentials and sensitive query values are masked.
         let mut image = String::new();
         render_content_block(
             &mut image,
-            1,
             ExportBlock::ImageReference {
                 url: "https://alice:pw@example.com/a.png?api_key=hidden&ok=1".to_string(),
             },
+            &names,
+            &mut false,
         );
         assert_eq!(
             image,
-            "### Content 1: Image attachment\n\n- Reference: https://***:***@example.com/a.png?api_key=***&ok=1\n\n"
+            "### Image attachment\n\n- Reference: https://***:***@example.com/a.png?api_key=***&ok=1\n\n"
         );
 
         // Inline/local image payloads became an omission marker at projection.
         let mut omitted = String::new();
-        render_content_block(&mut omitted, 2, ExportBlock::ImageOmitted);
+        render_content_block(&mut omitted, ExportBlock::ImageOmitted, &names, &mut false);
         assert_eq!(
             omitted,
-            "### Content 2: Image attachment\n\n- Reference omitted (inline or local image payload)\n\n"
+            "### Image attachment\n\n- Reference omitted (inline or local image payload)\n\n"
         );
 
         // Reasoning bodies and signatures are replaced by the baseline marker.
         let mut reasoning = String::new();
-        render_content_block(&mut reasoning, 3, ExportBlock::InternalReasoning);
-        assert_eq!(
-            reasoning,
-            "### Content 3: Internal reasoning\n\n[internal reasoning and signature omitted]\n\n"
+        render_content_block(
+            &mut reasoning,
+            ExportBlock::InternalReasoning,
+            &names,
+            &mut false,
         );
+        assert_eq!(reasoning, "[internal reasoning and signature omitted]\n\n");
 
         // Tool call with caller metadata and redacted JSON input.
         let mut tool_call = String::new();
         render_content_block(
             &mut tool_call,
-            4,
             ExportBlock::ToolCall {
                 id: "call-1".to_string(),
                 name: "fetch_url".to_string(),
@@ -1472,27 +1805,30 @@ No workspace restore points are recorded for this workspace, so nothing in this 
                 }),
                 input: serde_json::json!({"api_key": "literal-secret"}),
             },
+            &names,
+            &mut false,
         );
         assert_eq!(
             tool_call,
-            "### Content 4: Tool call\n\n- ID: call-1\n- Name: fetch_url\n- Caller type: code_execution_20250825\n- Caller tool ID: server-tool-1\n\nInput:\n\n```json\n{\n  \"api_key\": \"[redacted]\"\n}\n```\n\n"
+            "### Tool call: fetch_url\n\n- ID: call-1\n- Caller type: code_execution_20250825\n- Caller tool ID: server-tool-1\n\n```json\n{\n  \"api_key\": \"[redacted]\"\n}\n```\n\n"
         );
 
         // Tool call without caller metadata omits only the caller lines.
         let mut bare_tool_call = String::new();
         render_content_block(
             &mut bare_tool_call,
-            5,
             ExportBlock::ToolCall {
                 id: "call-2".to_string(),
                 name: "read_file".to_string(),
                 caller: None,
                 input: serde_json::json!({}),
             },
+            &names,
+            &mut false,
         );
         assert_eq!(
             bare_tool_call,
-            "### Content 5: Tool call\n\n- ID: call-2\n- Name: read_file\n\nInput:\n\n```json\n{}\n```\n\n"
+            "### Tool call: read_file\n\n- ID: call-2\n\n```json\n{}\n```\n\n"
         );
 
         // Tool result with structured blocks: both the sanitized result text
@@ -1500,17 +1836,18 @@ No workspace restore points are recorded for this workspace, so nothing in this 
         let mut structured_result = String::new();
         render_content_block(
             &mut structured_result,
-            6,
             ExportBlock::ToolResult {
                 tool_use_id: "call-1".to_string(),
                 content: "tool output line".to_string(),
                 is_error: false,
                 structured: Some(serde_json::json!([{"session_token": "session-secret"}])),
             },
+            &names,
+            &mut false,
         );
         assert_eq!(
             structured_result,
-            "### Content 6: Tool result\n\n- Tool call ID: call-1\n- Error: false\n\nResult:\n\ntool output line\n\nStructured result blocks:\n\n```json\n[\n  {\n    \"session_token\": \"[redacted]\"\n  }\n]\n```\n\n"
+            "### Tool result: fetch_url\n\n- Tool call ID: call-1\n\n```text\ntool output line\n```\n\nStructured result blocks:\n\n```json\n[\n  {\n    \"session_token\": \"[redacted]\"\n  }\n]\n```\n\n"
         );
 
         // Tool result without structured blocks ends after the result text, and
@@ -1518,60 +1855,64 @@ No workspace restore points are recorded for this workspace, so nothing in this 
         let mut plain_result = String::new();
         render_content_block(
             &mut plain_result,
-            7,
             ExportBlock::ToolResult {
                 tool_use_id: "call-2".to_string(),
                 content: String::new(),
                 is_error: true,
                 structured: None,
             },
+            &names,
+            &mut false,
         );
         assert_eq!(
             plain_result,
-            "### Content 7: Tool result\n\n- Tool call ID: call-2\n- Error: true\n\nResult:\n\n[empty text]\n\n"
+            "### Tool result\n\n- Tool call ID: call-2\n- Error: true\n\n[empty text]\n\n"
         );
 
         let mut server_call = String::new();
         render_content_block(
             &mut server_call,
-            8,
             ExportBlock::ServerToolCall {
                 id: "srv-1".to_string(),
                 name: "web_search".to_string(),
                 input: serde_json::json!({"query": "rust"}),
             },
+            &names,
+            &mut false,
         );
         assert_eq!(
             server_call,
-            "### Content 8: Server tool call\n\n- ID: srv-1\n- Name: web_search\n\nInput:\n\n```json\n{\n  \"query\": \"rust\"\n}\n```\n\n"
+            "### Server tool call: web_search\n\n- ID: srv-1\n\n```json\n{\n  \"query\": \"rust\"\n}\n```\n\n"
         );
 
         let mut search_result = String::new();
         render_content_block(
             &mut search_result,
-            9,
             ExportBlock::ToolSearchResult {
                 tool_use_id: "search-1".to_string(),
                 content: serde_json::json!({"results": []}),
             },
+            &names,
+            &mut false,
         );
         assert_eq!(
             search_result,
-            "### Content 9: Tool-search result\n\n- Tool call ID: search-1\n\n```json\n{\n  \"results\": []\n}\n```\n\n"
+            "### Tool-search result\n\n- Tool call ID: search-1\n\n```json\n{\n  \"results\": []\n}\n```\n\n"
         );
 
         let mut execution_result = String::new();
         render_content_block(
             &mut execution_result,
-            10,
             ExportBlock::CodeExecutionResult {
                 tool_use_id: "exec-1".to_string(),
                 content: serde_json::json!({"stdout": "ok"}),
             },
+            &names,
+            &mut false,
         );
         assert_eq!(
             execution_result,
-            "### Content 10: Code-execution result\n\n- Tool call ID: exec-1\n\n```json\n{\n  \"stdout\": \"ok\"\n}\n```\n\n"
+            "### Code-execution result\n\n- Tool call ID: exec-1\n\n```json\n{\n  \"stdout\": \"ok\"\n}\n```\n\n"
         );
     }
 }

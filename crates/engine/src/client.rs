@@ -678,7 +678,25 @@ pub fn active_model_bound_secret_values(config: &Config) -> Vec<String> {
     configured_model_bound_secret_values(config, &active_key)
 }
 
+fn capture_file_backed_model_bound_secret_values() -> Vec<String> {
+    let mut values = Vec::new();
+    push_file_backed_model_bound_secrets(&mut values);
+    values
+}
+
 pub fn configured_model_bound_secret_values(config: &Config, active_api_key: &str) -> Vec<String> {
+    configured_model_bound_secret_values_with(
+        config,
+        active_api_key,
+        capture_file_backed_model_bound_secret_values(),
+    )
+}
+
+fn configured_model_bound_secret_values_with(
+    config: &Config,
+    active_api_key: &str,
+    file_backed: Vec<String>,
+) -> Vec<String> {
     let mut values = Vec::new();
     push_model_bound_secret(&mut values, Some(active_api_key));
     for (_, credential) in config.session_provider_keys.read().values() {
@@ -763,7 +781,9 @@ pub fn configured_model_bound_secret_values(config: &Config, active_api_key: &st
         push_model_bound_secret(&mut values, Some(&value));
     }
 
-    push_file_backed_model_bound_secrets(&mut values);
+    for secret in file_backed {
+        push_model_bound_secret(&mut values, Some(&secret));
+    }
 
     // Replace longer values first in case one credential happens to contain
     // another as a prefix.
@@ -1338,44 +1358,88 @@ fn build_speech_synthesis_body(
 
 // === CodewhaleClient ===
 
+struct CapturedRootCert {
+    path: String,
+    bytes: std::io::Result<Vec<u8>>,
+}
+
+enum CapturedRouteCredentials {
+    Codex(codewhale_runtime::oauth::OwnedOAuthCredentials),
+    ApiKey {
+        api_key: String,
+        api_key_source: String,
+        xai_sign_in: Option<codewhale_runtime::config::XaiSignInLabel>,
+    },
+}
+
+pub(crate) struct CapturedClientPreflight {
+    identity: ProviderIdentity,
+    base_url: String,
+    credentials: CapturedRouteCredentials,
+    model_bound_secrets: Vec<String>,
+    root_cert: Option<CapturedRootCert>,
+}
+
+struct AdmittedClientRoute {
+    identity: ProviderIdentity,
+    plugin_provider: Option<Box<codewhale_runtime::config::ProviderConfig>>,
+    base_url: String,
+    openrouter_vendor: Option<String>,
+}
+
 /// Read `SSL_CERT_FILE` and add its contents as extra root
 /// certificates on the reqwest builder (#418). Tries the PEM-bundle
 /// parser first (covers single-cert files too), then falls back to
 /// DER. All failures log a warning and return the builder unchanged
 /// so a malformed env var degrades gracefully.
-fn add_extra_root_certs(
+fn capture_ssl_cert_file() -> Option<CapturedRootCert> {
+    let cert_path = std::env::var("SSL_CERT_FILE").ok()?;
+    if cert_path.is_empty() {
+        return None;
+    }
+    let bytes = std::fs::read(&cert_path);
+    Some(CapturedRootCert {
+        path: cert_path,
+        bytes,
+    })
+}
+
+fn add_captured_root_cert(
     mut builder: reqwest::ClientBuilder,
-    cert_path: &str,
+    cert: &CapturedRootCert,
 ) -> reqwest::ClientBuilder {
-    let bytes = match std::fs::read(cert_path) {
-        Ok(b) => b,
+    let bytes = match &cert.bytes {
+        Ok(bytes) => bytes,
         Err(err) => {
             logging::warn(format!(
-                "SSL_CERT_FILE={cert_path} could not be read: {err}"
+                "SSL_CERT_FILE={} could not be read: {err}",
+                cert.path
             ));
             return builder;
         }
     };
 
-    if let Ok(certs) = reqwest::Certificate::from_pem_bundle(&bytes) {
+    if let Ok(certs) = reqwest::Certificate::from_pem_bundle(bytes) {
         let added = certs.len();
-        for cert in certs {
-            builder = builder.add_root_certificate(cert);
+        for root in certs {
+            builder = builder.add_root_certificate(root);
         }
         logging::info(format!(
-            "SSL_CERT_FILE={cert_path} loaded ({added} cert(s))"
+            "SSL_CERT_FILE={} loaded ({added} cert(s))",
+            cert.path
         ));
         return builder;
     }
 
-    match reqwest::Certificate::from_der(&bytes) {
-        Ok(cert) => {
-            builder = builder.add_root_certificate(cert);
-            logging::info(format!("SSL_CERT_FILE={cert_path} loaded (1 DER cert)"));
+    match reqwest::Certificate::from_der(bytes) {
+        Ok(root) => {
+            builder = builder.add_root_certificate(root);
+            logging::info(format!("SSL_CERT_FILE={} loaded (1 DER cert)", cert.path));
         }
         Err(err) => {
             logging::warn(format!(
-                "SSL_CERT_FILE={cert_path} could not be parsed as PEM bundle or DER: {err}"
+                "SSL_CERT_FILE={} could not be parsed as PEM bundle or DER: {err}",
+                cert.path
             ));
         }
     }
@@ -1530,6 +1594,70 @@ impl CodewhaleClient {
     /// an auth-source *class*), so the API key and provider are still read from
     /// `config`.
     pub fn from_candidate(config: &Config, candidate: &ReadyRouteCandidate) -> Result<Self> {
+        let admitted = Self::admit_candidate_route(config, candidate)?;
+        let captured =
+            Self::capture_route_preflight_inputs(config, &admitted.identity, &admitted.base_url)?;
+        Self::from_admitted(
+            config,
+            admitted,
+            captured,
+            candidate.wire_model_id().as_str().to_string(),
+            candidate.protocol(),
+            crate::route_budget::known_route_limits(candidate.limits()),
+        )
+    }
+
+    pub(crate) fn from_candidate_captured(
+        config: &Config,
+        candidate: &ReadyRouteCandidate,
+        captured: CapturedClientPreflight,
+    ) -> Result<Self> {
+        let admitted = Self::admit_candidate_route(config, candidate)?;
+        Self::from_admitted(
+            config,
+            admitted,
+            captured,
+            candidate.wire_model_id().as_str().to_string(),
+            candidate.protocol(),
+            crate::route_budget::known_route_limits(candidate.limits()),
+        )
+    }
+
+    pub(crate) async fn capture_candidate_preflight(
+        config: Box<Config>,
+        candidate: &ReadyRouteCandidate,
+    ) -> Result<(Box<Config>, CapturedClientPreflight)> {
+        let admitted = Self::admit_candidate_route(&config, candidate)?;
+        codewhale_runtime::runtime_control::owner_work(move || {
+            let captured = Self::capture_route_preflight_inputs(
+                &config,
+                &admitted.identity,
+                &admitted.base_url,
+            )?;
+            Ok((config, captured))
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("route preflight worker failed: {error}"))
+    }
+
+    fn capture_route_preflight_inputs(
+        config: &Config,
+        identity: &ProviderIdentity,
+        base_url: &str,
+    ) -> Result<CapturedClientPreflight> {
+        Ok(CapturedClientPreflight {
+            identity: identity.clone(),
+            base_url: base_url.to_string(),
+            credentials: Self::capture_route_credentials(config, identity, base_url)?,
+            model_bound_secrets: capture_file_backed_model_bound_secret_values(),
+            root_cert: capture_ssl_cert_file(),
+        })
+    }
+
+    fn admit_candidate_route(
+        config: &Config,
+        candidate: &ReadyRouteCandidate,
+    ) -> Result<AdmittedClientRoute> {
         let identity = config
             .active_provider_identity()
             .map_err(anyhow::Error::msg)?;
@@ -1537,35 +1665,43 @@ impl CodewhaleClient {
             candidate.provider_kind() == identity.provider,
             "resolved candidate does not match admitted provider kind"
         );
-        Self::from_parts(
-            candidate.endpoint().base_url.clone(),
-            candidate.wire_model_id().as_str().to_string(),
-            candidate.protocol(),
-            crate::route_budget::known_route_limits(candidate.limits()),
-            config,
-        )
+        let admitted = Self::admit_client_route(config, candidate.endpoint().base_url.clone())?;
+        Self::validate_admitted_route(config, &admitted, candidate.wire_model_id().as_str())?;
+        Ok(admitted)
     }
 
-    /// Shared constructor body for [`Self::new`] and [`Self::from_candidate`].
-    ///
-    /// `base_url` and `default_model` are the only inputs that differ between
-    /// the two entry points; everything else (auth, provider, retry, headers,
-    /// timeouts) is derived from `config` so the two paths cannot drift.
-    fn from_parts(
-        base_url: String,
-        default_model: String,
-        wire_format: WireFormat,
-        route_limits: Option<RouteLimits>,
+    fn validate_admitted_route(
         config: &Config,
-    ) -> Result<Self> {
+        admitted: &AdmittedClientRoute,
+        default_model: &str,
+    ) -> Result<()> {
+        let api_provider = admitted.identity.provider;
+        let base_url = admitted.base_url.as_str();
+        if api_provider == ProviderKind::OpenaiCodex {
+            anyhow::ensure!(
+                !reqwest::Url::parse(base_url)
+                    .ok()
+                    .is_some_and(|url| url.host_str() == Some("chatgpt.com")),
+                "The legacy ChatGPT backend route is retired. Use https://api.openai.com/v1 and run codewhale auth chatgpt."
+            );
+        }
+        if api_provider == ProviderKind::OpencodeGo {
+            validate_route(api_provider, default_model).map_err(anyhow::Error::msg)?;
+        }
+        anyhow::ensure!(
+            api_provider != ProviderKind::OpenaiCodex
+                || crate::pricing::is_official_chatgpt_api(base_url)
+                || config.provider_uses_custom_endpoint(&admitted.identity),
+            "Refusing to send an official ChatGPT grant to a different endpoint"
+        );
+        Ok(())
+    }
+
+    fn admit_client_route(config: &Config, base_url: String) -> Result<AdmittedClientRoute> {
         let admitted_identity = config
             .active_provider_identity()
             .map_err(anyhow::Error::msg)?;
         let api_provider = admitted_identity.provider;
-        let context_window_override = config.context_window_for_provider_config(&admitted_identity);
-        let model_context_windows = config
-            .model_context_windows_for(&admitted_identity)
-            .cloned();
         anyhow::ensure!(
             api_provider != ProviderKind::Antigravity,
             codewhale_config::LEGACY_ANTIGRAVITY_TOMBSTONE_MESSAGE
@@ -1601,6 +1737,83 @@ impl CodewhaleClient {
             base_url
         };
         let openrouter_vendor = config.openrouter_vendor()?;
+        Ok(AdmittedClientRoute {
+            identity: admitted_identity,
+            plugin_provider,
+            base_url,
+            openrouter_vendor,
+        })
+    }
+
+    fn capture_route_credentials(
+        config: &Config,
+        identity: &ProviderIdentity,
+        base_url: &str,
+    ) -> Result<CapturedRouteCredentials> {
+        if identity.provider == ProviderKind::OpenaiCodex
+            && crate::pricing::is_official_chatgpt_api(base_url)
+        {
+            return Ok(CapturedRouteCredentials::Codex(config.codex_credentials()?));
+        }
+        let ((api_key, api_key_source), xai_sign_in) =
+            config.active_route_api_key_with_xai_sign_in()?;
+        Ok(CapturedRouteCredentials::ApiKey {
+            api_key,
+            api_key_source,
+            xai_sign_in,
+        })
+    }
+
+    fn from_parts(
+        base_url: String,
+        default_model: String,
+        wire_format: WireFormat,
+        route_limits: Option<RouteLimits>,
+        config: &Config,
+    ) -> Result<Self> {
+        let admitted = Self::admit_client_route(config, base_url)?;
+        Self::validate_admitted_route(config, &admitted, &default_model)?;
+        let captured =
+            Self::capture_route_preflight_inputs(config, &admitted.identity, &admitted.base_url)?;
+        Self::from_admitted(
+            config,
+            admitted,
+            captured,
+            default_model,
+            wire_format,
+            route_limits,
+        )
+    }
+
+    /// Shared constructor body for every admitted route.
+    ///
+    /// `base_url` and `default_model` are the only inputs that differ between
+    /// the entry points; everything else (auth, provider, retry, headers,
+    /// timeouts) is derived from `config` so the paths cannot drift.
+    fn from_admitted(
+        config: &Config,
+        admitted: AdmittedClientRoute,
+        captured: CapturedClientPreflight,
+        default_model: String,
+        wire_format: WireFormat,
+        route_limits: Option<RouteLimits>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            admitted.identity == captured.identity && admitted.base_url == captured.base_url,
+            "captured route preflight inputs do not match the admitted route"
+        );
+        let credentials = captured.credentials;
+        let model_bound_secrets = captured.model_bound_secrets;
+        let root_cert = captured.root_cert;
+        let admitted_identity = admitted.identity;
+        let api_provider = admitted_identity.provider;
+        let context_window_override = config.context_window_for_provider_config(&admitted_identity);
+        let model_context_windows = config
+            .model_context_windows_for(&admitted_identity)
+            .cloned();
+        let plugin_provider = admitted.plugin_provider;
+        let base_url = admitted.base_url;
+        let openrouter_vendor = admitted.openrouter_vendor;
         let billing_surface = crate::route_billing::billing_surface_for_dispatch(
             Some(config),
             &admitted_identity,
@@ -1610,23 +1823,6 @@ impl CodewhaleClient {
         let billing_mode =
             crate::route_billing::for_route_with_endpoint(config, &admitted_identity, &base_url)
                 .into();
-        if api_provider == ProviderKind::OpenaiCodex {
-            anyhow::ensure!(
-                !reqwest::Url::parse(&base_url)
-                    .ok()
-                    .is_some_and(|url| url.host_str() == Some("chatgpt.com")),
-                "The legacy ChatGPT backend route is retired. Use https://api.openai.com/v1 and run codewhale auth chatgpt."
-            );
-        }
-        if api_provider == ProviderKind::OpencodeGo {
-            validate_route(api_provider, &default_model).map_err(anyhow::Error::msg)?;
-        }
-        anyhow::ensure!(
-            api_provider != ProviderKind::OpenaiCodex
-                || crate::pricing::is_official_chatgpt_api(&base_url)
-                || config.provider_uses_custom_endpoint(&admitted_identity),
-            "Refusing to send an official ChatGPT grant to a different endpoint"
-        );
         // Guidance and opaque-reasoning scope come from the exact owned
         // credential snapshot this client sends, never a second store read.
         let (
@@ -1634,43 +1830,44 @@ impl CodewhaleClient {
             codex_account_id,
             subscription_limit_guidance,
             chatgpt_reasoning_api,
-        ) = if api_provider == ProviderKind::OpenaiCodex
-            && crate::pricing::is_official_chatgpt_api(&base_url)
-        {
-            let credentials = config.codex_credentials()?;
-            let guidance = codewhale_runtime::oauth::usage_limit_guidance(
-                codewhale_runtime::oauth::OAuthProvider::Chatgpt,
-                credentials.account_label.as_deref(),
-            );
-            let identity = serde_json::to_vec(&(
-                credentials.issuer.as_str(),
-                credentials.client_id.as_str(),
-                credentials
-                    .account_id
-                    .as_deref()
-                    .context("Verified ChatGPT subject is missing")?,
-            ))?;
-            let reasoning_api = format!(
-                "openai-responses-siwc-v1:{}",
-                codewhale_runtime::hashing::sha256_hex(&identity),
-            );
-            (
-                (credentials.access_token, "ChatGPT sign-in".to_string()),
-                credentials.account_id,
-                Some(guidance),
-                Some(reasoning_api),
-            )
-        } else {
-            // Only the resolver's xAI OAuth step carries a sign-in; an
-            // OAuth mode that fell through to an API key names no account.
-            let (resolved, xai_sign_in) = config.active_route_api_key_with_xai_sign_in()?;
-            let guidance = xai_sign_in.map(|label| {
-                codewhale_runtime::oauth::usage_limit_guidance(
-                    codewhale_runtime::oauth::OAuthProvider::Xai,
-                    label.as_deref(),
+        ) = match credentials {
+            CapturedRouteCredentials::Codex(credentials) => {
+                let guidance = codewhale_runtime::oauth::usage_limit_guidance(
+                    codewhale_runtime::oauth::OAuthProvider::Chatgpt,
+                    credentials.account_label.as_deref(),
+                );
+                let identity = serde_json::to_vec(&(
+                    credentials.issuer.as_str(),
+                    credentials.client_id.as_str(),
+                    credentials
+                        .account_id
+                        .as_deref()
+                        .context("Verified ChatGPT subject is missing")?,
+                ))?;
+                let reasoning_api = format!(
+                    "openai-responses-siwc-v1:{}",
+                    codewhale_runtime::hashing::sha256_hex(&identity),
+                );
+                (
+                    (credentials.access_token, "ChatGPT sign-in".to_string()),
+                    credentials.account_id,
+                    Some(guidance),
+                    Some(reasoning_api),
                 )
-            });
-            (resolved, None, guidance, None)
+            }
+            CapturedRouteCredentials::ApiKey {
+                api_key,
+                api_key_source,
+                xai_sign_in,
+            } => {
+                let guidance = xai_sign_in.map(|label| {
+                    codewhale_runtime::oauth::usage_limit_guidance(
+                        codewhale_runtime::oauth::OAuthProvider::Xai,
+                        label.as_deref(),
+                    )
+                });
+                ((api_key, api_key_source), None, guidance, None)
+            }
         };
         let subscription_limit_guidance = if api_key_source == "Claude sign-in" {
             Some(codewhale_runtime::oauth::usage_limit_guidance(
@@ -1680,8 +1877,11 @@ impl CodewhaleClient {
         } else {
             subscription_limit_guidance
         };
-        let model_bound_secret_values =
-            Arc::new(configured_model_bound_secret_values(config, &api_key));
+        let model_bound_secret_values = Arc::new(configured_model_bound_secret_values_with(
+            config,
+            &api_key,
+            model_bound_secrets,
+        ));
         // The opt-out is effective only after an explicit startup confirmation;
         // every unconfirmed or absent request stays on the safe default.
         let model_bound_masking = !codewhale_config::redaction::effective_masking(
@@ -1784,6 +1984,7 @@ impl CodewhaleClient {
             force_http1,
             config,
             AuthHeaderSurface::Inference,
+            root_cert.as_ref(),
         )?;
         let http_client = http_client
             .redirect(reqwest::redirect::Policy::none())
@@ -1798,6 +1999,7 @@ impl CodewhaleClient {
             force_http1,
             config,
             AuthHeaderSurface::Listing,
+            root_cert.as_ref(),
         )?
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -1813,6 +2015,7 @@ impl CodewhaleClient {
             true,
             config,
             AuthHeaderSurface::Inference,
+            root_cert.as_ref(),
         )?;
         let http1_client = http1_client
             .redirect(reqwest::redirect::Policy::none())
@@ -2344,6 +2547,7 @@ impl CodewhaleClient {
             false,
             &Config::default(),
             AuthHeaderSurface::Inference,
+            None,
         )?
         .build()
         .map_err(Into::into)
@@ -2359,6 +2563,7 @@ impl CodewhaleClient {
         force_http1: bool,
         config: &Config,
         surface: AuthHeaderSurface,
+        root_cert: Option<&CapturedRootCert>,
     ) -> Result<reqwest::ClientBuilder> {
         let filtered_headers;
         let extra_headers = if config.session_provider_keys_only {
@@ -2395,10 +2600,8 @@ impl CodewhaleClient {
         if force_http1 {
             builder = builder.http1_only();
         }
-        if let Ok(cert_path) = std::env::var("SSL_CERT_FILE")
-            && !cert_path.is_empty()
-        {
-            builder = add_extra_root_certs(builder, &cert_path);
+        if let Some(cert) = root_cert {
+            builder = add_captured_root_cert(builder, cert);
         }
         Ok(builder)
     }
@@ -4665,7 +4868,8 @@ impl CodewhaleClient {
         let callback_scope = pause_scope.clone();
         // Non-streaming calls retain their whole-retry envelope. Streaming
         // attempts own their header wait and never carry a total body timeout.
-        let retry_future = with_retry(
+        let rate_policy = &retry_cfg.rate_limit;
+        let retry_future = crate::llm_client::rate_limit::with_recovery_clock(with_retry(
             &retry_cfg,
             || {
                 let response = attempt();
@@ -4677,27 +4881,94 @@ impl CodewhaleClient {
                     // shortened deadline) must release requests that are
                     // already waiting instead of stranding them for the whole
                     // original window.
-                    while let Some(delay) =
-                        codewhale_runtime::retry_status::rate_limit_remaining(pause_scope)
-                    {
-                        tokio::time::sleep(delay.min(RATE_LIMIT_PAUSE_RECHECK_INTERVAL)).await;
+                    let admission_started = tokio::time::Instant::now();
+                    loop {
+                        while let Some(delay) =
+                            codewhale_runtime::retry_status::rate_limit_remaining(pause_scope)
+                        {
+                            let remaining =
+                                crate::llm_client::rate_limit::remaining_recovery_budget(
+                                    rate_policy,
+                                )
+                                .min(
+                                    Duration::from_secs(rate_policy.recovery_budget_secs)
+                                        .saturating_sub(admission_started.elapsed()),
+                                );
+                            if delay >= remaining {
+                                return Err(LlmError::QuotaWindow {
+                                    message:
+                                        "Shared provider minimum exceeds the HTTP recovery budget"
+                                            .into(),
+                                    retry_after: Some(delay),
+                                    transmission:
+                                        crate::llm_client::RequestTransmission::NotDispatched,
+                                });
+                            }
+                            crate::llm_client::rate_limit::wait(
+                                delay.min(RATE_LIMIT_PAUSE_RECHECK_INTERVAL),
+                            )
+                            .await;
+                        }
+                        self.wait_for_rate_limit().await;
+                        if codewhale_runtime::retry_status::rate_limit_remaining(pause_scope)
+                            .is_some()
+                        {
+                            continue;
+                        }
+                        if crate::llm_client::rate_limit::remaining_recovery_budget(rate_policy)
+                            .is_zero()
+                        {
+                            return Err(LlmError::QuotaWindow {
+                                message: "HTTP recovery budget exhausted in admission".into(),
+                                retry_after: None,
+                                transmission: crate::llm_client::RequestTransmission::NotDispatched,
+                            });
+                        }
+                        break;
                     }
-                    self.wait_for_rate_limit().await;
                     let response = response.await?;
+                    let response =
+                        crate::llm_client::rate_limit::inspect_json_envelope_with_disclosure(
+                            self.api_provider.as_str(),
+                            response,
+                            Some((
+                                stream_entry::first_byte_timeout(self.stream_idle_timeout),
+                                self.stream_idle_timeout,
+                            )),
+                            |status, raw| self.disclosed_http_error_body(disclosure, status, raw),
+                        )
+                        .await
+                        .inspect_err(crate::llm_client::settle_outbound_http_error)?;
                     let status = response.status();
                     if status.is_success() {
                         return Ok(response);
                     }
                     let header_retry_after = extract_retry_after(response.headers());
                     let raw = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
-                    let body_retry_after = retry_delay_from_error_body(&raw);
+                    let body_retry_after = retry_delay_from_error_body(&raw)
+                        .max(crate::llm_client::rate_limit::body_delay(&raw));
                     let body = self.disclosed_http_error_body(disclosure, status.as_u16(), &raw);
-                    let error = self.http_error_with_route_context(
+                    let provider_error = crate::llm_client::rate_limit::provider_error(
+                        self.api_provider.as_str(),
+                        status.as_u16(),
+                        &raw,
+                        &body,
+                        header_retry_after,
+                    );
+                    let route_error = self.http_error_with_route_context(
                         status.as_u16(),
                         &body,
                         header_retry_after,
                         body_retry_after,
                     );
+                    let error = match (provider_error, route_error) {
+                        (
+                            Some(LlmError::QuotaExhausted(_)),
+                            route @ LlmError::QuotaExhausted(_),
+                        ) => route,
+                        (Some(native), _) => native,
+                        (None, route) => route,
+                    };
                     crate::llm_client::settle_outbound_http_error(&error);
                     Err(error)
                 }
@@ -4710,19 +4981,24 @@ impl CodewhaleClient {
                     attempt + 1,
                     delay.as_secs_f64(),
                 ));
-                if matches!(err, LlmError::RateLimited { .. }) {
+                if matches!(
+                    err,
+                    LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }
+                ) {
                     codewhale_runtime::retry_status::note_rate_limit(&callback_scope, delay);
                 }
                 codewhale_runtime::retry_status::start(attempt + 1, delay, human_reason);
             })),
-        );
+        ));
         let request_result = if let Some(total) = attempt_total {
             // The loop envelope must dominate the per-attempt total it
             // wraps: a caller-pinned budget (list_models' 30s) may exceed
             // the shared envelope, and the envelope must never strangle
             // its own attempts.
             let loop_envelope = total.max(non_streaming_request_envelope());
-            match tokio::time::timeout(loop_envelope, retry_future).await {
+            match crate::llm_client::rate_limit::active_timeout_total(loop_envelope, retry_future)
+                .await
+            {
                 Ok(result) => result,
                 Err(_elapsed) => {
                     let last = LlmError::Timeout(loop_envelope);
@@ -4747,7 +5023,9 @@ impl CodewhaleClient {
                 Ok(response)
             }
             Err(err) => {
-                if let LlmError::RateLimited { retry_after, .. } = &err.last_error {
+                if let LlmError::RateLimited { retry_after, .. }
+                | LlmError::QuotaWindow { retry_after, .. } = &err.last_error
+                {
                     codewhale_runtime::retry_status::note_rate_limit(
                         &pause_scope,
                         retry_after
@@ -4761,7 +5039,12 @@ impl CodewhaleClient {
                     codewhale_runtime::retry_status::clear();
                 }
                 self.mark_request_failure(&last).await;
-                self.maybe_probe_recovery().await;
+                if !matches!(
+                    err.last_error,
+                    LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. }
+                ) {
+                    self.maybe_probe_recovery().await;
+                }
                 // Keep the structured `LlmError` downcastable so failure
                 // surfaces can classify auth/rate-limit/invalid-request
                 // instead of reporting an opaque string (#3884).
@@ -4803,20 +5086,48 @@ impl CodewhaleClient {
                 async move {
                     self.wait_for_rate_limit().await;
                     let response = response.await?;
+                    let response =
+                        crate::llm_client::rate_limit::inspect_json_envelope_with_disclosure(
+                            self.api_provider.as_str(),
+                            response,
+                            Some((
+                                stream_entry::first_byte_timeout(self.stream_idle_timeout),
+                                self.stream_idle_timeout,
+                            )),
+                            |status, raw| self.disclosed_http_error_body(disclosure, status, raw),
+                        )
+                        .await
+                        .inspect_err(crate::llm_client::settle_outbound_http_error)?;
                     let status = response.status();
                     if status.is_success() {
                         return Ok(response);
                     }
                     let header_retry_after = extract_retry_after(response.headers());
                     let raw = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
-                    let body_retry_after = retry_delay_from_error_body(&raw);
+                    let body_retry_after = retry_delay_from_error_body(&raw)
+                        .max(crate::llm_client::rate_limit::body_delay(&raw));
                     let body = self.disclosed_http_error_body(disclosure, status.as_u16(), &raw);
-                    let error = self.http_error_with_route_context(
+                    let provider_error = crate::llm_client::rate_limit::provider_error(
+                        self.api_provider.as_str(),
+                        status.as_u16(),
+                        &raw,
+                        &body,
+                        header_retry_after,
+                    );
+                    let route_error = self.http_error_with_route_context(
                         status.as_u16(),
                         &body,
                         header_retry_after,
                         body_retry_after,
                     );
+                    let error = match (provider_error, route_error) {
+                        (
+                            Some(LlmError::QuotaExhausted(_)),
+                            route @ LlmError::QuotaExhausted(_),
+                        ) => route,
+                        (Some(native), _) => native,
+                        (None, route) => route,
+                    };
                     crate::llm_client::settle_outbound_http_error(&error);
                     Err(error)
                 }
@@ -4886,7 +5197,7 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
             .bump_error(codewhale_telemetry::ErrorCounter::NetworkError);
     }
     match err {
-        LlmError::RateLimited { retry_after, .. } => {
+        LlmError::RateLimited { retry_after, .. } | LlmError::QuotaWindow { retry_after, .. } => {
             let human = if let Some(after) = retry_after {
                 format!("rate limited (Retry-After {}s)", after.as_secs())
             } else {
@@ -6868,6 +7179,7 @@ pub use chat::is_reasoning_replay_placeholder;
 
 #[cfg(test)]
 mod tests {
+    include!("client/rate_limit_tests.rs");
     include!("client/test_cases_01.rs");
 
     include!("client/test_cases_02.rs");

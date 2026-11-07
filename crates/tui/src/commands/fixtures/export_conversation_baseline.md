@@ -20,24 +20,17 @@ No workspace restore points are recorded for this workspace, so nothing in this 
 
 ## 2. user
 
-### Content 1: Text
-
 Please inspect this output
 
 ## 3. assistant
 
-### Content 1: Internal reasoning
-
 [internal reasoning and signature omitted]
 
-### Content 2: Tool call
+### Tool call: fetch_url
 
 - ID: call-1
-- Name: fetch_url
 - Caller type: code_execution_20250825
 - Caller tool ID: server-tool-1
-
-Input:
 
 ```json
 {
@@ -49,17 +42,16 @@ Input:
 }
 ```
 
-## 4. user
+## 4. tool
 
-### Content 1: Tool result
+### Tool result: fetch_url
 
 - Tool call ID: call-1
-- Error: false
 
-Result:
-
+```text
 Authorization: [redacted]
 result ok
+```
 
 Structured result blocks:
 
@@ -80,22 +72,19 @@ Structured result blocks:
 
 ## 5. assistant
 
-### Content 1: Image attachment
+### Image attachment
 
 - Reference: https://example.com/visible.png?token=***
 
-### Content 2: Image attachment
+### Image attachment
 
 - Reference omitted (inline or local image payload)
 
 ## 6. assistant
 
-### Content 1: Server tool call
+### Server tool call: web_search
 
 - ID: srv-1
-- Name: web_search
-
-Input:
 
 ```json
 {
@@ -103,9 +92,9 @@ Input:
 }
 ```
 
-## 7. user
+## 7. tool
 
-### Content 1: Tool-search result
+### Tool-search result
 
 - Tool call ID: srv-1
 
@@ -117,7 +106,7 @@ Input:
 
 ## 8. assistant
 
-### Content 1: Code-execution result
+### Code-execution result
 
 - Tool call ID: srv-2
 

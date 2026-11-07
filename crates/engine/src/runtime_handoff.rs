@@ -865,28 +865,38 @@ pub fn is_agent_topology_checkpoint(message: &Message) -> bool {
         && text.ends_with(AGENT_TOPOLOGY_EVENT_SUFFIX)
 }
 
+/// True when a message carries a tool result, which strict paired chat
+/// templates treat as the user's half of the tool exchange: the next wire
+/// message must not be `role="user"`.
+fn carries_tool_result(message: &Message) -> bool {
+    message.content.iter().any(|block| {
+        matches!(
+            block,
+            ContentBlock::ToolResult { .. }
+                | ContentBlock::ToolSearchToolResult { .. }
+                | ContentBlock::CodeExecutionToolResult { .. }
+        )
+    })
+}
+
 /// Install one bounded, typed Agent-topology sidecar after replacement
 /// compaction. A current empty topology is still meaningful: it overrides a
 /// narrative summary or old runtime event that says an Agent remains live.
 /// Replays are idempotent because the previous sidecar is structurally removed
-/// before the replacement is inserted. A trailing compaction summary is not
-/// a real user boundary, and a checkpoint after a tool result would split a
-/// strict chat template's assistant/tool round.
+/// before the replacement is inserted — in both of its forms, live and
+/// restored display: a restored carrier is the projection of a sidecar a
+/// previous save already wrote, and keeping it beside the fresh one would
+/// persist a superseded duplicate that no later replay removes. A trailing
+/// compaction summary is not a real user boundary, and a checkpoint after a
+/// tool result would split a strict chat template's assistant/tool round.
 pub fn replace_agent_topology_checkpoint(
     messages: &mut Vec<Message>,
     snapshots: &[SubAgentResult],
 ) {
-    messages.retain(|message| !is_agent_topology_checkpoint(message));
-    let ends_with_tool_result = messages.last().is_some_and(|message| {
-        message.content.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::ToolResult { .. }
-                    | ContentBlock::ToolSearchToolResult { .. }
-                    | ContentBlock::CodeExecutionToolResult { .. }
-            )
-        })
+    messages.retain(|message| {
+        !is_agent_topology_checkpoint(message) && !is_restored_agent_topology_checkpoint(message)
     });
+    let ends_with_tool_result = messages.last().is_some_and(carries_tool_result);
     let ends_with_summary = messages
         .last()
         .is_some_and(codewhale_models::turn_classify::is_wire_compaction_checkpoint_message);
@@ -1013,6 +1023,118 @@ Authority: non-authoritative runtime checkpoint"
     }
 
     None
+}
+
+/// Where a restored Agent-topology carrier should sit, or `None` when it is
+/// already there. The placement a save writes is "directly after the genuine
+/// prompt its summary is merged into, before that round's assistant/tool
+/// chain", so a carrier is misplaced when it trails its own compaction
+/// summary or directly follows a tool result — the two shapes releases
+/// before the placement anchor saved. The summary boundary reads the
+/// history's era: in a history that carries a provenance-stamped carrier, a
+/// user turn that merely pastes a summary header is content, not a checkpoint.
+///
+/// The prompt scan is era-aware the same way and excludes checkpoint
+/// carriers (`is_compaction_checkpoint_message_in_era`) so the anchor never
+/// lands directly after one, matching the save-time scan. When the boundary
+/// window is empty — a summary at index 0 with the carrier after it — the
+/// carrier deliberately moves to index 0, in front of that summary: this is
+/// more aggressive than bailing out, but it is where a save would have
+/// written the sidecar and it keeps the carrier off every tool-result
+/// boundary.
+fn restored_topology_anchor(messages: &[Message], index: usize) -> Option<usize> {
+    let post_provenance = crate::compaction::history_is_post_provenance(messages);
+    let summary_before = messages[..index].iter().rposition(|message| {
+        crate::compaction::is_compaction_checkpoint_message_in_era(message, post_provenance)
+    });
+    let follows_tool_result = index > 0 && carries_tool_result(&messages[index - 1]);
+    if summary_before.is_none() && !follows_tool_result {
+        return None;
+    }
+    let before = summary_before
+        .or_else(|| {
+            messages[index + 1..]
+                .iter()
+                .position(|message| {
+                    crate::compaction::is_compaction_checkpoint_message_in_era(
+                        message,
+                        post_provenance,
+                    )
+                })
+                .map(|offset| index + 1 + offset)
+        })
+        .unwrap_or(messages.len());
+    // The same boundary `replace_agent_topology_checkpoint` writes at save
+    // time: after the latest genuine user prompt in the window, before that
+    // round's assistant/tool chain, or before the first assistant message
+    // when the window retains no prompt. Checkpoint carriers are excluded
+    // from the scan with the same era-aware predicate as the boundary, so a
+    // bare legacy summary in a pre-provenance history is never mistaken for
+    // the prompt the carrier anchors after.
+    let window = messages.get(..before)?;
+    let anchor = window
+        .iter()
+        .rposition(|message| {
+            !crate::compaction::is_compaction_checkpoint_message_in_era(message, post_provenance)
+                && classify_user_turn_prompt(message) != UserTurnPromptKind::NotPrompt
+        })
+        .map_or(
+            window
+                .iter()
+                .position(|message| message.role.is_assistant_like())
+                .unwrap_or(0),
+            |index| index + 1,
+        );
+    (anchor < index).then_some(anchor)
+}
+
+/// Repair the Agent-topology sidecar of a session saved before the placement
+/// anchor shipped. Those releases appended the sidecar to the end of the
+/// replacement history, so a restored session carries it after its own
+/// summary or directly after a tool result. Request-time rewriting moves only
+/// the summary, which leaves a `tool -> user` wire that strict paired chat
+/// templates reject with the same 400 this pipeline exists to fix. Moving the
+/// carrier to its placement anchor on restore repairs the session in place
+/// instead of asking for a new one. Engine-saved sessions — a replacement
+/// history carries exactly one checkpoint — saved by the placement anchor
+/// are already at that anchor and restore byte-identical. A host-imported
+/// history carrying an older summary before an already-anchored carrier is
+/// shuffled instead; that is wire-legal and self-heals at the next save via
+/// the both-forms retire. Relocation only reorders:
+/// nothing is deleted, and a user turn that merely pastes a summary header is
+/// never a carrier here, so real user content cannot be moved.
+pub(crate) fn relocate_restored_compaction_topology(messages: &mut Vec<Message>) {
+    let plan: Vec<Option<usize>> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            (is_agent_topology_checkpoint(message)
+                || is_restored_agent_topology_checkpoint(message))
+            .then(|| restored_topology_anchor(messages, index))
+            .flatten()
+        })
+        .collect();
+    if plan.iter().all(Option::is_none) {
+        return;
+    }
+    let mut slots: Vec<Option<Message>> = std::mem::take(messages).into_iter().map(Some).collect();
+    let mut rebuilt = Vec::with_capacity(slots.len());
+    for index in 0..=slots.len() {
+        // `plan` holds insertion positions, matching the save-time
+        // `Vec::insert` the anchor was defined for, so a relocated carrier is
+        // emitted before the message that currently occupies that position.
+        for (from, anchor) in plan.iter().enumerate() {
+            if *anchor == Some(index)
+                && let Some(message) = slots[from].take()
+            {
+                rebuilt.push(message);
+            }
+        }
+        if let Some(message) = slots.get_mut(index).and_then(Option::take) {
+            rebuilt.push(message);
+        }
+    }
+    *messages = rebuilt;
 }
 
 /// True when a persisted message is runtime-owned control traffic rather than
@@ -1483,6 +1605,9 @@ mod tests {
                 task_id: "shell_1".to_string(),
                 command: "cargo test".to_string(),
                 status: crate::tools::shell::ShellStatus::Completed,
+                started_at: None,
+                cause: Some(crate::tools::shell::ShellTerminationCause::Producer),
+                producer_reported: true,
                 exit_code: Some(0),
                 duration_ms: 10,
                 stdout_tail: "ok".to_string(),

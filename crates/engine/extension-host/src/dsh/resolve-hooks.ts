@@ -160,14 +160,25 @@ function checkedBunSpecifier(specifier:string,closure:ReviewedClosure,caller:str
     return specifier
   }
   if(nodeModule.isBuiltin(specifier))return specifier.startsWith('node:')?specifier:`node:${specifier}`
+  const callerPath=fileURLToPath(caller)
   const file=(specifier.startsWith('file:') || specifier.startsWith('.') || isAbsolute(specifier))
     ?new URL(specifier,caller):undefined
-  const path=file?(require && !specifier.startsWith('file:')?resolve(dirname(fileURLToPath(caller)),specifier):resolve(fileURLToPath(file))):undefined
-  if(!path)throw new Error('bare dependency is absent from this reviewed composition; package its reviewed relative source')
-  if(file?.search || file?.hash)throw new Error('Bun does not preserve reviewed module query or fragment identity; select [extension_host] runtime = \"node\" for this composition')
+  if(file?.search || file?.hash)throw new Error('Bun does not preserve reviewed module query or fragment identity; select [extension_host] runtime = "node" for this composition')
+  let path:string
+  if(file) path=require && !specifier.startsWith('file:')?resolve(dirname(callerPath),specifier):resolve(fileURLToPath(file))
+  else if(require) path=nodeModule.createRequire(caller).resolve(specifier)
+  else path=bunResolve(specifier,dirname(callerPath),caller)
   const inside=keyIn(closure,path)
-  if(inside===undefined || !(inside in closure.files))throw new Error('composition import escapes the reviewed file closure')
-  return require?path:file!.href
+  if(inside===undefined || !(inside in closure.files) || !unlinkedInside(closure,inside,path))throw new Error('composition import escapes the reviewed file closure')
+  return require?path:file?file.href:pathToFileURL(path).href
+}
+
+function bunResolve(specifier:string,from:string,caller:string):string {
+  const bun=(globalThis as any).Bun
+  if(typeof bun?.resolveSync==='function') {
+    try {return bun.resolveSync(specifier,from)} catch {}
+  }
+  return nodeModule.createRequire(caller).resolve(specifier)
 }
 
 // Module graph admission for an already-reviewed composition. This is an
@@ -258,11 +269,15 @@ export function installResolveHooks(modules: Record<string, Record<string, unkno
         return { url: `${SCHEME}${key}`, format: 'module', shortCircuit: true }
       }
       const caller=closureAt(context.parentURL)
-      if(caller && !nodeModule.isBuiltin(specifier) && !specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('file:')) throw new Error('bare dependency is absent from this reviewed composition; package its reviewed relative source')
+      const bare=!nodeModule.isBuiltin(specifier) && !specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('file:')
       const result=nextResolve(specifier, context)
-      if(caller && result.url.startsWith('file:')) {
-        const target=closureAt(result.url)
-        if(!target || target.root!==caller.root || !(target.path in caller.receipt.files)) throw new Error('composition import escapes the reviewed file closure')
+      if(caller) {
+        if(result.url.startsWith('file:')) {
+          const target=closureAt(result.url)
+          if(!target || target.root!==caller.root || !(target.path in caller.receipt.files) || !unlinkedInside(caller.receipt,target.path,fileURLToPath(result.url))) throw new Error('composition import escapes the reviewed file closure')
+        } else if(bare) {
+          throw new Error('composition import escapes the reviewed file closure')
+        }
       }
       return result
     },

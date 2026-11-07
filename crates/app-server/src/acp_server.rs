@@ -936,7 +936,7 @@ fn acp_mode(config: &Config) -> AppMode {
 /// else the Suggest default. Plan mode still pins read-only downstream
 /// regardless of posture.
 fn acp_approval_mode(config: &Config) -> ApprovalMode {
-    if config.yolo.unwrap_or(false) {
+    if config.yolo.unwrap_or(false) && !config.approval_policy_is_requirements_managed() {
         ApprovalMode::Bypass
     } else {
         config
@@ -1749,6 +1749,21 @@ mod tests {
             __cw_config_init_1_value
         };
         assert_eq!(acp_approval_mode(&yolo), ApprovalMode::Bypass);
+        let requirements = tempfile::tempdir().expect("requirements directory");
+        let requirements_path = requirements.path().join("requirements.toml");
+        std::fs::write(
+            &requirements_path,
+            "allowed_approval_policies = ['on-request']\n",
+        )
+        .expect("requirements file");
+        let mut managed_yolo = Config::default();
+        managed_yolo.requirements_path = Some(requirements_path.display().to_string());
+        managed_yolo.yolo = Some(true);
+        assert_eq!(
+            acp_approval_mode(&managed_yolo),
+            ApprovalMode::Suggest,
+            "requirements must outrank the CLI Full Access override"
+        );
         let policy = {
             let __cw_config_init_2_0 = Some("never".into());
             let mut __cw_config_init_2_value: Config = Config::default();

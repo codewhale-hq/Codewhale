@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! Codewhale account and BYOK credential commands.
 //!
 //! This module is deliberately separate from the provider-facing `login` and

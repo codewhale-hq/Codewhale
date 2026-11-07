@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 pub mod cursor_accent;
 pub mod diff_render;
 pub mod event_broker;

@@ -2226,6 +2226,23 @@
       "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models, which is public). Model ids are case-sensitive org/Name ids such as deepseek-ai/DeepSeek-V4.1-Flash. Live /v1/models is the model authority. Store RUNCRATE_API_KEY, not a raw key."
     },
     {
+      "id": "tencent",
+      "label": "Tencent TokenHub",
+      "wire": "openai-compatible",
+      "base_url": "https://tokenhub-intl.tencentcloudmaas.com/v1",
+      "api_key_env": "TENCENT_API_KEY",
+      "default_model": "hy4",
+      "discovery": "models_endpoint",
+      "docs_url": "https://www.tencentcloud.com/document/product/1300/80695",
+      "credential_url": "https://console.tencentcloud.com/tokenhub/apikey",
+      "guidance": "Tencent's international TokenHub endpoint; use the exact model id hy4, not tencent/hy4 or hy4-preview. Authenticated GET /v1/models is the availability authority. HY4 supports text, images, tools and reasoning, with a documented 1M context and 64K output. Set providers.tencent.model_context_windows.hy4 explicitly when using the full window; absent live limits the compatible-route fallback remains conservative. Direct prices are not inferred from OpenRouter. Store TENCENT_API_KEY, not a raw key.",
+      "aliases": [
+        "tencent-tokenhub",
+        "tokenhub",
+        "hunyuan"
+      ]
+    },
+    {
       "id": "opper",
       "label": "Opper",
       "wire": "openai-compatible",

@@ -2766,7 +2766,17 @@ impl ProviderPickerView {
         let preferred_wire = wire(&preferred);
         let selected = models
             .iter()
-            .position(|model| model.eq_ignore_ascii_case(preferred.trim()))
+            .position(|model| model == preferred.trim())
+            .or_else(|| {
+                models
+                    .iter()
+                    .position(|model| model == preferred_wire.trim())
+            })
+            .or_else(|| {
+                models
+                    .iter()
+                    .position(|model| model.eq_ignore_ascii_case(preferred.trim()))
+            })
             .or_else(|| {
                 models
                     .iter()

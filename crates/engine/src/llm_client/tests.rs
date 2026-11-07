@@ -467,8 +467,8 @@ async fn scoped_retry_records_first_transport_failure_and_recovery_without_remot
     assert_eq!(
         *receipts.lock().unwrap(),
         [
-            "Retry attempt: transport 1/2; upstream 503; waiting 0.00s",
-            "Retry recovery: transport request recovered after 1 retries",
+            "Retry attempt: HTTP 1; upstream 503; waiting 0.00s",
+            "Retry recovery: HTTP operation recovered after 2 attempts",
         ]
     );
 }
@@ -505,8 +505,8 @@ async fn scoped_retry_exhaustion_retains_typed_original_error_and_every_attempt(
     assert_eq!(
         *receipts.lock().unwrap(),
         [
-            "Retry attempt: transport 1/2; upstream 503; waiting 0.00s",
-            "Retry attempt: transport 2/2; upstream 503; waiting 0.00s",
+            "Retry attempt: HTTP 1; upstream 503; waiting 0.00s",
+            "Retry attempt: HTTP 2; upstream 503; waiting 0.00s",
             "Retry exhaustion: transport request stopped after 2 retries; upstream 503",
         ]
     );
@@ -602,10 +602,10 @@ async fn concurrent_request_retry_observations_keep_exact_producing_scope() {
     assert_eq!(second_count.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(
         first_receipts.lock().unwrap()[0],
-        "Retry attempt: transport 1/2; timeout; waiting 0.00s"
+        "Retry attempt: HTTP 1; timeout; waiting 0.00s"
     );
     assert_eq!(
         second_receipts.lock().unwrap()[0],
-        "Retry attempt: transport 1/4; upstream 502; waiting 0.00s"
+        "Retry attempt: HTTP 1; upstream 502; waiting 0.00s"
     );
 }

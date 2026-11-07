@@ -317,13 +317,21 @@ impl Drop for InteractiveTerminalGuard {
     }
 }
 
-pub fn emit_tool_audit(event: serde_json::Value) {
+pub async fn emit_tool_audit(event: serde_json::Value) {
     let Some(path) = std::env::var_os("CODEWHALE_TOOL_AUDIT_LOG")
         .or_else(|| std::env::var_os("DEEPSEEK_TOOL_AUDIT_LOG"))
     else {
         return;
     };
-    emit_tool_audit_to_path(&PathBuf::from(path), event);
+    let path = PathBuf::from(path);
+    if let Err(error) = codewhale_runtime::runtime_control::owner_work(move || {
+        emit_tool_audit_to_path(&path, event);
+        Ok(())
+    })
+    .await
+    {
+        tracing::error!("Failed to run the tool audit writer: {error}");
+    }
 }
 
 fn emit_tool_audit_to_path(path: &Path, event: serde_json::Value) {

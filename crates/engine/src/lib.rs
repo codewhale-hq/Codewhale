@@ -1,6 +1,10 @@
 //! Codewhale's engine: the one turn loop, tools, agents, context, the
 //! session store and thread manager, model clients and the extension host.
-#![allow(clippy::uninlined_format_args)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::uninlined_format_args,
+    rustdoc::private_intra_doc_links
+)]
 
 pub mod agent_roster;
 pub mod approval_log;

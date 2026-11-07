@@ -6754,6 +6754,52 @@ mod image_block_wire_tests {
     }
 
     #[test]
+    fn restore_repairs_pre_anchor_topology_sidecar_wire() {
+        // Sessions saved before the placement anchor appended the topology
+        // sidecar to the end of the replacement history, so a session
+        // compacted with live agents carries `tool result, summary, sidecar`.
+        // Request-time rewriting moves only the summary, so a sidecar left in
+        // place reaches the wire as `tool -> user` — the shape strict paired
+        // chat templates reject with HTTP 400. Restore relocates the sidecar
+        // to its placement anchor, and the first request is wire-legal again.
+        let summary = codewhale_models::SystemPrompt::Text(
+            crate::compaction::build_compaction_summary_block_text("Compacted summary", ""),
+        );
+        let mut messages: Vec<Message> = serde_json::from_value(serde_json::json!([
+            {"role":"user","content":[{"type":"text","text":"Analyze the data"}]},
+            {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"read","input":{"path":"a.txt"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"ready"}]},
+            // The v0.9.12-era bare summary carrier: legacy marker text, no
+            // provenance block.
+            {"role":"user","content":[{"type":"text","text":"Another language model started to solve this problem and produced a summary of the earlier turns."}]}
+        ])).unwrap();
+        let mut holder: Vec<Message> = Vec::new();
+        crate::runtime_handoff::replace_agent_topology_checkpoint(&mut holder, &[]);
+        messages.push(holder.remove(0));
+
+        let restored = crate::compaction::restore_compaction_checkpoint(
+            crate::runtime_handoff::project_owned_messages_for_restore(messages),
+            Some(&summary),
+        );
+        let wire = build_chat_messages(None, &restored, "gpt-4o");
+        for pair in wire.windows(2) {
+            assert!(
+                !(pair[0]["role"] == "tool" && pair[1]["role"] == "user"),
+                "no user message may follow a tool result on the wire: {wire:?}"
+            );
+        }
+        let roles: Vec<&str> = wire
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "assistant", "tool"], "{wire:?}");
+        let prompt = wire[0]["content"].as_str().unwrap();
+        assert!(prompt.contains("Compacted summary"));
+        assert!(prompt.contains("Analyze the data"));
+        assert!(prompt.contains("restored Agent topology checkpoint"));
+    }
+
+    #[test]
     fn quoted_compaction_marker_does_not_reorder_user_wire_messages() {
         // The current marker, and the legacy one older sessions still carry.
         for marker in [

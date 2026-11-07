@@ -791,6 +791,7 @@ impl App {
                 ..ViewportState::default()
             },
             pet_watch: crate::tui::pet_watch::PetWatch::default(),
+            attachment_preview: Box::new(crate::tui::image_preview::ThumbnailCache::new()),
             work_surface: {
                 let mut state = crate::tui::work_surface::WorkSurfaceState::with_layout(
                     work_surface_placement,
@@ -831,6 +832,7 @@ impl App {
             dispatch_in_flight: false,
             dispatch_cancel: None,
             last_enter_instant: None,
+            last_clipboard_paste: None,
             provider_wait_incident_logged: false,
             prompt_suggestion: None,
             notification_settings: config.notifications_config(),

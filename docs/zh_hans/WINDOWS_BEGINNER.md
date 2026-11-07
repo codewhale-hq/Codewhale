@@ -430,18 +430,18 @@ default_text_model = "deepseek-v4-pro"
 
 ## 10. 导出对话（/export）
 
-把当前对话导出为 Markdown 文件：
+把当前对话导出为 Markdown、HTML 或 JSON 文件：
 
 ```
 /export file 对话记录.md
 ```
 
-文件会生成在你**当前工作目录**（启动 Codewhale 的文件夹）下。
+写相对路径时，文件会生成在你**当前工作目录**（启动 Codewhale 的文件夹）下。不写路径（`/export file`）时会自动命名，保存到 Codewhale 主目录的 `exports` 文件夹，并在回执里告诉你完整路径。
 
 ### 基本格式
 
 ```
-/export [clipboard|file [--force] <路径>|turn [clipboard|file [--force] <路径>]]
+/export [clipboard|file [路径]|turn [clipboard|file [路径]]] [--format md|html|json] [--no-tools] [--force]
 ```
 
 ### 完整命令表
@@ -450,14 +450,21 @@ default_text_model = "deepseek-v4-pro"
 |---|---|
 | `/export` | 整个对话复制到剪贴板（默认行为，不带参数就是这个） |
 | `/export clipboard` | 同上，显式写法 |
-| `/export file 文件名.md` | 整个对话导出为 md 文件 |
-| `/export file --force 文件名.md` | 文件已存在时强制覆盖（不加 `--force` 会拒绝覆盖） |
+| `/export file 文件名.md` | 整个对话导出为 Markdown 文件 |
+| `/export file 文件名.html` | 导出为单文件 HTML 页面（自带明暗两套配色，不含脚本） |
+| `/export file 文件名.json` | 导出为带类型标记的结构化 JSON |
+| `/export file` | 不写路径，自动命名并保存到 Codewhale 主目录的 `exports` 文件夹 |
+| `/export --format html` | 同上，格式为 HTML（`--format json` 同理） |
+| `/export file 文件名.md --no-tools` | 不包含工具调用和工具结果 |
+| `/export file 文件名.md --force` | 文件已存在时强制覆盖（不加 `--force` 会拒绝覆盖） |
 | `/export turn` | 只导出当前这一回合（handoff）到剪贴板 |
 | `/export turn file 文件名.md` | 只导出当前这一回合为 md 文件 |
 | `/export turn file --force 文件名.md` | 当前这一回合导出并强制覆盖 |
 | `/daochu` | `/export` 的中文别名，完全等价 |
 
-> 兼容旧写法：`/export 路径.md` 和 `/export turn 路径.md` 也可以直接用（等价于带 `file` 的写法）。
+> 兼容旧写法：`/export 路径.md` 和 `/export turn 路径.md` 也可以直接用（等价于带 `file` 的写法）。`--force`、`--no-tools`、`--format` 可以放在命令里的任意位置。
+>
+> 文件格式默认由扩展名决定（`.md`、`.html`、`.json`），也可以用 `--format` 指定。HTML 和 JSON 只能写入文件，不能复制到剪贴板；`--no-tools` 和 `--format` 只用于整个对话，不用于 `turn`。路径里有空格时请用引号括起来。
 
 ### 导出的文件长什么样
 
@@ -467,6 +474,7 @@ default_text_model = "deepseek-v4-pro"
 # Codewhale conversation export
 
 - Exported: 2026-08-02T...   （导出时间）
+- Title: ...                 （会话标题，没有标题时不出现）
 - Session: xxxx              （会话 ID）
 - Provider: moonshot         （当前提供商）
 - Model: kimi-k3             （当前模型）
@@ -477,7 +485,7 @@ default_text_model = "deepseek-v4-pro"
 
 ### 注意事项
 
-- 只含对话内容，**AI 的内部推理过程被省略**，只有最终回复
+- 只含对话内容，**AI 的内部推理过程和系统提示词被省略**，只有最终回复；工具调用和结果默认包含（可用 `--no-tools` 去掉），工具输出放在代码围栏里
 - 类密钥内容（如 API key）和带凭据的 URL **自动打码**，分享前仍建议检查一遍
 - 导出是只读操作，不影响当前会话
 - 想省 token 而不是导出时，用 `/compact` 压缩上下文（见第 9 节）

@@ -349,7 +349,7 @@ class CommittedSeedTests(unittest.TestCase):
         self.assertEqual(data["_reviewed"], source["reviewed"])
         lock = json.loads((ROOT / "scripts/catalog/models_dev_seed.lock.json").read_text())
         self.assertIn(f"fetched {lock['source']['fetched_at']}", data["_meta"]["upstream"])
-        self.assertEqual(len(data["_reviewed"]["public_models"]), 91)
+        self.assertEqual(len(data["_reviewed"]["public_models"]), 92)
 
     def test_reviewed_malformed_and_duplicate_public_facts_are_refused(self) -> None:
         sys.path.insert(0, str(ROOT / "scripts"))

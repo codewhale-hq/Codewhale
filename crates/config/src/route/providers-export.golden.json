@@ -1059,6 +1059,10 @@
           "canonical": "alibaba/qwen3.8-flash"
         },
         {
+          "id": "tencent/hy4",
+          "canonical": "tencent/hy4"
+        },
+        {
           "id": "z-ai/glm-5.2",
           "canonical": "zhipuai/glm-5.2"
         },

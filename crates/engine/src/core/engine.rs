@@ -1224,6 +1224,7 @@ pub struct Engine {
     /// stability. `None` until the first block is built; the line is then
     /// emitted only when the snapshot actually changed.
     last_turn_meta_git_snapshot: StdMutex<Option<String>>,
+    turn_meta_git_snapshot: StdMutex<Option<Option<String>>>,
     /// Process-local cache for `estimated_input_tokens`. Memoizes the most
     /// recent token estimate keyed on `(session.messages_revision,
     /// system_prompt_fingerprint)`. Five call sites per turn consult this
@@ -1239,7 +1240,7 @@ pub struct Engine {
     advisor_emission_guard: Option<Arc<tokio::sync::Mutex<crate::tools::subagent::EmissionGuard>>>,
     /// Turn-phase heartbeat (#6184): where the active turn is and when it
     /// last made progress. Shared with `EngineHandle` and supervised by the
-    /// stall watchdog spawned in `run`.
+    /// stall watchdog bound to the admitted turn.
     pub turn_heartbeat: Arc<turn_heartbeat::TurnHeartbeat>,
 }
 
@@ -2042,32 +2043,53 @@ impl Engine {
         self.config.model.clone_from(&self.session.model);
     }
 
-    /// Activate a structurally resolved route at the engine boundary. Normal
-    /// engines construct the concrete client before any turn state changes.
-    /// Embedders/tests that explicitly injected a provider-neutral client keep
-    /// that client as the I/O authority while still installing the exact route
-    /// identity, model, config, and budget receipt.
-    fn install_resolved_runtime_route(
+    async fn install_resolved_runtime_route_async(
         &mut self,
         mut route: ResolvedRuntimeRoute,
     ) -> Result<(), String> {
         if !self.model_client_injected {
-            self.install_validated_runtime_route(route.validate()?);
+            self.install_validated_runtime_route(route.validate_async().await?);
             return Ok(());
         }
 
         let context_window = route.context_window;
-        let preflighted_client = route.take_preflighted_client();
+        let concrete_client = match route.take_preflighted_client() {
+            Some(client) => Ok(client),
+            None => {
+                let config = std::mem::take(&mut route.config);
+                match CodewhaleClient::capture_candidate_preflight(config, &route.candidate).await {
+                    Ok((config, captured)) => {
+                        route.config = config;
+                        CodewhaleClient::from_candidate_captured(
+                            &route.config,
+                            &route.candidate,
+                            captured,
+                        )
+                        .map_err(|err| err.to_string())
+                    }
+                    Err(err) => Err(err.to_string()),
+                }
+            }
+        }
+        .map(|client| client.with_context_window(context_window));
+        self.install_injected_runtime_route(route, context_window, concrete_client);
+        Ok(())
+    }
+
+    fn install_injected_runtime_route(
+        &mut self,
+        route: ResolvedRuntimeRoute,
+        context_window: crate::route_runtime::ContextWindowResolution,
+        concrete_client: Result<CodewhaleClient, String>,
+    ) {
         let provider = route.identity.provider;
         let identity = route.identity;
         let model = route.model;
         let limits = crate::route_budget::known_route_limits(route.candidate.limits());
         let capabilities = route.candidate.capabilities();
         let api_config = *route.config;
-        let concrete_client = preflighted_client
-            .map(Ok)
-            .unwrap_or_else(|| CodewhaleClient::from_candidate(&api_config, &route.candidate))
-            .map(|client| client.with_context_window(context_window));
+        let configured_sandbox_mode = self.api_config.sandbox_mode.clone();
+        let configured_sandbox_network_access = self.api_config.sandbox_network_access;
 
         let endpoint = route.candidate.endpoint().clone();
         self.forget_input_bill_if_route_changes(
@@ -2081,6 +2103,8 @@ impl Engine {
         self.api_provider = provider;
         self.api_provider_identity = Some(identity);
         self.api_config = api_config;
+        self.api_config.sandbox_mode = configured_sandbox_mode;
+        self.api_config.sandbox_network_access = configured_sandbox_network_access;
         self.active_route_limits = limits;
         if self.active_context_window != Some(context_window) {
             self.session.latest_parent_input_tokens = None;
@@ -2095,12 +2119,11 @@ impl Engine {
             }
             Err(err) => {
                 self.codewhale_client = None;
-                self.codewhale_client_error = Some(err.to_string());
+                self.codewhale_client_error = Some(err);
             }
         }
         self.session.model = model;
         self.config.model.clone_from(&self.session.model);
-        Ok(())
     }
 
     fn current_runtime_route(&self) -> Result<ResolvedRuntimeRoute, String> {
@@ -2674,6 +2697,7 @@ impl Engine {
             turn_wall_clock: turn_budget::TurnWallClock::start(turn_wall_clock_budget),
             last_policy_narrowing: None,
             last_turn_meta_git_snapshot: StdMutex::new(None),
+            turn_meta_git_snapshot: StdMutex::new(None),
             token_estimate_cache: TokenEstimateCache::new(),
             shared_paused: shared_paused.clone(),
             advisor_emission_guard: None,
@@ -2870,7 +2894,8 @@ impl Engine {
                     "tool_id": tool_id.clone(),
                     "tool_name": tool_name.clone(),
                     "source": "composer_bang",
-                }));
+                }))
+                .await;
                 Self::execute_tool_with_lock(
                     self.tool_exec_lock.clone(),
                     spec.supports_parallel(),
@@ -2909,7 +2934,8 @@ impl Engine {
                 "tool_name": tool_name.clone(),
                 "path": path.display().to_string(),
                 "source": "composer_bang",
-            }));
+            }))
+            .await;
         }
 
         let status = user_shell_turn_outcome(&result, self.cancel_token.is_cancelled());
@@ -3827,21 +3853,6 @@ impl Engine {
             // engine must wait for its host to claim and explicitly dispatch the
             // next turn so events cannot be attached to the wrong durable record.
             let host_managed_turns = self.host_managed_turns();
-            // #6184: supervise the turn heartbeat from outside the turn future,
-            // so a wedged await still produces a log line, a stall record and a
-            // status event — and now cancels the turn instead of leaving it
-            // wedged. The watchdog exits once the event channel closes.
-            let stall_cancel = self
-                .shared_cancel_token
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            let stall_watchdog = turn_heartbeat::spawn_turn_stall_watchdog(
-                Arc::clone(&self.turn_heartbeat),
-                self.tx_event.clone(),
-                stall_cancel,
-            );
-            let _stall_watchdog_guard = turn_heartbeat::AbortOnDrop(stall_watchdog);
             if let Err(error) = self
                 .start_mcp_session_boot(McpConnectRefresh::IfChanged)
                 .await
@@ -5205,7 +5216,15 @@ impl Engine {
         // Emit it only when the snapshot actually changed since the last
         // emitted block; the model can always run `git status` for a fresh
         // read.
-        if let Some(git_snapshot) = crate::git_status::collect(&self.config.workspace) {
+        let captured_git_snapshot = {
+            self.turn_meta_git_snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        };
+        let git_snapshot = captured_git_snapshot
+            .unwrap_or_else(|| crate::git_status::collect(&self.config.workspace));
+        if let Some(git_snapshot) = git_snapshot {
             let mut last = self
                 .last_turn_meta_git_snapshot
                 .lock()
@@ -5221,6 +5240,35 @@ impl Engine {
             text: format!("<turn_meta>\n{summary}\n</turn_meta>"),
             cache_control: None,
         }
+    }
+
+    async fn capture_turn_meta_git_snapshot(&self) -> Option<String> {
+        let workspace = self.config.workspace.clone();
+        match codewhale_runtime::runtime_control::owner_work(move || {
+            Ok(crate::git_status::collect(&workspace))
+        })
+        .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!("turn metadata git snapshot worker failed: {error}");
+                None
+            }
+        }
+    }
+
+    fn install_turn_meta_git_snapshot(&self, snapshot: Option<String>) {
+        *self
+            .turn_meta_git_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(snapshot);
+    }
+
+    fn clear_turn_meta_git_snapshot(&self) {
+        *self
+            .turn_meta_git_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Assemble the content blocks of a user turn.
@@ -6617,6 +6665,12 @@ impl Engine {
         // The wrapper restores on every ordinary/early return of the body;
         // dropping or panicking the entire Engine future cannot run a successor.
         let control = self.begin_turn_control_for_provenance(spec.provenance);
+        let stall_watchdog = turn_heartbeat::spawn_turn_stall_watchdog(
+            Arc::clone(&self.turn_heartbeat),
+            self.tx_event.clone(),
+            self.cancel_token.clone(),
+        );
+        let _stall_watchdog_guard = turn_heartbeat::AbortOnDrop(stall_watchdog);
         let previous = std::mem::replace(&mut self.turn_narrowing, control.narrowing);
         let shell_ceiling = self.is_acp_turn().then_some(spec.allow_shell);
         let previous_shell = std::mem::replace(&mut self.turn_acp_shell_ceiling, shell_ceiling);
@@ -6630,6 +6684,7 @@ impl Engine {
         self.turn_acp_shell_ceiling = previous_shell;
         self.turn_narrowing = previous;
         drop(control);
+        self.clear_turn_meta_git_snapshot();
         outcome
     }
 
@@ -6927,7 +6982,7 @@ impl Engine {
         // Freeze the billing receipt here, while `route` is still the single
         // authority for this turn: `route.config` is the identity-scoped
         // Config the client is being built from, and `route.candidate` names
-        // the endpoint it will call. After `install_resolved_runtime_route`
+        // the endpoint it will call. After `install_resolved_runtime_route_async`
         // consumes `route`, the only sound source for these facts is this
         // receipt — an ambient `Config` read at TurnStarted or TurnComplete
         // would follow a later provider switch, auto-router hop, or custom
@@ -6935,7 +6990,7 @@ impl Engine {
         let dispatched_base_url = route.candidate.endpoint().base_url.clone();
         let dispatched_product =
             crate::route_billing::capture_product(&route.config, &route.identity);
-        if let Err(err) = self.install_resolved_runtime_route(route) {
+        if let Err(err) = self.install_resolved_runtime_route_async(route).await {
             let cost_scope = crate::cost_status::scope_token();
             crate::cost_status::report_runtime_usage_batch(
                 cost_scope,
@@ -7085,8 +7140,9 @@ impl Engine {
         turn.max_output_tokens = max_output_tokens;
         self.turn_counter = self.turn_counter.saturating_add(1);
         let turn_started_at = chrono::Utc::now();
-        // Mint the route receipt from the client that `install_resolved_runtime_route`
-        // actually installed above — the same client `Event::TurnComplete`
+        // Mint the route receipt from the client that
+        // `install_resolved_runtime_route_async` installed above — the same
+        // client `Event::TurnComplete`
         // reports `base_url` from. Hosts must not re-derive this from config
         // when they process `TurnStarted`: by then config may already describe
         // a different endpoint or credential.
@@ -7474,6 +7530,8 @@ impl Engine {
             // Add the user message through the same explicit snapshot constructor
             // preview uses. Route limits and mode in resource metadata therefore
             // belong to this turn even when the previous route was different.
+            let turn_meta_git_snapshot = self.capture_turn_meta_git_snapshot().await;
+            self.install_turn_meta_git_snapshot(turn_meta_git_snapshot);
             let mut user_msg = self.user_text_message_from_snapshot(
                 content,
                 &model,

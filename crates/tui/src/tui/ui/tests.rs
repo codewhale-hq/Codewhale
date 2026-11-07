@@ -1049,6 +1049,40 @@ fn bracketed_paste_returns_dock_focus_to_the_visible_composer() {
     assert!(app.composer_enter_would_submit(true));
 }
 
+/// Windows Terminal answers an image-only clipboard with an **empty** bracketed
+/// paste ("LOAD BEARING: Send an empty bracketed paste even if the clipboard
+/// was empty" in its paste handler). That empty event is the only signal a TUI
+/// gets, so it has to be read as "the person pasted; ask the clipboard
+/// yourself" rather than as "nothing happened".
+#[test]
+fn empty_bracketed_paste_attaches_the_clipboard_image() {
+    let mut app = App::new(
+        crate::tui::test_support::test_tui_options("."),
+        &Config::default(),
+    );
+    app.clipboard = crate::tui::clipboard::ClipboardHandler::with_content_for_test(
+        crate::tui::clipboard::ClipboardContent::Image(crate::tui::clipboard::PastedImage {
+            path: std::path::PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        }),
+    );
+
+    handle_bracketed_paste(&mut app, "");
+
+    assert!(
+        app.input
+            .contains("[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]"),
+        "draft did not receive the attachment: {:?}",
+        app.input
+    );
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Attached image: 8x4 PNG (2KB)")
+    );
+}
+
 /// One representative terminal encoding per shell binding.
 fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
     match id {
@@ -10348,6 +10382,9 @@ fn shell_live_output_update_matches_exact_task_id_only() {
             status: ShellStatus::Running,
             exit_code: None,
             elapsed_ms: 111,
+            started_at: Some(chrono::Utc::now()),
+            cause: None,
+            producer_reported: false,
             stdout_tail: String::new(),
             stderr_tail: String::new(),
             stdout_len: 0,
@@ -10375,6 +10412,9 @@ fn shell_live_output_update_matches_exact_task_id_only() {
             status: ShellStatus::Running,
             exit_code: None,
             elapsed_ms: 777,
+            started_at: Some(chrono::Utc::now()),
+            cause: None,
+            producer_reported: false,
             stdout_tail: "stdout tail\n".to_string(),
             stderr_tail: "stderr tail\n".to_string(),
             stdout_len: 12,
@@ -10445,6 +10485,9 @@ fn shell_live_output_update_marks_stale_running_job_static() {
             status: ShellStatus::Running,
             exit_code: None,
             elapsed_ms: 90_000,
+            started_at: Some(chrono::Utc::now()),
+            cause: None,
+            producer_reported: false,
             stdout_tail: "still working\n".to_string(),
             stderr_tail: String::new(),
             stdout_len: 14,
@@ -10529,6 +10572,9 @@ fn shell_live_output_update_finalizes_background_exec_output() {
             status: ShellStatus::Completed,
             exit_code: Some(0),
             elapsed_ms: 999,
+            started_at: Some(chrono::Utc::now()),
+            cause: Some(codewhale_engine::tools::shell::ShellTerminationCause::Producer),
+            producer_reported: true,
             stdout_tail: "final stdout\n".to_string(),
             stderr_tail: "final stderr\n".to_string(),
             stdout_len: 13,
@@ -10620,6 +10666,9 @@ fn shell_live_output_update_skips_finalized_exec_cell() {
             status: ShellStatus::Completed,
             exit_code: Some(0),
             elapsed_ms: 999,
+            started_at: Some(chrono::Utc::now()),
+            cause: Some(codewhale_engine::tools::shell::ShellTerminationCause::Producer),
+            producer_reported: true,
             stdout_tail: "new live output".to_string(),
             stderr_tail: String::new(),
             stdout_len: 15,
@@ -17569,6 +17618,14 @@ fn shell_job(
     status: codewhale_engine::tools::shell::ShellStatus,
     exit_code: Option<i64>,
 ) -> codewhale_engine::tools::shell::ShellJobSnapshot {
+    use codewhale_engine::tools::shell::{ShellStatus, ShellTerminationCause};
+    let cause = match &status {
+        ShellStatus::Running => None,
+        ShellStatus::Completed | ShellStatus::Failed => Some(ShellTerminationCause::Producer),
+        ShellStatus::Killed => Some(ShellTerminationCause::Killed),
+        ShellStatus::TimedOut => Some(ShellTerminationCause::TimedOut),
+    };
+    let producer_reported = matches!(&status, ShellStatus::Completed | ShellStatus::Failed);
     codewhale_engine::tools::shell::ShellJobSnapshot {
         id: id.to_string(),
         job_id: id.to_string(),
@@ -17577,6 +17634,9 @@ fn shell_job(
         status,
         exit_code,
         elapsed_ms: 12_000,
+        started_at: Some(chrono::Utc::now()),
+        cause,
+        producer_reported,
         stdout_tail: String::new(),
         stderr_tail: String::new(),
         stdout_len: 0,

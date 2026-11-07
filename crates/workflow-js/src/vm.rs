@@ -44,6 +44,8 @@ const MIN_VM_THREAD_STACK_BYTES: usize = 512 * 1024;
 const MAX_VM_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_VMS: usize = 4;
 const MAX_CONCURRENT_VMS: usize = 256;
+const MAX_VM_SOURCE_BYTES: usize = 1024 * 1024;
+const MAX_VM_ARGS_BYTES: usize = 8 * 1024 * 1024;
 
 const VM_MEMORY_LIMIT_MB_ENV: &str = "CODEWHALE_WORKFLOW_JS_MEMORY_LIMIT_MB";
 const VM_STACK_KB_ENV: &str = "CODEWHALE_WORKFLOW_JS_STACK_KB";
@@ -119,6 +121,33 @@ fn vm_thread_stack_bytes() -> usize {
 fn vm_admission() -> &'static Arc<Semaphore> {
     static ADMISSION: OnceLock<Arc<Semaphore>> = OnceLock::new();
     ADMISSION.get_or_init(|| Arc::new(Semaphore::new(max_concurrent_vms())))
+}
+
+struct BoundedJson {
+    bytes: Vec<u8>,
+}
+
+impl std::io::Write for BoundedJson {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.len().saturating_add(buf.len()) > MAX_VM_ARGS_BYTES {
+            return Err(std::io::Error::other(format!(
+                "{MAX_VM_ARGS_BYTES}-byte limit exceeded"
+            )));
+        }
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn encode_args_json(args: &serde_json::Value) -> Result<String, WorkflowJsError> {
+    let mut writer = BoundedJson { bytes: Vec::new() };
+    serde_json::to_writer(&mut writer, args)
+        .map_err(|err| WorkflowJsError::InvalidArgs(err.to_string()))?;
+    String::from_utf8(writer.bytes).map_err(|err| WorkflowJsError::InvalidArgs(err.to_string()))
 }
 
 /// Executes Workflow scripts, one isolated QuickJS runtime per run.
@@ -202,8 +231,12 @@ impl WorkflowVm {
         invoker: Option<Arc<dyn ToolInvoker>>,
         cancel: WorkflowRunCancel,
     ) -> Result<serde_json::Value, WorkflowJsError> {
-        let args_json = serde_json::to_string(&args)
-            .map_err(|err| WorkflowJsError::InvalidArgs(err.to_string()))?;
+        if source.len() > MAX_VM_SOURCE_BYTES {
+            return Err(WorkflowJsError::VmInit(format!(
+                "workflow source exceeds {MAX_VM_SOURCE_BYTES} bytes"
+            )));
+        }
+        let args_json = encode_args_json(&args)?;
         let cancel = cancel.0;
         let (result_tx, result_rx) = oneshot::channel();
         let mut guard = RunGuard {

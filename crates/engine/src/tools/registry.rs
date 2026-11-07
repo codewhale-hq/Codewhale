@@ -707,6 +707,7 @@ pub fn enforce_tool_authority(
                 | "Bash"
                 | "context_archive_get"
                 | "context_archive_search"
+                | "present"
         ) {
             return Err(ToolError::not_available(format!(
                 "{name} is outside the ACP foreground tool profile"
@@ -1033,6 +1034,12 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(
                 super::tool_result_retrieval::RetrieveToolResultTool,
             ))
+    }
+
+    #[must_use]
+    pub fn with_present_tool(self) -> Self {
+        use super::present::PresentTool;
+        self.with_tool(Arc::new(PresentTool))
     }
 
     /// Include shell execution tools.
@@ -1531,6 +1538,7 @@ impl ToolRegistryBuilder {
     ) -> Self {
         let builder = self
             .with_file_tools()
+            .with_present_tool()
             .with_note_tool()
             .with_search_tools()
             .with_user_input_tool(user_input_limits)

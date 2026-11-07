@@ -358,7 +358,7 @@ impl RuntimeChatRelayHost {
             return Err("The Runtime Chat account owner does not match this target.".to_string());
         }
         let owner = owner_scope_fingerprint(account_ref, target_ref, &self.session_id);
-        self.persist_state_update(
+        self.persist_state_update_blocking(
             "Runtime Chat could not persist its account ownership.",
             |state| bind_owner_scope(state, &owner),
         )
@@ -511,7 +511,7 @@ impl RuntimeChatRelayHost {
     }
 
     #[cfg(test)]
-    pub(crate) fn install_unsettled_turn_for_tests(
+    pub(crate) async fn install_unsettled_turn_for_tests(
         &self,
         run_id: &str,
         native_thread_id: &str,
@@ -541,6 +541,7 @@ impl RuntimeChatRelayHost {
             )]),
             projected_native_seq: 0,
         })
+        .await
     }
 
     #[cfg(test)]
@@ -613,6 +614,7 @@ impl RuntimeChatRelayHost {
             )]),
             projected_native_seq: if terminal_projected { 1 } else { 0 },
         })
+        .await
     }
 
     fn has_unsettled_turns_for_run(&self, run_id: &str) -> bool {
@@ -733,7 +735,7 @@ impl RuntimeChatRelayHost {
                 turns: BTreeMap::new(),
                 projected_native_seq: 0,
             };
-            if let Err(error) = self.insert_binding(binding.clone()) {
+            if let Err(error) = self.insert_binding(binding.clone()).await {
                 let _ = self
                     .manager
                     .discard_empty_thread(&binding.native_thread_id)
@@ -769,15 +771,17 @@ impl RuntimeChatRelayHost {
             &command.turn_id,
             &operation_fingerprint,
         );
-        let reservation = self.reserve_turn(
-            &command.runtime_binding_id,
-            &command.runtime_thread_id,
-            &command.turn_id,
-            &reserved_native_turn_id,
-            &operation_fingerprint,
-            &request_fingerprint,
-            review_request_fingerprint.as_deref(),
-        )?;
+        let reservation = self
+            .reserve_turn(
+                &command.runtime_binding_id,
+                &command.runtime_thread_id,
+                &command.turn_id,
+                &reserved_native_turn_id,
+                &operation_fingerprint,
+                &request_fingerprint,
+                review_request_fingerprint.as_deref(),
+            )
+            .await?;
         if matches!(reservation, TurnReservationDisposition::ExistingTerminal) {
             return Ok(());
         }
@@ -794,7 +798,8 @@ impl RuntimeChatRelayHost {
                     &command.runtime_binding_id,
                     &command.runtime_thread_id,
                     &command.turn_id,
-                )?;
+                )
+                .await?;
             }
             self.release_inference_ownership_if_settled();
             return Err(error);
@@ -874,7 +879,8 @@ impl RuntimeChatRelayHost {
                         &command.runtime_binding_id,
                         &command.runtime_thread_id,
                         &command.turn_id,
-                    )?;
+                    )
+                    .await?;
                 }
                 self.release_inference_ownership_if_settled();
                 return Err(sanitized_runtime_error("start", &error));
@@ -970,7 +976,12 @@ impl RuntimeChatRelayHost {
                         return Ok(vec![*projection]);
                     }
                     ProjectionDecision::Skip => {
-                        self.advance_projection_cursor(&binding.native_thread_id, event.seq, None)?;
+                        self.advance_projection_cursor_async(
+                            &binding.native_thread_id,
+                            event.seq,
+                            None,
+                        )
+                        .await?;
                     }
                     ProjectionDecision::WaitForTurnBinding => break,
                 }
@@ -1102,10 +1113,10 @@ impl RuntimeChatRelayHost {
         Ok(())
     }
 
-    fn insert_binding(&self, binding: RelayThreadBinding) -> Result<(), String> {
+    async fn insert_binding(&self, binding: RelayThreadBinding) -> Result<(), String> {
         self.persist_state_update(
             "Runtime Chat could not persist its private thread binding.",
-            |state| {
+            move |state| {
                 if state.owner_scope_fingerprint.is_none() {
                     return Err("The Runtime Chat account owner is not established.".to_string());
                 }
@@ -1122,10 +1133,11 @@ impl RuntimeChatRelayHost {
                 Ok(())
             },
         )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn reserve_turn(
+    async fn reserve_turn(
         &self,
         runtime_binding_id: &str,
         virtual_thread_id: &str,
@@ -1141,9 +1153,16 @@ impl RuntimeChatRelayHost {
         if let Some(fingerprint) = review_request_fingerprint {
             validate_fingerprint(fingerprint).map_err(public_validation_error)?;
         }
+        let runtime_binding_id = runtime_binding_id.to_string();
+        let virtual_thread_id = virtual_thread_id.to_string();
+        let virtual_turn_id = virtual_turn_id.to_string();
+        let native_turn_id = native_turn_id.to_string();
+        let operation_fingerprint = operation_fingerprint.to_string();
+        let request_fingerprint = request_fingerprint.to_string();
+        let review_request_fingerprint = review_request_fingerprint.map(str::to_string);
         self.persist_state_update(
             "Runtime Chat could not persist its private turn reservation.",
-            |state| {
+            move |state| {
                 let binding = state
                     .bindings
                     .iter_mut()
@@ -1152,12 +1171,12 @@ impl RuntimeChatRelayHost {
                             && binding.virtual_thread_id == virtual_thread_id
                     })
                     .ok_or_else(|| "The Runtime Chat thread binding disappeared.".to_string())?;
-                if let Some(existing) = binding.turns.get_mut(virtual_turn_id) {
+                if let Some(existing) = binding.turns.get_mut(&virtual_turn_id) {
                     if existing.operation_fingerprint == operation_fingerprint
                         && existing.request_fingerprint == request_fingerprint
                         && existing.native_turn_id == native_turn_id
                         && existing.review_request_fingerprint.as_deref()
-                            == review_request_fingerprint
+                            == review_request_fingerprint.as_deref()
                     {
                         // A retry after a proven pre-dispatch failure reopens
                         // the same deterministic reservation. Any accepted or
@@ -1191,12 +1210,12 @@ impl RuntimeChatRelayHost {
                     );
                 }
                 binding.turns.insert(
-                    virtual_turn_id.to_string(),
+                    virtual_turn_id,
                     RelayTurnBinding {
-                        review_request_fingerprint: review_request_fingerprint.map(str::to_string),
-                        native_turn_id: native_turn_id.to_string(),
-                        operation_fingerprint: operation_fingerprint.to_string(),
-                        request_fingerprint: request_fingerprint.to_string(),
+                        review_request_fingerprint,
+                        native_turn_id,
+                        operation_fingerprint,
+                        request_fingerprint,
                         terminal_projected: false,
                         start_rejected: false,
                     },
@@ -1204,17 +1223,21 @@ impl RuntimeChatRelayHost {
                 Ok(TurnReservationDisposition::New)
             },
         )
+        .await
     }
 
-    fn finish_turn_reservation(
+    async fn finish_turn_reservation(
         &self,
         runtime_binding_id: &str,
         virtual_thread_id: &str,
         virtual_turn_id: &str,
     ) -> Result<(), String> {
+        let runtime_binding_id = runtime_binding_id.to_string();
+        let virtual_thread_id = virtual_thread_id.to_string();
+        let virtual_turn_id = virtual_turn_id.to_string();
         self.persist_state_update(
             "Runtime Chat could not settle its rejected turn reservation.",
-            |state| {
+            move |state| {
                 let turn = state
                     .bindings
                     .iter_mut()
@@ -1222,13 +1245,14 @@ impl RuntimeChatRelayHost {
                         binding.runtime_binding_id == runtime_binding_id
                             && binding.virtual_thread_id == virtual_thread_id
                     })
-                    .and_then(|binding| binding.turns.get_mut(virtual_turn_id))
+                    .and_then(|binding| binding.turns.get_mut(&virtual_turn_id))
                     .ok_or_else(|| "The Runtime Chat turn reservation disappeared.".to_string())?;
                 turn.terminal_projected = true;
                 turn.start_rejected = true;
                 Ok(())
             },
         )
+        .await
     }
 
     fn advance_projection_cursor(
@@ -1237,28 +1261,58 @@ impl RuntimeChatRelayHost {
         native_seq: u64,
         terminal_virtual_turn_id: Option<&str>,
     ) -> Result<(), String> {
-        self.persist_state_update(
+        self.persist_state_update_blocking(
             "Runtime Chat could not persist its event cursor.",
             |state| {
-                let binding = state
-                    .bindings
-                    .iter_mut()
-                    .find(|binding| binding.native_thread_id == native_thread_id)
-                    .ok_or_else(|| "The Runtime Chat projection binding is unknown.".to_string())?;
-                binding.projected_native_seq = binding.projected_native_seq.max(native_seq);
-                if let Some(virtual_turn_id) = terminal_virtual_turn_id {
-                    let turn = binding.turns.get_mut(virtual_turn_id).ok_or_else(|| {
-                        "The Runtime Chat terminal projection has no turn binding.".to_string()
-                    })?;
-                    turn.terminal_projected = true;
-                    turn.start_rejected = false;
-                }
-                Ok(())
+                persist_projection_cursor(
+                    state,
+                    native_thread_id,
+                    native_seq,
+                    terminal_virtual_turn_id,
+                )
             },
         )
     }
 
-    fn persist_state_update<T>(
+    async fn advance_projection_cursor_async(
+        &self,
+        native_thread_id: &str,
+        native_seq: u64,
+        terminal_virtual_turn_id: Option<&str>,
+    ) -> Result<(), String> {
+        let native_thread_id = native_thread_id.to_string();
+        let terminal_virtual_turn_id = terminal_virtual_turn_id.map(str::to_string);
+        self.persist_state_update(
+            "Runtime Chat could not persist its event cursor.",
+            move |state| {
+                persist_projection_cursor(
+                    state,
+                    &native_thread_id,
+                    native_seq,
+                    terminal_virtual_turn_id.as_deref(),
+                )
+            },
+        )
+        .await
+    }
+
+    async fn persist_state_update<T>(
+        &self,
+        persistence_error: &'static str,
+        update: impl FnOnce(&mut RelayState) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+    {
+        let host = self.clone();
+        tokio::task::spawn_blocking(move || {
+            host.persist_state_update_blocking(persistence_error, update)
+        })
+        .await
+        .map_err(|_| persistence_error.to_string())?
+    }
+
+    fn persist_state_update_blocking<T>(
         &self,
         persistence_error: &'static str,
         update: impl FnOnce(&mut RelayState) -> Result<T, String>,
@@ -1847,6 +1901,28 @@ fn load_state(path: &Path) -> Result<RelayState> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RelayState::default()),
         Err(error) => Err(error).context("read Runtime Chat binding state"),
     }
+}
+
+fn persist_projection_cursor(
+    state: &mut RelayState,
+    native_thread_id: &str,
+    native_seq: u64,
+    terminal_virtual_turn_id: Option<&str>,
+) -> Result<(), String> {
+    let binding = state
+        .bindings
+        .iter_mut()
+        .find(|binding| binding.native_thread_id == native_thread_id)
+        .ok_or_else(|| "The Runtime Chat projection binding is unknown.".to_string())?;
+    binding.projected_native_seq = binding.projected_native_seq.max(native_seq);
+    if let Some(virtual_turn_id) = terminal_virtual_turn_id {
+        let turn = binding.turns.get_mut(virtual_turn_id).ok_or_else(|| {
+            "The Runtime Chat terminal projection has no turn binding.".to_string()
+        })?;
+        turn.terminal_projected = true;
+        turn.start_rejected = false;
+    }
+    Ok(())
 }
 
 fn persist_state(path: &Path, state: &RelayState) -> Result<()> {
@@ -2472,8 +2548,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn failed_state_writes_never_become_in_memory_authority_and_exact_retry_reopens() {
+    #[tokio::test]
+    async fn failed_state_writes_never_become_in_memory_authority_and_exact_retry_reopens() {
         let root = tempfile::tempdir().unwrap();
         let host = open_host(root.path());
 
@@ -2489,9 +2565,9 @@ mod tests {
         let mut relay_binding = binding();
         relay_binding.turns.clear();
         inject_state_persist_failures(&host.state_path, 1);
-        assert!(host.insert_binding(relay_binding.clone()).is_err());
+        assert!(host.insert_binding(relay_binding.clone()).await.is_err());
         assert!(host.state.lock().bindings.is_empty());
-        host.insert_binding(relay_binding.clone()).unwrap();
+        host.insert_binding(relay_binding.clone()).await.unwrap();
 
         let virtual_turn_id = format!("local_turn_{}", "c".repeat(24));
         let operation_fingerprint = fingerprint("operation-state-fault");
@@ -2513,6 +2589,7 @@ mod tests {
                 &request_fingerprint,
                 None,
             )
+            .await
             .is_err()
         );
         assert!(
@@ -2529,15 +2606,18 @@ mod tests {
             &request_fingerprint,
             None,
         )
+        .await
         .unwrap();
 
         inject_state_persist_failures(&host.state_path, 1);
         assert!(
-            host.advance_projection_cursor(&relay_binding.native_thread_id, 7, None)
+            host.advance_projection_cursor_async(&relay_binding.native_thread_id, 7, None)
+                .await
                 .is_err()
         );
         assert_eq!(host.state.lock().bindings[0].projected_native_seq, 0);
-        host.advance_projection_cursor(&relay_binding.native_thread_id, 7, None)
+        host.advance_projection_cursor_async(&relay_binding.native_thread_id, 7, None)
+            .await
             .unwrap();
 
         drop(host);
@@ -2552,15 +2632,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn conflicting_replay_never_settles_a_live_turn_reservation() {
+    #[tokio::test]
+    async fn conflicting_replay_never_settles_a_live_turn_reservation() {
         let root = tempfile::tempdir().unwrap();
         let host = open_host(root.path());
         host.bind_account("account_fixture", "target_fixture")
             .unwrap();
         let mut relay_binding = binding();
         relay_binding.turns.clear();
-        host.insert_binding(relay_binding.clone()).unwrap();
+        host.insert_binding(relay_binding.clone()).await.unwrap();
 
         let virtual_turn_id = format!("local_turn_{}", "d".repeat(24));
         let operation_fingerprint = fingerprint("same-operation");
@@ -2582,6 +2662,7 @@ mod tests {
                 &original_request,
                 None,
             )
+            .await
             .unwrap(),
             TurnReservationDisposition::New
         );
@@ -2595,21 +2676,22 @@ mod tests {
                 &changed_request,
                 None,
             )
+            .await
             .is_err()
         );
         assert!(host.has_any_unsettled_turns());
         assert!(!host.state.lock().bindings[0].turns[&virtual_turn_id].terminal_projected);
     }
 
-    #[test]
-    fn rejected_start_retry_reopens_the_same_deterministic_reservation() {
+    #[tokio::test]
+    async fn rejected_start_retry_reopens_the_same_deterministic_reservation() {
         let root = tempfile::tempdir().unwrap();
         let host = open_host(root.path());
         host.bind_account("account_fixture", "target_fixture")
             .unwrap();
         let mut relay_binding = binding();
         relay_binding.turns.clear();
-        host.insert_binding(relay_binding.clone()).unwrap();
+        host.insert_binding(relay_binding.clone()).await.unwrap();
 
         let virtual_turn_id = format!("local_turn_{}", "e".repeat(24));
         let operation_fingerprint = fingerprint("retry-operation");
@@ -2630,6 +2712,7 @@ mod tests {
                 &request_fingerprint,
                 None,
             )
+            .await
             .unwrap(),
             TurnReservationDisposition::New
         );
@@ -2638,6 +2721,7 @@ mod tests {
             &relay_binding.virtual_thread_id,
             &virtual_turn_id,
         )
+        .await
         .unwrap();
         assert!(!host.has_any_unsettled_turns());
         assert_eq!(
@@ -2650,21 +2734,22 @@ mod tests {
                 &request_fingerprint,
                 None,
             )
+            .await
             .unwrap(),
             TurnReservationDisposition::Reopened
         );
         assert!(host.has_any_unsettled_turns());
     }
 
-    #[test]
-    fn exact_replay_of_a_projected_terminal_turn_stays_settled() {
+    #[tokio::test]
+    async fn exact_replay_of_a_projected_terminal_turn_stays_settled() {
         let root = tempfile::tempdir().unwrap();
         let host = open_host(root.path());
         host.bind_account("account_fixture", "target_fixture")
             .unwrap();
         let mut relay_binding = binding();
         relay_binding.turns.clear();
-        host.insert_binding(relay_binding.clone()).unwrap();
+        host.insert_binding(relay_binding.clone()).await.unwrap();
 
         let virtual_turn_id = format!("local_turn_{}", "f".repeat(24));
         let operation_fingerprint = fingerprint("terminal-replay-operation");
@@ -2685,6 +2770,7 @@ mod tests {
                 &request_fingerprint,
                 None,
             )
+            .await
             .unwrap(),
             TurnReservationDisposition::New
         );
@@ -2702,6 +2788,7 @@ mod tests {
                 &request_fingerprint,
                 None,
             )
+            .await
             .unwrap(),
             TurnReservationDisposition::ExistingTerminal
         );
@@ -2718,7 +2805,7 @@ mod tests {
             let host = open_host(root.path());
             host.bind_account("account_fixture", "target_fixture")
                 .unwrap();
-            host.insert_binding(binding()).unwrap();
+            host.insert_binding(binding()).await.unwrap();
             host.authorize_run("run_fixture").unwrap();
             assert!(host.has_unsettled_authorized_turns());
         }

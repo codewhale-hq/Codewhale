@@ -37,8 +37,7 @@ use codewhale_runtime::config::Config;
 
 const EXPORT_NAME: &str = "export";
 const EXPORT_ALIAS: &str = "daochu";
-const EXPORT_USAGE: &str =
-    "/export [clipboard|file [--force] <path>|turn [clipboard|file [--force] <path>]]";
+const EXPORT_USAGE: &str = "/export [clipboard|file [path]|turn [clipboard|file [path]]] [--format md|html|json] [--no-tools] [--force]";
 // Pinned to the authoritative catalog values (`crates/localization/locales/{en,fr}.json`,
 // key `CmdExportDescription`). The `description_key` bridge must keep resolving the
 // `/export` metadata to this catalog entry; the wording itself is owned by the catalog.
@@ -346,9 +345,16 @@ fn public_dispatch_file_receipts_and_usage_errors_are_exact() {
 
     let first = execute("/export file transcript.md", app);
     assert!(!first.is_error, "{:?}", first.message);
+    let lines = std::fs::read_to_string(&resolved)
+        .expect("exported file")
+        .lines()
+        .count();
     assert_eq!(
         result_message(&first),
-        format!("Conversation exported to {}", resolved.display())
+        format!(
+            "Conversation exported to {} (Markdown, {lines} lines)",
+            resolved.display()
+        )
     );
 
     let refused = execute("/export file transcript.md", app);
@@ -367,25 +373,21 @@ fn public_dispatch_file_receipts_and_usage_errors_are_exact() {
     assert_eq!(
         result_message(&forced),
         format!(
-            "Conversation exported to {} (overwrite explicitly allowed)",
+            "Conversation exported to {} (Markdown, {lines} lines) (overwrite explicitly allowed)",
             resolved.display()
         )
     );
 
     let usage = export_info().usage;
-    for (arg, reason) in [
-        ("file", "missing file path"),
-        ("file --force", "missing file path"),
-        ("clipboard extra.md", "clipboard does not accept a path"),
-    ] {
-        let result = execute(&format!("/export {arg}"), app);
-        assert!(result.is_error, "{arg} must be rejected");
-        assert_eq!(
-            result_message(&result),
-            format!("Error: {reason}. Usage: {usage}"),
-            "{arg} must keep the baseline usage error"
-        );
-    }
+    let arg = "clipboard extra.md";
+    let reason = "clipboard does not accept a path";
+    let result = execute(&format!("/export {arg}"), app);
+    assert!(result.is_error, "{arg} must be rejected");
+    assert_eq!(
+        result_message(&result),
+        format!("Error: {reason}. Usage: {usage}"),
+        "{arg} must keep the baseline usage error"
+    );
 }
 
 // ---------------------------------------------------------------------------

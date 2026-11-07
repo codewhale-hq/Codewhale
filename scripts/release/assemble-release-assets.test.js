@@ -122,9 +122,18 @@ test("NSIS installer ships the Windows Terminal launcher and Start Menu shortcut
     nsi,
     /CreateShortCut "\$SMPROGRAMS\\\$\{PRODUCT_NAME\}\\\$\{PRODUCT_NAME\}\.lnk" "\$INSTDIR\\bin\\codewhale\.bat"/,
   );
-  assert.match(nsi, /^\s*Delete "\$INSTDIR\\bin\\codewhale\.bat"\s*$/m);
-  assert.match(nsi, /^\s*Delete "\$SMPROGRAMS\\\$\{PRODUCT_NAME\}\\\$\{PRODUCT_NAME\}\.lnk"\s*$/m);
-  assert.match(nsi, /^\s*RMDir "\$SMPROGRAMS\\\$\{PRODUCT_NAME\}"\s*$/m);
+  assert.match(
+    nsi,
+    /^\s*!insertmacro RemoveOwnedFile "\$INSTDIR\\bin\\codewhale\.bat"\s*$/m,
+  );
+  assert.match(
+    nsi,
+    /^\s*!insertmacro RemoveOwnedFile "\$SMPROGRAMS\\\$\{PRODUCT_NAME\}\\\$\{PRODUCT_NAME\}\.lnk"\s*$/m,
+  );
+  assert.match(
+    nsi,
+    /^\s*!insertmacro RemoveOwnedDir "\$SMPROGRAMS\\\$\{PRODUCT_NAME\}"\s*$/m,
+  );
 
   const batNormalized = bat.replace(/\r\n/g, "\n");
   assert.match(batNormalized, /where wt >nul 2>nul/);

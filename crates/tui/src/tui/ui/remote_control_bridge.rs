@@ -14,8 +14,12 @@ pub(crate) async fn drain_remote_control_events(
     // the decision. Keep that card local; once it closes, bind the same
     // already-running typed turn on the next loop tick. If the turn ended in
     // the meantime this remains an ordinary idle attachment.
-    let mut changed = try_attach_active_local_turn_to_remote(app);
-    while let Some(event) = app.remote_control.try_next_event() {
+    let mut changed = try_attach_active_local_turn_to_remote(app).await;
+    loop {
+        let event = app.remote_control.try_next_event_async().await;
+        let Some(event) = event else {
+            break;
+        };
         changed = true;
         match event {
             codewhale_app_server::remote_control::RemoteEvent::Notice(message) => {
@@ -34,9 +38,10 @@ pub(crate) async fn drain_remote_control_events(
                 ..
             } => {
                 app.remote_control
-                    .upload_snapshot(&attachment.run_id, &app.api_messages);
+                    .upload_snapshot_async(&attachment.run_id, &app.api_messages)
+                    .await;
                 let active_local_turn = local_turn_is_active(app);
-                let attached_active_turn = try_attach_active_local_turn_to_remote(app);
+                let attached_active_turn = try_attach_active_local_turn_to_remote(app).await;
                 let status = codewhale_app_server::remote_control::remote_control_banner(
                     &account_ref,
                     &runner_id,
@@ -67,7 +72,8 @@ pub(crate) async fn drain_remote_control_events(
                 // snapshot receipt. `try_next_event` applies that truth before
                 // this handler, so this is either a no-op or one bounded retry.
                 app.remote_control
-                    .upload_snapshot(&attachment.run_id, &app.api_messages);
+                    .upload_snapshot_async(&attachment.run_id, &app.api_messages)
+                    .await;
             }
             codewhale_app_server::remote_control::RemoteEvent::RuntimeCursor { .. } => {
                 // The controller has already retired the acknowledged prefix.
@@ -145,7 +151,7 @@ pub(crate) async fn drain_remote_control_events(
                             "failed",
                             Some(error.clone()),
                         );
-                        app.remote_control.stop();
+                        app.remote_control.stop_async().await;
                         app.sticky_status = None;
                         app.status_message = Some(error);
                         continue;
@@ -201,8 +207,13 @@ pub(crate) async fn drain_remote_control_events(
                             continue;
                         }
                         app.remote_control
-                            .upload_snapshot(&run_id, &app.api_messages);
-                        if let Err(error) = app.remote_control.activate_prompt(&run_id, &turn_id) {
+                            .upload_snapshot_async(&run_id, &app.api_messages)
+                            .await;
+                        if let Err(error) = app
+                            .remote_control
+                            .activate_prompt_async(&run_id, &turn_id)
+                            .await
+                        {
                             app.remote_control.acknowledge(
                                 &run_id,
                                 seq,
@@ -229,9 +240,11 @@ pub(crate) async fn drain_remote_control_events(
                                     .acknowledge(&run_id, seq, &command, "applied", None);
                             }
                             Ok(()) => {
-                                app.remote_control.fail_active_dispatch(
-                                    "The remote prompt was blocked before dispatch.",
-                                );
+                                app.remote_control
+                                    .fail_active_dispatch_async(
+                                        "The remote prompt was blocked before dispatch.",
+                                    )
+                                    .await;
                                 app.remote_control.acknowledge(
                                     &run_id,
                                     seq,
@@ -244,7 +257,9 @@ pub(crate) async fn drain_remote_control_events(
                                 );
                             }
                             Err(error) => {
-                                app.remote_control.fail_active_dispatch(&error.to_string());
+                                app.remote_control
+                                    .fail_active_dispatch_async(&error.to_string())
+                                    .await;
                                 app.remote_control.acknowledge(
                                     &run_id,
                                     seq,
@@ -368,7 +383,7 @@ pub(crate) async fn drain_remote_control_events(
     // A Connected event and the local approval decision may be drained in the
     // same UI iteration. Re-check after the event batch so the current turn is
     // attached without waiting for another key or frame.
-    changed |= try_attach_active_local_turn_to_remote(app);
+    changed |= try_attach_active_local_turn_to_remote(app).await;
     Ok(changed)
 }
 
@@ -380,13 +395,7 @@ fn local_turn_is_active(app: &App) -> bool {
 
 /// Attach `/rc` to the current local turn only after the server has supplied
 /// a real run id and no pre-attachment approval card still owns the decision.
-/// There is no await between the state check and the controller mutation, so a
-/// terminal event cannot race this single-threaded ownership transition.
-/// Attach `/rc` to the current local turn only after the server has supplied
-/// a real run id and no pre-attachment approval card still owns the decision.
-/// There is no await between the state check and the controller mutation, so a
-/// terminal event cannot race this single-threaded ownership transition.
-fn try_attach_active_local_turn_to_remote(app: &mut App) -> bool {
+async fn try_attach_active_local_turn_to_remote(app: &mut App) -> bool {
     if app.remote_control.runtime_chat_blocks_local_dispatch() {
         return false;
     }
@@ -394,7 +403,10 @@ fn try_attach_active_local_turn_to_remote(app: &mut App) -> bool {
         // A dispatch can fail before its typed TurnStarted receipt. In that
         // case there is no turn to hand off and the connected attachment is
         // simply idle, so do not strand a synthetic active lease.
-        return app.remote_control.release_unstarted_local_turn();
+        return app
+            .remote_control
+            .release_unstarted_local_turn_async()
+            .await;
     }
     if app
         .view_stack
@@ -407,11 +419,13 @@ fn try_attach_active_local_turn_to_remote(app: &mut App) -> bool {
     // typed status is still in progress; a new dispatch otherwise parks until
     // its own TurnStarted arrives instead of binding the previous turn id.
     let turn_id = if matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {
-        app.runtime_turn_id.as_deref()
+        app.runtime_turn_id.clone()
     } else {
         None
     };
-    app.remote_control.attach_current_local_turn(turn_id)
+    app.remote_control
+        .attach_current_local_turn_async(turn_id.as_deref())
+        .await
 }
 
 fn report_remote_control_failure(app: &mut App, error: String) {
@@ -437,7 +451,7 @@ fn report_remote_control_start_failure(app: &mut App, error: String) {
     }
 }
 
-pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
+pub(crate) async fn start_remote_control_session(app: &mut App, config: &Config) {
     let session_id = app
         .current_session_id
         .clone()
@@ -470,27 +484,31 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
             return;
         }
     };
-    if let Err(error) = app.remote_control.prepare_remote_control_session_journal(
-        &journal_dir,
-        &target_ref,
-        &session_id,
-    ) {
+    if let Err(error) = app
+        .remote_control
+        .prepare_remote_control_session_journal_async(&journal_dir, &target_ref, &session_id)
+        .await
+    {
         report_remote_control_start_failure(app, error);
         return;
     }
-    if let Err(error) = app.remote_control.configure_runtime_chat(
-        config.clone(),
-        std::sync::Arc::clone(&app.plugin_registry),
-        journal_dir.join("runtime-chat"),
-        target_ref.clone(),
-        session_id.clone(),
-    ) {
+    if let Err(error) = app
+        .remote_control
+        .configure_runtime_chat_async(
+            config.clone(),
+            std::sync::Arc::clone(&app.plugin_registry),
+            journal_dir.join("runtime-chat"),
+            target_ref.clone(),
+            session_id.clone(),
+        )
+        .await
+    {
         report_remote_control_start_failure(app, error);
         return;
     }
     match app
         .remote_control
-        .start(codewhale_app_server::remote_control::RemoteStart {
+        .start_async(codewhale_app_server::remote_control::RemoteStart {
             workspace_label,
             target_ref,
             session_id,
@@ -498,7 +516,9 @@ pub(crate) fn start_remote_control_session(app: &mut App, config: &Config) {
             runtime_commit,
             journal_dir: Some(journal_dir),
             git_remote,
-        }) {
+        })
+        .await
+    {
         Ok(()) => {
             let status = app.remote_control.status_line();
             app.status_message = Some(status.clone());

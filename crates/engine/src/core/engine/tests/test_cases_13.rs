@@ -847,24 +847,34 @@ async fn compaction_completed_reports_complete_post_input_tokens() {
         crate::compaction::estimate_input_tokens_for_pressure(&engine.session.messages, None);
     let expected = engine.estimated_input_tokens();
     assert!(expected > messages_only);
+    engine.active_context_window = Some(crate::route_runtime::ContextWindowResolution {
+        tokens: 1_000_000,
+        source: crate::route_runtime::ContextWindowSource::Configured,
+    });
 
     engine
         .emit_compaction_completed(
             "compact_test".to_string(),
             false,
             "Made room".to_string(),
-            Some(4),
-            Some(1),
             super::compaction::CompactionPass {
                 trigger: "manual",
-                path: crate::compaction::CompactionPath::Summary,
+                path: Some(crate::compaction::CompactionPath::Summary),
+                messages_before: 4,
+                messages_after: Some(1),
                 tokens_before: 9000,
                 threshold_tokens: 8000,
+                configured_threshold_tokens: 8000,
                 usage: Usage {
                     input_tokens: 120,
                     output_tokens: 15,
                     ..Default::default()
                 },
+                elapsed_ms: 42,
+                reported_input_tokens: Some(8_500),
+                gate_input_tokens: None,
+                calibration: (2, 1),
+                compaction_window_tokens: Some(1_000_000),
             },
         )
         .await;
@@ -897,9 +907,23 @@ async fn compaction_completed_reports_complete_post_input_tokens() {
     assert_eq!(details["estimated_tokens_before"], 9000);
     assert_eq!(details["estimated_tokens_after"], expected);
     assert_eq!(details["threshold_tokens"], 8000);
+    assert_eq!(details["configured_threshold_tokens"], 8000);
     assert_eq!(details["summarizer_usage"]["input_tokens"], 120);
     assert_eq!(details["trigger"], "manual");
     assert_eq!(details["path"], "summary");
+    assert_eq!(details["outcome"], "success");
+    assert_eq!(details["elapsed_ms"], 42);
+    assert_eq!(details["reported_input_tokens"], 8_500);
+    assert_eq!(details["gate_input_tokens"], Value::Null);
+    assert_eq!(details["calibration"]["numerator"], 2);
+    assert_eq!(details["calibration"]["denominator"], 1);
+    assert_eq!(details["compaction_window_tokens"], 1_000_000);
+    assert_eq!(details["effective_context_window_tokens"], 1_000_000);
+    assert_eq!(details["effective_context_window_source"], "configured");
+    assert_eq!(
+        details["route_model"],
+        Value::String(engine.session.model.clone())
+    );
     assert!(!log.contains("post-compaction message"));
     engine
         .record_compaction_event(

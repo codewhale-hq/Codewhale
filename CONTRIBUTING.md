@@ -382,6 +382,26 @@ because `main` moved while it was in review, say so and a maintainer resolves
 it on your branch. If your branch is in a fork we cannot push to, we ask on the
 PR first; harvesting is the last resort.
 
+## Labels
+
+Issues and pull requests are labelled by `.github/workflows/triage.yml`, which
+only ever adds labels that already exist. Pull requests get their labels from
+the paths they change and their conventional-commit title prefix; issues get
+them from the title and form answers.
+
+| Family | Meaning |
+| --- | --- |
+| `area:*` | The subsystem or client: `tui`, `core`, `tools`, `mcp`, `state`, `sandbox`, `plugins`, `providers`, `runtime-api`, `install`, `localization`, `ci`, `desktop`, `web`, `mobile`, `remote-control`, `subagents` |
+| `os:*` | Platform-specific behaviour: `windows`, `macos`, `linux`, `freebsd`, `ohos` |
+| `priority:p0` / `p1` / `p2` | Set by a maintainer; `release-blocker` still marks work that must land before a release |
+| `bug`, `enhancement`, `documentation`, `question`, `cleanup`, `performance`, `security` | What kind of change it is |
+| `accessibility` | Screen readers, keyboard use, contrast, motion |
+| `contributor:external` | Opened by someone outside the maintainer team |
+| `lang:zh` | Written in Chinese |
+| `needs-triage`, `needs-info`, `agent-ready`, `agent-in-progress`, `needs-human`, `keep-open`, `pinned`, `stale` | Workflow state; other workflows read these names |
+
+Release targeting uses milestones, not version labels.
+
 ## Contribution Gate
 
 Codewhale uses a maintainer-managed contribution gate for the community front

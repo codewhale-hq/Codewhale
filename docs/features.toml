@@ -346,7 +346,7 @@ owner = "crates/sandbox/src"
 [[feature]]
 id = "providers"
 name = "Providers"
-summary = "Provider routes including Runcrate, with scoped facts, limits, price estimates and a disclosed OrcaRouter offer."
+summary = "Provider routes including Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PROVIDERS.md"
@@ -473,6 +473,15 @@ docs = "docs/PREVIEW_REQUEST.md"
 owner = "crates/engine/src/request_manifest.rs"
 
 [[feature]]
+id = "present-handoff"
+name = "Present final files"
+summary = "Declare existing workspace files as final deliverables with a read-only handoff receipt."
+status = "experimental"
+surfaces = { tui = "preview", api = "partial" }
+since = "unreleased"
+owner = "crates/engine/src/tools/present.rs"
+
+[[feature]]
 id = "read-media"
 name = "read_media"
 summary = "Reads and preprocesses images for vision-capable models with size and privacy guards."
@@ -480,6 +489,15 @@ status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/READ_MEDIA.md"
 owner = "crates/engine/src/tools/read_media.rs"
+
+[[feature]]
+id = "clipboard-image-preview"
+name = "Clipboard image paste preview"
+summary = "Attaches an image from the clipboard and previews it as a truecolor cell thumbnail above the composer."
+status = "stable"
+surfaces = { tui = "stable" }
+docs = "docs/READ_MEDIA.md"
+owner = "crates/tui/src/tui/image_preview.rs"
 
 [[feature]]
 id = "memory"
@@ -755,6 +773,16 @@ surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/session/structcopy.rs"
 
 [[feature]]
+id = "conversation-export"
+name = "Conversation export"
+summary = "/export saves a redacted conversation as Markdown, HTML or JSON, to the clipboard or an auto-named file."
+status = "stable"
+surfaces = { tui = "stable" }
+since = "unreleased"
+docs = "docs/GUIDE.md#exporting-a-conversation"
+owner = "crates/tui/src/commands/groups/session/export.rs"
+
+[[feature]]
 id = "live-thinking"
 name = "Live thinking"
 summary = "/verbose toggles live model thinking in the transcript."
@@ -995,3 +1023,12 @@ surfaces = { tui = "partial", api = "partial" }
 since = "unreleased"
 docs = "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started"
 owner = "crates/net/src/proxy.rs"
+
+[[feature]]
+id = "rate-limit-recovery"
+name = "Bounded HTTP rate-limit retries"
+summary = "Bound HTTP transport retries for 429 independently of network retries and honor provider reset minima."
+status = "experimental"
+surfaces = { tui = "preview", web = "partial", api = "partial" }
+owner = "crates/engine/src/llm_client/rate_limit.rs"
+docs = "docs/rate-limit-retries.md"

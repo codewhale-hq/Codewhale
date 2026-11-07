@@ -1879,9 +1879,6 @@ pub async fn update_provider_catalog(
         receipt.error = Some("refresh_credentials_changed");
         return receipt;
     }
-    // Serialize publication with explicit overlay install/remove. Resolve
-    // above before taking this guard: the resolver itself reads the overlay.
-    let access = route_config.account_model_access.read();
     let owner = |access: &codewhale_runtime::config::AccountModelAccess| {
         (
             access.session_id.clone(),
@@ -1889,7 +1886,11 @@ pub async fn update_provider_catalog(
             access.credential.expose_secret().to_string(),
         )
     };
-    if access.as_ref().map(owner) != account_owner.as_ref().map(owner) {
+    let account_unchanged = {
+        let access = route_config.account_model_access.read();
+        access.as_ref().map(owner) == account_owner.as_ref().map(owner)
+    };
+    if !account_unchanged {
         receipt.outcome = "skipped";
         receipt.error = Some("refresh_credentials_changed");
         return receipt;
@@ -1930,7 +1931,6 @@ pub async fn update_provider_catalog(
             receipt.error = Some(reason.label());
         }
     }
-    drop(access);
     let outcome = receipt.outcome;
     let failure = receipt.error;
     receipt = cached_receipt(&route_config, identity);

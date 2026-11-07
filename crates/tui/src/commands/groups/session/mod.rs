@@ -9,6 +9,8 @@ pub(in crate::commands) mod branch;
 pub(in crate::commands) mod color;
 pub(in crate::commands) mod compact;
 pub(in crate::commands) mod export;
+pub(in crate::commands) mod export_html;
+pub(in crate::commands) mod export_json;
 pub(in crate::commands) mod fork;
 pub(in crate::commands) mod load;
 pub(in crate::commands) mod new;
