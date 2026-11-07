@@ -27,6 +27,12 @@
   "crates/app-server/src/runtime_api/git.rs": {
     "std_fs": 6
   },
+  "crates/app-server/src/runtime_api/jobs.rs": {
+    "std_fs": 3
+  },
+  "crates/app-server/src/runtime_api/plugins.rs": {
+    "std_fs": 2
+  },
   "crates/app-server/src/runtime_api/workspace.rs": {
     "path_canonicalize": 4,
     "std_fs": 3
@@ -295,6 +301,13 @@
   "crates/net/src/import_claude.rs": {
     "std_fs": 2
   },
+  "crates/paths/src/daemon_socket.rs": {
+    "std_fs": 1
+  },
+  "crates/paths/src/lib.rs": {
+    "path_canonicalize": 1,
+    "std_fs": 1
+  },
   "crates/plugins/src/builtin.rs": {
     "thread_sleep": 1
   },
@@ -317,13 +330,14 @@
     "path_canonicalize": 2
   },
   "crates/plugins/src/marketplace/document.rs": {
-    "std_fs": 1
+    "std_fs": 2
   },
   "crates/plugins/src/marketplace/store.rs": {
     "std_fs": 1
   },
   "crates/plugins/src/registry.rs": {
-    "path_canonicalize": 6,
+    "path_canonicalize": 7,
+    "std_fs": 1,
     "thread_sleep": 1
   },
   "crates/plugins/src/runtime.rs": {
