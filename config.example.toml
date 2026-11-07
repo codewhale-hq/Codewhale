@@ -898,6 +898,7 @@ base_url = "https://api.deepseek.com/beta"
 # OpenAI-compatible Chat Completions route.
 # Provider aliases: mistral, mistral-ai, mistralai, la-plateforme
 # Env var aliases: MISTRAL_API_KEY, MISTRAL_BASE_URL, MISTRAL_MODEL
+# Vibe Code subscription setup: docs/MISTRAL_VIBE.md
 [providers.mistral]
 # api_key = "YOUR_MISTRAL_API_KEY"
 # base_url = "https://api.mistral.ai/v1"

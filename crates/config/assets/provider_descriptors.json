@@ -1567,9 +1567,9 @@
       "wire_policy": "chat_completions",
       "credential_help": {
         "acquisition": "api_key",
-        "credential_url": "https://console.mistral.ai/api-keys",
-        "docs_url": "https://docs.mistral.ai/",
-        "guidance": "Create a Mistral API key in the Mistral Console (la Plateforme)."
+        "credential_url": "https://chat.mistral.ai/code/extensions",
+        "docs_url": "https://docs.mistral.ai/vibe/code/cli/api-keys-profiles",
+        "guidance": "Use a Vibe Code API key or a Mistral Studio API key. Plan allowances and pay-as-you-go depend on your organization."
       },
       "selectable": true,
       "retired": false,
