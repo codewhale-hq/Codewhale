@@ -3556,7 +3556,18 @@ the model reports the tool absent and finishes instead of stalling.
 user_input_timeout_seconds = 300   # opt into 5 minutes; omitted or 0 waits indefinitely; maximum 86400
 ```
 
-This key governs question waits only. Approvals have their own clock,
+`task_human_wait_cap_seconds` is a separate, fail-safe ceiling for durable
+tasks run by the runtime API server. While a task waits on an approval or
+user-input answer its wall clock is paused; if nobody answers within this many
+seconds the task fails with `human_wait_timeout` and releases its worker.
+Omitted or `0` uses 1800 (30 minutes); values are clamped to `1..=86400`.
+
+```toml
+[tools]
+task_human_wait_cap_seconds = 3600   # optional; default 1800
+```
+
+`user_input_timeout_seconds` governs question waits only. Approvals have their own clock,
 `[approval] timeout_seconds`, which waits indefinitely unless you set it.
 Wall-clock and stream protections elsewhere are unaffected.
 

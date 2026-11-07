@@ -582,7 +582,7 @@ impl Default for TaskExecutionLimits {
             idle_progress: Duration::from_secs(2 * 60),
             cancel_grace: Duration::from_secs(5),
             persist_debounce: Duration::from_millis(250),
-            human_wait_cap: Duration::from_secs(24 * 60 * 60),
+            human_wait_cap: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -639,7 +639,9 @@ impl ExecutionGuard {
     }
 
     /// Mark the start of a human-paced wait (idempotent). Only the first
-    /// begin of an unmatched begin/end pair takes effect.
+    /// begin of an unmatched begin/end pair takes effect, and none does once
+    /// the wall deadline has already passed: that crossing still ends the
+    /// task instead of being moved past the prompt.
     ///
     /// Windows merge rather than stack: the first begin sets the origin and
     /// any end closes the whole window. That is sound because the engine
@@ -649,7 +651,7 @@ impl ExecutionGuard {
     /// today. If a future change lets nested prompts surface concurrently,
     /// switch to paired (counted) windows first.
     fn begin_human_wait(&mut self, now: Instant) {
-        if self.human_wait_since.is_none() {
+        if self.human_wait_since.is_none() && self.wall_deadline().is_none_or(|wall| now < wall) {
             self.human_wait_since = Some(now);
         }
     }
@@ -674,6 +676,32 @@ impl ExecutionGuard {
         now.saturating_duration_since(self.started_at)
             .saturating_sub(self.human_wait_total)
             .saturating_sub(open)
+    }
+
+    fn wall_deadline(&self) -> Option<Instant> {
+        self.started_at
+            .checked_add(self.limits.wall_time)
+            .and_then(|deadline| deadline.checked_add(self.human_wait_total))
+    }
+
+    /// Attribute the timeout to the limit that was crossed first, not to the
+    /// one this tick happens to check first. When the watchdog is starved
+    /// past both deadlines (a >=250 ms scheduler stall on a loaded CI runner
+    /// is enough with the test budgets), the idle limit that expired earlier
+    /// is still the truthful reason; a tie keeps the wall limit's precedence
+    /// (issue #5898). The wall deadline moves with every closed human-wait
+    /// window, so it stays `wall_time` away from the engine-owned elapsed
+    /// time rather than from the raw wall clock.
+    fn crossed_deadline(&self, now: Instant) -> Option<TaskTerminalReason> {
+        let idle_deadline = self.last_progress_at.checked_add(self.limits.idle_progress);
+        match (self.wall_deadline(), idle_deadline) {
+            (Some(wall), Some(idle)) if now >= wall && wall <= idle => {
+                Some(TaskTerminalReason::WallTimeout)
+            }
+            (_, Some(idle)) if now >= idle => Some(TaskTerminalReason::IdleTimeout),
+            (Some(wall), _) if now >= wall => Some(TaskTerminalReason::WallTimeout),
+            _ => None,
+        }
     }
 
     fn note_progress(&mut self, now: Instant) {
@@ -729,34 +757,7 @@ impl ExecutionGuard {
             // task even between windows.
             Some(TaskTerminalReason::HumanWaitTimeout)
         } else {
-            // Attribute the timeout to the limit that was crossed first, not
-            // to the one this tick happens to check first. When the watchdog
-            // is starved past both deadlines (a >=250 ms scheduler stall on a
-            // loaded CI runner is enough with the test budgets), the idle
-            // limit that expired earlier is still the truthful reason; a tie
-            // keeps the wall limit's precedence (issue #5898).
-            // The wall deadline moves with every excluded human-wait window,
-            // so it stays `wall_time` away from the engine-owned elapsed
-            // time rather than from the raw wall clock.
-            let open = self
-                .human_wait_since
-                .map(|since| now.saturating_duration_since(since))
-                .unwrap_or_default();
-            let wall_deadline =
-                self.started_at
-                    .checked_add(self.limits.wall_time)
-                    .and_then(|deadline| {
-                        deadline.checked_add(self.human_wait_total.saturating_add(open))
-                    });
-            let idle_deadline = self.last_progress_at.checked_add(self.limits.idle_progress);
-            match (wall_deadline, idle_deadline) {
-                (Some(wall), Some(idle)) if now >= wall && wall <= idle => {
-                    Some(TaskTerminalReason::WallTimeout)
-                }
-                (_, Some(idle)) if now >= idle => Some(TaskTerminalReason::IdleTimeout),
-                (Some(wall), _) if now >= wall => Some(TaskTerminalReason::WallTimeout),
-                _ => None,
-            }
+            self.crossed_deadline(now)
         };
         if let Some(reason) = pending {
             return GuardAction::Interrupt { reason };
@@ -829,7 +830,10 @@ impl TaskManagerConfig {
             default_mode: "agent".to_string(),
             allow_shell: config.allow_shell(),
             trust_mode: false,
-            execution_limits: TaskExecutionLimits::default(),
+            execution_limits: TaskExecutionLimits {
+                human_wait_cap: config.task_human_wait_cap(),
+                ..TaskExecutionLimits::default()
+            },
             human_waits_answerable: false,
         }
     }
@@ -1164,7 +1168,6 @@ impl TaskExecutor for EngineTaskExecutor {
 /// decision: with no host able to deliver a decision, a pending prompt is
 /// not a human-paced wait but a prompt nobody will answer, so the wall
 /// clock keeps running and releases the worker at its own deadline.
-
 async fn drive_engine_turn(
     runtime_threads: &RuntimeThreadManager,
     thread_id: &str,

@@ -69,10 +69,15 @@ fn server_task_config_opts_tasks_into_answerable_human_waits() {
     // tasks (`POST /v1/approvals/{id}`, the user-input endpoints), so its
     // config must opt in explicitly; everywhere else (`from_runtime`, the
     // TUI's private runtime) the safe default is unanswerable.
-    let cfg = server_task_config(&Config::default(), PathBuf::from("."), 2);
+    let cfg = server_task_config(&Config::default(), PathBuf::from("."), 2, true);
     assert!(
         cfg.human_waits_answerable,
         "server task config must arm answerable human waits"
+    );
+    let local = server_task_config(&Config::default(), PathBuf::from("."), 2, false);
+    assert!(
+        !local.human_waits_answerable,
+        "a local control frontend binds no HTTP listener, so its tasks stay unanswerable"
     );
 }
 
@@ -101,7 +106,7 @@ async fn server_task_runtime_wires_answerable_human_waits_into_the_executor() ->
         RuntimeThreadManagerConfig::from_task_data_dir(root.path().join("runtime")),
     )?);
     let task_manager = TaskManager::start_with_runtime_manager(
-        server_task_config(&config, workspace, 1),
+        server_task_config(&config, workspace, 1, true),
         config,
         runtime_threads.clone(),
     )
