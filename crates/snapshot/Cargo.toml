@@ -25,7 +25,6 @@ serde.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
-wait-timeout = "0.2"
 
 [dev-dependencies]
 codewhale-runtime = { path = "../runtime", version = "0.10.3", features = ["test-support"] }

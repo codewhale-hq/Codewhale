@@ -114,20 +114,13 @@ async-trait.workspace = true
 base64 = "0.23.1"
 axum.workspace = true
 clap.workspace = true
-crossterm = "0.29"
 encoding_rs.workspace = true
 fd-lock = "4.0.4"
 dirs.workspace = true
 futures-util = "0.3.31"
 oauth2 = { version = "5", default-features = false }
-# No ratatui-core pin: ColorCompatBackend answers `get_cursor_position()`
-# from tracked state (ratatui#2640's recommended workaround), so the CPR query
-# inside `Terminal::clear()` no longer races the input loop. See
-# `tui/color_compat.rs`.
-ratatui = { version = "=0.30.2", features = ["unstable-rendered-line-info"] }
 regex = "1.11"
 reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
-rquickjs.workspace = true
 rmcp = { version = "3.7.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
 rustls.workspace = true
 similar = { version = "3", features = ["unicode"] }
@@ -156,7 +149,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tower-http.workspace = true
 wait-timeout = "0.2"
 webbrowser = "1.0"
 shlex = "2.0.1"
@@ -179,7 +171,6 @@ liblzma = { version = "0.4", features = ["static"] }
 sha2.workspace = true
 # Reuse the locked cryptographic implementation for exact-call user decisions.
 ring = "0.17"
-semver.workspace = true
 codewhale-localization = { path = "../localization", version = "0.10.3" }
 shell-words = "1.1.1"
 
