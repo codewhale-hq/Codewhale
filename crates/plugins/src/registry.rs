@@ -297,6 +297,16 @@ impl PluginRegistry {
                 staged_bundle_matches(&staged_root, &plugin.content_hash, &plugin.capability_hash)
                     .then_some(staged_root)
             });
+            plugin
+                .diagnostics
+                .retain(|diagnostic| diagnostic.code != "runtime-snapshot-unavailable");
+            if plugin.enabled && plugin.trusted() && plugin.staged_root.is_none() {
+                plugin.diagnostics.push(PluginDiagnostic::warning(
+                    "runtime-snapshot-unavailable",
+                    "Plugin runtime snapshot is missing or invalid; inspect it and review the plugin again.",
+                    Some(plugin.canonical_root.clone()),
+                ));
+            }
             if let Some(staged_root) = plugin.staged_root.clone() {
                 match super::discovery::load_staged_skill_snapshots(
                     &staged_root,
