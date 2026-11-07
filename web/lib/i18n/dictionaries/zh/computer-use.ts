@@ -10,7 +10,7 @@ export const computerUse: ComputerUseDict = {
   metaTitle: "Computer Use · Mac 测试版 · Codewhale",
   metaDescription: "智能体在 Mac 应用中后台操作，你可以继续使用电脑。下载经过 Apple 公证的 Computer Use 助手，并连接兼容的 MCP 宿主。",
   title: "Computer Use",
-  lead: "智能体在 Mac 应用中后台操作，你可以继续使用电脑。将 Computer Use 连接到 Codewhale 或其他兼容 MCP 的宿主，需要时随时暂停或停止。",
+  lead: "让智能体在 Mac 应用中工作，你可以继续使用电脑。",
   publisher: "由 Codewhale 开发",
   download: "下载 Mac 版",
   downloadZip: "ZIP 压缩包（供应用内更新使用）",
@@ -26,7 +26,7 @@ export const computerUse: ComputerUseDict = {
   steps: [
     { title: "安装应用", body: "打开下载的磁盘映像，将 Codewhale Computer Use 拖入“应用程序”。从“应用程序”中打开它，然后点击菜单栏中的鲸鱼图标，选择 Computer Use。" },
     { title: "检查权限", body: "通过设置按钮打开系统设置中的“辅助功能”和“屏幕录制”。由你决定授予哪些权限。" },
-    { title: "连接智能体", body: "在 Codewhale 中运行 /plugin marketplace install codewhale computer-use，审阅并启用插件。其他兼容 MCP 的宿主可按设置指南连接助手。助手与宿主插件是两个独立部分。" },
+    { title: "连接智能体", body: "在 Codewhale 中运行 /plugin marketplace install codewhale computer-use，审阅并启用插件。其他兼容 MCP 的宿主可按设置指南连接助手。" },
   ],
   controlsTitle: "随时掌握控制权",
   controlsBody: "授予 macOS 权限后，标准模式无需逐个应用询问。你禁用的应用仍不可访问；Pause 暂停电脑操作，Stop computer use 结束当前会话。也可选择严格审批模式。想观看操作过程时，再请求打开实时预览。",

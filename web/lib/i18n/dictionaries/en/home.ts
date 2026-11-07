@@ -6,7 +6,7 @@ export const home: HomeDict = {
   metaDescription: "Build apps, fix code and automate work with an open-source agent in your terminal. Choose hosted or local models. Help build Codewhale with code, docs and feedback.",
 
   heroTitle: "Build apps. Automate work.",
-  heroIntro: "{brand} is an open-source agent that builds software and automates work with your choice of models. Run it in your terminal, coordinate a Fleet, or add Computer Use for work across Mac apps.",
+  heroIntro: "{brand} is an open-source agent for your terminal. Run workflows, connect tools and use the hosted or local models you choose.",
   getCodewhale: "Install Codewhale",
   heroInstallAria: "Install command",
   exploreProduct: "Explore Codewhale",
@@ -43,7 +43,7 @@ export const home: HomeDict = {
   chapterModels: "Your models",
   modelsHeading: "Use the models you choose",
   modelsBody:
-    "Keep the choice of model in your hands. Use a supported provider, an OpenAI-compatible endpoint or a local model, and choose a different model for each agent in a Fleet.",
+    "Use provider API keys, an OpenAI-compatible endpoint or local models.",
   modelsFacts: [
     [
       "Your API accounts",
@@ -132,9 +132,9 @@ export const home: HomeDict = {
   chinaMirrors: "China mirrors",
   installGuideLink: "Read the install guide",
 
-  communityHeading: "Help build an agent you want to use",
+  communityHeading: "Contribute to Codewhale",
   communityBody:
-    "Join {count} contributors making Codewhale better. Start with something you care about: a bug, a clearer guide, a translation or a feature. You do not need to write Rust to help.",
+    "{count} contributors. Code, docs, translations and skills all help.",
   communityLinksAria: "Community links",
-  contribute: "Find your first contribution",
+  contribute: "Contribute",
 };

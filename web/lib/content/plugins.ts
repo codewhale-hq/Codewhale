@@ -16,7 +16,7 @@ export const PLUGINS_COPY = {
   docsCta: { en: "Plugin authoring guide", zh: "插件编写指南" },
 
   cuLabel: { en: "First-party plugin · macOS beta", zh: "官方插件 · macOS 测试版" },
-  cuTitle: { en: "Let an agent work in your apps", zh: "让智能体在应用中替你操作" },
+  cuTitle: { en: "Computer Use", zh: "Computer Use" },
   cuLead: {
     en: "Let an agent work in Mac apps while you keep using your computer. Connect the Computer Use helper and plugin to Codewhale or another compatible MCP host.",
     zh: "智能体在 Mac 应用中后台操作，你可以继续使用电脑。将 Computer Use 助手和插件连接到 Codewhale 或其他兼容 MCP 的宿主。",

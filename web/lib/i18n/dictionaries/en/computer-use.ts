@@ -10,7 +10,7 @@ export const computerUse: ComputerUseDict = {
   metaTitle: "Computer Use · Mac beta · Codewhale",
   metaDescription: "Let an agent work in Mac apps while you keep using your computer. Download the notarized Computer Use helper and connect a compatible MCP host.",
   title: "Computer Use",
-  lead: "Let an agent work in Mac apps while you keep using your computer. Connect Computer Use to Codewhale or another compatible MCP host, and pause or stop it whenever you need.",
+  lead: "Let your agent work in Mac apps while you keep using your computer.",
   publisher: "By Codewhale",
   download: "Download for Mac",
   downloadZip: "ZIP archive (used by the in-app updater)",
@@ -26,7 +26,7 @@ export const computerUse: ComputerUseDict = {
   steps: [
     { title: "Install the app", body: "Open the disk image and drag Codewhale Computer Use into Applications. Open it from Applications, then choose Computer Use from the whale icon in your menu bar." },
     { title: "Review permissions", body: "Use the setup buttons to open Accessibility and Screen Recording in System Settings. You choose which permissions to grant." },
-    { title: "Connect your agent", body: "In Codewhale, install Computer Use with /plugin marketplace install codewhale computer-use, then review and enable the plugin. Other compatible MCP hosts connect to the helper using the setup guide. The helper and host plugin are separate pieces." },
+    { title: "Connect your agent", body: "In Codewhale, install Computer Use with /plugin marketplace install codewhale computer-use, then review and enable the plugin. Other compatible MCP hosts connect to the helper using the setup guide." },
   ],
   controlsTitle: "Stay in control",
   controlsBody: "After you grant the macOS permissions, standard mode works without per-app prompts. Apps you deny stay off limits; Pause suspends computer use and Stop computer use ends current sessions. Strict approval is optional. Request a live preview when you want to watch.",

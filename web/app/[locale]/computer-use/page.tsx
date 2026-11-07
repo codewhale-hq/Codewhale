@@ -34,7 +34,6 @@ export default async function ComputerUsePage({ params }: { params: Promise<{ lo
   return (
     <>
       <PageHeader
-        kicker={t.publisher}
         title={t.title}
         lede={t.lead}
         pose="computer"
@@ -43,8 +42,6 @@ export default async function ComputerUsePage({ params }: { params: Promise<{ lo
             <Status tone="attention">{getFeatures(locale).preview}</Status>
             <br />
             {t.requirements}
-            <br />
-            {t.included}
           </>
         }
       >

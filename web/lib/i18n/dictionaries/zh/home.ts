@@ -6,7 +6,7 @@ export const home: HomeDict = {
   metaTitle: "Codewhale · 构建应用，自动完成工作",
   metaDescription: "在终端里用开源智能体构建应用、修复代码并自动完成工作。选择托管或本地模型，通过代码、文档和反馈一起改进 Codewhale。",
   heroTitle: "构建应用，自动完成工作",
-  heroIntro: "{brand} 是开源智能体，用你选择的模型构建软件、自动完成工作。在终端里使用，组建 Fleet 智能体团队，或添加 Computer Use 操作 Mac 应用。",
+  heroIntro: "{brand} 是终端里的开源智能体。运行工作流、连接工具，使用你选择的托管或本地模型。",
   getCodewhale: "安装 Codewhale",
   heroInstallAria: "安装命令",
   exploreProduct: "探索 Codewhale",
@@ -38,7 +38,7 @@ export const home: HomeDict = {
   chapterModels: "你的模型",
   modelsHeading: "使用你选择的模型",
   modelsBody:
-    "连接你的提供商账户、OpenAI 兼容端点，或本地及自托管模型。为会话选择模型，也可以为 Fleet 中的每个智能体分别选择模型。",
+    "使用提供商 API 密钥、OpenAI 兼容端点或本地模型。",
   modelsFacts: [
     [
       "你的 API 账户",
@@ -119,8 +119,8 @@ export const home: HomeDict = {
   binaries: "预编译包",
   chinaMirrors: "中国镜像",
   installGuideLink: "阅读安装指南",
-  communityHeading: "一起构建你想用的智能体",
-  communityBody: "加入 {count} 位贡献者，一起改进 Codewhale。从你关心的地方开始：一个问题、一段更清楚的说明、一份翻译或一项功能。不写 Rust，也能帮上忙。",
+  communityHeading: "参与 Codewhale",
+  communityBody: "已有 {count} 位贡献者。代码、文档、翻译和技能都欢迎。",
   communityLinksAria: "社区链接",
-  contribute: "找到你的第一次贡献",
+  contribute: "参与贡献",
 };

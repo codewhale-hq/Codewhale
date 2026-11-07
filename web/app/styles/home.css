@@ -265,10 +265,3 @@
   border-radius: var(--radius-sheet);
   background: var(--surface);
 }
-.home-community .dir-desc {
-  display: block;
-  margin-top: var(--space-2);
-  color: var(--muted);
-  font-size: var(--text-ui);
-  line-height: 1.55;
-}

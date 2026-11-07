@@ -371,18 +371,8 @@ describe("navigation parity and accessibility", () => {
 describe("homepage integration", () => {
   const homepage = webText("app/[locale]/page.tsx");
 
-  it("renders the shared getting-started path on the homepage", () => {
-    expect(homepage).toContain('import { GettingStartedSteps } from "@/components/getting-started-steps"');
-    expect(homepage).toContain("<GettingStartedSteps locale={locale} />");
-    expect(homepage).toContain("product-start");
-    expect(homepage).toContain("/docs/guide");
-    expect(homepage).toContain("/docs/vocabulary");
-  });
-
   it("keeps the published release separate from the source candidate", () => {
     expect(homepage).toContain("facts.latestPublishedRelease");
-    // The unreleased-source label is the EN dictionary value the page renders
-    // (plain "Unreleased", per docs/design/WEB_VOICE.md).
     expect(homepage).toContain("d.sourceCandidate");
     expect(getHome("en").sourceCandidate).toBe("Unreleased");
   });

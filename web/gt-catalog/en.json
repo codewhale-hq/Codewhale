@@ -168,7 +168,7 @@
     "themeDark": "dark",
     "themeAria": "Theme: {mode} (click to cycle)",
     "themeTitle": "Theme · auto / light / dark",
-    "footerTagline": "Build apps and automate work with an open-source agent and the models you choose.",
+    "footerTagline": "Build apps. Automate work.",
     "footerProduct": "Product",
     "footerProject": "Project",
     "footerDocs": "Docs",
@@ -195,7 +195,7 @@
     "metaTitle": "Codewhale · Build apps. Automate work.",
     "metaDescription": "Build apps, fix code and automate work with an open-source agent in your terminal. Choose hosted or local models. Help build Codewhale with code, docs and feedback.",
     "heroTitle": "Build apps. Automate work.",
-    "heroIntro": "{brand} is an open-source agent that builds software and automates work with your choice of models. Run it in your terminal, coordinate a Fleet, or add Computer Use for work across Mac apps.",
+    "heroIntro": "{brand} is an open-source agent for your terminal. Run workflows, connect tools and use the hosted or local models you choose.",
     "getCodewhale": "Install Codewhale",
     "heroInstallAria": "Install command",
     "exploreProduct": "Explore Codewhale",
@@ -225,7 +225,7 @@
     ],
     "chapterModels": "Your models",
     "modelsHeading": "Use the models you choose",
-    "modelsBody": "Keep the choice of model in your hands. Use a supported provider, an OpenAI-compatible endpoint or a local model, and choose a different model for each agent in a Fleet.",
+    "modelsBody": "Use provider API keys, an OpenAI-compatible endpoint or local models.",
     "modelsFacts": [
       [
         "Your API accounts",
@@ -306,10 +306,10 @@
     "binaries": "Binaries",
     "chinaMirrors": "China mirrors",
     "installGuideLink": "Read the install guide",
-    "communityHeading": "Help build an agent you want to use",
-    "communityBody": "Join {count} contributors making Codewhale better. Start with something you care about: a bug, a clearer guide, a translation or a feature. You do not need to write Rust to help.",
+    "communityHeading": "Contribute to Codewhale",
+    "communityBody": "{count} contributors. Code, docs, translations and skills all help.",
     "communityLinksAria": "Community links",
-    "contribute": "Find your first contribution"
+    "contribute": "Contribute"
   },
   "docs-guide": {
     "metaTitle": "Start your first task · Codewhale Docs",
@@ -2051,7 +2051,7 @@
     "metaTitle": "Computer Use · Mac beta · Codewhale",
     "metaDescription": "Let an agent work in Mac apps while you keep using your computer. Download the notarized Computer Use helper and connect a compatible MCP host.",
     "title": "Computer Use",
-    "lead": "Let an agent work in Mac apps while you keep using your computer. Connect Computer Use to Codewhale or another compatible MCP host, and pause or stop it whenever you need.",
+    "lead": "Let your agent work in Mac apps while you keep using your computer.",
     "publisher": "By Codewhale",
     "download": "Download for Mac",
     "downloadZip": "ZIP archive (used by the in-app updater)",
@@ -2075,7 +2075,7 @@
       },
       {
         "title": "Connect your agent",
-        "body": "In Codewhale, install Computer Use with /plugin marketplace install codewhale computer-use, then review and enable the plugin. Other compatible MCP hosts connect to the helper using the setup guide. The helper and host plugin are separate pieces."
+        "body": "In Codewhale, install Computer Use with /plugin marketplace install codewhale computer-use, then review and enable the plugin. Other compatible MCP hosts connect to the helper using the setup guide."
       }
     ],
     "controlsTitle": "Stay in control",

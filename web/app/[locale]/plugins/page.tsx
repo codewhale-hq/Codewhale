@@ -36,7 +36,6 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
   return (
     <>
       <PageHeader
-        kicker={t(PLUGINS_COPY.kicker)}
         title={t(PLUGINS_COPY.title)}
         lede={t(PLUGINS_COPY.lead)}
         pose="connect"

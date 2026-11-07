@@ -38,7 +38,6 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
   return (
     <>
       <PageHeader
-        kicker={t(MODELS_COPY.kicker)}
         title={t(MODELS_COPY.title)}
         lede={t(MODELS_COPY.lead)}
         pose="think"

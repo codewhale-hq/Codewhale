@@ -5,8 +5,6 @@ import {
   footerLegalLinks,
   footerProductLinks,
   footerProjectLinks,
-  REPO_RELEASES_URL,
-  REPO_URL,
 } from "@/lib/i18n/links";
 import { SITE_CONTACT_EMAIL, SITE_SECURITY_EMAIL } from "@/lib/page-meta";
 import { USAGE_COUNTING_COPY } from "@/lib/content/usage-counting";
@@ -57,12 +55,6 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
         </div>
 
         <div className="site-footer-meta">
-          <p>
-            {chrome.footerCanonicalSource}
-            <a href={REPO_URL}>github.com/codewhale-hq/CodeWhale</a>
-            {chrome.footerReleases}
-            <a href={REPO_RELEASES_URL}>{chrome.footerReleasesLink}</a>
-          </p>
           <div className="site-footer-meta-links">
             {legal.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
             {GITEE_ENABLED && <a href="https://gitee.com/codewhale-hq/CodeWhale">Gitee</a>}

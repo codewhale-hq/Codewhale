@@ -29,7 +29,6 @@ export default async function RuntimePage({ params }: { params: Promise<{ locale
     <>
       <PageHeader
         seal="接"
-        kicker={t.kicker}
         title={t.title}
         titleAside={t.titleAside}
         titleAsideLang={t.titleAsideLang}
