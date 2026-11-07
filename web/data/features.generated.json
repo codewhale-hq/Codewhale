@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "01f850a5cf09f4dc0ffdc0558bd85676885a996203a1434fcfb6a16e28c6ce18"
+    "sha256": "85b2d707336e34558a5b7e639ed25e07978fae3a34f1dacc26f7beadfbfc2f8a"
   },
   "features": [
     {
@@ -1365,6 +1365,35 @@
       "flag": null,
       "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
       "registryLine": 1008
+    },
+    {
+      "id": "local-proxy-fallback",
+      "name": "Local proxy fallback",
+      "summary": "Long-lived clients go direct while a loopback proxy port refuses connections, then resume proxying.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "partial",
+        "api": "partial"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started",
+      "registryLine": 1018
+    },
+    {
+      "id": "rate-limit-recovery",
+      "name": "Bounded HTTP rate-limit retries",
+      "summary": "Bound HTTP transport retries for 429 independently of network retries and honor provider reset minima.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview",
+        "web": "partial",
+        "api": "partial"
+      },
+      "since": null,
+      "flag": null,
+      "docs": "docs/rate-limit-retries.md",
+      "registryLine": 1028
     }
   ]
 }
