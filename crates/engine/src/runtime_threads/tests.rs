@@ -24081,6 +24081,63 @@ fn runtime_traffic_and_attachment_tags_are_not_kept_prompts() {
     );
 }
 
+/// The workspace-drift notice the engine appends between turns, in the bare
+/// shape `context_update_message` renders: one whole text block, no
+/// `<turn_meta>` provenance line, and nothing of it on any turn record. A
+/// session that had received one could not be cut at all — every fork and
+/// `/undo` past the first notice answered "Cannot identify an exact
+/// saved-history boundary" — so the walks must skip it like the provenance-
+/// carrying notices above, while a person quoting a notice keeps their turn.
+#[test]
+fn a_context_update_notice_is_not_a_kept_prompt() {
+    let text = |text: &str| ContentBlock::Text {
+        text: text.to_string(),
+        cache_control: None,
+    };
+    let user = |content: &str| Message {
+        role: Role::User,
+        content: vec![text(content)],
+    };
+    let notice = codewhale_core::prefix_cache::context_update_message(
+        "## Skills\nold skill\n",
+        "## Skills\nnew skill\n",
+    )
+    .expect("workspace drifted");
+    assert!(
+        codewhale_core::prefix_cache::is_context_update_envelope(&notice),
+        "the fixture is the engine's own drift notice"
+    );
+
+    let quoted = format!("what does this notice mean?\n{notice}");
+    let messages = vec![user("first"), user(&notice), user(&quoted), user("undo me")];
+
+    assert!(
+        projected_user_text(&messages[1]).is_none(),
+        "the drift notice is not a prompt"
+    );
+    assert_eq!(
+        projected_user_text(&messages[3]).as_deref(),
+        Some("undo me"),
+        "the prompt after a notice still reads as one"
+    );
+    assert_eq!(
+        projected_user_text(&messages[2]).as_deref(),
+        Some(quoted.as_str()),
+        "a person quoting a notice keeps their own turn"
+    );
+
+    let kept = vec!["first".to_string(), quoted.clone()];
+    assert_eq!(saved_history_boundary(&messages, &kept, "undo me"), Some(3));
+    assert_eq!(
+        exact_prefix_boundary(
+            &messages,
+            &session_recovery_projection(&[user("first"), user(&quoted)]),
+        ),
+        Some(3),
+        "the exact prefix ends just past the last kept message"
+    );
+}
+
 /// The decision a rebuild makes about a call the turn store left unanswered:
 /// which outcome the item itself holds, and which calls it must leave alone.
 #[test]
