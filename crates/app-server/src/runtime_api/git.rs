@@ -2107,7 +2107,13 @@ pub(super) async fn git_discard(
         return patch_write(&state, &root, request, &["apply", "--reverse"]).await;
     }
     let (_, paths, expect) = paths_and_expect(request, false)?;
-    guarded_write(&state, &root, expect, literal_path_args(&["checkout"], paths)).await
+    guarded_write(
+        &state,
+        &root,
+        expect,
+        literal_path_args(&["checkout"], paths),
+    )
+    .await
 }
 
 pub(super) async fn git_commit(
@@ -2295,7 +2301,12 @@ fn parse_worktrees(porcelain: &str, managed_root: Option<&FsPath>) -> Vec<Worktr
             } else if let Some(value) = line.strip_prefix("HEAD ") {
                 head = Some(value.to_string());
             } else if let Some(value) = line.strip_prefix("branch ") {
-                branch = Some(value.strip_prefix("refs/heads/").unwrap_or(value).to_string());
+                branch = Some(
+                    value
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(value)
+                        .to_string(),
+                );
             } else if line == "bare" {
                 bare = true;
             } else if line == "locked" || line.starts_with("locked ") {
@@ -2309,9 +2320,17 @@ fn parse_worktrees(porcelain: &str, managed_root: Option<&FsPath>) -> Vec<Worktr
             continue;
         }
         let main = rows.is_empty();
-        let managed = !main
-            && managed_root.is_some_and(|root| FsPath::new(&path).parent() == Some(root));
-        rows.push(WorktreeRow { path, branch, head, main, managed, locked, prunable });
+        let managed =
+            !main && managed_root.is_some_and(|root| FsPath::new(&path).parent() == Some(root));
+        rows.push(WorktreeRow {
+            path,
+            branch,
+            head,
+            main,
+            managed,
+            locked,
+            prunable,
+        });
     }
     rows
 }
@@ -2352,7 +2371,13 @@ pub(super) struct WorktreeCreateRequest {
 fn worktree_slug(branch: &str) -> String {
     let slug: String = branch
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     slug.trim_matches(|c| c == '-' || c == '.').to_string()
 }
@@ -2390,20 +2415,36 @@ pub(super) async fn worktree_create(
     let (main, rows) = repository_worktrees(&root).await?;
     let check = git_write(
         &main,
-        vec!["check-ref-format".to_string(), "--branch".to_string(), branch.clone()],
+        vec![
+            "check-ref-format".to_string(),
+            "--branch".to_string(),
+            branch.clone(),
+        ],
     )
     .await?;
     if !check.status_success {
         return Err(ApiError::bad_request("branch is not a valid branch name").into());
     }
-    if rows.iter().any(|row| row.branch.as_deref() == Some(branch.as_str())) {
+    if rows
+        .iter()
+        .any(|row| row.branch.as_deref() == Some(branch.as_str()))
+    {
         return Err(coded(
             StatusCode::CONFLICT,
             "branch_checked_out",
             format!("{branch} is already checked out in another worktree"),
         ));
     }
-    let base_check = git_read(&main, &["rev-parse", "--verify", "--quiet", &format!("{base}^{{commit}}")]).await?;
+    let base_check = git_read(
+        &main,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{base}^{{commit}}"),
+        ],
+    )
+    .await?;
     if !base_check.status_success {
         return Err(ApiError::bad_request(format!("base {base} is not a commit")).into());
     }
@@ -2411,7 +2452,11 @@ pub(super) async fn worktree_create(
     if slug.is_empty() {
         return Err(ApiError::bad_request("branch does not name a folder").into());
     }
-    let common = git_read_ok(&main, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await?;
+    let common = git_read_ok(
+        &main,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await?;
     let exclude = PathBuf::from(common.trim()).join("info").join("exclude");
     let path = main.join(WORKTREES_DIR).join(&slug);
     let spec = codewhale_lane::WorktreeProvision {
@@ -2435,7 +2480,11 @@ pub(super) async fn worktree_create(
                 std::fs::create_dir_all(dir)
                     .map_err(|error| ApiError::internal(format!("update info/exclude: {error}")))?;
             }
-            let separator = if current.is_empty() || current.ends_with('\n') { "" } else { "\n" };
+            let separator = if current.is_empty() || current.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
             std::fs::write(&exclude, format!("{current}{separator}{line}\n"))
                 .map_err(|error| ApiError::internal(format!("update info/exclude: {error}")))?;
         }
@@ -2477,10 +2526,17 @@ pub(super) async fn worktree_remove(
         return Err(ApiError::not_found("no worktree of this repository at that path").into());
     };
     if !row.managed {
-        return Err(ApiError::forbidden("only worktrees Codewhale created under .codewhale/worktrees can be archived here").into());
+        return Err(ApiError::forbidden(
+            "only worktrees Codewhale created under .codewhale/worktrees can be archived here",
+        )
+        .into());
     }
     if row.locked {
-        return Err(coded(StatusCode::CONFLICT, "worktree_locked", "the worktree is locked"));
+        return Err(coded(
+            StatusCode::CONFLICT,
+            "worktree_locked",
+            "the worktree is locked",
+        ));
     }
     let path = PathBuf::from(&row.path);
     state
@@ -2489,17 +2545,29 @@ pub(super) async fn worktree_remove(
         .await
         .map_err(|error| coded(StatusCode::CONFLICT, "worktree_busy", error.to_string()))?;
     if !row.prunable {
-        let status = git_read_ok(&path, &["status", "--porcelain", "--untracked-files=normal"]).await?;
+        let status = git_read_ok(
+            &path,
+            &["status", "--porcelain", "--untracked-files=normal"],
+        )
+        .await?;
         if !status.trim().is_empty() {
             let mut extra = serde_json::Map::new();
             extra.insert(
                 "files".to_string(),
-                json!(status.lines().take(50).map(|line| line.get(3..).unwrap_or(line)).collect::<Vec<_>>()),
+                json!(
+                    status
+                        .lines()
+                        .take(50)
+                        .map(|line| line.get(3..).unwrap_or(line))
+                        .collect::<Vec<_>>()
+                ),
             );
             return Err(GitWriteError::Coded {
                 status: StatusCode::CONFLICT,
                 code: "worktree_dirty",
-                message: "The worktree has uncommitted changes. Commit or discard them before archiving.".to_string(),
+                message:
+                    "The worktree has uncommitted changes. Commit or discard them before archiving."
+                        .to_string(),
                 extra,
             });
         }
@@ -2514,7 +2582,9 @@ pub(super) async fn worktree_remove(
     if !run.status_success {
         return Err(ApiError::bad_request(output_tail(&run)).into());
     }
-    Ok(Json(json!({ "ok": true, "path": row.path, "branch": row.branch, "head": row.head })))
+    Ok(Json(
+        json!({ "ok": true, "path": row.path, "branch": row.branch, "head": row.head }),
+    ))
 }
 
 #[cfg(test)]
