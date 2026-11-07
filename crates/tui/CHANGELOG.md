@@ -252,6 +252,13 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Plugin enablement revalidates its review:** enabling rechecks the staged
+  snapshot and, under the existing state lock, refuses a changed review
+  generation or trust receipt. The macOS stale-enable check passed (1/1);
+  a separate Linux run reported 202 passed and one ignored on an earlier base
+  with matching plugin files and lockfile. Snapshot checking is point-in-time;
+  automatic restoration is unfinished and filesystem races remain open. A
+  stage-disappearance regression and the final candidate remain unqualified.
 - **Plugin status and UI admission:** an enabled, trusted plugin whose reviewed
   runtime snapshot is missing or invalid now reports
   `runtime-snapshot-unavailable`. Both plugin UI metadata and assets require a
