@@ -346,7 +346,7 @@ owner = "crates/sandbox/src"
 [[feature]]
 id = "providers"
 name = "Providers"
-summary = "Provider routes including Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates."
+summary = "Provider routes including Tinker, Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PROVIDERS.md"
@@ -360,6 +360,16 @@ status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter"
 owner = "crates/engine/src/model_routing.rs"
+
+[[feature]]
+id = "model-catalog-refresh"
+name = "Model catalog refresh"
+summary = "Refresh public model facts and exact provider rosters during use; failures retain the last good snapshot."
+status = "stable"
+surfaces = { tui = "stable", api = "stable" }
+since = "0.10.3"
+docs = "docs/CATALOG_REFRESH.md"
+owner = "crates/engine/src/models_dev_live.rs"
 
 [[feature]]
 id = "output-limit-answer-recovery"

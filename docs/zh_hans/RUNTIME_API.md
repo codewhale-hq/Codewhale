@@ -70,8 +70,8 @@ local supervisor / SDK / automation harness
 `{cursor?: string | null, limit?: number | null}`，结果为
 `{data: string[], nextCursor: string | null}`。数据来自持有的 manager 中已加载
 引擎的快照，包括仍在内存中的空闲或已归档引擎；不会把已保存历史或仅在运行的回合
-当作已加载列表。省略 limit 返回完整快照；limit 为零时返回空页，仍有条目时保留
-继续游标。继续分页时原样传回不透明的 nextCursor；分页期间加载或卸载会改变快照。`app/thread_loaded_list`、
+当作已加载列表。省略 limit 返回完整快照；仍有条目时，limit 为零会按一条处理，
+避免空页保留不变的继续游标。继续分页时原样传回不透明的 nextCursor；分页期间加载或卸载会改变快照。`app/thread_loaded_list`、
 `app/thread-loaded-list` 和 `app/request` 的 ThreadLoadedList 兼容形式保留
 线程对象包装，并使用同一个已加载引擎权威。完整工具 turn/start、交互回复及订阅/重连
 兼容仍不可用。
@@ -398,7 +398,9 @@ HTTP 返回 400，`error.code` 为 `invalid_request`，同一详情位于 `error
 `$CODEWHALE_HOME/run/daemon.sock`（显式指定 home 即是一条隔离边界）；否则用
 `$XDG_RUNTIME_DIR/codewhale/daemon.sock`；再否则在 macOS 上用
 `~/Library/Application Support/codewhale/daemon.sock`，其他平台用
-`~/.codewhale/run/daemon.sock`。目录以 `0700` 创建，套接字为 `0600`，
+`~/.codewhale/run/daemon.sock`。Unix 上，若隐式端点没有足够空间容纳按存储区区分的
+套接字，会自动改用私有、确定性的短临时目录；数据主目录保持原位。显式选择的
+套接字路径保持原样，过长的显式路径会被拒绝。目录以 `0700` 创建，套接字为 `0600`，
 每个被接受的连接方都必须出示守护进程自身的 uid。
 启动时，无人应答的套接字文件会被删除；若有一个仍在工作的，则新守护进程以
 `a live listener already answers on <path>; refusing to
@@ -1780,6 +1782,68 @@ Engine 并不知道的终端。输入可按路由归因：
 后台命令使用同一个逐线程管理器，因此 `GET /v1/jobs`
 也是客户端看到模型派生工作的地方。
 
+**持久化客户端作业操作**（能力 `job_operations`）
+
+已授权的 `GET /v1/runtime/info` 返回 `job_operation_store_id`，即持久化运行时存储标识。
+它在 Engine 升级和重启后保持不变；它是命名空间，不是凭据。未授权发现返回 null。
+带键的作业创建在现有 POST 请求体中同时添加四个字段：`operation_key`
+（提交前保留的新 UUID v4）、`purpose`（`setup`、`run`、`archive` 或 `command`）
+以及 `expected_store_id` 和 `expected_workspace`。存储必须匹配当前存储，工作区断言必须
+匹配准入时的线程工作区；否则在派发前返回 `409 job_operation_store_changed` 或
+`409 job_operation_workspace_changed`。这些断言不改变线程位置。省略全部四个字段时，
+保留旧的 `201 {job}` 契约。
+
+新的带键请求返回 `201 {job, operation, request_fingerprint}`。相同键和完全相同的规范化请求返回
+`200` 以及原操作，永不再次启动命令；重启或响应丢失也不例外。改变已绑定请求时返回
+`409 job_operation_mismatch`。持久化回执保留但活动句柄或输出已不可用时，`job` 可以为 null。
+操作包含 `id`、`store_id`、`thread_id`、规范化的 `workspace` 和 `cwd`、`purpose`、
+`status`、可为 null 的 `job_id`、`job_status` 和 `exit_code`，以及 `created_at_ms`
+和 `updated_at_ms`。不透明的回执 ID 不会暴露原始操作键。
+
+`request_fingerprint` 绑定原始请求，包括请求中的工作区路径写法；操作的工作区和 cwd
+仍使用规范路径。它以操作 UUID 为键，对 UTF-8 JSON 数组
+`[2, thread_id, expected_workspace, trimmed_command, cwd_or_null, timeout_ms,
+tty, sorted_environment_pairs, purpose]` 计算 HMAC-SHA256，返回小写十六进制。
+命令按 Unicode White_Space 去除首尾空白；环境键值对按键的 UTF-8 字节排序。
+省略 timeout 时使用 120000，省略 cwd 时为 null，省略 tty 时为 false。客户端必须在
+POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后才能接受回执或清除待确认意图。
+路径别名不能成为把规范路径与原始路径字符串直接比较的理由。缺失或不匹配的绑定保持
+未确认，不自动重新 POST。UUID 和指纹不提供加密；同时取得两者的人仍可尝试猜测
+低熵请求值。
+
+`status` 为 `running`、`completed`、`rejected` 或 `unknown`。完成回执携带终态 `job_status`
+（`Completed`、`Failed`、`Killed` 或 `TimedOut`）以及可为 null 的退出码；只有
+`Completed` 且退出码为零才表示成功。时间戳为 Unix 毫秒；`updated_at_ms` 是最后一次
+持久化转换的时间，不能证明未知结果发生的时间。
+
+`rejected` 回执证明命令从未启动，所有作业字段均为 null。shell 执行器仅对经过审核的
+启动前失败提供此类型化证据，例如 PTY 分配或工作目录检查失败。它是终态记录：同一个键
+只返回原拒绝结果，不重新执行；修复问题后可使用新键重试。POST 拒绝使用
+`409 job_operation_rejected`。启动包装器和启动后失败仍视为未知，除非可靠证据能证明其他结果。
+
+- `GET /v1/job-operations` 和 `GET /v1/threads/{id}/job-operations` 返回
+  `{operations: [...]}`，包括工作区目录已不存在的记录。
+- `GET /v1/threads/{id}/job-operations/{operation_key}` 返回相同的
+  `{job, operation, request_fingerprint}` 封装。存储或准入错误不能当作空列表或不存在的证据。
+- 准入争用返回 `409 job_operation_pending`。新的带键 setup/run/archive 操作与活动的
+  带键工作区脚本重叠时返回 `409 job_operation_busy`。重叠的未确认操作会以
+  `409 job_operation_unconfirmed` 拒绝所有新作业，包括旧式请求；工作树删除也受此保护。
+
+现有运行时线程存储在启动前原子记录意图；现有 shell 管理器仍是执行权威。完成观察器和
+读取操作持久化已验证的父作业终态，不消费输出。持久记录保存带密钥的请求指纹，不保存
+原始命令、环境值或操作键。句柄缺失、所有者代际不同或派发附近崩溃的结果仍为 `unknown`，
+不能据此重复命令。新作业 ID 使用完整 UUID；客户端必须把它们视为不透明标识。
+这不构成操作系统级恰好一次事务、持久输出捕获、未知结果自动恢复或分阶段归档事务。
+脱离跟踪的后代进程、智能体/工具启动的作业以及其他存储仍不在此 API 操作保护范围内。
+
+准入在检查项目 shell 策略前确定一个规范工作区，并以此解析策略及 cwd；记录意图前
+再次核对请求根目录和启动目录。这些路径检查不能保证最后检查后目录仍未被替换，
+不等同于持有目录句柄的启动保护。
+
+线程删除和空线程丢弃与作业共享准入保护；线程仍有运行中或未确认的持久化客户端作业操作时，
+拒绝删除。删除对话前，应停止已知作业并等待其终态回执；未知结果需要恢复处理，不能静默
+移除保护。线程删除后，完成和拒绝回执仍保留在全局操作列表中。
+
 **命令**（带类型的命令目录，APPS-28）
 - `GET /v1/commands` — `{commands: [...]}`：TUI 自己的注册表所持有的
   每一个已注册斜杠命令，内置与用户自定义的都在内。每个条目包含：`name`、
@@ -1896,7 +1960,7 @@ Engine 并不知道的终端。输入可按路由归因：
   `{ "remote"?, "set_upstream"? }`（`remote`，或仅提供 `set_upstream` 时使用的 `origin`，必须是已配置的远端名称）；`POST /v1/git/branch`
   `{ "name", "create"? }`
 
-`POST /v1/worktrees/remove?thread_id=` 还会在当前运行时跟踪到启动目录与工作树重叠的运行中 shell 作业时，返回 `409 worktree_busy`。工作树删除与 API 作业启动使用和新轮次相同的准入锁；即使 HTTP 连接断开，也会持有保护直到修改完成。此保护仅覆盖同一个运行时管理器跟踪的作业。启动目录不能证明命令后来切换到了哪里；脱离跟踪的后代进程、稍后独立启动的子代理以及其他运行时管理器或进程仍不在此保护范围内。这不是操作系统级的进程占用保留。
+`POST /v1/worktrees/remove?thread_id=` 还会在当前运行时跟踪到启动目录与工作树重叠的运行中 shell 作业时，返回 `409 worktree_busy`。工作树删除与 API 作业启动使用和新轮次相同的准入锁；即使 HTTP 连接断开，也会持有保护直到修改完成。此保护覆盖同一个运行时管理器跟踪的作业；持久化客户端作业操作还会在共享存储中拦住重叠的未确认派发，包括 Engine 重启之后。启动目录不能证明命令后来切换到了哪里；脱离跟踪的后代进程、稍后独立启动的子代理以及其他运行时管理器或进程仍不在此保护范围内。这不是操作系统级的进程占用保留。
 
 diff 与前置条件令牌的读取通过加固过的审阅命令运行（过滤器、fsmonitor、钩子、
 惰性抓取与 replace-objects 均被中和）。porcelain 状态使用普通 Git，与工作区的计数和

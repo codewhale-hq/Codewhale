@@ -36,18 +36,20 @@ not a `ProviderKind`: enum variants are reserved for distinct *wires*
 (Anthropic Messages, Codex Responses, Google thought signatures). Any such
 host is a `[providers.<name>]` table with a base URL, a model, and a key env
 (`docs/CONFIGURATION.md`); `/provider` and `/setup` keep a "paste a Base URL
-and a key" path for exactly this. Offerings come from live `GET /v1/models`
-plus the Codewhale catalog rather than a compiled roster (#5350, #6289).
+and a key" path for exactly this. Where available, offerings come from live
+`GET /v1/models` plus the Codewhale catalog (#5350, #6289).
 
-Known-good hosts. These ship as bundled descriptor rows in
+Bundled compatible hosts. These ship as descriptor rows in
 `crates/config/assets/provider_descriptors.json` (compiled in by
 `crates/config/src/descriptors.rs`): each row says how to reach the host — wire,
-base URL, key env, aliases — while model ids stay live from `GET /v1/models`
-and the Codewhale catalog; the example model is only a bootstrap hint. Verify
+base URL, key env, aliases — while model IDs come from configured models, the
+Codewhale catalog, and a live `GET /v1/models` when supported. The example model
+is only a bootstrap hint. Verify
 against the vendor's own docs before trusting any value here:
 
 | Host | Base URL | Example models | API key env |
 | --- | --- | --- | --- |
+| Thinking Machines Tinker (beta) | `https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1` | `thinkingmachines/Inkling-2-Small:peft:262144:sampling-nvfp4` | `TINKER_API_KEY` |
 | SenseNova | `https://token.sensenova.cn/v1` | `deepseek-v4-flash` | `SENSENOVA_API_KEY` |
 | Baseten | `https://inference.baseten.co/v1` | `deepseek-ai/DeepSeek-V4-Pro` | `BASETEN_API_KEY` |
 | Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | `GROQ_API_KEY` |
@@ -62,6 +64,31 @@ against the vendor's own docs before trusting any value here:
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`, `zai-org/GLM-5.3`, `openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`, `gpt-5.4-mini` (pool names); `anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
 | Tencent TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
+
+Tinker's OpenAI-compatible API and serverless inference are beta. Select
+Tinker in `/provider` or configure the named route below. Its documented
+serverless IDs also include `thinkingmachines/Inkling-Small:peft:262144:sampling-nvfp4`
+and `thinkingmachines/Inkling:peft:262144:sampling-nvfp4`; enter one as the
+model to use it. The Tinker API also accepts your own sampler checkpoint paths.
+
+```toml
+provider = "tinker"
+
+[providers.tinker]
+kind = "openai-compatible"
+base_url = "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1"
+api_key_env = "TINKER_API_KEY"
+model = "thinkingmachines/Inkling-2-Small:peft:262144:sampling-nvfp4"
+```
+
+Codewhale does not discover a Tinker model roster or verify the key through a
+model-list endpoint. The configured model appears in the picker; other IDs
+must be entered explicitly. Cost remains unknown in Codewhale for this route.
+Tinker documents its default reasoning effort as 0.9; this generic route does
+not currently send an effort setting. Codewhale has not yet qualified a live
+Tinker conversation, tool call, or image input. See the vendor's
+[API documentation](https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/)
+and [model list](https://tinker-docs.thinkingmachines.ai/tinker/models/models_and_pricing/).
 
 AICraft's roster spans DeepSeek, Anthropic Claude, Google Gemini, Qwen, GLM,
 MiniMax and Doubao ids on its OpenAI-compatible endpoint. The authority is

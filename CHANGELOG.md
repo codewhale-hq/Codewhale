@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Website:** restored the ocean blues and gradient actions, brought Operate, Fleet, Workflows and Computer Use into the product story, corrected Computer Use setup guidance, and added direct paths to contribute bug reports, documentation, translations and code.
 - **Website copy:** removed repeated setup instructions, duplicate product sections and developer-facing release notes from the homepage; shortened contribution and Computer Use copy.
+- **Website guidance:** restored the full-width ocean product stage, unified localized headlines, and corrected Workflow confirmation, Fleet recovery, plugin trust, provider setup, snapshot and Computer Use instructions against published versions.
 
 ## [0.10.3] - 2026-11-06
 
@@ -24,14 +25,53 @@ until the matching tag, packages, checksums, and release assets exist.
   available; full-tool turns, subscriptions, bidirectional interactions, durable
   settlements, TCP WebSocket and the complete SDK remain unfinished.
 - **DSH plugins and MCP lifecycle:** compatibility with unmodified DeepSeek
-  Harness plugins remains in progress. A trusted and enabled plugin can be
-  inactive when its verified runtime snapshot is missing; clearer status and
-  safe recovery remain work to do. DSH client UI isolation and an end-to-end
-  published-plugin journey have not been qualified.
+  Harness plugins remains in progress. Automatic restoration of a missing
+  runtime snapshot is unfinished and may only use canonical source bytes that
+  still match its receipt. Existing mismatched or tampered snapshots refuse
+  and require review. Authenticated DSH UI asset transport and revocation,
+  and an end-to-end published-plugin journey remain unfinished.
+  Downgrading a newly saved plugin marketplace catalog remains unqualified.
+- **ChatGPT sign-in on Windows:** the reported 0.10.2 post-browser identity
+  verification failure has not been confirmed resolved in the reporter's
+  environment. More specific errors and clock-skew handling are not a
+  successful Windows sign-in receipt. ([#7203](https://github.com/codewhale-hq/Codewhale/issues/7203))
+- **Conversation recovery on Deepin:** scoped interrupted-reply recovery and
+  persistence checks do not establish a fix for the original whole-history
+  disappearance on Deepin 25.2.2. ([#7095](https://github.com/codewhale-hq/Codewhale/issues/7095))
+- **Windows ACP and undo:** the original Paseo approval/sandbox journey and
+  ordinary multi-turn `/undo` through Windows ConPTY remain unqualified on the
+  final candidate. macOS and simulated checks do not establish those Windows
+  results. ([#6992](https://github.com/codewhale-hq/Codewhale/issues/6992), [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970))
+- **Install and update routes:** final-candidate Windows and Linux package,
+  install, update, rollback and uninstall coverage is incomplete. Earlier
+  scoped platform receipts do not qualify the final package matrix or ordinary
+  Windows user journeys. ([#7091](https://github.com/codewhale-hq/Codewhale/issues/7091))
+- **Workspace downgrade and rollback:** compatibility with older binaries after
+  a 0.10.3 workspace migration remains unqualified. The CLI self-updater guard
+  refuses recorded targets below 0.10.3 in `codewhale update --rollback` when
+  running 0.10.3 or newer, before replacing the executable. Five isolated
+  macOS development-candidate refusal/control cases passed with fixture trees
+  unchanged. This does not provide backward-compatible rollback or qualify
+  actual workspace migration or an allowed rollback. Manual or package-manager
+  downgrades and older builds reporting the same version remain outside the guard.
+- **Long-running ZAI sessions:** scoped watchdog and recovery checks do not
+  establish a fix for the original hours-long, tool-heavy silent stall.
+  ([#6184](https://github.com/codewhale-hq/Codewhale/issues/6184))
 
 ### Added
 
-- **Task wall clock pauses for answerable human waits:** a durable task can opt into moving its wall deadline while a prompt on that run awaits a decision, bounded by a 24-hour aggregate cap and a distinct `human_wait_timeout` reason. The app-server opts in; the TUI default is unchanged. (#5898)
+- **Refresh model catalogs during use:** Runtime provider refresh now checks
+  public Models.dev metadata alongside the exact provider's model list;
+  `force_catalog=true` bypasses the public cache TTL and retry backoff.
+  `GET /v1/providers` exposes catalog revision and freshness so clients can
+  pick up new models without repeatedly loading an unchanged catalog. The
+  runtime rechecks in the background, retains the last good snapshot on
+  failure, and preserves explicit model selections and account/route scope.
+- **Tinker beta route:** configure Thinking Machines Tinker's OpenAI-compatible
+  endpoint and a serverless model or sampler checkpoint ID. Model-list discovery,
+  key verification through that list, and cost estimates remain unavailable;
+  live conversations, tools and image input have not been qualified in
+  Codewhale. See [provider setup](docs/PROVIDERS.md).
 - **Worktrees for parallel workspaces:** `GET /v1/worktrees` lists a repository's worktrees, `POST /v1/worktrees` creates a branch and its own checkout under `<repository>/.codewhale/worktrees/` through the existing lane provisioning, and `POST /v1/worktrees/remove` archives a clean managed one without `--force`, keeping the branch. A client starts a thread in the new folder, so several agents can work on one project without sharing files. (codewhale-hq/codewhale-app#3500)
 - **Thread-scoped snapshots:** `GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept `?thread_id=` and act on that thread's workspace under the same restore admission rule. (codewhale-hq/codewhale-app#3500)
 - **DSH plugins can carry their own client UI:** a reviewed DSH plugin closure may now ship its own Node/Bun dependency tree, CommonJS/CTS entries and UI-only source bundles. The Engine exposes a trusted and enabled plugin's client entry and assets through two loopback-only, read-only routes with bounded sizes, confined paths and safe MIME/no-store responses; no other plugin route gains an unauthenticated path. (#2, #3)
@@ -214,7 +254,15 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Plugin status and UI admission:** an enabled, trusted plugin whose reviewed
+  runtime snapshot is missing or invalid now reports
+  `runtime-snapshot-unavailable`. Both plugin UI metadata and assets require a
+  declared DSH client; ordinary plugins cannot expose staged files through the
+  client UI route. Automatic restoration of missing snapshots from
+  receipt-matching canonical source and authenticated DSH asset transport
+  remain work in progress; existing modified snapshots require review.
 - **A local proxy that stops mid-session no longer strands the session (#7231):** the model, catalog, search, vision, finance, MCP-registry, profile and remote-control clients watch a loopback proxy port and go direct while it refuses connections, then resume proxying when it returns. Only a definite refusal from every resolved address changes the route; remote proxies, `NO_PROXY` matches, credentials and the existing precedence are unchanged. Set `CODEWHALE_LOCAL_PROXY_FALLBACK=0` to keep the old build-time snapshot.
+- **Proxy diagnostic privacy ([#7233](https://github.com/codewhale-hq/codewhale/issues/7233)):** malformed MCP proxy warnings omit configured values; local-proxy log labels mask userinfo and omit URL paths, queries and fragments. Routing is unchanged. All 23 existing proxy tests passed on macOS; runtime log capture and other platforms remain unqualified. Thanks [@SparkofSpike](https://github.com/SparkofSpike) for the report.
 - **Fork, undo and retry work after a workspace drift notice (#7234):** the history-boundary walks now treat a whole `<context_update>` envelope as engine-owned, so a session that received one can be cut at every saved turn. A person quoting a notice or a truncated envelope still counts as their own prompt.
 - **Git writes land in the right workspace:** stage, unstage, discard, commit, push and branch take `?thread_id=` and run in that thread's recorded workspace, matching the read routes. Before, they always ran in the server's own folder, so a commit asked for a thread in another folder could land in the wrong tree.
 - **ChatGPT sign-in tolerates a small device clock skew:** identity-token expiry and not-before checks allow the same 60-second tolerance already used for ordinary network time drift, while signature, issuer, audience, subject and nonce checks remain exact. The diagnostic text still names the exact failed check when a token is genuinely invalid.
@@ -487,6 +535,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Contributors
 
+- **[@zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)).
 - **[@printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).
 - **[@liuyy2](https://github.com/liuyy2)** — diagnosed case-sensitive model selection collisions in the provider picker ([#7214](https://github.com/codewhale-hq/Codewhale/issues/7214)).
 - **[@isaacs](https://github.com/isaacs)** — upstream minimatch preprocessing and glob cancellation fixes reused in compatible web build dependency backports.

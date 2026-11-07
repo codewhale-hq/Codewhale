@@ -76,8 +76,9 @@ Initialized stdio/private-socket controls support `thread/loaded/list` with
 `{data: string[], nextCursor: string | null}` from the held manager's loaded
 engine snapshot, including idle and archived engines still in memory. It does
 not enumerate saved history or only running turns. Omit the limit for the full
-snapshot. A zero limit returns no entries and retains a continuation when
-entries remain. Pass the opaque `nextCursor` back unchanged; loading or
+snapshot. A zero limit is clamped to one entry when entries remain, so an
+empty page cannot retain an unchanged continuation. Pass the opaque
+`nextCursor` back unchanged; loading or
 unloading between pages can change the snapshot. The
 `app/thread_loaded_list`, `app/thread-loaded-list` and `app/request`
 `ThreadLoadedList` compatibility forms retain their thread-object wrapper and
@@ -494,7 +495,11 @@ attachment handshake.
 when `CODEWHALE_HOME` is set (an explicit home is an isolation boundary); else
 `$XDG_RUNTIME_DIR/codewhale/daemon.sock`; else
 `~/Library/Application Support/codewhale/daemon.sock` on macOS or
-`~/.codewhale/run/daemon.sock` elsewhere. The directory is created `0700`, the
+`~/.codewhale/run/daemon.sock` elsewhere. On Unix, an implicit endpoint that
+leaves insufficient room for the store-specific socket automatically uses a
+private deterministic short temporary directory; the data home stays in place.
+Explicit socket selections remain exact, and an overlong explicit path is
+refused. The directory is created `0700`, the
 socket is `0600`, and every accepted peer must present the daemon's own uid.
 On start, a socket file nobody answers on is removed; a live one makes the new
 daemon exit with `a live listener already answers on <path>; refusing to
@@ -2242,6 +2247,107 @@ that created them and are killed when that thread is removed; the engine's
 background commands use the same per-thread manager, so `GET /v1/jobs` is
 also how a client sees model-spawned work.
 
+**Durable client job operations** (capability `job_operations`)
+
+Authorized `GET /v1/runtime/info` supplies `job_operation_store_id`, the
+persisted runtime store identity. It survives Engine updates and restarts;
+it is a namespace, not a credential. Unauthorized discovery returns null.
+Keyed job creation adds all four fields to the existing POST body:
+`operation_key` (a fresh UUID v4 retained before submission), `purpose`
+(`setup`, `run`, `archive` or `command`), `expected_store_id`, and
+`expected_workspace`. The store must match the current store, and the workspace
+assertion must match the admitted thread workspace; otherwise dispatch refuses
+`409 job_operation_store_changed` or `409 job_operation_workspace_changed`.
+These assertions never move a thread. Omitting all four retains the legacy
+`201 {job}` contract.
+
+A new keyed request returns `201 {job, operation, request_fingerprint}`. The same key and exact
+normalized request return `200` with the existing operation and never spawn
+again, including after restart or a lost response. Changing the bound request
+returns `409 job_operation_mismatch`. `job` may be null when the durable
+receipt survives without its live handle or retained output. The operation is:
+
+```json
+{
+  "id": "opaque-receipt-id",
+  "store_id": "runtime-store-id",
+  "thread_id": "thread-id",
+  "workspace": "/canonical/workspace",
+  "cwd": "/canonical/launch-directory",
+  "purpose": "run",
+  "status": "running",
+  "job_id": "shell-job-id",
+  "job_status": null,
+  "exit_code": null,
+  "created_at_ms": 1794000000000,
+  "updated_at_ms": 1794000000000
+}
+```
+
+`status` is `running`, `completed`, `rejected` or `unknown`. A completed receipt has a
+terminal `job_status` (`Completed`, `Failed`, `Killed` or `TimedOut`) and a
+nullable exit code; success requires `Completed` and exit code zero. Timestamps
+are Unix milliseconds; `updated_at_ms` is the last persisted transition, not
+proof of when an unknown outcome occurred. The opaque receipt ID does not
+expose the original operation key.
+
+`request_fingerprint` binds the original request, including its requested
+workspace spelling; the operation's workspace and cwd remain canonical. It is
+lowercase HMAC-SHA256, keyed by the operation UUID, over UTF-8 JSON for
+`[2, thread_id, expected_workspace, trimmed_command, cwd_or_null, timeout_ms,
+tty, sorted_environment_pairs, purpose]`. Command trimming uses Unicode
+White_Space; environment pairs sort by UTF-8 key bytes. Omitted timeout is
+120000, omitted cwd is null and omitted tty is false. Persist the expected
+fingerprint before POST, and compare it on response and exact-key GET recovery
+before accepting a receipt or clearing a pending intent. An alias is not a
+reason to compare the canonical receipt path literally with the requested
+spelling. A missing or mismatched binding stays unconfirmed; do not re-POST
+automatically. The UUID and fingerprint do not provide encryption or protect
+low-entropy request values from someone who obtains both.
+
+A `rejected` receipt proves the command never started: its job fields are all
+null. The shell executor supplies this typed witness only for audited failures
+before launch, such as PTY allocation or a working-directory check. It is a
+terminal tombstone, so the same key returns it without retrying; a new key can
+try again after the problem is fixed. The POST refusal uses `409
+job_operation_rejected`. Spawn-wrapper and post-launch failures remain unknown
+unless a trustworthy witness proves otherwise.
+
+- `GET /v1/job-operations` and `GET /v1/threads/{id}/job-operations` return
+  `{operations: [...]}`, including records whose workspace folder is gone.
+- `GET /v1/threads/{id}/job-operations/{operation_key}` returns the same
+  `{job, operation, request_fingerprint}` envelope. A storage or admission error is not an empty
+  list or proof of absence.
+- Contended admission returns `409 job_operation_pending`. A new keyed
+  setup/run/archive overlapping an active keyed workspace script returns
+  `409 job_operation_busy`. An overlapping unconfirmed operation refuses
+  every new job, including legacy requests, with `409
+  job_operation_unconfirmed`; worktree removal is fenced as well.
+
+The existing runtime thread store atomically records intent before spawning;
+the existing shell manager remains the execution authority. A completion
+observer and reads persist verified terminal parent status without consuming
+output. Durable records contain a keyed request fingerprint rather than raw
+commands, environment values or operation keys. A missing live handle,
+different owner generation or crash around dispatch remains `unknown`, never
+permission to repeat the command. New job IDs use full UUIDs; clients must
+treat them as opaque. This is not an exactly-once OS transaction, durable
+output capture, automatic unknown-outcome recovery or a phased archive
+transaction. Detached descendants, agent/tool launches and other stores remain
+outside this API operation fence.
+
+Admission resolves one canonical workspace before project shell policy checks
+and uses it for policy and cwd resolution. It rechecks the requested root and
+launch directory before recording intent. These pathname checks do not provide
+a directory-handle guarantee against replacement after the final check.
+
+Thread deletion and empty-thread discard share job admission and refuse a
+thread whose durable client job operation is running or unconfirmed. Stop the
+known job and wait for its terminal receipt before deleting the conversation;
+an unknown outcome requires recovery rather than silently dropping the fence.
+Completed and rejected receipts remain in the global operation list after
+thread deletion.
+
 **Commands** (typed command catalog, APPS-28)
 - `GET /v1/commands` — `{commands: [...]}`: every registered slash command,
   builtin and user, as the TUI's own registry holds it. Per entry: `name`,
@@ -2426,7 +2532,9 @@ Worktree removal also refuses `409 worktree_busy` while this runtime tracks a
 running shell job whose launch directory overlaps the worktree. Removal and
 API job starts share admission with new turns, and retain their guards until
 the mutation finishes even if the HTTP request disconnects. This covers the
-same runtime manager's tracked jobs. Launch directories do not prove where a
+same runtime manager's tracked jobs. Durable client job operations additionally
+fence unconfirmed overlapping dispatches in their shared store, including
+after Engine restart. Launch directories do not prove where a
 command later changes directory; escaped descendants, late independent
 subagent launches and other runtime managers or processes remain outside this
 guard. It is not an OS-wide process reservation.
