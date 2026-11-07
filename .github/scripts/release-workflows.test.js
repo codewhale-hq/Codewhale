@@ -69,7 +69,7 @@ assert.match(
   "Engine acceptance must build the canonical executable first",
 );
 const npmSmokeJob = ci.match(/^  npm-wrapper-smoke:\n([\s\S]*?)(?=^  \S)/m)?.[1];
-assert.ok(npmSmokeJob, "CI must retain the required npm-wrapper job");
+assert.ok(npmSmokeJob, "CI must retain the npm-wrapper job");
 assert.match(
   namedStep(npmSmokeJob, "Build wrapper binaries"),
   /run: cargo build --release --locked -p codewhale-cli --bin codewhale/,
@@ -79,19 +79,19 @@ assert.match(
   /run: node scripts\/release\/npm-wrapper-smoke\.js/,
 );
 const npmSmokeSteps = npmSmokeJob.split(/(?=^      - )/m).slice(1);
-// Exercise the workflow's actual Boolean guards. A successful location echo
-// must never substitute for the build/install smoke on a heavy pull request.
+// Exercise the workflow's actual Boolean guards. The smoke is manual-only
+// (workflow_dispatch); pull requests, pushes and schedules skip the job.
 const npmSmokeCases = [
   // name, event, heavy, OS, trusted, cache success, execute, Linux deps, CNB
-  ["own PR", "pull_request", true, "ubuntu-latest", true, true, true, true, false],
-  ["fork PR", "pull_request", true, "ubuntu-latest", false, true, true, true, false],
-  ["PR cache failure", "pull_request", true, "ubuntu-latest", false, false, true, true, false],
+  ["own PR", "pull_request", true, "ubuntu-latest", true, true, false, false, false],
+  ["fork PR", "pull_request", true, "ubuntu-latest", false, true, false, false, false],
+  ["PR cache failure", "pull_request", true, "ubuntu-latest", false, false, false, false, false],
   ["light PR", "pull_request", false, "ubuntu-latest", true, true, false, false, false],
   ["manual Ubuntu", "workflow_dispatch", true, "ubuntu-latest", true, true, true, true, false],
-  ["main Ubuntu", "push", true, "ubuntu-latest", true, true, false, false, true],
+  ["main Ubuntu", "push", true, "ubuntu-latest", true, true, false, false, false],
   ["manual macOS", "workflow_dispatch", true, "macos-latest", true, true, true, false, false],
-  ["main Windows", "push", true, "windows-latest", true, true, true, false, false],
-  ["main cache failure", "push", true, "windows-latest", true, false, true, false, false],
+  ["main Windows", "push", true, "windows-latest", true, true, false, false, false],
+  ["main cache failure", "push", true, "windows-latest", true, false, false, false, false],
   ["light main", "push", false, "ubuntu-latest", true, true, false, false, false],
   ["schedule", "schedule", true, "ubuntu-latest", true, true, false, false, false],
 ];
@@ -121,6 +121,7 @@ for (const [label, event, heavy, os, trusted, cache, execute, linuxDeps, cnb] of
     else if (name === "Linux smoke location") expected = cnb;
     else if (name === sccacheInstallStep) expected = installed;
     else if (name === "Enable sccache" || name === "sccache stats") expected = installed && cache;
+    if (!jobEnabled) expected = false;
     assert.equal(
       Boolean(jobEnabled && vm.runInNewContext(guard, context)),
       expected,
@@ -128,15 +129,14 @@ for (const [label, event, heavy, os, trusted, cache, execute, linuxDeps, cnb] of
     );
   }
 }
-// The matrix itself: pull requests keep the single required Ubuntu context,
-// main pushes skip the hosted-macOS leg (5-job concurrency cap), and a manual
-// full-CI dispatch still covers all three platforms.
+// The matrix itself: a manual full-CI dispatch covers Ubuntu and Windows; the
+// release artifacts cover macOS.
 const npmSmokeMatrix = npmSmokeJob.match(/^        os: \$\{\{ fromJSON\((.+)\) \}\}$/m)?.[1];
 assert.ok(npmSmokeMatrix, "the wrapper job must keep an event-keyed OS matrix");
 for (const [event, expected] of [
   ["pull_request", ["ubuntu-latest"]],
   ["push", ["ubuntu-latest", "windows-latest"]],
-  ["workflow_dispatch", ["ubuntu-latest", "macos-latest", "windows-latest"]],
+  ["workflow_dispatch", ["ubuntu-latest", "windows-latest"]],
 ]) {
   assert.deepEqual(
     JSON.parse(vm.runInNewContext(npmSmokeMatrix, { github: { event_name: event } })),

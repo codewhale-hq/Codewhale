@@ -193,6 +193,23 @@ jobs:
         with:
           cache-bin: false
           prefix-key: v1-${{ runner.os }}-${{ runner.arch }}-stable
+      - name: Add swap so the aarch64 dist build is not killed for memory
+        if: runner.os == 'Linux' && contains(matrix.target, 'aarch64')
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir=/mnt
+          if ! sudo test -w /mnt; then dir=/; fi
+          avail=$(df -Pk "$dir" | awk 'NR==2 {print int($4 / 1048576)}')
+          if [ "$avail" -ge 30 ]; then size=16; elif [ "$avail" -ge 14 ]; then size=8; else size=0; fi
+          if [ "$size" -gt 0 ]; then
+            sudo fallocate -l "${size}G" "$dir/cw-swapfile"
+            sudo chmod 600 "$dir/cw-swapfile"
+            sudo mkswap "$dir/cw-swapfile" >/dev/null
+            sudo swapon "$dir/cw-swapfile"
+          fi
+          free -g
+          df -h "$dir"
       - name: Build static Linux binaries (musl)
         if: endsWith(matrix.target, '-unknown-linux-musl')
         shell: bash
