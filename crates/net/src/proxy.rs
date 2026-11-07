@@ -1054,7 +1054,12 @@ mod tests {
 
         assert_eq!(redact_proxy_userinfo("not-a-url"), "<invalid proxy URL>");
 
-        for host in ["ho st:8080", "proxy.example:port-not-a-number", "[::1:8080", ""] {
+        for host in [
+            "ho st:8080",
+            "proxy.example:port-not-a-number",
+            "[::1:8080",
+            "",
+        ] {
             let malformed = format!("{placeholder_user}:{placeholder_pass}@{host}");
             let redacted = redact_proxy_userinfo(&malformed);
             assert_eq!(redacted, "<invalid proxy URL>", "{host:?}");
