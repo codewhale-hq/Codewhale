@@ -197,6 +197,8 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **A local proxy that stops mid-session no longer strands the session (#7231):** the model, catalog, search, vision, finance, MCP-registry, profile and remote-control clients watch a loopback proxy port and go direct while it refuses connections, then resume proxying when it returns. Only a definite refusal from every resolved address changes the route; remote proxies, `NO_PROXY` matches, credentials and the existing precedence are unchanged. Set `CODEWHALE_LOCAL_PROXY_FALLBACK=0` to keep the old build-time snapshot.
+- **Fork, undo and retry work after a workspace drift notice (#7234):** the history-boundary walks now treat a whole `<context_update>` envelope as engine-owned, so a session that received one can be cut at every saved turn. A person quoting a notice or a truncated envelope still counts as their own prompt.
 - **Git writes land in the right workspace:** stage, unstage, discard, commit, push and branch take `?thread_id=` and run in that thread's recorded workspace, matching the read routes. Before, they always ran in the server's own folder, so a commit asked for a thread in another folder could land in the wrong tree.
 - **ChatGPT sign-in tolerates a small device clock skew:** identity-token expiry and not-before checks allow the same 60-second tolerance already used for ordinary network time drift, while signature, issuer, audience, subject and nonce checks remain exact. The diagnostic text still names the exact failed check when a token is genuinely invalid.
 - **Remaining long-blocking work moved off async callers (#6553):** route
