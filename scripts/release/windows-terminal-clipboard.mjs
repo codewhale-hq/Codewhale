@@ -120,7 +120,7 @@ try {
   receipt.stash = { path: stashFile, sha256: createHash('sha256').update(stashBytes).digest('hex'), records: 1, exactDraftMatch: true, normalization: 'CRLF to LF only' };
   assert.equal(await desktopClosed, 0, desktopError);
   assert.equal(desktopError, '', 'no desktop errors');
-  receipt.cleanup = JSON.parse(await fs.readFile(path.join(evidence, 'cleanup.json'), 'utf8'));
+  receipt.cleanup = JSON.parse((await fs.readFile(path.join(evidence, 'cleanup.json'), 'utf8')).replace(/^\uFEFF/, ''));
   assert.equal(receipt.cleanup.terminal, terminal, 'cleanup used the owned Terminal path');
   assert.equal(receipt.cleanup.remaining, 0, 'owned Terminal processes are gone');
   receipt.result = 'passed';
@@ -135,17 +135,21 @@ try {
         await fs.writeFile(path.join(evidence, 'cancel'), 'retire owned Terminal');
         await Promise.race([desktopClosed, delay(5000)]);
       } catch (error) { receipt.desktop.cancelError = String(error); }
-      if (desktop.exitCode === null && desktop.signalCode === null) {
-        try {
-          const cleanup = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-            '$ErrorActionPreference = "Stop"; $terminal = $env:CODEWHALE_CLIPBOARD_TERMINAL; $stopped = @(); foreach ($process in @(Get-Process | Where-Object { $_.Path -eq $terminal })) { Stop-Process -InputObject $process -Force; if (!$process.WaitForExit(5000)) { throw "Owned Terminal did not exit" }; $stopped += $process.Id }; $remaining = @(Get-Process | Where-Object { $_.Path -eq $terminal }).Count; if ($remaining) { throw "Owned Terminal is still running" }; @{ terminal = $terminal; stopped = $stopped; remaining = $remaining } | ConvertTo-Json -Compress'],
-          { env: { ...desktopEnv, CODEWHALE_CLIPBOARD_TERMINAL: terminal }, encoding: 'utf8', timeout: 10_000 });
-          receipt.desktop.fallbackCleanup = JSON.parse(cleanup.replace(/^\uFEFF/, ''));
-        } catch (error) {
-          receipt.desktop.cleanupError = String(error); receipt.result = 'failed'; process.exitCode = 1;
-        }
-        receipt.desktop.killRequestedAt = new Date().toISOString(); desktop.kill();
+    }
+    if (receipt.result !== 'passed') {
+      try {
+        const cleanup = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+          '$ErrorActionPreference = "Stop"; $terminal = $env:CODEWHALE_CLIPBOARD_TERMINAL; $stopped = @(); foreach ($process in @(Get-Process | Where-Object { $_.Path -eq $terminal })) { Stop-Process -InputObject $process -Force; if (!$process.WaitForExit(5000)) { throw "Owned Terminal did not exit" }; $stopped += $process.Id }; $remaining = @(Get-Process | Where-Object { $_.Path -eq $terminal }).Count; if ($remaining) { throw "Owned Terminal is still running" }; @{ terminal = $terminal; stopped = $stopped; remaining = $remaining } | ConvertTo-Json -Compress'],
+        { env: { ...desktopEnv, CODEWHALE_CLIPBOARD_TERMINAL: terminal }, encoding: 'utf8', timeout: 10_000 });
+        receipt.desktop.fallbackCleanup = JSON.parse(cleanup.replace(/^\uFEFF/, ''));
+        assert.equal(receipt.desktop.fallbackCleanup.terminal, terminal, 'fallback cleanup used the owned Terminal path');
+        assert.equal(receipt.desktop.fallbackCleanup.remaining, 0, 'fallback cleanup retired the owned Terminal');
+      } catch (error) {
+        receipt.desktop.cleanupError = String(error); receipt.result = 'failed'; process.exitCode = 1;
       }
+    }
+    if (desktop.exitCode === null && desktop.signalCode === null) {
+      receipt.desktop.killRequestedAt = new Date().toISOString(); desktop.kill();
     }
     await desktopClosed;
   }
