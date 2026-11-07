@@ -73,6 +73,7 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
+http = "1.5"
 codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3" }
 codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
 codewhale-memory = { path = "../memory", version = "0.10.3" }
@@ -188,6 +189,7 @@ wiremock = { version = "0.6", optional = true }
 codewhale-build-support = { path = "../build-support", version = "0.10.3" }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3", features = ["schema"] }
 codewhale-skills = { path = "../skills", version = "0.10.3", features = ["test-support"] }
 codewhale-dependencies = { path = "../dependencies", version = "0.10.3", features = ["test-support"] }
