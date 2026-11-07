@@ -283,6 +283,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Plugin stages created during a registry load are checked:** a plugin whose staged copy appears while the registry is loading now goes through the same restage lock, receipt and policy checks as any other stage instead of being left unstaged; invalid bytes are still refused and stay in the failure cache.
 - **Host-provided model clients:** keep configured session isolation and
   approval deadlines when optional credential preflight fails.
 - **Runtime SDK exports:** include the existing thread-scoped Git, snapshot,
@@ -553,6 +554,8 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Maintenance
 
+- **Windows release harness:** the terminal-clipboard check strips Windows PowerShell's UTF-8 BOM before parsing cleanup receipts and still runs the bounded private-path cleanup fallback after its controller has exited; the vendored terminal kit lock follows Protocol 0.10.3.
+- **Windows release import floor:** the 10 ARM64 import pairs that the native export probe resolved on Windows 11 ARM64 are qualified, and 12 x64 pairs are recorded as documented API contracts until a native x64 export probe exists. The Windows 10 build 14393 floor, the guard and the x86 profile are unchanged; the next frozen candidate's import job is the real check.
 - MCP regression fixtures retain private extension-host roots and wait for their own workers to finish, preventing parallel checks from borrowing a deleted fixture home. Production connection and credential policy is unchanged.
 - **Independent terminal kit candidate 0.2.0:** its workflow totals use `u64`, and its existing avatar API reexports the shared Protocol contract. All local consumers pin 0.2.0. Protocol 0.10.3 must be published and verified before the kit, followed by the dependent Engine packages; each publication retains its separate approval.
 - **`codewhale-plugins` crate:** plugin discovery, review, install and marketplace parsing move out of `codewhale-tui` into a new crate; MCP server config types move to `codewhale-mcp`, and the skill parse core and recommendations to `codewhale-skill-install`. Review and trust behavior is unchanged. (S19, #5316)
