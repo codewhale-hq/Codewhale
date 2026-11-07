@@ -10,11 +10,12 @@
  *
  * One storage contract, shared with the web app: the `cw-theme` key holds
  * `light | dark`. A stored `system` or `auto` (earlier modes) reads as
- * light. The inline boot script in the locale layout applies a stored pin
- * before paint, so there is no theme flash on reload.
+ * light. The server-inserted boot script applies a stored pin before paint;
+ * locale navigation reapplies that choice from the same storage contract.
  */
 
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { useServerInsertedHTML } from "next/navigation";
 import { fill } from "@/lib/i18n/dictionaries";
 import { Icon, type IconName } from "./icon";
 
@@ -46,22 +47,34 @@ export function ThemeToggle({
   lightLabel,
   darkLabel,
   ariaTemplate,
-  titleLabel,
 }: {
-  /** Former "system" mode label; unused since paper became the default. */
-  autoLabel?: string;
   lightLabel: string;
   darkLabel: string;
   /** "Theme: {mode} (click to cycle)" — interpolated with fill(). */
   ariaTemplate: string;
-  titleLabel: string;
 }) {
   const [mode, setMode] = useState<Mode>("light");
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => {
+  const inserted = useRef(false);
+  useServerInsertedHTML(() => {
+    if (inserted.current) return null;
+    inserted.current = true;
+    return (
+      <script
+        dangerouslySetInnerHTML={{
+          __html:
+            "(function(){try{var t=localStorage.getItem('cw-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();",
+        }}
+      />
+    );
+  });
+
+  useLayoutEffect(() => {
+    const selected = load();
+    apply(selected);
+    setMode(selected);
     setMounted(true);
-    setMode(load());
   }, []);
 
   const cycle = () => {
@@ -83,7 +96,6 @@ export function ThemeToggle({
       onClick={cycle}
       className="nav-icon-button"
       aria-label={fill(ariaTemplate, { mode: labels[shown] })}
-      title={titleLabel}
       suppressHydrationWarning
     >
       <Icon name={glyph[shown]} className="nav-icon" />

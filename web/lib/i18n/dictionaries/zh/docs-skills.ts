@@ -25,6 +25,9 @@ export const docsSkills: DocsPageDict = {
       "title": "安装到自有目录",
       "blocks": [
         {
+          "p": "按照[双文件插件教程](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md)编写并分享技能。"
+        },
+        {
           "code": "/skill install --project <spec>\n/skill install --global <spec>\n/skill trust --project <name>",
           "lang": "Codewhale"
         },

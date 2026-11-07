@@ -4,7 +4,7 @@ import { PageHeader, Section } from "@/components/page-header";
 import { getContribute, pickText } from "@/lib/i18n/dictionaries";
 import { buildPageMetadata } from "@/lib/page-meta";
 import { getMerchCopy } from "@/lib/content/contributor-merch";
-import { CONTRIBUTION_PATHS } from "@/lib/content/contributing";
+import { CONTRIBUTION_PATHS, SKILL_CONTRIBUTION } from "@/lib/content/contributing";
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
@@ -30,6 +30,10 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
         pose="write"
         actions={
           <>
+            <Link href={SKILL_CONTRIBUTION.href} className="btn btn-primary btn-lg">
+              {pickText(SKILL_CONTRIBUTION.title, locale)}
+              <Icon name="external" className="icon" />
+            </Link>
             <Link href="https://github.com/codewhale-hq/CodeWhale/blob/main/CONTRIBUTING.md" className="btn btn-secondary btn-lg">
               {t.fullGuide}
               <Icon name="external" className="icon" />

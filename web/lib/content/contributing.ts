@@ -9,6 +9,16 @@ export interface ContributionPath {
   icon: IconName;
 }
 
+export const SKILL_CONTRIBUTION: ContributionPath = {
+  title: { en: "Share a skill", zh: "分享技能" },
+  body: {
+    en: "Package a checklist or report format with the two-file plugin tutorial.",
+    zh: "用两文件插件教程，将清单或报告格式打包为可分享的技能。",
+  },
+  href: "https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md",
+  icon: "layers",
+};
+
 export const CONTRIBUTION_PATHS: ContributionPath[] = [
   {
     title: { en: "Report a bug", zh: "报告问题" },

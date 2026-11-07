@@ -34,9 +34,6 @@ codewhale auth status --provider deepseek`,
         {
           p: "You can also connect from inside Codewhale: press F3 (or type `/provider`), choose a provider, paste the key, then pick a model.",
         },
-        {
-          note: "In v0.10.0, `auth set --provider deepseek` also switches your default model to DeepSeek Pro. Run `/model` if you want the faster, cheaper model back. Connecting through F3 keeps your current model.",
-        },
       ],
     },
     {
@@ -69,7 +66,7 @@ codewhale auth status --provider deepseek`,
           p: "`codewhale auth list` shows every provider Codewhale knows and whether each one has a key. The pattern is the same for all of them: `codewhale auth set --provider <name>`, or that provider's environment variable.",
         },
         {
-          p: "Local runners — Ollama, vLLM, and SGLang — need no key by default, and your prompts stay on your machine. Start the runner, then choose it:",
+          p: "Local Ollama, vLLM and SGLang servers need no API key by default. Use a loopback endpoint for a model on your machine, then select the model tag it serves:",
         },
         {
           code: `codewhale auth list

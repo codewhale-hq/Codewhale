@@ -9,14 +9,15 @@ export const PLUGINS_COPY = {
   kicker: { en: "Plugins and marketplace", zh: "插件与市场" },
   title: { en: "Add tools and skills with plugins", zh: "通过插件添加工具和技能" },
   lead: {
-    en: "Add capabilities from the first-party Codewhale catalog, a GitHub repository, or a tarball. Nothing runs until you read the manifest and trust it.",
-    zh: "从官方 Codewhale 目录、GitHub 仓库或压缩包添加能力。在你阅读清单并信任它之前，不会运行任何内容。",
+    en: "Add skills and tools from the Codewhale catalog, a GitHub repository or a tarball. Review, trust and enable each plugin before use.",
+    zh: "从 Codewhale 目录、GitHub 仓库或压缩包添加技能和工具。使用前，先审阅、确认信任并启用插件。",
   },
   marketplaceCta: { en: "Browse the Codewhale catalog", zh: "浏览 Codewhale 目录" },
   docsCta: { en: "Plugin authoring guide", zh: "插件编写指南" },
 
   cuLabel: { en: "First-party plugin · macOS beta", zh: "官方插件 · macOS 测试版" },
   cuTitle: { en: "Computer Use", zh: "Computer Use" },
+  cuHomeTitle: { en: "Work in Mac apps while you keep working", zh: "智能体操作 Mac 应用，你继续工作" },
   cuLead: {
     en: "Let an agent work in Mac apps while you keep using your computer. Connect the Computer Use helper and plugin to Codewhale or another compatible MCP host.",
     zh: "智能体在 Mac 应用中后台操作，你可以继续使用电脑。将 Computer Use 助手和插件连接到 Codewhale 或其他兼容 MCP 的宿主。",
@@ -166,15 +167,15 @@ export const PLUGINS_COPY = {
     {
       title: { en: "Review", zh: "审阅" },
       detail: {
-        en: "/plugin show <name> prints the manifest, declared capabilities, and install receipt, including the source and bundle selector.",
-        zh: "/plugin show <name> 打印清单、声明的能力与安装回执，包括来源与 bundle 选择器。",
+        en: "/plugin trust <name> shows the capability review and prints the confirmation command.",
+        zh: "/plugin trust <name> 显示能力审阅内容，并打印确认命令。",
       },
     },
     {
       title: { en: "Trust", zh: "信任" },
       detail: {
-        en: "/plugin trust <name> marks your decision. Official catalog provenance grants no execution or network permission on its own.",
-        zh: "/plugin trust <name> 记录你的决定。官方目录来源本身不授予任何执行或网络权限。",
+        en: "After reviewing, copy and run the exact confirmation command, including both full hashes. Catalog provenance alone grants no permission.",
+        zh: "审阅后，复制并运行打印出的完整确认命令，保留两个完整哈希。目录来源本身不授予权限。",
       },
     },
     {
@@ -209,6 +210,7 @@ export const PLUGIN_COMMANDS = [
   "/plugin install github:owner/repo",
   "/plugin show <name>",
   "/plugin trust <name>",
+  "/plugin trust <name> <full-content-sha256>.<full-capability-sha256>",
   "/plugin enable <name>",
   "/plugin update <name>",
   "/plugin suggest <task>",

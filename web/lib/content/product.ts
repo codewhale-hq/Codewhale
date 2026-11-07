@@ -46,7 +46,7 @@ export const PRODUCT_COPY = {
     zh: "Codewhale 在终端和本地浏览器中工作，使用你选择的模型。",
   },
 
-  workHeading: { en: "Plan, delegate and run workflows", zh: "计划、委派并运行工作流" },
+  workHeading: { en: "Keep larger tasks moving", zh: "推进更大的任务" },
   workPatterns: [
     {
       title: { en: "Operate", zh: "Operate" },
@@ -60,8 +60,8 @@ export const PRODUCT_COPY = {
     {
       title: { en: "Fleet", zh: "Fleet" },
       body: {
-        en: "Assign different models to building and review, then save the team as a Fleet.",
-        zh: "为实现和审阅分配不同模型，再把团队保存为 Fleet。",
+        en: "Give agents different roles and models, then reuse those profiles across tasks.",
+        zh: "为智能体分配不同角色和模型，再在后续任务中复用这些配置。",
       },
       href: "/docs/fleet",
       command: "/fleet setup",
@@ -73,7 +73,7 @@ export const PRODUCT_COPY = {
         zh: "把步骤、并行工作与审阅关卡保存为可重复运行的流程。",
       },
       href: "https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/AUTOMATIC_WORKFLOWS.md",
-      command: "codewhale workflow run",
+      command: "codewhale workflow run <workflow>",
     },
     {
       title: { en: "Skills and plugins", zh: "技能与插件" },
@@ -87,8 +87,8 @@ export const PRODUCT_COPY = {
     {
       title: { en: "Receipts and undo", zh: "回执与撤销" },
       body: {
-        en: "Preview the next primary request, review recorded actions and undo recorded file changes.",
-        zh: "预览下一次主要请求、查看已记录的操作，并撤回已记录的文件改动。",
+        en: "Preview the next primary request, review recorded actions and restore available file snapshots.",
+        zh: "预览下一次主要请求、查看已记录的操作，并恢复可用的文件快照。",
       },
       href: "/docs/review",
       command: "/receipts",

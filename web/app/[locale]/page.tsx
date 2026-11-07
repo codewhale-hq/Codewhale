@@ -3,14 +3,12 @@ import Image from "next/image";
 import Link from "next/link";
 import { HeroInstall } from "@/components/hero-install";
 import { Icon } from "@/components/icon";
-import { InstallCodeBlock } from "@/components/install-code-block";
 import { Section } from "@/components/page-header";
 import { Status } from "@/components/status-badge";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { WhaleLive } from "@/components/whale-live";
 import { getFacts } from "@/lib/facts";
-import { CONTRIBUTION_PATHS } from "@/lib/content/contributing";
-import { GETTING_STARTED_STEPS } from "@/lib/content/getting-started";
+import { CONTRIBUTION_PATHS, SKILL_CONTRIBUTION } from "@/lib/content/contributing";
 import { PLUGINS_COPY } from "@/lib/content/plugins";
 import { PRODUCT_COPY } from "@/lib/content/product";
 import { PARTNER_PROMO } from "@/lib/content/partner-promo";
@@ -27,8 +25,8 @@ export const revalidate = 300;
 /**
  * The whale-road homepage: the promise, capabilities and reading
  * sections sit on paper. The live v2 whale (the desktop app's own Director)
- * rests on the top edge of a real terminal capture just under the promise,
- * and the page ends in the sea with the install command, running into the
+ * rests on the ocean above the captured terminal,
+ * and the page ends in the sea with the install action, running into the
  * footer.
  *
  * One memorable thing moves: the whale. It breathes, glances toward the
@@ -90,84 +88,106 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             </div>
           </div>
           <div className="home-whale">
-            <WhaleLive locale={locale} perform />
+            <WhaleLive locale={locale} />
           </div>
         </div>
       </section>
 
-      <figure className="home-terminal figure">
-        <div className="figure-frame" dir="ltr">
-          <NativeTerminalGallery
-            locale={locale}
-            defaultFrame="home"
-            regionLabel={d.shotPreview}
-            label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
-          />
+      <section className="home-terminal stage" aria-label={d.shotPreview}>
+        <div className="home-terminal-inner">
+          <figure className="home-shot figure">
+            <div className="figure-frame" dir="ltr">
+              <NativeTerminalGallery
+                locale={locale}
+                defaultFrame="home"
+                regionLabel={d.shotPreview}
+                label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
+              />
+            </div>
+            <figcaption className="figure-caption">{d.shotPreview}</figcaption>
+          </figure>
+          <div
+            className="home-proof"
+            data-source-state={sourceIsPublished ? "published release" : "source candidate"}
+            data-source-state-label={sourceIsPublished ? d.publishedRelease : d.sourceCandidate}
+          >
+            <Status tone={publishedRelease ? "ready" : "idle"}>
+              {publishedRelease
+                ? <a href={publishedRelease.url}>{fill(d.latestRelease, { tag: publishedRelease.tag })}</a>
+                : d.releaseUnavailable}
+            </Status>
+            <span>{facts.license ?? "MIT"}</span>
+          </div>
         </div>
-        <figcaption className="figure-caption">
-          {d.shotPreview}
-        </figcaption>
-      </figure>
-
-      <div
-        className="home-proof"
-        data-source-state={sourceIsPublished ? "published release" : "source candidate"}
-        data-source-state-label={sourceIsPublished ? d.publishedRelease : d.sourceCandidate}
-      >
-        <Status tone={publishedRelease ? "ready" : "idle"}>
-          {publishedRelease
-            ? <a href={publishedRelease.url}>{fill(d.latestRelease, { tag: publishedRelease.tag })}</a>
-            : d.releaseUnavailable}
-        </Status>
-        <span>{facts.license ?? "MIT"}</span>
-      </div>
+      </section>
 
       {/* PAPER — models, connections, and the getting-started path. */}
       <div className="home-body">
         <Section
           id="home-capabilities"
-          layout="split"
           className="home-section"
           title={pickText(PRODUCT_COPY.workHeading, locale)}
           link={<Link href={`/${locale}/features`} className="section-link">{getChrome(locale).navFeatures}</Link>}
         >
-          <dl className="ruled-list">
-            {PRODUCT_COPY.workPatterns.map((pattern) => (
+          <dl className="home-work-patterns">
+            {PRODUCT_COPY.workPatterns.slice(0, 3).map((pattern) => (
               <div key={pattern.href}>
                 <dt>{pickText(pattern.title, locale)}</dt>
-                <dd>{pickText(pattern.body, locale)} <Link className="section-link" href={pattern.href.startsWith("/") ? `/${locale}${pattern.href}` : pattern.href}><code>{pattern.command}</code></Link></dd>
+                <dd>
+                  <p>{pickText(pattern.body, locale)}</p>
+                  <Link className="section-link" href={pattern.href.startsWith("/") ? `/${locale}${pattern.href}` : pattern.href}><code>{pattern.command}</code></Link>
+                </dd>
               </div>
             ))}
           </dl>
         </Section>
 
+      </div>
+
+      <div className="home-computer-use stage">
+        <div className="home-computer-inner">
+          <Section
+            id="home-computer-use"
+            layout="split"
+            className="home-section"
+            label={pickText(PLUGINS_COPY.cuTitle, locale)}
+            title={pickText(PLUGINS_COPY.cuHomeTitle, locale)}
+            scope={pickText(PLUGINS_COPY.cuLabel, locale)}
+            link={<Link href={`/${locale}/computer-use`} className="btn btn-secondary">{getComputerUse(locale).setup}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+          >
+            <dl className="ruled-list">
+              {[0, 1, 6].map((index) => {
+                const feature = PLUGINS_COPY.cuFeatures[index];
+                return <div key={feature.title.en}><dt>{pickText(feature.title, locale)}</dt><dd>{pickText(feature.detail, locale)}</dd></div>;
+              })}
+            </dl>
+          </Section>
+        </div>
+      </div>
+
+      <div className="home-body">
         <Section
-          id="home-computer-use"
-          layout="split"
-          className="home-section home-computer-use"
-          title={pickText(PLUGINS_COPY.cuTitle, locale)}
-          link={<Link href={`/${locale}/computer-use`} className="section-link">{getComputerUse(locale).setup}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+          id="home-models"
+          className="home-section"
+          title={d.modelsHeading}
+          scope={d.modelsBody}
+          link={<Link href={`/${locale}/models`} className="section-link">{d.modelsLink}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+        />
+
+        <Section
+          id="home-community"
+          className="home-section home-community"
+          title={d.communityHeading}
+          scope={fill(d.communityBody, { count: facts.contributorCount })}
+          link={<Link href={`/${locale}/contribute`} className="section-link">{d.contribute}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
         >
-          <dl className="ruled-list">
-            {[0, 1, 6].map((index) => {
-              const feature = PLUGINS_COPY.cuFeatures[index];
-              return <div key={feature.title.en}><dt>{pickText(feature.title, locale)}</dt><dd>{pickText(feature.detail, locale)}</dd></div>;
-            })}
-          </dl>
-        </Section>
-
-        <Section id="home-models" className="home-section" title={d.modelsHeading}>
-          <p className="section-scope">{d.modelsBody}</p>
-          <Link href={`/${locale}/models`} className="section-link">{d.modelsLink}<Icon name="arrow-right" className="icon icon-flip" /></Link>
-        </Section>
-
-        <section className="home-section home-community" aria-labelledby="home-community">
-          <div className="section-split">
-            <div className="section-head-text">
-              <h2 className="section-title" id="home-community">{d.communityHeading}</h2>
-              <p className="section-scope">{fill(d.communityBody, { count: facts.contributorCount })}</p>
-              <Link href={`/${locale}/contribute`} className="section-link">{d.contribute}<Icon name="arrow-right" className="icon icon-flip" /></Link>
-            </div>
+          <div className="home-contribution-grid">
+            <a href={SKILL_CONTRIBUTION.href} className="home-skill">
+              <h3>{pickText(SKILL_CONTRIBUTION.title, locale)}</h3>
+              <p>{pickText(SKILL_CONTRIBUTION.body, locale)}</p>
+              <code dir="ltr">plugin.json<br />skills/hello/SKILL.md</code>
+              <Icon name="arrow-right" className="icon icon-flip" />
+            </a>
             <nav aria-label={d.communityLinksAria}>
               <ul className="dir-list" role="list">
                 {CONTRIBUTION_PATHS.map((path) => (
@@ -191,7 +211,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               </ul>
             </nav>
           </div>
-        </section>
+        </Section>
 
         {showPromo && (
           <section className="home-section home-promo" aria-labelledby="home-promo-title">
@@ -217,29 +237,17 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             </a>
           </section>
         )}
-
-
       </div>
 
-      {/* THE SEA AGAIN — the install command where the page ends; the water
+      {/* THE SEA AGAIN — the install action where the page ends; the water
           runs on into the footer. */}
       <section className="home-install stage sea-continues" aria-labelledby="home-install">
         <div className="home-install-inner">
-          <div className="section-head-text">
-            <h2 className="section-title" id="home-install">{d.installBandHeading}</h2>
-            <p className="home-install-channels">
-              GitHub Releases ({d.binaries}) · npm · Cargo · Docker · Windows · Android / Termux · {d.chinaMirrors}
-            </p>
-            <Link href={`/${locale}/install`} className="section-link">
-              {d.installGuideLink}
-              <Icon name="arrow-right" className="icon icon-flip" />
-            </Link>
-          </div>
-          <InstallCodeBlock
-            cmd={GETTING_STARTED_STEPS[0].commands[0]}
-            copyLabel={d.copy}
-            copiedLabel={d.copied}
-          />
+          <h2 className="section-title" id="home-install">{d.startHeading}</h2>
+          <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
+            {d.getCodewhale}
+            <Icon name="arrow-right" className="icon icon-flip" />
+          </Link>
         </div>
       </section>
     </div>

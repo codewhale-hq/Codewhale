@@ -21,11 +21,11 @@ export const docsFleet: DocsFleetDict = {
       title: "Save roles in a Fleet",
       blocks: [
         {
-          p: "Your Fleet is the list of roles Codewhale can hand work to, and the model each role uses. Set it up once inside a session:",
+          p: "Fleet keeps reusable roles and model choices. Connect a model first, then create a role profile inside a session:",
         },
         { code: "/fleet setup\n/fleet\n/fleet saved", lang: "Codewhale" },
         {
-          p: "`/fleet setup` walks you through a role, its model (or “use the session's model”), and where to save it: this project, or your personal profile for every repository. You review the exact file before it is written. `/fleet` shows the members of the selected Fleet, and `/fleet saved` switches between named Fleets.",
+          p: "`/fleet setup` saves one role profile at a time. Choose its model or inherit the session route, then choose this project or your personal profiles. Review the exact file before saving. `/fleet` shows the selected team; `/fleet saved` switches among named teams that already exist. Ask for a task and use `/fleet workers` to watch its session agents.",
         },
         {
           p: "A Fleet only chooses who does the work. What a worker may read, write, or run still comes from your workspace trust, [approval setting](/docs/modes), and sandbox.",
@@ -37,7 +37,7 @@ export const docsFleet: DocsFleetDict = {
       title: "Write a workflow",
       blocks: [
         {
-          p: "A Workflow is a JavaScript file in your repository's `workflows/` folder. It describes steps; it does not do the work itself. This one reviews two areas in parallel, then combines the findings. Save it as `workflows/docs_readiness.workflow.js`:",
+          p: "A saved Workflow describes a process the agents can repeat. Create a `workflows/` folder and save this declarative example as `workflows/docs_readiness.workflow.js`. It reviews two areas in parallel, then combines the findings. Replace `src` and `docs` with directories that exist in your project:",
         },
         {
           code: `export default workflow({
@@ -68,10 +68,10 @@ export const docsFleet: DocsFleetDict = {
           lang: "workflows/docs_readiness.workflow.js",
         },
         {
-          p: "Steps can be `agent`, `branch`, `sequence`, `reduce`, `loop_until`, `cond`, `expand`, and `teacher_review`. A workflow file has no file, shell, or network access of its own, and `import`, `fetch`, `eval`, and `async` are rejected. The agents it starts do the real work, under your normal permissions.",
+          p: "This declarative form supports `agent`, `branch`, `sequence`, `reduce`, `loop_until`, `cond`, `expand`, and `teacher_review`. It compiles to a validated plan and rejects constructs such as `import`, `fetch`, `eval`, and `async`. Advanced imperative JavaScript can use asynchronous `task()` and `parallel()` in a sandbox, still without direct filesystem, shell or network access. Workers perform those actions under the active policy.",
         },
         {
-          note: "One run can start up to 1,000 agents, with at most 16 working at once; the rest wait for a slot. Loops must declare `max_iterations`.",
+          note: "Workflow defaults to 16 concurrently live agents; admitted work waits for a slot. There is no default cumulative child limit or structural depth limit. Set positive `[workflow] max_children` or `max_depth` values to limit them. Runtime agent admission and delegation limits apply separately. Loops must declare `max_iterations`.",
         },
       ],
     },
@@ -80,18 +80,17 @@ export const docsFleet: DocsFleetDict = {
       title: "Run it",
       blocks: [
         {
-          code: `codewhale workflow run docs-readiness --runtime inline
-codewhale workflow run docs-readiness --goal "prepare the 1.2 release" --verify`,
+          code: `codewhale workflow run docs-readiness --runtime inline`,
           lang: "Terminal",
         },
         {
-          p: "Codewhale finds `workflows/docs_readiness.workflow.js` from the name, checks it, and starts it. `--runtime inline` runs it in this terminal. The default, `tmux`, runs it in a detached tmux session that keeps going after you close the terminal. `--verify` runs the verification gates after a successful finish, and `--fleet <name>` uses a named Fleet instead of the built-in roles.",
+          p: "This command finds `workflows/docs_readiness.workflow.js`, validates it and starts a model-backed run, so connect your provider first. `--runtime inline` waits in this terminal. The default backend requires `tmux` installed on the host and runs in a detached session. Add `--verify` to the launch command for the configured verifier gates after a successful finish. `--fleet <name>` selects an existing named Fleet.",
         },
         {
           p: "To keep the work off your checkout, add `--worktree-repo . --branch <name>`: the run gets its own git worktree and branch.",
         },
         {
-          p: "Inside a session, `/workflow` starts a workflow and `/workflows` lists or cancels the runs in that session.",
+          p: "Inside a session, `/workflow <objective>` drafts a proposal without executing it. To review this saved file, use `/workflow run workflows/docs_readiness.workflow.js`. Wait for the review, then run `/workflow confirm` to start the reviewed draft. `/workflow status` reads run state, `/workflow cancel <run-id>` cancels, and `/workflows` opens the session run dashboard.",
         },
       ],
     },
@@ -109,7 +108,7 @@ codewhale lane interrupt <lane-id>`,
           lang: "Terminal",
         },
         {
-          p: "`lane list`, `lane status`, and `lane interrupt` accept `--json` and print a machine-readable receipt. In a session, `/lane` offers the same controls with the same results.",
+          p: "`lane list`, `lane status`, and `lane interrupt` accept `--json`. Inside a session, use `/lane list`, `/lane status <lane-id>`, or `/lane interrupt <lane-id>`. Logs and tmux attachment use the shell commands above. Slash reads show the last recorded state; CLI list/status reconcile backend exits. Slash interrupt first returns a queued receipt, then its final result.",
         },
       ],
     },
@@ -122,6 +121,7 @@ codewhale lane interrupt <lane-id>`,
         },
         {
           code: `codewhale fleet init
+codewhale fleet run tasks.json --check
 codewhale fleet run tasks.json --max-workers 4
 codewhale fleet status
 codewhale fleet logs <worker-id>
@@ -130,7 +130,7 @@ codewhale fleet stop --all`,
           lang: "Terminal",
         },
         {
-          p: "`fleet status` counts queued, running, finished, and failed work from this workspace's run record. `fleet resume` picks a run back up after the laptop slept or the manager exited, without starting a new one. For the agents attached to your current session only, use `/fleet workers` (or `/subagents`).",
+          p: "`fleet run --check` validates without creating a run; omit `--check` to start the foreground manager. Use another terminal for status and controls while it runs. After an interruption, `fleet resume <run-id>` reconciles stale leases and reports their state; it does not restart the manager or launch queued work. To explicitly retry a worker, inspect it and use `codewhale fleet restart <worker-id>`, which runs the manager for that run. `/fleet workers` and `/subagents` show current-session agents, not these durable runs.",
         },
       ],
     },

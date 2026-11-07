@@ -4,7 +4,7 @@
 /*
  * Paper holds the promise, capabilities and reading sections.
  * The live whale rests on the top edge of the real terminal capture under
- * the hero. The page ends in the sea with the install command, which runs
+ * the hero. The page ends in the sea with the install action, which runs
  * on into the footer.
  */
 
@@ -13,8 +13,8 @@
 /* ---------- paper: the hero ---------- */
 .home-hero {
   position: relative;
-  padding-block: clamp(2.5rem, 4vw, 3.5rem) 0;
-  background: var(--bg);
+  padding-block: clamp(2rem, 3vw, 2.5rem) 0;
+  background: radial-gradient(ellipse 48rem 30rem at 85% 100%, color-mix(in srgb, var(--brand-light) 12%, transparent), transparent 72%);
 }
 
 .home-hero-inner {
@@ -29,7 +29,7 @@
 .home-hero-copy {
   display: grid;
   gap: var(--space-4);
-  padding-bottom: clamp(1.5rem, 3vw, 2.5rem);
+  padding-bottom: clamp(1.5rem, 3vw, 2rem);
   min-width: 0;
 }
 
@@ -37,8 +37,8 @@
 /* Measured in em, not ch, so CJK and long compound words wrap the same as
    English; hyphenation lets German compounds break at syllables. */
 .home-title {
-  max-width: 9.5em;
-  font-size: clamp(2.5rem, 1.4rem + 3.6vw, 4rem);
+  max-width: 11.25em;
+  font-size: clamp(2.5rem, 1.4rem + 3.6vw, 3.75rem);
   hyphens: auto;
   font-weight: 650;
   line-height: 0.98;
@@ -74,8 +74,7 @@
 .home-hero-copy .hero-install { max-width: 35rem; margin-top: var(--space-2); }
 .home-hero-copy .actions { margin-top: calc(var(--space-2) * -1); }
 
-/* The whale rests on the terminal: its lowest point meets the frame's top
-   edge. */
+/* The whale rests on the horizon above the terminal. */
 .home-whale {
   display: flex;
   justify-content: center;
@@ -83,10 +82,10 @@
   min-width: 0;
 }
 .home-whale .whale-live {
-  --whale-size: clamp(16rem, 30vw, 26rem);
+  --whale-size: clamp(18rem, 36vw, 29rem);
   width: var(--whale-size);
   /* The rig fills the middle 72% of the canvas; drop its belly onto the
-     terminal frame below. */
+     horizon below. */
   margin-bottom: calc(var(--whale-size) * -0.26);
   position: relative;
   z-index: 2;
@@ -165,11 +164,28 @@
 .home-terminal {
   position: relative;
   z-index: 1;
+  background: var(--tide), var(--ocean-floor);
+}
+:root[data-theme="dark"] .home-terminal {
+  background: linear-gradient(180deg, var(--page-ground) 0, var(--sea-shallow) 3.5rem, var(--sea-mid) 9rem, var(--ocean-floor) 26rem);
+}
+.home-terminal::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--horizon-light);
+}
+.home-terminal-inner {
   width: var(--container);
   margin-inline: auto;
+  padding-block: clamp(4rem, 7vw, 6rem) clamp(2.5rem, 6vw, 4.5rem);
 }
-.home-terminal .figure-frame {
-  box-shadow: 0 1px 0 var(--line), 0 32px 64px -32px rgb(10 30 51 / 0.5);
+.home-shot { margin: 0; }
+.home-shot .figure-frame {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--brand-light) 35%, var(--line));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand-light) 20%, transparent), 0 40px 80px -40px rgb(0 0 0 / 0.75);
 }
 
 /* Release, licence and the contributor count read from facts, never typed into copy. */
@@ -178,10 +194,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-6);
-  width: var(--container);
-  margin-inline: auto;
-  padding-block: var(--space-5);
-  border-bottom: 1px solid var(--line);
+  padding-top: var(--space-5);
   color: var(--muted);
   font-size: var(--text-ui);
   font-variant-numeric: tabular-nums;
@@ -221,6 +234,34 @@
   border-top: 1px solid var(--line);
 }
 
+.home-work-patterns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-6);
+  margin-top: var(--space-7);
+}
+.home-work-patterns dt { font-size: var(--text-heading); font-weight: 600; }
+.home-work-patterns dd { display: grid; gap: var(--space-4); margin: var(--space-3) 0 0; color: var(--muted); line-height: 1.6; }
+.home-work-patterns code { font-size: var(--text-ui); overflow-wrap: anywhere; }
+
+.home-computer-use {
+  background: linear-gradient(115deg, var(--ocean-floor), var(--ocean-raised) 55%, var(--ocean-sky));
+}
+.home-computer-inner {
+  width: var(--container);
+  margin-inline: auto;
+  padding-block: clamp(3rem, 7vw, 6rem);
+}
+.home-computer-inner > .home-section { padding-block: 0; }
+.home-computer-use .section-title { max-width: 19ch; }
+.home-computer-use .btn { margin-top: var(--space-6); }
+.home-computer-use .ruled-list dt { font-family: var(--font-body); font-size: var(--text-body); font-weight: 600; }
+.home-contribution-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-6) clamp(2rem, 6vw, 5rem);
+}
+
 /* Terms read as words, not as code: the brand face, a little weight. */
 .home-body .ruled-list dt {
   font-family: var(--font-body);
@@ -231,6 +272,21 @@
 }
 
 .product-start-links { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-5); margin-top: var(--space-5); }
+
+.home-skill {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sheet);
+  background: var(--surface);
+  text-decoration: none;
+}
+.home-skill h3 { color: var(--text); font-size: var(--text-heading); }
+.home-skill p { color: var(--muted); line-height: 1.6; }
+.home-skill code { margin-top: var(--space-4); color: var(--muted); font-size: var(--text-ui); }
+.home-skill > .icon { color: var(--accent); }
+.home-skill:hover { border-color: var(--accent); }
 
 /* ---------- the sea: install, into the footer ---------- */
 .home-install-inner {
@@ -243,9 +299,8 @@
   padding-block: clamp(4.5rem, 9vw, 7rem) clamp(2.5rem, 5vw, 4rem);
 }
 @media (min-width: 900px) {
-  .home-install-inner { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); }
+  .home-install-inner { grid-template-columns: minmax(0, 1fr) auto; }
 }
-.home-install-channels { color: var(--muted); font-size: var(--text-ui); line-height: 1.6; }
 
 /* ---------- narrow screens ---------- */
 @media (max-width: 900px) {
@@ -253,15 +308,12 @@
   .home-hero-copy { padding-bottom: var(--space-4); }
   .home-whale { justify-content: flex-end; }
   .home-whale .whale-live { --whale-size: clamp(11rem, 48vw, 16rem); }
+  .home-work-patterns,
+  .home-contribution-grid { grid-template-columns: minmax(0, 1fr); }
+  .home-work-patterns > div + div { padding-top: var(--space-5); border-top: 1px solid var(--line); }
 }
 
 @media (forced-colors: active) {
-  .home-install::before { background: CanvasText; }
-}
-
-.home-body > .home-section.home-computer-use {
-  padding: clamp(1.25rem, 3vw, 2.5rem);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sheet);
-  background: var(--surface);
+  .home-install::before,
+  .home-terminal::before { background: CanvasText; }
 }

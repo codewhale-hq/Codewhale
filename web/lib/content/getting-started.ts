@@ -73,10 +73,10 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
     id: "fleet-workflow",
     title: { en: "Use multiple agents", zh: "使用多个智能体" },
     body: {
-      en: "Split a larger job across agents with different roles and models. Inside Codewhale, save your team with /fleet setup, then check its runs with /fleet status.",
-      zh: "把较大的任务分配给不同角色、不同模型的智能体。在 Codewhale 中用 /fleet setup 保存团队，再用 /fleet status 查看运行状态。",
+      en: "Save a reusable role and model with /fleet setup. Ask Codewhale to split a larger task across agents, then use /fleet workers to watch the agents in your current session.",
+      zh: "用 /fleet setup 保存可复用的角色和模型，再请 Codewhale 把较大任务分给多个智能体。用 /fleet workers 查看当前会话的智能体。",
     },
-    commands: ["/fleet setup", "/fleet status"],
+    commands: ["/fleet setup", "/fleet workers"],
     link: {
       href: "/docs/fleet",
       label: { en: "Set up a Fleet", zh: "配置 Fleet" },
@@ -94,8 +94,8 @@ export const GUIDE_NEXT_LINKS: { href: string; label: LocalizedText; note: Local
     href: "/docs/review",
     label: { en: "Review what changed", zh: "查看改动" },
     note: {
-      en: "See every edit in a session, roll files back to an earlier turn, and get a code review before you push.",
-      zh: "查看一次会话中的每处修改，把文件回滚到之前的回合，并在推送前做一次代码审查。",
+      en: "Review recorded edits, restore available snapshots and get a code review before pushing.",
+      zh: "查看已记录的修改、恢复可用快照，并在推送前做代码审查。",
     },
   },
   {

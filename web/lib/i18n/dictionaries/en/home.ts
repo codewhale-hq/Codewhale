@@ -2,11 +2,11 @@ import type { HomeDict } from "../types";
 
 /** English reference home copy: useful work with chosen models and connected tools. */
 export const home: HomeDict = {
-  metaTitle: "Codewhale · Build apps. Automate work.",
+  metaTitle: "Codewhale · An open-source agent for your computer",
   metaDescription: "Build apps, fix code and automate work with an open-source agent in your terminal. Choose hosted or local models. Help build Codewhale with code, docs and feedback.",
 
-  heroTitle: "Build apps. Automate work.",
-  heroIntro: "{brand} is an open-source agent for your terminal. Run workflows, connect tools and use the hosted or local models you choose.",
+  heroTitle: "An open-source agent for your computer",
+  heroIntro: "Build software and run repeatable workflows with {brand} in your terminal. Add Computer Use to work in Mac apps.",
   getCodewhale: "Install Codewhale",
   heroInstallAria: "Install command",
   exploreProduct: "Explore Codewhale",

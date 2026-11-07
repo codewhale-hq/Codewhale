@@ -103,15 +103,6 @@ export default async function LocaleLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(siteJsonLd) }}
         />
-        {/* Site-wide theme, applied before paint so there is no flash. The
-            site is light unless a stored "dark" (`cw-theme`, see
-            components/theme-toggle.tsx) pins the dark set. */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html:
-              "(function(){try{var t=localStorage.getItem('cw-theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();",
-          }}
-        />
         <a href="#main-content" className="skip-link">
           {chrome.skipToContent}
         </a>

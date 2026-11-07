@@ -19,8 +19,10 @@ competitor quality, adoption or completeness.
 
 ## The supported position
 
-**Build apps. Automate work.** This is also the existing Codewhale Moda kit's
-position. Codewhale combines a model-neutral local agent, coordinated model
+**An open-source agent for your computer.** The category comes first; the
+terminal demo and optional Mac Computer Use explain its scope. The existing
+Moda kit supplies the visual identity, not a mandatory slogan.
+Codewhale combines a model-neutral local agent, coordinated model
 teams, reusable Workflows, connected tools and an independently released
 Computer Use plugin, with visible permissions and recorded execution.
 Do not claim competitors lack these capabilities.

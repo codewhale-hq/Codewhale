@@ -25,6 +25,9 @@ export const docsSkills: DocsPageDict = {
       "title": "Install into an owned folder",
       "blocks": [
         {
+          "p": "Write and share a skill with the [two-file plugin tutorial](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md)."
+        },
+        {
           "code": "/skill install --project <spec>\n/skill install --global <spec>\n/skill trust --project <name>",
           "lang": "Codewhale"
         },

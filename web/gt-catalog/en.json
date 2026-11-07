@@ -38,6 +38,9 @@
         "title": "Install into an owned folder",
         "blocks": [
           {
+            "p": "Write and share a skill with the [two-file plugin tutorial](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md)."
+          },
+          {
             "code": "/skill install --project <spec>\n/skill install --global <spec>\n/skill trust --project <name>",
             "lang": "Codewhale"
           },
@@ -192,10 +195,10 @@
     "partialBadge": "(partial)"
   },
   "home": {
-    "metaTitle": "Codewhale · Build apps. Automate work.",
+    "metaTitle": "Codewhale · An open-source agent for your computer",
     "metaDescription": "Build apps, fix code and automate work with an open-source agent in your terminal. Choose hosted or local models. Help build Codewhale with code, docs and feedback.",
-    "heroTitle": "Build apps. Automate work.",
-    "heroIntro": "{brand} is an open-source agent for your terminal. Run workflows, connect tools and use the hosted or local models you choose.",
+    "heroTitle": "An open-source agent for your computer",
+    "heroIntro": "Build software and run repeatable workflows with {brand} in your terminal. Add Computer Use to work in Mac apps.",
     "getCodewhale": "Install Codewhale",
     "heroInstallAria": "Install command",
     "exploreProduct": "Explore Codewhale",
@@ -840,14 +843,14 @@
         "title": "Save roles in a Fleet",
         "blocks": [
           {
-            "p": "Your Fleet is the list of roles Codewhale can hand work to, and the model each role uses. Set it up once inside a session:"
+            "p": "Fleet keeps reusable roles and model choices. Connect a model first, then create a role profile inside a session:"
           },
           {
             "code": "/fleet setup\n/fleet\n/fleet saved",
             "lang": "Codewhale"
           },
           {
-            "p": "`/fleet setup` walks you through a role, its model (or “use the session's model”), and where to save it: this project, or your personal profile for every repository. You review the exact file before it is written. `/fleet` shows the members of the selected Fleet, and `/fleet saved` switches between named Fleets."
+            "p": "`/fleet setup` saves one role profile at a time. Choose its model or inherit the session route, then choose this project or your personal profiles. Review the exact file before saving. `/fleet` shows the selected team; `/fleet saved` switches among named teams that already exist. Ask for a task and use `/fleet workers` to watch its session agents."
           },
           {
             "p": "A Fleet only chooses who does the work. What a worker may read, write, or run still comes from your workspace trust, [approval setting](/docs/modes), and sandbox."
@@ -859,17 +862,17 @@
         "title": "Write a workflow",
         "blocks": [
           {
-            "p": "A Workflow is a JavaScript file in your repository's `workflows/` folder. It describes steps; it does not do the work itself. This one reviews two areas in parallel, then combines the findings. Save it as `workflows/docs_readiness.workflow.js`:"
+            "p": "A saved Workflow describes a process the agents can repeat. Create a `workflows/` folder and save this declarative example as `workflows/docs_readiness.workflow.js`. It reviews two areas in parallel, then combines the findings. Replace `src` and `docs` with directories that exist in your project:"
           },
           {
             "code": "export default workflow({\n  \"id\": \"docs-readiness\",\n  \"goal\": \"Review the docs and code for gaps, then summarize the next edit\",\n  \"nodes\": [\n    {\n      \"branch\": {\n        \"id\": \"parallel-review\",\n        \"parallel\": true,\n        \"children\": [\n          { \"agent\": { \"id\": \"code-review\", \"prompt\": \"Inspect src/ for undocumented behavior.\",\n                       \"agent_type\": \"review\", \"mode\": \"read_only\", \"file_scope\": [\"src\"] } },\n          { \"agent\": { \"id\": \"docs-review\", \"prompt\": \"Inspect docs/ for stale or missing steps.\",\n                       \"agent_type\": \"review\", \"mode\": \"read_only\", \"file_scope\": [\"docs\"] } }\n        ]\n      }\n    },\n    {\n      \"reduce\": {\n        \"id\": \"summary\",\n        \"inputs\": [\"code-review\", \"docs-review\"],\n        \"prompt\": \"Combine the findings into the safest next edit.\"\n      }\n    }\n  ]\n});",
             "lang": "workflows/docs_readiness.workflow.js"
           },
           {
-            "p": "Steps can be `agent`, `branch`, `sequence`, `reduce`, `loop_until`, `cond`, `expand`, and `teacher_review`. A workflow file has no file, shell, or network access of its own, and `import`, `fetch`, `eval`, and `async` are rejected. The agents it starts do the real work, under your normal permissions."
+            "p": "This declarative form supports `agent`, `branch`, `sequence`, `reduce`, `loop_until`, `cond`, `expand`, and `teacher_review`. It compiles to a validated plan and rejects constructs such as `import`, `fetch`, `eval`, and `async`. Advanced imperative JavaScript can use asynchronous `task()` and `parallel()` in a sandbox, still without direct filesystem, shell or network access. Workers perform those actions under the active policy."
           },
           {
-            "note": "One run can start up to 1,000 agents, with at most 16 working at once; the rest wait for a slot. Loops must declare `max_iterations`."
+            "note": "Workflow defaults to 16 concurrently live agents; admitted work waits for a slot. There is no default cumulative child limit or structural depth limit. Set positive `[workflow] max_children` or `max_depth` values to limit them. Runtime agent admission and delegation limits apply separately. Loops must declare `max_iterations`."
           }
         ]
       },
@@ -878,17 +881,17 @@
         "title": "Run it",
         "blocks": [
           {
-            "code": "codewhale workflow run docs-readiness --runtime inline\ncodewhale workflow run docs-readiness --goal \"prepare the 1.2 release\" --verify",
+            "code": "codewhale workflow run docs-readiness --runtime inline",
             "lang": "Terminal"
           },
           {
-            "p": "Codewhale finds `workflows/docs_readiness.workflow.js` from the name, checks it, and starts it. `--runtime inline` runs it in this terminal. The default, `tmux`, runs it in a detached tmux session that keeps going after you close the terminal. `--verify` runs the verification gates after a successful finish, and `--fleet <name>` uses a named Fleet instead of the built-in roles."
+            "p": "This command finds `workflows/docs_readiness.workflow.js`, validates it and starts a model-backed run, so connect your provider first. `--runtime inline` waits in this terminal. The default backend requires `tmux` installed on the host and runs in a detached session. Add `--verify` to the launch command for the configured verifier gates after a successful finish. `--fleet <name>` selects an existing named Fleet."
           },
           {
             "p": "To keep the work off your checkout, add `--worktree-repo . --branch <name>`: the run gets its own git worktree and branch."
           },
           {
-            "p": "Inside a session, `/workflow` starts a workflow and `/workflows` lists or cancels the runs in that session."
+            "p": "Inside a session, `/workflow <objective>` drafts a proposal without executing it. To review this saved file, use `/workflow run workflows/docs_readiness.workflow.js`. Wait for the review, then run `/workflow confirm` to start the reviewed draft. `/workflow status` reads run state, `/workflow cancel <run-id>` cancels, and `/workflows` opens the session run dashboard."
           }
         ]
       },
@@ -904,7 +907,7 @@
             "lang": "Terminal"
           },
           {
-            "p": "`lane list`, `lane status`, and `lane interrupt` accept `--json` and print a machine-readable receipt. In a session, `/lane` offers the same controls with the same results."
+            "p": "`lane list`, `lane status`, and `lane interrupt` accept `--json`. Inside a session, use `/lane list`, `/lane status <lane-id>`, or `/lane interrupt <lane-id>`. Logs and tmux attachment use the shell commands above. Slash reads show the last recorded state; CLI list/status reconcile backend exits. Slash interrupt first returns a queued receipt, then its final result."
           }
         ]
       },
@@ -916,11 +919,11 @@
             "p": "When you have a list of separate tasks rather than one plan, write them as a task file and run them as a Fleet run. Each task names its goal, its role, and the paths it may write. [The tutorial](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/FLEET_WORKFLOW_TUTORIAL.md) has a complete `tasks.json`."
           },
           {
-            "code": "codewhale fleet init\ncodewhale fleet run tasks.json --max-workers 4\ncodewhale fleet status\ncodewhale fleet logs <worker-id>\ncodewhale fleet resume <run-id>\ncodewhale fleet stop --all",
+            "code": "codewhale fleet init\ncodewhale fleet run tasks.json --check\ncodewhale fleet run tasks.json --max-workers 4\ncodewhale fleet status\ncodewhale fleet logs <worker-id>\ncodewhale fleet resume <run-id>\ncodewhale fleet stop --all",
             "lang": "Terminal"
           },
           {
-            "p": "`fleet status` counts queued, running, finished, and failed work from this workspace's run record. `fleet resume` picks a run back up after the laptop slept or the manager exited, without starting a new one. For the agents attached to your current session only, use `/fleet workers` (or `/subagents`)."
+            "p": "`fleet run --check` validates without creating a run; omit `--check` to start the foreground manager. Use another terminal for status and controls while it runs. After an interruption, `fleet resume <run-id>` reconciles stale leases and reports their state; it does not restart the manager or launch queued work. To explicitly retry a worker, inspect it and use `codewhale fleet restart <worker-id>`, which runs the manager for that run. `/fleet workers` and `/subagents` show current-session agents, not these durable runs."
           }
         ]
       }
@@ -1125,7 +1128,7 @@
               ],
               [
                 "Auto-Review",
-                "Never stops to ask. Calls that are provably safe run. Publishing and destructive background actions are always blocked. Anything else gets one independent model review; high-risk calls and failed reviews are denied, not run."
+                "Reviews tool actions automatically, but may still ask you to resolve a choice. Calls that are provably safe run. Publishing and destructive background actions are always blocked. Anything else gets one independent model review; high-risk calls and failed reviews are denied, not run."
               ],
               [
                 "Full Access",
@@ -1553,7 +1556,7 @@
             "p": "When two sub-agents would edit the same repository, ask for each to work in its own worktree. Codewhale creates a fresh git worktree and branch for that agent beside your repository, under `.codewhale-worktrees/`, so your checkout stays clean until you merge."
           },
           {
-            "p": "A worktree is isolation, not permission: an agent that should write still needs a writing role and the paths it may change. Two agents that claim the same files are stopped before either one edits anything."
+            "p": "A worktree is isolation, not permission: a writer still needs a writing role and the paths it may change. When a new write claim overlaps an active claim in the same checkout, the host refuses the new claimant; it does not rewind or pause the existing writer."
           }
         ]
       },
@@ -1569,7 +1572,7 @@
             "p": "`/subagents` (the same view as `/fleet workers`) lists the agents attached to this session and what each one is doing. Select one to read its transcript."
           },
           {
-            "p": "Sub-agents follow your [approval setting](/docs/modes). In Ask, a call that needs approval appears in your session as a normal prompt while the agent waits. In Auto-Review, each held call gets the same independent review, and nothing prompts you. Every decision you did not make yourself is written to the agent's transcript."
+            "p": "Sub-agents follow your [approval setting](/docs/modes) and may be more restricted. In Ask, a call that needs approval appears in your session while the agent waits. Auto-Review handles tool approvals through policy and eligible independent review; blocked calls or failed reviews are refused. Check the child transcript for decisions and refusal reasons. OS and connected-service permissions may still need your action."
           }
         ]
       },
@@ -1585,16 +1588,16 @@
               ],
               [
                 "Queued plus running",
-                "Up to 1,024; extra launches wait for a slot."
+                "Up to 1,024 admitted by default, configurable with `[subagents] max_admitted`. Admitted agents wait for an execution slot; launches beyond the admission limit are refused."
               ],
               [
                 "Nesting",
-                "A sub-agent may start its own, three levels deep by default, never more than eight."
+                "No default product depth cap. Set `[subagents] max_depth` to an owner-selected limit; child requests cannot widen an inherited restriction."
               ]
             ]
           },
           {
-            "p": "These are ceilings, not targets. A few well-scoped agents with one clear summary beat many overlapping ones. For work that must survive a restart or a sleeping laptop, use a [Fleet run](/docs/fleet) instead."
+            "p": "These are capacity controls, not targets. Keep each agent's scope clear. Durable [Fleet runs](/docs/fleet) record work across manager exits, but recovery is explicit: reconcile stale leases, inspect the result, then choose whether to restart a worker. They do not keep executing while your machine is asleep."
           }
         ]
       }
@@ -1748,9 +1751,6 @@
           },
           {
             "p": "You can also connect from inside Codewhale: press F3 (or type `/provider`), choose a provider, paste the key, then pick a model."
-          },
-          {
-            "note": "In v0.10.0, `auth set --provider deepseek` also switches your default model to DeepSeek Pro. Run `/model` if you want the faster, cheaper model back. Connecting through F3 keeps your current model."
           }
         ]
       },
@@ -1789,7 +1789,7 @@
             "p": "`codewhale auth list` shows every provider Codewhale knows and whether each one has a key. The pattern is the same for all of them: `codewhale auth set --provider <name>`, or that provider's environment variable."
           },
           {
-            "p": "Local runners — Ollama, vLLM, and SGLang — need no key by default, and your prompts stay on your machine. Start the runner, then choose it:"
+            "p": "Local Ollama, vLLM and SGLang servers need no API key by default. Use a loopback endpoint for a model on your machine, then select the model tag it serves:"
           },
           {
             "code": "codewhale auth list\ncodewhale --provider ollama --model <model-tag>",

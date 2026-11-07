@@ -59,7 +59,7 @@ export const docsModes: DocsModesDict = {
             ],
             [
               "Auto-Review",
-              "Never stops to ask. Calls that are provably safe run. Publishing and destructive background actions are always blocked. Anything else gets one independent model review; high-risk calls and failed reviews are denied, not run.",
+              "Reviews tool actions automatically, but may still ask you to resolve a choice. Calls that are provably safe run. Publishing and destructive background actions are always blocked. Anything else gets one independent model review; high-risk calls and failed reviews are denied, not run.",
             ],
             [
               "Full Access",

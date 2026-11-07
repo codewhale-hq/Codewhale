@@ -10,16 +10,19 @@ import type { DocsReviewDict } from "../types";
 export const docsReview: DocsReviewDict = {
   metaTitle: "Review what changed · Codewhale Docs",
   metaDescription:
-    "See every file Codewhale changed in a session, roll the workspace back to an earlier turn, get a code review of a diff, and keep a receipt of that review.",
+    "Review recorded changes, restore available workspace snapshots and get a code review before pushing.",
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Review what changed",
   lede:
-    "Codewhale shows you each edit as it happens and keeps a snapshot of your workspace before and after every turn. Use this page to check what changed, put files back, and get a second opinion before you push.",
+    "Review edits, restore available workspace snapshots and get a second opinion before pushing.",
   sections: [
     {
       "id": "receipts",
       "title": "See what a session did",
       "blocks": [
+        {
+          "p": "Inspect the next primary model request without sending it: [/preview-request](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PREVIEW_REQUEST.md)."
+        },
         {
           "p": "Session receipts list recorded file changes, commands, tools, agents, approvals and failures. Review receipts below cover a separate code review."
         },
@@ -53,7 +56,7 @@ export const docsReview: DocsReviewDict = {
       title: "Roll files back to an earlier turn",
       blocks: [
         {
-          p: "Before and after each turn, Codewhale snapshots the workspace into a separate git store. It never writes to your repository's own `.git`, and it works in folders that are not git repositories.",
+          p: "Workspace snapshots, when available, are stored separately from your repository's `.git`. They also work in folders without a git repository.",
         },
         {
           code: `/restore           # list the 20 most recent snapshots
@@ -62,10 +65,10 @@ export const docsReview: DocsReviewDict = {
           lang: "Codewhale",
         },
         {
-          p: "Restoring changes files, so it needs a trusted workspace (`/trust on`) or Full Access; anyone can list snapshots. You can also ask in plain language: “undo your last edit” rolls back Codewhale's own turn.",
+          p: "Restoring changes files, so it needs a trusted workspace (`/trust on`) or Full Access; anyone can list snapshots. You can also ask Codewhale to undo its last change.",
         },
         {
-          p: "`/undo` takes back your last request. In 0.10.1 it needs `/trust on` to put files back and steps back one tool call at a time. From 0.10.2 it restores every file the request changed in any access mode and removes the request and its reply. `/restore` rolls the whole workspace back to an earlier snapshot.",
+          p: "`/undo` reverts your last request and its recorded file changes. It refuses file reversal if restore points are unavailable or files changed afterward. `/restore` selects a workspace snapshot.",
         },
         {
           note: "Snapshots are kept for 7 days. A workspace larger than 2 GB skips snapshots and Codewhale tells you once; raise `[snapshots] max_workspace_gb` in config if you want them anyway. If git is missing or the disk is full, the turn still runs without a snapshot.",
