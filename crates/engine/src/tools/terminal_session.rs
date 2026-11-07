@@ -4,6 +4,17 @@
 //! durable summary records identity, last-known cwd, lifecycle state, and
 //! replacement history. A later process reports the shell as stale/lost and
 //! starts a new identity; it never claims to reattach from a reused PID.
+//!
+//! A session belongs to one owner (the tool context's `state_namespace`: a
+//! runtime thread's id, or the TUI session's) in one canonical workspace, so
+//! two conversations that both say `term-1` get two shells. Each live shell
+//! carries an identity (`session_id`) issued at creation and never reused;
+//! reset and restart issue a new one.
+//!
+//! Known limitations: the dock lists every owner's shells in its workspace;
+//! deleting a thread does not end its shells, which live until the process
+//! exits; and a workspace directory replaced at the same path does not retire
+//! shells already running there.
 
 #[cfg(unix)]
 use std::collections::{HashMap, VecDeque};
@@ -129,9 +140,9 @@ struct OutputBuffer {
 /// lets a client resume from a cursor it stored earlier, and what lets this
 /// type tell it the truth when the retained window has moved past it.
 ///
-/// Field names match the `/v1/terminal/{name}/output` wire so the payload is a
-/// projection, not a translation (the same vocabulary the jobs byte stream
-/// uses).
+/// Field names match the `/v1/threads/{id}/terminals/{terminal_id}/output`
+/// wire so the payload is a projection, not a translation (the same
+/// vocabulary the jobs byte stream uses).
 #[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputChunk {
@@ -203,11 +214,34 @@ pub type SharedSession = Arc<Mutex<TerminalSession>>;
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct SessionKey {
     workspace: PathBuf,
+    owner: String,
     name: String,
 }
 
 #[cfg(unix)]
-static SESSIONS: OnceLock<Mutex<HashMap<SessionKey, SharedSession>>> = OnceLock::new();
+struct Registered {
+    id: String,
+    session: SharedSession,
+}
+
+#[cfg(unix)]
+impl Registered {
+    fn new(session: &SharedSession) -> Result<Self, String> {
+        let id = session
+            .lock()
+            .map_err(|_| "terminal session lock poisoned".to_string())?
+            .durable
+            .session_id
+            .clone();
+        Ok(Self {
+            id,
+            session: Arc::clone(session),
+        })
+    }
+}
+
+#[cfg(unix)]
+static SESSIONS: OnceLock<Mutex<HashMap<SessionKey, Registered>>> = OnceLock::new();
 
 #[cfg(unix)]
 static RUNTIME_NONCE: OnceLock<String> = OnceLock::new();
@@ -218,27 +252,38 @@ fn runtime_nonce() -> &'static str {
 }
 
 #[cfg(unix)]
-fn sessions() -> &'static Mutex<HashMap<SessionKey, SharedSession>> {
+pub fn instance_id() -> &'static str {
+    runtime_nonce()
+}
+
+#[cfg(unix)]
+fn sessions() -> &'static Mutex<HashMap<SessionKey, Registered>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 #[cfg(unix)]
-fn session_key(name: &str, workspace: &Path) -> SessionKey {
+fn canonical(workspace: &Path) -> PathBuf {
+    workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf())
+}
+
+#[cfg(unix)]
+fn session_key(owner: &str, name: &str, workspace: &Path) -> SessionKey {
     SessionKey {
-        workspace: workspace
-            .canonicalize()
-            .unwrap_or_else(|_| workspace.to_path_buf()),
+        workspace: canonical(workspace),
+        owner: owner.to_string(),
         name: name.to_string(),
     }
 }
 
 #[cfg(unix)]
-fn durable_path(name: &str, workspace: &Path) -> Result<PathBuf, String> {
-    let workspace = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
+fn durable_path(owner: &str, name: &str, workspace: &Path) -> Result<PathBuf, String> {
+    let workspace = canonical(workspace);
     let mut hasher = Sha256::new();
     hasher.update(workspace.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(owner.as_bytes());
     hasher.update(b"\0");
     hasher.update(name.as_bytes());
     let digest = hasher
@@ -322,6 +367,7 @@ fn prepare_pty_shell(
 
 #[cfg(unix)]
 fn create_session(
+    owner: &str,
     name: &str,
     workspace: &std::path::Path,
     policy: codewhale_sandbox::SandboxPolicy,
@@ -334,10 +380,8 @@ fn create_session(
     let shell = "/bin/sh".to_string();
     #[cfg(not(any(test, feature = "test-support")))]
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let workspace = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
-    let durable_path = durable_path(name, &workspace)?;
+    let workspace = canonical(workspace);
+    let durable_path = durable_path(owner, name, &workspace)?;
     let previous = load_durable(&durable_path).map(|mut record| {
         // A persisted shell is historical evidence only. A random per-process
         // nonce makes PID reuse irrelevant and deliberately forbids reattach.
@@ -425,30 +469,47 @@ fn create_session(
 
 #[cfg(unix)]
 pub fn get_or_create(
+    owner: &str,
     name: &str,
     workspace: &std::path::Path,
     policy: codewhale_sandbox::SandboxPolicy,
     shell_manager: &crate::tools::shell::SharedShellManager,
 ) -> Result<SharedSession, String> {
-    let key = session_key(name, workspace);
+    let key = session_key(owner, name, workspace);
     let mut registry = sessions()
         .lock()
         .map_err(|_| "terminal session registry lock poisoned".to_string())?;
-    if let Some(session) = registry.get(&key) {
-        let session_guard = session
-            .lock()
-            .map_err(|_| "terminal session lock poisoned".to_string())?;
-        if !can_reuse_under_policy(&session_guard, &policy) {
+    let existing = registry.get(&key).map(|entry| Arc::clone(&entry.session));
+    if let Some(session) = existing {
+        drop(registry);
+        let reusable = {
+            let guard = session
+                .lock()
+                .map_err(|_| "terminal session lock poisoned".to_string())?;
+            can_reuse_under_policy(&guard, &policy)
+        };
+        if !reusable {
             return Err(
                 "existing PTY session does not enforce the current sandbox policy; start a new session name under the current posture or use Full Access"
                     .to_string(),
             );
         }
-        return Ok(Arc::clone(session));
+        return Ok(session);
     }
-    let session = create_session(name, workspace, policy, shell_manager)?;
-    registry.insert(key, Arc::clone(&session));
+    let session = create_session(owner, name, workspace, policy, shell_manager)?;
+    registry.insert(key, Registered::new(&session)?);
     Ok(session)
+}
+
+#[cfg(unix)]
+fn replace_registered(key: SessionKey, session: &SharedSession) -> Result<String, String> {
+    let entry = Registered::new(session)?;
+    let id = entry.id.clone();
+    sessions()
+        .lock()
+        .map_err(|_| "terminal session registry lock poisoned".to_string())?
+        .insert(key, entry);
+    Ok(id)
 }
 
 /// Restricted reuse requires the policy that actually created the process.
@@ -463,16 +524,16 @@ fn can_reuse_under_policy(
 }
 
 #[cfg(unix)]
-fn find(name: &str, workspace: &Path) -> Result<SharedSession, String> {
+fn find(owner: &str, name: &str, workspace: &Path) -> Result<SharedSession, String> {
     let live = sessions()
         .lock()
         .map_err(|_| "terminal session registry lock poisoned".to_string())?
-        .get(&session_key(name, workspace))
-        .cloned();
+        .get(&session_key(owner, name, workspace))
+        .map(|entry| Arc::clone(&entry.session));
     if let Some(live) = live {
         return Ok(live);
     }
-    if let Ok(path) = durable_path(name, workspace)
+    if let Ok(path) = durable_path(owner, name, workspace)
         && let Some(mut record) = load_durable(&path)
     {
         record.state = DurableTerminalState::StaleLost;
@@ -594,22 +655,39 @@ pub fn kill_session(session: &mut TerminalSession) -> Result<(), String> {
         .map_err(|e| format!("PTY kill failed: {e}"))
 }
 
-/// Resolve a live session without creating one.
+/// Resolve a live session by the identity it was issued, never creating one.
 ///
-/// `/v1/terminal` attaches to shells the Engine already owns (the agent's
-/// terminal tools create them). A request for a name that has no live session
-/// is a 404, never a new process: an HTTP client must not be able to conjure a
-/// shell the Engine does not know about.
+/// HTTP clients attach to shells the Engine already owns (the agent's
+/// terminal tools create them): an identity with no live session is a miss,
+/// never a new process. `owner` narrows the match to one thread's shells; the
+/// dock passes `None` because it shows every shell in its workspace.
 #[cfg(unix)]
-pub fn lookup(name: &str, workspace: &Path) -> Option<SharedSession> {
-    let key = session_key(name, workspace);
-    sessions()
-        .lock()
-        .ok()
-        .and_then(|registry| registry.get(&key).map(Arc::clone))
+pub fn lookup(workspace: &Path, owner: Option<&str>, id: &str) -> Option<SharedSession> {
+    registered(workspace, owner, None, id)
 }
 
-/// A dock projection of the existing registry, never another session owner.
+#[cfg(unix)]
+fn registered(
+    workspace: &Path,
+    owner: Option<&str>,
+    name: Option<&str>,
+    id: &str,
+) -> Option<SharedSession> {
+    let workspace = canonical(workspace);
+    sessions()
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(key, entry)| {
+            entry.id == id
+                && key.workspace == workspace
+                && owner.is_none_or(|owner| key.owner == owner)
+                && name.is_none_or(|name| key.name == name)
+        })
+        .map(|(_, entry)| Arc::clone(&entry.session))
+}
+
+/// A projection of the existing registry, never another session owner.
 #[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalSessionInfo {
@@ -621,20 +699,20 @@ pub struct TerminalSessionInfo {
     pub last_activity: Option<Instant>,
 }
 
-/// Called on the dock's blocking worker. Reads never consume tool output.
-/// A selected identity that disappeared is not replaced by a reused name.
 #[cfg(unix)]
-pub fn inspect_workspace(
+fn live_entries(
     workspace: &Path,
-    selected: Option<&str>,
-) -> Result<(Vec<TerminalSessionInfo>, Option<OutputChunk>), String> {
-    let workspace = session_key("", workspace).workspace;
+    owner: Option<&str>,
+) -> Result<Vec<(TerminalSessionInfo, SharedSession)>, String> {
+    let workspace = canonical(workspace);
     let live = sessions()
         .lock()
         .map_err(|_| "terminal session registry lock poisoned".to_string())?
         .iter()
-        .filter(|(key, _)| key.workspace == workspace)
-        .map(|(_, session)| Arc::clone(session))
+        .filter(|(key, _)| {
+            key.workspace == workspace && owner.is_none_or(|owner| key.owner == owner)
+        })
+        .map(|(_, entry)| Arc::clone(&entry.session))
         .collect::<Vec<_>>();
     let mut entries = Vec::with_capacity(live.len());
     for handle in live {
@@ -670,6 +748,17 @@ pub fn inspect_workspace(
             .then(b.updated_at.cmp(&a.updated_at))
             .then(a.name.cmp(&b.name))
     });
+    Ok(entries)
+}
+
+/// Called on the dock's blocking worker. Reads never consume tool output.
+/// A selected identity that disappeared is not replaced by a reused name.
+#[cfg(unix)]
+pub fn inspect_workspace(
+    workspace: &Path,
+    selected: Option<&str>,
+) -> Result<(Vec<TerminalSessionInfo>, Option<OutputChunk>), String> {
+    let entries = live_entries(workspace, None)?;
     let selected = match selected {
         Some(id) => entries.iter().find(|(info, _)| info.id == id),
         None => entries.first(),
@@ -689,8 +778,78 @@ pub fn inspect_workspace(
     Ok((entries.into_iter().map(|(info, _)| info).collect(), output))
 }
 
+#[cfg(unix)]
+pub fn owned_sessions(workspace: &Path, owner: &str) -> Result<Vec<TerminalSessionInfo>, String> {
+    Ok(live_entries(workspace, Some(owner))?
+        .into_iter()
+        .map(|(info, _)| info)
+        .collect())
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+pub enum HumanInputError {
+    Gone,
+    Posture,
+    Exited,
+    Rejected(String),
+    Failed(String),
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for HumanInputError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Gone => {
+                "selected terminal is gone or was reset; select its replacement explicitly"
+            }
+            Self::Posture => {
+                "selected terminal does not enforce the current sandbox policy; start a fresh terminal"
+            }
+            Self::Exited => "selected terminal has exited; start a fresh terminal",
+            Self::Rejected(message) | Self::Failed(message) => message.as_str(),
+        })
+    }
+}
+
 /// Human input is bound to the displayed incarnation, including across reset.
 /// It follows the same sandbox-reuse guard as the model's terminal/run path.
+#[cfg(unix)]
+pub fn write_human_input(
+    handle: &SharedSession,
+    bytes: &[u8],
+    policy: &codewhale_sandbox::SandboxPolicy,
+) -> Result<(), HumanInputError> {
+    let mut session = handle
+        .lock()
+        .map_err(|_| HumanInputError::Failed("terminal session lock poisoned".into()))?;
+    if !can_reuse_under_policy(&session, policy) {
+        return Err(HumanInputError::Posture);
+    }
+    if session_exit_status(&mut session)
+        .map_err(HumanInputError::Failed)?
+        .is_some()
+    {
+        return Err(HumanInputError::Exited);
+    }
+    if bytes == [3] && session.command.is_some() && completion(&session).is_none() {
+        // SIGINT can discard the grouped command's completion suffix. Reuse
+        // the confirmed interrupt path so model waiters and later runs see
+        // the persistent shell become ready again.
+        drop(session);
+        return cancel_shared_session(handle)
+            .map(|_| ())
+            .map_err(|error| HumanInputError::Failed(error.to_string()));
+    }
+    write_raw_input(&session, bytes).map_err(|error| {
+        if error.kind() == io::ErrorKind::InvalidInput {
+            HumanInputError::Rejected(error.to_string())
+        } else {
+            HumanInputError::Failed(error.to_string())
+        }
+    })
+}
+
 #[cfg(unix)]
 pub fn write_dock_input(
     workspace: &Path,
@@ -699,47 +858,25 @@ pub fn write_dock_input(
     bytes: &[u8],
     policy: &codewhale_sandbox::SandboxPolicy,
 ) -> Result<(), String> {
-    let handle = lookup(name, workspace).ok_or("selected terminal is gone or was reset")?;
-    let mut session = handle
-        .lock()
-        .map_err(|_| "terminal session lock poisoned".to_string())?;
-    if session.durable.session_id != id {
-        return Err(
-            "selected terminal is gone or was reset; select its replacement explicitly".into(),
-        );
-    }
-    if !can_reuse_under_policy(&session, policy) {
-        return Err(
-            "selected terminal does not enforce the current sandbox policy; start a fresh terminal"
-                .into(),
-        );
-    }
-    if session_exit_status(&mut session)?.is_some() {
-        return Err("selected terminal has exited; start a fresh terminal".into());
-    }
-    if bytes == [3] && session.command.is_some() && completion(&session).is_none() {
-        // SIGINT can discard the grouped command's completion suffix. Reuse
-        // the confirmed interrupt path so model waiters and later runs see
-        // the persistent shell become ready again.
-        drop(session);
-        return cancel_shared_session(&handle)
-            .map(|_| ())
-            .map_err(|error| error.to_string());
-    }
-    write_raw_input(&session, bytes).map_err(|error| error.to_string())
+    let handle = registered(workspace, None, Some(name), id)
+        .ok_or_else(|| HumanInputError::Gone.to_string())?;
+    write_human_input(&handle, bytes, policy).map_err(|error| error.to_string())
 }
 
 #[cfg(unix)]
 pub fn resize_dock_session(
-    session: &TerminalSession,
+    workspace: &Path,
+    name: &str,
     id: &str,
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    if session.durable.session_id != id {
-        return Err("selected terminal is gone or was reset".into());
-    }
-    resize_session(session, rows, cols)
+    let handle = registered(workspace, None, Some(name), id)
+        .ok_or("selected terminal is gone or was reset")?;
+    let session = handle
+        .lock()
+        .map_err(|_| "terminal session lock poisoned".to_string())?;
+    resize_session(&session, rows, cols)
 }
 
 #[cfg(unix)]
@@ -1045,6 +1182,7 @@ impl ToolSpec for TerminalRunTool {
             let command = required_str(&input, "command")?.to_string();
             let name = session_name(&input, false)?.to_string();
             let session = get_or_create(
+                &context.state_namespace,
                 &name,
                 &context.workspace,
                 pty_sandbox_policy(context)?,
@@ -1096,7 +1234,8 @@ impl ToolSpec for TerminalSendTool {
         {
             let name = session_name(&input, true)?.to_string();
             let text = required_str(&input, "text")?.as_bytes().to_vec();
-            let session = find(&name, &context.workspace).map_err(ToolError::execution_failed)?;
+            let session = find(&context.state_namespace, &name, &context.workspace)
+                .map_err(ToolError::execution_failed)?;
             let wait = Duration::from_millis(optional_u64(&input, "wait_ms", 250)?.min(60_000));
             return tokio::task::spawn_blocking(move || {
                 {
@@ -1143,7 +1282,8 @@ impl ToolSpec for TerminalWaitTool {
         #[cfg(unix)]
         {
             let name = session_name(&input, true)?.to_string();
-            let session = find(&name, &context.workspace).map_err(ToolError::execution_failed)?;
+            let session = find(&context.state_namespace, &name, &context.workspace)
+                .map_err(ToolError::execution_failed)?;
             let timeout = timeout_secs(&input, "timeout_secs")?;
             return tokio::task::spawn_blocking(move || {
                 let (done, timed_out) = wait_shared_session(&session, timeout)?;
@@ -1182,7 +1322,8 @@ impl ToolSpec for TerminalCancelTool {
         #[cfg(unix)]
         {
             let name = session_name(&input, true)?.to_string();
-            let session = find(&name, &context.workspace).map_err(ToolError::execution_failed)?;
+            let session = find(&context.state_namespace, &name, &context.workspace)
+                .map_err(ToolError::execution_failed)?;
             return tokio::task::spawn_blocking(move || {
                 let done = cancel_shared_session(&session)?;
                 let mut session = session
@@ -1226,22 +1367,41 @@ impl ToolSpec for TerminalResetTool {
         #[cfg(unix)]
         {
             let name = session_name(&input, true)?.to_string();
-            let old = find(&name, &context.workspace).map_err(ToolError::execution_failed)?;
+            let owner = context.state_namespace.clone();
+            let old =
+                find(&owner, &name, &context.workspace).map_err(ToolError::execution_failed)?;
             let workspace = context.workspace.clone();
             let policy = pty_sandbox_policy(context)?;
             let shell_manager = context.shell_manager.clone();
             return tokio::task::spawn_blocking(move || {
-                if let Ok(mut old) = old.lock() { let _ = old.child.kill(); }
+                let mut previous = None;
                 if let Ok(mut old) = old.lock() {
+                    let _ = old.child.kill();
                     old.durable.state = DurableTerminalState::Reset;
                     old.durable.updated_at = chrono::Utc::now().to_rfc3339();
                     let _ = persist_durable(&old.durable_path, &old.durable);
+                    previous = Some(old.durable.session_id.clone());
                 }
-                let fresh = create_session(&name, &workspace, policy, &shell_manager)
+                let fresh = create_session(&owner, &name, &workspace, policy, &shell_manager)
                     .map_err(ToolError::execution_failed)?;
-                sessions().lock().map_err(|_| ToolError::execution_failed("terminal session registry lock poisoned"))?.insert(session_key(&name, &workspace), fresh);
-                Ok(ToolResult { content: format!("Reset terminal session '{name}'. Lost shell state and any running command."), success: true, metadata: Some(json!({"session":name,"reset":true,"lost_state":["cwd","environment","functions","activated environments","running command"]})) })
-            }).await.map_err(|e| ToolError::execution_failed(e.to_string()))?;
+                let id = replace_registered(session_key(&owner, &name, &workspace), &fresh)
+                    .map_err(ToolError::execution_failed)?;
+                Ok(ToolResult {
+                    content: format!(
+                        "Reset terminal session '{name}'. Lost shell state and any running command."
+                    ),
+                    success: true,
+                    metadata: Some(json!({
+                        "session": name,
+                        "reset": true,
+                        "terminal_session_id": id,
+                        "previous_session_id": previous,
+                        "lost_state": ["cwd", "environment", "functions", "activated environments", "running command"],
+                    })),
+                })
+            })
+            .await
+            .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         }
         #[cfg(not(unix))]
         {
@@ -1259,6 +1419,8 @@ mod tests {
 
     use super::*;
 
+    const OWNER: &str = "workspace";
+
     /// Dock tests own a workspace so parallel tests cannot share their registry
     /// entries or durable summaries. Kill and reap every owned shell on drop.
     struct DockWorkspace(tempfile::TempDir);
@@ -1274,6 +1436,7 @@ mod tests {
 
         fn session(&self, name: &str) -> SharedSession {
             get_or_create(
+                OWNER,
                 name,
                 self.path(),
                 codewhale_sandbox::SandboxPolicy::DangerFullAccess,
@@ -1285,12 +1448,12 @@ mod tests {
 
     impl Drop for DockWorkspace {
         fn drop(&mut self) {
-            let workspace = session_key("", self.path()).workspace;
+            let workspace = canonical(self.path());
             let mut owned = Vec::new();
             if let Ok(mut registry) = sessions().lock() {
-                registry.retain(|key, session| {
+                registry.retain(|key, entry| {
                     if key.workspace == workspace {
-                        owned.push(Arc::clone(session));
+                        owned.push(Arc::clone(&entry.session));
                         false
                     } else {
                         true
@@ -1309,6 +1472,7 @@ mod tests {
 
     fn fresh(name: &str) -> SharedSession {
         let session = get_or_create(
+            OWNER,
             name,
             std::path::Path::new("/tmp"),
             codewhale_sandbox::SandboxPolicy::DangerFullAccess,
@@ -1319,16 +1483,14 @@ mod tests {
         let _ = session_guard.child.kill();
         drop(session_guard);
         let replacement = create_session(
+            OWNER,
             name,
             std::path::Path::new("/tmp"),
             codewhale_sandbox::SandboxPolicy::DangerFullAccess,
             &test_shell_manager(),
         )
         .unwrap();
-        sessions().lock().unwrap().insert(
-            session_key(name, Path::new("/tmp")),
-            Arc::clone(&replacement),
-        );
+        replace_registered(session_key(OWNER, name, Path::new("/tmp")), &replacement).unwrap();
         replacement
     }
 
@@ -1443,16 +1605,18 @@ mod tests {
         );
         let _ = session.lock().unwrap().child.kill();
         let replacement = create_session(
+            OWNER,
             "test-reset",
             std::path::Path::new("/tmp"),
             codewhale_sandbox::SandboxPolicy::DangerFullAccess,
             &test_shell_manager(),
         )
         .unwrap();
-        sessions().lock().unwrap().insert(
-            session_key("test-reset", Path::new("/tmp")),
-            Arc::clone(&replacement),
-        );
+        replace_registered(
+            session_key(OWNER, "test-reset", Path::new("/tmp")),
+            &replacement,
+        )
+        .unwrap();
         assert!(
             !run(
                 &replacement,
@@ -1561,27 +1725,28 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn session_names_are_scoped_to_workspace() {
-        let first_workspace = tempfile::tempdir().unwrap();
-        let second_workspace = tempfile::tempdir().unwrap();
-        let first = get_or_create(
+    fn session_names_are_scoped_to_owner_and_workspace() {
+        let first_workspace = DockWorkspace::new();
+        let second_workspace = DockWorkspace::new();
+        let first = first_workspace.session("shared-name");
+        let second = second_workspace.session("shared-name");
+        let other_owner = get_or_create(
+            "another-thread",
             "shared-name",
             first_workspace.path(),
             codewhale_sandbox::SandboxPolicy::DangerFullAccess,
             &test_shell_manager(),
         )
         .unwrap();
-        let second = get_or_create(
-            "shared-name",
-            second_workspace.path(),
-            codewhale_sandbox::SandboxPolicy::DangerFullAccess,
-            &test_shell_manager(),
-        )
-        .unwrap();
         assert!(!Arc::ptr_eq(&first, &second));
-        assert!(find("shared-name", first_workspace.path()).is_ok());
-        assert!(find("shared-name", second_workspace.path()).is_ok());
-        assert!(find("shared-name", Path::new("/tmp")).is_err());
+        assert!(!Arc::ptr_eq(&first, &other_owner));
+        assert!(find(OWNER, "shared-name", first_workspace.path()).is_ok());
+        assert!(find(OWNER, "shared-name", second_workspace.path()).is_ok());
+        assert!(find(OWNER, "shared-name", Path::new("/tmp")).is_err());
+        let other_id = other_owner.lock().unwrap().durable.session_id.clone();
+        assert!(lookup(first_workspace.path(), Some("another-thread"), &other_id).is_some());
+        assert!(lookup(first_workspace.path(), Some(OWNER), &other_id).is_none());
+        assert!(lookup(second_workspace.path(), None, &other_id).is_none());
     }
 
     #[test]
@@ -1642,17 +1807,18 @@ mod tests {
             old.child.wait().unwrap();
         }
         let replacement = create_session(
+            OWNER,
             "replaceable",
             workspace.path(),
             codewhale_sandbox::SandboxPolicy::DangerFullAccess,
             &test_shell_manager(),
         )
         .unwrap();
-        let new_id = replacement.lock().unwrap().durable.session_id.clone();
-        sessions().lock().unwrap().insert(
-            session_key("replaceable", workspace.path()),
-            Arc::clone(&replacement),
-        );
+        let new_id = replace_registered(
+            session_key(OWNER, "replaceable", workspace.path()),
+            &replacement,
+        )
+        .unwrap();
         let (entries, output) = inspect_workspace(workspace.path(), Some(&old_id)).unwrap();
         assert_eq!(entries[0].id, new_id);
         assert!(output.is_none());
@@ -1668,12 +1834,12 @@ mod tests {
             error.contains("select its replacement explicitly"),
             "{error}"
         );
-        assert!(resize_dock_session(&replacement.lock().unwrap(), &old_id, 40, 80).is_err());
+        assert!(resize_dock_session(workspace.path(), "replaceable", &old_id, 40, 80).is_err());
         assert!(!workspace.path().join("stale-input-must-not-run").exists());
         // Refusal preserves the replacement and its environment instead of
         // silently resetting it to recover from the stale selection.
         assert_eq!(
-            lookup("replaceable", workspace.path())
+            find(OWNER, "replaceable", workspace.path())
                 .unwrap()
                 .lock()
                 .unwrap()
@@ -1692,6 +1858,7 @@ mod tests {
         let narrowed = SandboxPolicy::read_only();
         assert!(
             get_or_create(
+                OWNER,
                 "posture",
                 workspace.path(),
                 narrowed.clone(),
@@ -1724,6 +1891,7 @@ mod tests {
         for policy in changed {
             assert!(
                 get_or_create(
+                    OWNER,
                     "posture",
                     workspace.path(),
                     policy.clone(),
@@ -1734,7 +1902,14 @@ mod tests {
             assert!(write_dock_input(workspace.path(), "posture", &id, b"x", &policy).is_err());
         }
         assert!(Arc::ptr_eq(
-            &get_or_create("posture", workspace.path(), original, &test_shell_manager()).unwrap(),
+            &get_or_create(
+                OWNER,
+                "posture",
+                workspace.path(),
+                original,
+                &test_shell_manager()
+            )
+            .unwrap(),
             &shell
         ));
         assert_eq!(shell.lock().unwrap().durable.session_id, id);
@@ -1971,6 +2146,7 @@ mod tests {
         let canonical_workspace = workspace.path().canonicalize().unwrap();
         let name = format!("restart-proof-{}", Uuid::new_v4());
         let first = create_session(
+            OWNER,
             &name,
             workspace.path(),
             codewhale_sandbox::SandboxPolicy::DangerFullAccess,
@@ -1987,8 +2163,8 @@ mod tests {
         sessions()
             .lock()
             .unwrap()
-            .remove(&session_key(&name, workspace.path()));
-        let stale = match find(&name, workspace.path()) {
+            .remove(&session_key(OWNER, &name, workspace.path()));
+        let stale = match find(OWNER, &name, workspace.path()) {
             Ok(_) => panic!("persisted session must not be reattached"),
             Err(error) => error,
         };
@@ -1996,6 +2172,7 @@ mod tests {
         assert!(stale.contains("start a replacement"), "{stale}");
 
         let replacement = create_session(
+            OWNER,
             &name,
             workspace.path(),
             codewhale_sandbox::SandboxPolicy::DangerFullAccess,

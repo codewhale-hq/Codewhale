@@ -6,6 +6,7 @@
 > 2026-10-11 补齐工作区信任契约：`workspace_trusted` 与 `POST /v1/workspace/trust`。
 > 2026-10-23 补齐完整 API 入口、兼容执行限制与 ACP MCP 拒绝边界。
 > 2026-11-02 补齐控制帧大小、写入背压、ACP 拒绝恢复与当前 HTTP 监听器边界。
+> 2026-11-07 补齐线程作用域的终端会话标识、重新连接与重启语义。
 
 `codewhale app-server --http` 是本地运行时的规范 API 与控制面。本地 SDK、移动端/远程控制客户端
 以及编辑器集成都与它对话，而不是去抓取终端输出。它提供完整的 HTTP/SSE 运行时
@@ -1718,33 +1719,73 @@ token 但成本为 `0.0`。于 v0.8.10 加入（#564）。
 
 上面的 jobs 族每个作业运行一条命令。终端面板需要的是
 **另一种**权威：智能体自己的终端工具所驱动的、有状态且基于 PTY 的 shell，它在多次输入之间保持 cwd 与环境。
-这些路由附着到那个会话，且从不创建会话——一个没有活动会话的名字返回
-`404`，因为从一次 HTTP 请求中凭空变出一个 shell 会让客户端得到一个
-Engine 并不知道的终端。输入可按路由归因：
-`input` 是客户端的写入通道，`terminal_send` 是智能体的。
+每个 shell 属于启动它的那一轮对话所在的线程，并位于该线程的工作区中：
+同一文件夹里两个都使用 `term-1` 的对话会得到两个 shell。
+这些路由附着到这些 shell，且从不创建 shell，因为从一次 HTTP 请求中凭空变出一个 shell
+会让客户端得到一个 Engine 并不知道的终端。输入可按路由归因：
+`input` 是客户端的写入通道，`terminal/send` 是智能体的。
 
-- `GET /v1/terminal/{name}/output?cursor=<bytes>&max_bytes=<1-64KiB>&format=
-  <base64|text>` — 可恢复的字节流。`{name, offset, next_cursor,
-  total, dropped, encoding, data, running, exit_code}`：把 `next_cursor`
-  传回来即可继续；读取永不消费，因此多个客户端可以持有
-  各自独立的游标；`dropped` 报告 512 KiB 环形缓冲区丢弃的字节数，
+- `GET /v1/threads/{id}/terminals` → `{thread_id, workspace, instance,
+  terminals: [{terminal_id, name, state, running, exit_code, updated_at}]}` —
+  该线程的活动 shell，按最近活动排序。`terminal_id` 在 shell 启动时签发，
+  且永不复用；智能体终端工具的结果以 `terminal_session_id` 携带同一个值，
+  `terminal/reset` 还会报告 `previous_session_id`。`instance` 标识本 Engine
+  进程的终端注册表
+- `GET /v1/threads/{id}/terminals/{terminal_id}/output?cursor=<bytes>&
+  max_bytes=<1-64KiB>&format=<base64|text>` — 可恢复的字节流。
+  `{terminal_id, offset, next_cursor, total, dropped, gap, encoding, data,
+  running, exit_code}`：把 `next_cursor` 传回来即可继续；读取永不消费，
+  因此多个客户端可以持有各自独立的游标；当 512 KiB 环形缓冲区已经丢弃了
+  所请求的字节时，`gap` 为真且 `offset` 大于 `cursor`（`dropped` 统计丢弃量），
   而超出 `total` 的游标会从 `total` 作答，而不是把它回显回来
-- `POST /v1/terminal/{name}/input` — `{ "data", "encoding"? }`，默认
-  `base64`（精确字节），或用 `text` 传 UTF-8 → `{ "name", "written" }`
-- `POST /v1/terminal/{name}/resize` — `{ "rows", "cols" }` → 子进程绘制目标的内核
-  窗口
-- `POST /v1/terminal/{name}/kill` — 结束该 shell；通过
+- `POST /v1/threads/{id}/terminals/{terminal_id}/input` — `{ "data",
+  "encoding"? }`，默认 `base64`（精确字节），或用 `text` 传 UTF-8 →
+  `{ "terminal_id", "written" }`。它需要线程的 shell 授权（`403`
+  `thread_shell_disabled`）与已加载的 shell 策略（`403`）。当线程当前的
+  权限姿态要求沙箱时，不是在完全相同的策略下启动的 shell 会拒绝输入
+  （`403` `terminal_posture_changed`）；已退出的 shell 同样拒绝输入
+  （`409` `terminal_exited`）。在智能体的命令运行期间单独发送 ETX（Ctrl-C）
+  会走经确认的中断路径，因此智能体的等待会看到退出状态 130；若 shell 在 2 秒内
+  没有确认，调用返回 `500` 并说明中断已发送，客户端不得自行再次发送
+- `POST /v1/threads/{id}/terminals/{terminal_id}/resize` — `{ "rows", "cols" }`
+  → 子进程绘制目标的内核窗口
+- `POST /v1/threads/{id}/terminals/{terminal_id}/kill` — 结束该 shell →
+  `{ "terminal_id", "killed" }`，若它早已退出则 `killed: false`；通过
   `output`（`running` / `exit_code`）观察退出，而不是看这次确认
 
-`GET /v1/runtime/info` 声明 `terminal_stream`、`terminal_input`、
-`terminal_resize` 与 `terminal_kill`。这四个在 Windows 与 OpenHarmony 构建上
-目前都是 `false`：其所有者仅支持 Unix，那些路由回答 `501`，因此客户端
-应当用这些布尔标志来门控终端控件，而不是通过一次失败请求去发现这一点。
-以下限制需要明说，否则读者会自行假设：没有 `wait_ms` 长轮询（请轮询游标），
-被环形缓冲区丢弃的回滚内容随进程一起消失，重启后的 Engine
-会报告没有会话，而不是假装重新附着；且
-`@codewhale/runtime-sdk` 包还没有终端客户端封装——目前
-裸路由就是契约。
+每次调用都会重新解析线程记录的工作区。未知线程返回 `404`；缺失、被替换为链接
+或在解析期间发生变化的工作区返回 `409` `thread_workspace_unavailable`；
+不属于该线程在该工作区中的活动 shell 的标识（其他线程的、其他工作区的、
+已重置的，或 Engine 重启之前的）返回 `404` `terminal_not_found`。
+Engine 从不以同名 shell 代替。
+
+重新连接与重启语义：
+
+- **重新连接**（连接中断、面板或窗口重新打开，或 Engine 持续运行期间客户端
+  应用重启）：列出线程的终端，确认 `instance` 与记录的一致，然后从保存的游标
+  继续每个 `terminal_id`。只会重放仍保留的输出；`gap` 报告环形缓冲区丢失的部分。
+- **重置**（`terminal/reset`）：旧 shell 被结束，同名的新 shell 以新的
+  `terminal_id` 启动。旧标识返回 `404`；列表会显示替代者，客户端只在用户
+  选择后才切换过去。
+- **退出**：该标识仍会以 `running: false` 及其 `exit_code` 出现在列表中，
+  直到智能体重置它或 Engine 重启。
+- **Engine 重启**：活动 shell 随进程一起结束。列表会报告不同的 `instance`，
+  且不含任何旧标识，旧标识返回 `404`。不会重建 shell，也不会重新运行命令；
+  之后同名的 `terminal/run` 会启动一个新标识。
+- **故障中的输入**：已发送的输入无法撤回。在收到响应前失去连接的客户端
+  无法知道这些字节是否到达 shell，且不得自动重发。
+
+`GET /v1/runtime/info` 声明 `thread_scoped_terminals`。它在 Windows 与
+OpenHarmony 构建上目前为 `false`：其所有者仅支持 Unix，那些路由回答 `501`，
+因此客户端应当用这个标志来门控终端控件，而不是通过一次失败请求去发现这一点。
+按名称寻址的路由 `/v1/terminal/{name}/*` 及其 `terminal_stream`、
+`terminal_input`、`terminal_resize` 与 `terminal_kill` 标志已在 0.10.3 中退役：
+服务器工作区中的一个名字可能触及其他线程的 shell，因此这些路径现在返回
+`410` `terminal_route_retired`。以下限制需要明说，否则读者会自行假设：
+没有 `wait_ms` 长轮询（请轮询游标），被环形缓冲区丢弃的回滚内容随进程一起消失，
+在运行时线程之外启动的 shell（TUI 终端坞、无头运行）在这里没有路由，
+删除线程不会结束它的 shell（它们会一直运行到 Engine 退出），且
+`@codewhale/runtime-sdk` 包还没有终端客户端封装——目前裸路由就是契约。
 
 **作业**（操作者范围内的 shell 作业；终端表面）
 - `GET /v1/jobs` — 跨所有线程的每个活动与已知过期作业

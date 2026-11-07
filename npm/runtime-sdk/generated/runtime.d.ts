@@ -64,6 +64,7 @@ export type RuntimeCapabilities = {
   thread_scoped_reads: boolean
   thread_scoped_git_writes: boolean
   thread_scoped_snapshots: boolean
+  thread_scoped_terminals: boolean
   worktrees: boolean
   job_operations: boolean
   thread_shell_consent: boolean
@@ -96,10 +97,6 @@ export type RuntimeCapabilities = {
   skill_detail: boolean
   plugin_management: boolean
   agent_mail: boolean
-  terminal_stream: boolean
-  terminal_input: boolean
-  terminal_resize: boolean
-  terminal_kill: boolean
   event_stream_resume: boolean
   [key: string]: Json | undefined
 }

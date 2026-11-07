@@ -256,7 +256,7 @@
     "path_canonicalize": 6
   },
   "crates/engine/src/tools/terminal_session.rs": {
-    "path_canonicalize": 3,
+    "path_canonicalize": 1,
     "std_fs": 1,
     "thread_sleep": 2
   },

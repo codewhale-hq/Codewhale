@@ -19,7 +19,7 @@ use axum::middleware;
 use axum::response::Html;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -1578,6 +1578,11 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         thread_scoped_reads: true,
         thread_scoped_git_writes: true,
         thread_scoped_snapshots: true,
+        // The terminal family follows the routes' own gate: the owner is
+        // `#[cfg(unix)]` end to end, and the Windows and OpenHarmony builds
+        // answer 501. A client must be able to feature-detect that before it
+        // offers a pane, so the flag must never outrun the handler.
+        thread_scoped_terminals: cfg!(all(unix, not(target_env = "ohos"))),
         worktrees: true,
         job_operations: true,
         thread_shell_consent: true,
@@ -1613,14 +1618,6 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         // SSE journal frames carry their durable `seq` as the event id, and the
         // thread event stream resumes from `Last-Event-ID`.
         event_stream_resume: true,
-        // The terminal family follows the routes' own gate: the owner is
-        // `#[cfg(unix)]` end to end, and the Windows and OpenHarmony builds
-        // answer 501. A client must be able to feature-detect that before it
-        // offers a pane, so the flag must never outrun the handler.
-        terminal_stream: cfg!(all(unix, not(target_env = "ohos"))),
-        terminal_input: cfg!(all(unix, not(target_env = "ohos"))),
-        terminal_resize: cfg!(all(unix, not(target_env = "ohos"))),
-        terminal_kill: cfg!(all(unix, not(target_env = "ohos"))),
     }
 }
 
@@ -2906,15 +2903,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         // The only writer a GUI has for workspace trust. The engine owns
         // `config.toml`; a client asks here instead of editing the file.
         .route("/v1/workspace/trust", post(update_workspace_trust))
-        // The Engine's terminal byte stream (#34). Auth is the route layer's,
-        // not this module's; these never create a session — see terminal.rs.
-        .route("/v1/terminal/{name}/output", get(terminal::terminal_output))
-        .route("/v1/terminal/{name}/input", post(terminal::terminal_input))
         .route(
-            "/v1/terminal/{name}/resize",
-            post(terminal::terminal_resize),
+            "/v1/terminal/{*rest}",
+            any(terminal::retired_terminal_route),
         )
-        .route("/v1/terminal/{name}/kill", post(terminal::terminal_kill))
         .route("/v1/workspace/files/search", get(workspace_file_search))
         .route(
             "/v1/workspace/files",
@@ -3068,6 +3060,29 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/threads/{id}/jobs/{job_id}/resize",
             post(jobs::resize_thread_job),
+        )
+        // The Engine's terminal byte stream (#34), addressed by owning thread
+        // and issued identity. Auth is the route layer's, not this module's;
+        // these never create a session — see terminal.rs.
+        .route(
+            "/v1/threads/{id}/terminals",
+            get(terminal::list_thread_terminals),
+        )
+        .route(
+            "/v1/threads/{id}/terminals/{terminal_id}/output",
+            get(terminal::terminal_output),
+        )
+        .route(
+            "/v1/threads/{id}/terminals/{terminal_id}/input",
+            post(terminal::terminal_input),
+        )
+        .route(
+            "/v1/threads/{id}/terminals/{terminal_id}/resize",
+            post(terminal::terminal_resize),
+        )
+        .route(
+            "/v1/threads/{id}/terminals/{terminal_id}/kill",
+            post(terminal::terminal_kill),
         )
         .route("/v1/threads/{id}/context", get(context::get_thread_context))
         .route(

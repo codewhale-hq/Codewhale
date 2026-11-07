@@ -2199,35 +2199,89 @@ scheduler, or credential store.
 
 The jobs family above runs one command per job. A terminal pane needs the
 *other* authority: the stateful PTY-backed shell the agent's own terminal
-tools drive, which keeps cwd and environment across inputs. These routes
-attach to that session and never create one — a name with no live session is
-`404`, because conjuring a shell from an HTTP request would give the client a
-terminal the Engine does not know about. Input is attributable by route:
-`input` is the client's writer, `terminal_send` is the agent's.
+tools drive, which keeps cwd and environment across inputs. Each shell belongs
+to the thread whose turn started it, in that thread's workspace: two
+conversations that both use `term-1` in one folder get two shells. These
+routes attach to those shells and never create one, because conjuring a shell
+from an HTTP request would give the client a terminal the Engine does not
+know about. Input is attributable by route: `input` is the client's writer,
+`terminal/send` is the agent's.
 
-- `GET /v1/terminal/{name}/output?cursor=<bytes>&max_bytes=<1-64KiB>&format=
-  <base64|text>` — the resumable byte stream. `{name, offset, next_cursor,
-  total, dropped, encoding, data, running, exit_code}`: pass `next_cursor`
-  back to continue; reads never consume, so several clients may hold
-  independent cursors; `dropped` reports bytes the 512 KiB ring discarded,
-  and a cursor past `total` is answered from `total` rather than echoed back
-- `POST /v1/terminal/{name}/input` — `{ "data", "encoding"? }`, `base64` by
-  default (exact bytes) or `text` for UTF-8 → `{ "name", "written" }`
-- `POST /v1/terminal/{name}/resize` — `{ "rows", "cols" }` → the kernel
-  window the child draws for
-- `POST /v1/terminal/{name}/kill` — end the shell; observe the exit through
-  `output` (`running` / `exit_code`) rather than the acknowledgement
+- `GET /v1/threads/{id}/terminals` → `{thread_id, workspace, instance,
+  terminals: [{terminal_id, name, state, running, exit_code, updated_at}]}` —
+  the thread's live shells, newest activity first. `terminal_id` is issued
+  when the shell starts and is never reused; the agent's terminal tool results
+  carry the same value as `terminal_session_id`, and `terminal/reset` also
+  reports `previous_session_id`. `instance` names this Engine process's
+  terminal registry
+- `GET /v1/threads/{id}/terminals/{terminal_id}/output?cursor=<bytes>&
+  max_bytes=<1-64KiB>&format=<base64|text>` — the resumable byte stream.
+  `{terminal_id, offset, next_cursor, total, dropped, gap, encoding, data,
+  running, exit_code}`: pass `next_cursor` back to continue; reads never
+  consume, so several clients may hold independent cursors; `gap` is true and
+  `offset` exceeds `cursor` when the 512 KiB ring already discarded the bytes
+  asked for (`dropped` counts them), and a cursor past `total` is answered from
+  `total` rather than echoed back
+- `POST /v1/threads/{id}/terminals/{terminal_id}/input` — `{ "data",
+  "encoding"? }`, `base64` by default (exact bytes) or `text` for UTF-8 →
+  `{ "terminal_id", "written" }`. It needs the thread's shell consent (`403`
+  `thread_shell_disabled`) and the loaded shell policy (`403`). When the
+  thread's current posture requires a sandbox, a shell that was not started
+  under exactly that policy refuses input (`403` `terminal_posture_changed`);
+  an exited shell refuses it too (`409` `terminal_exited`). A lone ETX
+  (Ctrl-C) while the agent's command runs takes the confirmed-interrupt path,
+  so the agent's wait sees exit status 130; if the shell does not confirm it
+  within 2 seconds the call answers `500` saying the interrupt was sent, and
+  the client must not send it again on its own
+- `POST /v1/threads/{id}/terminals/{terminal_id}/resize` — `{ "rows", "cols" }`
+  → the kernel window the child draws for
+- `POST /v1/threads/{id}/terminals/{terminal_id}/kill` — end the shell →
+  `{ "terminal_id", "killed" }`, with `killed: false` when it had already
+  exited; observe the exit through `output` (`running` / `exit_code`) rather
+  than the acknowledgement
 
-`GET /v1/runtime/info` advertises `terminal_stream`, `terminal_input`,
-`terminal_resize` and `terminal_kill`. All four are `false` on Windows and OpenHarmony builds
-today: the owner is Unix-only, those routes answer `501`, and a client
-should gate its terminal controls on these flags rather than discovering it
-from a failed request. Known limitations, stated because a reader would
-otherwise assume them: there is no `wait_ms` long poll (poll the cursor),
-scrollback dropped by the ring is gone with the process, a restarted Engine
-reports no session rather than pretending to reattach, and the
-`@codewhale/runtime-sdk` package has no terminal client wrapper yet — the raw
-routes are the contract for now.
+Every call resolves the thread's recorded workspace again. An unknown thread
+is `404`; a workspace that is missing, replaced by a link or changed during
+resolution is `409` `thread_workspace_unavailable`; and an identity that is not
+one of this thread's live shells in that workspace (another thread's, another
+workspace's, a reset shell's, or one from before an Engine restart) is `404`
+`terminal_not_found`. The Engine never substitutes a shell with the same name.
+
+Reconnect and restart semantics:
+
+- **Reconnect** (a dropped connection, a reopened pane or window, or a client
+  app restart while the Engine kept running): list the thread's terminals,
+  confirm `instance` is the one recorded, and resume each `terminal_id` from
+  its stored cursor. Only retained output is replayed; `gap` reports what the
+  ring lost.
+- **Reset** (`terminal/reset`): the shell is killed and a new one starts under
+  the same name with a new `terminal_id`. The old identity is `404`; the list
+  shows the replacement, and a client switches to it only on the person's
+  choice.
+- **Exit**: the identity stays listed with `running: false` and its
+  `exit_code` until the agent resets it or the Engine restarts.
+- **Engine restart**: live shells end with the process. The list reports a
+  different `instance` and none of the old identities, which answer `404`. No
+  shell is recreated and no command is rerun; a later `terminal/run` with the
+  same name starts a new identity.
+- **Input across a failure**: input already sent cannot be retracted. A client
+  that loses the connection before the response cannot know whether the bytes
+  reached the shell and must not resend them automatically.
+
+`GET /v1/runtime/info` advertises `thread_scoped_terminals`. It is `false` on
+Windows and OpenHarmony builds today: the owner is Unix-only, those routes
+answer `501`, and a client should gate its terminal controls on the flag
+rather than discovering it from a failed request. The name-addressed routes
+`/v1/terminal/{name}/*` and their `terminal_stream`, `terminal_input`,
+`terminal_resize` and `terminal_kill` flags were retired in 0.10.3: a name at
+the server's workspace could reach another thread's shell, so those paths now
+answer `410` `terminal_route_retired`. Known limitations, stated because a
+reader would otherwise assume them: there is no `wait_ms` long poll (poll the
+cursor), scrollback dropped by the ring is gone with the process, shells
+started outside a runtime thread (the TUI dock, headless runs) have no route
+here, deleting a thread does not end its shells (they run until the Engine
+exits), and the `@codewhale/runtime-sdk` package has no terminal client
+wrapper yet — the raw routes are the contract for now.
 
 **Jobs** (operator-scoped shell jobs; the terminal surface)
 - `GET /v1/jobs` — every live and known-stale job across all threads

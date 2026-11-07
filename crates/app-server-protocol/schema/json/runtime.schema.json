@@ -299,6 +299,11 @@
           "description": "`GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept\n`?thread_id=` and act on that thread's workspace.",
           "default": false
         },
+        "thread_scoped_terminals": {
+          "type": "boolean",
+          "description": "`GET /v1/threads/{id}/terminals` lists the thread's live shells, and\n`/v1/threads/{id}/terminals/{terminal_id}/output|input|resize|kill`\ndrive one by the identity the Engine issued it.",
+          "default": false
+        },
         "worktrees": {
           "type": "boolean",
           "description": "`GET`/`POST /v1/worktrees` and `POST /v1/worktrees/remove`.",
@@ -437,26 +442,6 @@
           "description": "Durable, workspace-scoped cross-task Agent Mail endpoints and events.",
           "default": false
         },
-        "terminal_stream": {
-          "type": "boolean",
-          "description": "`GET /v1/terminal/{name}/output` — the resumable byte stream over a\npersistent Engine-owned terminal session, with absolute cursors.",
-          "default": false
-        },
-        "terminal_input": {
-          "type": "boolean",
-          "description": "`POST /v1/terminal/{name}/input` — bytes into the live session.",
-          "default": false
-        },
-        "terminal_resize": {
-          "type": "boolean",
-          "description": "`POST /v1/terminal/{name}/resize` — the window the child draws for.",
-          "default": false
-        },
-        "terminal_kill": {
-          "type": "boolean",
-          "description": "`POST /v1/terminal/{name}/kill` — end the live session.",
-          "default": false
-        },
         "event_stream_resume": {
           "type": "boolean",
           "description": "`GET /v1/threads/{id}/events` puts the durable `seq` on every journal\nframe as the SSE `id:` and resumes from a `Last-Event-ID` header, so a\nbrowser `EventSource` reconnects without a cursor in the query string.",
@@ -475,6 +460,7 @@
         "thread_scoped_reads",
         "thread_scoped_git_writes",
         "thread_scoped_snapshots",
+        "thread_scoped_terminals",
         "worktrees",
         "job_operations",
         "thread_shell_consent",
@@ -507,10 +493,6 @@
         "skill_detail",
         "plugin_management",
         "agent_mail",
-        "terminal_stream",
-        "terminal_input",
-        "terminal_resize",
-        "terminal_kill",
         "event_stream_resume"
       ],
       "description": "Fixed capability map advertised by `GET /v1/runtime/info`.\n\nAll fields are required on serialization so clients can rely on the shape."

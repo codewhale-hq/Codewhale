@@ -85,7 +85,10 @@ enum Request {
         selected: Option<String>,
         session: String,
     },
-    Create(codewhale_sandbox::SandboxPolicy),
+    Create {
+        policy: codewhale_sandbox::SandboxPolicy,
+        owner: String,
+    },
     Input {
         name: String,
         id: String,
@@ -146,10 +149,11 @@ impl Worker {
                                 Err(error) => Reply::Error(error),
                             }
                         }
-                        Request::Create(policy) => {
+                        Request::Create { policy, owner } => {
                             let name =
                                 format!("user-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
                             match terminal_session::get_or_create(
+                                &owner,
                                 &name,
                                 &workspace,
                                 policy,
@@ -186,14 +190,9 @@ impl Worker {
                             rows,
                             cols,
                         } => {
-                            let result = terminal_session::lookup(&name, &workspace)
-                                .ok_or_else(|| "selected terminal is gone or was reset".to_string())
-                                .and_then(|handle| {
-                                    let session = handle.lock().map_err(|_| {
-                                        "terminal session lock poisoned".to_string()
-                                    })?;
-                                    terminal_session::resize_dock_session(&session, &id, rows, cols)
-                                });
+                            let result = terminal_session::resize_dock_session(
+                                &workspace, &name, &id, rows, cols,
+                            );
                             match result {
                                 Ok(()) => continue,
                                 Err(error) => Reply::Error(error),
@@ -473,7 +472,14 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             dock.scroll = 0;
             dock.size = None;
             dock.error = None;
-            let sent = send(app, Request::Create(policy(app)));
+            let owner = app.current_session_id.clone().unwrap_or_default();
+            let sent = send(
+                app,
+                Request::Create {
+                    policy: policy(app),
+                    owner,
+                },
+            );
             app.work_surface.terminal.creating = sent;
             return true;
         }

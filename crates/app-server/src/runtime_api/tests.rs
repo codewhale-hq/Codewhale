@@ -18928,16 +18928,19 @@ async fn runtime_info_advertises_terminal_capabilities() -> Result<()> {
     // — the flag must not claim a capability the build cannot serve, so assert
     // the routes' own gate rather than `true`.
     let expected = cfg!(all(unix, not(target_env = "ohos")));
-    for capability in [
+    assert_eq!(
+        info["capabilities"]["thread_scoped_terminals"], expected,
+        "runtime/info must advertise thread_scoped_terminals={expected}"
+    );
+    // The name-addressed family is retired; a client gating on its flags
+    // must see no terminal rather than reach the retired routes.
+    for retired in [
         "terminal_stream",
         "terminal_input",
         "terminal_resize",
         "terminal_kill",
     ] {
-        assert_eq!(
-            info["capabilities"][capability], expected,
-            "runtime/info must advertise {capability}={expected}"
-        );
+        assert!(info["capabilities"].get(retired).is_none(), "{retired}");
     }
 
     handle.abort();
@@ -18952,31 +18955,77 @@ async fn terminal_routes_serve_a_live_engine_session_over_http() -> Result<()> {
     let workspace = tmp.path().join("ws");
     fs::create_dir_all(&root)?;
     fs::create_dir_all(&workspace)?;
-    let Some((addr, _runtime_threads, handle)) =
-        spawn_test_server_with_root_token_mobile_workspace(
-            root.clone(),
-            root.join("sessions"),
-            None,
-            false,
-            workspace.clone(),
-        )
-        .await?
+    let Some((addr, runtime_threads, handle)) = spawn_test_server_with_root_token_mobile_workspace(
+        root.clone(),
+        root.join("sessions"),
+        None,
+        false,
+        workspace.clone(),
+    )
+    .await?
     else {
         return Ok(());
     };
     let client = codewhale_release::tls::reqwest_client();
-    let base = format!("http://{addr}/v1/terminal/pane");
+    let mut threads = Vec::new();
+    for _ in 0..2 {
+        threads.push(
+            runtime_threads
+                .create_thread(
+                    codewhale_engine::runtime_threads::manager::CreateThreadRequest {
+                        workspace: Some(workspace.clone()),
+                        permission_posture: Some("full_access".to_string()),
+                        allow_shell: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .await?,
+        );
+    }
+    let (thread, other) = (&threads[0], &threads[1]);
 
     // The agent's terminal tools own session creation; stand in for that
-    // producer on the same workspace the server was started with, which is
-    // what makes this the Engine's own shell rather than a second one.
-    let _session = codewhale_engine::tools::terminal_session::get_or_create(
-        "pane",
-        &workspace,
-        codewhale_sandbox::SandboxPolicy::DangerFullAccess,
-        &codewhale_engine::tools::shell::new_shared_shell_manager(workspace.clone()),
-    )
-    .map_err(anyhow::Error::msg)?;
+    // producer under each thread's own id, workspace and turn policy, which is
+    // what makes these the Engine's own shells rather than second ones. Both
+    // conversations say `pane` in one folder and still get separate shells.
+    let shell_manager = codewhale_engine::tools::shell::new_shared_shell_manager(workspace.clone());
+    for owner in [thread, other] {
+        codewhale_engine::tools::terminal_session::get_or_create(
+            &owner.id,
+            "pane",
+            &workspace,
+            runtime_threads.thread_job_sandbox_policy(owner).await,
+            &shell_manager,
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
+    let listed: serde_json::Value = client
+        .get(format!("http://{addr}/v1/threads/{}/terminals", thread.id))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let terminals = listed["terminals"].as_array().expect("terminal list");
+    assert_eq!(terminals.len(), 1, "{listed}");
+    assert_eq!(terminals[0]["name"], "pane");
+    assert_eq!(terminals[0]["running"], true);
+    let terminal_id = terminals[0]["terminal_id"]
+        .as_str()
+        .expect("terminal identity")
+        .to_string();
+    let base = format!(
+        "http://{addr}/v1/threads/{}/terminals/{terminal_id}",
+        thread.id
+    );
+    let foreign = client
+        .get(format!(
+            "http://{addr}/v1/threads/{}/terminals/{terminal_id}/output",
+            other.id
+        ))
+        .send()
+        .await?;
+    assert_eq!(foreign.status(), reqwest::StatusCode::NOT_FOUND);
 
     // Input and command output through the route, without direct session
     // access. Start output on its own line even if the shell paints a prompt.
@@ -19093,28 +19142,54 @@ async fn terminal_routes_serve_a_live_engine_session_over_http() -> Result<()> {
 #[tokio::test]
 #[cfg(unix)]
 async fn terminal_output_for_an_unknown_session_is_not_found_and_creates_nothing() -> Result<()> {
-    let Some((addr, _runtime_threads, handle)) = spawn_test_server().await? else {
+    let Some((addr, runtime_threads, handle)) = spawn_test_server().await? else {
         return Ok(());
     };
     let client = codewhale_release::tls::reqwest_client();
-    let base = format!("http://{addr}/v1/terminal");
+    let workspace = tempfile::tempdir()?;
+    let thread = runtime_threads
+        .create_thread(
+            codewhale_engine::runtime_threads::manager::CreateThreadRequest {
+                workspace: Some(workspace.path().to_path_buf()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let base = format!("http://{addr}/v1/threads/{}/terminals", thread.id);
 
-    // The route exists and answers for a name that has no live session: the
-    // Engine attaches to shells it owns, it does not conjure one per request.
+    // The route exists and answers for an identity that has no live session:
+    // the Engine attaches to shells it owns, it does not conjure one per request.
     let missing = client
-        .get(format!("{base}/no-such-session/output"))
+        .get(format!("{base}/{}/output", Uuid::new_v4()))
         .send()
         .await?;
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    let body: serde_json::Value = missing.json().await?;
+    assert_eq!(body["error"]["code"], "terminal_not_found");
 
-    // An over-long name is rejected as a miss too, so the registry is never
-    // asked to allocate for it.
-    let long_name = "n".repeat(200);
+    // An over-long identity is rejected as a miss too, so the registry is
+    // never searched for it.
+    let long_id = "n".repeat(200);
     let oversized = client
-        .get(format!("{base}/{long_name}/output"))
+        .get(format!("{base}/{long_id}/output"))
         .send()
         .await?;
     assert_eq!(oversized.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let unknown_thread = client
+        .get(format!("http://{addr}/v1/threads/no-such-thread/terminals"))
+        .send()
+        .await?;
+    assert_eq!(unknown_thread.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // A client built for the retired name-addressed routes fails loudly.
+    let retired = client
+        .get(format!("http://{addr}/v1/terminal/term-1/output"))
+        .send()
+        .await?;
+    assert_eq!(retired.status(), reqwest::StatusCode::GONE);
+    let body: serde_json::Value = retired.json().await?;
+    assert_eq!(body["error"]["code"], "terminal_route_retired");
 
     handle.abort();
     Ok(())

@@ -120,6 +120,11 @@ pub struct RuntimeCapabilities {
     /// `?thread_id=` and act on that thread's workspace.
     #[serde(default)]
     pub thread_scoped_snapshots: bool,
+    /// `GET /v1/threads/{id}/terminals` lists the thread's live shells, and
+    /// `/v1/threads/{id}/terminals/{terminal_id}/output|input|resize|kill`
+    /// drive one by the identity the Engine issued it.
+    #[serde(default)]
+    pub thread_scoped_terminals: bool,
     /// `GET`/`POST /v1/worktrees` and `POST /v1/worktrees/remove`.
     #[serde(default)]
     pub worktrees: bool,
@@ -210,19 +215,6 @@ pub struct RuntimeCapabilities {
     /// Durable, workspace-scoped cross-task Agent Mail endpoints and events.
     #[serde(default)]
     pub agent_mail: bool,
-    /// `GET /v1/terminal/{name}/output` — the resumable byte stream over a
-    /// persistent Engine-owned terminal session, with absolute cursors.
-    #[serde(default)]
-    pub terminal_stream: bool,
-    /// `POST /v1/terminal/{name}/input` — bytes into the live session.
-    #[serde(default)]
-    pub terminal_input: bool,
-    /// `POST /v1/terminal/{name}/resize` — the window the child draws for.
-    #[serde(default)]
-    pub terminal_resize: bool,
-    /// `POST /v1/terminal/{name}/kill` — end the live session.
-    #[serde(default)]
-    pub terminal_kill: bool,
     /// `GET /v1/threads/{id}/events` puts the durable `seq` on every journal
     /// frame as the SSE `id:` and resumes from a `Last-Event-ID` header, so a
     /// browser `EventSource` reconnects without a cursor in the query string.
@@ -538,6 +530,7 @@ mod tests {
             thread_scoped_reads: true,
             thread_scoped_git_writes: true,
             thread_scoped_snapshots: true,
+            thread_scoped_terminals: true,
             worktrees: true,
             job_operations: true,
             thread_shell_consent: true,
@@ -568,10 +561,6 @@ mod tests {
             skill_detail: false,
             plugin_management: false,
             agent_mail: true,
-            terminal_stream: false,
-            terminal_input: false,
-            terminal_resize: false,
-            terminal_kill: false,
             event_stream_resume: true,
         };
         let value = serde_json::to_value(&caps).unwrap();

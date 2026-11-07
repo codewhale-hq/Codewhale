@@ -26,6 +26,15 @@ pub(super) async fn scoped_workspace(
     let Some(thread_id) = thread_id else {
         return Ok(state.workspace.clone());
     };
+    thread_workspace(state, thread_id)
+        .await
+        .map(|(_, workspace)| workspace)
+}
+
+pub(super) async fn thread_workspace(
+    state: &RuntimeApiState,
+    thread_id: &str,
+) -> Result<(codewhale_engine::runtime_threads::ThreadRecord, PathBuf), ApiError> {
     if thread_id.trim().is_empty() {
         return Err(ApiError::bad_request("thread_id must not be empty"));
     }
@@ -34,14 +43,14 @@ pub(super) async fn scoped_workspace(
         .get_thread(thread_id)
         .await
         .map_err(map_thread_err)?;
-    let recorded = thread.workspace;
+    let recorded = thread.workspace.clone();
     if !recorded.is_absolute() {
         return Err(
             ApiError::conflict("thread workspace is not an absolute path")
                 .with_code("thread_workspace_unavailable"),
         );
     }
-    tokio::task::spawn_blocking(move || {
+    let workspace = tokio::task::spawn_blocking(move || {
         codewhale_util::workspace_dir::open_workspace_directory(&recorded)
             .map(|(canonical, _directory)| canonical)
             .map_err(|_| {
@@ -50,7 +59,8 @@ pub(super) async fn scoped_workspace(
             })
     })
     .await
-    .map_err(|_| ApiError::internal("thread workspace resolution failed"))?
+    .map_err(|_| ApiError::internal("thread workspace resolution failed"))??;
+    Ok((thread, workspace))
 }
 
 #[derive(Deserialize)]

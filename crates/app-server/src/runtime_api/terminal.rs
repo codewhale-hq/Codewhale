@@ -1,11 +1,18 @@
-//! `/v1/terminal/{name}` — the Engine's terminal byte stream.
+//! `/v1/threads/{id}/terminals` — the Engine's terminal byte stream.
 //!
 //! The owner is [`codewhale_engine::tools::terminal_session`]: the same PTY-backed shell
 //! the agent's terminal tools drive, so a client attaching here sees the
 //! session the model is already working in rather than a second shell beside
-//! it. These routes never create a session — a name with no live session is a
-//! 404, because conjuring a shell from an HTTP request would give the app a
-//! terminal the Engine does not know about.
+//! it. These routes never create a session — an identity with no live session
+//! is a 404, because conjuring a shell from an HTTP request would give the app
+//! a terminal the Engine does not know about.
+//!
+//! A terminal is addressed by the thread that owns it and the identity the
+//! Engine issued when the shell started (`terminal_id`). Every call resolves
+//! the thread's recorded workspace again and answers only that thread's shells
+//! in it, so another thread's or workspace's shell with the same name is never
+//! reached. Reset and restart issue new identities; an old identity stays a
+//! 404 instead of attaching to its replacement.
 //!
 //! Authentication is the `/v1` route layer's bearer token (see
 //! [`super::auth`]); nothing here re-implements or bypasses it.
@@ -24,10 +31,16 @@
 //! - **No scrollback recovery.** `dropped` reports what the 512 KiB ring
 //!   discarded; those bytes are gone with the process, not on disk.
 //! - **Live sessions only.** Persistence is identity and lifecycle, never
-//!   output, so a restarted Engine reports no session rather than pretending to
-//!   reattach (#34 acceptance: "Restart truthfully reports lost live PTYs").
+//!   output, so a restarted Engine reports a new `instance` and none of the
+//!   old identities rather than pretending to reattach (#34 acceptance:
+//!   "Restart truthfully reports lost live PTYs").
+//! - **Thread-owned shells only.** A shell started outside a runtime thread
+//!   (the TUI dock, a headless run) has no route here.
 //! - **Unix only.** The owner is `#[cfg(all(unix, not(target_env = "ohos")))]` end to end; on Windows these
 //!   routes do not exist yet. ConPTY qualification is its own slice.
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+use std::path::PathBuf;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -40,14 +53,16 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(unix, not(target_env = "ohos")))]
 use codewhale_engine::tools::terminal_session;
 
+#[cfg(all(unix, not(target_env = "ohos")))]
+use super::workspace::thread_workspace;
 use super::{ApiError, RuntimeApiState};
 
 /// Default per-response ceiling; the owner clamps to its own `READ_LIMIT`.
 #[cfg(all(unix, not(target_env = "ohos")))]
 const TERMINAL_CHUNK_DEFAULT: usize = 64 * 1024;
-/// Session names come from the agent's tools; this only bounds the echo.
+/// Identities are issued UUIDs; this only bounds the lookup.
 #[cfg(all(unix, not(target_env = "ohos")))]
-const TERMINAL_NAME_MAX_BYTES: usize = 128;
+const TERMINAL_ID_MAX_BYTES: usize = 64;
 /// One input frame. Interactive typing is bytes, not uploads.
 #[cfg(all(unix, not(target_env = "ohos")))]
 const TERMINAL_INPUT_MAX_BYTES: usize = 64 * 1024;
@@ -72,8 +87,26 @@ pub(super) struct TerminalOutputQuery {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct TerminalOutputResponse {
+pub(super) struct TerminalView {
+    terminal_id: String,
     name: String,
+    state: String,
+    running: bool,
+    exit_code: Option<u32>,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct TerminalListResponse {
+    thread_id: String,
+    workspace: std::path::PathBuf,
+    instance: String,
+    terminals: Vec<TerminalView>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct TerminalOutputResponse {
+    terminal_id: String,
     /// Absolute offset of `data[0]`; exceeds `cursor` when the ring already
     /// discarded that prefix (`dropped` reports the cutoff).
     offset: u64,
@@ -83,6 +116,7 @@ pub(super) struct TerminalOutputResponse {
     total: u64,
     /// Leading bytes the bounded ring permanently discarded.
     dropped: u64,
+    gap: bool,
     encoding: &'static str,
     data: String,
     /// False once the shell has exited and no bytes remain past `next_cursor`.
@@ -102,7 +136,7 @@ pub(super) struct TerminalInputRequest {
 
 #[derive(Debug, Serialize)]
 pub(super) struct TerminalWriteResponse {
-    name: String,
+    terminal_id: String,
     written: usize,
 }
 
@@ -116,14 +150,14 @@ pub(super) struct TerminalResizeRequest {
 
 #[derive(Debug, Serialize)]
 pub(super) struct TerminalResizeResponse {
-    name: String,
+    terminal_id: String,
     rows: u16,
     cols: u16,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) struct TerminalKillResponse {
-    name: String,
+    terminal_id: String,
     killed: bool,
 }
 
@@ -185,28 +219,55 @@ fn bounded_dimension(value: u16, field: &str) -> Result<u16, ApiError> {
     Ok(value)
 }
 
-/// Resolve a live session or 404. Never creates one — see the module docs.
 #[cfg(all(unix, not(target_env = "ohos")))]
-fn open_session(
-    state: &RuntimeApiState,
-    name: &str,
-) -> Result<terminal_session::SharedSession, ApiError> {
-    if name.is_empty() || name.len() > TERMINAL_NAME_MAX_BYTES {
-        return Err(ApiError::not_found("terminal session not found"));
+fn terminal_not_found() -> ApiError {
+    ApiError::not_found("no live terminal with this identity in this thread")
+        .with_code("terminal_not_found")
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn lock(
+    session: &terminal_session::SharedSession,
+) -> Result<std::sync::MutexGuard<'_, terminal_session::TerminalSession>, ApiError> {
+    session
+        .lock()
+        .map_err(|_| ApiError::internal("terminal session lock poisoned"))
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn state_label(state: terminal_session::DurableTerminalState) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn input_error(error: terminal_session::HumanInputError) -> ApiError {
+    use terminal_session::HumanInputError;
+    match &error {
+        HumanInputError::Gone => terminal_not_found(),
+        HumanInputError::Posture => {
+            ApiError::forbidden(error.to_string()).with_code("terminal_posture_changed")
+        }
+        HumanInputError::Exited => {
+            ApiError::conflict(error.to_string()).with_code("terminal_exited")
+        }
+        HumanInputError::Rejected(message) => ApiError::bad_request(message.clone()),
+        HumanInputError::Failed(message) => ApiError::internal(message.clone()),
     }
-    terminal_session::lookup(name, &state.workspace)
-        .ok_or_else(|| ApiError::not_found(format!("no live terminal session named '{name}'")))
 }
 
 /// How many terminal route calls may occupy blocking threads at once. The
-/// rest wait in `with_session` asynchronously, so a client that disconnects
+/// rest wait in `with_terminal` asynchronously, so a client that disconnects
 /// while queued simply disappears instead of holding a pool thread, and one
 /// stuck write (a child that stopped reading, lock held) can stall terminal
 /// routes but never the runtime's other blocking work.
 #[cfg(all(unix, not(target_env = "ohos")))]
 static ROUTE_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
 
-/// Run one operation against the locked session on the blocking pool.
+/// Resolve one of the thread's live shells by identity and run one operation
+/// against it on the blocking pool.
 ///
 /// The session mutex and the PTY behind it are synchronous: the agent's own
 /// tool holds the lock across a whole command, and a write to a child that
@@ -214,58 +275,102 @@ static ROUTE_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8)
 /// runtime worker (#6149), so a route never touches the session inline, and
 /// `ROUTE_GATE` bounds how many such touches can be in flight.
 #[cfg(all(unix, not(target_env = "ohos")))]
-async fn with_session<T>(
-    session: terminal_session::SharedSession,
-    operation: impl FnOnce(&mut terminal_session::TerminalSession) -> Result<T, ApiError>
-    + Send
-    + 'static,
+async fn with_terminal<T>(
+    workspace: PathBuf,
+    thread_id: String,
+    terminal_id: String,
+    operation: impl FnOnce(&terminal_session::SharedSession) -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError>
 where
     T: Send + 'static,
 {
+    if terminal_id.is_empty() || terminal_id.len() > TERMINAL_ID_MAX_BYTES {
+        return Err(terminal_not_found());
+    }
     let permit = ROUTE_GATE
         .acquire()
         .await
         .map_err(|_| ApiError::internal("terminal route gate closed"))?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut guard = session
-            .lock()
-            .map_err(|_| ApiError::internal("terminal session lock poisoned"))?;
-        operation(&mut guard)
+        let session = terminal_session::lookup(&workspace, Some(&thread_id), &terminal_id)
+            .ok_or_else(terminal_not_found)?;
+        operation(&session)
     })
     .await
     .map_err(|error| ApiError::internal(error.to_string()))?
 }
 
-/// `GET /v1/terminal/{name}/output` — the resumable byte stream.
+/// `GET /v1/threads/{id}/terminals` — the thread's live shells, newest
+/// activity first, with the registry `instance` they belong to.
+#[cfg(all(unix, not(target_env = "ohos")))]
+pub(super) async fn list_thread_terminals(
+    State(state): State<RuntimeApiState>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<TerminalListResponse>, ApiError> {
+    let (_, workspace) = thread_workspace(&state, &thread_id).await?;
+    let permit = ROUTE_GATE
+        .acquire()
+        .await
+        .map_err(|_| ApiError::internal("terminal route gate closed"))?;
+    let scope = workspace.clone();
+    let owner = thread_id.clone();
+    let sessions = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        terminal_session::owned_sessions(&scope, &owner).map_err(ApiError::internal)
+    })
+    .await
+    .map_err(|error| ApiError::internal(error.to_string()))??;
+    Ok(Json(TerminalListResponse {
+        thread_id,
+        workspace,
+        instance: terminal_session::instance_id().to_string(),
+        terminals: sessions
+            .into_iter()
+            .map(|info| TerminalView {
+                running: info.exit_code.is_none(),
+                terminal_id: info.id,
+                name: info.name,
+                state: state_label(info.state),
+                exit_code: info.exit_code,
+                updated_at: info.updated_at,
+            })
+            .collect(),
+    }))
+}
+
+/// `GET /v1/threads/{id}/terminals/{terminal_id}/output` — the resumable byte
+/// stream.
 ///
 /// Reads are non-consuming: several clients may hold independent cursors, and
 /// polling here never steals output from the agent's own consuming read.
 #[cfg(all(unix, not(target_env = "ohos")))]
 pub(super) async fn terminal_output(
     State(state): State<RuntimeApiState>,
-    Path(name): Path<String>,
+    Path((thread_id, terminal_id)): Path<(String, String)>,
     Query(query): Query<TerminalOutputQuery>,
 ) -> Result<Json<TerminalOutputResponse>, ApiError> {
-    let session = open_session(&state, &name)?;
     let encoding = chunk_encoding(query.format.as_deref().unwrap_or("base64"))?;
     let max_bytes = bounded_max_bytes(query.max_bytes)?;
     let cursor = query.cursor.unwrap_or(0);
-    let (chunk, exit) = with_session(session, move |session| {
-        let chunk = terminal_session::read_session_since(session, cursor, max_bytes)
+    let (_, workspace) = thread_workspace(&state, &thread_id).await?;
+    let (chunk, exit) = with_terminal(workspace, thread_id, terminal_id.clone(), move |session| {
+        let mut session = lock(session)?;
+        let chunk = terminal_session::read_session_since(&session, cursor, max_bytes)
             .map_err(ApiError::internal)?;
-        let exit = terminal_session::session_exit_status(session).map_err(ApiError::internal)?;
+        let exit =
+            terminal_session::session_exit_status(&mut session).map_err(ApiError::internal)?;
         Ok((chunk, exit))
     })
     .await?;
     let running = exit.is_none();
     Ok(Json(TerminalOutputResponse {
-        name,
+        terminal_id,
         offset: chunk.offset,
         next_cursor: chunk.next_cursor,
         total: chunk.total,
         dropped: chunk.dropped,
+        gap: chunk.gap,
         encoding,
         data: encode_bytes(&chunk.bytes, encoding),
         // A gap means bytes were lost; `running` alone must not imply there is
@@ -275,7 +380,9 @@ pub(super) async fn terminal_output(
     }))
 }
 
-/// `POST /v1/terminal/{name}/input` — bytes into the live shell.
+/// `POST /v1/threads/{id}/terminals/{terminal_id}/input` — bytes into the live
+/// shell. The thread's shell consent and shell policy apply, and so does the
+/// sandbox-reuse guard the TUI dock applies to a person's input.
 ///
 /// Input attribution is the caller's: this route is the client's writer, and
 /// the agent's writer is `terminal_send`. Nothing here re-labels one as the
@@ -283,61 +390,106 @@ pub(super) async fn terminal_output(
 #[cfg(all(unix, not(target_env = "ohos")))]
 pub(super) async fn terminal_input(
     State(state): State<RuntimeApiState>,
-    Path(name): Path<String>,
+    Path((thread_id, terminal_id)): Path<(String, String)>,
     Json(request): Json<TerminalInputRequest>,
 ) -> Result<Json<TerminalWriteResponse>, ApiError> {
-    let session = open_session(&state, &name)?;
     let bytes = decode_bytes(
         &request.data,
         request.encoding.as_deref().unwrap_or("base64"),
     )?;
+    let (thread, workspace) = thread_workspace(&state, &thread_id).await?;
+    if !thread.allow_shell {
+        return Err(
+            ApiError::forbidden("this thread does not allow shell commands")
+                .with_code("thread_shell_disabled"),
+        );
+    }
+    state
+        .runtime_threads
+        .validate_shell_access_policy(
+            &workspace,
+            state.config_path.as_deref(),
+            state.config_profile.as_deref(),
+        )
+        .await
+        .map_err(|error| ApiError::forbidden(error.to_string()))?;
+    let policy = state
+        .runtime_threads
+        .thread_job_sandbox_policy(&thread)
+        .await;
     let written = bytes.len();
-    with_session(session, move |session| {
-        terminal_session::write_raw_input(session, &bytes).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::InvalidInput {
-                ApiError::bad_request(error.to_string())
-            } else {
-                ApiError::internal(error.to_string())
-            }
-        })
+    with_terminal(workspace, thread_id, terminal_id.clone(), move |session| {
+        terminal_session::write_human_input(session, &bytes, &policy).map_err(input_error)
     })
     .await?;
-    Ok(Json(TerminalWriteResponse { name, written }))
+    Ok(Json(TerminalWriteResponse {
+        terminal_id,
+        written,
+    }))
 }
 
-/// `POST /v1/terminal/{name}/resize` — the window the child should draw for.
+/// `POST /v1/threads/{id}/terminals/{terminal_id}/resize` — the window the
+/// child should draw for.
 #[cfg(all(unix, not(target_env = "ohos")))]
 pub(super) async fn terminal_resize(
     State(state): State<RuntimeApiState>,
-    Path(name): Path<String>,
+    Path((thread_id, terminal_id)): Path<(String, String)>,
     Json(request): Json<TerminalResizeRequest>,
 ) -> Result<Json<TerminalResizeResponse>, ApiError> {
-    let session = open_session(&state, &name)?;
     let rows = bounded_dimension(request.rows, "rows")?;
     let cols = bounded_dimension(request.cols, "cols")?;
-    with_session(session, move |session| {
-        terminal_session::resize_session(session, rows, cols).map_err(ApiError::internal)
+    let (_, workspace) = thread_workspace(&state, &thread_id).await?;
+    with_terminal(workspace, thread_id, terminal_id.clone(), move |session| {
+        let session = lock(session)?;
+        terminal_session::resize_session(&session, rows, cols).map_err(ApiError::internal)
     })
     .await?;
-    Ok(Json(TerminalResizeResponse { name, rows, cols }))
+    Ok(Json(TerminalResizeResponse {
+        terminal_id,
+        rows,
+        cols,
+    }))
 }
 
-/// `POST /v1/terminal/{name}/kill` — end the shell.
+/// `POST /v1/threads/{id}/terminals/{terminal_id}/kill` — end the shell.
 ///
 /// The exit itself is observed through `output` (`running` / `exit_code`),
 /// so a client that kills and then polls learns the truth instead of an
-/// optimistic acknowledgement.
+/// optimistic acknowledgement. `killed` is false when the shell had already
+/// exited.
 #[cfg(all(unix, not(target_env = "ohos")))]
 pub(super) async fn terminal_kill(
     State(state): State<RuntimeApiState>,
-    Path(name): Path<String>,
+    Path((thread_id, terminal_id)): Path<(String, String)>,
 ) -> Result<Json<TerminalKillResponse>, ApiError> {
-    let session = open_session(&state, &name)?;
-    with_session(session, |session| {
-        terminal_session::kill_session(session).map_err(ApiError::internal)
+    let (_, workspace) = thread_workspace(&state, &thread_id).await?;
+    let killed = with_terminal(workspace, thread_id, terminal_id.clone(), |session| {
+        let mut session = lock(session)?;
+        if terminal_session::session_exit_status(&mut session)
+            .map_err(ApiError::internal)?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        terminal_session::kill_session(&mut session).map_err(ApiError::internal)?;
+        Ok(true)
     })
     .await?;
-    Ok(Json(TerminalKillResponse { name, killed: true }))
+    Ok(Json(TerminalKillResponse {
+        terminal_id,
+        killed,
+    }))
+}
+
+/// `/v1/terminal/{name}/*` addressed a shell by a reusable name at the
+/// server's workspace, which could reach another thread's or workspace's
+/// shell. It answers 410 on every platform so a client built for it fails
+/// loudly instead of attaching to the wrong shell.
+pub(super) async fn retired_terminal_route() -> ApiError {
+    ApiError::gone(
+        "name-addressed terminal routes were retired; list GET /v1/threads/{id}/terminals and address a terminal by its terminal_id",
+    )
+    .with_code("terminal_route_retired")
 }
 
 /// Windows build: the owner is `#[cfg(all(unix, not(target_env = "ohos")))]` end to end, so the contract
@@ -354,9 +506,16 @@ mod platform {
         )
     }
 
-    pub(crate) async fn terminal_output(
+    pub(crate) async fn list_thread_terminals(
         State(_): State<RuntimeApiState>,
         Path(_): Path<String>,
+    ) -> Result<Json<TerminalListResponse>, ApiError> {
+        Err(unsupported())
+    }
+
+    pub(crate) async fn terminal_output(
+        State(_): State<RuntimeApiState>,
+        Path(_): Path<(String, String)>,
         Query(_): Query<TerminalOutputQuery>,
     ) -> Result<Json<TerminalOutputResponse>, ApiError> {
         Err(unsupported())
@@ -364,7 +523,7 @@ mod platform {
 
     pub(crate) async fn terminal_input(
         State(_): State<RuntimeApiState>,
-        Path(_): Path<String>,
+        Path(_): Path<(String, String)>,
         Json(_): Json<TerminalInputRequest>,
     ) -> Result<Json<TerminalWriteResponse>, ApiError> {
         Err(unsupported())
@@ -372,7 +531,7 @@ mod platform {
 
     pub(crate) async fn terminal_resize(
         State(_): State<RuntimeApiState>,
-        Path(_): Path<String>,
+        Path(_): Path<(String, String)>,
         Json(_): Json<TerminalResizeRequest>,
     ) -> Result<Json<TerminalResizeResponse>, ApiError> {
         Err(unsupported())
@@ -380,14 +539,16 @@ mod platform {
 
     pub(crate) async fn terminal_kill(
         State(_): State<RuntimeApiState>,
-        Path(_): Path<String>,
+        Path(_): Path<(String, String)>,
     ) -> Result<Json<TerminalKillResponse>, ApiError> {
         Err(unsupported())
     }
 }
 
 #[cfg(any(not(unix), target_env = "ohos"))]
-pub(super) use platform::{terminal_input, terminal_kill, terminal_output, terminal_resize};
+pub(super) use platform::{
+    list_thread_terminals, terminal_input, terminal_kill, terminal_output, terminal_resize,
+};
 
 #[cfg(all(test, unix, not(target_env = "ohos")))]
 mod tests {
