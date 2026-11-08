@@ -432,7 +432,6 @@ self-check of whether what you just did is actually correct and complete."
             ));
         };
 
-
         // --- Deterministic evidence gathering ---
         let mut evidence: Vec<EvidenceBlock> = Vec::new();
         if gather_diff_scope {
