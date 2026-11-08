@@ -1187,6 +1187,7 @@ pub struct SessionState {
     pub missing_usage_sources:
         std::collections::BTreeMap<String, codewhale_engine::cost_status::MissingUsageCoverage>,
     pub missing_usage_overflowed: bool,
+    pub in_flight_usage_sources: BTreeSet<String>,
     pub displayed_cost_high_water: f64,
     pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
@@ -1367,6 +1368,7 @@ impl Default for SessionState {
             accounted_usage_sources: Default::default(),
             missing_usage_sources: std::collections::BTreeMap::new(),
             missing_usage_overflowed: false,
+            in_flight_usage_sources: BTreeSet::new(),
             displayed_cost_high_water: 0.0,
             displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
@@ -4708,6 +4710,7 @@ impl App {
         self.session.accounted_usage_sources.clear();
         self.session.missing_usage_sources.clear();
         self.session.missing_usage_overflowed = false;
+        self.session.in_flight_usage_sources.clear();
         self.session.cost_priced_turns = 0;
         self.session.cost_unpriced_turns = 0;
         self.session.cost_cny_priced_turns = 0;
@@ -4817,6 +4820,7 @@ impl App {
         // apparently complete zero.
         cost.missing_usage_sources = self.session.missing_usage_sources.clone();
         cost.missing_usage_overflowed = self.session.missing_usage_overflowed;
+        cost.in_flight_usage_sources = self.session.in_flight_usage_sources.clone();
         cost.coverage_recorded = !self.session.cost_coverage_unknown_legacy;
         cost.accounted_usage_sources = self.session.accounted_usage_sources.clone();
     }
@@ -4844,6 +4848,7 @@ impl App {
         self.session.accounted_usage_sources = cost.accounted_usage_sources.clone();
         self.session.missing_usage_sources = cost.missing_usage_sources.clone();
         self.session.missing_usage_overflowed = cost.missing_usage_overflowed;
+        self.session.in_flight_usage_sources = cost.in_flight_usage_sources.clone();
         self.session.cost_priced_turns = cost.priced_turns;
         self.session.cost_unpriced_turns = cost.unpriced_turns;
         self.session.cost_cny_priced_turns = cost.cny_priced_turns;

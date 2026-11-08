@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "widersprüchliche Tokenzahlen",
   "CostReasonUsageBreakdown": "Aufschlüsselung der Token-Nutzung nicht verfügbar",
   "CostReasonOutcomeUnknown": "Anfrageergebnis unbekannt",
+  "CostReasonInProgress": "Anfrage läuft",
   "CostReasonProviderUsageMissing": "Anbieter hat keine Nutzungsdaten gemeldet",
   "CostReasonLegacyUsageUnverified": "ältere Nutzungsdaten ungeprüft",
   "CostReasonUsageCorrectionUnverified": "Nutzungskorrektur ungeprüft",

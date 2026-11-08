@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "토큰 수 불일치",
   "CostReasonUsageBreakdown": "토큰 사용량 내역을 알 수 없음",
   "CostReasonOutcomeUnknown": "요청 결과를 알 수 없음",
+  "CostReasonInProgress": "요청 진행 중",
   "CostReasonProviderUsageMissing": "공급자가 사용량을 보고하지 않음",
   "CostReasonLegacyUsageUnverified": "이전 사용량이 검증되지 않음",
   "CostReasonUsageCorrectionUnverified": "사용량 수정이 검증되지 않음",

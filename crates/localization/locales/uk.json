@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "суперечливі лічильники токенів",
   "CostReasonUsageBreakdown": "деталізація токенів недоступна",
   "CostReasonOutcomeUnknown": "результат запиту невідомий",
+  "CostReasonInProgress": "запит виконується",
   "CostReasonProviderUsageMissing": "провайдер не повідомив використання",
   "CostReasonLegacyUsageUnverified": "старі дані використання не перевірено",
   "CostReasonUsageCorrectionUnverified": "коригування використання не перевірено",

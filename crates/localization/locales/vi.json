@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "số token không nhất quán",
   "CostReasonUsageBreakdown": "không có chi tiết sử dụng token",
   "CostReasonOutcomeUnknown": "chưa rõ kết quả yêu cầu",
+  "CostReasonInProgress": "yêu cầu đang chạy",
   "CostReasonProviderUsageMissing": "nhà cung cấp không báo cáo mức sử dụng",
   "CostReasonLegacyUsageUnverified": "mức sử dụng cũ chưa được xác minh",
   "CostReasonUsageCorrectionUnverified": "điều chỉnh mức sử dụng chưa được xác minh",

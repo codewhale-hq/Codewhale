@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "token 计数冲突",
   "CostReasonUsageBreakdown": "token 用量明细不可用",
   "CostReasonOutcomeUnknown": "请求结果未知",
+  "CostReasonInProgress": "请求进行中",
   "CostReasonProviderUsageMissing": "提供商未返回用量",
   "CostReasonLegacyUsageUnverified": "旧版用量未经核实",
   "CostReasonUsageCorrectionUnverified": "用量修正未经核实",

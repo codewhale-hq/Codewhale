@@ -1466,6 +1466,7 @@
             usage_source_fingerprints: ["response-fingerprint".to_string()].into(),
             missing_usage_sources: Default::default(),
             missing_usage_overflowed: false,
+            in_flight_usage_sources: Default::default(),
             coverage_recorded: true,
         };
         let json = serde_json::to_string(&full).expect("serialize");

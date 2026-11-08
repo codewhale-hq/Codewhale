@@ -876,6 +876,7 @@ pub enum UnpricedReason {
     InconsistentUsage,
     MissingUsageBreakdown,
     RequestOutcomeUnknown,
+    RequestInProgress,
     ProviderSuccessMissingUsage,
     LegacyUsageUnverified,
     UsageCorrectionUnverified,
@@ -905,6 +906,7 @@ impl UnpricedReason {
             "late_usage_ledger_unavailable" => Self::LateUsageUnavailable,
             "late_usage_ledger_overflow" => Self::LateUsageOverflow,
             "request_outcome_unknown" => Self::RequestOutcomeUnknown,
+            "request_in_progress" => Self::RequestInProgress,
             "provider_success_missing_usage" | "success_without_usage" => {
                 Self::ProviderSuccessMissingUsage
             }
@@ -937,6 +939,7 @@ impl UnpricedReason {
             Self::InconsistentUsage => MessageId::CostReasonUsageConflict,
             Self::MissingUsageBreakdown => MessageId::CostReasonUsageBreakdown,
             Self::RequestOutcomeUnknown => MessageId::CostReasonOutcomeUnknown,
+            Self::RequestInProgress => MessageId::CostReasonInProgress,
             Self::ProviderSuccessMissingUsage => MessageId::CostReasonProviderUsageMissing,
             Self::LegacyUsageUnverified => MessageId::CostReasonLegacyUsageUnverified,
             Self::UsageCorrectionUnverified => MessageId::CostReasonUsageCorrectionUnverified,
@@ -966,6 +969,7 @@ impl UnpricedReason {
             Self::InconsistentUsage => "inconsistent_usage",
             Self::MissingUsageBreakdown => "missing_usage_breakdown",
             Self::RequestOutcomeUnknown => "request_outcome_unknown",
+            Self::RequestInProgress => "request_in_progress",
             Self::ProviderSuccessMissingUsage => "provider_success_missing_usage",
             Self::LegacyUsageUnverified => "legacy_usage_unverified",
             Self::UsageCorrectionUnverified => "usage_correction_unverified",

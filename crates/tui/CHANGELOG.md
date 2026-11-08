@@ -331,6 +331,12 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Cost line: a finished request is never "outcome unknown":** the cost
+  line drops "request outcome unknown" (and "provider omitted usage") once
+  the requests behind it have settled, even when another turn is still
+  unpriced for a different reason, and a request that is still running now
+  reads "request in progress" instead. A request that an exit or crash left
+  unsettled still reads "request outcome unknown" after a restart.
 - **Sub-agents in `codewhale exec`:** a sub-agent started from
   `codewhale exec` now runs. It used to stop before its first provider
   request with "child provider call has no captured accounting origin",

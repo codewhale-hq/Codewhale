@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "jumlah token bertentangan",
   "CostReasonUsageBreakdown": "rincian penggunaan token tidak tersedia",
   "CostReasonOutcomeUnknown": "hasil permintaan tidak diketahui",
+  "CostReasonInProgress": "permintaan sedang berjalan",
   "CostReasonProviderUsageMissing": "penyedia tidak melaporkan penggunaan",
   "CostReasonLegacyUsageUnverified": "penggunaan lama belum diverifikasi",
   "CostReasonUsageCorrectionUnverified": "koreksi penggunaan belum diverifikasi",

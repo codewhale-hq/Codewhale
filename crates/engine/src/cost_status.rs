@@ -1354,6 +1354,10 @@ impl UsageSourceRevision {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+
+    pub fn is_reservation(&self) -> bool {
+        self.reservation
+    }
 }
 
 #[derive(Debug, Clone)]

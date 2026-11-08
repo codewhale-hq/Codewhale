@@ -2538,6 +2538,7 @@
   "CostReasonUsageConflict": "token 計數衝突",
   "CostReasonUsageBreakdown": "token 用量明細不可用",
   "CostReasonOutcomeUnknown": "請求結果未知",
+  "CostReasonInProgress": "請求進行中",
   "CostReasonProviderUsageMissing": "供應商未回傳用量",
   "CostReasonLegacyUsageUnverified": "舊版用量未經核實",
   "CostReasonUsageCorrectionUnverified": "用量修正未經核實",

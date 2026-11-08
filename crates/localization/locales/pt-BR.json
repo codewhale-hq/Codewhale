@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "contagens de tokens conflitantes",
   "CostReasonUsageBreakdown": "detalhamento de tokens indisponível",
   "CostReasonOutcomeUnknown": "resultado da solicitação desconhecido",
+  "CostReasonInProgress": "solicitação em andamento",
   "CostReasonProviderUsageMissing": "o provedor omitiu o uso",
   "CostReasonLegacyUsageUnverified": "uso antigo não verificado",
   "CostReasonUsageCorrectionUnverified": "correção de uso não verificada",

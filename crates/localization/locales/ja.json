@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "トークン数が不整合",
   "CostReasonUsageBreakdown": "トークン使用量の内訳が不明",
   "CostReasonOutcomeUnknown": "リクエスト結果が不明",
+  "CostReasonInProgress": "リクエスト処理中",
   "CostReasonProviderUsageMissing": "プロバイダーが使用量を未報告",
   "CostReasonLegacyUsageUnverified": "旧形式の使用量が未検証",
   "CostReasonUsageCorrectionUnverified": "使用量の修正が未検証",

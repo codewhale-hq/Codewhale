@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "टोकन गणनाओं में विरोध",
   "CostReasonUsageBreakdown": "टोकन उपयोग का विवरण उपलब्ध नहीं",
   "CostReasonOutcomeUnknown": "अनुरोध का परिणाम अज्ञात",
+  "CostReasonInProgress": "अनुरोध जारी है",
   "CostReasonProviderUsageMissing": "प्रदाता ने उपयोग नहीं बताया",
   "CostReasonLegacyUsageUnverified": "पुराने उपयोग की पुष्टि नहीं हुई",
   "CostReasonUsageCorrectionUnverified": "उपयोग सुधार की पुष्टि नहीं हुई",

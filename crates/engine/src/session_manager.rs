@@ -681,6 +681,29 @@ const CURRENT_LATE_USAGE_SCHEMA_VERSION: u32 = 2;
 const MAX_LATE_USAGE_UNRESOLVED_RECORDS_PER_SESSION: usize = 64;
 const MAX_LATE_USAGE_LEDGER_BYTES: u64 = 1024 * 1024;
 const LATE_USAGE_DELETED: &[u8] = b"codewhale-session-deleted-v1\n";
+fn serialize_settled_reasons<S>(
+    reasons: &BTreeSet<String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::Serialize as _;
+    let in_progress = crate::pricing::UnpricedReason::RequestInProgress.label();
+    let unknown = crate::pricing::UnpricedReason::RequestOutcomeUnknown.label();
+    reasons
+        .iter()
+        .map(|reason| {
+            if reason == in_progress {
+                unknown
+            } else {
+                reason.as_str()
+            }
+        })
+        .collect::<BTreeSet<_>>()
+        .serialize(serializer)
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -1330,9 +1353,17 @@ pub struct SessionCostSnapshot {
     #[serde(default)]
     pub cny_unpriced_turns: u32,
     /// Stable reason labels for the unpriced turns.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeSet::is_empty",
+        serialize_with = "serialize_settled_reasons"
+    )]
     pub unpriced_reasons: BTreeSet<String>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeSet::is_empty",
+        serialize_with = "serialize_settled_reasons"
+    )]
     pub cny_unpriced_reasons: BTreeSet<String>,
     /// Token classes used on some route that carry no published price.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -1370,6 +1401,8 @@ pub struct SessionCostSnapshot {
     pub missing_usage_sources: BTreeMap<String, crate::cost_status::MissingUsageCoverage>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub missing_usage_overflowed: bool,
+    #[serde(skip)]
+    pub in_flight_usage_sources: BTreeSet<String>,
     /// Written by builds that track coverage, so a reader can tell "this session
     /// genuinely had zero money-metered turns" apart from "this session predates
     /// coverage tracking". Absent on legacy rows.
@@ -1517,10 +1550,15 @@ impl SessionCostSnapshot {
                 crate::llm_client::ProviderUsageCoverage::Missing
                     | crate::llm_client::ProviderUsageCoverage::Incomplete
             ) {
-                self.unpriced_reasons
-                    .insert(revision.reason.label().to_string());
-                self.cny_unpriced_reasons
-                    .insert(revision.reason.label().to_string());
+                let label = if revision.is_reservation() {
+                    self.in_flight_usage_sources.insert(key.clone());
+                    crate::pricing::UnpricedReason::RequestInProgress.label()
+                } else {
+                    self.in_flight_usage_sources.remove(&key);
+                    revision.reason.label()
+                };
+                self.unpriced_reasons.insert(label.to_string());
+                self.cny_unpriced_reasons.insert(label.to_string());
                 if self.missing_usage_sources.len() < crate::cost_status::MAX_MISSING_USAGE_SOURCES
                     || self.missing_usage_sources.contains_key(&key)
                 {
@@ -1536,17 +1574,34 @@ impl SessionCostSnapshot {
                 }
             } else {
                 self.missing_usage_sources.remove(&key);
+                self.in_flight_usage_sources.remove(&key);
             }
         }
-        if self.unpriced_turns == 0 {
-            self.unpriced_reasons.remove("request_outcome_unknown");
-            self.unpriced_reasons
-                .remove("provider_success_missing_usage");
+        let missing_sources = &self.missing_usage_sources;
+        self.in_flight_usage_sources
+            .retain(|source| missing_sources.contains_key(source));
+        let in_flight = &self.in_flight_usage_sources;
+        for reason in [
+            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+        ] {
+            let unresolved = self.missing_usage_overflowed
+                || missing_sources.iter().any(|(source, missing)| {
+                    missing.reason == reason && !in_flight.contains(source)
+                });
+            if self.unpriced_turns == 0 || !unresolved {
+                self.unpriced_reasons.remove(reason.label());
+            }
+            if self.cny_unpriced_turns == 0 || !unresolved {
+                self.cny_unpriced_reasons.remove(reason.label());
+            }
         }
-        if self.cny_unpriced_turns == 0 {
-            self.cny_unpriced_reasons.remove("request_outcome_unknown");
-            self.cny_unpriced_reasons
-                .remove("provider_success_missing_usage");
+        let in_progress = crate::pricing::UnpricedReason::RequestInProgress.label();
+        if self.unpriced_turns == 0 || in_flight.is_empty() {
+            self.unpriced_reasons.remove(in_progress);
+        }
+        if self.cny_unpriced_turns == 0 || in_flight.is_empty() {
+            self.cny_unpriced_reasons.remove(in_progress);
         }
         self.usage_source_fingerprints.insert(key.clone());
         self.accounted_usage_sources.insert(key, next);

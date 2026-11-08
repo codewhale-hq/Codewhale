@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "conflicting token counts",
   "CostReasonUsageBreakdown": "token usage breakdown unavailable",
   "CostReasonOutcomeUnknown": "request outcome unknown",
+  "CostReasonInProgress": "request in progress",
   "CostReasonProviderUsageMissing": "provider omitted usage",
   "CostReasonLegacyUsageUnverified": "legacy usage unverified",
   "CostReasonUsageCorrectionUnverified": "usage correction unverified",

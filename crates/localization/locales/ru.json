@@ -2540,6 +2540,7 @@
   "CostReasonUsageConflict": "противоречивые счётчики токенов",
   "CostReasonUsageBreakdown": "разбивка токенов недоступна",
   "CostReasonOutcomeUnknown": "результат запроса неизвестен",
+  "CostReasonInProgress": "запрос выполняется",
   "CostReasonProviderUsageMissing": "провайдер не сообщил расход",
   "CostReasonLegacyUsageUnverified": "старые данные расхода не проверены",
   "CostReasonUsageCorrectionUnverified": "корректировка расхода не проверена",
