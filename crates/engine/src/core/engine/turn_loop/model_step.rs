@@ -568,7 +568,7 @@ impl Engine {
         {
             stream_error.get_or_insert_with(|| "RLM usage settlement failed".to_string());
         }
-        let mut response_stream_failed = steer_preempted || stream_error.is_some();
+        let response_stream_failed = steer_preempted || stream_error.is_some();
         progress.turn_error = progress.turn_error.take().or(stream_error.clone());
         turn.stop_diagnostics
             .observe_provider_response(stop_reason.as_deref(), tool_uses.len());
@@ -634,9 +634,7 @@ impl Engine {
             .as_ref()
             .is_some_and(|dispatch| !dispatch.settlement_acknowledged())
         {
-            stream_error.get_or_insert_with(|| "Child usage settlement failed".to_string());
-            response_stream_failed = true;
-            progress.turn_error = progress.turn_error.take().or(stream_error.clone());
+            tracing::warn!("child usage settlement was not acknowledged; the turn continues");
         }
         drop(child_dispatch.take());
         if let Some(job) = child_job.as_ref() {

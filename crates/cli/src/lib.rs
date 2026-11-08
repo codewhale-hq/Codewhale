@@ -235,8 +235,9 @@ enum Commands {
     Install(TuiPassthroughArgs),
     #[command(
         about = "Inspect or restage reviewed plugin bundles",
+        alias = "plugin",
         override_usage = "codewhale plugins <COMMAND>",
-        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot"
+        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot"
     )]
     Plugins(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.

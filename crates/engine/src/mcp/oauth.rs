@@ -1846,17 +1846,55 @@ pub fn dynamic_registration_unavailable(server_name: &str, url: &str) -> bool {
         .contains(&(server_name.to_string(), url.to_string()))
 }
 
+const MAX_REGISTRATION_DETAIL_CHARS: usize = 400;
+
+fn registration_status_rejection(message: &str) -> Option<String> {
+    let trimmed = message.trim();
+    let status = trimmed.strip_prefix("HTTP ")?.split_whitespace().next()?;
+    let code = status.parse::<u16>().ok()?;
+    if !(400..500).contains(&code) {
+        return None;
+    }
+    let mut detail: String = trimmed
+        .chars()
+        .take(MAX_REGISTRATION_DETAIL_CHARS)
+        .collect();
+    if detail.chars().count() < trimmed.chars().count() {
+        detail.push('\u{2026}');
+    }
+    Some(detail)
+}
+
 fn error_is_dynamic_registration_unsupported(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<AuthError>(),
         Some(AuthError::RegistrationFailed(message))
             if message.contains("Dynamic client registration not supported")
+                || registration_status_rejection(message).is_some()
     )
+}
+
+fn dynamic_registration_failure(error: &anyhow::Error) -> String {
+    error
+        .downcast_ref::<AuthError>()
+        .and_then(|err| match err {
+            AuthError::RegistrationFailed(message) => Some(message.as_str()),
+            _ => None,
+        })
+        .map_or_else(
+            || "client registration is unavailable".to_string(),
+            |message| registration_status_rejection(message).unwrap_or_else(|| message.to_string()),
+        )
+}
+
+fn dynamic_registration_guidance() -> &'static str {
+    "Configure `oauth.client_metadata_url` for a hosted client document, or `oauth.client_id` with its exact `oauth.issuer`, then log in again. Alternatively set `bearer_token_env_var` to an environment variable holding a least-privilege personal access token and run `/mcp reload`"
 }
 
 pub fn dynamic_registration_unavailable_hint(server_name: &str) -> String {
     format!(
-        "MCP server '{server_name}' cannot complete an OAuth login: its authorization server offers no usable client registration. Configure `oauth.client_metadata_url` for a hosted client document, or `oauth.client_id` with its exact `oauth.issuer`, then log in again. Alternatively set `bearer_token_env_var` to an environment variable holding a least-privilege personal access token and run `/mcp reload`"
+        "MCP server '{server_name}' cannot complete an OAuth login: its authorization server offers no usable client registration. {}",
+        dynamic_registration_guidance()
     )
 }
 
@@ -2031,7 +2069,11 @@ impl OauthLoginFlow {
             }
             Err(error) if error_is_dynamic_registration_unsupported(&error) => {
                 note_dynamic_registration(server_name, server_url, false);
-                return Err(error.context(dynamic_registration_unavailable_hint(server_name)));
+                return Err(anyhow!(
+                    "MCP server '{server_name}' cannot complete an OAuth login: {}. {}",
+                    dynamic_registration_failure(&error),
+                    dynamic_registration_guidance()
+                ));
             }
             Err(error) => return Err(error),
         };

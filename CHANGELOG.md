@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A child no longer dies when usage settlement is not acknowledged.** The turn continues and cost stays unknown, matching the parent path.
+- **Workspace memory works without a git origin.** A plain folder or a repo with no `origin` remote gets a stable workspace id. `codewhale plugin list` is an alias of `plugins status`. A heavy command runs after 30 seconds instead of waiting forever for an admission slot. An MCP registration 4xx names the status and the manual client-id path.
 - **Wafer** is a selectable OpenAI-compatible host at `https://pass.wafer.ai/v1`. The public model list is the catalog; the default is `GLM-5.3`. Inference uses `WAFER_API_KEY`.
 - **Provider defaults follow the provider's own model list.** A same-line successor (`grok-4.6` to `grok-4.7`, `muse-spark-1.2` to `muse-spark-1.3`) replaces a stale pin. A different line, such as GPT-6 beside GPT-5.6, does not. The provider pane shows one current model per line and spreads a gateway list across authors, instead of filling the screen with every Claude snapshot.
 - **Turns no longer fail on a cost bookkeeping error.** When Codewhale could not

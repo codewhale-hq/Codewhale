@@ -6336,15 +6336,11 @@ mod tests {
         assert!(!id.is_empty());
         assert_eq!(id, memory.workspace_id(tmp.path()).expect("stable id"));
 
-        // A plain directory without git origin preserves the established error.
+        // A plain directory without a git origin still gets a stable identity.
         let plain = TempDir::new().unwrap();
-        let err = memory
-            .workspace_id(plain.path())
-            .expect_err("missing origin");
-        assert_eq!(
-            err,
-            "workspace memory requires a git repository with an origin"
-        );
+        let plain_id = memory.workspace_id(plain.path()).expect("workspace id");
+        assert!(!plain_id.is_empty());
+        assert_ne!(plain_id, id);
     }
 
     #[test]
@@ -6614,18 +6610,14 @@ mod tests {
     }
 
     #[test]
-    fn memory_adapter_preserves_workspace_delete_error_text() {
+    fn memory_adapter_deletes_workspace_without_an_origin() {
         let tmp = TempDir::new().unwrap();
         let mut app = memory_test_app(&tmp, true);
         let mut bundle = app.command_contexts();
         let memory = bundle.parts().memory.expect("memory facet");
-        let err = memory
+        memory
             .delete_workspace(tmp.path())
-            .expect_err("missing origin");
-        assert_eq!(
-            err,
-            "workspace memory requires a git repository with an origin"
-        );
+            .expect("plain folder still has a workspace id");
     }
 
     #[test]

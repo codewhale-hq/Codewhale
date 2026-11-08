@@ -271,7 +271,7 @@ enum Commands {
 
 #[derive(Subcommand, Debug, Clone)]
 enum PluginsCommand {
-    #[command(about = "Inspect plugin status and diagnostics")]
+    #[command(about = "Inspect plugin status and diagnostics", alias = "list")]
     Status {
         #[arg(value_name = "NAME")]
         name: Option<String>,
