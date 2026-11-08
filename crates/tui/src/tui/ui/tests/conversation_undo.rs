@@ -728,6 +728,7 @@ async fn refused_edit_rollback_returns_the_revision_to_the_composer() {
             allow_shell: false,
             trust_mode: false,
             execution_limits: codewhale_engine::task_manager::TaskExecutionLimits::default(),
+            human_waits_answerable: false,
         },
         Arc::new(Idle),
     )

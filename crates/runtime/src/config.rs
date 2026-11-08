@@ -1112,6 +1112,13 @@ pub struct ToolsConfig {
     /// with a warning.
     #[serde(default)]
     pub user_input_timeout_seconds: Option<u64>,
+
+    /// Seconds a durable task may stay parked on an unanswered approval or
+    /// user-input prompt before it fails with `human_wait_timeout`. Absent,
+    /// or an explicit `0`, uses the 1,800-second (30 minute) default. Values
+    /// are clamped to `1..=86_400` (24h) with a warning.
+    #[serde(default)]
+    pub task_human_wait_cap_seconds: Option<u64>,
 }
 
 /// Persistent-goal loop controls (`[goal]` table in config.toml, #5052).
@@ -3846,6 +3853,27 @@ impl Config {
             );
         }
         Some(std::time::Duration::from_secs(seconds.min(MAX_SECONDS)))
+    }
+
+    /// Effective ceiling for how long one durable task may stay parked on a
+    /// human answer. Absent or `0` is the 30 minute default; other values
+    /// clamp to `1..=86_400` seconds.
+    #[must_use]
+    pub fn task_human_wait_cap(&self) -> std::time::Duration {
+        const DEFAULT_SECONDS: u64 = 30 * 60;
+        const MAX_SECONDS: u64 = 86_400;
+        let seconds = self
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.task_human_wait_cap_seconds)
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(DEFAULT_SECONDS);
+        if seconds > MAX_SECONDS {
+            tracing::warn!(
+                "[tools] task_human_wait_cap_seconds={seconds} exceeds 24h; clamping to {MAX_SECONDS}"
+            );
+        }
+        std::time::Duration::from_secs(seconds.min(MAX_SECONDS))
     }
 
     /// Load configuration from disk and merge with environment overrides.

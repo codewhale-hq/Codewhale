@@ -34716,6 +34716,7 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
             allow_shell: false,
             trust_mode: false,
             execution_limits: codewhale_engine::task_manager::TaskExecutionLimits::default(),
+            human_waits_answerable: false,
         },
         Arc::new(Done),
     )

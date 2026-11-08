@@ -2070,6 +2070,30 @@ async fn admit_runtime_host(
 /// Prefix of the first line the Runtime prints once it holds its listener.
 pub const RUNTIME_LISTENING_PREFIX: &str = "Runtime API listening on http://";
 
+/// Build the task manager config for the runtime API server.
+///
+/// This is where the server opts its tasks into answerable human waits, and
+/// only when it binds its HTTP listener: the tasks it runs are then served by
+/// this server's HTTP decision endpoints (`POST /v1/approvals/{id}` and the
+/// user-input endpoints), so a pending prompt on them is a human-paced wait
+/// the wall clock may pause for — see
+/// [`TaskManagerConfig::human_waits_answerable`]. A local Stdio, Socket or
+/// ACP control frontend binds no listener and cannot deliver a task-owned
+/// answer, so its tasks keep the unanswerable default.
+#[must_use]
+pub(crate) fn server_task_config(
+    config: &Config,
+    workspace: PathBuf,
+    workers: usize,
+    http_decisions: bool,
+) -> TaskManagerConfig {
+    let default_model = runtime_request_model(config, None).unwrap_or_else(|_| "auto".into());
+    let mut task_cfg =
+        TaskManagerConfig::from_runtime(config, workspace, Some(default_model), Some(workers));
+    task_cfg.human_waits_answerable = http_decisions;
+    task_cfg
+}
+
 /// Start the runtime API server.
 pub async fn run_http_server(
     mut config: Config,
@@ -2099,12 +2123,7 @@ pub async fn run_http_server(
     );
 
     let task_default_model = runtime_request_model(&config, None).unwrap_or_else(|_| "auto".into());
-    let task_cfg = TaskManagerConfig::from_runtime(
-        &config,
-        workspace.clone(),
-        Some(task_default_model.clone()),
-        Some(options.workers),
-    );
+    let task_cfg = server_task_config(&config, workspace.clone(), options.workers, !local_control);
     #[cfg(any(unix, windows))]
     let selected_store =
         RuntimeThreadManagerConfig::from_task_data_dir(task_cfg.data_dir.clone()).data_dir;
@@ -14909,6 +14928,7 @@ base_url = "http://127.0.0.1:9/v1"
                 allow_shell: false,
                 trust_mode: false,
                 execution_limits: Default::default(),
+                human_waits_answerable: false,
             },
             config.clone(),
             runtime_threads.clone(),

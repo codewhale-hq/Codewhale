@@ -525,6 +525,11 @@ show_whats_new = true
 # 0 disables the timeout entirely; values above 86400 (24h) are clamped.
 # user_input_timeout_seconds = 300
 #
+# Fail-safe ceiling, in seconds, for how long a durable task (runtime API
+# server) may sit on an unanswered approval or question before it fails with
+# human_wait_timeout. 0 or omitted uses 1800; values are clamped to 1..=86400.
+# task_human_wait_cap_seconds = 1800
+#
 # Bound an interactive approval card's wait (#6101). When the window elapses
 # the card resolves to deny (fail-closed) and the transcript says the bound
 # denied the call; omitted or 0 waits indefinitely.
