@@ -6215,6 +6215,9 @@ impl Engine {
             )
             .ok();
         }
+        if tool_context.accounting_origin.is_none() {
+            tool_context.accounting_origin = self.config.runtime_services.accounting_origin.clone();
+        }
         // Ensure MCP pool is initialized before building the tool registry,
         // so start_mcp_server can be registered when Feature::Mcp is enabled.
         // A passive snapshot must not create the pool: allocating it is engine

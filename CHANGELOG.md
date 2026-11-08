@@ -336,6 +336,11 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Sub-agents in `codewhale exec`:** a sub-agent started from
+  `codewhale exec` now runs. It used to stop before its first provider
+  request with "child provider call has no captured accounting origin",
+  because the exec session's accounting origin never reached the turn's
+  tools, so a fan-out ran in one context instead.
 - **IME candidate window under modals:** the hidden terminal cursor now
   follows the caret in `/config` search and its value editor, so the
   input-method candidate window can appear there instead of over the

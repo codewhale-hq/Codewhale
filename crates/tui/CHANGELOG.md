@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OrcaRouter offer:** no longer shown when Codewhale is in Simplified Chinese
+  or your computer is set to mainland China, and its note now says the link is
+  part of a referral campaign.
 - **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.
 
 ## [0.10.3] - 2026-11-06
@@ -328,6 +331,11 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Sub-agents in `codewhale exec`:** a sub-agent started from
+  `codewhale exec` now runs. It used to stop before its first provider
+  request with "child provider call has no captured accounting origin",
+  because the exec session's accounting origin never reached the turn's
+  tools, so a fan-out ran in one context instead.
 - **IME candidate window under modals:** the hidden terminal cursor now
   follows the caret in `/config` search and its value editor, so the
   input-method candidate window can appear there instead of over the
