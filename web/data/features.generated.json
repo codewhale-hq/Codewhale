@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "e55453aff47faaf89f4f18c4212ddbaef9e9478e0a4919b89ad1b2e487ad7d44"
+    "sha256": "7af6fcfe9da9095686dc8df53422192cf88a78aa4df6343b6a82bf2312ae7d5c"
   },
   "features": [
     {
@@ -374,7 +374,7 @@
     {
       "id": "permission-postures",
       "name": "Permission postures",
-      "summary": "Ask, Auto-Review and Full Access govern approvals; cards default to Deny and preview saved grants.",
+      "summary": "Ask, Accept Edits, Auto-Review and Full Access govern approvals; Ask asks before every edit and command, Accept Edits runs in-repository edits without a card; cards default to Deny and preview saved grants.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
