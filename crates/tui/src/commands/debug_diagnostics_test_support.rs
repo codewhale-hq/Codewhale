@@ -305,7 +305,7 @@ fn context_expectations_preserve_counts_for_each_host() {
             assert_ne!(expected, windows.replace("22", "23"));
         }
         // A regression in another source still fails on every fixture.
-        assert_ne!(expected, windows.replace("1803", "1804"));
+        assert_ne!(expected, windows.replace("2414", "2415"));
     }
 }
 

@@ -16,7 +16,7 @@ message:
         "label": "Bundled constitution, language policy, and output policy",
         "source_path": "bundled in this codewhale-engine build (BASE_PROMPT, compiled in)",
         "activation_reason": "always_on",
-        "estimated_tokens": 1803,
+        "estimated_tokens": 2414,
         "counting_confidence": "high",
         "authority_tier": 1,
         "truncation_reason": null
@@ -152,7 +152,7 @@ message:
         "truncation_reason": "no API messages yet"
       }
     ],
-    "total_estimated_tokens": 2207,
+    "total_estimated_tokens": 2818,
     "active_context_estimated_tokens": 48,
     "overflow_guard_estimated_tokens": 48,
     "context_window_tokens": 1000000,
