@@ -221,6 +221,16 @@ pub(super) async fn host_git(
     command.args(args).current_dir(&context.workspace);
     host_output(&mut command, &[], cancel, "Git repository inspection").await
 }
+pub(super) async fn host_git_status(
+    context: &ToolContext,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<String, ToolError> {
+    let command = codewhale_dependencies::Git::status_command(&context.workspace)
+        .map_err(|error| ToolError::not_available(format!("git is unavailable: {error}")))?;
+    let mut command = tokio::process::Command::from(command);
+    command.args(["status", "--porcelain=v1", "--ignore-submodules=dirty"]);
+    host_output(&mut command, &[], cancel, "Git repository inspection").await
+}
 async fn host_output(
     command: &mut tokio::process::Command,
     input: &[u8],

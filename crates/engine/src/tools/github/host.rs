@@ -499,7 +499,7 @@ where
                 .as_ref()
                 .ok_or_else(|| ToolError::not_available("GitHub caller missing"))?;
             if !allow_dirty {
-                let status = cli::host_git(context, &["status", "--porcelain"], &cancel).await?;
+                let status = cli::host_git_status(context, &cancel).await?;
                 if !status.trim().is_empty() {
                     return Ok(Outcome {
                         projection: json!({"action":if target=="issue"{"close_issue"}else{"close_pr"},"number":number.to_string(),"target":target,"dirty":true}),
