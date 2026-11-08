@@ -714,11 +714,10 @@ fn selected_fleet_operator_load_error_redacts_paths_excerpts_and_opaque_name() {
     assert!(message.chars().count() <= 700, "{message}");
 }
 
-/// #6510: only a flag that grants tool authority opens a tool surface.
-/// Limits, prompt/hook opt-ins and the output format keep plain exec a
-/// zero-tool one-shot; `--max-turns 1` used to make it a tool agent.
+/// Plain exec offers tools. `--no-tools` is the explicit one-shot. Limits
+/// and output flags do not change that.
 #[test]
-fn exec_tool_surface_needs_an_explicit_grant() {
+fn exec_tool_surface_is_on_unless_no_tools() {
     let grants = |argv: &[&str], yolo: bool, resuming: bool, env: bool| {
         let mut full = vec!["codewhale", "exec"];
         full.extend_from_slice(argv);
@@ -730,40 +729,18 @@ fn exec_tool_surface_needs_an_explicit_grant() {
         exec_grants_tool_surface(&args, yolo, resuming, env)
     };
 
-    for zero_tool in [
+    for with_tools in [
         &[][..],
         &["--max-turns", "1"],
         &["--max-tool-calls", "3"],
-        &["--disallowed-tools", "exec_shell"],
-        &["--append-system-prompt", "be brief"],
-        &["--hooks"],
-        &["--sandbox", "read-only"],
-        &["--allow-sandbox-elevation"],
-        &["--output-format", "stream-json"],
+        &["--auto"],
+        &["--allowed-tools", "read_file"],
         &["--json"],
     ] {
-        assert!(
-            !grants(zero_tool, false, false, false),
-            "{zero_tool:?} must not grant tools"
-        );
+        assert!(grants(with_tools, false, false, false), "{with_tools:?}");
     }
-
-    assert!(grants(&["--auto"], false, false, false));
-    assert!(grants(
-        &["--allowed-tools", "read_file"],
-        false,
-        false,
-        false
-    ));
-    assert!(grants(
-        &["--tool-authority-json", "{}"],
-        false,
-        false,
-        false
-    ));
-    assert!(grants(&["--max-turns", "1"], true, false, false), "yolo");
-    assert!(grants(&[], false, true, false), "resumed session");
-    assert!(grants(&[], false, false, true), "launcher tool surface");
+    assert!(!grants(&["--no-tools"], false, false, false));
+    assert!(!grants(&["--no-tools", "--auto"], true, true, true));
 }
 
 #[test]

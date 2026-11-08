@@ -419,13 +419,16 @@ struct ExecArgs {
     /// operator hooks.
     #[arg(long, default_value_t = false)]
     hooks: bool,
+    /// Run one answer with no tools. The default offers the normal tool
+    /// surface under the configured sandbox and approval posture.
+    #[arg(long, default_value_t = false)]
+    no_tools: bool,
     /// Read the prompt from a file (`-` reads stdin) instead of argv, for
     /// prompts past the OS per-argument limit (~128 KiB on Linux).
     #[arg(long, value_name = "PATH", conflicts_with = "prompt")]
     prompt_file: Option<PathBuf>,
     #[arg(
         value_name = "PROMPT",
-        required_unless_present = "prompt_file",
         trailing_var_arg = true,
         help = codewhale_localization::tr(
             codewhale_localization::resolve_locale("auto"),
@@ -568,30 +571,17 @@ fn shell_only_exec_allowed_tools() -> Vec<String> {
         .collect()
 }
 
-/// #6510: whether an `exec` run is offered tools. Plain exec is one Engine
-/// turn with no tools; only a flag that grants tool authority opens a
-/// surface: `--auto`/`--yolo`, an explicit `--allowed-tools` list, a Fleet
-/// authority envelope, or the launcher's tool-surface env. A resumed session
-/// keeps its surface, because its history can carry tool calls and results
-/// that a zero-tool request cannot replay.
-///
-/// Limits (`--max-turns`, `--max-tool-calls`, `--disallowed-tools`,
-/// `--sandbox`, `--allow-sandbox-elevation`), prompt and hook opt-ins
-/// (`--append-system-prompt`, `--hooks`) and the output format never grant
-/// tools. They used to, so `exec --max-turns 1 "hi"` silently became a
-/// tool-using agent.
+/// Whether an `exec` run is offered tools. The default is the normal tool
+/// surface, still approval-gated by the configured sandbox. `--no-tools` is
+/// the explicit one-shot. A resumed session and a Fleet authority envelope
+/// keep their own surface.
 fn exec_grants_tool_surface(
     args: &ExecArgs,
-    yolo: bool,
-    resuming: bool,
-    env_tool_surface: bool,
+    _yolo: bool,
+    _resuming: bool,
+    _env_tool_surface: bool,
 ) -> bool {
-    args.auto
-        || yolo
-        || resuming
-        || args.allowed_tools.is_some()
-        || args.tool_authority_json.is_some()
-        || env_tool_surface
+    !args.no_tools
 }
 
 /// Flags that only shape a tool surface, passed on a run that has none.
@@ -938,13 +928,13 @@ fn join_prompt_parts(parts: &[String]) -> String {
 /// stays the real limit (#6688).
 const MAX_EXEC_PROMPT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The effective exec prompt: argv words, or the body of `--prompt-file`
-/// (`-` = stdin). A positional `-` stays literal text: raw-prompt callers
-/// such as cloud dispatch pass a job prompt verbatim as argv. Runs before
-/// any model call so a missing or empty source fails loudly (#6688).
+/// The effective exec prompt: argv words, a `--prompt-file`, or piped stdin.
+/// A positional `-` stays literal text. When stdin is not a terminal and no
+/// `--prompt-file` is set, a pipe is the prompt, or is appended to argv.
+/// `--parent-death-watch` owns stdin and does not read it as a prompt.
 fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
     let Some(path) = &args.prompt_file else {
-        return Ok(join_prompt_parts(&args.prompt));
+        return resolve_argv_or_piped_prompt(args);
     };
     let prompt = if path.as_os_str() == "-" {
         if args.parent_death_watch {
@@ -970,6 +960,31 @@ fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
         bail!("exec prompt from {source} is empty");
     }
     Ok(prompt)
+}
+
+fn resolve_argv_or_piped_prompt(args: &ExecArgs) -> Result<String> {
+    let argv = join_prompt_parts(&args.prompt);
+    if args.parent_death_watch || io::stdin().is_terminal() {
+        if argv.trim().is_empty() {
+            bail!("missing exec prompt; pass it as arguments, --prompt-file, or a pipe");
+        }
+        return Ok(argv);
+    }
+    let piped = read_capped_text(
+        io::stdin().lock(),
+        MAX_EXEC_PROMPT_BYTES,
+        "exec prompt on stdin",
+    )?;
+    if argv.trim().is_empty() {
+        if piped.trim().is_empty() {
+            bail!("exec prompt from stdin is empty");
+        }
+        return Ok(piped);
+    }
+    if piped.trim().is_empty() {
+        return Ok(argv);
+    }
+    Ok(format!("{argv}\n\n{piped}"))
 }
 
 fn resolve_exec_model(config: &Config, explicit_model: Option<&str>) -> String {
@@ -2894,7 +2909,7 @@ async fn run_async_main_dispatch(
                         let ignored = exec_tool_flags_without_grant(&args);
                         if !ignored.is_empty() {
                             eprintln!(
-                                "codewhale exec: {} only apply to tools, and this run offers none; add --auto or --allowed-tools to run with tools.",
+                                "codewhale exec: {} only apply when tools are offered; drop --no-tools to use them.",
                                 ignored.join(", ")
                             );
                         }
