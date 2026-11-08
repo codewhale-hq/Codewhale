@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Turns no longer fail on a cost bookkeeping error.** When Codewhale could not
+  settle its own usage record ("previous usage publication has not been
+  acknowledged"), the whole turn failed and sub-agents were interrupted, even
+  though the model had answered. The turn now continues, the receipt keeps the
+  accounting error, and the status line says the cost is uncertain.
 - **OrcaRouter offer:** no longer shown when Codewhale is in Simplified Chinese
   or your computer is set to mainland China, and its note now says the link is
   part of a referral campaign.

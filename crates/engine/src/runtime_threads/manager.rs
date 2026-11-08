@@ -17292,8 +17292,7 @@ source_usage_records: Default::default(),
                             .ok()
                         });
                         if let Some(error) = receipt["accounting_error"].as_str() {
-                            turn_status = Some(RuntimeTurnStatus::Failed);
-                            turn_error = Some(format!("Provider usage settlement failed: {error}"));
+                            tracing::warn!(%error, "provider usage settlement failed; the turn continues");
                         }
                         let reported = receipt["usage_reported"].as_bool() == Some(true);
                         if reported {

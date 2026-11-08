@@ -5492,7 +5492,7 @@ impl Engine {
         {
             Ok(record) => record,
             Err(error) => {
-                stream_error.get_or_insert(format!("Provider usage settlement failed: {error}"));
+                tracing::warn!(%error, "provider usage settlement failed; the turn continues");
                 None
             }
         };

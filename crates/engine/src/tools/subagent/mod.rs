@@ -7917,10 +7917,10 @@ impl SubAgentManager {
         if !source.permits_replacement(previous.map(|old| &old.0))? {
             return Ok(false);
         }
-        anyhow::ensure!(
-            source.is_acknowledged(),
-            "worker source has no durable acknowledgement"
-        );
+        if !source.is_acknowledged() {
+            tracing::warn!("worker usage source has no durable acknowledgement; not counted");
+            return Ok(false);
+        }
         let revision = source
             .settlement
             .as_ref()
