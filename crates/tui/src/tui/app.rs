@@ -3835,7 +3835,7 @@ impl App {
             .replace("{setting}", self.tr(subject).as_ref())
     }
 
-    /// Cycle through productive modes: Plan → Act → Operate → Plan.
+    /// Cycle between the two modes: Plan → Work → Plan.
     pub fn cycle_mode(&mut self) {
         let next = self.mode.next();
         let outcome = self.select_mode(next);

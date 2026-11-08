@@ -1970,7 +1970,7 @@ Responses:
 - `400`: malformed `snapshot_id`/`expected_hash`, path outside the workspace,
   or a path that is not a regular file on either side.
 - `404`: unknown thread.
-- `409`: thread not in trusted mode or Full Access; active turn in an
+- `409`: active turn in an
   overlapping workspace; workspace directory not available; snapshot unknown,
   pruned, not recorded on this thread's turns (another thread's or a TUI
   session's), or not a restore point (refresh the change record); file already
