@@ -1767,7 +1767,7 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
         }
         PlanHandoffChoice::Revise(feedback) => QueuedMessage::new(feedback, None),
         PlanHandoffChoice::Work(posture) => {
-            if !enter_work_for_plan(app, config, engine_handle, posture).await {
+            if !enter_work_for_plan(app, engine_handle, posture).await {
                 return Ok(());
             }
             let staged = seed_plan_handoff_todos(app, &mut plan).await;
@@ -1785,7 +1785,7 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
                     Err(cleanup) => format!("{reason}; {cleanup}"),
                 };
                 app.pending_plan_handoff = Some(plan.clone());
-                apply_mode_update(app, engine_handle, config, AppMode::Plan).await;
+                apply_mode_update(app, engine_handle, AppMode::Plan).await;
                 reopen_plan_handoff(app, &plan, &reason);
                 return Ok(());
             }
@@ -1813,7 +1813,6 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
 /// the session then stays where it was and nothing is sent.
 pub(crate) async fn enter_work_for_plan(
     app: &mut App,
-    config: &Config,
     engine_handle: &EngineHandle,
     posture: ApprovalMode,
 ) -> bool {
@@ -1826,7 +1825,7 @@ pub(crate) async fn enter_work_for_plan(
         app.push_status_toast(reason, StatusToastLevel::Warning, Some(8_000));
         return false;
     }
-    apply_mode_update(app, engine_handle, config, AppMode::Agent).await;
+    apply_mode_update(app, engine_handle, AppMode::Agent).await;
     if engine_handle.tx_op.is_closed() {
         app.set_mode(AppMode::Plan);
         return false;

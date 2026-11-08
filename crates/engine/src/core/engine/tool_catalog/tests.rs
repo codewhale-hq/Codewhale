@@ -140,7 +140,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
     .map(str::to_string)
     .collect::<BTreeSet<_>>();
     let mut expected_prefix = None;
-    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Operate] {
+    for mode in [AppMode::Plan, AppMode::Agent] {
         let mut catalog = [
             "read",
             "write",
@@ -181,7 +181,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
 
 #[test]
 fn eager_workflow_still_respects_command_allow_and_deny_gates() {
-    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Operate] {
+    for mode in [AppMode::Plan, AppMode::Agent] {
         for (allow, deny, expected) in [
             (None, None, true),
             (Some("read"), None, false),

@@ -1032,7 +1032,7 @@ fn plan_mode_toggle_preserves_catalog_byte_stability() {
 fn parent_turn_registry_includes_goal_tools_for_all_modes() {
     let (engine, _handle) = Engine::new(EngineConfig::default(), &Config::default());
 
-    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Operate] {
+    for mode in [AppMode::Plan, AppMode::Agent] {
         let registry = engine
             .build_turn_tool_registry_builder(
                 mode,
@@ -1149,7 +1149,7 @@ fn mode_invariant_matrix_covers_context_catalog_subagents_and_prompt_metadata() 
         },
         ModeCase {
             name: "operate",
-            mode: AppMode::Operate,
+            mode: AppMode::Agent,
             shell_policy: ShellPolicy::Full,
             sandbox: ExpectedSandbox::WorkspaceWrite,
             trust_mode: false,

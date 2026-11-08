@@ -594,13 +594,6 @@ impl HotbarActionSource for BuiltinHotbarActionSource {
             AppHotbarKind::Mode(AppMode::Agent),
         ));
         registry.register(AppHotbarAction::new(
-            "mode.operate",
-            "operate",
-            "Operate mode",
-            "Send tasks while Fleet workers run in parallel.",
-            AppHotbarKind::Mode(AppMode::Operate),
-        ));
-        registry.register(AppHotbarAction::new(
             "reasoning.cycle",
             "reason",
             "Cycle reasoning",
@@ -943,7 +936,6 @@ impl AppHotbarAction {
             AppHotbarKind::SessionCompact => MessageId::HotbarActionSessionCompactName,
             AppHotbarKind::Mode(AppMode::Plan) => MessageId::HotbarActionModePlanName,
             AppHotbarKind::Mode(AppMode::Agent) => MessageId::HotbarActionModeAgentName,
-            AppHotbarKind::Mode(AppMode::Operate) => MessageId::HotbarActionModeOperateName,
             AppHotbarKind::ReasoningCycle => MessageId::HotbarActionReasoningCycleName,
             AppHotbarKind::SidebarToggle => MessageId::HotbarActionSidebarToggleName,
             AppHotbarKind::FileTreeToggle => MessageId::HotbarActionFileTreeToggleName,
@@ -958,7 +950,6 @@ impl AppHotbarAction {
             AppHotbarKind::SessionCompact => MessageId::HotbarActionSessionCompactDescription,
             AppHotbarKind::Mode(AppMode::Plan) => MessageId::HotbarActionModePlanDescription,
             AppHotbarKind::Mode(AppMode::Agent) => MessageId::HotbarActionModeAgentDescription,
-            AppHotbarKind::Mode(AppMode::Operate) => MessageId::HotbarActionModeOperateDescription,
             AppHotbarKind::ReasoningCycle => MessageId::HotbarActionReasoningCycleDescription,
             AppHotbarKind::SidebarToggle => MessageId::HotbarActionSidebarToggleDescription,
             AppHotbarKind::FileTreeToggle => MessageId::HotbarActionFileTreeToggleDescription,
@@ -1944,7 +1935,7 @@ mod tests {
         let metadata = reasoning.metadata(Locale::En);
         assert_eq!(metadata.category, HotbarActionCategory::App);
         assert_eq!(metadata.safety, HotbarSafetyClass::LocalState);
-        assert_eq!(metadata.recommendation, HotbarRecommendation::Eligible);
+        assert_eq!(metadata.recommendation, HotbarRecommendation::Default);
         assert!(reasoning.disabled_reason(&app).is_none());
 
         app.auto_model = true;
@@ -2060,7 +2051,7 @@ mod tests {
                 (3, Some("auto")),
                 (4, Some("plan")),
                 (5, Some("agent")),
-                (6, Some("operate")),
+                (6, Some("reason")),
                 (7, Some("palette")),
                 (8, Some("side")),
             ]
@@ -2087,7 +2078,6 @@ mod tests {
             vec![
                 "filetree.toggle",
                 "mode.agent",
-                "mode.operate",
                 "mode.plan",
                 "palette.open",
                 "reasoning.cycle",
@@ -2512,7 +2502,6 @@ mod tests {
         let registry = HotbarActionRegistry::with_builtins();
         let plan = registry.get("mode.plan").expect("plan action");
         let agent = registry.get("mode.agent").expect("agent action");
-        let operate = registry.get("mode.operate").expect("operate action");
         let mut app = test_app();
 
         assert!(agent.is_active(&app));
@@ -2527,16 +2516,7 @@ mod tests {
         assert_eq!(app.mode, AppMode::Plan);
         assert!(plan.is_active(&app));
         assert!(!agent.is_active(&app));
-
-        assert_eq!(
-            operate
-                .dispatch(&mut app, &Config::default())
-                .expect("dispatch operate"),
-            HotbarDispatch::AppAction(AppAction::ModeChanged(AppMode::Operate))
-        );
-        assert_eq!(app.mode, AppMode::Operate);
-        assert!(operate.is_active(&app));
-        assert!(!agent.is_active(&app));
+        assert!(registry.get("mode.operate").is_none());
     }
 
     #[test]

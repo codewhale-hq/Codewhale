@@ -123,7 +123,6 @@ pub(crate) fn to_command_mode(mode: AppMode) -> CommandMode {
     match mode {
         AppMode::Agent => CommandMode::Agent,
         AppMode::Plan => CommandMode::Plan,
-        AppMode::Operate => CommandMode::Operate,
     }
 }
 
@@ -131,7 +130,7 @@ pub(crate) fn from_command_mode(mode: CommandMode) -> AppMode {
     match mode {
         CommandMode::Agent => AppMode::Agent,
         CommandMode::Plan => AppMode::Plan,
-        CommandMode::Operate => AppMode::Operate,
+        CommandMode::Operate => AppMode::Agent,
     }
 }
 
@@ -5380,7 +5379,7 @@ mod tests {
 
     #[test]
     fn boundary_mappings_cover_every_variant() {
-        for mode in [AppMode::Agent, AppMode::Plan, AppMode::Operate] {
+        for mode in [AppMode::Agent, AppMode::Plan] {
             let command = to_command_mode(mode);
             assert_eq!(from_command_mode(command), mode);
         }
@@ -5591,16 +5590,26 @@ mod tests {
             let mut bundle = app.command_contexts();
             let mut parts = bundle.parts();
             let policy = parts.mode_policy.as_mut().expect("mode facet");
-            policy.set_mode(CommandMode::Operate);
+            policy.set_mode(CommandMode::Plan);
             policy.set_shell_access(true);
-            assert!(policy.allow_shell());
-            assert_eq!(policy.mode(), CommandMode::Operate);
+            assert!(!policy.allow_shell(), "Plan stays read-only");
+            assert_eq!(policy.mode(), CommandMode::Plan);
         }
         assert_eq!(
             app.mode,
-            AppMode::Operate,
+            AppMode::Plan,
             "adapter delegates to App authority"
         );
+        assert!(!app.allow_shell, "Plan ignores a shell grant");
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let policy = parts.mode_policy.as_mut().expect("mode facet");
+            policy.set_mode(CommandMode::Agent);
+            policy.set_shell_access(true);
+            assert!(policy.allow_shell(), "Work uses the shell baseline");
+        }
+        assert_eq!(app.mode, AppMode::Agent);
         assert!(app.allow_shell);
     }
 

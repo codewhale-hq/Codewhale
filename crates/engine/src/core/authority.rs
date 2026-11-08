@@ -68,7 +68,6 @@ pub struct EffectiveModePolicy {
 /// This is the single source of truth for the mode/permission table:
 /// - `Plan`   -> read-only: no shell, no trust, `Suggest` approvals.
 /// - `Agent`  -> the user's durable baseline (`prefs`).
-/// - `Operate` -> Agent baseline plus orchestration capabilities in the runtime.
 ///
 /// The legacy YOLO spelling resolves to Agent plus a `Bypass` approval
 /// posture before it reaches this table; modes no longer carry permission.
@@ -81,7 +80,7 @@ pub fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> Effectiv
             trust_mode: false,
             approval_mode: ApprovalMode::Suggest,
         },
-        AppMode::Agent | AppMode::Operate => EffectiveModePolicy {
+        AppMode::Agent => EffectiveModePolicy {
             mode,
             allow_shell: prefs.agent_allow_shell,
             trust_mode: prefs.agent_trust_mode,
@@ -424,7 +423,7 @@ pub fn shell_policy_for_mode(mode: AppMode, allow_shell: bool) -> ShellPolicy {
     }
     match mode {
         AppMode::Plan => ShellPolicy::None,
-        AppMode::Agent | AppMode::Operate => ShellPolicy::Full,
+        AppMode::Agent => ShellPolicy::Full,
     }
 }
 
@@ -504,9 +503,7 @@ pub fn write_carve_out_posture(
     approval_mode: ApprovalMode,
     auto_approve: bool,
 ) -> bool {
-    !auto_approve
-        && matches!(mode, AppMode::Agent | AppMode::Operate)
-        && approval_mode == ApprovalMode::AcceptEdits
+    !auto_approve && matches!(mode, AppMode::Agent) && approval_mode == ApprovalMode::AcceptEdits
 }
 
 /// Whether every target path of a file-write call qualifies for the
@@ -870,11 +867,6 @@ mod tests {
     fn write_carve_out_posture_is_exactly_accept_edits() {
         assert!(write_carve_out_posture(
             AppMode::Agent,
-            ApprovalMode::AcceptEdits,
-            false
-        ));
-        assert!(write_carve_out_posture(
-            AppMode::Operate,
             ApprovalMode::AcceptEdits,
             false
         ));

@@ -342,7 +342,7 @@ async fn operate_never_promotes_wording_to_a_goal() {
     // The verb-list promotion is gone: an ordinary work prompt is an ordinary
     // turn in every mode, and the model decides goals through `create_goal`
     // (docs/design/TUI_DECONSTRUCTION.md, founder clarification 2026-09-09).
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, prompt).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, prompt).await;
     assert_eq!(
         objective, None,
         "the host must not infer a goal from wording"
@@ -359,7 +359,7 @@ async fn operate_never_promotes_wording_to_a_goal() {
     // prose now — the host never parses it, and the model decides goals
     // through `create_goal`.
     let (objective, active, contracts) =
-        operate_goal_probe(AppMode::Operate, "Please set /goal to ship the release").await;
+        operate_goal_probe(AppMode::Agent, "Please set /goal to ship the release").await;
     assert_eq!(
         objective, None,
         "prose asking for a goal must not create one host-side"
@@ -371,7 +371,7 @@ async fn operate_never_promotes_wording_to_a_goal() {
 #[tokio::test]
 async fn operate_leaves_followup_and_long_questions_as_ordinary_turns() {
     let report = "what about like rust or docker builds or something";
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, report).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, report).await;
     assert_eq!(
         objective, None,
         "conversational followup must remain ordinary turn in Operate"
@@ -381,7 +381,7 @@ async fn operate_leaves_followup_and_long_questions_as_ordinary_turns() {
 
     let long_q =
         "why did the build fail on the last step when running under docker on macos with rust 1.80";
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, long_q).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, long_q).await;
     assert_eq!(
         objective, None,
         "long question without punctuation must remain ordinary turn"
@@ -390,7 +390,7 @@ async fn operate_leaves_followup_and_long_questions_as_ordinary_turns() {
     assert_eq!(contracts, 0);
 
     let zh_followup = "那 rust 或者 docker 构建呢";
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, zh_followup).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, zh_followup).await;
     assert_eq!(
         objective, None,
         "Chinese followup must remain ordinary turn in Operate"
@@ -402,7 +402,7 @@ async fn operate_leaves_followup_and_long_questions_as_ordinary_turns() {
 #[tokio::test]
 async fn operate_does_not_create_a_goal_when_the_work_request_declines_one() {
     let prompt = "Run one bounded cancellation check. Do not edit files, inspect other files, create a goal, spawn agents, or start any other tool.";
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, prompt).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, prompt).await;
     assert_eq!(objective, None);
     assert!(!active);
     assert_eq!(contracts, 0, "Operate appends no contract");
@@ -445,7 +445,7 @@ async fn operate_turns_append_no_contract_and_never_replace_an_existing_goal() {
             max_output_tokens: None,
             content: content.to_string(),
             images: Vec::new(),
-            mode: AppMode::Operate,
+            mode: AppMode::Agent,
             route: resolved_route_for_test(&config, "local-model"),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),

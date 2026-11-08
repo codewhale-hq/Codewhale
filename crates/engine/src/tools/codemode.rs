@@ -1601,7 +1601,7 @@ mod tests {
         use codewhale_config::AppMode;
         use std::collections::HashSet;
         let empty = HashSet::new();
-        for mode in [AppMode::Agent, AppMode::Operate] {
+        for mode in [AppMode::Agent] {
             let mut catalog = Vec::new();
             crate::core::engine::tool_catalog::ensure_advanced_tooling(
                 &mut catalog,

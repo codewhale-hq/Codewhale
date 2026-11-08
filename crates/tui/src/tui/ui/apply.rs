@@ -677,16 +677,9 @@ pub(crate) fn apply_goal_snapshot_to_app(app: &mut App, snapshot: &GoalSnapshot)
     // to stop it. `/goal <objective>` sets the objective before this snapshot lands,
     // so a user-declared goal does not repeat its own receipt.
     if objective_changed && verdict == GoalStatus::Active {
-        // Operate set it from the prompt (or the model did while operating);
-        // the objective is the prompt the user just typed, so the receipt
-        // says what Operate will do with it instead of echoing it.
-        let content = if app.mode == AppMode::Operate {
-            app.tr(codewhale_localization::MessageId::GoalReceiptSetOperate)
-                .into_owned()
-        } else {
-            app.tr(codewhale_localization::MessageId::GoalReceiptSet)
-                .replace("{objective}", objective)
-        };
+        let content = app
+            .tr(codewhale_localization::MessageId::GoalReceiptSet)
+            .replace("{objective}", objective);
         app.add_message(crate::tui::history::HistoryCell::System { content });
     }
     // A fresh reported-progress receipt reads like the model's own status
@@ -764,16 +757,10 @@ pub(crate) fn apply_goal_snapshot_to_app(app: &mut App, snapshot: &GoalSnapshot)
 pub(crate) async fn apply_mode_update(
     app: &mut App,
     engine_handle: &EngineHandle,
-    config: &Config,
     mode: AppMode,
 ) -> bool {
     let outcome = app.select_mode(mode);
     app.report_mode_selection(mode, outcome);
-    if mode == AppMode::Operate {
-        present_operate_board(app, config).await;
-        // First contact with the fleet, not first launch, owns its intro.
-        app.maybe_show_feature_intro();
-    }
     if outcome.changed_live_state() {
         sync_mode_update(app, engine_handle).await;
         true
@@ -798,115 +785,6 @@ pub(crate) async fn apply_yolo_compat_update(
     } else {
         false
     }
-}
-
-/// Entering Operate attaches to the recorded operation (a fresh one only
-/// when none exists or the last was cancelled), shows the localized lead
-/// plan, and keeps always-on mode durable by reinstalling the hourly lead
-/// keepalive bound to this workspace. Burn rate is optional; default is
-/// unbounded.
-async fn present_operate_board(app: &mut App, config: &Config) {
-    let store = match codewhale_engine::operate::OperationStore::open(
-        codewhale_engine::operate::default_operate_dir(),
-    ) {
-        Ok(store) => store,
-        Err(error) => {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: format!("Operate store unavailable: {error}"),
-            });
-            return;
-        }
-    };
-    let Some(automations) = app
-        .runtime_services
-        .automations
-        .as_ref()
-        .map(std::sync::Arc::clone)
-    else {
-        app.add_message(crate::tui::history::HistoryCell::System {
-            content: "Operate keep-alive not installed: automation service unavailable".to_string(),
-        });
-        return;
-    };
-    let model = app.model_selection_for_persistence();
-    let identity = match config.resolve_persisted_provider_identity(
-        Some(app.api_provider.as_str()),
-        app.provider_id_for_persistence(),
-    ) {
-        Ok(identity) => identity,
-        Err(error) => {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: format!("Operate keep-alive not installed: {error}"),
-            });
-            return;
-        }
-    };
-    let (lead_model, credentials) = {
-        let manager = automations.lock().await;
-        match codewhale_engine::operate::keepalive_readiness(
-            &manager,
-            config,
-            Some((&identity, &model)),
-        ) {
-            Ok(credentials) => credentials,
-            Err(error) => {
-                app.add_message(crate::tui::history::HistoryCell::System {
-                    content: format!("Operate keep-alive not installed: {error}"),
-                });
-                return;
-            }
-        }
-    };
-    let operation = match codewhale_engine::operate::attach_or_start_operation(
-        &store,
-        &app.workspace,
-        None,
-        None,
-        credentials,
-        &lead_model,
-    ) {
-        Ok(mut operation) => {
-            if credentials && !operation.direction.is_empty() && operation.lead_plan.is_none() {
-                operation.plan_from_direction();
-                if let Err(error) = store.save(&operation) {
-                    app.add_message(crate::tui::history::HistoryCell::System {
-                        content: format!("Operate plan not saved: {error}"),
-                    });
-                }
-            }
-            operation
-        }
-        Err(error) => {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: format!("Operate did not start: {error}"),
-            });
-            return;
-        }
-    };
-    // Always-on is durable only if the keepalive automation exists: entering
-    // Operate (re)installs it for this workspace, kicking an immediate
-    // lead-plan step when the attached operation still needs one.
-    let needs_lead_plan = !operation
-        .lead_plan
-        .as_ref()
-        .is_some_and(|plan| !plan.slices.is_empty());
-    {
-        let manager = automations.lock().await;
-        if let Err(error) = codewhale_engine::operate::upsert_keepalive(
-            &manager,
-            &app.workspace,
-            needs_lead_plan,
-            config,
-            Some((&identity, &model)),
-        ) {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: format!("Operate keep-alive not installed: {error}"),
-            });
-        }
-    }
-    app.add_message(crate::tui::history::HistoryCell::System {
-        content: codewhale_engine::operate::render_plan_board_locale(&operation, app.ui_locale),
-    });
 }
 
 pub(crate) async fn apply_model_and_compaction_update(

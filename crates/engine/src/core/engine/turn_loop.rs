@@ -6086,8 +6086,8 @@ mod pre_tool_snapshot_gate_tests {
         ] {
             assert!(mode_blocks_command_execution(AppMode::Plan, tool));
             assert!(
-                !mode_blocks_command_execution(AppMode::Operate, tool),
-                "Operate must not add a mode-only command denial for {tool}"
+                !mode_blocks_command_execution(AppMode::Agent, tool),
+                "Work must not add a mode-only command denial for {tool}"
             );
         }
 
@@ -6099,8 +6099,8 @@ mod pre_tool_snapshot_gate_tests {
                 false
             ));
             assert!(
-                !mode_blocks_write_capable_tool(AppMode::Operate, tool, &json!({}), false),
-                "Operate must not add a mode-only write denial for {tool}"
+                !mode_blocks_write_capable_tool(AppMode::Agent, tool, &json!({}), false),
+                "Work must not add a mode-only write denial for {tool}"
             );
         }
 
@@ -6113,7 +6113,7 @@ mod pre_tool_snapshot_gate_tests {
                 false
             ));
             assert!(!mode_blocks_write_capable_tool(
-                AppMode::Operate,
+                AppMode::Agent,
                 "File",
                 &input,
                 false
@@ -6135,7 +6135,7 @@ mod pre_tool_snapshot_gate_tests {
             false
         ));
         assert!(!mode_blocks_write_capable_tool(
-            AppMode::Operate,
+            AppMode::Agent,
             "mcp_filesystem_write",
             &json!({}),
             false

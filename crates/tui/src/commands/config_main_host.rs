@@ -3690,17 +3690,14 @@ mod tests {
         let _ = mode_command(&mut app, Some("plan"));
         assert_eq!(app.mode, AppMode::Plan);
         let result = mode_command(&mut app, Some("3"));
-        assert_eq!(
-            result.action,
-            Some(AppAction::ModeChanged(AppMode::Operate))
-        );
-        assert_eq!(app.mode, AppMode::Operate);
+        assert_eq!(result.action, Some(AppAction::ModeChanged(AppMode::Agent)));
+        assert_eq!(app.mode, AppMode::Agent);
         let result = mode_command(&mut app, Some("5"));
         assert!(result.is_error);
-        assert_eq!(app.mode, AppMode::Operate);
+        assert_eq!(app.mode, AppMode::Agent);
         let result = mode_command(&mut app, Some("9"));
         assert!(result.is_error);
-        assert_eq!(app.mode, AppMode::Operate);
+        assert_eq!(app.mode, AppMode::Agent);
         let result = mode_command(&mut app, Some("4"));
         // "4" still routes to the deprecated YOLO alias, which lands in Agent
         // mode with bypass approvals (M6 compat shim).

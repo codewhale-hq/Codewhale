@@ -358,7 +358,7 @@ async fn live_runtime_authority_applies_latest_posture_and_sandbox_before_tools(
 
     for (mode, posture, auto_approve, sandbox_mode, expected_sandbox) in [
         (
-            AppMode::Operate,
+            AppMode::Agent,
             ApprovalMode::Auto,
             false,
             Some("read-only".to_string()),

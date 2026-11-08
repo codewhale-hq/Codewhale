@@ -297,11 +297,6 @@ const DEFAULT_MODE: &[SettingOption] = &[
         "ConfigChoiceDetailModeAgent",
     ),
     SettingOption::new("plan", "ConfigChoiceModePlan", "ConfigChoiceDetailModePlan"),
-    SettingOption::new(
-        "operate",
-        "ConfigChoiceModeOperate",
-        "ConfigChoiceDetailModeOperate",
-    ),
 ];
 
 const FOCUS_TEXTURE: &[SettingOption] = &[
@@ -1540,6 +1535,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     ),
     def(
         "yolo_deprecation_shown",
+        SettingKind::Bool(ON_OFF),
+        "false",
+        None,
+    ),
+    def(
+        "operate_deprecation_shown",
         SettingKind::Bool(ON_OFF),
         "false",
         None,

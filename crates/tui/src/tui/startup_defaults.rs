@@ -784,15 +784,15 @@ mod tests {
 
     #[test]
     fn mode_update_only_targets_default_mode() {
-        let update = StartupDefaults::mode(AppMode::Operate);
-        assert_eq!(update.mode, Some("operate"));
+        let update = StartupDefaults::mode(AppMode::Plan);
+        assert_eq!(update.mode, Some("plan"));
         assert!(update.reasoning_effort.is_none());
         assert_eq!(update.subjects(), vec![StartupDefaultSubject::Mode]);
     }
 
     #[test]
     fn subjects_stay_typed_for_a_combined_mode_and_thinking_update() {
-        let update = StartupDefaults::mode(AppMode::Operate).with_reasoning_effort("high");
+        let update = StartupDefaults::mode(AppMode::Plan).with_reasoning_effort("high");
         assert_eq!(
             update.subjects(),
             vec![StartupDefaultSubject::Mode, StartupDefaultSubject::Thinking,]
@@ -875,7 +875,7 @@ mod tests {
         let worker = writer.clone();
         let handle = std::thread::spawn(move || {
             let _membership = crate::test_support::join_env_scope(ticket);
-            let result = worker.apply_blocking(StartupDefaults::mode(AppMode::Operate));
+            let result = worker.apply_blocking(StartupDefaults::mode(AppMode::Plan));
             done_tx.send(result).ok();
         });
 
@@ -894,7 +894,7 @@ mod tests {
             Settings::load_persisted()
                 .expect("reload settings")
                 .default_mode,
-            "operate"
+            "plan"
         );
         assert!(tmp.path().join(".codewhale/settings.toml").exists());
     }
@@ -968,13 +968,13 @@ mod tests {
         // The sealed scope itself is unaffected: its own write still lands, and
         // its guard has nothing foreign to wait for.
         writer
-            .apply_blocking(StartupDefaults::mode(AppMode::Operate))
+            .apply_blocking(StartupDefaults::mode(AppMode::Plan))
             .expect("the sealed scope's own write must land");
         assert_eq!(
             Settings::load_persisted()
                 .expect("reload settings")
                 .default_mode,
-            "operate"
+            "plan"
         );
     }
 
@@ -1047,7 +1047,7 @@ mod tests {
             // Without its own opt-in, this scope's background path stays inert
             // and writes nothing — not even into its own sealed HOME.
             let writer = StartupDefaultsWriter::default();
-            writer.spawn(StartupDefaults::mode(AppMode::Operate));
+            writer.spawn(StartupDefaults::mode(AppMode::Plan));
             assert_eq!(writer.pending_len(), 0);
             assert!(!tmp.path().join(".codewhale/settings.toml").exists());
 
@@ -1055,11 +1055,11 @@ mod tests {
             // generation.
             let _writes = allow_writes_in_tests();
             assert_eq!(authorized_test_write_generation(), Some(second_generation));
-            writer.spawn(StartupDefaults::mode(AppMode::Operate));
+            writer.spawn(StartupDefaults::mode(AppMode::Plan));
             writer.flush();
             assert_eq!(
                 Settings::load_persisted().expect("reload").default_mode,
-                "operate"
+                "plan"
             );
             assert!(tmp.path().join(".codewhale/settings.toml").exists());
         }

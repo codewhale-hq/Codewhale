@@ -319,7 +319,7 @@ owner = "crates/engine/src/tools/review_host.rs"
 [[feature]]
 id = "modes"
 name = "Modes"
-summary = "Plan, Work and Operate modes set what the agent may do in a session; a finished plan offers to start the work."
+summary = "Plan and Work modes set what the agent may do in a session; a finished plan offers to start the work."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md"

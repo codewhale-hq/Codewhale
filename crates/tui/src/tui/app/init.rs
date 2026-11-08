@@ -1035,6 +1035,7 @@ impl App {
             lifecycle_outbox,
             yolo: yolo_compat,
             yolo_compat_notified: false,
+            operate_retired_notified: false,
             startup_defaults: Default::default(),
             keybinding_migration_notified: false,
             mode_prefs,
@@ -1248,6 +1249,9 @@ impl App {
         }
         if yolo_compat {
             app.notify_yolo_compat_once();
+        }
+        if settings.legacy_operate_default_detected() {
+            app.notify_operate_retired_once();
         }
         app
     }

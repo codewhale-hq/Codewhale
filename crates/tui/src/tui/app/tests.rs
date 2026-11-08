@@ -3775,7 +3775,7 @@ fn entering_operate_preserves_user_rail_panel() {
     let mut app = App::new(test_options(false), &Config::default());
     app.work_surface.panel = crate::tui::work_surface::RailPanel::Agents;
 
-    assert!(app.set_mode(AppMode::Operate));
+    assert!(app.set_mode(AppMode::Plan));
     assert_eq!(
         app.work_surface.panel,
         crate::tui::work_surface::RailPanel::Agents
@@ -3799,11 +3799,11 @@ fn test_cycle_scenario() {
 
         app.mode = AppMode::Plan;
         app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Operate);
-
-        app.mode = AppMode::Operate;
-        app.cycle_mode_reverse();
         assert_eq!(app.mode, AppMode::Agent);
+
+        app.mode = AppMode::Agent;
+        app.cycle_mode_reverse();
+        assert_eq!(app.mode, AppMode::Plan);
 
         app.mode = AppMode::Agent;
         app.cycle_mode_reverse();
@@ -4028,12 +4028,11 @@ fn base_policy_for_mode_projects_the_mode_permission_table() {
     assert!(agent.trust_mode);
     assert_eq!(agent.approval_mode, ApprovalMode::Never);
 
-    // Operate uses the Agent baseline.
-    let operate = base_policy_for_mode(AppMode::Operate, &prefs);
-    assert_eq!(operate.mode, AppMode::Operate);
-    assert_eq!(operate.allow_shell, agent.allow_shell);
-    assert_eq!(operate.trust_mode, agent.trust_mode);
-    assert_eq!(operate.approval_mode, ApprovalMode::Never);
+    // Work uses the Agent baseline.
+    let work = base_policy_for_mode(AppMode::Agent, &prefs);
+    assert_eq!(work.allow_shell, agent.allow_shell);
+    assert_eq!(work.trust_mode, agent.trust_mode);
+    assert_eq!(work.approval_mode, ApprovalMode::Never);
 
     // Full Access is represented by the Bypass posture, not a mode row or a
     // separate auto-approve field (#3736).
@@ -4048,10 +4047,6 @@ fn base_policy_for_mode_projects_the_mode_permission_table() {
     assert!(!agent_min.allow_shell);
     assert!(!agent_min.trust_mode);
     assert_eq!(agent_min.approval_mode, ApprovalMode::Suggest);
-    let operate_min = base_policy_for_mode(AppMode::Operate, &minimal);
-    assert!(!operate_min.allow_shell);
-    assert!(!operate_min.trust_mode);
-    assert_eq!(operate_min.approval_mode, ApprovalMode::Suggest);
 }
 
 #[test]
@@ -4156,7 +4151,7 @@ fn plan_permission_cycle_moves_the_baseline_and_leaves_plan_read_only() {
     assert!(
         app.status_toasts
             .iter()
-            .any(|toast| toast.text.contains("applies in Work and Operate")),
+            .any(|toast| toast.text.contains("applies in Work")),
         "the receipt must say when the new posture starts applying"
     );
 
@@ -4166,7 +4161,7 @@ fn plan_permission_cycle_moves_the_baseline_and_leaves_plan_read_only() {
         "the posture is durable, not dropped because Plan was active: {persisted}"
     );
 
-    app.set_mode(AppMode::Operate);
+    app.set_mode(AppMode::Agent);
     assert_eq!(
         app.approval_mode,
         ApprovalMode::Bypass,
@@ -6872,19 +6867,15 @@ fn interactive_mode_cycle_persists_the_startup_default() {
     app.mode = AppMode::Agent;
     app.cycle_mode();
 
-    assert_eq!(
-        app.mode,
-        AppMode::Operate,
-        "Act -> Operate is the Tab cycle"
-    );
+    assert_eq!(app.mode, AppMode::Plan, "Work -> Plan is the Tab cycle");
     let reloaded = Settings::load().expect("reload settings");
     assert_eq!(
-        reloaded.default_mode, "operate",
+        reloaded.default_mode, "plan",
         "the mode the user cycled into must be the startup default"
     );
     assert_eq!(
         AppMode::from_setting(&reloaded.default_mode),
-        AppMode::Operate,
+        AppMode::Plan,
         "a restart must restore the last user choice"
     );
     assert!(
@@ -6924,8 +6915,8 @@ fn session_restore_and_effective_turn_paths_do_not_rewrite_the_startup_default()
     // `set_mode` is the session-only primitive used by session restore and
     // preset application. It must move the live session without claiming the
     // user picked a new startup default.
-    assert!(app.set_mode(AppMode::Operate));
-    assert_eq!(app.mode, AppMode::Operate);
+    assert!(app.set_mode(AppMode::Agent));
+    assert_eq!(app.mode, AppMode::Agent);
     assert_eq!(
         Settings::load().expect("reload").default_mode,
         "plan",
@@ -6946,17 +6937,17 @@ fn reselecting_restored_live_mode_updates_the_startup_default() {
     })
     .expect("seed startup default");
     let mut app = App::new(test_options(false), &Config::default());
-    assert!(app.set_mode(AppMode::Operate), "simulate session restore");
+    assert!(app.set_mode(AppMode::Plan), "simulate session restore");
     assert_eq!(Settings::load().expect("reload").default_mode, "agent");
 
     assert_eq!(
-        app.select_mode(AppMode::Operate),
+        app.select_mode(AppMode::Plan),
         SettingSelection::PersistedSame,
         "an accepted selection that did not move live mode is not a refusal"
     );
     assert_eq!(
         Settings::load().expect("reload").default_mode,
-        "operate",
+        "plan",
         "the explicit same-live selection must still become the startup default"
     );
 }
@@ -7074,10 +7065,10 @@ async fn rapid_mode_selections_persist_the_last_one_not_the_last_to_finish() {
     // reordered transaction would land on a value that is also "plausible".
     for mode in [
         AppMode::Plan,
-        AppMode::Operate,
+        AppMode::Plan,
         AppMode::Agent,
         AppMode::Plan,
-        AppMode::Operate,
+        AppMode::Plan,
         AppMode::Agent,
         AppMode::Plan,
     ] {
@@ -7189,10 +7180,10 @@ async fn queued_mode_and_thinking_writes_finish_before_a_synchronous_selection()
     let saved = Settings::load_persisted().expect("reload");
     assert_eq!(saved.default_mode, "plan");
     assert_eq!(saved.reasoning_effort.as_deref(), Some("high"));
-    assert_eq!(app.select_mode(AppMode::Operate), SettingSelection::Changed);
+    assert_eq!(app.select_mode(AppMode::Agent), SettingSelection::Changed);
     app.startup_defaults.flush();
     let saved = Settings::load_persisted().expect("reload");
-    assert_eq!(saved.default_mode, "operate");
+    assert_eq!(saved.default_mode, "agent");
     assert_eq!(saved.reasoning_effort.as_deref(), Some("high"));
     assert!(app.startup_defaults.drain_failures().is_empty());
 }
@@ -7251,11 +7242,11 @@ async fn mode_and_permission_posture_writes_do_not_clobber_each_other() {
     // skipped because it refuses permission changes by design (#3386), so every
     // iteration below genuinely performs both writes.
     for next_mode in [
-        AppMode::Operate,
+        AppMode::Plan,
         AppMode::Agent,
-        AppMode::Operate,
+        AppMode::Plan,
         AppMode::Agent,
-        AppMode::Operate,
+        AppMode::Plan,
     ] {
         assert_eq!(
             app.select_mode(next_mode),
@@ -7272,7 +7263,7 @@ async fn mode_and_permission_posture_writes_do_not_clobber_each_other() {
     let expected_posture = App::approval_posture_setting(app.mode_prefs.agent_approval_mode);
     let saved = Settings::load_persisted().expect("reload settings");
     assert_eq!(
-        saved.default_mode, "operate",
+        saved.default_mode, "plan",
         "the posture writer must not revert the mode the user cycled into"
     );
     assert_eq!(
@@ -7359,7 +7350,7 @@ async fn rapid_mixed_writes_settle_on_the_last_value_for_every_field() {
         // Queued (background) writers.
         assert_eq!(
             app.select_mode(if index % 2 == 0 {
-                AppMode::Operate
+                AppMode::Plan
             } else {
                 AppMode::Agent
             }),
@@ -7405,11 +7396,11 @@ fn mode_cycling_in_an_unsealed_test_writes_nothing() {
     let mut app = App::new(test_options(false), &Config::default());
     app.mode = AppMode::Agent;
     assert_eq!(
-        app.select_mode(AppMode::Operate),
+        app.select_mode(AppMode::Plan),
         SettingSelection::Changed,
         "the live session must still change"
     );
-    assert_eq!(app.mode, AppMode::Operate);
+    assert_eq!(app.mode, AppMode::Plan);
     assert_eq!(
         app.startup_defaults.pending_len(),
         0,
@@ -7552,7 +7543,7 @@ fn restart_only_default_mode_is_still_settable_while_a_turn_runs() {
     );
     assert_eq!(
         Settings::load_persisted().expect("reload").default_mode,
-        "operate"
+        "agent"
     );
     assert_eq!(
         app.mode,
@@ -7579,13 +7570,13 @@ async fn shutdown_flushes_the_last_selection_and_returns_late_failures() {
     let mut app = App::new(test_options(false), &Config::default());
     // Deliberately *not* flushed and never drained by an event-loop iteration:
     // this is the "Tab, then immediately quit" shape.
-    assert_eq!(app.select_mode(AppMode::Operate), SettingSelection::Changed);
+    assert_eq!(app.select_mode(AppMode::Plan), SettingSelection::Changed);
 
     let failures = app.startup_defaults.shutdown();
     assert!(failures.is_empty(), "the write must land, not fail");
     assert_eq!(
         Settings::load_persisted().expect("reload").default_mode,
-        "operate",
+        "plan",
         "the last immediate selection must be on disk after shutdown"
     );
 }
@@ -7610,7 +7601,7 @@ async fn a_late_startup_default_failure_is_returned_not_only_logged() {
     let _writes = crate::tui::startup_defaults::allow_writes_in_tests();
 
     let mut app = App::new(test_options(false), &Config::default());
-    assert_eq!(app.select_mode(AppMode::Operate), SettingSelection::Changed);
+    assert_eq!(app.select_mode(AppMode::Plan), SettingSelection::Changed);
 
     let failures = app.startup_defaults.shutdown();
     let failure = failures
@@ -7653,12 +7644,12 @@ fn mode_selection_reports_refusal_change_and_persisted_same_distinctly() {
     let mut app = App::new(test_options(false), &Config::default());
     let _ = app.set_mode(AppMode::Agent);
 
-    assert_eq!(app.select_mode(AppMode::Operate), SettingSelection::Changed);
+    assert_eq!(app.select_mode(AppMode::Plan), SettingSelection::Changed);
     assert!(SettingSelection::Changed.changed_live_state());
     assert!(SettingSelection::Changed.accepted());
 
     assert_eq!(
-        app.select_mode(AppMode::Operate),
+        app.select_mode(AppMode::Plan),
         SettingSelection::PersistedSame
     );
     assert!(
@@ -7671,9 +7662,9 @@ fn mode_selection_reports_refusal_change_and_persisted_same_distinctly() {
     );
 
     app.is_loading = true;
-    assert_eq!(app.select_mode(AppMode::Plan), SettingSelection::Changed);
+    assert_eq!(app.select_mode(AppMode::Agent), SettingSelection::Changed);
     assert!(!SettingSelection::Refused.accepted());
-    assert_eq!(app.mode, AppMode::Plan, "mode is not turn-locked");
+    assert_eq!(app.mode, AppMode::Agent, "mode is not turn-locked");
 }
 
 /// Every accepted same-live selection shows a saved receipt, and a mid-turn
@@ -7686,7 +7677,7 @@ fn slash_mode_distinguishes_a_saved_startup_default_from_a_switch() {
     let _writes = crate::tui::startup_defaults::allow_writes_in_tests();
 
     let mut app = App::new(test_options(false), &Config::default());
-    let _ = app.set_mode(AppMode::Operate);
+    let _ = app.set_mode(AppMode::Plan);
     Settings::transact(|settings| {
         settings.default_mode = "agent".to_string();
         Ok(())
@@ -7694,7 +7685,7 @@ fn slash_mode_distinguishes_a_saved_startup_default_from_a_switch() {
     .expect("seed a startup default that disagrees with the live mode");
 
     // Same live mode, different startup default: `/mode operate` is a real save.
-    let receipt = crate::commands::switch_mode(&mut app, AppMode::Operate);
+    let receipt = crate::commands::switch_mode(&mut app, AppMode::Plan);
     assert!(
         receipt.contains("saved as startup default"),
         "the save must be reported, got {receipt:?}"
@@ -7702,11 +7693,11 @@ fn slash_mode_distinguishes_a_saved_startup_default_from_a_switch() {
     app.startup_defaults.flush();
     assert_eq!(
         Settings::load_persisted().expect("reload").default_mode,
-        "operate"
+        "plan"
     );
 
     app.is_loading = true;
-    let switched = crate::commands::switch_mode(&mut app, AppMode::Plan);
+    let switched = crate::commands::switch_mode(&mut app, AppMode::Agent);
     assert!(
         switched.starts_with("Switched to"),
         "mode is not turn-locked, got {switched:?}"

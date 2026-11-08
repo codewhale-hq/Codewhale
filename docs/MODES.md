@@ -4,7 +4,7 @@
 
 Codewhale has three related concepts:
 
-- **TUI mode**: what kind of visible interaction you're in (Plan/Work/Operate).
+- **TUI mode**: what kind of visible interaction you're in (Plan/Work).
 - **Permission posture**: how aggressively the UI asks before executing tools.
 - **Workflow**: named steps that coordinate sub-agents, with dependencies and
   results, available in any TUI mode.
@@ -25,42 +25,43 @@ the saved `role`/`profile` assignment. An Exact Fleet fixes each member's route.
 ## TUI Modes
 
 Press `Tab` to complete composer menus or cycle through the visible modes
-when the composer is empty: **Plan → Work → Operate → Plan**. `Tab` never sends
+when the composer is empty: **Plan → Work → Plan**. `Tab` never sends
 or queues composer text; use `Enter` to send or queue it.
 Press `Shift+Tab` to cycle permission posture (Ask → Accept Edits →
 Auto-Review → Full Access).
 Every change of effective permission writes a `Permissions changed to …` line
 in the transcript.
 Press `Ctrl+T` to cycle reasoning effort.
-Run `/mode` to open the mode picker, or switch directly with `/mode work`,
-`/mode plan`, or `/mode operate`.
+Run `/mode` to open the mode picker, or switch directly with `/mode work` or
+`/mode plan`. `operate` and its spellings still parse, as Work, so an older
+setting or script never errors.
 
 - **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Accept Edits), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
 - **Work** (internally `agent`): ordinary multi-step execution. The first-turn toolbox includes `read`, `write`, `edit`, `file_search`, `bash`, `agent`, `workflow`, `todo_write`, and `load_skill`, plus `create_goal`, `get_goal`, `update_goal`, and `task_shell_wait` so goal and background-shell controls are available without discovery. The agent calls `create_goal` when a request is a durable objective; the host never infers a goal from wording, and the contract must not tell the model otherwise. Approval, sandbox, repository law, and managed policy decide what may execute.
-- **Operate**: Work at full strength, the "ultra" mode. Same tools and authority as Work; the difference is how they are used. Each substantive request becomes a goal (`create_goal`), the plan stays visible (`todo_write`), multi-part work runs through `workflow` and parallel `agent` workers, non-trivial changes get an independent reviewer before they are called done, long commands keep running in the background, and recurring or watch-type work is offered as an `automation` (created after approval). It keeps going until the goal is verified, blocked on you, or paused.
+- **Operate is retired.** It was Work with an orchestration contract, and that contract now lives in every session's constitution: make a goal of a durable request, keep the plan visible, fan independent work out to parallel sub-agents, and have an independent reviewer try to refute a non-trivial change. A saved `default_mode = "operate"` loads as Work and says so once. Multi-agent work stays on `agent`, `workflow` and `/fleet` in every mode.
 
 `Act` and `/mode act` remain compatibility aliases for Work. Saved settings
 still normalize to the internal value `agent`.
 
 ### Tool availability by mode
 
-| Tool family | Plan | Work | Operate |
-|:---|:---:|:---:|:---:|
-| `read` and policy-allowed deferred research tools | yes | yes | yes |
-| `write` and `edit` | visible names; execution denied | approval- and policy-gated | same as Work |
-| `bash` | visible name; execution denied | approval- and policy-gated | same as Work; delegation is preferred when parallelism or isolation helps |
-| `agent` | yes, subject to child-depth authority | yes, subject to child-depth authority | yes, subject to child-depth authority |
-| Deferred native, MCP, and plugin tools | discoverable through `tool_search` when policy permits | same | same |
-| Paid or external-service tools | follows permission posture | follows permission posture | follows permission posture |
-| Access outside the workspace root | explicit trusted paths only | only through trusted paths or trust mode | same trusted-path/trust policy as Work; fleet profiles never widen it |
+| Tool family | Plan | Work |
+|:---|:---:|:---:|
+| `read` and policy-allowed deferred research tools | yes | yes |
+| `write` and `edit` | visible names; execution denied | approval- and policy-gated |
+| `bash` | visible name; execution denied | approval- and policy-gated; delegation is preferred when parallelism or isolation helps |
+| `agent` | yes, subject to child-depth authority | yes, subject to child-depth authority |
+| Deferred native, MCP, and plugin tools | discoverable through `tool_search` when policy permits | same |
+| Paid or external-service tools | follows permission posture | follows permission posture |
+| Access outside the workspace root | explicit trusted paths only | only through trusted paths or trust mode; fleet profiles never widen it |
 
-Operate changes scheduling emphasis, not authority. It neither adds a
-mode-specific tool denial nor bypasses the active approval, sandbox, shell,
-ask-rule, repository-law, or managed-policy boundary. Plan remains the
-mode-specific execution boundary for shell and write-capable tools; that
-authority difference does not require a different primitive vocabulary.
+Mode changes scheduling emphasis, not authority. No mode adds a specific tool
+denial or bypasses the active approval, sandbox, shell, ask-rule,
+repository-law, or managed-policy boundary. Plan remains the mode-specific
+execution boundary for shell and write-capable tools; that authority difference
+does not require a different primitive vocabulary.
 
-### Operate loop (one screen)
+### Orchestration loop (one screen)
 
 ```text
 User message
@@ -118,7 +119,7 @@ only controls model and thinking selection.
 Workflow builds on the same separation: a goal can ask the agent to keep
 working, while Workflow supplies the repeatable workflow/progress surface for
 large fanout. In the UI, a Workflow run should be shown as an overlay on the
-main screen, not as another mode beside Plan, Work, and Operate.
+main screen, not as another mode beside Plan and Work.
 
 App-server clients can persist a thread-scoped goal with `thread/goal/set`, read
 it with `thread/goal/get`, and clear it with `thread/goal/clear`. That persisted
@@ -130,8 +131,8 @@ thread resume semantics.
 
 Choosing a mode interactively also sets the mode a fresh session starts in.
 Tab/Shift+Tab cycling, the `Alt+A` / `Alt+P` / `Alt+Y` shortcuts, the hotbar's
-Plan/Work/Operate actions, and `/mode` all write `default_mode` to
-`~/.codewhale/settings.toml`, so switching to Operate survives a restart. The
+Plan/Work actions, and `/mode` all write `default_mode` to
+`~/.codewhale/settings.toml`, so switching to Plan survives a restart. The
 write happens off the event loop; if it fails, the TUI says so in a warning
 toast rather than reverting silently on the next launch.
 

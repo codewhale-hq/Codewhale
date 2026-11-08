@@ -4114,7 +4114,6 @@ fn canonical_config_choice(key: &str, value: &str) -> String {
         },
         "default_mode" => match normalized.as_str() {
             "plan" => "plan".to_string(),
-            "operate" | "operation" | "ops" => "operate".to_string(),
             _ => "agent".to_string(),
         },
         "locale" => normalize_configured_locale(value)
@@ -8341,6 +8340,7 @@ consent_version = 1
             &vec![
                 "use-tui-default".to_string(),
                 "ask".to_string(),
+                "accept-edits".to_string(),
                 "auto-review".to_string(),
                 "full-access".to_string(),
             ]
@@ -8350,7 +8350,7 @@ consent_version = 1
         explicit.render(area, &mut buf);
         let dump = buffer_text(&buf, area);
         assert!(
-            dump.contains("4. Full Access"),
+            dump.contains("5. Full Access"),
             "root permission chooser must expose the product posture:\n{dump}"
         );
         assert!(
@@ -10197,13 +10197,7 @@ context_window = 131072
         let edit = view.editing.as_ref().expect("choice editor");
         assert_eq!(
             edit.choices.as_deref(),
-            Some(
-                &[
-                    "agent".to_string(),
-                    "plan".to_string(),
-                    "operate".to_string(),
-                ][..]
-            )
+            Some(&["agent".to_string(), "plan".to_string()][..])
         );
         assert!(
             edit.choices
@@ -10213,7 +10207,7 @@ context_window = 131072
                 .all(|choice| choice != "yolo")
         );
 
-        let _ = view.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+        let _ = view.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
         let apply = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match apply {
             ViewAction::Emit(ViewEvent::ConfigUpdated {
@@ -10222,21 +10216,18 @@ context_window = 131072
                 persist,
             }) => {
                 assert_eq!(key, "default_mode");
-                assert_eq!(value, "operate");
+                assert_eq!(value, "plan");
                 assert!(persist);
             }
             other => panic!("expected startup choice update, got {other:?}"),
         }
 
+        assert_eq!(canonical_config_choice("default_mode", "Operate"), "agent");
         assert_eq!(
-            canonical_config_choice("default_mode", "Operate"),
-            "operate"
+            config_choice_label(Locale::En, "default_mode", "plan"),
+            "Plan (read only)"
         );
-        assert_eq!(
-            config_choice_label(Locale::En, "default_mode", "operate"),
-            "Operate"
-        );
-        assert!(!config_choice_detail(Locale::En, "default_mode", "operate").is_empty());
+        assert!(!config_choice_detail(Locale::En, "default_mode", "plan").is_empty());
     }
 
     #[test]
@@ -11753,18 +11744,18 @@ context_window = 131072
                 "{w}x{h}:\n{dump}"
             );
             let choices = view.last_choice_hitboxes.borrow().clone();
-            let (operate_rect, operate_idx) = choices
+            let (plan_rect, plan_idx) = choices
                 .iter()
                 .copied()
-                .find(|(_, idx)| *idx == 2)
-                .unwrap_or_else(|| panic!("{w}x{h} third choice painted:\n{dump}"));
+                .find(|(_, idx)| *idx == 1)
+                .unwrap_or_else(|| panic!("{w}x{h} second choice painted:\n{dump}"));
             // Clicking a choice selects it; clicking beside the controls does
             // nothing; clicking Apply emits exactly that choice.
             assert!(matches!(
-                click(&mut view, operate_rect.x + 2, operate_rect.y),
+                click(&mut view, plan_rect.x + 2, plan_rect.y),
                 ViewAction::None
             ));
-            assert_eq!(view.editing.as_ref().unwrap().selected_choice, operate_idx);
+            assert_eq!(view.editing.as_ref().unwrap().selected_choice, plan_idx);
             let beside = apply.right().saturating_add(1);
             if beside < cancel.x {
                 assert!(matches!(
@@ -11780,7 +11771,7 @@ context_window = 131072
                     persist,
                 }) => {
                     assert_eq!(key, "default_mode");
-                    assert_eq!(value, "operate");
+                    assert_eq!(value, "plan");
                     assert!(persist);
                 }
                 other => panic!("{w}x{h} Apply click should emit: {other:?}"),
@@ -11947,7 +11938,6 @@ context_window = 131072
             MessageId::ConfigEditChooseLabel,
             MessageId::ConfigChoiceModeAct,
             MessageId::ConfigChoiceModePlan,
-            MessageId::ConfigChoiceModeOperate,
             MessageId::ConfigChoiceDetailModeAgent,
             MessageId::ConfigEditorApply,
             MessageId::ConfigEditorCancel,
@@ -12379,6 +12369,7 @@ context_window = 131072
                 .expect("session permission choices"),
             &vec![
                 "ask".to_string(),
+                "accept-edits".to_string(),
                 "auto-review".to_string(),
                 "full-access".to_string(),
             ]

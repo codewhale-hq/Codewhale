@@ -23,15 +23,7 @@ async fn work_choice_leaves_plan_with_the_chosen_permission() {
     let mut app = app_in_plan();
     let mut engine = mock_engine_handle();
 
-    assert!(
-        enter_work_for_plan(
-            &mut app,
-            &Config::default(),
-            &engine.handle,
-            ApprovalMode::Suggest
-        )
-        .await
-    );
+    assert!(enter_work_for_plan(&mut app, &engine.handle, ApprovalMode::Suggest).await);
 
     assert_eq!(app.mode, AppMode::Agent);
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
@@ -56,15 +48,7 @@ async fn a_locked_permission_keeps_the_session_in_plan() {
 
     // Ask is in force and locked; the person asked for Auto-Review. Starting
     // the work under a permission they did not pick is the wrong outcome.
-    assert!(
-        !enter_work_for_plan(
-            &mut app,
-            &Config::default(),
-            &engine.handle,
-            ApprovalMode::Auto
-        )
-        .await
-    );
+    assert!(!enter_work_for_plan(&mut app, &engine.handle, ApprovalMode::Auto).await);
 
     assert_eq!(app.mode, AppMode::Plan);
     assert_eq!(app.agent_approval_baseline(), ApprovalMode::Suggest);

@@ -204,7 +204,7 @@ Codewhale works best when you let investigation and implementation happen in
 separate steps for unfamiliar code. For small, well-understood changes, a
 single implementation request is fine.
 
-Next: [MODES.md](MODES.md) explains when to use Plan, Work, and Operate.
+Next: [MODES.md](MODES.md) explains when to use Plan and Work.
 
 ## 4. Understanding the Interface
 
@@ -234,7 +234,7 @@ screen while you type. Keys for the sheet are in [KEYBINDINGS.md](KEYBINDINGS.md
 
 The bottom chrome is configurable. Run `/statusline` to choose what is
 visible, or set `[tui].status_items` in `config.toml`. Each key owns exactly
-one thing on screen: `mode` is the posture bar's plan/act/operate chip, and
+one thing on screen: `mode` is the posture bar's plan/work chip, and
 `model`, `context_percent`, `cost`, `balance` (prepaid providers only:
 DeepSeek, DeepSeekCN, OpenRouter, SiliconFlow), `cache`, `tokens` and
 `ttft`, `output_rate`, `workspace` and `git_branch` are segments of the metrics line below it. Omit
@@ -308,13 +308,12 @@ Next: [KEYBINDINGS.md](KEYBINDINGS.md) is the complete shortcut reference.
 
 ## 5. Modes
 
-Codewhale has three visible TUI modes:
+Codewhale has two visible TUI modes:
 
 | Mode | Use it for | Default posture |
 | --- | --- | --- |
 | Plan | Exploration, design, and review before changes | Read-only investigation |
 | Work | Normal multi-step coding work | Tool use with approval gates |
-| Operate | Direct work plus parallel or background coordination | Tools follow the active posture; delegate when useful |
 
 Switch modes from the TUI with the mode picker:
 
@@ -327,8 +326,9 @@ Or switch directly:
 ```text
 /mode plan
 /mode work
-/mode operate
 ```
+
+`operate` still parses, as Work, so an older setting or script keeps working.
 
 Plan mode is the safest place to start in an unfamiliar repository. It is for
 inspection and decision-making, not file edits.
@@ -345,7 +345,7 @@ the composer is empty and no other view is open; `/mode work` always works.
 Work mode is the default for most contribution work. It lets Codewhale read,
 run checks, and edit files while keeping risky actions behind approval gates.
 
-Operate keeps that direct tool surface and its approval, sandbox, shell,
+Work keeps that direct tool surface and its approval, sandbox, shell,
 ask-rule, and repository protections. Small or tightly coupled work stays
 direct. Multi-step delegation uses a compact Workflow plan with dependencies,
 bounded scopes, and completion evidence passed between steps. Fleet configures

@@ -695,7 +695,6 @@ impl ShellPhase {
 pub(crate) fn header_mode_ink(mode: AppMode) -> ChromeInk {
     match mode {
         AppMode::Plan => ChromeInk::PolicyPlan,
-        AppMode::Operate => ChromeInk::PolicyOperate,
         AppMode::Agent => ChromeInk::PolicyAct,
     }
 }
@@ -913,7 +912,6 @@ pub(crate) fn mode_label(locale: Locale, mode: AppMode) -> Cow<'static, str> {
     match mode {
         AppMode::Agent => tr(locale, MessageId::ChipModeAct),
         AppMode::Plan => tr(locale, MessageId::ChipModePlan),
-        AppMode::Operate => tr(locale, MessageId::ChipModeOperate),
     }
 }
 

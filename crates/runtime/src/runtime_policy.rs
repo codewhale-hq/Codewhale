@@ -141,7 +141,7 @@ mod tests {
     fn named_posture_is_normalized_and_authoritative() {
         let auto = RuntimePolicyProjection::from_request("operate", Some("auto-review"), None)
             .expect("compat permission");
-        assert_eq!(auto.mode_setting(), "operate");
+        assert_eq!(auto.mode_setting(), "agent");
         assert_eq!(auto.permission_wire(), "auto_review");
         assert_eq!(auto.permission, ApprovalMode::Auto);
         assert!(!auto.auto_approve());

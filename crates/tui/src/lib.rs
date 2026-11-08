@@ -14866,7 +14866,7 @@ async fn build_direct_workflow_tool(
     }
 
     let yolo = config.yolo.unwrap_or(false);
-    let mode = AppMode::Operate;
+    let mode = AppMode::Agent;
     let allow_shell = yolo || config.allow_shell();
     let shell_policy = shell_policy_for_mode(mode, allow_shell);
     let trusted = codewhale_runtime::workspace_trust::WorkspaceTrust::load_for(workspace);

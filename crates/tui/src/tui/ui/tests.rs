@@ -10962,15 +10962,7 @@ async fn mode_change_update_sends_restored_agent_policy() {
     let _ = app.set_mode(AppMode::Plan);
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
-    assert!(
-        apply_mode_update(
-            &mut app,
-            &engine.handle,
-            &codewhale_runtime::config::Config::default(),
-            AppMode::Agent
-        )
-        .await
-    );
+    assert!(apply_mode_update(&mut app, &engine.handle, AppMode::Agent).await);
 
     match engine.rx_op.recv().await.expect("change mode op") {
         codewhale_engine::core::ops::Op::ChangeMode {
@@ -10990,202 +10982,6 @@ async fn mode_change_update_sends_restored_agent_policy() {
         }
         other => panic!("expected ChangeMode, got {other:?}"),
     }
-}
-
-fn operate_tui_route_config() -> Config {
-    let mut config: Config = toml::from_str(
-        r#"
-provider = "startup-route"
-[providers.startup-route]
-kind = "openai-compatible"
-base_url = "https://startup.example.test/v1"
-model = "startup-model"
-auth_mode = "none"
-[providers.collision-route]
-kind = "openai-compatible"
-base_url = "https://custom-openai.example.test/v1"
-model = "table-default"
-auth_mode = "none"
-"#,
-    )
-    .expect("operate TUI routes");
-    let custom = &mut config.providers.as_mut().expect("providers").custom;
-    let collision = custom.remove("collision-route").expect("custom fixture");
-    custom.insert("openai".to_string(), collision);
-    config
-}
-
-#[tokio::test]
-async fn operate_entry_preserves_live_custom_identity_and_auto_over_startup_route() {
-    let _env = crate::test_support::lock_test_env();
-    for selected in ["session-model", "auto"] {
-        let root = TempDir::new().expect("root");
-        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
-        let _operate = crate::test_support::EnvVarGuard::set(
-            "CODEWHALE_OPERATE_DIR",
-            root.path().join("operate"),
-        );
-        let mut config = operate_tui_route_config();
-        config.fleet_operator_route_applied = true;
-        let manager = codewhale_engine::automation_manager::AutomationManager::open_for_test(
-            root.path().join("automations"),
-        )
-        .expect("manager");
-        let automations = Arc::new(tokio::sync::Mutex::new(manager));
-        let mut app = create_test_app();
-        app.workspace = root.path().to_path_buf();
-        app.runtime_services.automations = Some(automations.clone());
-        app.set_provider_identity_record(
-            config
-                .resolve_persisted_provider_identity(Some("custom"), Some("openai"))
-                .expect("exact custom"),
-        );
-        app.set_model_selection(selected.to_string());
-        app.last_effective_model = Some("previous-turn-model".to_string());
-        let engine = mock_engine_handle();
-        apply_mode_update(&mut app, &engine.handle, &config, AppMode::Operate).await;
-        let record = automations
-            .lock()
-            .await
-            .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
-            .expect("keepalive installed");
-        assert_eq!(record.model.as_deref(), Some(selected));
-        assert_eq!(record.model_provider.as_deref(), Some("custom"));
-        assert_eq!(record.model_provider_id.as_deref(), Some("openai"));
-        assert_eq!(record.auto_approve, Some(false));
-        let operation =
-            codewhale_engine::operate::OperationStore::open(root.path().join("operate"))
-                .expect("store")
-                .load()
-                .expect("load")
-                .expect("operation");
-        assert_eq!(operation.lead_operator.model, selected);
-        assert!(
-            operation
-                .roster
-                .iter()
-                .filter(|member| member.id == "lead")
-                .all(|member| member.model == selected)
-        );
-        assert!(operation.credentials_present);
-        assert!(
-            automations
-                .lock()
-                .await
-                .list_runs(&record.id, None)
-                .expect("runs")
-                .is_empty(),
-            "entry alone is not task execution"
-        );
-    }
-}
-
-#[tokio::test]
-async fn operate_rejected_attach_does_not_reactivate_saved_keepalive() {
-    let _env = crate::test_support::lock_test_env();
-    let root = TempDir::new().expect("root");
-    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
-    let operate_dir = root.path().join("operate");
-    let _operate = crate::test_support::EnvVarGuard::set("CODEWHALE_OPERATE_DIR", &operate_dir);
-    let config = operate_tui_route_config();
-    let manager = codewhale_engine::automation_manager::AutomationManager::open_for_test(
-        root.path().join("automations"),
-    )
-    .expect("manager");
-    codewhale_engine::operate::upsert_keepalive(&manager, root.path(), true, &config, None)
-        .expect("upsert");
-    codewhale_engine::operate::pause_keepalive(&manager).expect("pause");
-    let before = serde_json::to_value(
-        manager
-            .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
-            .expect("record"),
-    )
-    .expect("json");
-    std::fs::create_dir_all(&operate_dir).expect("directory");
-    std::fs::write(operate_dir.join("current.json"), b"{broken")
-        .expect("corrupt operation fixture");
-    let automations = Arc::new(tokio::sync::Mutex::new(manager));
-    let mut app = create_test_app();
-    app.workspace = root.path().to_path_buf();
-    app.runtime_services.automations = Some(automations.clone());
-    app.set_provider_identity_record(config.active_provider_identity().expect("identity"));
-    app.set_model_selection("startup-model".into());
-    let engine = mock_engine_handle();
-    apply_mode_update(&mut app, &engine.handle, &config, AppMode::Operate).await;
-    let record = automations
-        .lock()
-        .await
-        .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
-        .expect("saved keepalive");
-    assert_eq!(serde_json::to_value(&record).expect("json"), before);
-    assert_eq!(
-        record.status,
-        codewhale_engine::automation_manager::AutomationStatus::Paused
-    );
-    assert!(record.next_run_at.is_none());
-    assert_eq!(
-        std::fs::read(operate_dir.join("current.json")).expect("operation"),
-        b"{broken"
-    );
-    assert!(app.history.iter().any(|cell| matches!(cell, HistoryCell::System { content } if content.contains("Operate did not start"))));
-}
-
-#[tokio::test]
-async fn operate_mode_entry_attaches_to_recorded_operation() {
-    let _lock = crate::test_support::lock_test_env();
-    let dir = tempfile::TempDir::new().expect("temp");
-    let _operate_dir = crate::test_support::EnvVarGuard::set("CODEWHALE_OPERATE_DIR", dir.path());
-    // Pre-record a planned operation: entering Operate must attach to it
-    // (same id) instead of minting a fresh record that resets spend and plan.
-    let store = codewhale_engine::operate::OperationStore::open(dir.path()).expect("store");
-    let recorded = codewhale_engine::operate::start_operation(
-        &store,
-        dir.path(),
-        Some("Steady ops".into()),
-        None,
-        true,
-        "selected-model",
-    )
-    .expect("start");
-    let mut planned = recorded.clone();
-    planned.plan_from_direction();
-    store.save(&planned).expect("save planned");
-
-    let mut app = create_test_app();
-    app.runtime_services.automations = Some(Arc::new(tokio::sync::Mutex::new(
-        codewhale_engine::automation_manager::AutomationManager::open_for_test(
-            dir.path().join("automations"),
-        )
-        .expect("automations"),
-    )));
-    let engine = codewhale_engine::core::engine::mock_engine_handle();
-    assert!(
-        apply_mode_update(
-            &mut app,
-            &engine.handle,
-            &Config::default(),
-            AppMode::Operate
-        )
-        .await
-    );
-
-    let board = app
-        .history
-        .iter()
-        .rev()
-        .find_map(|cell| match cell {
-            crate::tui::history::HistoryCell::System { content } => Some(content.clone()),
-            _ => None,
-        })
-        .expect("operate board message");
-    assert!(
-        board.contains(&planned.id),
-        "re-entry must show the recorded operation, saw: {board}"
-    );
-    assert!(
-        board.contains("slice-1"),
-        "board shows the kept plan: {board}"
-    );
 }
 
 #[test]
@@ -22040,7 +21836,7 @@ async fn empty_enter_promotes_the_oldest_queued_message() {
 #[tokio::test]
 async fn operate_streaming_enter_queues_another_parallel_task() {
     let mut app = create_test_app();
-    app.mode = AppMode::Operate;
+    app.mode = AppMode::Plan;
     app.is_loading = true;
     app.streaming_message_index = Some(0);
     let config = Config::default();

@@ -69,7 +69,6 @@ pub fn app_mode_str(mode: AppMode) -> &'static str {
     match mode {
         AppMode::Agent => "agent",
         AppMode::Plan => "plan",
-        AppMode::Operate => "operate",
     }
 }
 
@@ -1862,7 +1861,7 @@ mod tests {
 
     #[test]
     fn mode_labels_round_trip_through_app_mode_parse() {
-        for mode in [AppMode::Agent, AppMode::Plan, AppMode::Operate] {
+        for mode in [AppMode::Agent, AppMode::Plan] {
             assert_eq!(AppMode::parse(app_mode_str(mode)), Some(mode), "{mode:?}");
         }
         for mode in [

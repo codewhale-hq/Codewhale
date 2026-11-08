@@ -185,7 +185,7 @@ fn app_mode(case: &Value) -> AppMode {
     match case["mode"].as_str().unwrap_or("agent") {
         "agent" => AppMode::Agent,
         "plan" => AppMode::Plan,
-        "operate" => AppMode::Operate,
+        "operate" => AppMode::Agent,
         other => panic!("unknown mode `{other}`"),
     }
 }

@@ -1920,7 +1920,7 @@ mod tests {
         )
         .expect("write project instruction");
         for host in [PromptHost::Interactive, PromptHost::Headless] {
-            let prompts = [AppMode::Plan, AppMode::Agent, AppMode::Operate].map(|mode| {
+            let prompts = [AppMode::Plan, AppMode::Agent].map(|mode| {
                 system_prompt_flat_text(
                     &system_prompt_for_mode_with_context_skills_session_and_approval_for_host(
                         tmp.path(),
@@ -1936,7 +1936,6 @@ mod tests {
                 )
             });
             assert_eq!(prompts[0], prompts[1]);
-            assert_eq!(prompts[1], prompts[2]);
             assert!(prompts[0].contains("Preserve the blue-ocean marker"));
             assert!(!prompts[0].contains("##### Mode:"));
             if host == PromptHost::Headless {

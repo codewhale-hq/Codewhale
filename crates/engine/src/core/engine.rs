@@ -3167,13 +3167,12 @@ impl Engine {
                 // head — so the user read "Runtime policy changed to" with the
                 // policy itself gone, which is the one word the notice exists
                 // to carry. Product words only (§19): Permissions, then
-                // Plan / Work / Operate — not "Policy" or the ACT tag.
+                // Plan / Work — not "Policy" or the ACT tag.
                 "Permissions: {} · {}",
                 effective_approval.permission_chip_label(),
                 match mode {
                     AppMode::Plan => "Plan",
                     AppMode::Agent => "Work",
-                    AppMode::Operate => "Operate",
                 },
             )))
             .await;
@@ -9782,9 +9781,9 @@ impl Engine {
     /// across modes).
     ///
     /// Derived from the session log, like the workspace-trust note: a session
-    /// with no notice gets one in Plan or Operate, and once a notice exists a
+    /// with no notice gets one in Plan, and once a notice exists a
     /// new one is appended whenever the mode differs from the latest. Restored
-    /// Operate contracts also require a current notice after leaving Operate.
+    /// Operate contracts also require a current notice.
     /// Child and RLM hosts get none: their mode is fixed by their parent.
     /// Runs at turn start and before every model request, so a mode switched
     /// mid-turn reaches the next request. Known limitation: a response already
@@ -9807,10 +9806,8 @@ impl Engine {
         });
         let message = crate::runtime_handoff::mode_runtime_message(mode);
         let record = match previous {
-            None => matches!(mode, AppMode::Plan | AppMode::Operate),
-            Some(previous) if crate::runtime_handoff::is_operate_contract_message(previous) => {
-                mode != AppMode::Operate
-            }
+            None => matches!(mode, AppMode::Plan),
+            Some(previous) if crate::runtime_handoff::is_operate_contract_message(previous) => true,
             Some(previous) => previous != &message,
         };
         if record {

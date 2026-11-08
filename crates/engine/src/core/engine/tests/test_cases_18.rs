@@ -926,7 +926,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
     // cannot fit. The already-queued operation will wake the engine, which
     // applies this pending authority before handling it.
     let result = handle.try_send(Op::ChangeMode {
-        mode: AppMode::Operate,
+        mode: AppMode::Agent,
         allow_shell: true,
         trust_mode: false,
         auto_approve: false,
@@ -990,7 +990,7 @@ async fn full_mailbox_posture_update_supersedes_queued_change_mode() {
     }
 
     let result = handle.try_send(Op::ChangeMode {
-        mode: AppMode::Operate,
+        mode: AppMode::Agent,
         allow_shell: true,
         trust_mode: false,
         auto_approve: false,

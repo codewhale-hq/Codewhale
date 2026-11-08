@@ -215,10 +215,6 @@ fn mode_event_body(mode: codewhale_config::AppMode) -> &'static str {
         AppMode::Agent => {
             "Mode: Work. Purpose: do the user's request. The user changes modes with /mode."
         }
-        AppMode::Operate => concat!(
-            "Mode: Operate. Purpose: carry the request through to verified completion. ",
-            "The user changes modes with /mode.",
-        ),
     }
 }
 
@@ -226,7 +222,7 @@ fn mode_event_body(mode: codewhale_config::AppMode) -> &'static str {
 ///
 /// KV-cache effect: append-only user history; the system prompt stays
 /// byte-identical across modes. The engine records it when a session starts
-/// in or enters Plan or Operate, and again whenever the mode differs from the last
+/// in or enters Plan, and again whenever the mode differs from the last
 /// recorded notice, so a notice in history is never stale.
 pub fn mode_runtime_message(mode: codewhale_config::AppMode) -> Message {
     runtime_handoff_message_with_meta(

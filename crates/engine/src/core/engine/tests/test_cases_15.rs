@@ -1282,8 +1282,8 @@ fn current_mode_field_assignment_takes_effect_synchronously() {
     let (mut engine, _handle) = Engine::new(config, &Config::default());
     assert_eq!(engine.current_mode, AppMode::Agent);
 
-    engine.current_mode = AppMode::Operate;
-    assert_eq!(engine.current_mode, AppMode::Operate);
+    engine.current_mode = AppMode::Plan;
+    assert_eq!(engine.current_mode, AppMode::Plan);
 }
 
 #[test]

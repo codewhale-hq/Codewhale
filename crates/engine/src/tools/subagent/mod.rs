@@ -3089,11 +3089,10 @@ pub struct SubAgentRuntime {
     pub allow_shell: bool,
     /// When true, Suggest-level file writes auto-accept for write-capable roles
     /// without full parent auto-approve. Shell/network/MCP still gated.
-    /// Set for Workflow-spawned children and parent-approved root Operate
-    /// workers.
+    /// Set for Workflow-spawned children.
     pub accept_edits: bool,
-    /// Allow the built-in, non-custom verification tools after a root Operate
-    /// worker start has crossed the parent's approval boundary. This is not a
+    /// Allow the built-in, non-custom verification tools after a worker
+    /// start has crossed the parent's approval boundary. This is not a
     /// general shell grant: arbitrary commands and custom verifier programs
     /// remain blocked unless the parent session is auto-approved.
     pub accept_verification: bool,
@@ -3598,7 +3597,7 @@ impl SubAgentRuntime {
             context: child_context,
             allow_shell: self.allow_shell,
             accept_edits: self.accept_edits,
-            // A parent-approved Operate verification lease belongs to its
+            // A parent-approved verification lease belongs to its
             // direct worker only; nested children must cross their own
             // approval boundary instead of silently inheriting it.
             accept_verification: self.accept_verification && self.spawn_depth == 0,
@@ -3697,7 +3696,7 @@ impl SubAgentWorkLifecycle {
             return Ok(None);
         }
 
-        // A root Operate verification lease is provenance, not delegated
+        // A root verification lease is provenance, not delegated
         // authority. Nested workers cannot inherit this bit.
         if runtime.accept_verification && runtime.spawn_depth == 1 {
             let reference = format!("operate-verification:{agent_id}");
@@ -15885,7 +15884,6 @@ async fn spawn_subagent_from_input(
 ) -> Result<(SubAgentResult, WorkflowTaskSpawnMetadata), ToolError> {
     let exact_fleet_binding =
         workflow_identity.and_then(|identity| identity.exact_fleet_binding.as_ref());
-    apply_session_spawn_defaults(&mut runtime);
     if start_requests_read_only_role(&input) {
         runtime.accept_verification = false;
     }
@@ -16497,18 +16495,6 @@ fn spawn_request_is_write_capable(request: &SpawnRequest) -> bool {
         | FleetRole::Reviewer
         | FleetRole::Verifier
         | FleetRole::Consultant => false,
-    }
-}
-
-/// A root Operate dispatch has already crossed the approval boundary on the
-/// `agent` call. Delegate Suggest-level file edits and the bounded built-in
-/// verification surfaces so a normal message can produce verified work.
-/// Arbitrary shell and custom verifier commands still follow the active
-/// permission posture.
-fn apply_session_spawn_defaults(runtime: &mut SubAgentRuntime) {
-    if runtime.spawn_depth == 0 && runtime.parent_mode == AppMode::Operate {
-        runtime.accept_edits = true;
-        runtime.accept_verification = true;
     }
 }
 

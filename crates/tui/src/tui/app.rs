@@ -2213,6 +2213,9 @@ pub struct App {
     pub yolo: bool,
     /// One-shot YOLO→Act+Bypass migration notice for this session (#0.8.68 M6).
     yolo_compat_notified: bool,
+    /// One-shot notice for a settings file that still names the retired
+    /// Operate mode, so the mode change is explained instead of silent.
+    operate_retired_notified: bool,
     /// The single serialized owner of `settings.toml` startup-default writes
     /// (mode, thinking, model). Keeping one owner per `App` is what stops two
     /// rapid selections from interleaving their load/modify/save transactions
@@ -3766,6 +3769,28 @@ impl App {
         );
     }
 
+    fn notify_operate_retired_once(&mut self) {
+        if self.operate_retired_notified {
+            return;
+        }
+        self.operate_retired_notified = true;
+        if let Ok(settings) = codewhale_runtime::settings::Settings::load()
+            && settings.operate_deprecation_shown
+        {
+            return;
+        }
+        let _ = codewhale_runtime::settings::Settings::transact(|settings| {
+            settings.operate_deprecation_shown = true;
+            Ok(())
+        });
+        self.push_status_toast(
+            "Operate mode was retired — this session starts in Work; /fleet runs parallel agents"
+                .to_string(),
+            StatusToastLevel::Info,
+            Some(10_000),
+        );
+    }
+
     /// One-release migration notice for the Shift+Tab/Ctrl+T rebinding: users
     /// pressing Shift+Tab expecting the old thinking cycle land here first.
     fn notify_keybinding_migration_once(&mut self) {
@@ -4129,7 +4154,7 @@ impl App {
         if self.mode == AppMode::Plan {
             self.push_status_toast(
                 format!(
-                    "Permissions set to {}. Plan stays Read Only; this applies in Work and Operate.",
+                    "Permissions set to {}. Plan stays Read Only; this applies in Work.",
                     next.permission_chip_label()
                 ),
                 StatusToastLevel::Info,

@@ -540,7 +540,7 @@ async fn operate_model_shell_uses_normal_approval_and_workspace_sandbox() {
             max_output_tokens: None,
             content: "Write the requested local fixture to the workspace".to_string(),
             images: Vec::new(),
-            mode: AppMode::Operate,
+            mode: AppMode::Agent,
             route: resolved_route_for_test(&api_config, codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),
@@ -774,7 +774,6 @@ fn live_runtime_authority_narrows_only_when_a_grant_is_withdrawn() {
     assert!(!at(AppMode::Agent, ApprovalMode::Bypass, None).narrows(&ask));
     assert!(!ask.narrows(&at(AppMode::Plan, ApprovalMode::Suggest, None)));
     assert!(at(AppMode::Plan, ApprovalMode::Suggest, None).narrows(&ask));
-    assert!(at(AppMode::Operate, ApprovalMode::Suggest, None).narrows(&ask));
     assert!(ask.narrows(&at(AppMode::Agent, ApprovalMode::Bypass, None)));
     assert!(at(AppMode::Agent, ApprovalMode::Never, None).narrows(&ask));
     assert!(at(AppMode::Agent, ApprovalMode::Suggest, Some("read-only")).narrows(&ask));

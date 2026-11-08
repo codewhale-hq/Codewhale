@@ -169,7 +169,7 @@ fn to_app_mode(mode: CommandMode) -> AppMode {
     match mode {
         CommandMode::Agent => AppMode::Agent,
         CommandMode::Plan => AppMode::Plan,
-        CommandMode::Operate => AppMode::Operate,
+        CommandMode::Operate => AppMode::Agent,
     }
 }
 
@@ -177,7 +177,6 @@ fn from_app_mode(mode: AppMode) -> CommandMode {
     match mode {
         AppMode::Agent => CommandMode::Agent,
         AppMode::Plan => CommandMode::Plan,
-        AppMode::Operate => CommandMode::Operate,
     }
 }
 

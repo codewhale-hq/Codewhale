@@ -480,7 +480,7 @@ async fn measure_production_mode_tool_catalogs() -> serde_json::Value {
     for (mode_name, mode) in [
         ("plan", AppMode::Plan),
         ("act", AppMode::Agent),
-        ("operate", AppMode::Operate),
+        ("operate", AppMode::Agent),
     ] {
         let workspace = tmp.path().join(mode_name);
         fs::create_dir_all(&workspace).expect("create isolated mode workspace");
@@ -704,7 +704,7 @@ fn print_mode_runtime_contract_metrics() {
     for (mode_name, mode) in [
         ("plan", AppMode::Plan),
         ("act", AppMode::Agent),
-        ("operate", AppMode::Operate),
+        ("operate", AppMode::Agent),
     ] {
         let prompt = system_prompt_for_mode_with_context_skills_and_session(
             &workspace,

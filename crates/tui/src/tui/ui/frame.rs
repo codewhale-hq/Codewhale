@@ -1080,12 +1080,10 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
                 |identity| config.max_admitted_subagents_for_provider(identity),
             )
             .max(max_subagents),
-        launch_concurrency: identity
-            .map_or_else(
-                || config.launch_concurrency(),
-                |identity| config.launch_concurrency_for_provider(identity),
-            )
-            .max(app.mode.mode_delegation_launch_floor()),
+        launch_concurrency: identity.map_or_else(
+            || config.launch_concurrency(),
+            |identity| config.launch_concurrency_for_provider(identity),
+        ),
         subagents_enabled: identity
             .is_some_and(|identity| config.subagents_enabled_for_provider(identity)),
         features: config.features(),
