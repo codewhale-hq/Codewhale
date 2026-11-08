@@ -1272,7 +1272,7 @@ fn with_pending_state_mut<R>(f: impl FnOnce(&mut ScopedPendingBackgroundCost) ->
 /// This journal is deliberately separate from the TUI pending-money pool:
 /// taking one runtime owner's records cannot steal or reset the foreground
 /// session's `/cost` state.
-const MAX_RUNTIME_USAGE_RECORDS_PER_OWNER: usize = 64;
+const MAX_RUNTIME_USAGE_RECORDS_PER_OWNER: usize = 256;
 
 #[derive(Default)]
 struct OwnerRuntimeUsageJournal {

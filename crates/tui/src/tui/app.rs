@@ -745,7 +745,7 @@ fn load_launch_recent(workspace: &std::path::Path) -> (Vec<LaunchRecentSession>,
     let manager = codewhale_engine::session_manager::SessionManager::default_location().ok();
     let sessions = manager
         .as_ref()
-        .and_then(|manager| manager.list_sessions().ok())
+        .map(|manager| manager.list_sessions_lenient())
         .unwrap_or_default();
     let any_scoped = sessions.iter().any(|session| {
         !session.archived

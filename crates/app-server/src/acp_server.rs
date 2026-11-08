@@ -481,7 +481,7 @@ impl AcpServer {
         let sessions =
             codewhale_engine::session_manager::SessionManager::new(self.sessions_dir.clone())
                 .ok()
-                .and_then(|manager| manager.list_sessions().ok())
+                .map(|manager| manager.list_sessions_lenient())
                 .unwrap_or_default();
         let sessions: Vec<Value> = sessions
             .into_iter()

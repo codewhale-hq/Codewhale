@@ -6768,6 +6768,12 @@ impl Engine {
         review: Option<codewhale_protocol::op::ReviewOperation>,
     ) -> SendMessageOutcome {
         let setup_timing = codewhale_runtime::logging::PhaseTimer::start("turn_setup");
+        self.turn_heartbeat.enter(
+            turn_heartbeat::TurnPhase::Preparing,
+            Some("starting the turn".to_string()),
+            Some(turn_heartbeat::PREPARING_PHASE_BOUND),
+        );
+        let _pre_turn_idle = turn_heartbeat::IdleOnDrop(Arc::clone(&self.turn_heartbeat));
         let is_review = review.is_some();
         let TurnSpec {
             profile_constitution,

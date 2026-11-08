@@ -34,14 +34,19 @@ use codewhale_models::tool_projection::{
     RouteToolProjection, ToolSchemaProjection, description_with_constraint_note, forced_tool_name,
     project_tool_schema,
 };
-use codewhale_models::{ContentBlock, MessageRequest, MessageResponse, StreamEvent, Usage};
+use codewhale_models::{
+    ContentBlock, ContentBlockStart, MessageRequest, MessageResponse, StreamEvent, Usage,
+};
 use codewhale_runtime::config::wire_model_for_provider_route;
 use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
 use super::prepared::WireDialect;
 use super::role_placement::{RolePlacement, role_placement};
-use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
+use super::wire::{
+    extract_sse_data_value, from_api_tool_name, next_sse_line, push_sse_event_data,
+    to_api_tool_name,
+};
 
 /// Maximum `cache_control` breakpoints Anthropic accepts per request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
@@ -120,7 +125,7 @@ impl CodewhaleClient {
                         constraint_note,
                     } => {
                         let mut value = json!({
-                            "name": tool.name,
+                            "name": to_api_tool_name(&tool.name),
                             "description": description_with_constraint_note(
                                 &tool.description,
                                 constraint_note,
@@ -137,7 +142,7 @@ impl CodewhaleClient {
                     }
                     ToolSchemaProjection::Omitted { .. } => {
                         omitted_logical_names.push(tool.name.clone());
-                        omitted_tool_names.push(tool.name.clone());
+                        omitted_tool_names.push(to_api_tool_name(&tool.name));
                     }
                 }
             }
@@ -520,12 +525,26 @@ fn discard_provider_execution_ids(value: &mut Value) {
     }
 }
 
+fn decode_tool_use_names(value: &mut Value) {
+    let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for block in content.iter_mut() {
+        if block.get("type").and_then(Value::as_str) == Some("tool_use")
+            && let Some(name) = block.get("name").and_then(Value::as_str)
+        {
+            block["name"] = json!(from_api_tool_name(name));
+        }
+    }
+}
+
 fn decode_anthropic_message(mut value: Value) -> Result<MessageResponse> {
     discard_provider_execution_ids(&mut value);
     if let Some(usage) = value.get_mut("usage") {
         *usage = json!(parse_anthropic_usage(usage));
     }
     normalize_redacted_thinking_blocks(&mut value);
+    decode_tool_use_names(&mut value);
     serde_json::from_value(value).context("Failed to decode Anthropic Messages response")
 }
 
@@ -777,7 +796,7 @@ fn anthropic_tool_choice(tool_choice: &Value, model: &str) -> Value {
         Some("auto") => json!({ "type": "auto" }),
         Some("none") => json!({ "type": "none" }),
         Some("any" | "required") => json!({ "type": "any" }),
-        Some(name) => json!({ "type": "tool", "name": name }),
+        Some(name) => json!({ "type": "tool", "name": to_api_tool_name(name) }),
         None => tool_choice.clone(),
     }
 }
@@ -925,7 +944,7 @@ fn content_block_to_anthropic(block: &ContentBlock) -> Option<Value> {
         } => Some(json!({
             "type": "tool_use",
             "id": id,
-            "name": name,
+            "name": to_api_tool_name(name),
             "input": input,
         })),
         ContentBlock::ToolResult {
@@ -1084,7 +1103,16 @@ fn convert_anthropic_sse_data(data: &str) -> Option<Result<StreamEvent>> {
         // Local-only receipt: the legacy path ignored it (not a provider
         // type), so it stays ignored rather than decoding.
         Ok(StreamEvent::ToolProjectionWarning { .. }) => None,
-        Ok(event) => Some(Ok(event)),
+        Ok(mut event) => {
+            if let StreamEvent::ContentBlockStart {
+                content_block: ContentBlockStart::ToolUse { name, .. },
+                ..
+            } = &mut event
+            {
+                *name = from_api_tool_name(name);
+            }
+            Some(Ok(event))
+        }
         Err(error) => {
             // Cold path, reached only when direct decode fails: invalid JSON
             // and unknown types keep their exact legacy outcomes.

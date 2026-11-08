@@ -5888,6 +5888,29 @@ impl SessionManager {
             .collect())
     }
 
+    pub fn list_sessions_lenient(&self) -> Vec<SessionMetadata> {
+        let catalog = match self.scan_session_records() {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                tracing::warn!(%error, "session listing failed; showing no sessions");
+                return Vec::new();
+            }
+        };
+        if let Some(warning) = catalog.warning() {
+            tracing::warn!(%warning, "session listing is incomplete; showing the readable ones");
+        }
+        let mut sessions: Vec<_> = catalog
+            .records
+            .into_iter()
+            .map(|(_, mut metadata)| {
+                self.apply_late_usage_to_metadata(&mut metadata);
+                metadata
+            })
+            .collect();
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
+        sessions
+    }
+
     pub fn list_sessions_with_recovery(
         &self,
     ) -> std::io::Result<(
