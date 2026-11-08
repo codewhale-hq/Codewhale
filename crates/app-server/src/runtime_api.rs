@@ -9859,8 +9859,8 @@ struct RevertThreadFileResponse {
 /// Ownership: only the `tool:`/`pre-turn:` restore points recorded on this
 /// thread's own turns (`TurnRecord::workspace_snapshots`, fork-inherited turns
 /// included) are candidates, never another thread's or the TUI's snapshots in
-/// the same workspace, and the thread must be in trusted mode or Full Access. Nothing to revert is a `409`, not a silent
-/// success, so the GUI can tell the user why the button did nothing.
+/// the same workspace. Nothing to revert is a `409`, not a silent success, so
+/// the GUI can tell the user why the button did nothing.
 async fn revert_thread_file(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
@@ -9883,11 +9883,6 @@ async fn revert_thread_file(
         .thread_restore_guard(&id)
         .await
         .map_err(map_thread_err)?;
-    if !(thread.trust_mode || thread.auto_approve) {
-        return Err(ApiError::conflict(
-            "Refusing to restore workspace files outside trusted mode. Turn on /trust or switch this thread to Full Access, then retry.",
-        ));
-    }
     // The restore points this thread owns: the receipts on its own turns
     // (including turns a fork cloned). Read under the restore reservation, so
     // no turn is recording one meanwhile.

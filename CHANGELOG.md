@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reverting a file works in any posture.** Restoring a file the thread's own turns changed no longer requires `/trust` or Full Access; the exact snapshot and reviewed-hash checks still apply. **`fetch_url` can reach a local or private host you allowed** with `/network allow <host>`; cloud metadata stays blocked. Both refusals now name the setting.
 - **`codewhale exec` offers tools by default**, still under the configured sandbox and approval posture. `--no-tools` is the one-shot. A pipe on stdin is the prompt when no arguments are given, or is appended to them.
 - **A child no longer dies when usage settlement is not acknowledged.** The turn continues and cost stays unknown, matching the parent path.
 - **Workspace memory works without a git origin.** A plain folder or a repo with no `origin` remote gets a stable workspace id. `codewhale plugin list` is an alias of `plugins status`. A heavy command runs after 30 seconds instead of waiting forever for an admission slot. An MCP registration 4xx names the status and the manual client-id path.

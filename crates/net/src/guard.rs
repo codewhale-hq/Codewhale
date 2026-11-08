@@ -1,4 +1,4 @@
-use crate::network_policy::NetworkPolicyDecider;
+use crate::network_policy::{Decision, NetworkPolicyDecider};
 use codewhale_tools::ToolError;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -97,6 +97,32 @@ pub fn fetch_target_host(url: &reqwest::Url) -> Result<String, ToolError> {
         .ok_or_else(|| ToolError::invalid_input("URL must include a host"))
 }
 
+fn explicitly_allowed(decider: Option<&NetworkPolicyDecider>, host: &str) -> bool {
+    let Some(decider) = decider else {
+        return false;
+    };
+    let policy = decider.policy();
+    if policy.decide(host) == Decision::Deny {
+        return false;
+    }
+    let normalized = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    policy.allow.iter().any(|entry| {
+        let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
+        match entry.strip_prefix("*.") {
+            Some(suffix) => normalized.ends_with(&format!(".{suffix}")),
+            None => entry == normalized,
+        }
+    })
+}
+
+fn cloud_metadata_ip(ip: &IpAddr) -> bool {
+    *ip == IpAddr::V4(std::net::Ipv4Addr::new(169, 254, 169, 254))
+}
+
+fn restricted_host_hint(host: &str) -> String {
+    format!("add {host:?} with `/network allow {host}` (or `network.allow` in config) to permit it")
+}
+
 pub async fn validate_fetch_destination(
     host: String,
     decider: Option<&NetworkPolicyDecider>,
@@ -105,13 +131,18 @@ pub async fn validate_fetch_destination(
 ) -> Result<DnsPin, ToolError> {
     // SSRF protection: reject localhost names and private/link-local/loopback
     // IP literals; when `resolve` is set, also resolve the hostname and reject
-    // restricted answers. Prevents LLM-prompted requests to cloud metadata
-    // (169.254.169.254), localhost services, and internal networks.
+    // restricted answers. An explicit `/network allow` for this host is the
+    // user's opt-in for a local dev server, an internal docs host or a tailnet
+    // peer. Cloud metadata stays blocked either way.
     let bare = host.strip_suffix('.').unwrap_or(&host);
-    if bare == "localhost" || bare == "localhost.localdomain" || bare.ends_with(".localhost") {
-        return Err(ToolError::permission_denied(
-            "requests to localhost are not allowed",
-        ));
+    let allowed = explicitly_allowed(decider, bare);
+    if !allowed
+        && (bare == "localhost" || bare == "localhost.localdomain" || bare.ends_with(".localhost"))
+    {
+        return Err(ToolError::permission_denied(format!(
+            "requests to localhost are not allowed; {}",
+            restricted_host_hint(bare)
+        )));
     }
     // Normalize bracketed IPv6 literals before the literal-IP check so they
     // route through the same restricted-IP policy as unbracketed forms
@@ -121,9 +152,10 @@ pub async fn validate_fetch_destination(
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(host.as_str());
     if let Ok(ip) = ip_candidate.parse::<IpAddr>() {
-        if is_restricted_ip(&ip) {
+        if is_restricted_ip(&ip) && (!allowed || cloud_metadata_ip(&ip)) {
             return Err(ToolError::permission_denied(format!(
-                "IP {ip} is a restricted address (private/loopback/link-local)"
+                "IP {ip} is a restricted address (private/loopback/link-local); {}",
+                restricted_host_hint(bare)
             )));
         }
         return Ok(None);
@@ -165,7 +197,7 @@ pub fn validate_dns_resolved_ip(
     decider: Option<&NetworkPolicyDecider>,
     tool: &str,
 ) -> Result<(), ToolError> {
-    if !is_restricted_ip(ip) {
+    if !is_restricted_ip(ip) || (explicitly_allowed(decider, host) && !cloud_metadata_ip(ip)) {
         return Ok(());
     }
 
@@ -182,7 +214,8 @@ pub fn validate_dns_resolved_ip(
     }
 
     Err(ToolError::permission_denied(format!(
-        "resolved IP {ip} is a restricted address (private/loopback/link-local)"
+        "resolved IP {ip} is a restricted address (private/loopback/link-local); {}",
+        restricted_host_hint(host)
     )))
 }
 
