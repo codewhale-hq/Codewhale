@@ -15881,6 +15881,9 @@ async fn spawn_subagent_from_input(
     let exact_fleet_binding =
         workflow_identity.and_then(|identity| identity.exact_fleet_binding.as_ref());
     apply_session_spawn_defaults(&mut runtime);
+    if start_requests_read_only_role(&input) {
+        runtime.accept_verification = false;
+    }
     if exact_fleet_binding.is_none() {
         refresh_spawn_route_sources(&mut runtime);
     }

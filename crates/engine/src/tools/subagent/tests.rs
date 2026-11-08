@@ -15439,10 +15439,9 @@ async fn worker_child_write_carve_out_requires_a_git_work_tree() {
 }
 
 #[tokio::test]
-async fn builder_child_runs_bounded_verification_but_not_shell_without_parent_auto_approve() {
-    // #5186: the bounded built-in verification surface is delegated to
-    // shell-capable children of non-auto parents; arbitrary shell and
-    // unbounded verification argv stay gated.
+async fn builder_child_verification_asks_like_shell_without_an_operate_lease() {
+    // Outside a root Operate lease, built-in verification, arbitrary shell
+    // and unbounded verification argv all reach the parent's approval.
     let tmp = tempdir().expect("tempdir");
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
@@ -15457,22 +15456,14 @@ async fn builder_child_runs_bounded_verification_but_not_shell_without_parent_au
         Arc::new(Mutex::new(PlanState::default())),
     );
 
-    // No Cargo.toml here, so execution itself may fail — what must NOT
-    // appear is the approval-gate error.
-    match registry
+    let verification_err = registry
         .execute("agent_test", "Run", json!({"action": "tests"}))
         .await
-    {
-        Ok(_) => {}
-        Err(err) => assert!(
-            !err.to_string().contains("requires approval"),
-            "bounded verification must pass the approval gate: {err}"
-        ),
-    }
-
+        .expect_err("built-in verification asks the parent outside an Operate lease");
     assert!(
-        receipt_store.load("workspace").unwrap().is_empty(),
-        "bounded verification never asks approval"
+        matches!(verification_err.downcast_ref::<ToolError>(), Some(ToolError::NotAvailable { message })
+            if message == "child caller has no host that can answer this approval"),
+        "unexpected error: {verification_err}"
     );
     let shell_err = registry
         .execute(
@@ -15502,7 +15493,7 @@ async fn builder_child_runs_bounded_verification_but_not_shell_without_parent_au
         "unexpected error: {argv_err}"
     );
     let replay = receipt_store.replay("workspace").unwrap();
-    assert_eq!(replay.completed.len(), 2);
+    assert_eq!(replay.completed.len(), 3);
     assert!(
         replay
             .completed

@@ -495,7 +495,8 @@ impl ChildAuthority {
                             || self.workspace_write_carve_out_permits(registry, name, input))
                 }
                 ApprovalRequirement::Required => {
-                    Self::is_delegated_builtin_verification(name, input)
+                    self.runtime.accept_verification
+                        && Self::is_delegated_builtin_verification(name, input)
                 }
             })
     }
