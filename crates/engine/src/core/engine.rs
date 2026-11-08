@@ -105,6 +105,9 @@ const SUBAGENT_COMPLETION_CHANNEL_CAPACITY: usize = 256;
 /// slot instead of being dropped.
 const MCP_BOOT_CHANNEL_CAPACITY: usize = 64;
 const EXTENSION_FIRST_SYNC_WAIT: Duration = Duration::from_secs(10);
+const RESTORE_POINT_TIMEOUT: Duration = Duration::from_secs(180);
+const TURN_META_GIT_TIMEOUT: Duration = Duration::from_secs(30);
+const TURN_POOL_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const GOAL_CONTINUATION_FAILURE_DETAIL_MAX_BYTES: usize = 512;
 const PLAN_SHELL_NETWORK_DENIED_HINT: &str = "Shell command blocked: in Plan mode shell commands run in a read-only sandbox with no writes and no network access. The user can change modes with /mode.";
 
@@ -3018,14 +3021,31 @@ impl Engine {
         let sid = self.session.id.clone();
         #[cfg(any(test, feature = "test-support"))]
         let env_ticket = crate::test_support::env_scope_ticket();
-        let taken = tokio::task::spawn_blocking(move || {
+        let snapshot = tokio::task::spawn_blocking(move || {
             #[cfg(any(test, feature = "test-support"))]
             let _membership = crate::test_support::join_env_scope(env_ticket);
             super::turn::restore_point_snapshot(&workspace, &label, cap, Some(&sid), since.as_ref())
-        })
-        .await
-        .ok()
-        .flatten();
+        });
+        let taken = tokio::select! {
+            biased;
+            () = self.cancel_token.cancelled() => None,
+            joined = tokio::time::timeout(RESTORE_POINT_TIMEOUT, snapshot) => match joined {
+                Ok(joined) => joined.ok().flatten(),
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_secs = RESTORE_POINT_TIMEOUT.as_secs(),
+                        "workspace restore point timed out; continuing without it"
+                    );
+                    let _ = self
+                        .send_event(Event::status(format!(
+                            "No /undo restore point was recorded: the workspace snapshot did not finish within {} s.",
+                            RESTORE_POINT_TIMEOUT.as_secs()
+                        )))
+                        .await;
+                    None
+                }
+            },
+        };
         let Some((taken, changed)) = taken else {
             self.restore_point_since = None;
             return false;
@@ -5250,16 +5270,46 @@ impl Engine {
 
     async fn capture_turn_meta_git_snapshot(&self) -> Option<String> {
         let workspace = self.config.workspace.clone();
-        match codewhale_runtime::runtime_control::owner_work(move || {
+        let work = codewhale_runtime::runtime_control::owner_work(move || {
             Ok(crate::git_status::collect(&workspace))
-        })
-        .await
-        {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                tracing::warn!("turn metadata git snapshot worker failed: {error}");
-                None
-            }
+        });
+        tokio::select! {
+            biased;
+            () = self.cancel_token.cancelled() => None,
+            result = tokio::time::timeout(TURN_META_GIT_TIMEOUT, work) => match result {
+                Ok(Ok(snapshot)) => snapshot,
+                Ok(Err(error)) => {
+                    tracing::warn!("turn metadata git snapshot worker failed: {error}");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_secs = TURN_META_GIT_TIMEOUT.as_secs(),
+                        "turn metadata git snapshot timed out; the turn continues without its git line"
+                    );
+                    None
+                }
+            },
+        }
+    }
+
+    async fn turn_mcp_server_attribution(&self) -> std::collections::BTreeMap<String, String> {
+        let Some(pool) = self.mcp_pool.as_ref() else {
+            return std::collections::BTreeMap::new();
+        };
+        tokio::select! {
+            biased;
+            () = self.cancel_token.cancelled() => std::collections::BTreeMap::new(),
+            locked = tokio::time::timeout(TURN_POOL_LOCK_TIMEOUT, pool.lock()) => match locked {
+                Ok(locked) => locked.resolved_tool_servers(),
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_secs = TURN_POOL_LOCK_TIMEOUT.as_secs(),
+                        "MCP pool stayed locked at turn start; tool server attribution is omitted for this turn"
+                    );
+                    std::collections::BTreeMap::new()
+                }
+            },
         }
     }
 
@@ -7233,6 +7283,8 @@ impl Engine {
             turn.id.clone(),
             submission_id.clone(),
         ));
+        self.turn_heartbeat.begin_turn(&turn.id);
+        let _heartbeat_idle = turn_heartbeat::IdleOnDrop(Arc::clone(&self.turn_heartbeat));
         start_permit.send(Event::TurnStarted {
             previous_source,
             turn_id: turn.id.clone(),
@@ -7304,6 +7356,11 @@ impl Engine {
         // `/restore` listings are human-readable.
         if !is_review {
             let _timing = codewhale_runtime::logging::PhaseTimer::start("workspace_snapshot");
+            self.turn_heartbeat.enter(
+                turn_heartbeat::TurnPhase::Preparing,
+                Some("taking the pre-turn restore point".to_string()),
+                Some(RESTORE_POINT_TIMEOUT + turn_heartbeat::STALL_BOUND_GRACE),
+            );
             self.take_restore_point(
                 WorkspaceSnapshotKind::PreTurn,
                 format_snapshot_label("pre-turn", self.turn_counter, Some(&content)),
@@ -7311,6 +7368,11 @@ impl Engine {
                 None,
             )
             .await;
+            self.turn_heartbeat.enter(
+                turn_heartbeat::TurnPhase::Preparing,
+                None,
+                Some(turn_heartbeat::PREPARING_PHASE_BOUND),
+            );
 
             self.emit_pending_snapshot_notices().await;
         }
@@ -7538,6 +7600,7 @@ impl Engine {
             // belong to this turn even when the previous route was different.
             let turn_meta_git_snapshot = self.capture_turn_meta_git_snapshot().await;
             self.install_turn_meta_git_snapshot(turn_meta_git_snapshot);
+            self.turn_heartbeat.touch();
             let mut user_msg = self.user_text_message_from_snapshot(
                 content,
                 &model,
@@ -7615,6 +7678,7 @@ impl Engine {
                 )
                 .await;
             drop(catalog_timing);
+            self.turn_heartbeat.touch();
             let tool_catalog_for_event = Some(surface.catalog.clone());
 
             // Resolve, once per turn, the out-of-request facts the read-only
@@ -7625,14 +7689,12 @@ impl Engine {
             // the tools actually prepared for that step.
             let mut tool_surface = crate::tool_inspection::ToolSurfaceContext {
                 registry: surface.registry.registry_facts(&plugin_tool_names),
-                mcp_servers: match self.mcp_pool.as_ref() {
-                    Some(pool) => pool.lock().await.resolved_tool_servers(),
-                    None => std::collections::BTreeMap::new(),
-                },
+                mcp_servers: self.turn_mcp_server_attribution().await,
                 synthetic_names: default_synthetic_catalog_tool_names(),
                 provider: crate::tool_inspection::ProviderAvailability::Unknown,
             };
             tool_surface.provider = self.tool_surface_provider_receipt();
+            self.turn_heartbeat.touch();
 
             (
                 context_update,

@@ -13,7 +13,8 @@
 //! `remote get-url origin` by way of
 //! [`observed_git_repo`]. Git older than 2.11 has no
 //! porcelain v2; the probe then falls back to the old three calls. There is
-//! no `gix` dependency and no per-invocation timeout. All of these run with
+//! no `gix` dependency. Each read runs under a timeout, so a wedged git
+//! fails its probe instead of holding the caller. All of these run with
 //! `GIT_OPTIONAL_LOCKS=0` so a read never contends for `.git/index.lock` in
 //! the user's repository.
 //!
@@ -25,7 +26,7 @@
 //! This module owns capability and state outside the renderer so
 //! `widgets/mod.rs` / `ui.rs` stay projection-only.
 
-use codewhale_dependencies::{ExternalTool, Git};
+use codewhale_dependencies::{ExternalTool, Git, run_bounded_git_with_timeout};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -645,15 +646,19 @@ fn parse_worktree_list(porcelain: &str) -> Vec<WorktreeEntry> {
     entries
 }
 
+const GIT_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn git_output(cwd: &Path, args: &[&str]) -> Result<String, String> {
     // Shared read policy disables repository-selected helpers and lazy
     // fetch while keeping the sanitized environment and optional locks off.
-    let output = Git::review_command(cwd)
-        .map_err(|e| format!("{e:#}"))?
-        .args(["-c", "log.showSignature=false"])
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut command = Git::review_command(cwd).map_err(|e| format!("{e:#}"))?;
+    command.args(["-c", "log.showSignature=false"]).args(args);
+    let output = run_bounded_git_with_timeout(
+        &mut command,
+        args.first().copied().unwrap_or("git"),
+        GIT_READ_TIMEOUT,
+    )
+    .map_err(|e| e.to_string())?;
     finish_git_output(output)
 }
 
@@ -846,12 +851,12 @@ pub fn normalize_observed_git_repo(input: &str) -> Option<String> {
 }
 
 pub fn observed_git_repo(workspace: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    command
         .arg("-C")
         .arg(workspace)
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .ok()?;
+        .args(["remote", "get-url", "origin"]);
+    let output = run_bounded_git_with_timeout(&mut command, "remote", GIT_READ_TIMEOUT).ok()?;
     if !output.status.success() {
         return None;
     }

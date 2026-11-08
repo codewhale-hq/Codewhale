@@ -284,8 +284,17 @@ pub(crate) fn suspect_running_agents(app: &App, now: Instant) -> Vec<String> {
 /// Running sub-agents that still legitimately hold the turn open.
 pub(crate) fn live_running_agent_count(app: &App, now: Instant) -> usize {
     let suspects = suspect_running_agents(app, now);
-    let mut ids: std::collections::HashSet<&str> =
-        app.agent_progress.keys().map(String::as_str).collect();
+    let mut ids: std::collections::HashSet<&str> = app
+        .agent_progress
+        .keys()
+        .filter(|id| {
+            app.agent_progress_meta
+                .get(id.as_str())
+                .and_then(|meta| meta.last_progress_at)
+                .is_some_and(|at| now.saturating_duration_since(at) <= TOOL_HANG_WATCHDOG_TIMEOUT)
+        })
+        .map(String::as_str)
+        .collect();
     for agent in app
         .subagent_cache
         .iter()

@@ -19,11 +19,21 @@ where
     let env_ticket = crate::test_support::env_scope_ticket();
     static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
         std::sync::OnceLock::new();
-    let permit = SLOTS
-        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)))
-        .clone()
-        .acquire_owned()
-        .await?;
+    const PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+    let permit = tokio::time::timeout(
+        PERMIT_WAIT,
+        SLOTS
+            .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)))
+            .clone()
+            .acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "blocking work is queued behind earlier jobs that have not finished within {}s",
+            PERMIT_WAIT.as_secs()
+        )
+    })??;
     tokio::task::spawn_blocking(move || {
         #[cfg(any(test, feature = "test-support"))]
         let _membership = crate::test_support::join_env_scope(env_ticket);
