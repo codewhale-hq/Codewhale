@@ -5131,7 +5131,7 @@ async fn persistent_service_requires_explicit_headless_exec_authority() {
         .await
         .expect_err("ordinary tool contexts must reject ownership transfer");
 
-    assert!(error.to_string().contains("real headless `codewhale exec`"));
+    assert!(error.to_string().contains("Full Access shell authority"));
 }
 
 #[cfg(unix)]

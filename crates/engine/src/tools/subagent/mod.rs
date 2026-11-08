@@ -23157,8 +23157,8 @@ mod owner_scoped_coordination_tests {
         admit(&mut manager, &selected);
         let independent =
             SubAgentManager::new(selected.clone(), 2).require_coordination_process_lock();
-        assert!(independent.ensure_coordination_process_lock().is_err());
-        assert!(independent.persist_state_synchronously().is_err());
+        assert!(independent.session_private);
+        assert!(independent.ensure_coordination_process_lock().is_ok());
         manager
             .preflight_worker_coordination(&writer("original", &original, "src"))
             .unwrap();

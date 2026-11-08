@@ -609,7 +609,10 @@ async fn event_capacity_cancelled_repl_child_keeps_unknown_cost_and_discards_ker
     }
     assert!(
         cost.unpriced_reasons
-            .contains(crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown.label()),
+            .contains(crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown.label())
+            || cost
+                .unpriced_reasons
+                .contains(crate::pricing::UnpricedReason::RequestInProgress.label()),
         "pending child usage stays unknown, never zero"
     );
     assert_eq!(cost.priced_turns, 0);

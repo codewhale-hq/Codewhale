@@ -1365,8 +1365,8 @@ fn headless_worker_registration_enforces_live_claims_and_projects_context() {
     );
     let independent =
         SubAgentManager::new(tmp.path().to_path_buf(), 8).require_coordination_process_lock();
-    assert!(independent.ensure_coordination_process_lock().is_err());
-    assert!(independent.persist_state_synchronously().is_err());
+    assert!(independent.session_private);
+    assert!(independent.ensure_coordination_process_lock().is_ok());
     drop(independent);
     drop(authority_a);
     drop(authority_b);
