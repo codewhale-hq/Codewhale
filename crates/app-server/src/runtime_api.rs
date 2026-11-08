@@ -116,6 +116,7 @@ mod avatars;
 mod computer_display;
 mod context;
 mod diagnostics;
+mod external_agents;
 mod git;
 mod jobs;
 pub mod listener;
@@ -3407,6 +3408,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
                 .layer(DefaultBodyLimit::max(
                     secrets::PROVIDER_KEY_BODY_LIMIT_BYTES,
                 )),
+        )
+        .route(
+            "/v1/agents/external",
+            get(external_agents::list_external_agents),
         )
         .route("/v1/providers", get(list_providers))
         .route("/v1/providers/{id}/models", get(list_provider_models))

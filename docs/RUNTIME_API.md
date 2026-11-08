@@ -3040,6 +3040,33 @@ other failure to ask (a network error, a timeout, another status) answers
 The route applies `PUT`'s credential-writability rules and key-shape limits and
 refuses OpenAI Codex. An Engine without this route answers `404`.
 
+### `GET /v1/agents/external` — agent CLIs installed on this computer
+
+```json
+// response
+{ "agents": [
+  { "id": "opencode", "name": "OpenCode", "state": "installed",
+    "version": "1.19.5", "acp": "native",
+    "auth_methods": [{ "id": "login", "name": "Log in", "type": "agent" }],
+    "website": "https://opencode.ai", "runnable": false },
+  { "id": "qoder", "name": "Qoder", "state": "not_installed", "version": null,
+    "acp": null, "auth_methods": [], "website": "https://qoder.com", "runnable": false }
+] }
+```
+
+Reports which external agent CLIs this computer already has, without starting a
+session. It covers Claude, Codex, Gemini CLI, OpenCode, Kimi Code, Mistral Vibe,
+Qoder, CodeBuddy and Grok. `state` is `installed` or `not_installed`; a binary is
+looked up on `PATH` and in the usual per-user bin directories. For an installed
+agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
+itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
+that handshake answered, `adapter` for CLIs that need a separate adapter
+process, and `unreachable` when the handshake did not answer. `auth_methods`
+comes from the handshake; `type: "terminal"` means the agent can only be signed
+in by running it in a terminal. The probes time out after 8 s (5 s for
+`--version`), receive no Codewhale or provider credentials, and leave nothing
+stored. `runnable` is `false`: this route reports, it does not start an agent.
+
 ### `DELETE /v1/providers/{id}/key` — clear a Codewhale-owned credential
 
 ```json

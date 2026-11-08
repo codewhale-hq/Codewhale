@@ -2333,6 +2333,30 @@ Runtime 的提供商或模型默认值。
 可视为“无法验证”，仍可 `PUT` 该 key。该路由遵循与 `PUT` 相同的凭据可写规则和 key 形状限制，并拒绝
 OpenAI Codex。没有此路由的 Engine 返回 `404`。
 
+### `GET /v1/agents/external` —— 本机已安装的外部 agent CLI
+
+```json
+// 响应
+{ "agents": [
+  { "id": "opencode", "name": "OpenCode", "state": "installed",
+    "version": "1.19.5", "acp": "native",
+    "auth_methods": [{ "id": "login", "name": "Log in", "type": "agent" }],
+    "website": "https://opencode.ai", "runnable": false },
+  { "id": "qoder", "name": "Qoder", "state": "not_installed", "version": null,
+    "acp": null, "auth_methods": [], "website": "https://qoder.com", "runnable": false }
+] }
+```
+
+报告本机已有哪些外部 agent CLI，不启动任何会话。覆盖 Claude、Codex、Gemini
+CLI、OpenCode、Kimi Code、Mistral Vibe、Qoder、CodeBuddy 和 Grok。`state` 为
+`installed` 或 `not_installed`；程序会在 `PATH` 以及常见的用户 bin 目录中查找。
+对已安装的 agent，该路由会同时执行 `--version`，并在该 CLI 本身支持 Agent
+Client Protocol 时通过 stdin 发送一次 `initialize`。`acp` 为 `native` 表示握手
+成功，`adapter` 表示需要单独的适配器进程，`unreachable` 表示握手没有回应。
+`auth_methods` 来自握手结果；`type: "terminal"` 表示只能在该 agent 自己的终端里
+登录。探测超时为 8 秒（`--version` 为 5 秒），不会收到任何 Codewhale 或服务商
+凭据，也不会保存任何内容。`runnable` 为 `false`：该路由只做报告，不启动 agent。
+
 ### `DELETE /v1/providers/{id}/key` —— 清除 Codewhale 拥有的凭据
 
 ```json

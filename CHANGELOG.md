@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runtime API: find the agent CLIs already installed on this computer.**
+  `GET /v1/agents/external` reports Claude, Codex, Gemini CLI, OpenCode, Kimi
+  Code, Mistral Vibe, Qoder, CodeBuddy and Grok, with the version each one
+  reports and whether it answers Agent Client Protocol itself. The probe runs
+  `--version` and one `initialize` handshake, gets no Codewhale or provider
+  credentials, and stores nothing. Read-only: it does not start an agent yet.
 - **Runtime API: check a provider key before storing it.**
   `POST /v1/providers/{id}/key/check` asks the provider's own `/models`
   endpoint once whether it accepts a key, and never stores it. A key the
