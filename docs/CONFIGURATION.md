@@ -2266,7 +2266,7 @@ Common settings keys:
 - `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
   context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
-- `default_mode` (`agent`, `plan`, or `operate`; legacy values are accepted for migration but are not live mode vocabulary)
+- `default_mode` (`agent` or `plan`; legacy values such as `normal` and `operate` load as `agent` and are not live mode vocabulary)
 - `launch_screen` (legacy, migration-only): this historical `on`/`off` value
   is still accepted when reading an existing settings file, but it no longer
   changes behavior and is omitted from new saves. A fresh interactive launch
@@ -2312,9 +2312,8 @@ operations and four-state To-do list as plain text, running work first. It
 reads the same snapshots as the styled Work surface and owns no parallel
 progress state.
 
-Plan and Work are the everyday visible modes in the UI; Operate is an explicit
-preview entry while its Workflow control surface is still being built. Switch
-between them with `/mode`. For compatibility, older settings files with
+Plan and Work are the two modes in the UI. Switch between them with `/mode` or
+`Tab`. The retired `operate` spelling still parses, as Work. For compatibility, older settings files with
 `default_mode = "normal"` still load as `agent`.
 
 Localization scope is tracked in [LOCALIZATION.md](LOCALIZATION.md). The v0.7.6
@@ -2603,7 +2602,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   The Hotbar is hidden by default (#3807): omitting `hotbar` and setting
   `hotbar = []` both mean no hotbar. `/hotbar on` writes the eight default
   slots (`slash.workflow`, `slash.goal`, `slash.auto`, `mode.plan`,
-  `mode.agent`, `mode.operate`, `palette.open`, `sidebar.toggle`) as explicit
+  `mode.agent`, `reasoning.cycle`, `palette.open`, `sidebar.toggle`) as explicit
   `[[hotbar]]` tables. When one or more `[[hotbar]]` tables are present, that
   list is the whole bar; missing slots stay empty. Invalid slots outside `1..=8` are skipped with a warning, duplicate
   slots use the later entry, and unknown action IDs are kept so the UI can show
@@ -3078,7 +3077,7 @@ Notes:
 
 ### Goal loop (`[goal]`)
 
-Operate-mode goals run to their completion gate with no default token, time, or
+Goals run to their completion gate with no default token, time, or
 continuation ceiling (#5052). Token/time budgets, when explicitly supplied,
 are telemetry only and do not stop a goal. Users who want a circuit breaker can
 opt into one:

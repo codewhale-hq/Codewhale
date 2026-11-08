@@ -107,7 +107,7 @@ A fresh install starts in Work mode with the Ask permission.
 
 | | Switch with | Options |
 | --- | --- | --- |
-| Mode | `Tab` (when the input is empty) or `/mode` | **Plan** reads and searches but changes nothing. **Work** edits files and runs commands. **Operate** has the same access as Work, treats your request as a goal, and keeps going until the goal is verified or it needs input from you. |
+| Mode | `Tab` (when the input is empty) or `/mode` | **Plan** reads and searches but changes nothing. **Work** edits files and runs commands; start a goal with `/goal` when a request needs more than one turn. |
 | Permission | `Shift+Tab` | **Ask** asks before every file edit and every shell command that is not read-only. **Accept Edits** applies file edits in your git repository without asking and still asks before commands. **Auto-Review** lets rules and a reviewer model approve routine calls and refuses high-risk ones; switch to Ask to approve those yourself. **Full Access** never asks and turns off Codewhale's sandbox; repository rules and managed policy still apply. |
 
 See the [modes and permissions guide](docs/MODES.md) for the details.

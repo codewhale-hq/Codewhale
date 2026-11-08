@@ -17,7 +17,7 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Ctrl-C`             | Cancel current turn / dismiss modal / clear a non-empty draft (recoverable — see `Ctrl-Z`) / arm-then-confirm quit |
 | `Ctrl-B`             | Release the current shell wait so the turn can continue; foreground commands move into `/jobs`, and background tasks keep running. Use `/jobs` or `Bash` with `action: "wait"` to inspect output |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
-| `Tab`                | When the composer is empty, cycle TUI mode: Plan → Work → Operate → Plan. Works while a turn is running: the change applies at the agent's next step in the same turn, and the status line says so until it does |
+| `Tab`                | When the composer is empty, cycle TUI mode: Plan → Work → Plan. Works while a turn is running: the change applies at the agent's next step in the same turn, and the status line says so until it does |
 | `Shift+Tab`          | Cycle permission posture: Ask → Accept Edits → Auto-Review → Full Access. Live regardless of composer contents or whether a turn is running (suppressed only while a modal other than Config is open). During a turn the change applies at the agent's next step; a call you already approved runs only if the new posture is equal or broader. Model, thinking level and provider stay locked until the turn ends |
 | `Ctrl-T`             | Cycle reasoning effort for the active model. Walks the same ladder as `/model` and `/effort` (catalog or documented route dialect). Always-thinking models omit `off`; Grok 4.6 includes `xhigh`. |
 | `Ctrl-Shift-T`       | Toggle live transcript overlay (sticky-tail auto-scroll)                       |
@@ -128,7 +128,7 @@ Since #3807 a missing `hotbar` key renders **no bar** — fresh configs show no 
 | 3    | `Alt-3` | `slash.auto`       | `auto`    |
 | 4    | `Alt-4` | `mode.plan`        | `plan`    |
 | 5    | `Alt-5` | `mode.agent`       | `agent`   |
-| 6    | `Alt-6` | `mode.operate`     | `operate` |
+| 6    | `Alt-6` | `reasoning.cycle`  | `reason`  |
 | 7    | `Alt-7` | `palette.open`     | `palette` |
 | 8    | `Alt-8` | `sidebar.toggle`   | `side`    |
 
