@@ -4698,6 +4698,15 @@ impl App {
                 }
             }
         }
+        codewhale_engine::cost_status::prune_settled_missing_reasons(
+            &self.session.missing_usage_sources,
+            self.session.missing_usage_overflowed,
+            &mut self.session.in_flight_usage_sources,
+            self.session.cost_unpriced_turns,
+            self.session.cost_cny_unpriced_turns,
+            &mut self.session.cost_unpriced_reasons,
+            &mut self.session.cost_cny_unpriced_reasons,
+        );
         runtime_usage_arrived || source_arrived
     }
 

@@ -1577,32 +1577,15 @@ impl SessionCostSnapshot {
                 self.in_flight_usage_sources.remove(&key);
             }
         }
-        let missing_sources = &self.missing_usage_sources;
-        self.in_flight_usage_sources
-            .retain(|source| missing_sources.contains_key(source));
-        let in_flight = &self.in_flight_usage_sources;
-        for reason in [
-            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
-            crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
-        ] {
-            let unresolved = self.missing_usage_overflowed
-                || missing_sources.iter().any(|(source, missing)| {
-                    missing.reason == reason && !in_flight.contains(source)
-                });
-            if self.unpriced_turns == 0 || !unresolved {
-                self.unpriced_reasons.remove(reason.label());
-            }
-            if self.cny_unpriced_turns == 0 || !unresolved {
-                self.cny_unpriced_reasons.remove(reason.label());
-            }
-        }
-        let in_progress = crate::pricing::UnpricedReason::RequestInProgress.label();
-        if self.unpriced_turns == 0 || in_flight.is_empty() {
-            self.unpriced_reasons.remove(in_progress);
-        }
-        if self.cny_unpriced_turns == 0 || in_flight.is_empty() {
-            self.cny_unpriced_reasons.remove(in_progress);
-        }
+        crate::cost_status::prune_settled_missing_reasons(
+            &self.missing_usage_sources,
+            self.missing_usage_overflowed,
+            &mut self.in_flight_usage_sources,
+            self.unpriced_turns,
+            self.cny_unpriced_turns,
+            &mut self.unpriced_reasons,
+            &mut self.cny_unpriced_reasons,
+        );
         self.usage_source_fingerprints.insert(key.clone());
         self.accounted_usage_sources.insert(key, next);
         let total = self.total_estimate();
@@ -1636,6 +1619,15 @@ impl SessionCostSnapshot {
             .extend(pool.unpriced_reasons.iter().map(ToString::to_string));
         self.cny_unpriced_reasons
             .extend(pool.cny_unpriced_reasons.iter().map(ToString::to_string));
+        crate::cost_status::prune_settled_missing_reasons(
+            &self.missing_usage_sources,
+            self.missing_usage_overflowed,
+            &mut self.in_flight_usage_sources,
+            self.unpriced_turns,
+            self.cny_unpriced_turns,
+            &mut self.unpriced_reasons,
+            &mut self.cny_unpriced_reasons,
+        );
         self.unpriced_classes
             .extend(pool.unpriced_classes.iter().map(ToString::to_string));
         self.pricing_provenances

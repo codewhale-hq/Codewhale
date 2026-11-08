@@ -3883,6 +3883,40 @@ pub fn reconcile_missing_usage_sources(
     }
 }
 
+pub fn prune_settled_missing_reasons(
+    missing: &BTreeMap<String, MissingUsageCoverage>,
+    overflowed: bool,
+    in_flight: &mut BTreeSet<String>,
+    unpriced: u32,
+    cny_unpriced: u32,
+    reasons: &mut BTreeSet<String>,
+    cny_reasons: &mut BTreeSet<String>,
+) {
+    in_flight.retain(|source| missing.contains_key(source));
+    for reason in [
+        RuntimeUsageMissingReason::RequestOutcomeUnknown,
+        RuntimeUsageMissingReason::SuccessWithoutUsage,
+    ] {
+        let unresolved = overflowed
+            || missing
+                .iter()
+                .any(|(source, coverage)| coverage.reason == reason && !in_flight.contains(source));
+        if unpriced == 0 || !unresolved {
+            reasons.remove(reason.label());
+        }
+        if cny_unpriced == 0 || !unresolved {
+            cny_reasons.remove(reason.label());
+        }
+    }
+    let in_progress = crate::pricing::UnpricedReason::RequestInProgress.label();
+    if unpriced == 0 || in_flight.is_empty() {
+        reasons.remove(in_progress);
+    }
+    if cny_unpriced == 0 || in_flight.is_empty() {
+        cny_reasons.remove(in_progress);
+    }
+}
+
 /// Apply bounded unresolved metadata to an existing cost projection. The
 /// returned batch omits exact identities whose missing slots overflowed; a
 /// real receipt for such an id can still settle once, but cannot erase the gap.
