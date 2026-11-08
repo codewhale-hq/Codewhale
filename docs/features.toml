@@ -512,7 +512,7 @@ owner = "crates/tui/src/tui/image_preview.rs"
 [[feature]]
 id = "clipboard-image-prune"
 name = "Pasted image cleanup"
-summary = "codewhale sessions prune-images reports, and with --apply deletes, pasted clipboard images that no saved session, draft or history still names."
+summary = "codewhale sessions prune-images reports pasted clipboard images no saved session still names; --apply deletes them."
 status = "experimental"
 surfaces = { tui = "preview" }
 since = "unreleased"
