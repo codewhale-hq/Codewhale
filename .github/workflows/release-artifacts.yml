@@ -306,18 +306,26 @@ jobs:
           cargo build --profile dist --locked --target "${{ matrix.target }}" -p codewhale-cli
 
           bin="target/${{ matrix.target }}/dist/${{ matrix.cli_binary }}"
-          signer="$(dirname "${OHOS_NATIVE_SDK}")/toolchains/lib/binary-sign-tool.jar"
-          if [[ ! -f "${signer}" ]]; then
-            echo "binary-sign-tool.jar is missing from the SDK toolchains component" >&2
+          tools="$(dirname "${OHOS_NATIVE_SDK}")/toolchains/lib"
+          # SDK 6.1 publishes the native `binary-sign-tool` and no jar, while
+          # DevEco ships the Java build; both take the same arguments.
+          if [[ -f "${tools}/binary-sign-tool.jar" ]]; then
+            signer=(java -jar "${tools}/binary-sign-tool.jar")
+          elif [[ -f "${tools}/binary-sign-tool" ]]; then
+            chmod +x "${tools}/binary-sign-tool"
+            signer=("${tools}/binary-sign-tool")
+          else
+            echo "no binary-sign-tool in ${tools}; the device refuses an unsigned ELF" >&2
+            ls -la "${tools}" >&2
             exit 1
           fi
-          java -jar "${signer}" sign -inFile "${bin}" -outFile "${bin}" -selfSign 1
+          "${signer[@]}" sign -inFile "${bin}" -outFile "${bin}" -selfSign 1
 
           # Capture then match. `tool | grep -q` cannot be used under
           # `pipefail`: grep exits at the first match, the tool takes SIGPIPE,
           # and llvm-readelf reports that as exit 74, which reads as a failed
           # verification of a good binary.
-          signature="$(java -jar "${signer}" display-sign -inFile "${bin}")"
+          signature="$("${signer[@]}" display-sign -inFile "${bin}")"
           case "${signature}" in
             *'code signature is self-sign'*) ;;
             *)

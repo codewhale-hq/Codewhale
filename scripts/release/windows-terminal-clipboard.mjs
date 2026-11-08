@@ -54,10 +54,20 @@ try {
   // Official Microsoft ZIP, pinned by release and GitHub's asset SHA-256.
   const terminalUrl = 'https://github.com/microsoft/terminal/releases/download/v1.25.2733.0/Microsoft.WindowsTerminal_1.25.2733.0_x64.zip';
   const terminalHash = 'bf3ef2012f6c44d8340a4c58125acc9498d19b580f9890dc043cdf831852e796';
-  const download = await fetch(terminalUrl, { signal: AbortSignal.timeout(60_000) });
-  assert.equal(download.status, 200, 'official Terminal download');
-  const bytes = Buffer.from(await download.arrayBuffer());
-  assert.equal(createHash('sha256').update(bytes).digest('hex'), terminalHash, 'Terminal asset digest');
+  let bytes;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    try {
+      const download = await fetch(terminalUrl, { signal: AbortSignal.timeout(180_000) });
+      assert.equal(download.status, 200, 'official Terminal download');
+      const candidate = Buffer.from(await download.arrayBuffer());
+      assert.equal(createHash('sha256').update(candidate).digest('hex'), terminalHash, 'Terminal asset digest');
+      bytes = candidate;
+      break;
+    } catch (error) {
+      if (attempt === 5) throw error;
+      await new Promise(resolve => setTimeout(resolve, attempt * 15_000));
+    }
+  }
   const zip = path.join(root, 'terminal.zip'); await fs.writeFile(zip, bytes);
   await fs.mkdir(terminalRoot);
   execFileSync('tar.exe', ['-xf', zip, '-C', terminalRoot], { timeout: 60_000 });
