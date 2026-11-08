@@ -208,6 +208,7 @@ fn mode_event_body(mode: codewhale_config::AppMode) -> &'static str {
     match mode {
         AppMode::Plan => concat!(
             "Mode: Plan. Purpose: investigate and produce a plan for the user to review. ",
+            "Resolve open requirements with the question tool first, then present the plan. ",
             "In Plan, shell, code-execution, and file-writing calls are refused. ",
             "The user changes modes with /mode.",
         ),

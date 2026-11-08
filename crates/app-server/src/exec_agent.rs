@@ -593,6 +593,12 @@ pub async fn run_exec_agent(
                 .into_iter()
                 .map(Into::into)
                 .collect();
+            instrs.push(codewhale_engine::prompts::InstructionSource::Inline {
+                name: "exec:no-user-present".into(),
+                content:
+                    "No user is present; choose the recommended default and state the assumption."
+                        .into(),
+            });
             if let Some(ref extra) = append_system_prompt {
                 instrs.push(codewhale_engine::prompts::InstructionSource::Inline {
                     name: "cli:append-system-prompt".into(),

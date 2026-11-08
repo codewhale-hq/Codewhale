@@ -2747,8 +2747,9 @@ impl SetupWizardView {
         }
 
         // The compiled constitution already embodies the balanced posture:
-        // act on clear reversible work, ask when ambiguity is costly, and
-        // require express authorization for irreversible or external effects.
+        // act on clear reversible work without asking, ask with options when a
+        // choice is the user's, and require express authorization for
+        // irreversible or external effects.
         // Accepting the recommendation therefore records Bundled rather than
         // pinning a generated user-global fork that would miss future bundled
         // law improvements. Only Customize writes a GuidedCustom file.

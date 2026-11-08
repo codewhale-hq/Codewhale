@@ -2174,6 +2174,11 @@ impl Engine {
         if config.compaction.workspace.is_none() && !api_config.runtime_chat_isolated {
             config.compaction.workspace = Some(config.workspace.clone());
         }
+        if config.user_input_responder {
+            config
+                .tools_always_load
+                .insert(codewhale_tools::names::REQUEST_USER_INPUT_NAME.to_string());
+        }
 
         // Unlike a Skill body, this instruction is visible on the first model
         // request. Registry discovery is a fallback for missing capabilities;

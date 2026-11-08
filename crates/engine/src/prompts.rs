@@ -1975,7 +1975,7 @@ mod tests {
         for phrase in [
             "Do what the user's current request asks, no more.",
             "require express user authorization in",
-            "otherwise name the decision and ask.",
+            "otherwise name the decision and ask with options.",
             "external publication, spending",
             "credentials, and material scope expansion",
             "prohibitions stay binding; convenience creates no exception",
