@@ -5140,17 +5140,24 @@ impl App {
 
     /// Price is one number, everywhere (design §2.11 item 5): the session
     /// cost as the footer chip, the price view, and the roster print it.
-    /// Money routes print the amount; subscription, local, and unknown
-    /// routes print the same words the chip uses; a metered route that has
-    /// not spent yet prints `$0.00` rather than vanishing between turns.
+    /// Money routes print the amount; subscription and local routes print the
+    /// same words the chip uses; a metered route that has not spent yet prints
+    /// `$0.00`; a session with no confirmed price says `unknown` rather than
+    /// inventing a zero.
     #[must_use]
     pub fn session_cost_label(&self) -> String {
         let chip = self.cumulative_usage_chip();
+        if matches!(chip, codewhale_engine::route_billing::UsageChip::Hidden) {
+            return self
+                .format_cost_amount(self.displayed_session_cost_for_currency(self.cost_currency));
+        }
         codewhale_engine::route_billing::format_usage_chip(&chip, self.ui_locale).unwrap_or_else(
             || {
-                self.format_cost_amount(
-                    self.displayed_session_cost_for_currency(self.cost_currency),
+                codewhale_localization::tr(
+                    self.ui_locale,
+                    codewhale_localization::MessageId::CmdCostUnknownValue,
                 )
+                .into_owned()
             },
         )
     }

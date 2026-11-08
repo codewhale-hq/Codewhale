@@ -1823,7 +1823,7 @@ admission rule and one safety net, and they differ in scope and trust.
 | --- | --- | --- | --- |
 | `POST /v1/snapshots/{id}/restore` | whole server workspace, or the `thread_id` workspace | bearer token only (operator action) | no |
 | `POST /v1/threads/{id}/patch-undo` | the files the dropped turns changed | thread `trust_mode` or `auto_approve` when files would change | yes |
-| `POST /v1/threads/{id}/file-revert` | exactly one regular file | thread `trust_mode` or `auto_approve`, always | no |
+| `POST /v1/threads/{id}/file-revert` | exactly one regular file | none; the restore point must be one the thread owns and `expected_hash` must match | no |
 
 **Admission.** A restore reserves the same admission the Runtime uses for
 config reloads and session checkpoints, so no new turn starts and no saved

@@ -9006,13 +9006,13 @@ async fn file_revert_route_probes_as_available_and_404s_unknown_threads() -> Res
     Ok(())
 }
 
-/// Route-level contract for the new destructive endpoint: malformed bodies
-/// are 422/400 before any thread state is read, an untrusted thread is a 409
-/// even with a well-formed request, and a trusted thread without a bound
-/// restore point it owns is a 409 that names the reason. No file is touched in
-/// any case.
+/// Route-level contract for the destructive endpoint: malformed bodies are
+/// 422/400 before any thread state is read, and a thread that did not record
+/// the named restore point is a 409 that names the reason. Reverting follows
+/// the user's own choices (`6a6d9bf2980`), so posture is not a gate; the exact
+/// snapshot and reviewed-hash checks are. No file is touched in any case.
 #[tokio::test]
-async fn file_revert_route_validates_body_then_trust_then_ownership() -> Result<()> {
+async fn file_revert_route_validates_body_then_ownership() -> Result<()> {
     // The route opens the snapshot store under the resolved home. Seal the
     // process environment and own that home, so a concurrent test's temporary
     // HOME (deleted when it ends) can never host or remove this store mid-request.
@@ -9054,20 +9054,8 @@ async fn file_revert_route_validates_body_then_trust_then_ownership() -> Result<
         let resp = client.post(&url).json(&bad).send().await?;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
     }
-    // Untrusted thread: 409 that says how to proceed.
-    let resp = client.post(&url).json(&well_formed).send().await?;
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let text = resp.text().await?;
-    assert!(text.contains("trusted mode"), "got: {text}");
-
-    // Trusted, but the thread recorded no such restore point: still a 409
-    // with the reason.
-    client
-        .patch(format!("http://{addr}/v1/threads/{thread_id}"))
-        .json(&json!({ "trust_mode": true }))
-        .send()
-        .await?
-        .error_for_status()?;
+    // A well-formed request for a restore point this thread does not own:
+    // a 409 that names the reason, whatever the thread's posture.
     let resp = client.post(&url).json(&well_formed).send().await?;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let text = resp.text().await?;

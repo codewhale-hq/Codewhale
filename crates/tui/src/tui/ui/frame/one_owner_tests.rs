@@ -699,10 +699,11 @@ fn statusline_full_frame_presets_preserve_transcript_composer_and_hitboxes() {
     }
 }
 
-/// #5976 intentionally supersedes #5950's blanket custom-cost omission:
-/// missing coverage is evidence, independent of whether today's route is known.
+/// #5976 supersedes #5950's blanket custom-cost omission, and the cost line
+/// now carries confirmed dollars only: an unpriced session shows no money at
+/// any width, and a partly priced one shows exactly the confirmed amount.
 #[test]
-fn statusline_full_frame_custom_cost_preserves_evidence_and_width_shedding() {
+fn statusline_cost_shows_confirmed_dollars_only() {
     use codewhale_config::ProviderKind;
     use codewhale_engine::route_billing::{BillingPresentation, UsageChip};
     use codewhale_runtime::config::{ChromeRowPreset, StatusItem};
@@ -723,122 +724,55 @@ fn statusline_full_frame_custom_cost_preserves_evidence_and_width_shedding() {
         app.posture_bar = ChromeRowPreset::Hidden;
         app.metrics_line = ChromeRowPreset::Compact;
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let expected = "cost: unknown (saved coverage unavailable)";
+
         assert_eq!(app.api_provider, ProviderKind::Custom);
         assert!(matches!(app.cumulative_usage_chip(), UsageChip::Unknown(_)));
-        assert_eq!(super::session_cost_label(&app), expected);
-        let (rows, _) = draw_into(&mut app, &mut terminal);
-        eprintln!("{width}x{height} custom-saved-unknown\n{}", rows.join("\n"));
-        let metrics = rows.last().unwrap();
-        assert!(metrics.contains("context 0%"), "{metrics}");
-        if width >= 60 {
-            assert!(metrics.contains(expected), "{width}: {metrics}");
-        } else {
-            // The existing whole-segment shed ladder cannot fit the reason
-            // plus context in 40 columns. It must not invent a zero price.
-            assert!(!metrics.contains("cost:"), "{metrics}");
-            assert!(!metrics.contains('$'), "{metrics}");
-        }
         assert_eq!(
             super::session_cost_label(&app),
-            expected,
-            "shedding changes no receipt"
+            "",
+            "{width}: an unpriced session shows no money"
         );
+        let (rows, _) = draw_into(&mut app, &mut terminal);
+        let metrics = rows.last().unwrap();
+        assert!(metrics.contains("context 0%"), "{metrics}");
+        assert!(!metrics.contains('$'), "{width}: {metrics}");
+        assert!(!metrics.contains("cost"), "{width}: {metrics}");
 
         app.status_items.retain(|item| *item != StatusItem::Cost);
         let (hidden, _) = draw_into(&mut app, &mut terminal);
-        assert!(!hidden.last().unwrap().contains("cost:"));
         assert_eq!(
-            super::session_cost_label(&app),
-            expected,
-            "a toggle changes no receipt"
+            hidden, rows,
+            "an empty cost line changes no frame at {width}"
         );
         app.status_items.push(StatusItem::Cost);
-        assert_eq!(
-            draw_into(&mut app, &mut terminal).0,
-            rows,
-            "live cost toggle restores the same frame"
-        );
 
+        // A confirmed amount with a coverage gap prints as that amount alone.
+        app.billing_presentation = BillingPresentation::Metered;
         app.session.cost_coverage_unknown_legacy = false;
+        app.session.cost_priced_turns = 1;
         app.session.cost_unpriced_turns = 1;
-        app.session.cost_unpriced_reasons.insert(
-            codewhale_engine::pricing::UnpricedReason::NoPricingRow
-                .label()
-                .to_string(),
+        app.session.session_cost = 0.42;
+        assert!(
+            matches!(
+                app.cumulative_usage_chip(),
+                UsageChip::PricedSubtotal { .. }
+            ),
+            "{:?}",
+            app.cumulative_usage_chip()
         );
-        let missing_rate = "cost: unknown (rate unavailable)";
-        assert_eq!(super::session_cost_label(&app), missing_rate);
-        let (unpriced, _) = draw_into(&mut app, &mut terminal);
-        eprintln!(
-            "{width}x{height} custom-unpriced-turn\n{}",
-            unpriced.join("\n")
+        let label = super::session_cost_label(&app);
+        assert!(
+            label.contains("0.42") && !label.contains("unknown"),
+            "{label}"
         );
+        let (priced, _) = draw_into(&mut app, &mut terminal);
         if width >= 60 {
-            assert!(
-                unpriced.last().unwrap().contains(missing_rate),
-                "{unpriced:?}"
-            );
-        } else {
-            assert!(!unpriced.last().unwrap().contains("cost:"), "{unpriced:?}");
+            assert!(priced.last().unwrap().contains(&label), "{priced:?}");
         }
         assert_eq!(app.session.cost_unpriced_turns, 1);
-        assert!(matches!(app.cumulative_usage_chip(), UsageChip::Unknown(_)));
-
-        // An unavailable effective effort is omitted independently of the
-        // explicit missing-cost reason. At 100 columns both model and reason fit.
-        if width == 100 {
-            app.status_items.insert(0, StatusItem::Model);
-            let (with_model, _) = draw_into(&mut app, &mut terminal);
-            eprintln!(
-                "{width}x{height} custom-model-and-unpriced-turn\n{}",
-                with_model.join("\n")
-            );
-            let metrics = with_model.last().unwrap();
-            assert!(metrics.contains("vendor-model-x"), "{metrics}");
-            assert!(metrics.contains(missing_rate), "{metrics}");
-            assert_eq!(app.provable_reasoning_effort_label(), None);
-            assert!(!metrics.contains("high"), "{metrics}");
-            assert!(!metrics.contains("effective unavailable"), "{metrics}");
-            app.status_items.remove(0);
-        }
-
-        app.session.cost_unpriced_turns = 0;
-        app.session.cost_unpriced_reasons.clear();
-        app.session.cost_priced_turns = 1;
-        app.session.session_cost = 0.42;
-        let (priced, _) = draw_into(&mut app, &mut terminal);
-        eprintln!(
-            "{width}x{height} custom-recorded-price\n{}",
-            priced.join("\n")
-        );
-        assert!(matches!(app.cumulative_usage_chip(), UsageChip::Money(_)));
-        assert!(
-            priced.last().unwrap().contains("0.42"),
-            "real fixture price survives Custom: {priced:?}"
-        );
-        app.set_provider_identity(ProviderKind::Deepseek, "deepseek");
-        app.active_route_base_url = "https://api.deepseek.com/v1".to_string();
-        app.model = "deepseek-v4-pro".to_string();
-        app.billing_presentation = BillingPresentation::Metered;
-        let (first_party, _) = draw_into(&mut app, &mut terminal);
-        assert_eq!(
-            first_party.last(),
-            priced.last(),
-            "historical price does not follow today's provider"
-        );
-        app.set_provider_identity(ProviderKind::Custom, "my-gateway");
-        app.active_route_base_url = "https://gateway.example/v1".to_string();
-        app.model = "vendor-model-x".to_string();
-        app.billing_presentation = BillingPresentation::Unknown;
-        let (restored_custom, _) = draw_into(&mut app, &mut terminal);
-        assert_eq!(restored_custom.last(), priced.last());
     }
 }
 
-/// Feed real estimated conversation tokens through the composed frame, then
-/// change only the route window. Crossing the warning threshold must repaint
-/// both text and ink without moving the transcript, composer or inspector.
 #[test]
 fn statusline_full_frame_context_reading_updates_below_and_at_warning() {
     use crate::tui::tideline::InteractionTargetId;

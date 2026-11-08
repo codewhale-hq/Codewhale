@@ -3117,9 +3117,10 @@ mod tests {
         assert_eq!(super::billing_tier_label(&app, peak), None);
     }
 
-    /// A provider switch must not hide missing historical coverage.
+    /// A provider switch must not fabricate a price: the glance carries
+    /// confirmed dollars, so an unpriced session renders no cost at all.
     #[test]
-    fn cost_unknown_preserves_saved_coverage_across_route_changes() {
+    fn cost_shows_confirmed_dollars_only_across_route_changes() {
         use codewhale_engine::route_billing::BillingPresentation;
         let mut app = app_with_context_percent(10);
         app.session.cost_coverage_unknown_legacy = true;
@@ -3131,39 +3132,34 @@ mod tests {
         ));
         assert_eq!(
             super::session_cost_label(&app),
-            "cost: unknown (saved coverage unavailable)"
+            "",
+            "an unpriced session shows no money"
         );
         let row = metrics_row(&app, 200);
-        assert!(
-            row.contains("cost: unknown"),
-            "a priceable route keeps the honesty: {row:?}"
-        );
+        assert!(!row.contains('$'), "no invented price: {row:?}");
 
         app.billing_presentation = BillingPresentation::Unknown;
         assert!(matches!(
             app.cumulative_usage_chip(),
             codewhale_engine::route_billing::UsageChip::Unknown(_)
         ));
-        assert_eq!(
-            super::session_cost_label(&app),
-            "cost: unknown (saved coverage unavailable)"
-        );
+        assert_eq!(super::session_cost_label(&app), "");
         let ids: Vec<InfoSegmentId> = super::info_segments(&app, 200)
             .iter()
             .map(|segment| segment.id)
             .collect();
-        assert!(ids.contains(&InfoSegmentId::Cost), "{ids:?}");
+        assert!(!ids.contains(&InfoSegmentId::Cost), "{ids:?}");
         let row = metrics_row(&app, 200);
         assert!(
-            row.contains("saved coverage unavailable"),
-            "an unclassified route preserves the reason: {row:?}"
+            !row.contains('$'),
+            "a route change invents nothing: {row:?}"
         );
         assert!(
             row.contains("context 10%"),
             "and nothing else moves: {row:?}"
         );
 
-        // A real price on an otherwise unclassified route still prints.
+        // A confirmed price on an otherwise unclassified route still prints.
         app.session.cost_coverage_unknown_legacy = false;
         app.session.cost_priced_turns = 1;
         app.session.session_cost = 0.42;
