@@ -16,10 +16,6 @@
         {
           "kind": "api-key",
           "label": "API key"
-        },
-        {
-          "kind": "oauth",
-          "label": "OAuth"
         }
       ],
       "models": [

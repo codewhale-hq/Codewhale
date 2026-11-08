@@ -374,7 +374,6 @@ impl CodewhaleClient {
         let stream_idle_timeout = self.stream_idle_timeout;
         let first_byte = super::stream_entry::first_byte_timeout(stream_idle_timeout);
         let provider_label = self.api_provider.provider().display_name();
-        let suppress_error_details = self.claude_oauth_config.is_some();
         let byte_stream = response.bytes_stream();
 
         let stream = async_stream::stream! {
@@ -457,10 +456,6 @@ impl CodewhaleClient {
 
                     match convert_anthropic_sse_data(&data) {
                         Some(Ok(StreamEvent::Error { error })) => {
-                            if suppress_error_details {
-                                yield Err(anyhow::anyhow!("Claude subscription stream failed"));
-                                return;
-                            }
                             let (error_type, message) = anthropic_error_fields(&error);
                             yield Err(anyhow::anyhow!(
                                 "Anthropic stream error ({error_type}): {message}"
@@ -475,11 +470,7 @@ impl CodewhaleClient {
                             }
                         }
                         Some(Err(e)) => {
-                            if suppress_error_details {
-                                logging::warn("Failed to parse Claude subscription stream event");
-                            } else {
-                                logging::warn(format!("Failed to parse Anthropic SSE event: {e}"));
-                            }
+                            logging::warn(format!("Failed to parse Anthropic SSE event: {e}"));
                         }
                         None => {}
                     }

@@ -70,6 +70,10 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **MCP servers say why they are not connected:** the Runtime API's
+  `GET /v1/apps/mcp/servers` now includes a configured server's last
+  connection error while it is retrying, so the desktop and other clients can
+  show the reason instead of only "disconnected".
 - **Inspect and repair plugin snapshots:** `codew plugins status [name]
   [--json]` reports bundle state and diagnostics without changing plugin
   stores. Runtime loading restores a missing snapshot only from bytes matching
@@ -283,8 +287,24 @@ until the matching tag, packages, checksums, and release assets exist.
   had no way to send. `Ctrl-J` always inserts a newline. Thanks
   [@luestr](https://github.com/luestr) for the report. (#7093)
 
+### Removed
+
+- **Claude subscription sign-in (breaking):** Claude subscription sign-in is
+  removed: it used Claude Code's sign-in, which Anthropic doesn't allow other
+  apps to use. Use an Anthropic API key instead, through
+  `codewhale auth set --provider anthropic`, `/provider setup anthropic` or
+  `ANTHROPIC_API_KEY`. `codewhale auth claude` and `/auth claude` now explain
+  the removal, and `/provider setup anthropic` goes straight to API-key entry.
+  A config that still selects `auth_mode = "oauth"` for Anthropic fails with
+  the same guidance instead of switching billing to an API key. Saved Claude
+  sign-in files are not deleted; `codewhale logout` removes them with your
+  other saved credentials (Refs #6932).
+
 ### Fixed
 
+- **Fleet members:** a replayed member start now matches only within its own
+  session, so two sessions that reuse an operation key no longer receive each
+  other's agent.
 - **Plugin stages created during a registry load are checked:** a plugin whose staged copy appears while the registry is loading now goes through the same restage lock, receipt and policy checks as any other stage instead of being left unstaged; invalid bytes are still refused and stay in the failure cache.
 - **Host-provided model clients:** keep configured session isolation and
   approval deadlines when optional credential preflight fails.

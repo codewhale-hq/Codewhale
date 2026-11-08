@@ -1253,13 +1253,16 @@ pub fn trust(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
     }
 }
 
-/// `/auth xai-device|chatgpt|chatgpt-revoke|claude|claude-revoke|orcarouter|orcarouter-revoke`.
+/// `/auth xai-device|chatgpt|chatgpt-revoke|orcarouter|orcarouter-revoke`.
 /// Pure: selects a capability-launch action, no host observation.
 pub fn auth(arg: Option<&str>) -> ConfigCommandResult {
     let action = match arg.map(str::trim) {
         Some("xai-device") | Some("xai_device") => ConfigAction::StartXaiDeviceLogin,
-        Some("claude") | Some("anthropic") => ConfigAction::StartClaudeLogin,
-        Some("claude-revoke") => ConfigAction::StartClaudeRevoke,
+        Some("claude") | Some("anthropic") | Some("claude-revoke") => {
+            return ConfigCommandResult::error(
+                "Claude subscription sign-in was removed in 0.10.3. Use an Anthropic API key: /provider setup anthropic",
+            );
+        }
         Some("chatgpt") | Some("openai-codex") | Some("openai_codex") => {
             ConfigAction::StartChatgptPkceLogin
         }
@@ -1271,7 +1274,7 @@ pub fn auth(arg: Option<&str>) -> ConfigCommandResult {
         _ => {
             return ConfigCommandResult {
                 message: Some(
-                    "Usage: /auth xai-device|chatgpt|chatgpt-revoke|claude|claude-revoke|orcarouter|orcarouter-revoke"
+                    "Usage: /auth xai-device|chatgpt|chatgpt-revoke|orcarouter|orcarouter-revoke"
                         .to_string(),
                 ),
                 action: None,

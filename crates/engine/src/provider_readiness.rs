@@ -142,9 +142,6 @@ pub fn auth_class_for_provider(
         };
     }
     let auth_mode = config.auth_mode_for_provider(identity);
-    if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
-        return ProviderAuthClass::OAuth;
-    }
     if provider == ProviderKind::Custom
         && config
             .provider_config_for(identity)
@@ -218,17 +215,7 @@ pub fn credential_state_for_provider(
     }
     let auth_mode = config.auth_mode_for_provider(identity);
     if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
-        return if matches!(
-            config.base_url_for_route(identity).trim_end_matches('/'),
-            "https://api.anthropic.com" | "https://api.anthropic.com/v1"
-        ) && codewhale_runtime::oauth::credentials_valid(
-            codewhale_runtime::oauth::OAuthProvider::Claude,
-            config,
-        ) {
-            CredentialState::Saved
-        } else {
-            CredentialState::MissingLogin
-        };
+        return CredentialState::MissingKey;
     }
     // Plugin OAuth takes precedence over local/keyless and legacy custom
     // classifications. Diagnostics only read the bound credential; they never

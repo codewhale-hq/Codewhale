@@ -825,27 +825,20 @@ impl ProviderDashboardRow {
                 codewhale_runtime::oauth::OAuthProvider::Xai,
                 config,
             );
-        let auth_status =
-            if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
-                if official_endpoint && has_key {
-                    ProviderAuthStatus::OAuthReady
-                } else {
-                    ProviderAuthStatus::OAuthMissing
-                }
-            } else if credential_state == CredentialState::ExternalConsent {
-                ProviderAuthStatus::OAuthConsented
-            } else {
-                auth_status_for(
-                    provider,
-                    &auth_base_url,
-                    has_key,
-                    configured,
-                    no_auth,
-                    api_key_required,
-                    official_endpoint,
-                    xai_oauth_ready,
-                )
-            };
+        let auth_status = if credential_state == CredentialState::ExternalConsent {
+            ProviderAuthStatus::OAuthConsented
+        } else {
+            auth_status_for(
+                provider,
+                &auth_base_url,
+                has_key,
+                configured,
+                no_auth,
+                api_key_required,
+                official_endpoint,
+                xai_oauth_ready,
+            )
+        };
         // Slice D: cost lives at the model level (per-model $/mtok in the
         // models pane and the model-pick stage), never on the provider row.
         // Auth guidance that used to ride the provider meter (e.g. the Kimi
@@ -2458,21 +2451,8 @@ impl ProviderPickerView {
     }
 
     fn selected_has_key(&self) -> bool {
-        let Some(identity) = self.selected_identity() else {
+        if self.selected_identity().is_none() {
             return false;
-        };
-        if self.selected_provider() == ProviderKind::Anthropic
-            && self
-                .route_config
-                .auth_mode_for_provider(&identity)
-                .as_deref()
-                == Some("oauth")
-        {
-            return !self.route_config.provider_uses_custom_endpoint(&identity)
-                && codewhale_runtime::oauth::credentials_valid(
-                    codewhale_runtime::oauth::OAuthProvider::Claude,
-                    &self.route_config,
-                );
         }
         if self.selected_provider() == ProviderKind::OpenaiCodex {
             return codewhale_runtime::oauth::credentials_valid(
@@ -2523,10 +2503,7 @@ impl ProviderPickerView {
     /// than one endpoint choose the route first so the key is validated
     /// against the endpoint it will actually be saved for (#4526).
     fn begin_setup(&mut self) {
-        if matches!(
-            self.selected_provider(),
-            ProviderKind::Xai | ProviderKind::Anthropic
-        ) {
+        if self.selected_provider() == ProviderKind::Xai {
             self.enter_subscription_auth_choice();
         } else if self.selected_provider() == ProviderKind::OpenaiCodex {
             self.enter_chatgpt_auth_choice();
@@ -3645,11 +3622,7 @@ impl ProviderPickerView {
     fn render_subscription_auth_choice(&self, area: Rect, buf: &mut Buffer) {
         let outer = Block::default()
             .title(Line::from(Span::styled(
-                if self.selected_provider() == ProviderKind::Anthropic {
-                    Cow::Borrowed("Anthropic")
-                } else {
-                    self.tr(MessageId::XaiAuthChoiceTitle)
-                },
+                self.tr(MessageId::XaiAuthChoiceTitle),
                 Style::default()
                     .fg(palette::WHALE_ACTION)
                     .add_modifier(Modifier::BOLD),
@@ -3676,17 +3649,9 @@ impl ProviderPickerView {
             buf,
             vec![Line::from(self.tr(MessageId::XaiAuthChoiceIntro))],
             [
-                if self.selected_provider() == ProviderKind::Anthropic {
-                    "Anthropic API key (separate billing)".to_string()
-                } else {
-                    self.tr(MessageId::XaiAuthChoiceApiKeyOption).into_owned()
-                },
-                if self.selected_provider() == ProviderKind::Anthropic {
-                    "Claude Pro / Max (OAuth)".to_string()
-                } else {
-                    self.tr(MessageId::XaiAuthChoiceDeviceOAuthOption)
-                        .into_owned()
-                },
+                self.tr(MessageId::XaiAuthChoiceApiKeyOption).into_owned(),
+                self.tr(MessageId::XaiAuthChoiceDeviceOAuthOption)
+                    .into_owned(),
             ],
             usize::from(self.subscription_auth_choice == SubscriptionAuthChoice::DeviceOAuth),
         );
@@ -5044,13 +5009,9 @@ impl ModalView for ProviderPickerView {
                         self.enter_key_entry();
                         ViewAction::None
                     }
-                    SubscriptionAuthChoice::DeviceOAuth => ViewAction::EmitAndClose(
-                        if self.selected_provider() == ProviderKind::Anthropic {
-                            ViewEvent::ProviderPickerClaudeOAuthRequested
-                        } else {
-                            ViewEvent::ProviderPickerXaiOAuthRequested
-                        },
-                    ),
+                    SubscriptionAuthChoice::DeviceOAuth => {
+                        ViewAction::EmitAndClose(ViewEvent::ProviderPickerXaiOAuthRequested)
+                    }
                 },
                 _ => ViewAction::None,
             },
@@ -5099,10 +5060,7 @@ impl ModalView for ProviderPickerView {
                 KeyCode::Esc => {
                     // Back to the route choice when one was made, so Esc undoes
                     // one wizard step instead of discarding the whole flow.
-                    self.stage = if matches!(
-                        self.selected_provider(),
-                        ProviderKind::Xai | ProviderKind::Anthropic
-                    ) {
+                    self.stage = if self.selected_provider() == ProviderKind::Xai {
                         Stage::SubscriptionAuthChoice
                     } else if self.selected_provider() == ProviderKind::OpenaiCodex {
                         Stage::ChatgptAuthChoice
@@ -5193,10 +5151,7 @@ impl ModalView for ProviderPickerView {
             },
             Stage::ExternalConsentChoice => match key.code {
                 KeyCode::Esc => {
-                    self.stage = if matches!(
-                        self.selected_provider(),
-                        ProviderKind::Xai | ProviderKind::Anthropic
-                    ) {
+                    self.stage = if self.selected_provider() == ProviderKind::Xai {
                         Stage::SubscriptionAuthChoice
                     } else if self.selected_provider() == ProviderKind::OpenaiCodex {
                         Stage::ChatgptAuthChoice
@@ -8585,7 +8540,7 @@ mod tests {
             None,
         )
         .expect("Anthropic has a picker row");
-        assert_eq!(picker.stage, Stage::SubscriptionAuthChoice);
+        assert_eq!(picker.stage, Stage::KeyEntry);
         assert_eq!(picker.selected_provider(), ProviderKind::Anthropic);
     }
 
@@ -8637,7 +8592,7 @@ mod tests {
         );
 
         assert_eq!(picker.view, ProviderListView::Catalog);
-        assert_eq!(picker.stage, Stage::SubscriptionAuthChoice);
+        assert_eq!(picker.stage, Stage::KeyEntry);
         assert_eq!(picker.selected_provider(), ProviderKind::Anthropic);
         assert!(picker.api_key_input.is_empty());
     }
@@ -8962,14 +8917,13 @@ mod tests {
                 CredentialAcquisition::ApiKeyOrOAuth => {
                     assert!(matches!(
                         provider,
-                        ProviderKind::Xai | ProviderKind::Anthropic | ProviderKind::Orcarouter
+                        ProviderKind::Xai | ProviderKind::Orcarouter
                     ));
                     assert!(matches!(action, ViewAction::None), "{provider:?}");
                     let choices = render_text(&picker, 80, 24);
                     assert!(choices.contains("API key"), "{choices}");
                     let oauth_label = match provider {
                         ProviderKind::Xai => "device OAuth",
-                        ProviderKind::Anthropic => "Claude Pro / Max",
                         ProviderKind::Orcarouter => "PKCE",
                         _ => unreachable!(),
                     };
@@ -9043,10 +8997,6 @@ mod tests {
                     ));
                     let action = oauth.handle_key(key(KeyCode::Enter));
                     match provider {
-                        ProviderKind::Anthropic => assert!(matches!(
-                            action,
-                            ViewAction::EmitAndClose(ViewEvent::ProviderPickerClaudeOAuthRequested)
-                        )),
                         ProviderKind::Xai => assert!(matches!(
                             action,
                             ViewAction::EmitAndClose(ViewEvent::ProviderPickerXaiOAuthRequested)
@@ -9181,15 +9131,9 @@ mod tests {
         ));
         assert_eq!(
             picker.stage,
-            Stage::SubscriptionAuthChoice,
-            "Escape from key entry returns to the credential choice"
+            Stage::List,
+            "Escape from key entry returns to the provider list"
         );
-
-        assert!(matches!(
-            picker.handle_key(key(KeyCode::Esc)),
-            ViewAction::None
-        ));
-        assert_eq!(picker.stage, Stage::List);
 
         assert!(
             matches!(
@@ -9213,14 +9157,12 @@ mod tests {
     #[test]
     fn setup_catalog_key_entry_uses_setup_reopen_hint() {
         let config = Config::default();
-        let mut picker = ProviderPickerView::new_for_setup(
+        let picker = ProviderPickerView::new_for_setup(
             ProviderKind::Deepseek,
             Some(ProviderKind::Anthropic.as_str().into()),
             &config,
             None,
         );
-
-        picker.handle_key(key(KeyCode::Enter));
 
         let rendered = render_text(&picker, 96, 20);
 
@@ -9234,7 +9176,6 @@ mod tests {
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);
         move_to_provider(&mut picker, ProviderKind::Anthropic);
-        picker.handle_key(key(KeyCode::Enter));
         picker.handle_key(key(KeyCode::Enter));
 
         let rendered = render_text(&picker, 96, 20);

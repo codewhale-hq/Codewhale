@@ -287,6 +287,19 @@ until the matching tag, packages, checksums, and release assets exist.
   had no way to send. `Ctrl-J` always inserts a newline. Thanks
   [@luestr](https://github.com/luestr) for the report. (#7093)
 
+### Removed
+
+- **Claude subscription sign-in (breaking):** Claude subscription sign-in is
+  removed: it used Claude Code's sign-in, which Anthropic doesn't allow other
+  apps to use. Use an Anthropic API key instead, through
+  `codewhale auth set --provider anthropic`, `/provider setup anthropic` or
+  `ANTHROPIC_API_KEY`. `codewhale auth claude` and `/auth claude` now explain
+  the removal, and `/provider setup anthropic` goes straight to API-key entry.
+  A config that still selects `auth_mode = "oauth"` for Anthropic fails with
+  the same guidance instead of switching billing to an API key. Saved Claude
+  sign-in files are not deleted; `codewhale logout` removes them with your
+  other saved credentials (Refs #6932).
+
 ### Fixed
 
 - **Fleet members:** a replayed member start now matches only within its own

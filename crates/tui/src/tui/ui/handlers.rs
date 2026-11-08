@@ -3332,9 +3332,6 @@ pub(crate) async fn handle_view_events(
                 );
                 refresh_config_view_if_open(app, "provider");
             }
-            ViewEvent::ProviderPickerClaudeOAuthRequested => {
-                app.pending_claude_login = Some(true);
-            }
             ViewEvent::ProviderPickerXaiOAuthRequested => {
                 let switched =
                     run_xai_device_login_from_tui(terminal, app, engine_handle, config).await?;

@@ -231,7 +231,6 @@ pub struct CodewhaleClient {
     /// Read-only diagnostic probes must never migrate or refresh the grant.
     plugin_oauth_read_only: bool,
     session_provider_keys_only: bool,
-    claude_oauth_config: Option<Box<Config>>,
     /// Exact configured credential values removed from model-bound tool
     /// results. Structural redaction handles config/JSON assignments, while
     /// this list closes the gap for bare provider tokens with no recognizable
@@ -546,9 +545,7 @@ fn mark_recovery_probe_if_due(health: &mut ConnectionHealth, now: Instant) -> bo
 
 /// The one command that replaces a rejected key, by where it came from.
 fn auth_fix_hint(route: &str, key_source: &str) -> String {
-    if key_source == "Claude sign-in" {
-        "codewhale auth claude".to_string()
-    } else if key_source.starts_with("--api-key") {
+    if key_source.starts_with("--api-key") {
         "pass a valid --api-key".to_string()
     } else if let Some(rest) = key_source.strip_prefix("env var ")
         && rest.contains("api_key_env")
@@ -574,7 +571,6 @@ impl Clone for CodewhaleClient {
             plugin_provider: self.plugin_provider.clone(),
             plugin_oauth_read_only: self.plugin_oauth_read_only,
             session_provider_keys_only: self.session_provider_keys_only,
-            claude_oauth_config: self.claude_oauth_config.clone(),
             model_bound_secret_values: Arc::clone(&self.model_bound_secret_values),
             catalog_error_secret_values: Arc::clone(&self.catalog_error_secret_values),
             model_bound_masking: self.model_bound_masking,
@@ -1869,14 +1865,6 @@ impl CodewhaleClient {
                 ((api_key, api_key_source), None, guidance, None)
             }
         };
-        let subscription_limit_guidance = if api_key_source == "Claude sign-in" {
-            Some(codewhale_runtime::oauth::usage_limit_guidance(
-                codewhale_runtime::oauth::OAuthProvider::Claude,
-                None,
-            ))
-        } else {
-            subscription_limit_guidance
-        };
         let model_bound_secret_values = Arc::new(configured_model_bound_secret_values_with(
             config,
             &api_key,
@@ -1901,32 +1889,10 @@ impl CodewhaleClient {
         }
         // A newly reviewed plugin destination must not inherit credentials or
         // routing headers from unrelated, global provider configuration.
-        let mut http_headers = plugin_provider.as_ref().map_or_else(
+        let http_headers = plugin_provider.as_ref().map_or_else(
             || config.http_headers(),
             |entry| entry.http_headers.clone().unwrap_or_default(),
         );
-        if api_key_source == "Claude sign-in" {
-            http_headers.retain(|name, _| !is_upstream_auth_header(name));
-            let mut beta = http_headers
-                .iter()
-                .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
-                .flat_map(|(_, value)| value.split(',').map(str::trim))
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>();
-            http_headers.retain(|name, _| !name.eq_ignore_ascii_case("anthropic-beta"));
-            if !beta.iter().any(|value| value == "oauth-2025-04-20") {
-                beta.push("oauth-2025-04-20".into());
-            }
-            http_headers.insert("anthropic-beta".into(), beta.join(","));
-            anyhow::ensure!(
-                config
-                    .provider_config_for(&admitted_identity)
-                    .and_then(|entry| entry.oauth_credential_generation.as_deref())
-                    .is_some_and(codewhale_config::is_valid_claude_oauth_generation),
-                "Claude sign-in generation is missing; sign in again"
-            );
-        }
         let auth_disabled = auth_mode_disables_api_key(
             config.auth_mode_for_provider(&admitted_identity).as_deref(),
         );
@@ -2039,8 +2005,6 @@ impl CodewhaleClient {
             models_http_client,
             http1_client,
             api_key,
-            claude_oauth_config: (api_key_source == "Claude sign-in")
-                .then(|| Box::new(config.clone())),
             api_key_source,
             subscription_limit_guidance,
             plugin_provider,
@@ -2091,39 +2055,9 @@ impl CodewhaleClient {
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder> {
         anyhow::ensure!(
-            !self.session_provider_keys_only
-                || (self.claude_oauth_config.is_none() && self.plugin_provider.is_none()),
+            !self.session_provider_keys_only || self.plugin_provider.is_none(),
             "Stored OAuth authorization is unavailable under session-only provider key policy"
         );
-        if let Some(config) = self.claude_oauth_config.clone() {
-            let destination = request
-                .try_clone()
-                .context("Claude request cannot be inspected")?
-                .build()?;
-            anyhow::ensure!(
-                destination.url().scheme() == "https"
-                    && destination.url().host_str() == Some("api.anthropic.com")
-                    && destination.url().port_or_known_default() == Some(443),
-                "Claude subscription request escaped the native Anthropic origin"
-            );
-            let read_only = self.plugin_oauth_read_only;
-            let token = tokio::task::spawn_blocking(move || {
-                if read_only {
-                    codewhale_runtime::oauth::get_owned_credentials_read_only(
-                        codewhale_runtime::oauth::OAuthProvider::Claude,
-                        &config,
-                    )
-                } else {
-                    codewhale_runtime::oauth::get_owned_credentials(
-                        codewhale_runtime::oauth::OAuthProvider::Claude,
-                        &config,
-                    )
-                }
-            })
-            .await
-            .context("Claude credential worker failed")??;
-            return Ok(request.bearer_auth(token.access_token));
-        }
         let Some(provider) = self.plugin_provider.clone() else {
             return Ok(request);
         };
@@ -3673,20 +3607,11 @@ impl CodewhaleClient {
     /// route that was actually installed for the turn.
     #[must_use]
     pub fn turn_route_receipt(&self) -> crate::route_receipt::TurnRouteReceipt {
-        let credential =
-            self.claude_oauth_config
-                .as_ref()
-                .map_or(self.api_key.as_str(), |config| {
-                    config
-                        .provider_config_for(&self.admitted_identity)
-                        .and_then(|entry| entry.oauth_credential_generation.as_deref())
-                        .unwrap_or_default()
-                });
         crate::route_receipt::TurnRouteReceipt::from_admitted(
             &self.admitted_identity,
             &self.default_model,
             &self.base_url,
-            credential,
+            &self.api_key,
         )
         .with_openrouter_vendor(self.openrouter_vendor.as_deref())
     }
@@ -4730,9 +4655,6 @@ impl CodewhaleClient {
     ) -> String {
         // Rotated opaque bearer values are not part of this client's frozen
         // redaction list. Do not disclose a dynamic OAuth endpoint's body.
-        if self.claude_oauth_config.is_some() {
-            return "Claude subscription request failed".into();
-        }
         if self.plugin_provider.is_some() {
             return "plugin provider request failed".into();
         }

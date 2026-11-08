@@ -1008,10 +1008,10 @@
       "aliases": ["claude"],
       "wire_policy": "anthropic_messages",
       "credential_help": {
-        "acquisition": "api_key_or_oauth",
+        "acquisition": "api_key",
         "credential_url": "https://console.anthropic.com/settings/keys",
         "docs_url": "https://docs.anthropic.com/en/api/overview",
-        "guidance": "Sign in with Claude Pro or Max using codewhale auth claude, or create an Anthropic API key for separate API billing."
+        "guidance": "Create an Anthropic API key in the Anthropic Console."
       },
       "selectable": true,
       "retired": false,

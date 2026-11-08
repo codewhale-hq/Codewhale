@@ -431,7 +431,7 @@ the listed provider env vars.
 | `together` | `[providers.together]` | OpenAI Chat Completions | `TOGETHER_API_KEY` |
 | `qianfan` | `[providers.qianfan]` | OpenAI Chat Completions | `QIANFAN_API_KEY`, `BAIDU_QIANFAN_API_KEY` |
 | `openai-codex` | `[providers.openai_codex]` | OpenAI Responses | Official Sign in with ChatGPT (`codewhale auth chatgpt`) with a validated Codewhale-owned plan grant |
-| `anthropic` | `[providers.anthropic]` | Anthropic Messages | `ANTHROPIC_API_KEY` or `codewhale auth claude` |
+| `anthropic` | `[providers.anthropic]` | Anthropic Messages | `ANTHROPIC_API_KEY` |
 | `openmodel` | `[providers.openmodel]` | Anthropic Messages | `OPENMODEL_API_KEY` |
 | `zai` | `[providers.zai]` | OpenAI Chat Completions | `ZAI_API_KEY`, `Z_AI_API_KEY` |
 | `stepfun` | `[providers.stepfun]` | OpenAI Chat Completions | `STEPFUN_API_KEY`, `STEP_API_KEY` |
@@ -1589,40 +1589,18 @@ provider docs work, but they are not native shipped behavior in this checkout:
   model, context length, chat template, tool-call support, reasoning support,
   and gated/private status.
 
-## Sign in with Claude
+## Claude subscription sign-in (removed)
 
-This is an experimental 0.10.2 candidate flow; live sign-in, inference and
-provider authorization are not release-qualified.
+Codewhale 0.10.3 removes Claude Pro/Max sign-in: `codewhale auth claude`,
+`/auth claude` and the Claude choice in `/provider setup anthropic`. It used
+Claude Code's sign-in, which Anthropic doesn't allow other apps to use. Use an
+Anthropic API key instead, through `codewhale auth set --provider anthropic`,
+`/provider setup anthropic` or `ANTHROPIC_API_KEY`.
 
-Run `codewhale auth claude` (or `/auth claude` in a running session), open the
-printed Claude sign-in URL, and paste the complete `code#state` callback.
-`/provider setup anthropic` also offers API-key and Claude Pro / Max choices.
-Then select `anthropic` or its `claude` alias. API keys continue to use separate
-Anthropic API billing; selecting subscription sign-in never falls back to one.
-
-Codewhale stores the grant in its private credentials directory, commits the
-provider's credential pointer atomically, and refreshes it before requests on a
-worker. Subscription tokens go only to `https://api.anthropic.com`; a custom
-endpoint is rejected. Each request keeps the existing Messages adapter, tool
-protocol, cache prefix, and Codewhale inference-client identity. The login
-registration is a separate fact: this candidate uses Claude Code’s OAuth
-client ID, not a Codewhale-issued registration. No Claude Code credential
-file or keychain entry is read or modified.
-
-`codewhale auth claude-revoke` (or `/auth claude-revoke`) removes the owned local
-grant. End remote access separately in your Claude account settings. The
-subscription route then needs another login; select API-key billing explicitly
-to use an API key. Login and inference follow Anthropic's provider-side
-availability; local checks do not
-establish that an account is eligible or that live subscription inference works.
-
-Reference refreshed on 2026-10-13: upstream Pi is now `earendil-works/pi`.
-Its [v1.2.0 OAuth adapter](https://github.com/earendil-works/pi/blob/06a466935536f8c9bcacb2d5efc0fc021be1bdff/packages/ai/src/auth/oauth/anthropic.ts)
-supports loopback and copy-code flows and uses `platform.claude.com` token and
-copy-code endpoints; this candidate still uses `console.anthropic.com`.
-Pi also uses [Claude Code inference identity](https://github.com/earendil-works/pi/blob/06a466935536f8c9bcacb2d5efc0fc021be1bdff/packages/ai/src/api/anthropic-messages.ts),
-which Codewhale does not adopt. Pi's implementation is a compatibility
-reference, not proof of account eligibility, billing behavior or permission
-to offer the same flow. See Anthropic's current
-[authentication guidance](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
-and [Agent SDK plan guidance](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+A config that still selects `auth_mode = "oauth"` under `[providers.anthropic]`
+fails with that guidance. It never falls back to an API key on its own, so
+billing changes only when you save an Anthropic key. Codewhale does not delete
+a saved Claude sign-in: its `claude-*.json` files stay in the `credentials`
+folder of your Codewhale home until you delete them or run `codewhale logout`,
+which removes every saved credential. End remote access in your Claude account
+settings.

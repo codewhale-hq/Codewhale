@@ -6321,24 +6321,7 @@ impl Config {
             return Ok(keyless());
         }
         if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
-            anyhow::ensure!(
-                matches!(
-                    self.base_url_for_route(&identity).trim_end_matches('/'),
-                    "https://api.anthropic.com" | "https://api.anthropic.com/v1"
-                ),
-                "Claude subscription credentials require the native Anthropic endpoint"
-            );
-            if read_only {
-                return Ok((
-                    crate::oauth::get_owned_credentials_read_only(
-                        crate::oauth::OAuthProvider::Claude,
-                        self,
-                    )?
-                    .access_token,
-                    "Claude sign-in".to_string(),
-                ));
-            }
-            return Ok((String::new(), "Claude sign-in".to_string()));
+            anyhow::bail!(codewhale_config::credentials::CLAUDE_SIGN_IN_REMOVED);
         }
         let custom_endpoint = self.provider_uses_custom_endpoint(&identity);
         let explicit_cli_key = explicit_cli_api_key_override();
@@ -11553,15 +11536,6 @@ pub fn save_api_key_for_identity(
     if identity.provider == ProviderKind::Xai {
         return codewhale_config::with_xai_oauth_revocation_transaction(|| {
             save_api_key_for_identity_unlocked(identity, route_config, api_key)
-        });
-    }
-    if identity.provider == ProviderKind::Anthropic {
-        return codewhale_config::with_xai_oauth_lifecycle_lock(|_| {
-            let saved = save_api_key_for_identity_unlocked(identity, route_config, api_key)?;
-            codewhale_config::clear_all_claude_oauth_credentials_locked().context(
-                "API-key billing was selected and saved, but old Claude sign-in cleanup failed",
-            )?;
-            Ok(saved)
         });
     }
     save_api_key_for_identity_unlocked(identity, route_config, api_key)

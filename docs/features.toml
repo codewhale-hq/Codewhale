@@ -876,16 +876,6 @@ docs = "docs/PROVIDERS.md#sign-in-with-chatgpt"
 owner = "crates/runtime/src/oauth.rs"
 
 [[feature]]
-id = "claude-plan-sign-in"
-name = "Sign in with Claude"
-summary = "Adds Claude subscription sign-in and native Messages routing. Live provider acceptance remains unverified."
-status = "experimental"
-surfaces = { tui = "preview", api = "partial", web = "none" }
-since = "0.10.2"
-docs = "docs/PROVIDERS.md#sign-in-with-claude"
-owner = "crates/runtime/src/oauth.rs"
-
-[[feature]]
 id = "plugin-oauth-providers"
 name = "Reviewed plugin OAuth providers"
 summary = "Reviewed plugins sign in with /connect <id> and out with /disconnect; the host owns PKCE, models and approvals."

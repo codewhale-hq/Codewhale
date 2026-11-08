@@ -134,8 +134,6 @@ pub enum ConfigAction {
     StartAccountLogin,
     StartAccountLogout,
     StartXaiDeviceLogin,
-    StartClaudeLogin,
-    StartClaudeRevoke,
     StartChatgptPkceLogin,
     StartChatgptRevoke,
     StartOrcarouterPkceLogin,

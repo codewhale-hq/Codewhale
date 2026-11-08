@@ -1844,10 +1844,8 @@ enum AuthCommand {
     /// Revoke Codewhale-owned ChatGPT tokens. Codex CLI consent is unchanged.
     #[command(name = "chatgpt-revoke")]
     ChatgptRevoke,
-    #[command(name = "claude", alias = "anthropic")]
+    #[command(name = "claude", aliases = ["anthropic", "claude-revoke"], hide = true)]
     Claude,
-    #[command(name = "claude-revoke")]
-    ClaudeRevoke,
     /// Sign in to OrcaRouter with OAuth 2.0 + PKCE and store the issued key.
     ///
     /// Opens the OrcaRouter consent screen on a loopback callback and
@@ -2775,19 +2773,7 @@ fn run() -> Result<()> {
                     vec!["auth".to_string(), "xai-device".to_string()],
                 )
             }
-            command @ (AuthCommand::Claude | AuthCommand::ClaudeRevoke) => {
-                let route = if matches!(command, AuthCommand::Claude) {
-                    "claude"
-                } else {
-                    "claude-revoke"
-                };
-                let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-                run_tui_in_process(
-                    &cli,
-                    &resolved_runtime,
-                    vec!["auth".to_string(), route.to_string()],
-                )
-            }
+            AuthCommand::Claude => bail!(codewhale_config::credentials::CLAUDE_SIGN_IN_REMOVED),
             AuthCommand::Chatgpt => {
                 let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
                 run_tui_in_process(
@@ -5026,22 +5012,7 @@ fn run_auth_command_with_secrets_and_runtime(
                 1
             })
         }
-        command @ (AuthCommand::Claude | AuthCommand::ClaudeRevoke) => {
-            let route = if matches!(command, AuthCommand::Claude) {
-                "claude"
-            } else {
-                "claude-revoke"
-            };
-            let code = codewhale_tui::run(
-                codewhale_engine::runtime_options::RuntimeOptions::default(),
-                vec!["auth".to_string(), route.to_string()],
-            );
-            std::process::exit(if code == std::process::ExitCode::SUCCESS {
-                0
-            } else {
-                1
-            })
-        }
+        AuthCommand::Claude => bail!(codewhale_config::credentials::CLAUDE_SIGN_IN_REMOVED),
         AuthCommand::Chatgpt => {
             let argv = vec!["auth".to_string(), "chatgpt".to_string()];
             let code = codewhale_tui::run(

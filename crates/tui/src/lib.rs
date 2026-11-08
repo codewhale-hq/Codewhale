@@ -487,10 +487,6 @@ enum TuiAuthCommand {
     /// Revoke Codewhale-owned ChatGPT tokens. Codex CLI consent is unchanged.
     #[command(name = "chatgpt-revoke")]
     ChatgptRevoke,
-    #[command(name = "claude", alias = "anthropic")]
-    Claude,
-    #[command(name = "claude-revoke")]
-    ClaudeRevoke,
     /// Sign in to OrcaRouter with OAuth 2.0 + PKCE; run again to switch accounts.
     #[command(name = "orcarouter")]
     Orcarouter,
@@ -2655,18 +2651,6 @@ async fn run_async_main_dispatch(
             Commands::Logout => run_logout(),
             Commands::Auth(args) => match args.command {
                 TuiAuthCommand::XaiDevice => run_xai_device_auth(cli.config.as_deref()).await,
-                TuiAuthCommand::Claude => run_claude_auth(cli.config.as_deref()).await,
-                TuiAuthCommand::ClaudeRevoke => {
-                    codewhale_runtime::oauth::revoke_owned_login(
-                        codewhale_runtime::oauth::OAuthProvider::Claude,
-                        cli.config.as_deref(),
-                        None,
-                    )?;
-                    println!(
-                        "Removed Codewhale's saved Claude sign-in. Manage remote access in Claude account settings."
-                    );
-                    Ok(())
-                }
                 TuiAuthCommand::Chatgpt => run_chatgpt_pkce_auth(cli.config.as_deref()).await,
                 TuiAuthCommand::ChatgptRevoke => run_chatgpt_pkce_revoke(cli.config.as_deref()),
                 TuiAuthCommand::Orcarouter => run_orcarouter_pkce_auth(cli.config.as_deref()).await,
@@ -10256,22 +10240,6 @@ async fn run_xai_device_auth(config_path: Option<&Path>) -> Result<()> {
     );
     println!(
         "To switch accounts later, run `codewhale auth xai-device` again (or `/auth xai-device` in Codewhale) and approve with the other account. Restart open Codewhale sessions after a shell login."
-    );
-    Ok(())
-}
-
-async fn run_claude_auth(config_path: Option<&Path>) -> Result<()> {
-    let pending =
-        codewhale_runtime::oauth::login(codewhale_runtime::oauth::OAuthProvider::Claude).await?;
-    let path = config_path.map(Path::to_path_buf);
-    let activation = tokio::task::spawn_blocking(move || {
-        codewhale_runtime::oauth::activate_login(pending, path.as_deref(), None)
-    })
-    .await
-    .context("Claude activation worker failed")??;
-    println!("{}", activation.summary(codewhale_localization::Locale::En));
-    println!(
-        "Use `codewhale --provider anthropic` or `/provider anthropic`. Sign out with `codewhale auth claude-revoke`."
     );
     Ok(())
 }
