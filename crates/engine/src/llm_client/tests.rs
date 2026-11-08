@@ -609,3 +609,21 @@ async fn concurrent_request_retry_observations_keep_exact_producing_scope() {
         "Retry attempt: HTTP 1; upstream 502; waiting 0.00s"
     );
 }
+
+#[test]
+fn timeout_display_zero_reports_unknown_duration_instead_of_0ns() {
+    // from_reqwest maps reqwest is_timeout() to Timeout(ZERO) because the spent
+    // budget is not recoverable from the error. The user-facing text must never
+    // claim "after 0ns" — that reads as a zero-length budget and hides the real
+    // failure (see hengqu order mini-20261108-123645, turn_f2409014).
+    let zero = LlmError::Timeout(Duration::from_secs(0)).to_string();
+    assert!(!zero.contains("0ns"), "zero duration leaked as 0ns: {zero}");
+    assert!(zero.contains("Request timed out"), "{zero}");
+    assert!(zero.contains("duration not recorded"), "{zero}");
+
+    let measured = LlmError::Timeout(Duration::from_secs(120)).to_string();
+    assert!(
+        measured.contains("Request timed out after 120s"),
+        "{measured}"
+    );
+}

@@ -479,6 +479,11 @@ impl std::fmt::Display for LlmError {
             LlmError::ConnectError { message, .. } => {
                 write!(f, "Connection failed before request dispatch: {message}")
             }
+            LlmError::Timeout(d) if d.is_zero() => write!(
+                f,
+                "Request timed out (provider request exceeded its transport budget; \
+                 exact duration not recorded)"
+            ),
             LlmError::Timeout(d) => write!(f, "Request timed out after {d:?}"),
             LlmError::AuthenticationError(auth) => {
                 write!(f, "Authentication failed: {}", auth.to_user_message())
@@ -762,6 +767,13 @@ impl LlmError {
     }
 
     /// Constructs an `LlmError` from a reqwest error.
+    ///
+    /// `Timeout` carries `Duration::ZERO` when the spent budget cannot be
+    /// recovered: reqwest errors do not expose elapsed time, and the caller
+    /// may have pinned the per-attempt total at a distance. Display renders
+    /// the zero case as "duration unknown" instead of a misleading "0ns";
+    /// call sites that can measure should overwrite it with the real elapsed
+    /// time (see the retry loops in `client.rs`).
     pub fn from_reqwest(err: &reqwest::Error) -> Self {
         if err.is_connect() {
             LlmError::ConnectError {
@@ -775,6 +787,17 @@ impl LlmError {
             LlmError::NetworkError(format!("Request failed: {err}"))
         } else {
             LlmError::Other(err.to_string())
+        }
+    }
+
+    /// [`Self::from_reqwest`] with the attempt's measured elapsed time: reqwest
+    /// errors do not carry the spent budget, so call sites that can measure
+    /// overwrite the unknown-duration sentinel with the real elapsed time
+    /// (the retry loops in `client.rs`).
+    pub(crate) fn from_reqwest_measured(err: &reqwest::Error, started: std::time::Instant) -> Self {
+        match Self::from_reqwest(err) {
+            Self::Timeout(_) => Self::Timeout(started.elapsed()),
+            mapped => mapped,
         }
     }
 }
