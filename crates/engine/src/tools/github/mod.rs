@@ -215,8 +215,8 @@ impl ToolSpec for GithubTool {
             "issue_context" => self.execute_issue_context(&input, context).await,
             "pr_context" => self.execute_pr_context(&input, context).await,
             "comment" => self.execute_comment(&input, context).await,
-            "close_issue" => close_github_thread(input, context, GithubCloseTarget::Issue),
-            "close_pr" => close_github_thread(input, context, GithubCloseTarget::Pr),
+            "close_issue" => close_github_thread(input, context, GithubCloseTarget::Issue).await,
+            "close_pr" => close_github_thread(input, context, GithubCloseTarget::Pr).await,
             action => Err(ToolError::invalid_input(format!(
                 "github: invalid action `{action}`"
             ))),
@@ -259,8 +259,8 @@ mod tests {
     use super::*;
     use crate::tools::spec::ToolSpec;
 
-    #[test]
-    fn close_refuses_when_git_cannot_determine_worktree_status() {
+    #[tokio::test]
+    async fn close_refuses_when_git_cannot_determine_worktree_status() {
         use codewhale_dependencies::{ExternalTool, Git};
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -295,6 +295,7 @@ mod tests {
             }
         });
         let error = close_github_thread(input, &context, GithubCloseTarget::Issue)
+            .await
             .expect_err("unknown worktree state must not authorize closure")
             .to_string();
         assert!(error.contains("git status failed"), "{error}");
@@ -554,9 +555,10 @@ mod tests {
         })
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn stringy_dry_run_never_closes_the_thread() {
+    #[allow(clippy::await_holding_lock)]
+    async fn stringy_dry_run_never_closes_the_thread() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let log = tmp.path().join("gh-calls.log");
         let bin = install_recording_gh(tmp.path(), &log);
@@ -571,7 +573,8 @@ mod tests {
             close_input_with_dry_run(json!("true")),
             &ctx,
             GithubCloseTarget::Issue,
-        );
+        )
+        .await;
         // SAFETY: same lock; restores the process environment.
         unsafe {
             std::env::remove_var("CODEWHALE_GH_BIN");
@@ -591,9 +594,10 @@ mod tests {
         );
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(unix)]
-    fn real_dry_run_bool_still_short_circuits() {
+    #[allow(clippy::await_holding_lock)]
+    async fn real_dry_run_bool_still_short_circuits() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let log = tmp.path().join("gh-calls.log");
         let bin = install_recording_gh(tmp.path(), &log);
@@ -608,7 +612,8 @@ mod tests {
             close_input_with_dry_run(json!(true)),
             &ctx,
             GithubCloseTarget::Issue,
-        );
+        )
+        .await;
         // SAFETY: same lock; restores the process environment.
         unsafe {
             std::env::remove_var("CODEWHALE_GH_BIN");
