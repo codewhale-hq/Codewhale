@@ -386,6 +386,9 @@ pub struct ThreadRecord {
     /// normal configured tool catalog; `Some([])` deliberately exposes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    /// Extra roots the file tools may read and write outside the workspace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add_dirs: Vec<PathBuf>,
     pub workspace: PathBuf,
     pub mode: String,
     /// Named default permission posture for new turns. Absent on legacy

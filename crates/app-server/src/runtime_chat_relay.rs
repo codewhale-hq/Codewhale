@@ -700,6 +700,7 @@ impl RuntimeChatRelayHost {
                     model_provider_id: Some(command.model_provider_id.clone()),
                     reasoning_effort: command.reasoning_effort.clone(),
                     allowed_tools: Some(Vec::new()),
+                    add_dirs: Vec::new(),
                     workspace: None,
                     // The native engine's existing Act loop executes a pure
                     // chat turn once its model-visible tool catalog is empty.

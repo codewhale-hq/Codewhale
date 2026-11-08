@@ -20,6 +20,23 @@ pub(super) const STEER_DROPPED_REASON: &str =
 pub(super) const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 pub(super) const REDACTED_USER_INPUT_RECEIPT: &str = "User input submitted";
 
+fn validate_add_dirs(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let canonical = path
+                .canonicalize()
+                .map_err(|error| anyhow!("add_dir {} is unavailable: {error}", path.display()))?;
+            anyhow::ensure!(
+                canonical.is_dir(),
+                "add_dir {} is not a directory",
+                path.display()
+            );
+            Ok(canonical)
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum StreamDeltaKind {
     Message,
@@ -1379,6 +1396,10 @@ pub struct CreateThreadRequest {
     /// An empty array intentionally disables every model-visible tool.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    /// Extra directories the file tools may read and write outside the
+    /// workspace. Each path must exist and be a directory.
+    #[serde(default, alias = "addDirs")]
+    pub add_dirs: Vec<PathBuf>,
     pub workspace: Option<PathBuf>,
     pub mode: Option<String>,
     #[serde(default)]
@@ -7082,6 +7103,7 @@ impl RuntimeThreadManager {
             .filter(|m| !m.trim().is_empty())
             .unwrap_or(default_model);
         let workspace = req.workspace.unwrap_or_else(|| self.workspace.clone());
+        let add_dirs = validate_add_dirs(req.add_dirs)?;
         let requested_mode = req
             .mode
             .filter(|m| !m.trim().is_empty())
@@ -7137,6 +7159,7 @@ impl RuntimeThreadManager {
             model_provider_id,
             reasoning_effort,
             allowed_tools: req.allowed_tools,
+            add_dirs,
             workspace,
             mode,
             permission_posture,
@@ -7168,6 +7191,7 @@ impl RuntimeThreadManager {
                     "model_provider_id": thread.model_provider_id,
                     "reasoning_effort": thread.reasoning_effort,
                     "allowed_tools": thread.allowed_tools,
+                    "add_dirs": thread.add_dirs,
                     "workspace": thread.workspace,
                     "mode": thread.mode,
                     "permission_posture": thread.permission_posture,
@@ -12983,6 +13007,11 @@ impl RuntimeThreadManager {
             };
         let mode = policy.mode;
         let mut cfg_snapshot = self.config.read().clone();
+        for path in &thread.add_dirs {
+            if !cfg_snapshot.extra_trusted_paths.iter().any(|trusted| trusted == path) {
+                cfg_snapshot.extra_trusted_paths.push(path.clone());
+            }
+        }
         // Optional per-turn provider override: routes this turn only. The
         // saved thread keeps its provider; `route_thread` is the view the
         // route, fingerprint and turn receipt are resolved from.
