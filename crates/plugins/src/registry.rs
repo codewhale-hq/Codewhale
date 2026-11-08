@@ -803,11 +803,15 @@ impl PluginRegistry {
                 plugin.trust_status.as_str()
             ));
         }
-        if plugin.staged_root.as_deref().is_none_or(|root| {
-            !staged_bundle_matches(root, &plugin.content_hash, &plugin.capability_hash)
-        }) {
+        let snapshot_rejection = match plugin.staged_root.as_deref() {
+            None => Some("no staged snapshot".to_string()),
+            Some(root) => {
+                staged_bundle_rejection(root, &plugin.content_hash, &plugin.capability_hash)
+            }
+        };
+        if let Some(reason) = snapshot_rejection {
             return Err(format!(
-                "Plugin bundle `{}` has no verified Codewhale runtime snapshot; review and trust it again before enablement",
+                "Plugin bundle `{}` has no verified Codewhale runtime snapshot ({reason}); review and trust it again before enablement",
                 plugin.name()
             ));
         }
@@ -1671,12 +1675,25 @@ fn runtime_stage_path(state_path: &Path, id: &PluginId, content_hash: &str) -> P
         .join(content_hash)
 }
 
-fn staged_bundle_matches(root: &Path, content_hash: &str, capability_hash: &str) -> bool {
-    let Ok(finalized) = verify_finalized_stage_root(root, None) else {
-        return false;
+fn staged_bundle_rejection(
+    root: &Path,
+    content_hash: &str,
+    capability_hash: &str,
+) -> Option<String> {
+    let finalized = match verify_finalized_stage_root(root, None) {
+        Ok(finalized) => finalized,
+        Err(reason) => return Some(format!("stage root: {reason}")),
     };
-    staged_bundle_content_matches(root, content_hash, capability_hash)
-        && verify_finalized_stage_root(root, Some(&finalized)).is_ok()
+    if !staged_bundle_content_matches(root, content_hash, capability_hash) {
+        return Some("content or capability identity differs".to_string());
+    }
+    verify_finalized_stage_root(root, Some(&finalized))
+        .err()
+        .map(|reason| format!("final root check: {reason}"))
+}
+
+fn staged_bundle_matches(root: &Path, content_hash: &str, capability_hash: &str) -> bool {
+    staged_bundle_rejection(root, content_hash, capability_hash).is_none()
 }
 
 pub(super) fn verify_finalized_stage_root(

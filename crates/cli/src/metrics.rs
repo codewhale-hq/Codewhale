@@ -519,7 +519,7 @@ fn open_diagnostic_file(path: &Path) -> io::Result<std::fs::File> {
         )
     })?;
     codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)?
-        .open_file()
+        .open_file_shared()
 }
 
 fn read_diagnostic_text(path: &Path) -> io::Result<String> {

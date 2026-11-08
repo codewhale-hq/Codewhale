@@ -1681,7 +1681,7 @@ impl FleetLedger {
         let mut events = Vec::new();
         let mut replay_epoch = "legacy".to_string();
         let mut history_compacted = false;
-        let file = match self.ledger_file.open_file() {
+        let file = match self.ledger_file.open_file_shared() {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok((false, events, history_compacted));
@@ -1737,7 +1737,7 @@ impl FleetLedger {
 
     fn rebuild_state_unlocked(&self) -> Result<FleetLedgerState> {
         let mut state = FleetLedgerState::default();
-        let file = match self.ledger_file.open_file() {
+        let file = match self.ledger_file.open_file_shared() {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(state),
             Err(error) => return Err(error).context("Opening Fleet ledger for state rebuild"),

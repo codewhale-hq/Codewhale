@@ -80,3 +80,7 @@ scripts/release/*.sh text eol=lf
 
 # Preserve the qualified upstream font license, including its trailing space.
 web/public/brand/fonts/OFL.txt text eol=lf whitespace=-blank-at-eol
+
+# Generated protocol and SDK exports are compared byte for byte; keep LF on Windows checkouts.
+crates/app-server-protocol/schema/** text eol=lf
+npm/runtime-sdk/generated/** text eol=lf
