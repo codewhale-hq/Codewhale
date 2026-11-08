@@ -771,10 +771,6 @@ impl FleetRouterCaller for LiveFleetRouter {
             top_p: None,
         };
 
-        #[cfg(not(any(test, feature = "test-support")))]
-        if self.accounting_origin.is_none() {
-            return Err("reasoning router has no admitted accounting origin".to_string());
-        }
         let route = self
             .client
             .effective_route_envelope(&self.route.wire_model, chrono::Utc::now());

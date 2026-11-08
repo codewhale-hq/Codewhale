@@ -432,12 +432,6 @@ self-check of whether what you just did is actually correct and complete."
             ));
         };
 
-        #[cfg(not(any(test, feature = "test-support")))]
-        if context.accounting_origin.is_none() {
-            return Err(ToolError::execution_failed(
-                "verify has no admitted usage origin".to_string(),
-            ));
-        }
 
         // --- Deterministic evidence gathering ---
         let mut evidence: Vec<EvidenceBlock> = Vec::new();
@@ -527,12 +521,6 @@ pub(crate) async fn judge_claim(
     requirement: String,
     origin: Option<crate::cost_status::NativeUsageOrigin>,
 ) -> Result<CritiqueReport, ToolError> {
-    #[cfg(not(any(test, feature = "test-support")))]
-    if origin.is_none() {
-        return Err(ToolError::execution_failed(
-            "judge has no admitted usage origin".to_string(),
-        ));
-    }
     let route = client.effective_route_envelope(model, chrono::Utc::now());
     let max_tokens = client.effective_max_output_tokens(&route.model);
     let input = CritiqueInput {

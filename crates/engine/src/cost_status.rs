@@ -1892,13 +1892,7 @@ impl NativeUsageSource {
             state.origin.as_ref().map(|origin| origin.scope)
         };
         let Some(scope) = scope else {
-            #[cfg(any(test, feature = "test-support"))]
             return Ok(None);
-            #[cfg(not(any(test, feature = "test-support")))]
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "provider dispatch has no captured accounting origin",
-            ));
         };
         if self.observed_wire().last_transmission.is_some() {
             return Err(std::io::Error::new(

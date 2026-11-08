@@ -708,13 +708,6 @@ impl RlmDispatchedRequest {
         &mut self,
         observation: &crate::llm_client::RequestRetryObservation,
     ) -> std::io::Result<()> {
-        #[cfg(not(any(test, feature = "test-support")))]
-        if !self.accounting_source.has_captured_origin() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "RLM provider call has no captured accounting origin",
-            ));
-        }
         self.accounting_source
             .bind_dispatch(&self.route, observation)?;
         if let Some(record) = self.accounting_source.admit_dispatch(&self.route).await? {

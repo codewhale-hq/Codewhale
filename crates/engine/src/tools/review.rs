@@ -1566,12 +1566,6 @@ impl ToolSpec for ReviewTool {
             }]
         };
 
-        #[cfg(not(any(test, feature = "test-support")))]
-        if context.accounting_origin.is_none() {
-            return Err(ToolError::not_available(
-                "review has no native accounting origin",
-            ));
-        }
         let route = client.effective_route_envelope(&self.model, chrono::Utc::now());
         let review_diff = match &source {
             ReviewSource::PullRequest { diff, .. } => diff.clone(),
