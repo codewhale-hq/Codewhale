@@ -296,12 +296,21 @@ impl PluginRegistry {
             let staged_path = state_path
                 .as_deref()
                 .map(|state_path| runtime_stage_path(state_path, id, &plugin.content_hash));
-            plugin.staged_root = staged_path
-                .as_ref()
-                .filter(|root| {
-                    staged_bundle_matches(root, &plugin.content_hash, &plugin.capability_hash)
-                })
-                .cloned();
+            let mut snapshot_rejection = None;
+            plugin.staged_root =
+                staged_path.as_ref().and_then(|root| {
+                    match staged_bundle_rejection(
+                        root,
+                        &plugin.content_hash,
+                        &plugin.capability_hash,
+                    ) {
+                        None => Some(root.clone()),
+                        Some(reason) => {
+                            snapshot_rejection = Some(reason);
+                            None
+                        }
+                    }
+                });
             if plugin.staged_root.is_some() {
                 plugin
                     .diagnostics
@@ -335,6 +344,10 @@ impl PluginRegistry {
                     Some(Err(_)) | None => {
                         "Plugin runtime snapshot cannot be inspected; check access to the runtime snapshot path."
                     }
+                };
+                let message = match snapshot_rejection {
+                    Some(reason) => format!("{message} Rejected: {reason}."),
+                    None => message.to_string(),
                 };
                 plugin.diagnostics.push(PluginDiagnostic::warning(
                     "runtime-snapshot-unavailable",
@@ -804,7 +817,16 @@ impl PluginRegistry {
             ));
         }
         let snapshot_rejection = match plugin.staged_root.as_deref() {
-            None => Some("no staged snapshot".to_string()),
+            None => Some(
+                plugin
+                    .diagnostics
+                    .iter()
+                    .find(|diagnostic| diagnostic.code == "runtime-snapshot-unavailable")
+                    .map_or_else(
+                        || "no staged snapshot".to_string(),
+                        |diagnostic| diagnostic.message.clone(),
+                    ),
+            ),
             Some(root) => {
                 staged_bundle_rejection(root, &plugin.content_hash, &plugin.capability_hash)
             }

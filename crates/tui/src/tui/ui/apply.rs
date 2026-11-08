@@ -3864,14 +3864,20 @@ pub(crate) async fn apply_provider_picker_custom_provider(
                 StatusToastLevel::Error,
                 Some(8_000),
             );
+            sync_config_provider_from_app(config, app);
             return false;
         }
         Err(reason) => {
             app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
+            sync_config_provider_from_app(config, app);
             return false;
         }
     };
-    switch_provider(app, engine_handle, config, identity, model).await
+    let switched = switch_provider(app, engine_handle, config, identity, model).await;
+    if !switched {
+        sync_config_provider_from_app(config, app);
+    }
+    switched
 }
 
 async fn reopen_provider_picker_list(

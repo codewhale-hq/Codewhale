@@ -376,6 +376,10 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **A plugin refused for its runtime snapshot now says why.** The warning and the enable error carry the reason the saved snapshot was rejected (for example the stage root is not read-only, or its content identity differs) instead of only "no staged snapshot". On Windows, 119 of the 135 hosted test failures were this one message with the cause discarded, so the next run can name it. Not a fix for those failures.
+- **Listing installed agent CLIs no longer blocks the runtime.** `GET /v1/agents/external` looks for each binary with `tokio::fs` instead of synchronous file calls on a runtime worker.
+- **A failed custom-provider switch leaves the provider you were on.** When saving a custom provider succeeds but switching to it fails (its identity cannot be resolved, or the engine refuses the route), the next request keeps going to the provider the footer shows instead of the half-configured one.
+- **A thread page asked for with limit 0 advances.** The App Server clamps a zero page size to one, so a client that sends `0` still reaches the next page.
 - **Anthropic and Messages-compatible routes accept any tool name.** Tool names that Anthropic's pattern rejects, such as `web.run` from a loaded tool group, are encoded on the wire and decoded in replies, as the chat and responses routes already did. Before, one such name made every request fail with "tools.N.custom.name: String should match pattern", which stopped sub-agents that had loaded it.
 - **A large sub-agent fan-out no longer exhausts the usage journal.** The per-session limit of live usage receipts rises from 64 to 256, above the workflow ceiling of 128, so a full fan-out keeps its cost receipts instead of running with cost unknown.
 - **A turn that stalls before it starts is now bounded.** The stall watchdog covers the setup before the first model request, so a wedged start is logged, cancelled after 180 seconds with a stated reason, and leaves a stall record instead of waiting silently. A warning names the case where all four blocking-work slots are held. Refs #6184.

@@ -2,7 +2,7 @@
 //!
 //! Older clients can still send mode aliases and the legacy `auto_approve`
 //! bit. New callers send a named posture. Keep those inputs readable, but
-//! persist and execute one contract: Plan / Act / Operate plus Ask /
+//! persist and execute one contract: Plan / Work plus Ask /
 //! Accept Edits / Auto-Review / Full Access.
 
 use anyhow::{Result, bail};
@@ -66,7 +66,7 @@ impl RuntimePolicyProjection {
         auto_approve: Option<bool>,
     ) -> Result<Self> {
         let parsed_mode = parse_runtime_mode(mode).ok_or_else(|| {
-            anyhow::anyhow!("unsupported Runtime mode {mode:?}; expected plan, act, or operate")
+            anyhow::anyhow!("unsupported Runtime mode {mode:?}; expected plan or agent")
         })?;
         let permission = match permission_posture {
             Some(value) => ApprovalMode::from_config_value(value).ok_or_else(|| {
