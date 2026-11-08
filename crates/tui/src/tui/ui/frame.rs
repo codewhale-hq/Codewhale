@@ -1058,6 +1058,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_state_root: None,
         allow_shell: app.allow_shell,
         trust_mode: app.trust_mode,
+        extra_trusted_paths: config.extra_trusted_paths.clone(),
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         mcp_auth_context: Default::default(),

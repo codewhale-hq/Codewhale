@@ -1981,6 +1981,10 @@ pub struct Config {
     >,
     #[serde(skip)]
     pub required_account_model_owner: Option<String>,
+    /// Runtime-only extra roots the tool layer may read and write outside the
+    /// workspace, set by `codewhale exec --add-dir`.
+    #[serde(skip)]
+    pub extra_trusted_paths: Vec<std::path::PathBuf>,
     /// Persisted exact-route declarations, separate from provider credentials.
     #[serde(
         default,
@@ -10046,6 +10050,11 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
         custom_models: override_cfg.custom_models.or(base.custom_models),
+        extra_trusted_paths: if override_cfg.extra_trusted_paths.is_empty() {
+            base.extra_trusted_paths
+        } else {
+            override_cfg.extra_trusted_paths
+        },
         provider: override_cfg.provider.or(base.provider),
         telemetry: override_cfg.telemetry.or(base.telemetry),
         http_headers: override_cfg.http_headers.or(base.http_headers),

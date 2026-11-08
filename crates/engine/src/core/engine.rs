@@ -574,6 +574,9 @@ pub struct EngineConfig {
     /// itself must be inside the workspace). Mirrors the
     /// `workspace_follow_symlinks` setting.
     pub workspace_follow_symlinks: bool,
+    /// Extra roots the file tools may read and write outside the workspace,
+    /// set by `codewhale exec --add-dir`.
+    pub extra_trusted_paths: Vec<PathBuf>,
     /// Ask-only permission rules loaded from sibling `permissions.toml`.
     pub exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine,
     /// Whether turn startup may write terminal title/taskbar OSC sequences.
@@ -696,6 +699,7 @@ impl Default for EngineConfig {
             verbosity: None,
             tools: None,
             workspace_follow_symlinks: false,
+            extra_trusted_paths: Vec::new(),
             exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine::new(Vec::new(), Vec::new()),
             terminal_chrome_enabled: true,
             session_checkpoint_backend: None,
@@ -8471,6 +8475,11 @@ impl Engine {
         let trusted =
             codewhale_runtime::workspace_trust::WorkspaceTrust::load_for(&self.session.workspace);
         let mut trusted_external_paths = trusted.paths().to_vec();
+        for path in &self.config.extra_trusted_paths {
+            if !trusted_external_paths.iter().any(|trusted| trusted == path) {
+                trusted_external_paths.push(path.clone());
+            }
+        }
         let clipboard_images_dir =
             codewhale_runtime::config::clipboard_images_dir(&self.session.workspace);
         if !trusted_external_paths

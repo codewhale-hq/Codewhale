@@ -14524,6 +14524,7 @@ source_usage_records: Default::default(),
                 tools: (!isolated_chat).then(|| cfg.tools.clone()).flatten(),
                 verbosity: cfg.verbosity.clone(),
                 workspace_follow_symlinks: settings.workspace_follow_symlinks,
+                extra_trusted_paths: Vec::new(),
                 exec_policy_engine: cfg.exec_policy_engine.clone(),
                 terminal_chrome_enabled: false,
                 advisor_config: cfg

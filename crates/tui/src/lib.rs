@@ -423,6 +423,9 @@ struct ExecArgs {
     /// surface under the configured sandbox and approval posture.
     #[arg(long, default_value_t = false)]
     no_tools: bool,
+    /// Additional directory the file tools may read and write (repeatable).
+    #[arg(long = "add-dir", value_name = "PATH")]
+    add_dir: Vec<PathBuf>,
     /// Read the prompt from a file (`-` reads stdin) instead of argv, for
     /// prompts past the OS per-argument limit (~128 KiB on Linux).
     #[arg(long, value_name = "PATH", conflicts_with = "prompt")]
@@ -2803,6 +2806,19 @@ async fn run_async_main_dispatch(
                         %error,
                         "persisted Models.dev cache load did not complete; keeping bundled"
                     );
+                }
+                if !args.add_dir.is_empty() {
+                    let mut extra = Vec::with_capacity(args.add_dir.len());
+                    for path in &args.add_dir {
+                        let canonical = path.canonicalize().with_context(|| {
+                            format!("--add-dir {} does not exist", path.display())
+                        })?;
+                        if !canonical.is_dir() {
+                            bail!("--add-dir {} is not a directory", path.display());
+                        }
+                        extra.push(canonical);
+                    }
+                    config.extra_trusted_paths = extra;
                 }
                 let prompt = resolve_exec_prompt(&args)?;
                 let resume_session_id = resolve_exec_resume_session_id(&args, &workspace)?;

@@ -1479,6 +1479,7 @@ impl NativeUsageSource {
         let _scope = bind_test_cost_scope(slot.test_origin);
         with_runtime_usage_journal_mut(|journal| {
             let entry = journal.entry(owner.to_string()).or_default();
+            entry.records.retain(|record| !record.is_acknowledged());
             let occupied = occupied_runtime_usage_sources(entry);
             if let Some(current) = entry
                 .native_slots
@@ -1508,10 +1509,12 @@ impl NativeUsageSource {
             if !occupied.contains(&slot.source_fingerprint)
                 && occupied.len() >= MAX_RUNTIME_USAGE_RECORDS_PER_OWNER
             {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "native usage journal capacity reached before dispatch",
-                ));
+                tracing::warn!(
+                    owner,
+                    occupied = occupied.len(),
+                    "native usage journal is at capacity; this request continues without a retained receipt"
+                );
+                return Ok(());
             }
             slot.active
                 .store(true, std::sync::atomic::Ordering::Release);

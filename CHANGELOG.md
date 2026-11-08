@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`codewhale exec --add-dir <path>`** (repeatable) lets the file tools read and write a sibling directory, a second checkout or a shared scratch root without turning on Full Access.
+- **A full usage journal no longer fails a turn before dispatch.** The request runs with cost unknown instead of stopping on “native usage journal capacity reached”.
 - **Reverting a file works in any posture.** Restoring a file the thread's own turns changed no longer requires `/trust` or Full Access; the exact snapshot and reviewed-hash checks still apply. **`fetch_url` can reach a local or private host you allowed** with `/network allow <host>`; cloud metadata stays blocked. Both refusals now name the setting.
 - **`codewhale exec` offers tools by default**, still under the configured sandbox and approval posture. `--no-tools` is the one-shot. A pipe on stdin is the prompt when no arguments are given, or is appended to them.
 - **A child no longer dies when usage settlement is not acknowledged.** The turn continues and cost stays unknown, matching the parent path.

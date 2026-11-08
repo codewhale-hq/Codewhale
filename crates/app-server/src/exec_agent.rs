@@ -730,6 +730,7 @@ pub async fn run_exec_agent(
         },
         verbosity: execution_config.verbosity.clone(),
         workspace_follow_symlinks: settings.workspace_follow_symlinks,
+        extra_trusted_paths: execution_config.extra_trusted_paths.clone(),
         exec_policy_engine: execution_config.exec_policy_engine.clone(),
         terminal_chrome_enabled: false,
         advisor_config: execution_config
