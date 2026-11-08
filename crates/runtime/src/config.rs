@@ -1962,9 +1962,19 @@ pub struct AccountModelAccess {
     pub profile: Option<String>,
 }
 
+pub trait ModelHttpPolicy: std::fmt::Debug + Send + Sync {
+    fn configure(
+        &self,
+        builder: reqwest::ClientBuilder,
+        base_url: &str,
+    ) -> Result<reqwest::ClientBuilder>;
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
+    #[serde(skip)]
+    pub model_http_policy: Option<std::sync::Arc<dyn ModelHttpPolicy>>,
     #[serde(skip)]
     pub account_profile: Option<String>,
     /// Diagnostic clones must never refresh or mutate plugin OAuth credentials.
@@ -2642,6 +2652,8 @@ pub enum ToolOverride {
 /// Uses an OpenAI-compatible vision model API.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VisionModelConfig {
+    #[serde(skip)]
+    pub model_http_policy: Option<std::sync::Arc<dyn ModelHttpPolicy>>,
     /// Model identifier (e.g., "gemini-3.1-flash-lite-preview").
     pub model: String,
     /// API key for the vision model. Inherits from main config if not specified.
@@ -6966,7 +6978,11 @@ impl Config {
     /// DeepSeek key never follows `vision_model.base_url` to another host.
     #[must_use]
     pub fn vision_model_config(&self) -> Option<VisionModelConfig> {
-        self.vision_model.clone()
+        let mut config = self.vision_model.clone()?;
+        if config.model_http_policy.is_none() {
+            config.model_http_policy = self.model_http_policy.clone();
+        }
+        Some(config)
     }
 
     #[must_use]
@@ -10049,6 +10065,7 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
+        model_http_policy: override_cfg.model_http_policy.or(base.model_http_policy),
         custom_models: override_cfg.custom_models.or(base.custom_models),
         extra_trusted_paths: if override_cfg.extra_trusted_paths.is_empty() {
             base.extra_trusted_paths
