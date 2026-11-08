@@ -1742,7 +1742,9 @@ token 但成本为 `0.0`。于 v0.8.10 加入（#564）。
   该线程的活动 shell，按最近活动排序。`terminal_id` 在 shell 启动时签发，
   且永不复用；智能体终端工具的结果以 `terminal_session_id` 携带同一个值，
   `terminal/reset` 还会报告 `previous_session_id`。`instance` 标识本 Engine
-  进程的终端注册表
+  进程的终端注册表。shell 存活期间，`state` 是其最近一条命令的状态（`running`、
+  `idle`、`canceled`、`failed`、`stale_lost` 或 `reset`）；shell 本身结束后为
+  `exited`，此时 `running` 为 false，`exit_code` 给出 shell 的退出状态
 - `GET /v1/threads/{id}/terminals/{terminal_id}/output?cursor=<bytes>&
   max_bytes=<1-64KiB>&format=<base64|text>` — 可恢复的字节流。
   `{terminal_id, offset, next_cursor, total, dropped, gap, encoding, data,

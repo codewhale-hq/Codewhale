@@ -331,7 +331,11 @@ pub(super) async fn list_thread_terminals(
                 running: info.exit_code.is_none(),
                 terminal_id: info.id,
                 name: info.name,
-                state: state_label(info.state),
+                state: if info.exit_code.is_some() {
+                    "exited".to_string()
+                } else {
+                    state_label(info.state)
+                },
                 exit_code: info.exit_code,
                 updated_at: info.updated_at,
             })

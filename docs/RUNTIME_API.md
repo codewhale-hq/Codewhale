@@ -2236,7 +2236,10 @@ know about. Input is attributable by route: `input` is the client's writer,
   when the shell starts and is never reused; the agent's terminal tool results
   carry the same value as `terminal_session_id`, and `terminal/reset` also
   reports `previous_session_id`. `instance` names this Engine process's
-  terminal registry
+  terminal registry. While a shell lives, `state` is its latest command's
+  state (`running`, `idle`, `canceled`, `failed`, `stale_lost` or `reset`);
+  once the shell itself has ended it is `exited`, `running` is false and
+  `exit_code` holds the shell's status
 - `GET /v1/threads/{id}/terminals/{terminal_id}/output?cursor=<bytes>&
   max_bytes=<1-64KiB>&format=<base64|text>` — the resumable byte stream.
   `{terminal_id, offset, next_cursor, total, dropped, gap, encoding, data,
