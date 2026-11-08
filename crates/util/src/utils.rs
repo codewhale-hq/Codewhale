@@ -1130,7 +1130,7 @@ mod atomic_write_tests {
     /// file is still reclaimed, and none of ours is left behind.
     #[test]
     fn write_atomic_batch_writes_every_file_and_sweeps_the_directory() {
-        let _lock = codewhale_runtime::test_support::lock_test_env();
+        let _lock = crate::test_env_lock::lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let (product, _guards) = seal_product_home(tmp.path());
 
@@ -1528,23 +1528,6 @@ mod atomic_write_tests {
         assert_eq!(fs::read(&path).expect("read"), b"workspace");
     }
 
-    #[test]
-    fn flush_and_sync_writes_and_syncs() {
-        use std::io::Write as _;
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("append.log");
-        {
-            let mut writer =
-                codewhale_runtime::private_log::open_append(&path).expect("open_append");
-            writeln!(writer, "line 1").expect("write");
-            codewhale_runtime::private_log::flush_and_sync(&mut writer).expect("flush_and_sync");
-            writeln!(writer, "line 2").expect("write");
-            codewhale_runtime::private_log::flush_and_sync(&mut writer).expect("flush_and_sync");
-        }
-        let content = fs::read_to_string(&path).expect("read");
-        assert_eq!(content, "line 1\nline 2\n");
-    }
-
     // === stray atomic-write temp files ===
 
     /// Backdate a file's mtime past the sweeper's one-hour threshold, using
@@ -1617,11 +1600,8 @@ mod atomic_write_tests {
     /// and never inspects the developer's real `~/.codewhale`.
     fn seal_product_home(
         tmp: &std::path::Path,
-    ) -> (
-        std::path::PathBuf,
-        Vec<codewhale_runtime::test_support::EnvVarGuard>,
-    ) {
-        use codewhale_runtime::test_support::EnvVarGuard;
+    ) -> (std::path::PathBuf, Vec<crate::test_env_lock::EnvVarGuard>) {
+        use crate::test_env_lock::EnvVarGuard;
 
         let product = tmp.join("product-home");
         std::fs::create_dir_all(&product).expect("create product home");
@@ -1638,7 +1618,7 @@ mod atomic_write_tests {
 
     #[test]
     fn a_private_atomic_write_in_a_product_dir_collects_strays() {
-        let _lock = codewhale_runtime::test_support::lock_test_env();
+        let _lock = crate::test_env_lock::lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let (product, _guards) = seal_product_home(tmp.path());
 
@@ -1660,7 +1640,7 @@ mod atomic_write_tests {
 
     #[test]
     fn a_private_atomic_write_to_a_user_chosen_dest_does_not_sweep() {
-        let _lock = codewhale_runtime::test_support::lock_test_env();
+        let _lock = crate::test_env_lock::lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let (_product, _guards) = seal_product_home(tmp.path());
         let user_dir = tmp.path().join("user-chosen");
@@ -1688,7 +1668,7 @@ mod atomic_write_tests {
 
     #[test]
     fn atomic_write_product_dir_detection_matches_codewhale_home_not_siblings() {
-        let _lock = codewhale_runtime::test_support::lock_test_env();
+        let _lock = crate::test_env_lock::lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let (product, explicit_guards) = seal_product_home(tmp.path());
         let sessions = product.join("sessions");
@@ -1702,7 +1682,7 @@ mod atomic_write_tests {
         assert!(!super::is_codewhale_owned_state_dir(tmp.path()));
         drop(explicit_guards);
 
-        use codewhale_runtime::test_support::EnvVarGuard;
+        use crate::test_env_lock::EnvVarGuard;
         let _home = EnvVarGuard::set("HOME", tmp.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", tmp.path());
         let _no_explicit = EnvVarGuard::remove("CODEWHALE_HOME");
@@ -1726,7 +1706,7 @@ mod atomic_write_tests {
     fn symlinked_product_subdir_cannot_sweep_an_external_directory() {
         use std::os::unix::fs::symlink;
 
-        let _lock = codewhale_runtime::test_support::lock_test_env();
+        let _lock = crate::test_env_lock::lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let (product, _guards) = seal_product_home(tmp.path());
         let external = tmp.path().join("external");
@@ -1766,10 +1746,9 @@ mod spawn_supervised_tests {
     /// the dump on Windows).
     #[tokio::test]
     async fn panicking_task_does_not_propagate_to_parent() {
-        let _lock = codewhale_runtime::test_support::lock_test_env();
+        let _lock = crate::test_env_lock::lock_test_env();
         let tmp = tempfile::tempdir().expect("tempdir");
-        let _profile =
-            codewhale_runtime::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let _profile = crate::test_env_lock::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
         let parent_alive = Arc::new(AtomicBool::new(false));
         let parent_alive_clone = parent_alive.clone();
 
@@ -1795,10 +1774,9 @@ mod spawn_supervised_tests {
 
     #[tokio::test]
     async fn panicking_blocking_task_does_not_propagate_to_parent() {
-        let _lock = codewhale_runtime::test_support::lock_test_env();
+        let _lock = crate::test_env_lock::lock_test_env();
         let tmp = tempfile::tempdir().expect("tempdir");
-        let _profile =
-            codewhale_runtime::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let _profile = crate::test_env_lock::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
         let parent_alive = Arc::new(AtomicBool::new(false));
         let parent_alive_clone = parent_alive.clone();
 
@@ -1822,10 +1800,9 @@ mod spawn_supervised_tests {
     /// when another supervised task also writes a crash there.
     #[test]
     fn write_panic_dump_writes_named_log() {
-        let _lock = codewhale_runtime::test_support::lock_test_env();
+        let _lock = crate::test_env_lock::lock_test_env();
         let tmp = tempfile::tempdir().expect("tempdir");
-        let _profile =
-            codewhale_runtime::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+        let _profile = crate::test_env_lock::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
         let crash_dir = tmp.path().join("crashes");
         let location = std::panic::Location::caller();
 
@@ -1992,29 +1969,5 @@ mod project_mapping_tests {
             .strip_prefix("Project with key files: ")
             .expect("prefix");
         assert_eq!(suffix, "Makefile, README.md");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn append_logs_are_owner_only_and_not_opened_through_links() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
-
-        let log = dir.path().join("audit.log");
-        drop(codewhale_runtime::private_log::open_append(&log).expect("open"));
-        let mode = std::fs::metadata(&log).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-
-        // A log left world-readable by an earlier version is tightened.
-        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
-        drop(codewhale_runtime::private_log::open_append(&log).expect("reopen"));
-        let mode = std::fs::metadata(&log).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-
-        let target = dir.path().join("elsewhere");
-        std::fs::write(&target, "").unwrap();
-        let link = dir.path().join("linked.log");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(codewhale_runtime::private_log::open_append(&link).is_err());
     }
 }

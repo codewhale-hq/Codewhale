@@ -1884,7 +1884,6 @@ dependencies = [
  "codewhale-models",
  "codewhale-paths",
  "codewhale-protocol",
- "codewhale-runtime",
  "codewhale-telemetry",
  "futures-util",
  "gix",

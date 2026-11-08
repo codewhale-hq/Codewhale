@@ -65,3 +65,48 @@ pub fn flush_and_sync(writer: &mut std::io::BufWriter<std::fs::File>) -> std::io
     writer.flush()?;
     writer.get_ref().sync_all()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{flush_and_sync, open_append};
+
+    #[test]
+    fn flush_and_sync_writes_and_syncs() {
+        use std::io::Write as _;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("append.log");
+        {
+            let mut writer = open_append(&path).expect("open_append");
+            writeln!(writer, "line 1").expect("write");
+            flush_and_sync(&mut writer).expect("flush_and_sync");
+            writeln!(writer, "line 2").expect("write");
+            flush_and_sync(&mut writer).expect("flush_and_sync");
+        }
+        let content = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(content, "line 1\nline 2\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_logs_are_owner_only_and_not_opened_through_links() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let log = dir.path().join("audit.log");
+        drop(open_append(&log).expect("open"));
+        let mode = std::fs::metadata(&log).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        // A log left world-readable by an earlier version is tightened.
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(open_append(&log).expect("reopen"));
+        let mode = std::fs::metadata(&log).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, "").unwrap();
+        let link = dir.path().join("linked.log");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(open_append(&link).is_err());
+    }
+}
