@@ -109,6 +109,30 @@ impl DoctorPathReport {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct SessionStoreCounts {
+    pub(crate) saved: usize,
+    pub(crate) checkpoints: usize,
+}
+
+pub(crate) fn session_store_counts(sessions: &Path) -> Result<Option<SessionStoreCounts>, String> {
+    let Some(manager) =
+        codewhale_engine::session_manager::SessionManager::open_read_only(sessions.to_path_buf())
+            .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(SessionStoreCounts {
+        saved: manager
+            .saved_session_count()
+            .map_err(|error| error.to_string())?,
+        checkpoints: manager
+            .list_checkpoints()
+            .map_err(|error| error.to_string())?
+            .len(),
+    }))
+}
+
 /// Render structural secret-backend facts for the human doctor report.
 ///
 /// The input type cannot carry secret values, keeping this renderer safe by

@@ -5220,6 +5220,17 @@ async fn run_doctor(
     println!("{}", "Sessions:".bold());
     println!(
         "  · {}",
+        match crate::doctor::session_store_counts(&doctor_paths.sessions) {
+            Ok(Some(counts)) => format!(
+                "{} saved sessions, {} crash checkpoints",
+                counts.saved, counts.checkpoints
+            ),
+            Ok(None) => "no sessions directory yet".to_string(),
+            Err(error) => format!("could not count sessions: {error}"),
+        }
+    );
+    println!(
+        "  · {}",
         codewhale_engine::session_reconcile::last_run(&doctor_paths.sessions).map_or_else(
             || "no session repair has run yet (it runs at launch; `codewhale doctor --repair-sessions` runs it now)".to_string(),
             |summary| summary.doctor_detail()
@@ -8429,6 +8440,10 @@ fn run_doctor_json(
         "config_present": config_path.exists(),
         "sessions": {
             "last_repair": codewhale_engine::session_reconcile::last_run(&doctor_paths.sessions),
+            "counts": match crate::doctor::session_store_counts(&doctor_paths.sessions) {
+                Ok(counts) => json!(counts),
+                Err(error) => json!({ "error": error }),
+            },
         },
         "paths": doctor_paths,
         "secret_backend": secret_backend,
@@ -13765,8 +13780,26 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
 /// they may belong to a live session in another terminal, and `--continue`
 /// reads them directly.
 fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) -> Option<String> {
-    let manager = session_manager::SessionManager::default_location().ok()?;
-    let newest = load_recent_checkpoints(&manager).into_iter().next()?;
+    let manager = match session_manager::SessionManager::default_location() {
+        Ok(manager) => manager,
+        Err(error) => {
+            tracing::warn!(target: "sessions", %error, "could not open the sessions store at launch");
+            return None;
+        }
+    };
+    let recent = load_recent_checkpoints(&manager);
+    tracing::info!(
+        target: "sessions",
+        sessions_dir = %manager.sessions_dir().display(),
+        saved_sessions = ?manager.saved_session_count().map_err(|error| error.to_string()),
+        checkpoint_files = ?manager.list_checkpoints().map(|refs| refs.len()).map_err(|error| error.to_string()),
+        interrupted = recent.len(),
+        newest_interrupted_in_this_workspace = ?recent.first().map(|checkpoint| {
+            session_manager::workspace_scope_matches(&checkpoint.metadata.workspace, launch_workspace)
+        }),
+        "session store at launch"
+    );
+    let newest = recent.into_iter().next()?;
 
     let session_workspace = newest.metadata.workspace.clone();
     let age_str = checkpoint_age_label(newest.age);

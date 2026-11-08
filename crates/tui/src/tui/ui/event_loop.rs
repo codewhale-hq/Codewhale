@@ -885,6 +885,8 @@ pub(crate) fn coalesce_resize_burst(
 /// Toast identity for a failing session save, so recovery can retire it.
 const SESSION_SAVE_FAILURE_TOAST: &str = "session-save-failure";
 
+pub(crate) const STARTUP_NOTICE_TOAST: &str = "startup-notice";
+
 pub(crate) fn surface_session_save_failure(app: &mut App, session_id: Option<&str>, error: &str) {
     let text = app
         .tr(MessageId::SessionSaveFailed)
@@ -1228,17 +1230,24 @@ pub async fn run_tui(
         }
     }
 
-    // Auto-resume's receipt (#2934). It overrides the generic resume message
-    // because it is the more specific truth: it names what was reattached, or
-    // why nothing was. It never overwrites a *failure* message from the load
-    // path above — a real error outranks a decision receipt.
-    if let Some(notice) = options.startup_notice.clone()
-        && app
+    // Auto-resume's receipt (#2934) or the interrupted-session hint (#7095).
+    // It replaces the generic resume message because it is the more specific
+    // truth, but never a *failure* message from the load path above. It stands
+    // until the first turn starts or a session is opened, so later status
+    // updates cannot hide it.
+    if let Some(notice) = options.startup_notice.clone() {
+        if app
             .status_message
             .as_deref()
-            .is_none_or(|current| !current.starts_with("Failed to"))
-    {
-        app.status_message = Some(notice);
+            .is_some_and(|current| !current.starts_with("Failed to"))
+        {
+            app.status_message = None;
+        }
+        app.push_status_toast_record(StatusToast::standing(
+            notice,
+            StatusToastLevel::Info,
+            STARTUP_NOTICE_TOAST,
+        ));
     }
 
     let session_id = ensure_runtime_session_id(&mut app);
@@ -3318,6 +3327,7 @@ pub(crate) async fn run_event_loop(
                         let now = Instant::now();
                         app.turn_started_at = Some(now);
                         app.turn_last_activity_at = Some(now);
+                        app.retire_event_notices(STARTUP_NOTICE_TOAST);
                         app.session.clear_pending_turn_usage();
                         app.streaming_output_token_estimate = 0;
                         app.provider_wait_incident_logged = false;

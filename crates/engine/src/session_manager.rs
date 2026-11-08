@@ -5963,6 +5963,27 @@ impl SessionManager {
         self.scan_session_records()?.into_complete()
     }
 
+    fn is_session_document(path: &Path) -> bool {
+        path.extension().is_some_and(|ext| ext == "json")
+            && path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| {
+                    stem != SESSION_BOOT_OWNERS_STEM
+                        && codewhale_runtime::artifacts::is_valid_session_id(stem)
+                })
+    }
+
+    pub fn saved_session_count(&self) -> io::Result<usize> {
+        let mut count = 0;
+        for entry in fs::read_dir(&self.sessions_dir)? {
+            if Self::is_session_document(&entry?.path()) {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     fn scan_session_records(&self) -> io::Result<SessionCatalog> {
         let mut catalog = SessionCatalog::default();
         for entry in fs::read_dir(&self.sessions_dir)? {
@@ -5974,13 +5995,7 @@ impl SessionManager {
                 }
             };
             let path = entry.path();
-            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                continue;
-            };
-            if path.extension().is_none_or(|ext| ext != "json")
-                || stem == SESSION_BOOT_OWNERS_STEM
-                || !codewhale_runtime::artifacts::is_valid_session_id(stem)
-            {
+            if !Self::is_session_document(&path) {
                 continue;
             }
             match Self::load_session_metadata(&path) {

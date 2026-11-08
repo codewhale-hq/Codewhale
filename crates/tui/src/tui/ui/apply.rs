@@ -4980,6 +4980,7 @@ pub(crate) fn apply_loaded_session_with_goal(
     app.workspace_is_linked_worktree = false;
     app.workspace_context_refreshed_at = None;
     app.system_prompt = session.system_prompt.map(SystemPrompt::Text);
+    app.retire_event_notices(super::event_loop::STARTUP_NOTICE_TOAST);
     app.scroll_to_bottom();
     Ok(())
 }
