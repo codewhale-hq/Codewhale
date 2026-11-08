@@ -5,34 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- **Runtime API: find the agent CLIs already installed on this computer.**
-  `GET /v1/agents/external` reports Claude, Codex, Gemini CLI, OpenCode, Kimi
-  Code, Mistral Vibe, Qoder, CodeBuddy and Grok, with the version each one
-  reports and whether it answers Agent Client Protocol itself. The probe runs
-  `--version` and one `initialize` handshake, gets no Codewhale or provider
-  credentials, and stores nothing. Read-only: it does not start an agent yet.
-- **Runtime API: check a provider key before storing it.**
-  `POST /v1/providers/{id}/key/check` asks the provider's own `/models`
-  endpoint once whether it accepts a key, and never stores it. A key the
-  provider rejects answers `422`; a provider that cannot be reached answers
-  `502`, so a client can still save the key. The desktop app uses it so a wrong
-  key is refused with a clear message instead of being saved. See
-  `docs/RUNTIME_API.md`.
-- **Website: the homepage whale comes alive.** It starts as the flat Codewhale
-  mark, is colored in as the live whale, then becomes a field of breathing
-  lights made of the same 64 points as the desktop app. Pointing at it or
-  picking a terminal view brings the whale back. Reduced motion keeps the still
-  whale. Not yet published to codewhale.net.
-
-### Fixed
-
-- **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.
-
-## [0.10.3] - 2026-11-06
+## [0.10.3] - 2026-11-08
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release
 until the matching tag, packages, checksums, and release assets exist.
@@ -242,6 +215,24 @@ until the matching tag, packages, checksums, and release assets exist.
   Live use in Codewhale is not verified.
 - **Website:** an Enterprise page at `/enterprise` lists what Enterprise will
   deliver, with no pricing or availability claim, and the FAQ is finished.
+- **Runtime API: find the agent CLIs already installed on this computer.**
+  `GET /v1/agents/external` reports Claude, Codex, Gemini CLI, OpenCode, Kimi
+  Code, Mistral Vibe, Qoder, CodeBuddy and Grok, with the version each one
+  reports and whether it answers Agent Client Protocol itself. The probe runs
+  `--version` and one `initialize` handshake, gets no Codewhale or provider
+  credentials, and stores nothing. Read-only: it does not start an agent yet.
+- **Runtime API: check a provider key before storing it.**
+  `POST /v1/providers/{id}/key/check` asks the provider's own `/models`
+  endpoint once whether it accepts a key, and never stores it. A key the
+  provider rejects answers `422`; a provider that cannot be reached answers
+  `502`, so a client can still save the key. The desktop app uses it so a wrong
+  key is refused with a clear message instead of being saved. See
+  `docs/RUNTIME_API.md`.
+- **Website: the homepage whale comes alive.** It starts as the flat Codewhale
+  mark, is colored in as the live whale, then becomes a field of breathing
+  lights made of the same 64 points as the desktop app. Pointing at it or
+  picking a terminal view brings the whale back. Reduced motion keeps the still
+  whale. Not yet published to codewhale.net.
 
 ### Changed
 
@@ -737,6 +728,7 @@ until the matching tag, packages, checksums, and release assets exist.
   again when its manifest digest matches `codewhale`'s. (#7102)
 - **The zsh missing-key hint reads as guidance:** the first-run hint no longer
   looks like a shell error.
+- **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.
 
 ### Security
 
