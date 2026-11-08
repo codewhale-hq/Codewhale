@@ -375,6 +375,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Reverting a file requires a trusted thread.** The Runtime API's file-revert route refuses an untrusted thread with a `409` that names `/trust` or Full Access, matching the TUI's undo gate, and answers that refusal before it looks at snapshot ownership. Before, an untrusted thread that named a restore point it owned could rewrite workspace files.
 - **Anthropic and Messages-compatible routes accept any tool name.** Tool names that Anthropic's pattern rejects, such as `web.run` from a loaded tool group, are encoded on the wire and decoded in replies, as the chat and responses routes already did. Before, one such name made every request fail with "tools.N.custom.name: String should match pattern", which stopped sub-agents that had loaded it.
 - **A large sub-agent fan-out no longer exhausts the usage journal.** The per-session limit of live usage receipts rises from 64 to 256, above the workflow ceiling of 128, so a full fan-out keeps its cost receipts instead of running with cost unknown.
 - **A turn that stalls before it starts is now bounded.** The stall watchdog covers the setup before the first model request, so a wedged start is logged, cancelled after 180 seconds with a stated reason, and leaves a stall record instead of waiting silently. A warning names the case where all four blocking-work slots are held. Refs #6184.

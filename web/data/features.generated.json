@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "a706bf367123e5689548f7b2b1c7698ce6873dab6fec2b42ee60bef71b95d193"
+    "sha256": "c2caf85cd1dd0d95e0b566c12af6ec67b5a476cf5810312bb309d35744d08d3f"
   },
   "features": [
     {
@@ -360,7 +360,7 @@
     {
       "id": "modes",
       "name": "Modes",
-      "summary": "Plan, Work and Operate modes set what the agent may do in a session; a finished plan offers to start the work.",
+      "summary": "Plan and Work modes set what the agent may do in a session; a finished plan offers to start the work.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",

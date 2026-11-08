@@ -9894,6 +9894,16 @@ async fn revert_thread_file(
         .thread_restore_guard(&id)
         .await
         .map_err(map_thread_err)?;
+    // Reverting is a workspace mutation, gated where the TUI gates the same
+    // operation and before ownership, so an untrusted caller gets the
+    // actionable refusal instead of a hint about another thread's snapshots.
+    if !(thread.trust_mode || thread.auto_approve) {
+        return Err(ApiError::conflict(
+            "Refusing to revert workspace files outside trusted mode. \
+             Turn on /trust or switch this thread to Full Access, then revert again.",
+        )
+        .with_code(PATCH_UNDO_UNTRUSTED));
+    }
     // The restore points this thread owns: the receipts on its own turns
     // (including turns a fork cloned). Read under the restore reservation, so
     // no turn is recording one meanwhile.

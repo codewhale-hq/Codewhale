@@ -148,9 +148,11 @@ mod tests {
             TurnOutcomeStatus::Completed,
             prose
         ));
-        for mode in [AppMode::Agent] {
-            assert!(!plan_ready(mode, TurnOutcomeStatus::Completed, prose));
-        }
+        assert!(!plan_ready(
+            AppMode::Agent,
+            TurnOutcomeStatus::Completed,
+            prose
+        ));
         for status in [TurnOutcomeStatus::Interrupted, TurnOutcomeStatus::Failed] {
             assert!(!plan_ready(AppMode::Plan, status, prose));
         }

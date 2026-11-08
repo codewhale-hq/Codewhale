@@ -1601,20 +1601,23 @@ mod tests {
         use codewhale_config::AppMode;
         use std::collections::HashSet;
         let empty = HashSet::new();
-        for mode in [AppMode::Agent] {
-            let mut catalog = Vec::new();
-            crate::core::engine::tool_catalog::ensure_advanced_tooling(
-                &mut catalog,
-                mode,
-                &empty,
-                ToolMode::Direct,
-            );
-            let tool = catalog
-                .iter()
-                .find(|tool| tool.name == EXECUTE_TOOLS_TOOL_NAME)
-                .unwrap_or_else(|| panic!("{mode:?} catalog must advertise execute_tools"));
-            assert_eq!(tool.defer_loading, Some(true), "{mode:?} must defer it");
-        }
+        let mut catalog = Vec::new();
+        crate::core::engine::tool_catalog::ensure_advanced_tooling(
+            &mut catalog,
+            AppMode::Agent,
+            &empty,
+            ToolMode::Direct,
+        );
+        let tool = catalog
+            .iter()
+            .find(|tool| tool.name == EXECUTE_TOOLS_TOOL_NAME)
+            .unwrap_or_else(|| panic!("{:?} catalog must advertise execute_tools", AppMode::Agent));
+        assert_eq!(
+            tool.defer_loading,
+            Some(true),
+            "{:?} must defer it",
+            AppMode::Agent
+        );
         let mut catalog = Vec::new();
         crate::core::engine::tool_catalog::ensure_advanced_tooling(
             &mut catalog,

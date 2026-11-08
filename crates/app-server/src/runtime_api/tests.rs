@@ -11169,7 +11169,7 @@ async fn create_thread_normalizes_and_persists_named_permission_posture() -> Res
         .error_for_status()?
         .json()
         .await?;
-    assert_eq!(created["mode"], "operate");
+    assert_eq!(created["mode"], "agent");
     assert_eq!(created["permission_posture"], "auto_review");
     assert_eq!(created["auto_approve"], false);
     assert_eq!(created["trust_mode"], false);
@@ -17817,9 +17817,10 @@ async fn memory_all_scope_includes_workspace_notes() -> Result<()> {
 }
 
 #[tokio::test]
-async fn memory_workspace_scope_without_a_remote_is_a_client_error() -> Result<()> {
-    // A workspace with no origin remote has no workspace memory: asking for
-    // that scope is the caller's error, as it already is for create.
+async fn memory_workspace_scope_without_a_remote_resolves_from_the_work_tree() -> Result<()> {
+    // A work tree with no origin remote has no repository identity, so the
+    // workspace scope keys on the work-tree path itself: asking for it is a
+    // real, empty scope rather than the caller's error.
     let root = std::env::temp_dir().join(format!("cw-memory-no-remote-{}", Uuid::new_v4()));
     let _lock = lock_test_env();
     let home = root.join("home");
@@ -17849,12 +17850,12 @@ async fn memory_workspace_scope_without_a_remote_is_a_client_error() -> Result<(
         .get(format!("http://{addr}/v1/memory?scope=workspace"))
         .send()
         .await?;
-    assert_eq!(listed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(listed.status(), StatusCode::OK);
     let cleared = client
         .delete(format!("http://{addr}/v1/memory?scope=workspace"))
         .send()
         .await?;
-    assert_eq!(cleared.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(cleared.status(), StatusCode::OK);
     let all: serde_json::Value = client
         .get(format!("http://{addr}/v1/memory"))
         .send()
