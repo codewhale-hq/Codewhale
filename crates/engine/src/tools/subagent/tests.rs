@@ -21003,6 +21003,17 @@ fn coordination_process_lock_rejects_second_process() {
 
     if let Some(role) = std::env::var_os(ROLE_ENV) {
         let workspace = PathBuf::from(std::env::var_os(WORKSPACE_ENV).expect("workspace env"));
+        if role == "legacy-holder" {
+            let _legacy_session = CoordinationProcessLock::acquire(&workspace, false)
+                .expect("an older session holds the shared lock");
+            std::fs::write(workspace.join("holder.ready"), b"ready").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !workspace.join("holder.release").exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(workspace.join("holder.release").exists(), "release timeout");
+            return;
+        }
         let manager = new_shared_subagent_manager_with_timeout(
             workspace.clone(),
             4,
@@ -21082,6 +21093,90 @@ fn coordination_process_lock_rejects_second_process() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let legacy_dir = tempdir().expect("tempdir");
+    let legacy_workspace = legacy_dir
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let state_dir = legacy_workspace.join(".codewhale").join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let legacy_file = state_dir.join(LEGACY_SUBAGENT_STATE_FILE);
+    std::fs::write(
+        &legacy_file,
+        serde_json::to_vec(&PersistedSubAgentState::default()).unwrap(),
+    )
+    .unwrap();
+    let legacy_bytes = std::fs::read(&legacy_file).unwrap();
+    let mut legacy_holder = std::process::Command::new(&test_binary)
+        .arg("--exact")
+        .arg(TEST_NAME)
+        .arg("--nocapture")
+        .env(ROLE_ENV, "legacy-holder")
+        .env(WORKSPACE_ENV, &legacy_workspace)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn legacy lock holder");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !legacy_workspace.join("holder.ready").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !legacy_workspace.join("holder.ready").exists() {
+        let _ = legacy_holder.kill();
+        let output = legacy_holder
+            .wait_with_output()
+            .expect("legacy holder output");
+        panic!(
+            "legacy holder never acquired lock:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let private = new_shared_subagent_manager(legacy_workspace.clone(), 4);
+    {
+        let guard = private.blocking_read();
+        assert!(
+            guard.ensure_coordination_process_lock().is_ok(),
+            "a session beside an older one keeps working sub-agents"
+        );
+        let projection = guard.coordination_detail_projection(None, 8);
+        assert!(!projection.process_lock_held);
+        assert!(
+            projection
+                .process_lock_note
+                .as_deref()
+                .is_some_and(|note| note.starts_with(SESSION_PRIVATE_COORDINATION)),
+            "{:?}",
+            projection.process_lock_note
+        );
+    }
+    assert_eq!(
+        std::fs::read(&legacy_file).unwrap(),
+        legacy_bytes,
+        "the older session's store stays untouched"
+    );
+    assert!(
+        !state_dir.join(SUBAGENT_STATE_FILE).exists(),
+        "no forced cutover while the older session runs"
+    );
+    std::fs::write(legacy_workspace.join("holder.release"), b"release").unwrap();
+    let output = legacy_holder
+        .wait_with_output()
+        .expect("legacy holder output");
+    assert!(
+        output.status.success(),
+        "legacy holder failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let upgraded = new_shared_subagent_manager(legacy_workspace, 4);
+    assert!(
+        state_dir.join(SUBAGENT_STATE_FILE).exists() && legacy_file.is_dir(),
+        "the next session upgrades the store once the older one exits"
+    );
+    assert!(upgraded.blocking_read().holds_coordination_process_lock());
+    drop(private);
 }
 
 // === agent(action="wait") + peek throttling (#4097) ===

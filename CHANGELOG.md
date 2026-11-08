@@ -309,6 +309,12 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **Sub-agents beside an older session:** while a Codewhale 0.10.2 session
+  still uses a folder's older delegated-agent store, a 0.10.3 session in the
+  same folder keeps working sub-agents with private state that is not saved,
+  instead of refusing every sub-agent action. The older session's files are
+  left untouched, and the store upgrades when a session starts after the older
+  one exits (Refs #7232).
 - **Fleet members:** a replayed member start now matches only within its own
   session, so two sessions that reuse an operation key no longer receive each
   other's agent.

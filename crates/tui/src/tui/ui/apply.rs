@@ -116,6 +116,10 @@ pub(crate) fn apply_coordination_detail_projection(
                     .starts_with("Runtime coordination was opened without its writer lock")
                 {
                     "Delegated coordination is read-only — resolve the lock issue and restart this Runtime. Details in Work."
+                } else if note
+                    .starts_with(codewhale_engine::tools::subagent::SESSION_PRIVATE_COORDINATION)
+                {
+                    "Sub-agents here keep private state while another Codewhale session uses this folder — see Work."
                 } else {
                     "Delegated coordination unavailable — see Work for the reason."
                 };

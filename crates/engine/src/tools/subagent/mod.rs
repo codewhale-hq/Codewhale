@@ -3952,6 +3952,19 @@ pub const COORDINATION_SAME_PROCESS_HANDOVER: &str =
 pub const COORDINATION_LOCK_TIMEOUT_MARKER: &str =
     "timed out acquiring delegated coordination lock";
 
+pub const SESSION_PRIVATE_COORDINATION: &str = "another Codewhale session still uses this folder's older delegated-agent store, so its upgrade waits; sub-agents in this session keep private state that other sessions do not see and that is not saved, and the store upgrades when a session starts after the other one exits";
+
+#[derive(Debug)]
+struct SubAgentCutoverBlocked(anyhow::Error);
+
+impl std::fmt::Display for SubAgentCutoverBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for SubAgentCutoverBlocked {}
+
 impl CoordinationProcessLock {
     fn acquire(state_root: &Path, exclusive: bool) -> Result<Self> {
         let requested_root = normalize_subagent_workspace(state_root);
@@ -4103,6 +4116,8 @@ pub struct SubAgentManager {
     coordination_process_lock_required: bool,
     coordination_exclusive: bool,
     coordination_snapshot_read_only: bool,
+    store_cutover_blocked: bool,
+    session_private: bool,
     workspace_writer_locks: HashMap<PathBuf, Arc<CoordinationProcessLock>>,
     /// Configured default per-child model-turn budget (`[subagents]
     /// default_max_steps`, #5324). `None` keeps the unbounded Fleet default;
@@ -4747,6 +4762,8 @@ impl SubAgentManager {
             coordination_process_lock_required: false,
             coordination_exclusive: false,
             coordination_snapshot_read_only: false,
+            store_cutover_blocked: false,
+            session_private: false,
             workspace_writer_locks: HashMap::new(),
             max_steps: None,
             wall_time: None,
@@ -5696,13 +5713,15 @@ impl SubAgentManager {
             },
             bounded: true,
             limit,
-            process_lock_held: {
+            process_lock_held: !self.session_private && {
                 // Retry acquire on each projection so a session that lost the
                 // flock at construction recovers once the previous owner exits.
                 let _ = self.coordination_process_lock_status();
                 self.holds_coordination_process_lock()
             },
-            process_lock_note: if self.holds_coordination_process_lock() {
+            process_lock_note: if self.session_private {
+                Some(SESSION_PRIVATE_COORDINATION.to_string())
+            } else if self.holds_coordination_process_lock() {
                 None
             } else {
                 self.coordination_process_lock_status().err()
@@ -6054,9 +6073,21 @@ impl SubAgentManager {
             Ok(authority) => self.store_authority = Some(authority),
             Err(error) => {
                 self.coordination_snapshot_read_only = true;
+                self.store_cutover_blocked = error
+                    .chain()
+                    .any(|cause| cause.is::<SubAgentCutoverBlocked>());
                 tracing::warn!(target: "subagent", %error, "delegated store admission failed; writable state remains refused");
             }
         }
+        self
+    }
+
+    fn into_session_private(mut self) -> Self {
+        self.state_path = None;
+        self.store_authority = None;
+        self.coordination_snapshot_read_only = false;
+        self.session_private = true;
+        tracing::warn!(target: "subagent", "{SESSION_PRIVATE_COORDINATION}");
         self
     }
 
@@ -13732,7 +13763,10 @@ fn ensure_subagent_store_cutover(root: &Path, path: &Path) -> Result<()> {
     let _migration = if legacy.is_dir() {
         None
     } else {
-        Some(CoordinationProcessLock::acquire(root, true)?)
+        Some(
+            CoordinationProcessLock::acquire(root, true)
+                .map_err(|error| anyhow::Error::new(SubAgentCutoverBlocked(error)))?,
+        )
     };
     if path.exists() {
         read_durable_subagent_store(root, path)?;
@@ -14530,7 +14564,11 @@ pub fn new_shared_subagent_manager_with_state_root_and_timeout(
     if let Some(state_path) = state_path {
         manager = manager.with_state_path(state_path);
     }
-    manager = manager.require_coordination_process_lock();
+    manager = if manager.store_cutover_blocked {
+        manager.into_session_private()
+    } else {
+        manager.require_coordination_process_lock()
+    };
     if let Err(error) = manager.ensure_coordination_process_lock() {
         tracing::warn!(target: "subagent", %error, "this session cannot append to the shared coordination ledger");
     }
