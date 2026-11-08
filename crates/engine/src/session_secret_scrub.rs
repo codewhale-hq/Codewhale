@@ -139,7 +139,7 @@ fn canonical_store_root(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Option<Pat
     }
 }
 
-fn entry_has_type(
+pub(crate) fn entry_has_type(
     entry: &std::fs::DirEntry,
     directory: bool,
     unreadable: &mut Vec<PathBuf>,
@@ -159,7 +159,10 @@ fn entry_has_type(
     }
 }
 
-fn directory_entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<std::fs::DirEntry> {
+pub(crate) fn directory_entries(
+    dir: &Path,
+    unreadable: &mut Vec<PathBuf>,
+) -> Vec<std::fs::DirEntry> {
     let entries = match std::fs::symlink_metadata(dir) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Vec::new(),
         Ok(meta) if meta.is_dir() => std::fs::read_dir(dir).ok(),

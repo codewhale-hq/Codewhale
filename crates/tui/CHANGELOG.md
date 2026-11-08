@@ -70,6 +70,12 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Added
 
+- **Prune pasted images:** `codewhale sessions prune-images` lists pasted
+  clipboard images that no saved session, checkpoint, Runtime thread, draft or
+  history still names and that are older than 7 days (`--older-than-days`);
+  `--apply` deletes them. If any file it must scan cannot be read, it deletes
+  nothing. Run it while no Codewhale session is open. Thanks
+  [@Asteria1028](https://github.com/Asteria1028) for the report (Refs #7221).
 - **Task wall clock pauses for answerable human waits (#5898):** a durable task run by the Runtime API server no longer spends its wall-time budget while a prompt on that run waits for an approval or user-input answer. `[tools] task_human_wait_cap_seconds` (default 1800, maximum 86400) bounds the total wait and fails an unanswered task with `human_wait_timeout`, releasing its worker. Only a Runtime serving its HTTP API pauses the clock; local Stdio, Socket and ACP control frontends keep the wall deadline, and a wall deadline crossed before the prompt still ends the task. The TUI's own tasks are unchanged. Thanks [@asto18089](https://github.com/asto18089).
 - **MCP servers say why they are not connected:** the Runtime API's
   `GET /v1/apps/mcp/servers` now includes a configured server's last
@@ -613,6 +619,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Contributors
 
+- **[@Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).
 - **[@zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)).
 - **[@printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).
 - **[@liuyy2](https://github.com/liuyy2)** — diagnosed case-sensitive model selection collisions in the provider picker ([#7214](https://github.com/codewhale-hq/Codewhale/issues/7214)).

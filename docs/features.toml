@@ -510,6 +510,16 @@ docs = "docs/READ_MEDIA.md"
 owner = "crates/tui/src/tui/image_preview.rs"
 
 [[feature]]
+id = "clipboard-image-prune"
+name = "Pasted image cleanup"
+summary = "codewhale sessions prune-images reports, and with --apply deletes, pasted clipboard images that no saved session, draft or history still names."
+status = "experimental"
+surfaces = { tui = "preview" }
+since = "unreleased"
+docs = "docs/READ_MEDIA.md#pasted-image-storage"
+owner = "crates/engine/src/session_image_prune.rs"
+
+[[feature]]
 id = "memory"
 name = "User memory"
 summary = "Opt-in local store of preferences and conventions that persists across sessions."

@@ -189,6 +189,9 @@
   "crates/engine/src/session_export.rs": {
     "path_canonicalize": 1
   },
+  "crates/engine/src/session_image_prune.rs": {
+    "std_fs": 4
+  },
   "crates/engine/src/session_manager.rs": {
     "path_canonicalize": 2,
     "thread_sleep": 1

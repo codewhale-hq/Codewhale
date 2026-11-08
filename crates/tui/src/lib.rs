@@ -8,8 +8,8 @@
 
 use codewhale_engine::runtime_options::RuntimeOptions;
 use codewhale_engine::{
-    fleet, pricing, project_context, receipts, runtime_threads, session_export, session_manager,
-    session_secret_scrub, task_manager,
+    fleet, pricing, project_context, receipts, runtime_threads, session_export,
+    session_image_prune, session_manager, session_secret_scrub, task_manager,
 };
 use codewhale_runtime::config;
 use std::collections::BTreeSet;
@@ -307,6 +307,17 @@ enum SessionsCommand {
         /// Rewrite the affected session files (default: report only)
         #[arg(long, default_value_t = false)]
         apply: bool,
+    },
+    /// Delete pasted clipboard images that no saved session, draft or history
+    /// still names. Reports what it would delete unless `--apply` is given.
+    /// Run it while no Codewhale session is open.
+    PruneImages {
+        /// Delete the listed images (default: report only)
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Keep unreferenced images newer than this many days
+        #[arg(long, value_name = "DAYS", default_value_t = 7)]
+        older_than_days: u64,
     },
     /// Export a session as a full-fidelity tar.xz archive (complete context:
     /// system prompt, messages, tool calls and results, plus artifacts)
@@ -2626,6 +2637,10 @@ async fn run_async_main_dispatch(
                     )
                     .await
                 }
+                Some(SessionsCommand::PruneImages {
+                    apply,
+                    older_than_days,
+                }) => run_sessions_prune_images(apply, older_than_days).await,
                 Some(SessionsCommand::Export {
                     id,
                     output,
@@ -9768,6 +9783,89 @@ fn run_sessions_scrub_secrets_blocking(
             println!("  {}", path.display());
         }
     }
+    Ok(())
+}
+
+async fn run_sessions_prune_images(apply: bool, older_than_days: u64) -> Result<()> {
+    #[cfg(test)]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        run_sessions_prune_images_blocking(apply, older_than_days)
+    })
+    .await?
+}
+
+fn run_sessions_prune_images_blocking(apply: bool, older_than_days: u64) -> Result<()> {
+    let workspace = std::env::current_dir().context("Failed to read the current directory")?;
+    let image_dir = config::clipboard_images_dir(&workspace);
+    let manager = session_manager::SessionManager::default_location()?;
+    let runtime = runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
+        task_manager::default_tasks_dir(),
+    );
+    let mut roots = vec![
+        manager.sessions_dir().to_path_buf(),
+        runtime.data_dir.clone(),
+    ];
+    roots.extend(image_dir.parent().map(Path::to_path_buf));
+    let grace = Duration::from_secs(older_than_days.saturating_mul(24 * 60 * 60));
+    let report = session_image_prune::prune_clipboard_images(&image_dir, &roots, grace, apply);
+    if report.images == 0 {
+        println!("No pasted images in {}.", image_dir.display());
+        return Ok(());
+    }
+    println!(
+        "{} pasted images ({}) in {}: {} still referenced, {} newer than {older_than_days} days.",
+        report.images,
+        format_bytes(report.image_bytes),
+        image_dir.display(),
+        report.referenced,
+        report.recent,
+    );
+    if !report.removed.is_empty() {
+        println!(
+            "Deleted {} unreferenced images ({}).",
+            report.removed.len(),
+            format_bytes(report.removed_bytes())
+        );
+    }
+    if !report.unreferenced.is_empty() {
+        println!(
+            "{} unreferenced images ({}) {}:",
+            report.unreferenced.len(),
+            format_bytes(report.unreferenced_bytes()),
+            if apply { "were kept" } else { "can be deleted" }
+        );
+        for (path, _) in &report.unreferenced {
+            println!("  {}", path.display());
+        }
+        if !apply && report.unreadable.is_empty() {
+            println!(
+                "Re-run with `{} --apply` to delete them (close open Codewhale sessions first).",
+                session_image_prune::PRUNE_IMAGES_COMMAND
+            );
+        }
+    }
+    if !report.failed.is_empty() {
+        println!(
+            "{} images could not be deleted and were left in place:",
+            report.failed.len()
+        );
+        for (path, error) in &report.failed {
+            println!("  {}: {error}", path.display());
+        }
+    }
+    if !report.unreadable.is_empty() {
+        println!(
+            "{} files or directories could not be read, so `--apply` deletes nothing until they can:",
+            report.unreadable.len()
+        );
+        for path in &report.unreadable {
+            println!("  {}", path.display());
+        }
+    }
+    println!("Scanned {} files for references.", report.files_scanned);
     Ok(())
 }
 

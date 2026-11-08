@@ -35,6 +35,32 @@
   that explicit turn action; merely having a screenshot path or artifact does
   not trigger background analysis.
 
+### Pasted image storage
+
+A pasted clipboard image is saved as `clipboard-<number>.png` under
+`~/.codewhale/clipboard-images/` (or `<workspace>/clipboard-images/` when no
+home directory is available), and the attachment names that absolute path.
+The image bytes enter the request when the message is built, so a later
+missing file never fails a resume; editing and resending an old message
+reattaches from the path and reports a missing image instead of sending it.
+
+Nothing deletes these files on its own. To reclaim space:
+
+```sh
+codewhale sessions prune-images                 # report only
+codewhale sessions prune-images --apply         # delete what the report lists
+codewhale sessions prune-images --older-than-days 30
+```
+
+The command lists only images that no file under the Codewhale state
+directory, the sessions directory or the Runtime task store still names
+(saved sessions, checkpoints, archives, Runtime threads, the composer stash
+and history) and that are older than the grace window (7 days by default),
+so a draft or a running turn keeps its picture. If any file there cannot be
+read, it reports what it found and deletes nothing. A file another process
+still holds open (common on Windows) is reported and skipped. Close open
+Codewhale sessions before `--apply`.
+
 ### How `Ctrl+V` reaches Codewhale
 
 Most terminals own the paste chord, and Windows Terminal turns `Ctrl+V` into a

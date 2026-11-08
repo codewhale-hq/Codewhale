@@ -59,6 +59,7 @@ pub mod runtime_options;
 pub mod runtime_threads;
 pub mod scorecard;
 pub mod session_export;
+pub mod session_image_prune;
 pub mod session_manager;
 pub mod session_peek;
 pub mod session_projection;
