@@ -98,7 +98,7 @@ const USER_BIN_DIRS: &[&str] = &[
 ];
 const SYSTEM_BIN_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
 
-fn resolve(binary: &str) -> Option<PathBuf> {
+async fn resolve(binary: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
@@ -106,21 +106,28 @@ fn resolve(binary: &str) -> Option<PathBuf> {
         dirs.extend(USER_BIN_DIRS.iter().map(|dir| home.join(dir)));
     }
     dirs.extend(SYSTEM_BIN_DIRS.iter().map(PathBuf::from));
-    dirs.into_iter()
-        .map(|dir| dir.join(binary))
-        .find(|candidate| is_executable(candidate))
+    for dir in dirs {
+        let candidate = dir.join(binary);
+        if is_executable(&candidate).await {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
+async fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
+    tokio::fs::metadata(path)
+        .await
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
+async fn is_executable(path: &Path) -> bool {
+    tokio::fs::metadata(path)
+        .await
+        .is_ok_and(|meta| meta.is_file())
 }
 
 fn foreign_command(path: &Path, args: &[&str]) -> Command {
@@ -258,7 +265,7 @@ fn clean_kind(kind: &str) -> &'static str {
 }
 
 async fn describe(agent: &'static Agent) -> Value {
-    let Some(path) = resolve(agent.binary) else {
+    let Some(path) = resolve(agent.binary).await else {
         return json!({
             "id": agent.id,
             "name": agent.name,
