@@ -309,6 +309,12 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **IME candidate window under modals:** the hidden terminal cursor now
+  follows the caret in `/config` search and its value editor, so the
+  input-method candidate window can appear there instead of over the
+  composer. Real Pinyin input on macOS and Windows is not yet confirmed.
+  Thanks [@cmdcorp6534](https://github.com/cmdcorp6534) for the report
+  (Refs #2323).
 - **Sub-agents beside an older session:** while a Codewhale 0.10.2 session
   still uses a folder's older delegated-agent store, a 0.10.3 session in the
   same folder keeps working sub-agents with private state that is not saved,
@@ -625,6 +631,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Contributors
 
+- **[@cmdcorp6534](https://github.com/cmdcorp6534)** — reported the Chinese input-method candidate window appearing away from the field being typed into ([#2323](https://github.com/codewhale-hq/Codewhale/issues/2323)).
 - **[@Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).
 - **[@zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)).
 - **[@printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).

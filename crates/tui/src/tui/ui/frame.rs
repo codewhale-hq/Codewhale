@@ -2331,9 +2331,18 @@ pub(crate) fn draw_app_frame_inner(
             terminal.clear()?;
         }
         let mut cursor_pos = None;
-        terminal.draw(|f| cursor_pos = render(f, app, config))?;
+        let mut frame_area = ratatui::layout::Rect::default();
+        terminal.draw(|f| {
+            frame_area = f.area();
+            cursor_pos = render(f, app, config);
+        })?;
         app.pet_watch.present(terminal.backend_mut())?;
         finish_frame_cursor(terminal, cursor_pos)?;
+        if cursor_pos.is_none()
+            && let Some(anchor) = app.view_stack.cursor_anchor(frame_area)
+        {
+            terminal.set_cursor_position(anchor)?;
+        }
         Ok(())
     });
     if resized.is_some() {

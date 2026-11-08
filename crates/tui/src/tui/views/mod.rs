@@ -1247,6 +1247,9 @@ pub trait ModalView: std::any::Any {
     fn occupied_region(&self, area: Rect) -> Rect {
         area
     }
+    fn input_anchor(&self) -> Option<(u16, u16)> {
+        None
+    }
     fn update_subagents(&mut self, _agents: &[SubAgentResult]) -> bool {
         false
     }
@@ -1366,6 +1369,22 @@ impl ViewStack {
 
     pub fn top_kind(&self) -> Option<ModalKind> {
         self.views.last().map(|view| view.kind())
+    }
+
+    pub fn cursor_anchor(&self, area: Rect) -> Option<(u16, u16)> {
+        let view = self.views.last()?;
+        view.input_anchor().or_else(|| {
+            let region = view.occupied_region(area);
+            (region.width > 0 && region.height > 0).then(|| {
+                (
+                    region
+                        .x
+                        .saturating_add(1)
+                        .min(region.right().saturating_sub(1)),
+                    region.bottom().saturating_sub(2).max(region.y),
+                )
+            })
+        })
     }
 
     pub(crate) fn remove_owned_evidence_pagers(&mut self) {
@@ -2252,6 +2271,7 @@ pub struct ConfigView {
     /// Selection-anchored scroll actually used by the last render; keeps the
     /// panel scroll rail truthful when the stored scroll predates a resize.
     last_render_scroll: Cell<usize>,
+    last_input_anchor: Cell<Option<(u16, u16)>>,
     /// Exact painted cells of each list row; a click selects a row only when
     /// it lands inside one of these rects.
     last_row_hitboxes: RefCell<Vec<(Rect, usize)>>,
@@ -2998,6 +3018,7 @@ impl ConfigView {
             locale: app.ui_locale,
             last_visible_rows: Cell::new(0),
             last_render_scroll: Cell::new(0),
+            last_input_anchor: Cell::new(None),
             last_row_hitboxes: RefCell::new(Vec::new()),
             last_choice_hitboxes: RefCell::new(Vec::new()),
             last_editor_controls: RefCell::new(Vec::new()),
@@ -4204,6 +4225,10 @@ impl ModalView for ConfigView {
         ModalKind::Config
     }
 
+    fn input_anchor(&self) -> Option<(u16, u16)> {
+        self.last_input_anchor.get()
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -4447,7 +4472,9 @@ impl ModalView for ConfigView {
 
         let inner =
             render_underwater_surface(area, buf, self.tr(MessageId::ConfigModalTitle).to_string());
+        self.last_input_anchor.set(None);
         let mut choice_rail = None;
+        let mut value_line_row = None;
         let (lines, footer) = if let Some(edit) = self.editing.as_ref() {
             *self.last_choice_hitboxes.borrow_mut() = Vec::new();
             *self.last_editor_controls.borrow_mut() = Vec::new();
@@ -4605,6 +4632,7 @@ impl ModalView for ConfigView {
                     )));
                 }
             } else {
+                value_line_row = Some(lines.len());
                 lines.push(render_config_editor_value_line(edit, self.locale));
                 if spacious {
                     lines.push(Line::from(""));
@@ -4643,6 +4671,27 @@ impl ModalView for ConfigView {
             .style(Style::default().fg(palette::TEXT_PRIMARY))
             .scroll((0, 0))
             .render(body, buf);
+        if let (Some(edit), Some(row)) = (self.editing.as_ref(), value_line_row)
+            && let Ok(row) = u16::try_from(row)
+            && row < body.height
+            && body.width > 0
+        {
+            use codewhale_tui_kit::ui_text::text_display_width;
+            let caret = if edit.select_all {
+                edit.buffer.len()
+            } else {
+                edit.cursor
+            };
+            let typed: String = edit.buffer.iter().take(caret).collect();
+            let offset = text_display_width(&self.tr(MessageId::ConfigEditNewLabel))
+                .saturating_add(text_display_width(&typed));
+            let x = body
+                .x
+                .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX))
+                .min(body.right().saturating_sub(1));
+            self.last_input_anchor
+                .set(Some((x, body.y.saturating_add(row))));
+        }
         if let Some((rail, total, offset, visible)) = choice_rail {
             render_panel_scroll_rail(rail, buf, total, offset, visible, true);
         }
@@ -5620,6 +5669,17 @@ impl ConfigView {
                 },
                 buf,
             );
+            if header.width > 0 {
+                use codewhale_tui_kit::ui_text::text_display_width;
+                let offset = text_display_width(&self.tr(MessageId::ConfigSearchLabel))
+                    .saturating_add(text_display_width(&self.filter));
+                let x = header
+                    .x
+                    .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX))
+                    .min(header.right().saturating_sub(1));
+                self.last_input_anchor
+                    .set(Some((x, header.y.saturating_add(1))));
+            }
         }
 
         // Groups column: the active tab's `ui.group` names, the one holding
