@@ -20,6 +20,10 @@ struct Agent {
     binary: &'static str,
     acp_args: Option<&'static [&'static str]>,
     website: &'static str,
+    min_version: Option<&'static str>,
+    upgrade: Option<&'static str>,
+    login: Option<&'static str>,
+    adapter: Option<&'static str>,
 }
 
 const AGENTS: &[Agent] = &[
@@ -29,6 +33,10 @@ const AGENTS: &[Agent] = &[
         binary: "claude",
         acp_args: None,
         website: "https://github.com/agentclientprotocol/claude-agent-acp",
+        min_version: Some("2.1.226"),
+        upgrade: Some("npm i -g @anthropic-ai/claude-code@latest"),
+        login: Some("claude auth login"),
+        adapter: Some("@agentclientprotocol/claude-agent-acp"),
     },
     Agent {
         id: "codex",
@@ -36,6 +44,21 @@ const AGENTS: &[Agent] = &[
         binary: "codex",
         acp_args: None,
         website: "https://github.com/agentclientprotocol/codex-acp",
+        min_version: Some("0.160.0"),
+        upgrade: Some("npm i -g @openai/codex@latest"),
+        login: Some("codex login"),
+        adapter: Some("@agentclientprotocol/codex-acp"),
+    },
+    Agent {
+        id: "dsh",
+        name: "DeepSeek Harness",
+        binary: "dsh",
+        acp_args: Some(&["acp"]),
+        website: "https://github.com/deepseek-ai/deepseek-harness",
+        min_version: None,
+        upgrade: Some("npm i -g @deepseek-ai/dsh@latest"),
+        login: None,
+        adapter: None,
     },
     Agent {
         id: "gemini",
@@ -43,6 +66,10 @@ const AGENTS: &[Agent] = &[
         binary: "gemini",
         acp_args: Some(&["--acp"]),
         website: "https://geminicli.com",
+        min_version: Some("0.62.0"),
+        upgrade: Some("npm i -g @google/gemini-cli@latest"),
+        login: None,
+        adapter: None,
     },
     Agent {
         id: "opencode",
@@ -50,6 +77,10 @@ const AGENTS: &[Agent] = &[
         binary: "opencode",
         acp_args: Some(&["acp"]),
         website: "https://opencode.ai",
+        min_version: Some("1.15.5"),
+        upgrade: Some("npm i -g opencode-ai@latest"),
+        login: Some("opencode auth login"),
+        adapter: None,
     },
     Agent {
         id: "kimi",
@@ -57,6 +88,10 @@ const AGENTS: &[Agent] = &[
         binary: "kimi",
         acp_args: Some(&["acp"]),
         website: "https://moonshotai.github.io/kimi-code/",
+        min_version: None,
+        upgrade: None,
+        login: Some("kimi login"),
+        adapter: None,
     },
     Agent {
         id: "mistral-vibe",
@@ -64,6 +99,10 @@ const AGENTS: &[Agent] = &[
         binary: "vibe-acp",
         acp_args: Some(&[]),
         website: "https://mistral.ai/products/vibe",
+        min_version: None,
+        upgrade: None,
+        login: None,
+        adapter: None,
     },
     Agent {
         id: "qoder",
@@ -71,6 +110,10 @@ const AGENTS: &[Agent] = &[
         binary: "qodercli",
         acp_args: Some(&["--acp"]),
         website: "https://qoder.com",
+        min_version: None,
+        upgrade: None,
+        login: None,
+        adapter: None,
     },
     Agent {
         id: "codebuddy",
@@ -78,6 +121,10 @@ const AGENTS: &[Agent] = &[
         binary: "codebuddy",
         acp_args: Some(&["--acp"]),
         website: "https://www.codebuddy.cn/cli/",
+        min_version: None,
+        upgrade: None,
+        login: None,
+        adapter: None,
     },
     Agent {
         id: "grok",
@@ -85,6 +132,10 @@ const AGENTS: &[Agent] = &[
         binary: "grok",
         acp_args: Some(&["agent", "stdio"]),
         website: "https://x.ai/cli",
+        min_version: None,
+        upgrade: None,
+        login: None,
+        adapter: None,
     },
 ];
 
@@ -256,6 +307,22 @@ fn auth_methods(result: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn parsed_version(text: &str) -> Option<semver::Version> {
+    let core: String = text
+        .trim_start_matches('v')
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
+        .collect();
+    semver::Version::parse(core.trim_end_matches('.')).ok()
+}
+
+fn needs_update(version: Option<&str>, minimum: Option<&str>) -> bool {
+    match (version.and_then(parsed_version), minimum.and_then(parsed_version)) {
+        (Some(found), Some(floor)) => found < floor,
+        _ => false,
+    }
+}
+
 fn clean_kind(kind: &str) -> &'static str {
     if kind == "terminal" {
         "terminal"
@@ -274,6 +341,11 @@ async fn describe(agent: &'static Agent) -> Value {
             "acp": null,
             "auth_methods": [],
             "website": agent.website,
+            "min_version": agent.min_version,
+            "upgrade": agent.upgrade,
+            "login": agent.login,
+            "adapter": agent.adapter,
+            "needs_update": false,
             "runnable": false,
         });
     };
@@ -293,11 +365,17 @@ async fn describe(agent: &'static Agent) -> Value {
         .and_then(|result| result.pointer("/agentInfo/version"))
         .and_then(Value::as_str)
         .map(clean);
+    let version = reported.or(version);
     json!({
         "id": agent.id,
         "name": agent.name,
         "state": "installed",
-        "version": reported.or(version),
+        "needs_update": needs_update(version.as_deref(), agent.min_version),
+        "min_version": agent.min_version,
+        "upgrade": agent.upgrade,
+        "login": agent.login,
+        "adapter": agent.adapter,
+        "version": version,
         "acp": acp,
         "auth_methods": initialized.as_ref().map(auth_methods).unwrap_or_default(),
         "website": agent.website,
