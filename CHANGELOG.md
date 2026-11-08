@@ -17,25 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A held coordination lock no longer makes a new session read-only.** When another session owns the delegated-agent store, the new session starts on private state and says so, instead of refusing every sub-agent with “Failed to clean up sub-agents”.
-- **A dev server can outlive the turn in an interactive session.** `persist:true` now works in the TUI and desktop when the thread has Full Access; restricted postures and Fleet/sub-agents still refuse it.
-- **`codewhale exec --add-dir <path>`** (repeatable) and `addDirs` on `POST /v1/threads` let the file tools read and write a sibling directory, a second checkout or a shared scratch root without turning on Full Access.
-- **Unsettled usage is persisted in production, not only in tests.** The interactive sink now records a legacy usage receipt when a provider response has no settlement, so children and turns stop reporting settlement failure.
-- **A full usage journal no longer fails a turn before dispatch.** The request runs with cost unknown instead of stopping on “native usage journal capacity reached”.
-- **Reverting a file works in any posture.** Restoring a file the thread's own turns changed no longer requires `/trust` or Full Access; the exact snapshot and reviewed-hash checks still apply. **`fetch_url` can reach a local or private host you allowed** with `/network allow <host>`; cloud metadata stays blocked. Both refusals now name the setting.
-- **`codewhale exec` offers tools by default**, still under the configured sandbox and approval posture. `--no-tools` is the one-shot. A pipe on stdin is the prompt when no arguments are given, or is appended to them.
-- **A child no longer dies when usage settlement is not acknowledged.** The turn continues and cost stays unknown, matching the parent path.
-- **Workspace memory works without a git origin.** A plain folder or a repo with no `origin` remote gets a stable workspace id. `codewhale plugin list` is an alias of `plugins status`. A heavy command runs after 30 seconds instead of waiting forever for an admission slot. An MCP registration 4xx names the status and the manual client-id path.
-- **Wafer** is a selectable OpenAI-compatible host at `https://pass.wafer.ai/v1`. The public model list is the catalog; the default is `GLM-5.3`. Inference uses `WAFER_API_KEY`.
-- **Provider defaults follow the provider's own model list.** A same-line successor (`grok-4.6` to `grok-4.7`, `muse-spark-1.2` to `muse-spark-1.3`) replaces a stale pin. A different line, such as GPT-6 beside GPT-5.6, does not. The provider pane shows one current model per line and spreads a gateway list across authors, instead of filling the screen with every Claude snapshot.
-- **Turns no longer fail on a cost bookkeeping error.** When Codewhale could not
-  settle its own usage record ("previous usage publication has not been
-  acknowledged"), the whole turn failed and sub-agents were interrupted, even
-  though the model had answered. The turn now continues, the receipt keeps the
-  accounting error, and the status line says the cost is uncertain.
-- **OrcaRouter offer:** no longer shown when Codewhale is in Simplified Chinese
-  or your computer is set to mainland China, and its note now says the link is
-  part of a referral campaign.
 - **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.
 
 ## [0.10.3] - 2026-11-06
@@ -258,7 +239,7 @@ until the matching tag, packages, checksums, and release assets exist.
 - **Bundled skill `goals` is now `personal-goals`.** It tracks personal resolutions in `goals.md` and no longer collides with goal mode; `goals` still resolves to it. An untouched installed `goals` copy becomes `personal-goals` on upgrade; an edited one stays as `goals`.
 - **Each sub-agent is told its name, its scope and that its final answer is delivered to the parent automatically.**
 - **Thread-owned terminals (Runtime API, breaking):** Engine terminal shells now belong to the conversation that started them, so two conversations using `term-1` in one folder get separate shells instead of sharing cwd, running command and output. Clients list a thread's shells at `GET /v1/threads/{id}/terminals` and drive one at `/v1/threads/{id}/terminals/{terminal_id}/output|input|resize|kill`; a reset shell, another thread's or workspace's shell, or one from before an Engine restart answers 404 instead of attaching to a same-named shell. The name-addressed `/v1/terminal/{name}/*` routes now answer 410, and `/v1/runtime/info` advertises `thread_scoped_terminals` in place of the four `terminal_*` flags. Client input meets the thread's shell consent and sandbox-reuse guard, and a lone Ctrl-C uses the dock's confirmed interrupt. In the TUI, a new conversation starts its own `term-1` rather than reusing the previous conversation's shell, which the dock still lists.
-- **Ask asks before every edit; new Accept Edits posture:** Ask now opens a
+- **Ask asks before every edit; new Accept Edits posture (#5185, #5186):** Ask now opens a
   card for file edits inside the workspace too, as its name and the Plan
   handoff ("Edits and commands ask you first") promise. The in-repository edit
   rule moved to a new posture, **Accept Edits** (Claude Code's `acceptEdits`):
@@ -379,6 +360,26 @@ until the matching tag, packages, checksums, and release assets exist.
   other saved credentials (Refs #6932).
 
 ### Fixed
+
+- **A held coordination lock no longer makes a new session read-only.** When another session owns the delegated-agent store, the new session starts on private state and says so, instead of refusing every sub-agent with “Failed to clean up sub-agents”.
+- **A dev server can outlive the turn in an interactive session.** `persist:true` now works in the TUI and desktop when the thread has Full Access; restricted postures and Fleet/sub-agents still refuse it.
+- **`codewhale exec --add-dir <path>`** (repeatable) and `addDirs` on `POST /v1/threads` let the file tools read and write a sibling directory, a second checkout or a shared scratch root without turning on Full Access.
+- **Unsettled usage is persisted in production, not only in tests.** The interactive sink now records a legacy usage receipt when a provider response has no settlement, so children and turns stop reporting settlement failure.
+- **A full usage journal no longer fails a turn before dispatch.** The request runs with cost unknown instead of stopping on “native usage journal capacity reached”.
+- **Reverting a file works in any posture.** Restoring a file the thread's own turns changed no longer requires `/trust` or Full Access; the exact snapshot and reviewed-hash checks still apply. **`fetch_url` can reach a local or private host you allowed** with `/network allow <host>`; cloud metadata stays blocked. Both refusals now name the setting.
+- **`codewhale exec` offers tools by default**, still under the configured sandbox and approval posture. `--no-tools` is the one-shot. A pipe on stdin is the prompt when no arguments are given, or is appended to them.
+- **A child no longer dies when usage settlement is not acknowledged.** The turn continues and cost stays unknown, matching the parent path.
+- **Workspace memory works without a git origin.** A plain folder or a repo with no `origin` remote gets a stable workspace id. `codewhale plugin list` is an alias of `plugins status`. A heavy command runs after 30 seconds instead of waiting forever for an admission slot. An MCP registration 4xx names the status and the manual client-id path.
+- **Wafer** is a selectable OpenAI-compatible host at `https://pass.wafer.ai/v1`. The public model list is the catalog; the default is `GLM-5.3`. Inference uses `WAFER_API_KEY`.
+- **Provider defaults follow the provider's own model list.** A same-line successor (`grok-4.6` to `grok-4.7`, `muse-spark-1.2` to `muse-spark-1.3`) replaces a stale pin. A different line, such as GPT-6 beside GPT-5.6, does not. The provider pane shows one current model per line and spreads a gateway list across authors, instead of filling the screen with every Claude snapshot.
+- **Turns no longer fail on a cost bookkeeping error.** When Codewhale could not
+  settle its own usage record ("previous usage publication has not been
+  acknowledged"), the whole turn failed and sub-agents were interrupted, even
+  though the model had answered. The turn now continues, the receipt keeps the
+  accounting error, and the status line says the cost is uncertain.
+- **OrcaRouter offer:** no longer shown when Codewhale is in Simplified Chinese
+  or your computer is set to mainland China, and its note now says the link is
+  part of a referral campaign.
 
 - **Cost line: a finished request is never "outcome unknown":** the cost
   line drops "request outcome unknown" (and "provider omitted usage") once

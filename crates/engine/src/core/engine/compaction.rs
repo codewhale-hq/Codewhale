@@ -52,12 +52,13 @@ impl crate::compaction::CompactionNoticeSink for EngineCompactionNoticeSink {
     }
     fn accounting_origin(&self) -> std::io::Result<Option<crate::cost_status::NativeUsageOrigin>> {
         if let Some(child) = self.child.as_ref() {
-            return child.usage_origin().map(Some).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "child compaction has no admitted accounting origin",
-                )
-            });
+            let origin = child.usage_origin();
+            if origin.is_none() {
+                tracing::warn!(
+                    "child compaction has no admitted accounting origin; cost stays unknown"
+                );
+            }
+            return Ok(origin);
         }
         Ok(self.origin.clone())
     }
@@ -66,8 +67,13 @@ impl crate::compaction::CompactionNoticeSink for EngineCompactionNoticeSink {
         record: &'a crate::cost_status::RuntimeUsageRecord,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(child) = self.child.as_ref() {
-                child.project_settled_response(record).await?;
+            if let Some(child) = self.child.as_ref()
+                && let Err(error) = child.project_settled_response(record).await
+            {
+                tracing::warn!(
+                    %error,
+                    "compaction usage projection failed; the pass continues"
+                );
             }
             Ok(())
         })

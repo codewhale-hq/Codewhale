@@ -1759,10 +1759,9 @@ impl NativeUsageSource {
                         || revision.physical_requests_dropped != wire.transmissions_dropped
                 })
             {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "previous usage publication has not been acknowledged",
-                ));
+                tracing::warn!(
+                    "previous usage publication was not acknowledged; keeping it for this attempt"
+                );
             }
             let mut record = prepared.clone();
             record.native = Some(NativeUsageProof {
