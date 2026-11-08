@@ -317,7 +317,10 @@ fn parsed_version(text: &str) -> Option<semver::Version> {
 }
 
 fn needs_update(version: Option<&str>, minimum: Option<&str>) -> bool {
-    match (version.and_then(parsed_version), minimum.and_then(parsed_version)) {
+    match (
+        version.and_then(parsed_version),
+        minimum.and_then(parsed_version),
+    ) {
         (Some(found), Some(floor)) => found < floor,
         _ => false,
     }
