@@ -202,6 +202,30 @@ until the matching tag, packages, checksums, and release assets exist.
   transcript, so the text can be read and edited before sending. While a
   slash, mention or history-search menu is open the composer keeps its usual
   height (#7049).
+- **Scheduled work can post into an existing conversation:** automations,
+  `send_later` triggers and tasks accept `destination_thread_id`. A run then
+  starts a turn in that thread instead of a new one, retrying while the thread
+  is busy up to the task's time limit, and a missing or archived thread fails
+  the task by name.
+- **Audit receipt as Markdown (Runtime API):** `format=md` on the thread and
+  turn receipt routes returns the same text the terminal shows; other formats
+  return 400.
+- **Native HarmonyOS binary:** releases build `aarch64-unknown-linux-ohos` as an
+  eighth target and publish a signed `codewhale-ohos-arm64`, so HarmonyOS users
+  no longer need a Rust toolchain and the OpenHarmony SDK, and
+  `npm i -g codewhale` there picks the native build.
+- **Pinned whale routes (preview):** `codewhale account agents create NAME
+  --provider P --model M` pins the exact route on the whale's saved Agent, and
+  `account agents list` shows each whale's provider and model.
+- **Cloud dispatch reuses a configured API-key model (preview):** plain
+  `dispatch` picks your only running account computer and carries a portable
+  configured model; the key is sent in memory only, bound to the account and
+  the exact HTTPS endpoint.
+- **Mistral Vibe key setup documented:** the Mistral provider docs point to
+  current Vibe Code key guidance, with its shared-allowance and billing limits.
+  Live use in Codewhale is not verified.
+- **Website:** an Enterprise page at `/enterprise` lists what Enterprise will
+  deliver, with no pricing or availability claim, and the FAQ is finished.
 
 ### Changed
 
@@ -315,6 +339,9 @@ until the matching tag, packages, checksums, and release assets exist.
   Linux terminals that report it as plain `Enter`, multiline mode previously
   had no way to send. `Ctrl-J` always inserts a newline. Thanks
   [@luestr](https://github.com/luestr) for the report. (#7093)
+- **Faster repository checks:** the Engine reads a repository's HEAD in-process
+  instead of starting `git`, without running the repository's filters or
+  fsmonitor.
 
 ### Removed
 
@@ -618,6 +645,49 @@ until the matching tag, packages, checksums, and release assets exist.
   workspace" when the Codewhale state root is a symlink or Windows junction to
   another volume: the state root is resolved before session-side state is
   opened. Thanks [@SparkofSpike](https://github.com/SparkofSpike). (#7097)
+- **Dollar signs stay dollar signs:** `$5 a month`, `10$ per year` and
+  `PATH=$HOME/bin:$PATH` no longer start inline math that swallows the text up
+  to the next `$`.
+- **Math with non-ASCII text no longer crashes the TUI:** a reply with
+  `\text{如果}` or Greek letters inside `\begin{cases}` or `\begin{aligned}` used
+  to panic, and the saved reply panicked again on `--continue`. Escaped
+  characters (`\%`, `\{`, `\$`) and delimiters such as `\left\{` now render.
+- **Markdown tables, rules, images and tabs:** table columns size to their
+  content instead of taking equal shares; `<br>` in a table cell breaks the
+  line; `- - -` and `* * *` are rules, not bullets; images render as their alt
+  text; and tabs in replies and sent messages expand, so Go and Makefile code
+  keeps its indentation.
+- **The read tool opens text that starts with "BM":** a note beginning "BM25
+  is..." came back as "[Image omitted...]". A file is treated as a bitmap only
+  when its header is valid.
+- **The launch card keeps the folder you are in:** on a narrow pane its path
+  drops to the folder name before it clips, and `/context` keeps the end of the
+  workspace path instead of its root.
+- **A narrow rail keeps urgent notices:** warnings and errors are cut to fit
+  instead of vanishing when their first clause does not fit.
+- **Truer status text:** "Model set to" appears only when the model changes, so
+  `/effort high` shows its own message; `/status` shows an unpriced session's
+  cost as unknown instead of `$0.0000`; and `/cache` no longer prints
+  `Σ hit: 0` for routes that report no cache tokens.
+- **Compaction never drops history to fit:** when a complete summary cannot fit
+  the context window, the pass fails and your history stays, instead of
+  retrying with older messages silently left out.
+- **`/diff` keeps its place on resize:** resizing the terminal no longer jumps
+  the pager and its search match back to an earlier line. (#7087)
+- **First downloads for `npx` and `uvx` MCP servers:** a stdio server started
+  through `npx`, `pnpx`, `bunx` or `uvx` with no `connect_timeout` of its own
+  now gets at least 120 seconds to connect, so a recommended server such as
+  Playwright no longer fails its first `/mcp add` on a cold download.
+- **The Linux extension host falls back to Node when Bun cannot run in the
+  sandbox:** a Bun that is a shim or script (asdf's, for example) now triggers
+  the `runtime = "auto"` fallback instead of failing the start.
+- **Shell jobs hold their worktree (Runtime API):** removing a managed worktree
+  while one of its tracked shell jobs runs is refused with 409
+  `worktree_busy`, and the folder stays until the job ends.
+- **The installer reuses an identical download:** `codew` is not downloaded
+  again when its manifest digest matches `codewhale`'s. (#7102)
+- **The zsh missing-key hint reads as guidance:** the first-run hint no longer
+  looks like a shell error.
 
 ### Security
 
@@ -625,6 +695,25 @@ until the matching tag, packages, checksums, and release assets exist.
 - **Pinned marketplace archives:** a Codewhale or Claude marketplace entry whose tarball source carries a `sha256` now installs only when the downloaded bytes match it; a mismatch, a malformed pin or a pin on a non-archive source refuses the install with nothing written. The pin also applies to direct installs as `https://…/x.tar.gz#sha256=<hex>`.
 - **Sandboxed commands cannot plant git hooks or edit git config:** in workspace-write mode, `.git/hooks` and `.git/config` (and a linked worktree's shared `hooks` and `config`) are read-only to sandboxed commands, so a command cannot leave a hook or `core.hooksPath` that later runs outside the sandbox. The workspace's `.codewhale/` is protected even before it exists (on Linux it is created first, because bubblewrap can only protect existing paths). `git commit` and ordinary file writes are unaffected; `git config` writes and hook edits need an approved unsandboxed command.
 - **Tool image validation:** an image returned by a tool must decode before it is sent, so truncated or corrupt files are omitted with a receipt even when they are already within the delivery budget.
+- **Terminal graphics advisory (RUSTSEC-2026-0430):** the terminal emulator
+  library moves to rio-vt 0.5.29, closing a path traversal in its Kitty
+  graphics handler that could read or delete files outside the intended
+  directory.
+- **Workspace status no longer runs repository filter drivers:**
+  `GET /v1/workspace/status` and the Git status detail neutralize clean and
+  process filters a repository defines, so opening a cloned repository cannot
+  run its code. A failing filter used to make the route report a clean tree; it
+  no longer does.
+- **Bridge and extension dependency advisories:** the Feishu and WeCom bridges
+  move to `follow-redirects` 1.16.2 (high severity), and the VS Code extension
+  build no longer pulls a vulnerable `minimatch`.
+- **Approval answers must match their request (Runtime API):** an approval,
+  user-input or tool answer that names a different thread, turn or call is
+  refused with 403 instead of being delivered. Callers that send no binding,
+  such as the existing HTTP route, behave as before.
+- **Bounded release discovery:** `codewhale update` reads at most 8 MiB of
+  release metadata and 4 KiB of error text, strips control characters from
+  remote errors and no longer echoes malformed input.
 
 ### Maintenance
 
