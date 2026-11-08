@@ -3542,7 +3542,6 @@ impl SessionManager {
         .ok_or_else(Self::retired_session_write_error)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn persist_legacy_usage_admitted(
         &self,
         session_id: &str,
@@ -3563,7 +3562,6 @@ impl SessionManager {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn persist_late_runtime_usage(
         &self,
         session_id: &str,

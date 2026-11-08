@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-#[cfg(any(test, feature = "test-support"))]
 use crate::cost_status::EffectiveRouteUsage;
 use crate::cost_status::{
     CostScopeToken, EffectiveRouteEnvelope, RuntimeUsageDropRecord, RuntimeUsageMissingReason,
@@ -8,7 +7,6 @@ use crate::cost_status::{
     record_interactive_runtime_usage_drop, register_interactive_runtime_usage_sink_with_projection,
     register_runtime_decision_sink, report_interactive_decision,
 };
-#[cfg(any(test, feature = "test-support"))]
 use codewhale_models::Usage;
 
 /// Install an interactive sink whose stale-scope fallback is an origin-session
@@ -67,22 +65,15 @@ pub fn register_persistent_interactive_runtime_usage_sink_at(
                         )
                         .is_ok();
                     }
-                    #[cfg(any(test, feature = "test-support"))]
-                    {
-                        report_effective_route_for_interactive_origin_with_manager(
-                            scope,
-                            &usage_session_id,
-                            &usage_turn_id,
-                            &record.source_id,
-                            &record.usage.route,
-                            &record.usage.usage,
-                            &manager,
-                        )
-                    }
-                    #[cfg(not(any(test, feature = "test-support")))]
-                    {
-                        false
-                    }
+                    report_effective_route_for_interactive_origin_with_manager(
+                        scope,
+                        &usage_session_id,
+                        &usage_turn_id,
+                        &record.source_id,
+                        &record.usage.route,
+                        &record.usage.usage,
+                        &manager,
+                    )
                 })
                 .unwrap_or(false)
         }),
@@ -181,7 +172,6 @@ pub(crate) fn report_runtime_usage_record_for_origin_with_manager(
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn report_effective_route_for_interactive_origin_with_manager(
     scope: CostScopeToken,
     session_id: &str,
