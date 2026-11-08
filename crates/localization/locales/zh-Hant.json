@@ -8,7 +8,7 @@
   "OrcaRouterOfferRecommended": "OrcaRouter · 推薦",
   "OrcaRouterOfferAction": "在 /provider 或 /model 中查看 OrcaRouter 優惠",
   "OrcaRouterOfferBody": "透過 Codewhale × OrcaRouter 優惠，儲值可額外獲得 30% 的 DeepSeek V4.1 Flash 額度。最新條款請查看優惠頁面。",
-  "OrcaRouterOfferDisclosure": "Codewhale 會從 OrcaRouter 獲得推薦佣金。",
+  "OrcaRouterOfferDisclosure": "此連結屬於一項推廣活動；透過此連結儲值時，Codewhale 可能獲得推廣獎勵。",
   "ShellWaitNoActive": "目前沒有正在等待的 shell 命令。",
   "ShellWaitInteractive": "互動式命令無法在背景繼續執行。請取消目前回合，或等待命令完成。",
   "ShellWaitUnavailable": "此工具無法在背景繼續執行。請取消目前回合，或等待它完成。",

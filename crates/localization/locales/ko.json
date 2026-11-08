@@ -8,7 +8,7 @@
   "OrcaRouterOfferRecommended": "OrcaRouter · 추천",
   "OrcaRouterOfferAction": "/provider 또는 /model에서 OrcaRouter 혜택 보기",
   "OrcaRouterOfferBody": "Codewhale × OrcaRouter 혜택으로 충전 금액의 30%를 DeepSeek V4.1 Flash 크레딧으로 추가 적립하세요. 최신 조건은 혜택 페이지에서 확인하세요.",
-  "OrcaRouterOfferDisclosure": "Codewhale은 OrcaRouter로부터 추천 수수료를 받습니다.",
+  "OrcaRouterOfferDisclosure": "이 링크는 추천 캠페인의 일부이며, 이 링크를 통한 충전에 대해 Codewhale이 추천 보상을 받을 수 있습니다.",
   "ShellWaitNoActive": "현재 완료를 기다리는 셸 명령이 없습니다.",
   "ShellWaitInteractive": "대화형 명령은 백그라운드에서 계속 실행할 수 없습니다. 턴을 취소하거나 명령이 완료될 때까지 기다리세요.",
   "ShellWaitUnavailable": "이 도구는 백그라운드에서 계속 실행할 수 없습니다. 턴을 취소하거나 완료될 때까지 기다리세요.",

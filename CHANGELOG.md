@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OrcaRouter offer:** no longer shown when Codewhale is in Simplified Chinese
+  or your computer is set to mainland China, and its note now says the link is
+  part of a referral campaign.
 - **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.
 
 ## [0.10.3] - 2026-11-06

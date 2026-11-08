@@ -8,7 +8,7 @@
   "OrcaRouterOfferRecommended": "OrcaRouter · 推荐",
   "OrcaRouterOfferAction": "在 /provider 或 /model 中查看 OrcaRouter 优惠",
   "OrcaRouterOfferBody": "通过 Codewhale × OrcaRouter 优惠，充值可额外获得 30% 的 DeepSeek V4.1 Flash 额度。最新条款请查看优惠页面。",
-  "OrcaRouterOfferDisclosure": "Codewhale 会从 OrcaRouter 获得推荐佣金。",
+  "OrcaRouterOfferDisclosure": "此链接属于一项推广活动；通过此链接充值时，Codewhale 可能获得推广奖励。",
   "ShellWaitNoActive": "当前没有正在等待的 shell 命令。",
   "ShellWaitInteractive": "交互式命令无法在后台继续运行。请取消当前回合，或等待命令完成。",
   "ShellWaitUnavailable": "此工具无法在后台继续运行。请取消当前回合，或等待它完成。",

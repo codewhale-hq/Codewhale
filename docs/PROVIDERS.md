@@ -15,10 +15,13 @@ The `/provider` and `/model` pickers recommend OrcaRouter as a partner option.
 Click the recommendation or press F7 to view the Codewhale × OrcaRouter offer:
 a **30% top-up match for DeepSeek V4.1 Flash**. The pager includes the
 [redemption link](https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67)
-and can copy its text. Codewhale earns a referral fee from OrcaRouter.
+and can copy its text. This link is part of a referral campaign; Codewhale may
+earn a referral reward on top-ups made through it.
 Current eligibility and terms are owned by the linked offer page. Viewing it
 preserves the current provider, model and credentials; redemption happens on
 OrcaRouter's site.
+The recommendation is not shown when the interface is in Simplified Chinese or
+the computer is set to a mainland China time zone or locale.
 
 DeepSeek remains the default provider, but every entry in `ProviderKind::ALL`
 is a first-class selectable provider route. `ALL` is the catalog/picker

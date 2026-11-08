@@ -75,9 +75,6 @@ use codewhale_config::descriptors::defaults::{
     DS4_BASE_URL, DS4_DEFAULT_MODEL, LM_STUDIO_BASE_URL,
 };
 
-pub(crate) const ORCAROUTER_OFFER_URL: &str =
-    "https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67";
-
 #[derive(Default)]
 pub(crate) struct ProviderOffer {
     hitbox: RefCell<Option<Rect>>,
@@ -93,18 +90,20 @@ impl ProviderOffer {
         ViewAction::Emit(ViewEvent::OpenTextPager {
             title: tr(locale, MessageId::OrcaRouterOfferRecommended).into_owned(),
             content: format!(
-                "{}\n\n{}\n\n{ORCAROUTER_OFFER_URL}",
+                "{}\n\n{}\n\n{}",
                 tr(locale, MessageId::OrcaRouterOfferBody),
                 tr(locale, MessageId::OrcaRouterOfferDisclosure),
+                crate::tui::orca_offer::OFFER_URL,
             ),
         })
     }
 
     pub(crate) fn key_action(locale: Locale, key: &KeyEvent) -> Option<ViewAction> {
-        crate::tui::shell_key_routing::binding(
-            crate::tui::shell_key_routing::ShellBindingId::ProviderOffer,
-        )
-        .matches(key)
+        (crate::tui::orca_offer::available(locale)
+            && crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::ProviderOffer,
+            )
+            .matches(key))
         .then(|| Self::open(locale))
     }
 
@@ -121,7 +120,7 @@ impl ProviderOffer {
 
     pub(crate) fn render(&self, locale: Locale, area: Rect, buf: &mut Buffer) -> Rect {
         self.clear();
-        if area.height < 4 || area.width < 20 {
+        if area.height < 4 || area.width < 20 || !crate::tui::orca_offer::available(locale) {
             return area;
         }
         let chord = crate::tui::shell_key_routing::display_chord(

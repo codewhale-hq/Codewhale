@@ -72,6 +72,7 @@ pub mod mouse_ui;
 pub mod notifications;
 pub mod ocean;
 pub mod onboarding;
+pub mod orca_offer;
 pub mod output_rows_cache;
 pub mod pager;
 pub mod paste;
