@@ -1332,7 +1332,7 @@ pub async fn run_tui(
         runtime_mcp_servers: app.runtime_services.runtime_mcp_servers.clone(),
 
         shell_manager: Some(shell_manager),
-        persist_services_enabled: false,
+        persist_services_enabled: true,
         task_manager: Some(task_manager.clone()),
         automations: Some(automations),
         task_data_dir: Some(task_manager.data_dir()),

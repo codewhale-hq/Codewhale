@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A dev server can outlive the turn in an interactive session.** `persist:true` now works in the TUI and desktop when the thread has Full Access; restricted postures and Fleet/sub-agents still refuse it.
 - **`codewhale exec --add-dir <path>`** (repeatable) and `addDirs` on `POST /v1/threads` let the file tools read and write a sibling directory, a second checkout or a shared scratch root without turning on Full Access.
 - **A full usage journal no longer fails a turn before dispatch.** The request runs with cost unknown instead of stopping on “native usage journal capacity reached”.
 - **Reverting a file works in any posture.** Restoring a file the thread's own turns changed no longer requires `/trust` or Full Access; the exact snapshot and reviewed-hash checks still apply. **`fetch_url` can reach a local or private host you allowed** with `/network allow <host>`; cloud metadata stays blocked. Both refusals now name the setting.
