@@ -20,7 +20,7 @@
 | `Ctrl-B` | 结束当前 shell 等待，使回合继续；前台命令转入 `/jobs`，后台任务继续运行。可用 `/jobs` 或 `action: "wait"` 的 `Bash` 查看输出 |
 | `Ctrl-D` | 退出（仅当输入框为空时） |
 | `Tab` | 当输入框为空时，循环切换 TUI 模式：Plan → Work → Operate → Plan |
-| `Shift+Tab` | 循环切换权限级别：Ask → Auto-Review → Full Access（完全访问）。无论输入框内容如何、回合是否在运行都即时生效（仅在打开设置以外的模态框时被抑制） |
+| `Shift+Tab` | 循环切换权限级别：Ask → Accept Edits → Auto-Review → Full Access（完全访问）。无论输入框内容如何、回合是否在运行都即时生效（仅在打开设置以外的模态框时被抑制） |
 | `Ctrl-T` | 循环切换当前模型的思考强度。走与 `/model` 和 `/effort` 相同的阶梯（模型目录，或已文档化的路由方言）。始终思考的模型省略 `off`；Grok 4.6 包含 `xhigh`。 |
 | `Ctrl-Shift-T` | 切换实时对话记录浮层（粘性尾部自动滚动） |
 | `Ctrl-R` | 打开恢复会话选择器 |

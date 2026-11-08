@@ -229,6 +229,11 @@ const THINKING_HIGHLIGHT: &[SettingOption] = &[
 const PERMISSION_POSTURE: &[SettingOption] = &[
     SettingOption::new("ask", "ConfigChoiceAsk", "ConfigChoiceDetailAsk"),
     SettingOption::new(
+        "accept-edits",
+        "ConfigChoiceAcceptEdits",
+        "ConfigChoiceDetailAcceptEdits",
+    ),
+    SettingOption::new(
         "auto-review",
         "ConfigChoiceAutoReview",
         "ConfigChoiceDetailAutoReview",
@@ -242,6 +247,11 @@ const PERMISSION_POSTURE: &[SettingOption] = &[
 
 const APPROVAL_MODE: &[SettingOption] = &[
     SettingOption::new("ask", "ConfigChoiceAsk", "ConfigChoiceDetailAsk"),
+    SettingOption::new(
+        "accept-edits",
+        "ConfigChoiceAcceptEdits",
+        "ConfigChoiceDetailAcceptEdits",
+    ),
     SettingOption::new(
         "auto-review",
         "ConfigChoiceAutoReview",
@@ -261,6 +271,11 @@ const APPROVAL_POLICY: &[SettingOption] = &[
         "ConfigChoiceDetailUseTuiDefault",
     ),
     SettingOption::new("ask", "ConfigChoiceAsk", "ConfigChoiceDetailAsk"),
+    SettingOption::new(
+        "accept-edits",
+        "ConfigChoiceAcceptEdits",
+        "ConfigChoiceDetailAcceptEdits",
+    ),
     SettingOption::new(
         "auto-review",
         "ConfigChoiceAutoReview",

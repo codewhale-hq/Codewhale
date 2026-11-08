@@ -60,6 +60,7 @@ pub enum CommandApprovalMode {
     Bypass,
     #[default]
     Suggest,
+    AcceptEdits,
     Never,
 }
 

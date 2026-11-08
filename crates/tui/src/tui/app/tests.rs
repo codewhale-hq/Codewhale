@@ -4070,6 +4070,9 @@ fn cycle_approval_scenario() {
         app.approval_mode = ApprovalMode::Suggest;
 
         assert!(app.cycle_approval_posture());
+        assert_eq!(app.approval_mode, ApprovalMode::AcceptEdits);
+
+        assert!(app.cycle_approval_posture());
         assert_eq!(app.approval_mode, ApprovalMode::Auto);
 
         assert!(app.cycle_approval_posture());
@@ -4196,9 +4199,10 @@ fn busy_permission_cycle_moves_the_live_posture() {
 fn permission_postures_persist_across_restart() {
     let _env_lock = lock_test_env();
     for (cycles, expected) in [
-        (1, ApprovalMode::Auto),
-        (2, ApprovalMode::Bypass),
-        (3, ApprovalMode::Suggest),
+        (1, ApprovalMode::AcceptEdits),
+        (2, ApprovalMode::Auto),
+        (3, ApprovalMode::Bypass),
+        (4, ApprovalMode::Suggest),
     ] {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("config.toml");
@@ -4243,18 +4247,18 @@ fn shift_tab_migrates_user_root_policy_to_durable_tui_posture() {
     assert!(app.approval_policy_locked());
 
     assert!(app.cycle_root_approval_posture());
-    assert_eq!(app.approval_mode, ApprovalMode::Auto);
+    assert_eq!(app.approval_mode, ApprovalMode::AcceptEdits);
     assert!(!app.approval_policy_locked());
     let saved_config = std::fs::read_to_string(&config_path).expect("saved config");
     assert!(saved_config.contains("# keep"));
     assert!(!saved_config.contains("approval_policy"));
     let saved_settings = std::fs::read_to_string(&settings_path).expect("saved settings");
-    assert!(saved_settings.contains("permission_posture = \"auto-review\""));
+    assert!(saved_settings.contains("permission_posture = \"accept-edits\""));
 
     let restarted_config =
         codewhale_plugins::providers::load_config(Some(config_path), None).expect("reload config");
     let restarted = App::new(options, &restarted_config);
-    assert_eq!(restarted.approval_mode, ApprovalMode::Auto);
+    assert_eq!(restarted.approval_mode, ApprovalMode::AcceptEdits);
     assert!(!restarted.approval_policy_locked());
 }
 

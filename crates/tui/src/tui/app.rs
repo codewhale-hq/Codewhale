@@ -3947,7 +3947,8 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Cycle the durable Agent permission posture: Ask → Auto-Review → Bypass.
+    /// Cycle the durable Agent permission posture: Ask → Accept Edits →
+    /// Auto-Review → Full Access.
     pub fn cycle_approval_posture(&mut self) -> bool {
         let Some(next) = self.next_approval_posture(false) else {
             return false;
@@ -4096,6 +4097,7 @@ impl App {
     fn approval_posture_setting(mode: ApprovalMode) -> &'static str {
         match mode {
             ApprovalMode::Suggest => "ask",
+            ApprovalMode::AcceptEdits => "accept-edits",
             ApprovalMode::Auto => "auto-review",
             ApprovalMode::Bypass => "full-access",
             ApprovalMode::Never => "never",

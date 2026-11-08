@@ -27,14 +27,15 @@ the saved `role`/`profile` assignment. An Exact Fleet fixes each member's route.
 Press `Tab` to complete composer menus or cycle through the visible modes
 when the composer is empty: **Plan → Work → Operate → Plan**. `Tab` never sends
 or queues composer text; use `Enter` to send or queue it.
-Press `Shift+Tab` to cycle permission posture (Ask → Auto-Review → Full Access).
+Press `Shift+Tab` to cycle permission posture (Ask → Accept Edits →
+Auto-Review → Full Access).
 Every change of effective permission writes a `Permissions changed to …` line
 in the transcript.
 Press `Ctrl+T` to cycle reasoning effort.
 Run `/mode` to open the mode picker, or switch directly with `/mode work`,
 `/mode plan`, or `/mode operate`.
 
-- **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
+- **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Accept Edits), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
 - **Work** (internally `agent`): ordinary multi-step execution. The first-turn toolbox includes `read`, `write`, `edit`, `file_search`, `bash`, `agent`, `workflow`, `todo_write`, and `load_skill`, plus `create_goal`, `get_goal`, `update_goal`, and `task_shell_wait` so goal and background-shell controls are available without discovery. The agent calls `create_goal` when a request is a durable objective; the host never infers a goal from wording, and the contract must not tell the model otherwise. Approval, sandbox, repository law, and managed policy decide what may execute.
 - **Operate**: Work at full strength, the "ultra" mode. Same tools and authority as Work; the difference is how they are used. Each substantive request becomes a goal (`create_goal`), the plan stays visible (`todo_write`), multi-part work runs through `workflow` and parallel `agent` workers, non-trivial changes get an independent reviewer before they are called done, long commands keep running in the background, and recurring or watch-type work is offered as an `automation` (created after approval). It keeps going until the goal is verified, blocked on you, or paused.
 
@@ -195,14 +196,24 @@ at runtime:
 
 ```text
 /config
-# edit the approval_mode row to: suggest | auto | never
+# edit the permission_posture row to: ask | accept-edits | auto-review | full-access
 ```
 
 Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
 
-- `suggest` (**Ask**, default): tool approvals may interrupt, and Codewhale asks
-  when an unresolved user choice materially changes authority, cost, scope, or
-  outcome.
+- `ask` (**Ask**, default; internally `suggest`): tool approvals may interrupt,
+  and Codewhale asks when an unresolved user choice materially changes
+  authority, cost, scope, or outcome. Every file edit and every command asks,
+  including edits inside the workspace.
+- `accept-edits` (**Accept Edits**, wire `accept_edits`): Ask, except that a
+  file edit whose every target stays inside the workspace's git work tree runs
+  without a card. Edits to `.git` internals, `.codewhale`, `.env*`, credential
+  and key files always ask, and so does every edit in a folder without git
+  (the card says the folder has no repository). Commands, network, MCP actions
+  and anything outside the folder ask exactly as in Ask; ask rules, hooks,
+  repository law and the safety floor still force a card. This is Claude
+  Code's `acceptEdits`. ACP sessions run it as Ask, because ACP turns never
+  apply the in-folder edit rule.
 - `auto` (**Auto-Review**): reviews tool calls automatically. Deliberate user
   questions remain available in interactive sessions through `request_user_input`;
   a question parks the turn until answered, canceled, or its configured timeout
@@ -292,7 +303,7 @@ auto-approve bit:
   is hard-blocked) and, for holds it cannot prove safe, the same one-shot
   model guardian using the child's own session client. No prompt is ever
   opened for a child; an unavailable guardian denies, fail closed.
-- **Ask**: a call the role may delegate runs. A held call is raised as an
+- **Ask** and **Accept Edits**: a call the role may delegate runs. A held call is raised as an
   approval prompt in the parent's UI (`agent:<id>:approval:<n>`) when the
   host is an interactive TUI; the worker waits visibly (`waiting for user`)
   and the person's answer is routed back to it, whether the parent turn is

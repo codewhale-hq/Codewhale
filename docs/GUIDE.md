@@ -333,9 +333,9 @@ Or switch directly:
 Plan mode is the safest place to start in an unfamiliar repository. It is for
 inspection and decision-making, not file edits.
 When a Plan turn successfully finishes a nonempty response, Codewhale asks
-how to continue, including when the plan is plain text. **Work (Ask)** and
-**Work (Auto-Review)** switch to Work with that permission and send the exact
-approved response as the next message. Existing To-dos from that turn are
+how to continue, including when the plan is plain text. **Work (Ask)**,
+**Work (Accept Edits)** and **Work (Auto-Review)** switch to Work with that
+permission and send the exact approved response as the next message. Existing To-dos from that turn are
 preserved; a prose-only plan adds one pending item without replacing unrelated
 work. If Codewhale cannot prepare the work state, it stays in Plan without
 starting the task. **Keep planning**, or `Esc`, stays in Plan. You can also

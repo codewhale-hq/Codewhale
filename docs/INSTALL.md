@@ -4,10 +4,11 @@
 
 Codewhale is an open-source coding agent that runs in your terminal. You give
 it a task ("fix the failing test", "add a CLI flag"). It reads your repository,
-edits files and runs commands. In the default **Ask** posture it applies file
-edits inside the workspace immediately (and shows you the diff), but asks before
-running shell commands, so commit or stash anything you care about first. It
-works with many model providers. **DeepSeek** is the default.
+edits files and runs commands. In the default **Ask** posture it asks before
+each file edit and each shell command; **Accept Edits** (one `Shift+Tab`)
+applies file edits inside the repository immediately and shows you the diff,
+so commit or stash anything you care about first. It works with many model
+providers. **DeepSeek** is the default.
 
 The command is `codewhale`. `codew` is a shorter alias for the same program.
 
@@ -921,11 +922,13 @@ codewhale
 
 * The composer is at the bottom. The footer shows the permission posture
   (`ask`), the mode (`work`) and the model (`DeepSeek · deepseek-flash`).
-* **Shift+Tab** cycles the permission posture: Ask → Auto-Review → Full Access.
-  **Tab** (with an empty composer) cycles the mode: Plan → Work → Operate.
-* In **Ask**, file edits in the workspace are applied and shown as a diff.
-  Shell commands stop at an **APPROVAL** prompt: `y` allow once, `a` allow for
-  this session, `n` deny, `Esc` abort the turn.
+* **Shift+Tab** cycles the permission posture: Ask → Accept Edits →
+  Auto-Review → Full Access. **Tab** (with an empty composer) cycles the
+  mode: Plan → Work → Operate.
+* In **Ask**, file edits and shell commands stop at an **APPROVAL** prompt:
+  `y` allow once, `a` allow for this session, `n` deny, `Esc` abort the turn.
+  In **Accept Edits**, file edits in the repository are applied and shown as a
+  diff, and shell commands still prompt.
 * Useful keys: **F1** help (or `/help`), **Ctrl-K** command palette, **F3**
   provider/model picker, **Ctrl-R** resume a past session, **Ctrl-U** clear the
   input (**Ctrl-Z** restores it), **Ctrl-C** cancel, clear the draft, or quit, **Ctrl-D** quit

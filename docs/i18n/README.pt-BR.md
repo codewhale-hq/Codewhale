@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:20d0bb7c0784 -->
 <div align="center">
 
 <picture>
@@ -74,8 +74,8 @@ contrário, duas cópias acabam no `PATH` e vale a que vier primeiro.
 ## Início rápido
 
 1. Faça commit ou stash do seu trabalho e execute `codewhale` na raiz de um
-   repositório git. Por padrão, ele aplica as edições de arquivos ali sem
-   perguntar e mostra o diff.
+   repositório git. Por padrão, ele pergunta antes de cada edição de arquivo
+   e de cada comando; pressione `Shift+Tab` uma vez para **Aceitar edições** (Accept Edits) e deixá-lo editar arquivos no repositório sem perguntar.
 2. Execute `/provider` (ou pressione `F3`), escolha um provedor, cole a chave
    de API dele e escolha um modelo. DeepSeek é o provedor padrão. Sem uma
    chave, escolha um runtime local. Se nenhum provedor estiver configurado e o
@@ -112,7 +112,7 @@ Uma instalação nova começa no modo Work com a permissão Perguntar.
 | | Alterne com | Opções |
 | --- | --- | --- |
 | Modo | `Tab` (com o campo de entrada vazio) ou `/mode` | **Plan** lê e pesquisa, mas não altera nada. **Work** edita arquivos e executa comandos. **Operate** tem o mesmo acesso que o Work, trata seu pedido como um objetivo e continua até o objetivo ser verificado ou precisar de uma resposta sua. |
-| Permissão | `Shift+Tab` | **Perguntar** (Ask) aplica edições de arquivos no seu repositório sem perguntar e pergunta antes de comandos de shell que não sejam somente leitura. **Revisão automática** (Auto-Review) deixa regras e um modelo revisor aprovarem chamadas rotineiras e recusa as de alto risco; mude para Perguntar para aprová-las você mesmo. **Acesso total** (Full Access) nunca pergunta e desliga o sandbox do Codewhale; as regras do repositório e a política gerenciada continuam valendo. |
+| Permissão | `Shift+Tab` | **Perguntar** (Ask) pergunta antes de toda edição de arquivo e de todo comando de shell que não seja somente leitura. **Aceitar edições** (Accept Edits) aplica edições de arquivos no seu repositório git sem perguntar e continua perguntando antes de comandos. **Revisão automática** (Auto-Review) deixa regras e um modelo revisor aprovarem chamadas rotineiras e recusa as de alto risco; mude para Perguntar para aprová-las você mesmo. **Acesso total** (Full Access) nunca pergunta e desliga o sandbox do Codewhale; as regras do repositório e a política gerenciada continuam valendo. |
 
 Os detalhes estão no [guia de modos e permissões](../MODES.md).
 

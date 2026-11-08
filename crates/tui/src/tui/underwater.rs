@@ -702,7 +702,9 @@ pub(crate) fn header_mode_ink(mode: AppMode) -> ChromeInk {
 
 pub(crate) fn header_permission_ink(mode: ApprovalMode) -> ChromeInk {
     match mode {
-        ApprovalMode::Suggest | ApprovalMode::Never => ChromeInk::PermissionAsk,
+        ApprovalMode::Suggest | ApprovalMode::AcceptEdits | ApprovalMode::Never => {
+            ChromeInk::PermissionAsk
+        }
         ApprovalMode::Auto => ChromeInk::PermissionAutoReview,
         ApprovalMode::Bypass => ChromeInk::PermissionFullAccess,
     }

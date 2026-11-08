@@ -4086,12 +4086,14 @@ fn canonical_config_choice(key: &str, value: &str) -> String {
         },
         "approval_mode" | "permission_posture" => match normalized.as_str() {
             "ask" | "suggest" | "on-request" | "untrusted" => "ask".to_string(),
+            "accept-edits" | "acceptedits" | "edits" => "accept-edits".to_string(),
             "auto" | "auto-review" => "auto-review".to_string(),
             "full" | "full-access" | "bypass" | "yolo" => "full-access".to_string(),
             _ => normalized,
         },
         "approval_policy" => match normalized.as_str() {
             "ask" | "suggest" | "on-request" | "untrusted" => "ask".to_string(),
+            "accept-edits" | "acceptedits" | "edits" => "accept-edits".to_string(),
             "auto" | "auto-review" => "auto-review".to_string(),
             "full" | "full-access" | "bypass" | "yolo" => "full-access".to_string(),
             "never" | "deny" => "never".to_string(),

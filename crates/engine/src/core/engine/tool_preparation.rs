@@ -89,7 +89,7 @@ pub(super) fn prepare_tool_call(
                 (context.auto_approve, context.approval_mode)
             });
             let can_ask = posture.is_none_or(|(auto_approve, approval_mode)| {
-                approval_mode == ApprovalMode::Suggest
+                approval_mode.is_ask_family()
                     || auto_approve
                     || approval_mode == ApprovalMode::Bypass
             });

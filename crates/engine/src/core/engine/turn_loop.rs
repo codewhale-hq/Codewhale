@@ -519,7 +519,7 @@ pub(super) fn registered_tool_approval_required(
 
 /// The engine-side half of the in-workspace write carve-out (#5185): true
 /// when a `Suggest`-tier call is a canonical file-write tool whose targets
-/// all qualify under the default Ask posture. Callers still honor
+/// all qualify under the Accept Edits posture. Callers still honor
 /// `approval_force_prompt`, typed ask-rules, the built-in safety floor, and
 /// repo law after this answer.
 #[must_use]
@@ -564,13 +564,14 @@ pub(super) fn call_forces_prompt(
         || crate::tools::approval_cache::computer_use_user_gate(tool_name, input).is_some()
 }
 
-/// Repo-law `ask` rules require a human decision. Only Ask posture can open
-/// that decision; every autonomous or no-prompt posture must fail closed.
+/// Repo-law `ask` rules require a human decision. Only Ask and Accept Edits
+/// can open that decision; every autonomous or no-prompt posture must fail
+/// closed.
 pub(super) fn repo_law_must_block_without_prompt(
     approval_mode: ApprovalMode,
     auto_approve: bool,
 ) -> bool {
-    auto_approve || approval_mode != ApprovalMode::Suggest
+    auto_approve || !approval_mode.is_ask_family()
 }
 
 pub(super) fn requested_sandbox_escalation(
@@ -2160,7 +2161,7 @@ impl Engine {
                 tool_input = prepared.call.input;
                 resources = prepared.call.resources;
 
-                // #5185: in the default Ask posture, a file write whose
+                // #5185: in Accept Edits, a file write whose
                 // every target stays inside the workspace git work tree —
                 // off `.git` internals, runtime state, and sensitive files
                 // — runs without a modal. Everything evaluated after this
@@ -2532,9 +2533,7 @@ impl Engine {
                             "sandbox escalation requires an effective tool context",
                         ));
                     }
-                    Ok(Some((_policy, justification)))
-                        if batch_approval_mode == ApprovalMode::Suggest =>
-                    {
+                    Ok(Some((_policy, justification))) if batch_approval_mode.is_ask_family() => {
                         let escalation_description = format!(
                             "Sandbox escalation to '{}' for this exact call: {justification}",
                             tool_input["sandbox_permissions"]
@@ -2572,7 +2571,7 @@ impl Engine {
             {
                 if matches!(
                     batch_approval_mode,
-                    ApprovalMode::Suggest | ApprovalMode::Bypass
+                    ApprovalMode::Suggest | ApprovalMode::AcceptEdits | ApprovalMode::Bypass
                 ) {
                     approval_required = true;
                     approval_force_prompt = true;

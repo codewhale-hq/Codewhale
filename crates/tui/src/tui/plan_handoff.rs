@@ -80,6 +80,10 @@ pub(crate) fn request(locale: Locale) -> UserInputRequest {
                     MessageId::PlanHandoffWorkAskDetail,
                 ),
                 option(
+                    MessageId::PlanHandoffWorkAcceptEdits,
+                    MessageId::PlanHandoffWorkAcceptEditsDetail,
+                ),
+                option(
                     MessageId::PlanHandoffWorkAuto,
                     MessageId::PlanHandoffWorkAutoDetail,
                 ),
@@ -104,6 +108,8 @@ pub(crate) fn choice(locale: Locale, response: &UserInputResponse) -> PlanHandof
     let picked = |id: MessageId| answer.label == tr(locale, id);
     if picked(MessageId::PlanHandoffWorkAsk) {
         PlanHandoffChoice::Work(ApprovalMode::Suggest)
+    } else if picked(MessageId::PlanHandoffWorkAcceptEdits) {
+        PlanHandoffChoice::Work(ApprovalMode::AcceptEdits)
     } else if picked(MessageId::PlanHandoffWorkAuto) {
         PlanHandoffChoice::Work(ApprovalMode::Auto)
     } else if picked(MessageId::PlanHandoffKeepPlanning) {
@@ -171,6 +177,7 @@ mod tests {
                 .collect();
             let expected = [
                 PlanHandoffChoice::Work(ApprovalMode::Suggest),
+                PlanHandoffChoice::Work(ApprovalMode::AcceptEdits),
                 PlanHandoffChoice::Work(ApprovalMode::Auto),
                 PlanHandoffChoice::KeepPlanning,
             ];

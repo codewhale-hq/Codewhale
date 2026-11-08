@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:20d0bb7c0784 -->
 <div align="center">
 
 <picture>
@@ -78,8 +78,8 @@ trouvée qui l’emporte.
 ## Démarrage rapide
 
 1. Commitez ou mettez de côté (stash) votre travail, puis lancez `codewhale` à
-   la racine d’un dépôt git. Par défaut, il y applique les modifications de
-   fichiers sans demander et vous montre le diff.
+   la racine d’un dépôt git. Par défaut, il demande avant chaque modification de
+   fichier et chaque commande ; appuyez une fois sur `Shift+Tab` pour **Accept Edits** afin qu’il modifie les fichiers du dépôt sans demander.
 2. Lancez `/provider` (ou appuyez sur `F3`), choisissez un fournisseur, collez
    sa clé API et choisissez un modèle. DeepSeek est le fournisseur par défaut.
    Sans clé, choisissez plutôt un runtime local. Si aucun fournisseur n’est
@@ -116,7 +116,7 @@ Une nouvelle installation démarre en mode Work avec la permission Ask.
 | | Changer avec | Options |
 | --- | --- | --- |
 | Mode | `Tab` (quand la saisie est vide) ou `/mode` | **Plan** lit et effectue des recherches, mais ne modifie rien. **Work** modifie des fichiers et exécute des commandes. **Operate** a les mêmes accès que Work, traite votre demande comme un objectif et continue jusqu’à ce que l’objectif soit vérifié ou qu’il ait besoin d’une réponse de votre part. |
-| Permission | `Shift+Tab` | **Ask** applique sans demander les modifications de fichiers dans votre dépôt et demande avant les commandes shell qui ne sont pas en lecture seule. **Auto-Review** laisse des règles et un modèle de revue approuver les appels courants et refuse ceux à haut risque ; passez en Ask pour les approuver vous-même. **Full Access** ne demande jamais et désactive le bac à sable de Codewhale ; les règles du dépôt et la politique gérée s’appliquent toujours. |
+| Permission | `Shift+Tab` | **Ask** demande avant chaque modification de fichier et chaque commande shell qui n’est pas en lecture seule. **Accept Edits** applique sans demander les modifications de fichiers dans votre dépôt git et demande toujours avant les commandes. **Auto-Review** laisse des règles et un modèle de revue approuver les appels courants et refuse ceux à haut risque ; passez en Ask pour les approuver vous-même. **Full Access** ne demande jamais et désactive le bac à sable de Codewhale ; les règles du dépôt et la politique gérée s’appliquent toujours. |
 
 Le [guide des modes et des permissions](../MODES.md) donne les détails.
 

@@ -3,7 +3,7 @@
 //! Older clients can still send mode aliases and the legacy `auto_approve`
 //! bit. New callers send a named posture. Keep those inputs readable, but
 //! persist and execute one contract: Plan / Act / Operate plus Ask /
-//! Auto-Review / Full Access.
+//! Accept Edits / Auto-Review / Full Access.
 
 use anyhow::{Result, bail};
 
@@ -27,6 +27,7 @@ pub fn approval_wire(mode: ApprovalMode) -> &'static str {
     match mode {
         ApprovalMode::Auto => "auto_review",
         ApprovalMode::Bypass => "full_access",
+        ApprovalMode::AcceptEdits => "accept_edits",
         ApprovalMode::Suggest | ApprovalMode::Never => "ask",
     }
 }
@@ -70,7 +71,7 @@ impl RuntimePolicyProjection {
         let permission = match permission_posture {
             Some(value) => ApprovalMode::from_config_value(value).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "unsupported permission posture {value:?}; expected ask, auto-review, or full-access"
+                    "unsupported permission posture {value:?}; expected ask, accept-edits, auto-review, or full-access"
                 )
             })?,
             None if AppMode::is_legacy_bypass_alias(mode) || auto_approve.unwrap_or(false) => ApprovalMode::Bypass,

@@ -2822,6 +2822,9 @@ fn normalize_default_model(value: &str) -> Option<String> {
 fn normalize_permission_posture(value: &str) -> Option<String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "ask" | "suggest" | "on-request" | "untrusted" => Some("ask".to_string()),
+        "accept-edits" | "accept_edits" | "acceptedits" | "edits" => {
+            Some("accept-edits".to_string())
+        }
         "auto" | "auto-review" | "auto_review" => Some("auto-review".to_string()),
         "full" | "full-access" | "full_access" | "bypass" => Some("full-access".to_string()),
         _ => None,

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:20d0bb7c0784 -->
 <div align="center">
 
 <picture>
@@ -75,8 +75,8 @@ sayfasında anlatılır. Her makinede tek bir kurulum yöntemi kullanın; aksi h
 ## Hızlı başlangıç
 
 1. Çalışmanızı commit edin veya stash'leyin, ardından bir git deposunun kök
-   dizininde `codewhale` çalıştırın. Varsayılan olarak orada dosya düzenlemelerini
-   sormadan uygular ve size diff'i gösterir.
+   dizininde `codewhale` çalıştırın. Varsayılan olarak her dosya düzenlemesinden
+   ve her komuttan önce sorar; depodaki dosyaları sormadan düzenlemesi için `Shift+Tab` tuşuna bir kez basarak **Accept Edits** modunu seçin.
 2. `/provider` çalıştırın (veya `F3` tuşuna basın), bir sağlayıcı seçin, onun API
    anahtarını yapıştırın ve bir model seçin. Varsayılan sağlayıcı DeepSeek'tir.
    Anahtarınız yoksa bunun yerine yerel bir çalışma ortamı seçin. Hiçbir sağlayıcı
@@ -113,7 +113,7 @@ Yeni bir kurulum Work modunda ve Ask izniyle başlar.
 | | Nasıl değiştirilir | Seçenekler |
 | --- | --- | --- |
 | Mod | `Tab` (giriş alanı boşken) veya `/mode` | **Plan** okur ve arar ama hiçbir şeyi değiştirmez. **Work** dosyaları düzenler ve komutları çalıştırır. **Operate** Work ile aynı erişime sahiptir, isteğinizi bir hedef olarak ele alır ve hedef doğrulanana ya da sizden girdi gerekene kadar devam eder. |
-| İzin | `Shift+Tab` | **Ask** deponuzdaki dosya düzenlemelerini sormadan uygular, salt okunur olmayan kabuk komutlarından önce sorar. **Auto-Review** rutin çağrıların kurallar ve bir inceleyici model tarafından onaylanmasına izin verir, yüksek riskli olanları reddeder; bunları kendiniz onaylamak için Ask iznine geçin. **Full Access** hiç sormaz ve Codewhale'in korumalı alanını kapatır; depo kuralları ve yönetilen politika yine de geçerlidir. |
+| İzin | `Shift+Tab` | **Ask** her dosya düzenlemesinden ve salt okunur olmayan her kabuk komutundan önce sorar. **Accept Edits** git deponuzdaki dosya düzenlemelerini sormadan uygular, komutlardan önce yine sorar. **Auto-Review** rutin çağrıların kurallar ve bir inceleyici model tarafından onaylanmasına izin verir, yüksek riskli olanları reddeder; bunları kendiniz onaylamak için Ask iznine geçin. **Full Access** hiç sormaz ve Codewhale'in korumalı alanını kapatır; depo kuralları ve yönetilen politika yine de geçerlidir. |
 
 Ayrıntılar için [modlar ve izinler kılavuzuna](../MODES.md) bakın.
 

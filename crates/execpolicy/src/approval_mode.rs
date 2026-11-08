@@ -1,6 +1,6 @@
-//! The user-facing approval posture (`Ask` / `Auto-Review` / `Full Access` /
-//! `Never`). Lives beside `AskForApproval` so policy code and the TUI share
-//! one definition; the TUI adds only presentation on top.
+//! The user-facing approval posture (`Ask` / `Accept Edits` / `Auto-Review` /
+//! `Full Access` / `Never`). Lives beside `AskForApproval` so policy code and
+//! the TUI share one definition; the TUI adds only presentation on top.
 
 /// Determines when tool executions require user approval
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -12,6 +12,7 @@ pub enum ApprovalMode {
     /// Suggest approval for non-safe tools (non-YOLO modes)
     #[default]
     Suggest,
+    AcceptEdits,
     /// Never execute tools requiring approval
     Never,
 }
@@ -25,14 +26,21 @@ impl ApprovalMode {
         }
     }
 
-    /// Shift+Tab permission cycle order (#0.8.68 M2).
-    pub const PERMISSION_CYCLE: [Self; 3] = [Self::Suggest, Self::Auto, Self::Bypass];
+    /// Shift+Tab permission cycle order (#0.8.68 M2), narrowest first.
+    pub const PERMISSION_CYCLE: [Self; 4] =
+        [Self::Suggest, Self::AcceptEdits, Self::Auto, Self::Bypass];
+
+    #[must_use]
+    pub fn is_ask_family(self) -> bool {
+        matches!(self, Self::Suggest | Self::AcceptEdits)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
             ApprovalMode::Auto => "AUTO",
             ApprovalMode::Bypass => "BYPASS",
             ApprovalMode::Suggest => "SUGGEST",
+            ApprovalMode::AcceptEdits => "ACCEPT_EDITS",
             ApprovalMode::Never => "NEVER",
         }
     }
@@ -47,6 +55,9 @@ impl ApprovalMode {
             "suggest" | "suggested" | "on-request" | "untrusted" | "ask" => {
                 Some(ApprovalMode::Suggest)
             }
+            "accept-edits" | "accept_edits" | "acceptedits" | "edits" => {
+                Some(ApprovalMode::AcceptEdits)
+            }
             "never" | "deny" | "denied" => Some(ApprovalMode::Never),
             _ => None,
         }
@@ -56,7 +67,7 @@ impl ApprovalMode {
     pub fn agent_baseline_sandbox_mode(self) -> &'static str {
         match self {
             Self::Bypass => "danger-full-access",
-            Self::Auto | Self::Suggest | Self::Never => "workspace-write",
+            Self::Auto | Self::Suggest | Self::AcceptEdits | Self::Never => "workspace-write",
         }
     }
 
@@ -72,6 +83,7 @@ impl ApprovalMode {
     pub fn permission_chip_label(self) -> &'static str {
         match self {
             Self::Suggest => "Ask",
+            Self::AcceptEdits => "Accept Edits",
             Self::Auto => "Auto-Review",
             Self::Bypass => "Full Access",
             Self::Never => "Never",
@@ -117,12 +129,17 @@ mod tests {
             ApprovalMode::PERMISSION_CYCLE,
             [
                 ApprovalMode::Suggest,
+                ApprovalMode::AcceptEdits,
                 ApprovalMode::Auto,
                 ApprovalMode::Bypass
             ]
         );
         assert_eq!(
             ApprovalMode::Suggest.cycle_permission_next(),
+            ApprovalMode::AcceptEdits
+        );
+        assert_eq!(
+            ApprovalMode::AcceptEdits.cycle_permission_next(),
             ApprovalMode::Auto
         );
         assert_eq!(

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:20d0bb7c0784 -->
 <div align="center">
 
 <picture>
@@ -75,8 +75,8 @@ altrimenti nel `PATH` finiscono due copie e vince quella che compare per prima.
 ## Avvio rapido
 
 1. Fai commit o stash del tuo lavoro, poi esegui `codewhale` dalla radice di un
-   repository git. Per impostazione predefinita lì applica le modifiche ai file
-   senza chiedere e ti mostra il diff.
+   repository git. Per impostazione predefinita chiede prima di ogni modifica ai file
+   e di ogni comando; premi `Shift+Tab` una volta per **Accept Edits** e lasciargli modificare i file nel repository senza chiedere.
 2. Esegui `/provider` (o premi `F3`), scegli un provider, incolla la sua chiave
    API e scegli un modello. DeepSeek è il provider predefinito. Se non hai una
    chiave, scegli invece un runtime locale. Se non è configurato alcun provider
@@ -112,7 +112,7 @@ Una nuova installazione parte in modalità Work con il permesso Ask.
 | | Si cambia con | Opzioni |
 | --- | --- | --- |
 | Modalità | `Tab` (quando l’input è vuoto) o `/mode` | **Plan** legge e cerca, ma non modifica nulla. **Work** modifica file ed esegue comandi. **Operate** ha gli stessi accessi di Work, tratta la tua richiesta come un obiettivo e va avanti finché l’obiettivo non è verificato o finché non ha bisogno di un tuo input. |
-| Permesso | `Shift+Tab` | **Ask** applica senza chiedere le modifiche ai file nel tuo repository e chiede prima dei comandi di shell che non sono in sola lettura. **Auto-Review** lascia che regole e un modello revisore approvino le chiamate di routine e rifiuta quelle ad alto rischio; passa ad Ask per approvarle tu stesso. **Full Access** non chiede mai e disattiva la sandbox di Codewhale; le regole del repository e le policy gestite restano comunque valide. |
+| Permesso | `Shift+Tab` | **Ask** chiede prima di ogni modifica ai file e di ogni comando di shell che non sia in sola lettura. **Accept Edits** applica senza chiedere le modifiche ai file nel tuo repository git e continua a chiedere prima dei comandi. **Auto-Review** lascia che regole e un modello revisore approvino le chiamate di routine e rifiuta quelle ad alto rischio; passa ad Ask per approvarle tu stesso. **Full Access** non chiede mai e disattiva la sandbox di Codewhale; le regole del repository e le policy gestite restano comunque valide. |
 
 I dettagli sono nella [guida a modalità e permessi](../MODES.md).
 

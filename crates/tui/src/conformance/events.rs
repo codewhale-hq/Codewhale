@@ -193,6 +193,7 @@ fn app_mode(case: &Value) -> AppMode {
 fn approval_mode(case: &Value) -> ApprovalMode {
     match case["approval_mode"].as_str().unwrap_or("suggest") {
         "suggest" => ApprovalMode::Suggest,
+        "accept_edits" => ApprovalMode::AcceptEdits,
         "auto" => ApprovalMode::Auto,
         "bypass" => ApprovalMode::Bypass,
         "never" => ApprovalMode::Never,

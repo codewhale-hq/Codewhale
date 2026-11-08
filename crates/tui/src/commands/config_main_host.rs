@@ -564,6 +564,7 @@ fn approval_mode_config_value(mode: ApprovalMode) -> &'static str {
         ApprovalMode::Auto => "auto",
         ApprovalMode::Bypass => "bypass",
         ApprovalMode::Suggest => "on-request",
+        ApprovalMode::AcceptEdits => "accept-edits",
         ApprovalMode::Never => "never",
     }
 }

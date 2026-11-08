@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:20d0bb7c0784 -->
 <div align="center">
 
 <picture>
@@ -77,8 +77,8 @@ die zuerst kommt.
 ## Schnellstart
 
 1. Committe oder stashe deine Arbeit und starte dann `codewhale` im
-   Wurzelverzeichnis eines Git-Repositorys. Standardmäßig wendet es dort
-   Dateiänderungen an, ohne zu fragen, und zeigt dir den Diff.
+   Wurzelverzeichnis eines Git-Repositorys. Standardmäßig fragt es vor jeder
+   Dateiänderung und jedem Befehl; drücke einmal `Shift+Tab` für **Accept Edits**, damit es Dateien im Repository ohne Nachfrage ändert.
 2. Führe `/provider` aus (oder drücke `F3`), wähle einen Anbieter, füge seinen
    API-Schlüssel ein und wähle ein Modell. DeepSeek ist der Standardanbieter.
    Ohne Schlüssel wählst du stattdessen eine lokale Runtime. Ist kein Anbieter
@@ -116,7 +116,7 @@ Eine neue Installation startet im Work-Modus mit der Berechtigung Ask.
 | | Wechseln mit | Optionen |
 | --- | --- | --- |
 | Modus | `Tab` (bei leerer Eingabe) oder `/mode` | **Plan** liest und durchsucht, ändert aber nichts. **Work** bearbeitet Dateien und führt Befehle aus. **Operate** hat dieselben Zugriffsrechte wie Work, behandelt deine Anfrage als Ziel und arbeitet weiter, bis das Ziel überprüft ist oder es eine Eingabe von dir braucht. |
-| Berechtigung | `Shift+Tab` | **Ask** wendet Dateiänderungen in deinem Repository an, ohne zu fragen, und fragt vor Shell-Befehlen, die nicht nur lesen. **Auto-Review** lässt Regeln und ein Prüfmodell Routineaufrufe freigeben und lehnt Aufrufe mit hohem Risiko ab; wechsle zu Ask, um diese selbst freizugeben. **Full Access** fragt nie und schaltet die Sandbox von Codewhale ab; Repository-Regeln und verwaltete Richtlinien gelten weiterhin. |
+| Berechtigung | `Shift+Tab` | **Ask** fragt vor jeder Dateiänderung und vor jedem Shell-Befehl, der nicht nur liest. **Accept Edits** wendet Dateiänderungen in deinem Git-Repository an, ohne zu fragen, und fragt weiterhin vor Befehlen. **Auto-Review** lässt Regeln und ein Prüfmodell Routineaufrufe freigeben und lehnt Aufrufe mit hohem Risiko ab; wechsle zu Ask, um diese selbst freizugeben. **Full Access** fragt nie und schaltet die Sandbox von Codewhale ab; Repository-Regeln und verwaltete Richtlinien gelten weiterhin. |
 
 Details stehen in der [Anleitung zu Modi und Berechtigungen](../MODES.md).
 

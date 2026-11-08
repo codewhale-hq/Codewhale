@@ -17,9 +17,9 @@ Workflow 通过同一个子智能体运行时执行命名步骤；Fleet 管理�
 
 ## TUI 模式
 
-按 `Tab` 补全输入框（composer）菜单，或在输入框为空时循环切换可见模式：**Plan → Work → Operate → Plan**。`Tab` 从不发送或排队输入框中的文本；用 `Enter` 发送或排队。按 `Shift+Tab` 循环切换权限姿态（Ask → Auto-Review → Full Access）。按 `Ctrl+T` 循环切换思考强度。运行 `/mode` 打开模式选择器，或直接用 `/mode work`、`/mode plan`、`/mode operate` 切换。
+按 `Tab` 补全输入框（composer）菜单，或在输入框为空时循环切换可见模式：**Plan → Work → Operate → Plan**。`Tab` 从不发送或排队输入框中的文本；用 `Enter` 发送或排队。按 `Shift+Tab` 循环切换权限姿态（Ask → Accept Edits → Auto-Review → Full Access）。按 `Ctrl+T` 循环切换思考强度。运行 `/mode` 打开模式选择器，或直接用 `/mode work`、`/mode plan`、`/mode operate` 切换。
 
-- **Plan**：设计优先的提示方式。原语（primitive）名称保持不变，仍是大家熟悉的那些，但运行时会集中拒绝文件修改和 shell 执行。只读检查与策略允许的研究（包括延迟加载的 Web 搜索/抓取）仍然可用。当一个 Plan 回合成功结束并给出非空回复（包括纯文字计划）时，TUI 会询问如何继续：Work（Ask）、Work（Auto-Review），或继续规划。选择 Work 会把已批准的原文作为普通后续消息发送，并保留该回合已有的 To-dos，或追加一个待办的计划项而不替换无关的工作。
+- **Plan**：设计优先的提示方式。原语（primitive）名称保持不变，仍是大家熟悉的那些，但运行时会集中拒绝文件修改和 shell 执行。只读检查与策略允许的研究（包括延迟加载的 Web 搜索/抓取）仍然可用。当一个 Plan 回合成功结束并给出非空回复（包括纯文字计划）时，TUI 会询问如何继续：Work（Ask）、Work（Accept Edits）、Work（Auto-Review），或继续规划。选择 Work 会把已批准的原文作为普通后续消息发送，并保留该回合已有的 To-dos，或追加一个待办的计划项而不替换无关的工作。
 - **Work**（内部为 `agent`）：普通的多步执行。第一回合的工具箱包含 `read`、`write`、`edit`、`file_search`、`bash`、`agent`、`workflow`、`todo_write` 和 `load_skill`，以及无需先搜索即可使用的目标与后台 shell 控制工具 `create_goal`、`get_goal`、`update_goal` 和 `task_shell_wait`。当请求属于一个持久的目标时，智能体会调用 `create_goal`；宿主从不根据措辞去推断目标，契约也不得告诉模型相反的内容。审批、沙箱、仓库规则（repository law）和托管策略决定什么可以执行。
 - **Operate**：以全力运行的 Work，即“ultra”模式。工具与权限和 Work 相同，区别在于如何使用它们。每个实质性请求都会成为一个目标（`create_goal`），计划保持可见（`todo_write`），多部分工作通过 `workflow` 和并行的 `agent` 工作者执行，非平凡的改动在宣布完成前先交给独立的审查者，长时间运行的命令继续在后台运行，循环或监视类工作则作为 `automation` 提出（获批后创建）。它会一直进行，直到目标被验证、被你阻塞或被暂停。
 
@@ -102,12 +102,13 @@ Codewhale 在跨进程的锁下写入 `settings.toml`，并以原子方式替换
 
 ```text
 /config
-# 把 approval_mode 行编辑为: suggest | auto | never
+# 把 permission_posture 行编辑为: ask | accept-edits | auto-review | full-access
 ```
 
 遗留说明：`/set approval_mode ...` 已被 `/config` 取代。
 
-- `suggest`（**Ask**，默认）：工具审批可能打断你；当一个尚未解决的用户选择会实质性改变权限、成本、范围或结果时，Codewhale 会询问你。
+- `ask`（**Ask**，默认；内部为 `suggest`）：工具审批可能打断你；当一个尚未解决的用户选择会实质性改变权限、成本、范围或结果时，Codewhale 会询问你。每次文件编辑和每条命令都会询问，包括工作区内的编辑。
+- `accept-edits`（**Accept Edits**，线上值 `accept_edits`）：与 Ask 相同，但所有目标都在工作区 git 工作树内的文件编辑无需卡片即可运行。对 `.git` 内部、`.codewhale`、`.env*`、凭据和密钥文件的编辑始终询问；在没有 git 的文件夹里，每次编辑也都询问（卡片会说明该文件夹没有仓库）。命令、网络、MCP 操作和文件夹外的任何操作都与 Ask 一样询问；ask 规则、hook、仓库规则和安全底线仍会强制弹出卡片。这对应 Claude Code 的 `acceptEdits`。ACP 会话按 Ask 运行它，因为 ACP 回合从不应用文件夹内编辑规则。
 - `auto`（**Auto-Review**）：自动审查工具调用。在交互式会话中，模型仍可通过 `request_user_input` 有意向用户提问；问题会挂起回合，直到用户回答、取消，或配置的超时到期。无头 `exec` 没有应答方，因此不提供这个工具。工具安全拦截与向用户提问是分开的。审批由两层决定。**确定性底线**（配置的阻断规则加内置安全底线）放行已证明安全的调用，并对发布类操作和破坏性的后台/无头工作直接硬阻断；这一层从不由模型审查。回退拦截——确定性引擎无法证明安全的调用——会升级给一次性的**模型守护者**（v0.9.8），由它返回风险级别、允许/拒绝和理由。守护者在各自独立的 JSON 字段中看到被拦截的确切调用和确定性观察；对话历史、技能指令、附件和展开的模型上下文都被排除在外。它不推断用户意图，也不计算通用的用户意图分数。高风险或严重风险即使模型判定允许，也不能自动运行。它没有工具，不记规则，遇到过大的确切调用会拒绝而不是截断。恰好只发出一次审查请求；输出不完整或格式错误、超时、取消或提供商失败，都会失败关闭（fail closed）。同一回合内，守护者连续拒绝三次，或在本回合最近五十次审查中拒绝达到十次，回合就会以“已中断”结束并显示一条状态行；同一批次中剩余的调用不再审查，直接拒绝。只有明确的拒绝才计数（超时或失败不算），一次放行会让连续拒绝重新计数，每个回合从零开始计数，子智能体按它自己的回合计数。无头适配器只使用确定性层。明确要求由人来决定的仓库规则拦截，在 Auto-Review 中直接阻断，而不是弹出一个隐藏的审批弹窗。
 
 LLM 审查器最接近 OpenAI Codex 的实验性 Auto-Review，对应提交 [`6fc6b9d6d2580d62622fc9884b5f5707f6505a5e`](https://github.com/openai/codex/tree/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e)。Codex 的 [guardian 入口点](https://github.com/openai/codex/blob/6fc6b9d6d2580d62622fc9884b5f5707f6505a5e/codex-rs/core/src/guardian/mod.rs)重建对话上下文并运行专门的审查会话。Codewhale 有意只采用其中四点：针对确切动作的结构化决策、90 秒截止时间、失败关闭的结果，以及按回合计数的拒绝熔断。它不复制 Codex 的对话记录重建、用户授权分数、审查器工具、重试、持久审查会话或拒绝台账。
@@ -125,7 +126,7 @@ Kimi Code 在提交 [`1414d4602898f406e540b23342cb18db23ff9efc`](https://github.
 子智能体会如实继承会话的姿态，而不是只继承一个简单的自动批准标志位：
 
 - **Auto-Review**：worker 被拦截的调用走同一套确定性策略（已证明安全的调用运行；发布类和破坏性的后台工作被硬阻断）；对于无法证明安全的拦截，则使用该子智能体自己的会话客户端，交给同一个一次性的模型守护者。绝不会为子智能体弹出提示；守护者不可用时拒绝，即失败关闭。
-- **Ask**：该角色可以委托的调用直接运行。被拦截的调用，在宿主是交互式 TUI 时，会作为审批提示在父会话的界面中提出（`agent:<id>:approval:<n>`）；worker 会明显地处于等待状态（`waiting for user`），用户的回答会被路由回它——无论父回合当时是空闲还是自己也在等待审批。无法弹出提示的宿主会拒绝，并说明原因。
+- **Ask** 和 **Accept Edits**：该角色可以委托的调用直接运行。被拦截的调用，在宿主是交互式 TUI 时，会作为审批提示在父会话的界面中提出（`agent:<id>:approval:<n>`）；worker 会明显地处于等待状态（`waiting for user`），用户的回答会被路由回它——无论父回合当时是空闲还是自己也在等待审批。无法弹出提示的宿主会拒绝，并说明原因。
 - **Full Access**：调用会运行，包括破坏性的分离式工作——Auto-Review 底线与父回合一样被跳过。执行包络仍然生效，且永远不会放宽。
 
 角色姿态和执行边界在这道关卡之前和之后都会被检查，且绝不会被放宽。凡是人没有在提示处亲自做出的决定，都会写入审计日志和子智能体的对话记录，作为一行说明（`Auto-Review allowed 'bash' (low risk, model guardian): …`），在聚焦该 worker 时可见。

@@ -209,6 +209,19 @@ until the matching tag, packages, checksums, and release assets exist.
 - **Bundled skill `goals` is now `personal-goals`.** It tracks personal resolutions in `goals.md` and no longer collides with goal mode; `goals` still resolves to it. An untouched installed `goals` copy becomes `personal-goals` on upgrade; an edited one stays as `goals`.
 - **Each sub-agent is told its name, its scope and that its final answer is delivered to the parent automatically.**
 - **Thread-owned terminals (Runtime API, breaking):** Engine terminal shells now belong to the conversation that started them, so two conversations using `term-1` in one folder get separate shells instead of sharing cwd, running command and output. Clients list a thread's shells at `GET /v1/threads/{id}/terminals` and drive one at `/v1/threads/{id}/terminals/{terminal_id}/output|input|resize|kill`; a reset shell, another thread's or workspace's shell, or one from before an Engine restart answers 404 instead of attaching to a same-named shell. The name-addressed `/v1/terminal/{name}/*` routes now answer 410, and `/v1/runtime/info` advertises `thread_scoped_terminals` in place of the four `terminal_*` flags. Client input meets the thread's shell consent and sandbox-reuse guard, and a lone Ctrl-C uses the dock's confirmed interrupt. In the TUI, a new conversation starts its own `term-1` rather than reusing the previous conversation's shell, which the dock still lists.
+- **Ask asks before every edit; new Accept Edits posture:** Ask now opens a
+  card for file edits inside the workspace too, as its name and the Plan
+  handoff ("Edits and commands ask you first") promise. The in-repository edit
+  rule moved to a new posture, **Accept Edits** (Claude Code's `acceptEdits`):
+  an edit whose every target stays inside the workspace git work tree runs
+  without a card, while `.git`, `.codewhale`, `.env*`, credential and key
+  files, folders without git, commands, network and connected apps still ask.
+  Shift+Tab cycles Ask → Accept Edits → Auto-Review → Full Access, so one
+  press restores the previous Ask behaviour. `/permissions`, `/status`,
+  `/config` and the Plan handoff offer it; the Runtime wire spells it
+  `permission_posture: "accept_edits"`, settings and `config.toml`
+  `accept-edits`. Project config may tighten Accept Edits to Ask but never
+  loosen Ask to it. ACP sessions run it as Ask.
 - **Brighter terminal working states:** the Ocean palette has stronger accents,
   and active work uses a restrained left-to-right text sweep. Quiet and
   reduced-motion settings keep stable working indicators. The shared

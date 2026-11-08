@@ -749,7 +749,7 @@ impl AcpServer {
                 MessageId::ConfigChoiceNever,
                 MessageId::PermissionsPostureNever,
             ),
-            ApprovalMode::Suggest => (
+            ApprovalMode::Suggest | ApprovalMode::AcceptEdits => (
                 "ask",
                 MessageId::ConfigChoiceAsk,
                 MessageId::PermissionsPostureAsk,
@@ -896,7 +896,7 @@ fn acp_permission_value(config: &Config) -> &'static str {
         ApprovalMode::Bypass => "full-access",
         ApprovalMode::Auto => "auto-review",
         ApprovalMode::Never => "never",
-        ApprovalMode::Suggest => "ask",
+        ApprovalMode::Suggest | ApprovalMode::AcceptEdits => "ask",
     }
 }
 
@@ -939,11 +939,15 @@ fn acp_approval_mode(config: &Config) -> ApprovalMode {
     if config.yolo.unwrap_or(false) && !config.approval_policy_is_requirements_managed() {
         ApprovalMode::Bypass
     } else {
-        config
+        match config
             .approval_policy
             .as_deref()
             .and_then(ApprovalMode::from_config_value)
             .unwrap_or_default()
+        {
+            ApprovalMode::AcceptEdits => ApprovalMode::Suggest,
+            mode => mode,
+        }
     }
 }
 

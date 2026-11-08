@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:20d0bb7c0784 -->
 <div align="center">
 
 <picture>
@@ -68,7 +68,7 @@ Homebrew、Android/Termux（预览版）以及手动下载见[安装指南](../I
 ## 快速开始
 
 1. 先提交或 stash 你的改动，然后在 git 仓库的根目录运行 `codewhale`。默认情况下，
-   它会直接在这里应用文件编辑而不询问，并向你展示 diff。
+   它会在每次文件编辑和每条命令之前询问；按一次 `Shift+Tab` 切换到**接受编辑**（Accept Edits），即可让它在仓库中直接编辑文件而不询问。
 2. 运行 `/provider`（或按 `F3`），选择一个提供商，粘贴它的 API 密钥，然后选择模型。
    默认提供商是 DeepSeek。没有密钥时，可以改选本地运行时。如果尚未配置任何提供商，
    而 Ollama 已经在提供聊天模型，Codewhale 会自动使用它；
@@ -99,7 +99,7 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 | | 切换方式 | 选项 |
 | --- | --- | --- |
 | 模式 | `Tab`（输入框为空时）或 `/mode` | **Plan** 只读取和搜索，不做任何改动。**Work** 编辑文件并运行命令。**Operate** 拥有与 Work 相同的访问权限，把你的请求当作一个目标，并持续推进，直到目标得到验证或需要你提供输入为止。 |
-| 权限 | `Shift+Tab` | **询问**（Ask）在你的仓库中直接应用文件编辑而不询问，并在运行非只读的 shell 命令之前先询问。**自动审核**（Auto-Review）让规则和一个审查模型批准常规调用，并拒绝高风险调用；如需亲自批准这些调用，请切换到“询问”。**完全访问**（Full Access）从不询问，并关闭 Codewhale 的沙箱；仓库规则和受管策略仍然适用。 |
+| 权限 | `Shift+Tab` | **询问**（Ask）在每次文件编辑和每条非只读的 shell 命令之前都会询问。**接受编辑**（Accept Edits）在你的 git 仓库中直接应用文件编辑而不询问，并仍会在运行命令之前先询问。**自动审核**（Auto-Review）让规则和一个审查模型批准常规调用，并拒绝高风险调用；如需亲自批准这些调用，请切换到“询问”。**完全访问**（Full Access）从不询问，并关闭 Codewhale 的沙箱；仓库规则和受管策略仍然适用。 |
 
 详情见[模式与权限指南](../MODES.md)。
 

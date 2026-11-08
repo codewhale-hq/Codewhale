@@ -3,7 +3,7 @@
 > 英文原文：[INSTALL.md](../INSTALL.md)。
 > 最后与英文同步日期（last synced with English revision）：2026-10-19。按当前英文源码复核；下文 v0.10.0 安装记录与附录的原始测试范围保留，不能当作 v0.10.1 发布安装回执。
 
-Codewhale 是一个在终端里运行的开源编码智能体（coding agent）。你交给它一个任务（"修复失败的测试"、"加一个 CLI 参数"），它会读取你的仓库、编辑文件并运行命令。在默认的 **Ask**（询问）权限级别下，它会立即应用工作区内的文件编辑（并给你看 diff），但运行 shell 命令之前会先询问，所以请先提交或暂存你在意的改动。它支持多家模型提供商，默认是 **DeepSeek**。
+Codewhale 是一个在终端里运行的开源编码智能体（coding agent）。你交给它一个任务（"修复失败的测试"、"加一个 CLI 参数"），它会读取你的仓库、编辑文件并运行命令。在默认的 **Ask**（询问）权限级别下，它在每次文件编辑和每条 shell 命令之前都会询问；按一次 `Shift+Tab` 切到 **Accept Edits**（接受编辑）后，它会立即应用仓库内的文件编辑（并给你看 diff），所以请先提交或暂存你在意的改动。它支持多家模型提供商，默认是 **DeepSeek**。
 
 命令是 `codewhale`。`codew` 是同一个程序的较短别名。
 
@@ -599,8 +599,8 @@ codewhale
 ```
 
 * 输入框（composer）在底部。页脚显示权限级别（`ask`）、模式（`work`）和模型（`DeepSeek · deepseek-flash`）。
-* **Shift+Tab** 循环切换权限级别：Ask → Auto-Review（自动审核）→ Full Access（完全访问）。（输入框为空时）**Tab** 循环切换模式：Plan → Work → Operate。
-* 在 **Ask** 下，工作区内的文件编辑会被直接应用并以 diff 显示。shell 命令会停在 **APPROVAL** 提示：`y` 允许本次，`a` 在本次会话中允许，`n` 拒绝，`Esc` 中止当前回合。
+* **Shift+Tab** 循环切换权限级别：Ask → Accept Edits（接受编辑）→ Auto-Review（自动审核）→ Full Access（完全访问）。（输入框为空时）**Tab** 循环切换模式：Plan → Work → Operate。
+* 在 **Ask** 下，文件编辑和 shell 命令都会停在 **APPROVAL** 提示：`y` 允许本次，`a` 在本次会话中允许，`n` 拒绝，`Esc` 中止当前回合。在 **Accept Edits** 下，仓库内的文件编辑会被直接应用并以 diff 显示，shell 命令仍会提示。
 * 常用按键：**F1** 帮助（或 `/help`），**Ctrl-K** 命令面板，**F3** 提供商/模型选择器，**Ctrl-R** 恢复过去的会话，**Ctrl-U** 清空输入（**Ctrl-Z** 可恢复），**Ctrl-C** 取消或退出，**Ctrl-D** 在输入为空时退出。完整列表见 [KEYBINDINGS.md](./KEYBINDINGS.md)。
 * 退出时它会打印 `To resume this session, run codewhale resume <id>`。
 

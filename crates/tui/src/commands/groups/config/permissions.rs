@@ -141,6 +141,7 @@ fn format_snapshot(m: &Messages, view: &PermissionsView) -> String {
     output.push_str("\n\n");
     let (label, explanation) = match view.approval_mode {
         CommandApprovalMode::Suggest => ("Ask", Text::PostureAsk),
+        CommandApprovalMode::AcceptEdits => ("Accept Edits", Text::PostureAcceptEdits),
         CommandApprovalMode::Auto => ("Auto-Review", Text::PostureAuto),
         CommandApprovalMode::Bypass => ("Full Access", Text::PostureBypass),
         CommandApprovalMode::Never => ("Never", Text::PostureNever),

@@ -1299,8 +1299,9 @@ impl LiveRuntimeAuthority {
             match mode {
                 ApprovalMode::Never => 0,
                 ApprovalMode::Suggest => 1,
-                ApprovalMode::Auto => 2,
-                ApprovalMode::Bypass => 3,
+                ApprovalMode::AcceptEdits => 2,
+                ApprovalMode::Auto => 3,
+                ApprovalMode::Bypass => 4,
             }
         }
         fn sandbox_rank(mode: Option<&str>) -> Option<u8> {
@@ -10732,9 +10733,10 @@ fn tool_ask_rule_decision_for_context(
     let cwd = workspace.to_string_lossy();
     let ask_for_approval = match approval_mode {
         ApprovalMode::Never => AskForApproval::Never,
-        ApprovalMode::Auto | ApprovalMode::Bypass | ApprovalMode::Suggest => {
-            AskForApproval::OnFailure
-        }
+        ApprovalMode::Auto
+        | ApprovalMode::Bypass
+        | ApprovalMode::Suggest
+        | ApprovalMode::AcceptEdits => AskForApproval::OnFailure,
     };
     let decision = exec_policy_engine
         .check(ExecPolicyContext {

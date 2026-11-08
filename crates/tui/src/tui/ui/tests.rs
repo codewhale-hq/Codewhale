@@ -8807,7 +8807,7 @@ fn file_edit_card_says_when_it_asks_for_lack_of_a_git_repository() {
     ] {
         let mut app = create_test_app();
         app.mode = AppMode::Agent;
-        app.approval_mode = ApprovalMode::Suggest;
+        app.approval_mode = ApprovalMode::AcceptEdits;
         app.workspace = workspace.to_path_buf();
         push_approval_request_view(
             &mut app,

@@ -141,6 +141,7 @@ pub(crate) fn to_command_approval(mode: ApprovalMode) -> CommandApprovalMode {
         ApprovalMode::Auto => CommandApprovalMode::Auto,
         ApprovalMode::Bypass => CommandApprovalMode::Bypass,
         ApprovalMode::Suggest => CommandApprovalMode::Suggest,
+        ApprovalMode::AcceptEdits => CommandApprovalMode::AcceptEdits,
         ApprovalMode::Never => CommandApprovalMode::Never,
     }
 }

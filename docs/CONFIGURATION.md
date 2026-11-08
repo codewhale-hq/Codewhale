@@ -2437,7 +2437,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   keep the conservative omitted-field default and require `allow_shell = true`
   to expose shell. Plan mode always hides shell; Full Access enables shell and
   auto-approval.
-- `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
+- `approval_policy` (string, optional): `on-request`, `untrusted`, `accept-edits`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases. A project file may set only a value that tightens the user's posture; the order from loosest is `auto`, `accept-edits`, `on-request`, `never`.
 - `[approval] default_selection` (string, optional): which option an approval
   card highlights when it first appears — `deny` (default) or `allow_once`.
   `deny` means a reflexive Enter on a card you have not read refuses the call.
@@ -2464,7 +2464,7 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   ```
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
   The value can only narrow the sandbox the permission mode picks (Full
-  Access: no wrapper; Ask and Auto-Review: `workspace-write`; Plan:
+  Access: no wrapper; Ask, Accept Edits and Auto-Review: `workspace-write`; Plan:
   `read-only`), so `danger-full-access` and `external-sandbox` take effect
   only in Full Access (`yolo`).
   Platform support is not identical. macOS uses Seatbelt when its runtime

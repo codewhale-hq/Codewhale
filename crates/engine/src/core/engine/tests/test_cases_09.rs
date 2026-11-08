@@ -153,14 +153,14 @@ fn generic_required_tools_keep_auto_approve_behavior() {
 }
 
 #[test]
-fn workspace_write_carve_out_covers_the_default_ask_posture_only() {
-    // #5185: an in-workspace edit under the default posture does not prompt;
+fn workspace_write_carve_out_covers_accept_edits_only() {
+    // #5185: an in-workspace edit under Accept Edits does not prompt;
     // out-of-tree, sensitive, and `.git` targets keep the modal; shell and
     // non-write tools never qualify.
     let tmp = tempdir().expect("tempdir");
     std::fs::create_dir(tmp.path().join(".git")).expect("git marker");
     let workspace = tmp.path();
-    let ask = (AppMode::Agent, ApprovalMode::Suggest, false);
+    let ask = (AppMode::Agent, ApprovalMode::AcceptEdits, false);
     let carve_out = |tool: &str, input: &serde_json::Value| {
         workspace_write_carve_out_applies(
             ask.0,
@@ -198,12 +198,14 @@ fn workspace_write_carve_out_covers_the_default_ask_posture_only() {
         &json!({"action": "read", "path": "src/main.rs"})
     ));
 
-    // Full Access, Auto-Review, Never, and Plan are untouched by the carve-out.
+    // Ask, Full Access, Auto-Review, Never, and Plan are untouched by the
+    // carve-out.
     for (mode, approval_mode, auto_approve) in [
+        (AppMode::Agent, ApprovalMode::Suggest, false),
         (AppMode::Agent, ApprovalMode::Bypass, true),
         (AppMode::Agent, ApprovalMode::Auto, false),
         (AppMode::Agent, ApprovalMode::Never, false),
-        (AppMode::Plan, ApprovalMode::Suggest, false),
+        (AppMode::Plan, ApprovalMode::AcceptEdits, false),
     ] {
         assert!(
             !workspace_write_carve_out_applies(

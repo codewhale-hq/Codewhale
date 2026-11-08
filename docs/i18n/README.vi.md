@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:20d0bb7c0784 -->
 <div align="center">
 
 <picture>
@@ -74,8 +74,8 @@ bản sẽ cùng nằm trên `PATH` và bản nào đứng trước sẽ đượ
 ## Bắt đầu nhanh
 
 1. Commit hoặc stash công việc của bạn, rồi chạy `codewhale` từ thư mục gốc của
-   một kho git. Theo mặc định, nó áp dụng các chỉnh sửa tệp ở đó mà không hỏi
-   và hiển thị diff cho bạn.
+   một kho git. Theo mặc định, nó hỏi trước mỗi lần chỉnh sửa tệp
+   và mỗi lệnh; nhấn `Shift+Tab` một lần để chọn **Accept Edits** và cho phép nó chỉnh sửa tệp trong kho mà không hỏi.
 2. Chạy `/provider` (hoặc nhấn `F3`), chọn một nhà cung cấp, dán khóa API của
    nhà cung cấp đó và chọn một mô hình. DeepSeek là nhà cung cấp mặc định. Nếu
    không có khóa, hãy chọn một runtime cục bộ. Nếu chưa cấu hình nhà cung cấp
@@ -112,7 +112,7 @@ Bản cài đặt mới khởi động ở chế độ Work với quyền Ask.
 | | Chuyển bằng | Tùy chọn |
 | --- | --- | --- |
 | Chế độ | `Tab` (khi ô nhập trống) hoặc `/mode` | **Plan** đọc và tìm kiếm nhưng không thay đổi gì. **Work** chỉnh sửa tệp và chạy lệnh. **Operate** có cùng quyền truy cập như Work, coi yêu cầu của bạn là một mục tiêu và tiếp tục làm cho đến khi mục tiêu được xác minh hoặc cần bạn cung cấp thêm thông tin. |
-| Quyền | `Shift+Tab` | **Ask** áp dụng các chỉnh sửa tệp trong kho mã của bạn mà không hỏi, và hỏi trước khi chạy các lệnh shell không phải chỉ đọc. **Auto-Review** để các quy tắc và một mô hình đánh giá phê duyệt các lệnh gọi thông thường, và từ chối các lệnh gọi rủi ro cao; hãy chuyển sang Ask để tự phê duyệt những lệnh gọi đó. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale; các quy tắc của kho mã và chính sách được quản lý vẫn được áp dụng. |
+| Quyền | `Shift+Tab` | **Ask** hỏi trước mỗi chỉnh sửa tệp và trước mọi lệnh shell không phải chỉ đọc. **Accept Edits** áp dụng các chỉnh sửa tệp trong kho git của bạn mà không hỏi và vẫn hỏi trước khi chạy lệnh. **Auto-Review** để các quy tắc và một mô hình đánh giá phê duyệt các lệnh gọi thông thường, và từ chối các lệnh gọi rủi ro cao; hãy chuyển sang Ask để tự phê duyệt những lệnh gọi đó. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale; các quy tắc của kho mã và chính sách được quản lý vẫn được áp dụng. |
 
 Xem chi tiết trong [hướng dẫn về chế độ và quyền](../MODES.md).
 

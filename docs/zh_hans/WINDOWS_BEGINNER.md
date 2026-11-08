@@ -315,11 +315,12 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ## 6. 权限与安全（小白最重要的保护）
 
-按 `Shift+Tab` 循环切换三种权限姿态（permission posture）：
+按 `Shift+Tab` 循环切换四种权限姿态（permission posture）：
 
 | 姿态 | 行为 | 建议 |
 |---|---|---|
-| **Ask** | 需要审批的调用会先询问；工作区内的普通文件编辑可以直接执行 | 默认档位；先保留重要文件的备份 |
+| **Ask** | 每次文件编辑和需要审批的调用都会先询问 | 默认档位 |
+| Accept Edits（接受编辑） | git 仓库内的普通文件编辑直接执行；命令仍会先询问 | 先保留重要文件的备份 |
 | Auto-Review | 自动审查工具调用；确定性规则判定安全的操作直接放行，其余可审查的拦截交给一次性模型复核，高风险仍会被拦下。模型仍可为需要你决定的事项提问 | 熟悉后可用 |
 | Full Access（完全访问） | 普通工具调用不再弹审批（仓库规则等硬性拦截仍然生效） | 只用于完全信任的文件夹 |
 
@@ -422,7 +423,7 @@ default_text_model = "deepseek-v4-pro"
 | 按键 | 作用 |
 |---|---|
 | `Tab` | 输入框为空时循环模式 Plan → Work → Operate |
-| `Shift+Tab` | 循环权限姿态 Ask → Auto-Review → Full Access |
+| `Shift+Tab` | 循环权限姿态 Ask → Accept Edits → Auto-Review → Full Access |
 | `Ctrl+T` | 循环思考强度 |
 | `Ctrl+Alt+O` | 打开 Turn Inspector（查看每回合用了哪个模型、为什么） |
 

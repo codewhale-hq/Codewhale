@@ -3280,6 +3280,7 @@ pub fn approval_policy_baseline_from_permission_posture(
     posture.and_then(
         |posture| match posture.trim().to_ascii_lowercase().as_str() {
             "ask" | "suggest" | "on-request" | "untrusted" => Some("on-request"),
+            "accept-edits" | "accept_edits" | "acceptedits" | "edits" => Some("accept-edits"),
             "auto" | "auto-review" | "auto_review" => Some("auto"),
             "full" | "full-access" | "full_access" | "bypass" => Some("auto"),
             _ => None,

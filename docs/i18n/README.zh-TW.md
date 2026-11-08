@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:20d0bb7c0784 -->
 <div align="center">
 
 <picture>
@@ -68,7 +68,7 @@ Homebrew、Android/Termux（預覽版）與手動下載請見[安裝指南](../I
 ## 快速入門
 
 1. 先提交（commit）或暫存（stash）你的工作，然後在 git 儲存庫的根目錄執行 `codewhale`。
-   預設情況下，它在該儲存庫中會直接套用檔案編輯、不先詢問，並向你顯示差異（diff）。
+   預設情況下，它會在每次檔案編輯與每個指令之前詢問；按一次 `Shift+Tab` 切換到**接受編輯**（Accept Edits），即可讓它在儲存庫中直接編輯檔案、不先詢問。
 2. 執行 `/provider`（或按 `F3`），選擇供應商、貼上它的 API 金鑰，再選擇模型。預設供應商是
    DeepSeek。如果沒有金鑰，請改選本機執行階段（local runtime）。若尚未設定任何供應商，而 Ollama 已在提供
    聊天模型，Codewhale 會自動使用它；從 0.10.2 起，它會在你送出第一則訊息時提議使用它。
@@ -98,7 +98,7 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 | | 切換方式 | 選項 |
 | --- | --- | --- |
 | 模式 | `Tab`（輸入框為空時）或 `/mode` | **Plan** 會讀取與搜尋，但不做任何變更。**Work** 會編輯檔案並執行指令。**Operate** 擁有與 Work 相同的存取權限，會把你的請求當作目標，持續推進，直到目標通過驗證或需要你提供輸入為止。 |
-| 權限 | `Shift+Tab` | **詢問**（Ask）會在你的儲存庫中直接套用檔案編輯、不先詢問，並在執行非唯讀的 shell 指令前先詢問。**自動審核**（Auto-Review）讓規則與審核模型核准例行呼叫，並拒絕高風險呼叫；若要自行核准這些呼叫，請切換到「詢問」。**完整存取**（Full Access）從不詢問，並關閉 Codewhale 的沙箱；儲存庫規則與受管理的政策仍然適用。 |
+| 權限 | `Shift+Tab` | **詢問**（Ask）會在每次檔案編輯與每個非唯讀的 shell 指令之前先詢問。**接受編輯**（Accept Edits）會在你的 git 儲存庫中直接套用檔案編輯、不先詢問，並仍會在執行指令前先詢問。**自動審核**（Auto-Review）讓規則與審核模型核准例行呼叫，並拒絕高風險呼叫；若要自行核准這些呼叫，請切換到「詢問」。**完整存取**（Full Access）從不詢問，並關閉 Codewhale 的沙箱；儲存庫規則與受管理的政策仍然適用。 |
 
 詳情請參閱[模式與權限指南](../MODES.md)。
 

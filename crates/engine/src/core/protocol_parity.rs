@@ -79,6 +79,7 @@ pub fn approval_mode_str(mode: ApprovalMode) -> &'static str {
         ApprovalMode::Auto => "auto",
         ApprovalMode::Bypass => "bypass",
         ApprovalMode::Suggest => "suggest",
+        ApprovalMode::AcceptEdits => "accept_edits",
         ApprovalMode::Never => "never",
     }
 }
@@ -1868,6 +1869,7 @@ mod tests {
             ApprovalMode::Auto,
             ApprovalMode::Bypass,
             ApprovalMode::Suggest,
+            ApprovalMode::AcceptEdits,
             ApprovalMode::Never,
         ] {
             assert_eq!(
