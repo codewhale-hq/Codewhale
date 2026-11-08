@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A held coordination lock no longer makes a new session read-only.** When another session owns the delegated-agent store, the new session starts on private state and says so, instead of refusing every sub-agent with “Failed to clean up sub-agents”.
 - **A dev server can outlive the turn in an interactive session.** `persist:true` now works in the TUI and desktop when the thread has Full Access; restricted postures and Fleet/sub-agents still refuse it.
 - **`codewhale exec --add-dir <path>`** (repeatable) and `addDirs` on `POST /v1/threads` let the file tools read and write a sibling directory, a second checkout or a shared scratch root without turning on Full Access.
 - **Unsettled usage is persisted in production, not only in tests.** The interactive sink now records a legacy usage receipt when a provider response has no settlement, so children and turns stop reporting settlement failure.

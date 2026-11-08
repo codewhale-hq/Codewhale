@@ -6086,6 +6086,7 @@ impl SubAgentManager {
         self.state_path = None;
         self.store_authority = None;
         self.coordination_snapshot_read_only = false;
+        self.coordination_process_lock_required = false;
         self.session_private = true;
         tracing::warn!(target: "subagent", "{SESSION_PRIVATE_COORDINATION}");
         self
@@ -6109,13 +6110,17 @@ impl SubAgentManager {
                 }
             }
         }
-        *self
-            .coordination_process_lock
-            .get_mut()
-            .expect("coordination lock slot poisoned") =
+        let acquired =
             CoordinationProcessLock::acquire(&self.state_root, self.coordination_exclusive)
                 .ok()
                 .map(Arc::new);
+        if acquired.is_none() {
+            return self.into_session_private();
+        }
+        *self
+            .coordination_process_lock
+            .get_mut()
+            .expect("coordination lock slot poisoned") = acquired;
         self
     }
 
