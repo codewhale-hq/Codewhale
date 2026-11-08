@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runtime API: check a provider key before storing it.**
+  `POST /v1/providers/{id}/key/check` asks the provider's own `/models`
+  endpoint once whether it accepts a key, and never stores it. A key the
+  provider rejects answers `422`; a provider that cannot be reached answers
+  `502`, so a client can still save the key. The desktop app uses it so a wrong
+  key is refused with a clear message instead of being saved. See
+  `docs/RUNTIME_API.md`.
 - **Website: the homepage whale comes alive.** It starts as the flat Codewhale
   mark, is colored in as the live whale, then becomes a field of breathing
   lights made of the same 64 points as the desktop app. Pointing at it or

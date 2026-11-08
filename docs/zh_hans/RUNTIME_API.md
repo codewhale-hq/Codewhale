@@ -2317,6 +2317,22 @@ Runtime 的提供商或模型默认值。
 都返回 `400`。成功写入后得到 `credentialState: "local"` 对无密钥本地路由来说是诚实的
 输出：密钥被存下了，但该路由被分类为不需要密钥。
 
+### `POST /v1/providers/{id}/key/check` —— 验证 key 但不保存
+
+```json
+// 请求
+{ "key": "sk-…" }
+
+// 响应
+{ "provider": "openai", "valid": true, "checked": true }
+```
+
+只向服务商自己的 `/models` 端点询问一次是否接受该 key，不保存 key，也不切换服务商。服务商没有
+`/models` 端点可询问时 `checked` 为 `false`，key 会在未经验证的情况下被接受。服务商拒绝的 key
+（HTTP 401 或 403）返回 `422`；其他无法询问的情况（网络错误、超时、其他状态码）返回 `502`，客户端
+可视为“无法验证”，仍可 `PUT` 该 key。该路由遵循与 `PUT` 相同的凭据可写规则和 key 形状限制，并拒绝
+OpenAI Codex。没有此路由的 Engine 返回 `404`。
+
 ### `DELETE /v1/providers/{id}/key` —— 清除 Codewhale 拥有的凭据
 
 ```json

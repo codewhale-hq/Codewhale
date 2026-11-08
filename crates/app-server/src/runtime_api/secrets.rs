@@ -28,6 +28,12 @@ pub(super) struct SetProviderKeyRequest {
     scope: ProviderKeyScope,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CheckProviderKeyRequest {
+    key: String,
+}
+
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ProviderKeyScope {
@@ -1016,6 +1022,50 @@ pub(super) async fn clear_provider_key(
     })
     .await
     .map_err(|_| ApiError::internal("credential clear task failed"))?
+}
+
+pub(super) async fn check_provider_key(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(request): Json<CheckProviderKeyRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let (identity, base_url) = {
+        let config = state.config.read();
+        let identity = writable_provider(&config, &id, ProviderKeyScope::Durable)?;
+        let base_url = config.base_url_for_route(&identity);
+        (identity, base_url)
+    };
+    let kind = identity.provider;
+    if kind == codewhale_config::ProviderKind::OpenaiCodex {
+        return Err(ApiError::bad_request(
+            codewhale_config::credentials::OPENAI_CODEX_API_KEY_REFUSAL,
+        ));
+    }
+    let key = codewhale_secrets::normalize_api_key(&request.key);
+    if key.is_empty() {
+        return Err(ApiError::bad_request("key must not be empty"));
+    }
+    if key.len() > MAX_KEY_BYTES || key.chars().any(char::is_control) {
+        return Err(ApiError::bad_request(
+            "key must be a single-line credential at most 4 KiB",
+        ));
+    }
+    let checked = codewhale_engine::client::provider_api_key_verification_is_observed_for_route(
+        kind, &base_url,
+    );
+    match codewhale_engine::client::verify_provider_api_key(kind, &key, &base_url).await {
+        Ok(_) => Ok(Json(json!({
+            "provider": identity.key,
+            "valid": true,
+            "checked": checked,
+        }))),
+        Err(reason) if reason.starts_with("HTTP 401") || reason.starts_with("HTTP 403") => Err(
+            ApiError::unprocessable("The provider did not accept this key."),
+        ),
+        Err(_) => Err(ApiError::bad_gateway(
+            "Could not check this key with the provider right now.",
+        )),
+    }
 }
 
 #[cfg(test)]

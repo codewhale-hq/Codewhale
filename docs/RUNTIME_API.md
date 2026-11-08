@@ -3021,6 +3021,25 @@ the shared key normalizer before validation; `openai-codex` refuses API-key writ
 a keyless local route: the key is
 accepted, but the route classifies as not needing one.
 
+### `POST /v1/providers/{id}/key/check` — verify a key without storing it
+
+```json
+// request
+{ "key": "sk-…" }
+
+// response
+{ "provider": "openai", "valid": true, "checked": true }
+```
+
+Asks the provider's own `/models` endpoint once whether it accepts the key. It
+never stores a key and never switches the provider. `checked` is `false` when
+the provider has no `/models` endpoint to ask, so the key is accepted
+unverified. A key the provider rejects (HTTP 401 or 403) answers `422`; any
+other failure to ask (a network error, a timeout, another status) answers
+`502`, which a client can treat as "could not verify" and still `PUT` the key.
+The route applies `PUT`'s credential-writability rules and key-shape limits and
+refuses OpenAI Codex. An Engine without this route answers `404`.
+
 ### `DELETE /v1/providers/{id}/key` — clear a Codewhale-owned credential
 
 ```json

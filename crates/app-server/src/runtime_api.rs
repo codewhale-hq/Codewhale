@@ -3416,6 +3416,12 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         )
         .route("/v1/providers/{id}/switch", post(switch_provider))
         .route(
+            "/v1/providers/{id}/key/check",
+            post(secrets::check_provider_key).layer(DefaultBodyLimit::max(
+                secrets::PROVIDER_KEY_BODY_LIMIT_BYTES,
+            )),
+        )
+        .route(
             "/v1/providers/{id}/key",
             put(secrets::set_provider_key)
                 .delete(secrets::clear_provider_key)
@@ -14853,6 +14859,14 @@ impl ApiError {
     fn unprocessable(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
             message: message.into(),
             code: None,
         }
