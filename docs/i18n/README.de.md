@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -115,7 +115,7 @@ Eine neue Installation startet im Work-Modus mit der Berechtigung Ask.
 
 | | Wechseln mit | Optionen |
 | --- | --- | --- |
-| Modus | `Tab` (bei leerer Eingabe) oder `/mode` | **Plan** liest und durchsucht, ändert aber nichts. **Work** bearbeitet Dateien und führt Befehle aus. **Operate** hat dieselben Zugriffsrechte wie Work, behandelt deine Anfrage als Ziel und arbeitet weiter, bis das Ziel überprüft ist oder es eine Eingabe von dir braucht. |
+| Modus | `Tab` (bei leerer Eingabe) oder `/mode` | **Plan** liest und durchsucht, ändert aber nichts. **Work** bearbeitet Dateien und führt Befehle aus; starte ein Ziel mit `/goal`, wenn eine Anfrage mehr als einen Turn braucht. |
 | Berechtigung | `Shift+Tab` | **Ask** fragt vor jeder Dateiänderung und vor jedem Shell-Befehl, der nicht nur liest. **Accept Edits** wendet Dateiänderungen in deinem Git-Repository an, ohne zu fragen, und fragt weiterhin vor Befehlen. **Auto-Review** lässt Regeln und ein Prüfmodell Routineaufrufe freigeben und lehnt Aufrufe mit hohem Risiko ab; wechsle zu Ask, um diese selbst freizugeben. **Full Access** fragt nie und schaltet die Sandbox von Codewhale ab; Repository-Regeln und verwaltete Richtlinien gelten weiterhin. |
 
 Details stehen in der [Anleitung zu Modi und Berechtigungen](../MODES.md).

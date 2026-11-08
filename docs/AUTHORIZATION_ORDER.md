@@ -143,6 +143,6 @@ cargo test -p codewhale-config --locked project_merge_only_tightens_approval_and
 
 - [Configuration](CONFIGURATION.md) — rule schema, `/permissions`, hooks, and
   project overlays
-- [Modes](MODES.md) — Plan/Work/Operate and permission posture
+- [Modes](MODES.md) — Plan/Work and permission posture
 - [Sandbox threat model](SANDBOX.md) — platform enforcement and fallbacks
 - [Runtime API](RUNTIME_API.md) — approval events and remote resolution

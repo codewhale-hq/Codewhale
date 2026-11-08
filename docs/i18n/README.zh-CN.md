@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -98,7 +98,7 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 | | 切换方式 | 选项 |
 | --- | --- | --- |
-| 模式 | `Tab`（输入框为空时）或 `/mode` | **Plan** 只读取和搜索，不做任何改动。**Work** 编辑文件并运行命令。**Operate** 拥有与 Work 相同的访问权限，把你的请求当作一个目标，并持续推进，直到目标得到验证或需要你提供输入为止。 |
+| 模式 | `Tab`（输入框为空时）或 `/mode` | **Plan** 只读取和搜索，不做任何改动。**Work** 编辑文件并运行命令。当请求需要多个回合时，用 `/goal` 开始一个目标。 |
 | 权限 | `Shift+Tab` | **询问**（Ask）在每次文件编辑和每条非只读的 shell 命令之前都会询问。**接受编辑**（Accept Edits）在你的 git 仓库中直接应用文件编辑而不询问，并仍会在运行命令之前先询问。**自动审核**（Auto-Review）让规则和一个审查模型批准常规调用，并拒绝高风险调用；如需亲自批准这些调用，请切换到“询问”。**完全访问**（Full Access）从不询问，并关闭 Codewhale 的沙箱；仓库规则和受管策略仍然适用。 |
 
 详情见[模式与权限指南](../MODES.md)。

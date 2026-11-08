@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -111,7 +111,7 @@ Instalasi baru dimulai dalam mode Work dengan izin Tanya.
 
 | | Ganti dengan | Opsi |
 | --- | --- | --- |
-| Mode | `Tab` (saat input kosong) atau `/mode` | **Plan** membaca dan mencari tetapi tidak mengubah apa pun. **Work** mengedit berkas dan menjalankan perintah. **Operate** memiliki akses yang sama dengan Work, memperlakukan permintaan Anda sebagai tujuan, dan terus berjalan sampai tujuan itu terverifikasi atau ia memerlukan masukan dari Anda. |
+| Mode | `Tab` (saat input kosong) atau `/mode` | **Plan** membaca dan mencari tetapi tidak mengubah apa pun. **Work** mengedit berkas dan menjalankan perintah; mulai tujuan dengan `/goal` saat permintaan membutuhkan lebih dari satu giliran. |
 | Izin | `Shift+Tab` | **Tanya** (Ask) bertanya sebelum setiap edit berkas dan setiap perintah shell yang bukan baca-saja. **Terima suntingan** (Accept Edits) menerapkan edit berkas di repositori git Anda tanpa bertanya dan tetap bertanya sebelum perintah. **Tinjauan otomatis** (Auto-Review) membiarkan aturan dan model peninjau menyetujui panggilan rutin dan menolak panggilan berisiko tinggi; beralihlah ke Tanya untuk menyetujuinya sendiri. **Akses penuh** (Full Access) tidak pernah bertanya dan menonaktifkan sandbox Codewhale; aturan repositori dan kebijakan terkelola tetap berlaku. |
 
 Lihat [panduan mode dan izin](../MODES.md) untuk detailnya.

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -111,7 +111,7 @@ Bản cài đặt mới khởi động ở chế độ Work với quyền Ask.
 
 | | Chuyển bằng | Tùy chọn |
 | --- | --- | --- |
-| Chế độ | `Tab` (khi ô nhập trống) hoặc `/mode` | **Plan** đọc và tìm kiếm nhưng không thay đổi gì. **Work** chỉnh sửa tệp và chạy lệnh. **Operate** có cùng quyền truy cập như Work, coi yêu cầu của bạn là một mục tiêu và tiếp tục làm cho đến khi mục tiêu được xác minh hoặc cần bạn cung cấp thêm thông tin. |
+| Chế độ | `Tab` (khi ô nhập trống) hoặc `/mode` | **Plan** đọc và tìm kiếm nhưng không thay đổi gì. **Work** chỉnh sửa tệp và chạy lệnh; hãy bắt đầu một mục tiêu với `/goal` khi yêu cầu cần nhiều hơn một lượt. |
 | Quyền | `Shift+Tab` | **Ask** hỏi trước mỗi chỉnh sửa tệp và trước mọi lệnh shell không phải chỉ đọc. **Accept Edits** áp dụng các chỉnh sửa tệp trong kho git của bạn mà không hỏi và vẫn hỏi trước khi chạy lệnh. **Auto-Review** để các quy tắc và một mô hình đánh giá phê duyệt các lệnh gọi thông thường, và từ chối các lệnh gọi rủi ro cao; hãy chuyển sang Ask để tự phê duyệt những lệnh gọi đó. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale; các quy tắc của kho mã và chính sách được quản lý vẫn được áp dụng. |
 
 Xem chi tiết trong [hướng dẫn về chế độ và quyền](../MODES.md).

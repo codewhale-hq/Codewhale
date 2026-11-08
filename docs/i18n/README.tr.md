@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -112,7 +112,7 @@ Yeni bir kurulum Work modunda ve Ask izniyle başlar.
 
 | | Nasıl değiştirilir | Seçenekler |
 | --- | --- | --- |
-| Mod | `Tab` (giriş alanı boşken) veya `/mode` | **Plan** okur ve arar ama hiçbir şeyi değiştirmez. **Work** dosyaları düzenler ve komutları çalıştırır. **Operate** Work ile aynı erişime sahiptir, isteğinizi bir hedef olarak ele alır ve hedef doğrulanana ya da sizden girdi gerekene kadar devam eder. |
+| Mod | `Tab` (giriş alanı boşken) veya `/mode` | **Plan** okur ve arar ama hiçbir şeyi değiştirmez. **Work** dosyaları düzenler ve komutları çalıştırır; bir istek birden fazla tur gerektirdiğinde `/goal` ile bir hedef başlatın. |
 | İzin | `Shift+Tab` | **Ask** her dosya düzenlemesinden ve salt okunur olmayan her kabuk komutundan önce sorar. **Accept Edits** git deponuzdaki dosya düzenlemelerini sormadan uygular, komutlardan önce yine sorar. **Auto-Review** rutin çağrıların kurallar ve bir inceleyici model tarafından onaylanmasına izin verir, yüksek riskli olanları reddeder; bunları kendiniz onaylamak için Ask iznine geçin. **Full Access** hiç sormaz ve Codewhale'in korumalı alanını kapatır; depo kuralları ve yönetilen politika yine de geçerlidir. |
 
 Ayrıntılar için [modlar ve izinler kılavuzuna](../MODES.md) bakın.

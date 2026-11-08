@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -111,7 +111,7 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 | | Przełączanie | Opcje |
 | --- | --- | --- |
-| Tryb | `Tab` (gdy pole wprowadzania jest puste) lub `/mode` | **Plan** czyta i przeszukuje, ale niczego nie zmienia. **Work** edytuje pliki i uruchamia polecenia. **Operate** ma ten sam dostęp co Work, traktuje Twoje zlecenie jako cel i działa dalej, dopóki cel nie zostanie zweryfikowany albo nie będzie potrzebował informacji od Ciebie. |
+| Tryb | `Tab` (gdy pole wprowadzania jest puste) lub `/mode` | **Plan** czyta i przeszukuje, ale niczego nie zmienia. **Work** edytuje pliki i uruchamia polecenia; uruchom cel poleceniem `/goal`, gdy zlecenie wymaga więcej niż jednej tury. |
 | Uprawnienie | `Shift+Tab` | **Ask** pyta przed każdą zmianą w pliku i przed każdym poleceniem powłoki, które nie jest tylko do odczytu. **Accept Edits** wprowadza zmiany w plikach Twojego repozytorium git bez pytania i nadal pyta przed poleceniami. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania, a wywołania wysokiego ryzyka odrzuca; aby zatwierdzać je samodzielnie, przełącz na Ask. **Full Access** nigdy nie pyta i wyłącza piaskownicę Codewhale; reguły repozytorium i polityka zarządzana nadal obowiązują. |
 
 Szczegóły opisuje [przewodnik po trybach i uprawnieniach](../MODES.md).

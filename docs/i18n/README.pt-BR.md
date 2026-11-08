@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -111,7 +111,7 @@ Uma instalação nova começa no modo Work com a permissão Perguntar.
 
 | | Alterne com | Opções |
 | --- | --- | --- |
-| Modo | `Tab` (com o campo de entrada vazio) ou `/mode` | **Plan** lê e pesquisa, mas não altera nada. **Work** edita arquivos e executa comandos. **Operate** tem o mesmo acesso que o Work, trata seu pedido como um objetivo e continua até o objetivo ser verificado ou precisar de uma resposta sua. |
+| Modo | `Tab` (com o campo de entrada vazio) ou `/mode` | **Plan** lê e pesquisa, mas não altera nada. **Work** edita arquivos e executa comandos; inicie um objetivo com `/goal` quando uma solicitação precisar de mais de um turno. |
 | Permissão | `Shift+Tab` | **Perguntar** (Ask) pergunta antes de toda edição de arquivo e de todo comando de shell que não seja somente leitura. **Aceitar edições** (Accept Edits) aplica edições de arquivos no seu repositório git sem perguntar e continua perguntando antes de comandos. **Revisão automática** (Auto-Review) deixa regras e um modelo revisor aprovarem chamadas rotineiras e recusa as de alto risco; mude para Perguntar para aprová-las você mesmo. **Acesso total** (Full Access) nunca pergunta e desliga o sandbox do Codewhale; as regras do repositório e a política gerenciada continuam valendo. |
 
 Os detalhes estão no [guia de modos e permissões](../MODES.md).

@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -111,7 +111,7 @@ Una instal·lació nova comença en mode Work amb el permís Ask.
 
 | | Es canvia amb | Opcions |
 | --- | --- | --- |
-| Mode | `Tab` (amb l’entrada buida) o `/mode` | **Plan** llegeix i cerca però no canvia res. **Work** edita fitxers i executa ordres. **Operate** té el mateix accés que Work, tracta la teva petició com un objectiu i continua fins que l’objectiu està verificat o necessita alguna resposta teva. |
+| Mode | `Tab` (amb l’entrada buida) o `/mode` | **Plan** llegeix i cerca però no canvia res. **Work** edita fitxers i executa ordres; inicia un objectiu amb `/goal` quan una petició necessiti més d’un torn. |
 | Permís | `Shift+Tab` | **Ask** pregunta abans de cada edició de fitxer i de cada ordre de shell que no és de només lectura. **Accept Edits** aplica les edicions de fitxers al teu repositori git sense preguntar i continua preguntant abans de les ordres. **Auto-Review** deixa que unes regles i un model revisor aprovin les crides rutinàries i rebutja les d’alt risc; canvia a Ask per aprovar-les tu mateix. **Full Access** no pregunta mai i desactiva el sandbox de Codewhale; les regles del repositori i la política gestionada continuen aplicant-se. |
 
 Consulta la [guia de modes i permisos](../MODES.md) per als detalls.

@@ -924,7 +924,7 @@ codewhale
   (`ask`), the mode (`work`) and the model (`DeepSeek · deepseek-flash`).
 * **Shift+Tab** cycles the permission posture: Ask → Accept Edits →
   Auto-Review → Full Access. **Tab** (with an empty composer) cycles the
-  mode: Plan → Work → Operate.
+  mode: Plan → Work → Plan.
 * In **Ask**, file edits and shell commands stop at an **APPROVAL** prompt:
   `y` allow once, `a` allow for this session, `n` deny, `Esc` abort the turn.
   In **Accept Edits**, file edits in the repository are applied and shown as a

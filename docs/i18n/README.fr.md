@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:20d0bb7c0784 -->
+<!-- source: README.md sha256:95505d84e54d -->
 <div align="center">
 
 <picture>
@@ -115,7 +115,7 @@ Une nouvelle installation démarre en mode Work avec la permission Ask.
 
 | | Changer avec | Options |
 | --- | --- | --- |
-| Mode | `Tab` (quand la saisie est vide) ou `/mode` | **Plan** lit et effectue des recherches, mais ne modifie rien. **Work** modifie des fichiers et exécute des commandes. **Operate** a les mêmes accès que Work, traite votre demande comme un objectif et continue jusqu’à ce que l’objectif soit vérifié ou qu’il ait besoin d’une réponse de votre part. |
+| Mode | `Tab` (quand la saisie est vide) ou `/mode` | **Plan** lit et effectue des recherches, mais ne modifie rien. **Work** modifie des fichiers et exécute des commandes ; lancez un objectif avec `/goal` quand une requête nécessite plus d’un tour. |
 | Permission | `Shift+Tab` | **Ask** demande avant chaque modification de fichier et chaque commande shell qui n’est pas en lecture seule. **Accept Edits** applique sans demander les modifications de fichiers dans votre dépôt git et demande toujours avant les commandes. **Auto-Review** laisse des règles et un modèle de revue approuver les appels courants et refuse ceux à haut risque ; passez en Ask pour les approuver vous-même. **Full Access** ne demande jamais et désactive le bac à sable de Codewhale ; les règles du dépôt et la politique gérée s’appliquent toujours. |
 
 Le [guide des modes et des permissions](../MODES.md) donne les détails.
