@@ -1119,8 +1119,10 @@ fn bundled_asset_yields_real_chat_offerings_for_key_models() {
         Some("disabled")
     );
 
+    let grok_47 = find(&rows, "xai", "grok-4.7");
+    assert!(grok_47.default_for_provider);
     let grok_46 = find(&rows, "xai", "grok-4.6");
-    assert!(grok_46.default_for_provider);
+    assert!(!grok_46.default_for_provider);
     assert_eq!(
         grok_46.limit.as_ref().and_then(|limit| limit.context),
         Some(500_000)

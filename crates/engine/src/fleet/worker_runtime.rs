@@ -2910,7 +2910,7 @@ mod tests {
             .expect("explicit xAI route should resolve without borrowing session config");
         assert_eq!(route.provider_id, "xai");
         assert_eq!(route.provider_kind, "xai");
-        assert_eq!(route.wire_model_id, "grok-4.6");
+        assert_eq!(route.wire_model_id, "grok-4.7");
         assert!(
             !serde_json::to_string(&route)
                 .expect("route json")

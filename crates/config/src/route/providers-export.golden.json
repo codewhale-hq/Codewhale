@@ -406,7 +406,7 @@
       "label": "Meta Model API",
       "endpoint": "https://api.meta.ai/v1",
       "wire": "chat-completions",
-      "defaultModel": "muse-spark-1.2",
+      "defaultModel": "muse-spark-1.3",
       "envVars": [
         "META_MODEL_API_KEY",
         "MODEL_API_KEY"
@@ -424,8 +424,7 @@
         },
         {
           "id": "muse-spark-1.2",
-          "canonical": "meta/muse-spark-1.2",
-          "default": true
+          "canonical": "meta/muse-spark-1.2"
         },
         {
           "id": "muse-spark-1.2-contributor",
@@ -433,7 +432,8 @@
         },
         {
           "id": "muse-spark-1.3",
-          "canonical": "meta/muse-spark-1.3"
+          "canonical": "meta/muse-spark-1.3",
+          "default": true
         },
         {
           "id": "muse-spark-1.3-contributor",
@@ -1412,7 +1412,7 @@
       "label": "xAI",
       "endpoint": "https://api.x.ai/v1",
       "wire": "chat-completions",
-      "defaultModel": "grok-4.6",
+      "defaultModel": "grok-4.7",
       "envVars": [
         "XAI_API_KEY"
       ],
@@ -1436,12 +1436,12 @@
         },
         {
           "id": "grok-4.6",
-          "canonical": "xai/grok-4.6",
-          "default": true
+          "canonical": "xai/grok-4.6"
         },
         {
           "id": "grok-4.7",
-          "canonical": "xai/grok-4.7"
+          "canonical": "xai/grok-4.7",
+          "default": true
         }
       ],
       "transport": "chat-completions"

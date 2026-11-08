@@ -468,6 +468,7 @@ pub(crate) fn canonical_orcarouter_recent_model_id(model: &str) -> Option<&'stat
     }
 }
 
-pub(crate) fn default_model_for_provider(provider: ProviderKind) -> &'static str {
-    provider.provider().default_model()
+pub(crate) fn default_model_for_provider(provider: ProviderKind) -> String {
+    crate::catalog::bundled_listed_default(provider.as_str())
+        .unwrap_or_else(|| provider.provider().default_model().to_string())
 }

@@ -6108,7 +6108,7 @@ fn catalog_delta_from_models_body(
     // OpenRouter returns extended capability metadata in its /models
     // response (#3385). Capture limits, pricing, reasoning, and modalities
     // from the live API instead of leaving them unknown.
-    let offerings: Vec<CatalogOffering> = if api_provider == ProviderKind::Orcarouter {
+    let mut offerings: Vec<CatalogOffering> = if api_provider == ProviderKind::Orcarouter {
         // OrcaRouter serves the extended capability shape too, and adds
         // `supported_endpoint_types` on every row. That field is what keeps a
         // gateway model list — which mixes chat with image/video generation —
@@ -6282,6 +6282,22 @@ fn catalog_delta_from_models_body(
             })
             .collect()
     };
+    if !offerings.iter().any(|row| row.default_for_provider) {
+        let listed: Vec<&str> = offerings
+            .iter()
+            .map(|row| row.wire_model_id.as_str())
+            .collect();
+        let identified = codewhale_config::catalog::identify_listed_default(
+            &provider,
+            api_provider.provider().default_model(),
+            &listed,
+        );
+        if listed.iter().any(|id| id.eq_ignore_ascii_case(&identified)) {
+            for row in &mut offerings {
+                row.default_for_provider = row.wire_model_id.eq_ignore_ascii_case(&identified);
+            }
+        }
+    }
 
     if offerings.iter().any(|row| {
         model_bound_secret_values

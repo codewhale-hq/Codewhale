@@ -374,69 +374,10 @@ SEED_ASSET = Path("crates/config/assets/models_dev.bundled.json")
 CORRECTIONS_ASSET = Path("crates/config/assets/catalog_corrections.json")
 DESCRIPTORS_ASSET = Path("crates/config/assets/provider_descriptors.json")
 SEED_RENDER_COMMAND = "python3 scripts/catalog_models_dev.py seed render"
-# Seeded providers whose default legitimately differs from the descriptor
-# (id -> reason). Every other seeded default must match it exactly.
+# Seeded providers whose fallback pin legitimately differs from the descriptor.
+# Identification from the provider's own model list is the authority; this map
+# is only for a pin that is not that identified id and must stay that way.
 SEED_DEFAULT_EXCEPTIONS: dict[str, str] = {}
-# Descriptors whose shipped default legitimately trails a newer stable upstream
-# release (descriptor id -> reason). `defaults audit` fails on any other
-# vendor default that is behind, so a stale default cannot ship silently.
-DEFAULT_AUDIT_REASONS: dict[str, str] = {
-    "openai": (
-        "OpenAI does not support normal tool calling for the GPT-6 family "
-        "(`gpt-6-sol`, `gpt-6.1-sol`, `gpt-6-luna`, `gpt-6-astra`) over Chat "
-        "Completions, which is this route's wire; the Responses-wire "
-        "`openai-codex` route defaults to `gpt-6.1-sol`."
-    ),
-    "sakana": (
-        "`sakana-namazu` is a separate, smaller line (262,144 context / 65,536 "
-        "output, $0.95/$4) rather than a successor to `fugu` (1,000,000 / "
-        "1,000,000, no published cost); `fugu` stays the general default."
-    ),
-    "meta": (
-        "Meta recommends `muse-spark-1.3` for new work and it stays selectable, "
-        "but `muse-spark-1.2` keeps its verified wire ID, tool support, 1M "
-        "context, 32K output and `none`-through-`xhigh` effort ladder "
-        "(docs/PROVIDERS.md)."
-    ),
-    "xai": (
-        "`grok-4.7` matches `grok-4.6` on window, modalities, tools, structured "
-        "output, reasoning ladder and price, but xAI documents no web-search "
-        "support for it yet and `grok-4.6` ships server-side web search "
-        "(docs/PROVIDERS.md)."
-    ),
-    "google": (
-        "`gemini-4-argon` is cheaper ($2/$10 against $2/$12) but publishes a "
-        "32,768-token output cap against `gemini-3.1-pro-preview`'s 65,536 and "
-        "omits the `xhigh`/`max` effort steps; the default moves once a live key "
-        "can verify the request shape."
-    ),
-}
-# Descriptors whose roster is the model author's own, so a newer release in it
-# means the default is behind. Every other descriptor is a marketplace or a
-# local runtime where the default is a curated choice, not a newest-wins fact.
-VENDOR_PROVIDERS: frozenset[str] = frozenset(
-    {
-        "anthropic",
-        "arcee",
-        "deepseek",
-        "deepseek-anthropic",
-        "google",
-        "longcat",
-        "meta",
-        "minimax",
-        "minimax-anthropic",
-        "mistral",
-        "moonshot",
-        "openai",
-        "openai-codex",
-        "qianfan",
-        "sakana",
-        "stepfun",
-        "xai",
-        "xiaomi-mimo",
-        "zai",
-    }
-)
 # Tokens that mark a row as a smaller/faster or non-stable release: newer than
 # the default, but not a replacement for it.
 VARIANT_TOKENS: frozenset[str] = frozenset(
@@ -680,21 +621,100 @@ def descriptor_defaults(path: Path) -> dict[str, str]:
     return defaults
 
 
+def version_id(model_id: str) -> tuple[str, int, tuple[int, ...]] | None:
+    """`stem-major.minor` only.
+
+    `grok-4.7` and `muse-spark-1.3` match. `gpt-6`, `gpt-6.1-sol`,
+    `gemini-3.1-pro-preview`, `kimi-k2.7-code` and dated snapshots do not:
+    a different product line, a major jump, or an extra suffix is not a
+    successor of the pinned id.
+    """
+    match = re.fullmatch(r"(.+)-(\d+)\.(\d+(?:\.\d+)*)", model_id.strip())
+    if match is None:
+        return None
+    return (
+        match.group(1).lower(),
+        int(match.group(2)),
+        tuple(int(part) for part in match.group(3).split(".")),
+    )
+
+
+def variant_id(model_id: str, name: str = "") -> bool:
+    tokens = [token for token in re.split(r"[^a-z0-9]+", f"{model_id} {name}".lower()) if token]
+    return any(token in VARIANT_TOKENS or token.startswith("flash") for token in tokens)
+
+
+def identify_listed_default(rows: list[dict[str, Any]], pinned: str) -> str:
+    """Default id implied by one provider's own model list.
+
+    The pin is the fallback when the list has no same-line successor. A
+    successor must share stem and major, carry a higher minor, and must not
+    be a variant, a retired row, or a regression of tool calling or a
+    published context/output limit. A newer row on a different line
+    (`gpt-6` beside `gpt-5.6`, `gemini-4-argon` beside `gemini-3.1-pro-preview`,
+    `sakana-namazu` beside `fugu`) does not replace the pin. An explicit
+    upstream `default` flag, when the list actually carries one, wins over
+    both the pin and a successor.
+    """
+    usable = [row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)]
+    flagged = [row["id"] for row in usable if row.get("default") is True and row["id"] != pinned]
+    # Our own render stamps `default` from this function. Treat a flag that
+    # merely repeats the pin as not an upstream choice. A flag on a different
+    # id is an explicit list decision.
+    if len(flagged) == 1:
+        return flagged[0]
+    parsed = version_id(pinned)
+    if parsed is None:
+        return pinned
+    pin_row = next((row for row in usable if row["id"] == pinned), {})
+    pin_limit = pin_row.get("limit") if isinstance(pin_row.get("limit"), dict) else {}
+    stem, major, _rest = parsed
+    best_id: str | None = None
+    best_rest: tuple[int, ...] | None = None
+    best_date = ""
+    for row in usable:
+        model_id = row["id"]
+        if row.get("status") in ("deprecated", "retired"):
+            continue
+        if row.get("type") not in (None, "language"):
+            continue
+        if variant_id(model_id, str(row.get("name") or "")):
+            continue
+        found = version_id(model_id)
+        if found is None or found[0] != stem or found[1] != major:
+            continue
+        if pin_row.get("tool_call") is True and row.get("tool_call") is False:
+            continue
+        row_limit = row.get("limit") if isinstance(row.get("limit"), dict) else {}
+        if any(
+            isinstance(pin_limit.get(field), int)
+            and isinstance(row_limit.get(field), int)
+            and row_limit[field] < pin_limit[field]
+            for field in ("context", "output")
+        ):
+            continue
+        date = row.get("release_date") if isinstance(row.get("release_date"), str) else ""
+        if best_rest is None or found[2] > best_rest or (found[2] == best_rest and date > best_date):
+            best_id, best_rest, best_date = model_id, found[2], date
+    return best_id or pinned
+
+
 def seed_descriptor_default_errors(spec: dict[str, Any], path: Path) -> list[str]:
-    """Seeded defaults that disagree with the descriptor the product ships."""
+    """Descriptor defaults that disagree with the provider model list."""
     defaults = descriptor_defaults(path)
     errors: list[str] = []
     for provider in spec["providers"]:
         pid = provider["id"]
         if pid in SEED_DEFAULT_EXCEPTIONS:
             continue
+        identified = identify_listed_default(provider["models"], provider["default"])
         declared = defaults.get(pid)
         if declared is None:
             errors.append(f"{pid}: seeded provider has no default_model in {path}")
-        elif declared != provider["default"]:
+        elif declared != identified:
             errors.append(
-                f"{pid}: {path} defaults to {declared!r} but the seed default is "
-                f"{provider['default']!r}; align them or record a SEED_DEFAULT_EXCEPTIONS reason"
+                f"{pid}: {path} defaults to {declared!r} but the model list "
+                f"identifies {identified!r} (pin {provider['default']!r})"
             )
     return errors
 
@@ -939,6 +959,7 @@ def render_seed(spec: dict[str, Any], lock: dict[str, Any], reviewed_source: dic
     row_count = 0
     for provider in spec["providers"]:
         models_out: dict[str, Any] = {}
+        listed_facts: list[dict[str, Any]] = []
         for model in provider["models"]:
             key = (provider["id"], model["id"])
             up_provider, up_id = upstream_ref(provider, model)
@@ -962,11 +983,15 @@ def render_seed(spec: dict[str, Any], lock: dict[str, Any], reviewed_source: dic
                     errors.append(f"{key[0]}/{key[1]}: seed base_model conflicts with upstream canonical_model_id")
                     continue
                 row["base_model"] = model["base_model"]
+            listed_facts.append(dict(row))
             row.pop("default", None)
-            if model["id"] == provider["default"]:
-                row["default"] = True
             models_out[model["id"]] = project_fields(row, PROVIDER_MODEL_FIELDS)
             row_count += 1
+        identified = identify_listed_default(listed_facts, provider["default"])
+        if identified in models_out:
+            stamped = dict(models_out[identified])
+            stamped["default"] = True
+            models_out[identified] = project_fields(stamped, PROVIDER_MODEL_FIELDS)
         header = {"id": provider["id"]}
         for field in ("name", "api", "npm", "doc", "env"):
             if field in provider:
@@ -1023,120 +1048,44 @@ def load_upstream_payload(
     return raw, source, ensure_models_dev_shape(load_json_bytes(raw, source), source)
 
 
-def descriptor_entries(path: Path) -> list[dict[str, Any]]:
-    """Every shipped provider descriptor, in file order."""
-    document = read_json_file(path)
-    providers = document.get("providers")
-    if not isinstance(providers, list):
-        die(f"{path}: `providers` must be a list of provider descriptors")
-    return [entry for entry in providers if isinstance(entry, dict)]
-
-
-def variant_release(row: dict[str, Any]) -> bool:
-    """True for a smaller/faster or non-stable row that never replaces a default."""
-    text = f"{row.get('id') or ''} {row.get('name') or ''}".lower()
-    tokens = [token for token in re.split(r"[^a-z0-9]+", text) if token]
-    return any(token in VARIANT_TOKENS or token.startswith("flash") for token in tokens)
-
-
-def model_namespace(model_id: str) -> str:
-    """`author/model` rows are third-party on a reseller roster."""
-    return model_id.split("/", 1)[0].lower() if "/" in model_id else ""
-
-
-def newer_stable_rows(
-    roster: dict[str, Any], default_row: dict[str, Any]
-) -> list[tuple[str, dict[str, Any]]]:
-    """Roster rows released after the default that a default should track."""
-    released = default_row.get("release_date")
-    if not isinstance(released, str) or not released:
-        return []
-    namespace = model_namespace(str(default_row.get("id") or ""))
-    newer: list[tuple[str, dict[str, Any]]] = []
-    for model_id, row in roster.items():
-        if not isinstance(row, dict) or row is default_row:
-            continue
-        if row.get("status") in ("deprecated", "retired"):
-            continue
-        if row.get("type") not in (None, "language"):
-            continue
-        if model_namespace(model_id) != namespace:
-            continue
-        if model_id.lower().endswith("-latest"):
-            continue
-        if variant_release(row):
-            continue
-        date = row.get("release_date")
-        if isinstance(date, str) and date > released:
-            newer.append((model_id, row))
-    return sorted(newer, key=lambda item: str(item[1].get("release_date") or ""))
-
-
 def cmd_defaults_audit(args: argparse.Namespace) -> None:
     spec = load_seed_spec(Path(args.spec))
-    raw, source, upstream = load_upstream_payload(spec, args.snapshot)
-    rosters = upstream.get("providers") or {}
-    print(f"upstream: {public_source_label(source)} sha256 {hashlib.sha256(raw).hexdigest()}")
+    lock = read_json_file(Path(getattr(args, "lock", None) or SEED_LOCK))
+    defaults = descriptor_defaults(Path(args.descriptors))
     print(
-        "rule: a vendor roster whose default has a newer stable release is a failure "
-        "unless DEFAULT_AUDIT_REASONS records why; marketplaces, local runtimes and "
-        "absent defaults are advisory"
+        "rule: a provider default is the same-line successor in that provider's "
+        "own model list, or the pin when the list has none. A newer row on a "
+        "different line is not a successor. The descriptor must match."
     )
     stale: list[str] = []
-    reasoned: list[str] = []
-    advisory: list[str] = []
-    marketplace: list[str] = []
-    unchecked: list[str] = []
-    current = 0
-    for entry in descriptor_entries(Path(args.descriptors)):
-        pid = entry.get("id")
-        default_model = entry.get("default_model")
-        if not isinstance(pid, str) or not isinstance(default_model, str):
-            continue
-        if entry.get("retired"):
-            continue
-        upstream_pid = entry.get("catalog_source_id") or entry.get("catalog_id") or pid
-        roster = (rosters.get(upstream_pid) or {}).get("models")
-        if not isinstance(roster, dict):
-            unchecked.append(f"{pid}: {upstream_pid} not in upstream catalog")
-            continue
-        found = find_row(roster, default_model)
-        if found is None:
-            advisory.append(f"{pid}: {default_model} not in {upstream_pid} roster")
-            continue
-        newer = newer_stable_rows(roster, found[1])
-        if not newer:
-            current += 1
-            continue
-        names = [model_id for model_id, _ in newer]
-        shown = ", ".join(names[:3]) + (f" (+{len(names) - 3} more)" if len(names) > 3 else "")
-        line = f"{pid}: {default_model} -> {shown}"
-        reason = DEFAULT_AUDIT_REASONS.get(pid)
-        if pid not in VENDOR_PROVIDERS:
-            marketplace.append(f"{pid}: {default_model} (curated pick; {len(names)} newer rows)")
-        elif reason is None:
-            stale.append(line)
-        else:
-            reasoned.append(f"{line} [{reason}]")
-    for label, lines in (
-        ("STALE", stale),
-        ("reasoned", reasoned),
-        ("advisory", advisory),
-        ("curated", marketplace),
-        ("unchecked", unchecked),
-    ):
-        for line in lines:
-            print(f"{label:9} {line}")
-    print(
-        f"{current} defaults are the newest stable row in their own roster; "
-        f"{len(stale)} stale, {len(reasoned)} reasoned, {len(advisory)} advisory, "
-        f"{len(marketplace)} curated, {len(unchecked)} unchecked"
-    )
+    promoted: list[str] = []
+    for provider in spec["providers"]:
+        rows: list[dict[str, Any]] = []
+        for model in provider["models"]:
+            up_provider, up_id = upstream_ref(provider, model)
+            locked = find_row(lock.get("providers", {}).get(up_provider, {}), up_id)
+            row = dict(locked[1]) if locked is not None else {"id": model["id"]}
+            row["id"] = model["id"]
+            rows.append(row)
+        identified = identify_listed_default(rows, provider["default"])
+        declared = defaults.get(provider["id"])
+        if declared != identified:
+            stale.append(
+                f"{provider['id']}: descriptor {declared!r}, list identifies {identified!r}, "
+                f"pin {provider['default']!r}"
+            )
+        elif identified != provider["default"]:
+            promoted.append(f"{provider['id']}: pin {provider['default']!r} -> {identified}")
+    for line in promoted:
+        print(f"promoted  {line}")
+    for line in stale:
+        print(f"STALE     {line}")
+    print(f"{len(spec['providers']) - len(stale)} descriptors match their model list; {len(stale)} stale")
     if stale:
         die(
-            "stale provider defaults:\n  "
+            "provider defaults disagree with their model lists:\n  "
             + "\n  ".join(stale)
-            + "\n  align each default (descriptor + seed) or record a DEFAULT_AUDIT_REASONS reason"
+            + "\n  set each descriptor default_model to the identified id"
         )
 
 
@@ -1335,14 +1284,10 @@ def build_parser() -> argparse.ArgumentParser:
     defaults_sub = defaults.add_subparsers(dest="defaults_cmd", required=True)
     audit = defaults_sub.add_parser(
         "audit",
-        help="Fail when a vendor default trails a newer stable release it should track",
-    )
-    audit.add_argument(
-        "--snapshot",
-        default=None,
-        help="Read catalog JSON from this file instead of the network",
+        help="Fail when a descriptor default disagrees with its provider model list",
     )
     audit.add_argument("--spec", default=str(SEED_SPEC))
+    audit.add_argument("--lock", default=str(SEED_LOCK))
     audit.add_argument("--descriptors", default=str(DESCRIPTORS_ASSET))
     audit.set_defaults(func=cmd_defaults_audit)
     return p

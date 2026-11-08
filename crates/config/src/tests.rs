@@ -5851,7 +5851,11 @@ fn provider_metadata_preserves_alias_and_config_key_semantics() {
 fn provider_metadata_defaults_match_runtime_helpers() {
     for kind in ProviderKind::ALL {
         let provider = kind.provider();
-        assert_eq!(provider.default_model(), default_model_for_provider(kind));
+        assert_eq!(
+            provider.default_model(),
+            default_model_for_provider(kind).as_str(),
+            "{kind:?} descriptor must match the model list's identified default"
+        );
         assert_eq!(
             provider.default_base_url(),
             default_base_url_for_provider(kind)

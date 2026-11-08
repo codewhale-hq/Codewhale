@@ -1190,7 +1190,7 @@ impl ProviderDashboardRow {
 
     fn catalog_label(&self) -> String {
         match self.catalog_status {
-            ProviderCatalogStatus::Bundled => format!("{} bundled", self.available_model_count),
+            ProviderCatalogStatus::Bundled => format!("{} models", self.available_model_count),
             ProviderCatalogStatus::DefaultOnly => "default-only".to_string(),
             ProviderCatalogStatus::Legacy => "legacy".to_string(),
         }
@@ -1792,10 +1792,11 @@ fn model_cost_label(provider: ProviderKind, model: &str) -> String {
 }
 
 /// Slice D two-pane picker: `(model, per-model cost, is_default_route)` rows
-/// for the models pane beside/under the provider strip. The default route's
-/// model sorts first so the eye lands on what Enter would use; the rest are
-/// alphabetical. ChatGPT keeps account ordering and requires an account roster;
-/// other providers can fall back to their default route.
+/// for the models pane beside/under the provider strip. The route default
+/// leads. The rest are the current id of each model line, round-robin by
+/// author, so a gateway catalog cannot fill the pane with one family's
+/// snapshots (`anthropic/claude-opus-4.6` beside `4.7` and `4.8`). ChatGPT
+/// keeps account ordering. Older snapshots stay behind `M`.
 fn provider_pane_models(
     config: &Config,
     row: &ProviderDashboardRow,
@@ -1815,16 +1816,13 @@ fn provider_pane_models(
     }
     let default = row.default_route.logical_model.clone();
     let wire = row.default_route.wire_model.clone();
-    if row.provider != ProviderKind::OpenaiCodex {
-        models.sort_by_key(|model| model.to_ascii_lowercase());
-        models.dedup_by_key(|model| model.to_ascii_lowercase());
-        models.sort_by_key(|model| {
-            (!model.eq_ignore_ascii_case(&default) && !model.eq_ignore_ascii_case(&wire)) as u8
-        });
-    }
-    models
+    let shown = if row.provider == ProviderKind::OpenaiCodex {
+        models.into_iter().take(limit.max(1)).collect()
+    } else {
+        preview_provider_models(&models, &default, &wire, limit)
+    };
+    shown
         .into_iter()
-        .take(limit.max(1))
         .map(|model| {
             let is_default =
                 model.eq_ignore_ascii_case(&default) || model.eq_ignore_ascii_case(&wire);
@@ -1832,6 +1830,60 @@ fn provider_pane_models(
             (model, price, is_default)
         })
         .collect()
+}
+
+fn preview_provider_models(
+    models: &[String],
+    default: &str,
+    wire: &str,
+    limit: usize,
+) -> Vec<String> {
+    let limit = limit.max(1);
+    let current = codewhale_config::catalog::current_listed_models(models);
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for model in current {
+        if model.eq_ignore_ascii_case(default) || model.eq_ignore_ascii_case(wire) {
+            continue;
+        }
+        let namespace = model
+            .split_once('/')
+            .map(|(author, _)| author.to_ascii_lowercase())
+            .unwrap_or_else(|| model.to_ascii_lowercase());
+        groups.entry(namespace).or_default().push(model);
+    }
+    for rows in groups.values_mut() {
+        rows.sort();
+    }
+    let mut ordered = Vec::new();
+    if models
+        .iter()
+        .any(|model| model.eq_ignore_ascii_case(default))
+    {
+        ordered.push(default.to_string());
+    } else if !wire.trim().is_empty() && models.iter().any(|model| model.eq_ignore_ascii_case(wire))
+    {
+        ordered.push(wire.to_string());
+    }
+    let keys: Vec<String> = groups.keys().cloned().collect();
+    let mut turn = 0usize;
+    while ordered.len() < limit && groups.values().any(|rows| !rows.is_empty()) {
+        if keys.is_empty() {
+            break;
+        }
+        let key = &keys[turn % keys.len()];
+        if let Some(rows) = groups.get_mut(key) {
+            if !rows.is_empty() {
+                ordered.push(rows.remove(0));
+            }
+        }
+        turn += 1;
+        if turn > keys.len().saturating_mul(limit).saturating_add(2) {
+            break;
+        }
+    }
+    ordered.truncate(limit);
+    ordered
 }
 
 fn model_cost_label_for_pricing(provider: ProviderKind, pricing: Option<&PricingSku>) -> String {

@@ -3114,7 +3114,6 @@
           "family": "muse",
           "release_date": "2026-08-05",
           "last_updated": "2026-08-05",
-          "default": true,
           "attachment": true,
           "reasoning": true,
           "reasoning_options": [
@@ -3211,6 +3210,7 @@
           "family": "muse",
           "release_date": "2026-09-02",
           "last_updated": "2026-09-02",
+          "default": true,
           "attachment": true,
           "reasoning": true,
           "reasoning_options": [
@@ -5979,6 +5979,7 @@
           "knowledge": "2026-05",
           "release_date": "2026-09-21",
           "last_updated": "2026-09-21",
+          "default": true,
           "attachment": true,
           "reasoning": true,
           "reasoning_options": [
@@ -6041,7 +6042,6 @@
           "knowledge": "2026-02-01",
           "release_date": "2026-08-12",
           "last_updated": "2026-08-12",
-          "default": true,
           "attachment": true,
           "reasoning": true,
           "reasoning_options": [
@@ -10767,7 +10767,10 @@
       },
       {
         "id": "muse-spark-1.3",
-        "aliases": [],
+        "aliases": [
+          "muse-spark",
+          "muse"
+        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "meta"
@@ -10792,10 +10795,7 @@
       },
       {
         "id": "muse-spark-1.2",
-        "aliases": [
-          "muse-spark",
-          "muse"
-        ],
+        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "meta"
@@ -10809,16 +10809,16 @@
       },
       {
         "id": "grok-4.6",
-        "aliases": [
-          "grok"
-        ],
+        "aliases": [],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xai"
       },
       {
         "id": "grok-4.7",
-        "aliases": [],
+        "aliases": [
+          "grok"
+        ],
         "supports_tools": true,
         "supports_reasoning": true,
         "provider": "xai"

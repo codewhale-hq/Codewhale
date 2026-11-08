@@ -897,7 +897,7 @@ base_url = "https://api.deepseek.com/beta"
 # api_key = "YOUR_XAI_API_KEY"
 # auth_mode = "oauth"                      # or "device_code" / "grok_cli"
 # base_url = "https://api.x.ai/v1"
-# model = "grok-4.6"                       # or grok-4.5, grok-4.3, grok-build
+# model = "grok-4.7"                       # or grok-4.6, grok-4.5, grok-4.3, grok-build
 
 # Mistral AI — la Plateforme (https://console.mistral.ai/)
 # OpenAI-compatible Chat Completions route.

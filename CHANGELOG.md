@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Wafer** is a selectable OpenAI-compatible host at `https://pass.wafer.ai/v1`. The public model list is the catalog; the default is `GLM-5.3`. Inference uses `WAFER_API_KEY`.
+- **Provider defaults follow the provider's own model list.** A same-line successor (`grok-4.6` to `grok-4.7`, `muse-spark-1.2` to `muse-spark-1.3`) replaces a stale pin. A different line, such as GPT-6 beside GPT-5.6, does not. The provider pane shows one current model per line and spreads a gateway list across authors, instead of filling the screen with every Claude snapshot.
 - **Turns no longer fail on a cost bookkeeping error.** When Codewhale could not
   settle its own usage record ("previous usage publication has not been
   acknowledged"), the whole turn failed and sub-agents were interrupted, even
