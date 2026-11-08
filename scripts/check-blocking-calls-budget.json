@@ -80,10 +80,6 @@
   "crates/config/src/persistence.rs": {
     "thread_sleep": 1
   },
-  "crates/config/src/private_directory.rs": {
-    "path_canonicalize": 1,
-    "std_fs": 1
-  },
   "crates/config/src/redaction.rs": {
     "path_canonicalize": 2,
     "thread_sleep": 1
@@ -184,7 +180,7 @@
     "thread_sleep": 2
   },
   "crates/engine/src/runtime_threads/manager.rs": {
-    "path_canonicalize": 3
+    "path_canonicalize": 4
   },
   "crates/engine/src/session_export.rs": {
     "path_canonicalize": 1
@@ -252,7 +248,7 @@
   },
   "crates/engine/src/tools/subagent/mod.rs": {
     "path_canonicalize": 4,
-    "std_fs": 4,
+    "std_fs": 3,
     "thread_sleep": 1
   },
   "crates/engine/src/tools/subagent/worktree.rs": {
@@ -382,6 +378,9 @@
     "path_canonicalize": 2,
     "std_fs": 6
   },
+  "crates/runtime/src/native_memory.rs": {
+    "path_canonicalize": 1
+  },
   "crates/runtime/src/oauth.rs": {
     "thread_sleep": 1
   },
@@ -488,14 +487,14 @@
     "std_fs": 5
   },
   "crates/tui/src/lib.rs": {
-    "path_canonicalize": 4,
+    "path_canonicalize": 5,
     "std_fs": 36
   },
   "crates/tui/src/tui/app/init.rs": {
     "std_fs": 1
   },
   "crates/tui/src/tui/file_frecency.rs": {
-    "std_fs": 2
+    "std_fs": 1
   },
   "crates/tui/src/tui/file_mention.rs": {
     "std_fs": 5
