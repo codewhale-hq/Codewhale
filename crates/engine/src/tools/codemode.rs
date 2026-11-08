@@ -958,6 +958,7 @@ impl CodemodeInvoker {
                 &context.disallowed_tools,
                 // Calls a program makes never carry a person's decision.
                 None,
+                context.account_fence.as_deref(),
                 None,
             )
             .await;

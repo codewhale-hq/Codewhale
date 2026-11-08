@@ -1,7 +1,107 @@
-//! Account preferences enter the existing Engine history once per turn.
+//! Account preferences enter the existing Engine history once per turn, and
+//! the account a person's turn was admitted under fences that turn's calls to
+//! the desktop side browser.
+//!
+//! Known limitations of the fence: it compares the local account store only,
+//! so account states the desktop keeps to itself are not seen; it sends the
+//! browser server no caller identity; and it cannot order browser
+//! registrations.
 use anyhow::{Context, Result, ensure};
 use codewhale_config::user_constitution::ProfileConstitutionSnapshot;
-use codewhale_secrets::account::{AccountSessionStore, secure_account_session_secrets};
+use codewhale_secrets::account::{
+    AccountSessionState, AccountSessionStore, secure_account_session_secrets,
+};
+
+const DESKTOP_BROWSER_SERVER: &str = "codewhale-browser";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountEpoch {
+    api_base: String,
+    state: AccountSessionState,
+    account_id: Option<String>,
+    session_id: Option<String>,
+    signed_out_revision: Option<String>,
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn account_epoch(profile: Option<&str>) -> Result<AccountEpoch> {
+    let api_base = runtime_account_api_base();
+    let snapshot = AccountSessionStore::new(secure_account_session_secrets()?, profile, &api_base)
+        .snapshot()?;
+    let info = snapshot.runtime_info_at(chrono::Utc::now())?;
+    let state = match info.state {
+        AccountSessionState::OfflineCached => AccountSessionState::Authenticated,
+        state => state,
+    };
+    let signed_out_revision = (state == AccountSessionState::SignedOut && !snapshot.is_pristine())
+        .then(|| snapshot.fingerprint());
+    Ok(AccountEpoch {
+        api_base: info.api_base,
+        state,
+        account_id: info.account_id,
+        session_id: info.session_id,
+        signed_out_revision,
+    })
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn account_epoch(_profile: Option<&str>) -> Result<AccountEpoch> {
+    Ok(AccountEpoch {
+        api_base: runtime_account_api_base(),
+        state: AccountSessionState::SignedOut,
+        account_id: None,
+        session_id: None,
+        signed_out_revision: None,
+    })
+}
+
+#[derive(Debug)]
+pub struct AccountFence {
+    profile: Option<String>,
+    admitted: Option<AccountEpoch>,
+}
+
+impl AccountFence {
+    pub async fn capture(profile: Option<&str>) -> Self {
+        let profile = profile.map(str::to_owned);
+        let admitted = read_account_epoch(profile.clone()).await;
+        Self { profile, admitted }
+    }
+}
+
+async fn read_account_epoch(profile: Option<String>) -> Option<AccountEpoch> {
+    tokio::task::spawn_blocking(move || account_epoch(profile.as_deref()))
+        .await
+        .ok()?
+        .ok()
+}
+
+pub async fn admit_desktop_browser_call(
+    name: &str,
+    fence: Option<&AccountFence>,
+) -> Result<(), crate::tools::spec::ToolError> {
+    use crate::tools::spec::ToolError;
+    if !name.starts_with(&crate::mcp::McpPool::mcp_model_tool_name(
+        DESKTOP_BROWSER_SERVER,
+        "",
+    )) {
+        return Ok(());
+    }
+    let Some((fence, Some(admitted))) = fence.map(|fence| (fence, fence.admitted.as_ref())) else {
+        return Err(ToolError::permission_denied(
+            "Codewhale could not confirm which account started this turn, so nothing was sent to the side browser.",
+        ));
+    };
+    match read_account_epoch(fence.profile.clone()).await {
+        Some(current) if current == *admitted => Ok(()),
+        Some(_) => Err(ToolError::permission_denied(
+            "The signed-in Codewhale account changed after this turn started, so nothing was sent to the side browser. Ask again in a new turn.",
+        )),
+        None => Err(ToolError::permission_denied(
+            "Codewhale could not confirm the signed-in account, so nothing was sent to the side browser.",
+        )),
+    }
+}
 
 /// No cached cross-account fallback. An unavailable or malformed signed-in
 /// profile is an error here; interactive turn admission (`Engine`) then uses the

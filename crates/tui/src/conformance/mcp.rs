@@ -197,6 +197,7 @@ impl McpDispatchUnderTest for McpPoolDispatch {
                 // Conformance probes cannot supply a person's card decision.
                 None,
                 None,
+                None,
             ) => result,
         }
     }

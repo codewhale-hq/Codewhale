@@ -2157,6 +2157,23 @@ Skill rows on `GET /v1/skills` carry `invocation`, `aliases`, and
 `bundled_tier` alongside the fields they always carried, so a client can build
 a picker, autocomplete, or activation gate without a second request per row.
 
+**Desktop side browser.** A desktop host registers its side-browser MCP server
+with `POST /v1/apps/mcp/desktop-browser` (`{url, bearer, signature}`, signed by
+the host key the Engine was launched with). Agent calls to that server are
+fenced by the Codewhale account that admitted the turn. When a person's turn
+starts, the Engine records who is signed in (the account and its login
+session, or signed out). A later `codewhale-browser` tool call from that turn,
+its sub-agents or its programs is refused with a permission error saying
+nothing was sent once the signed-in account differs: after a sign-out, a
+sign-in, a replaced account or a new login session. A turn whose account could
+not be read is refused the same way; token refresh does not trip the fence.
+Known limits of this interim fence: the Engine sends the browser server no
+caller identity, registrations carry no generation (a delayed older
+registration can still replace a newer one), account states the desktop keeps
+to itself (development sessions, replay, an unreachable account service) are
+not observed, and a Platform-side revocation counts only once a refresh writes
+it to the local account store.
+
 **Usage** (token/cost aggregation across threads)
 - `GET /v1/usage?since=<rfc3339>&until=<rfc3339>&group_by=<day|model|provider|thread>`
 

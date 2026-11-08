@@ -1863,6 +1863,11 @@ impl ToolSpec for McpToolAdapter {
         }
         pool.validate_native_caller(context.plugin_registry.as_deref())
             .map_err(|error| ToolError::not_available(error.to_string()))?;
+        crate::profile_constitution::admit_desktop_browser_call(
+            &self.name,
+            context.account_fence.as_deref(),
+        )
+        .await?;
         let result = pool
             .call_tool_with_disallowed(
                 &self.name,

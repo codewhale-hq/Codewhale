@@ -364,6 +364,7 @@ fn emit_tool_audit_to_path(path: &Path, event: serde_json::Value) {
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_mcp_tool_with_pool(
         pool: Arc<AsyncMutex<McpPool>>,
         tx_event: &mpsc::Sender<Event>,
@@ -371,6 +372,7 @@ impl Engine {
         input: serde_json::Value,
         disallowed_tools: &[String],
         decision: Option<&super::HumanDecision>,
+        account_fence: Option<&crate::profile_constitution::AccountFence>,
         always_binding: Option<u64>,
     ) -> Result<RichToolResult, ToolError> {
         McpPool::authorize_call(disallowed_tools, name, &input)
@@ -434,6 +436,7 @@ impl Engine {
                     ));
                 }
             }
+            crate::profile_constitution::admit_desktop_browser_call(name, account_fence).await?;
             (
                 pool.needs_auth_generation(),
                 pool.call_tool_with_disallowed(name, input, disallowed_tools, decision)
@@ -800,6 +803,10 @@ impl Engine {
                     let decision = context_override
                         .as_ref()
                         .and_then(|context| context.human_decision.as_ref());
+                    let account_fence = context_override
+                        .as_ref()
+                        .or_else(|| registry.map(|registry| registry.context()))
+                        .and_then(|context| context.account_fence.as_deref());
                     Engine::execute_mcp_tool_with_pool(
                         pool,
                         &tx_event,
@@ -807,6 +814,7 @@ impl Engine {
                         tool_input,
                         disallowed_tools,
                         decision,
+                        account_fence,
                         context_override
                             .as_ref()
                             .and_then(|context| context.mcp_always_binding),

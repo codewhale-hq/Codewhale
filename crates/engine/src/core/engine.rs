@@ -1123,6 +1123,7 @@ pub struct Engine {
     /// The local-fallback notice for an unavailable account profile is shown
     /// once per engine; later turns only log it.
     profile_constitution_fallback_noticed: bool,
+    turn_account_fence: Option<Arc<crate::profile_constitution::AccountFence>>,
     /// Model requests in a row that failed with the same upstream HTTP
     /// status on the same model (#6889). Cleared when a request opens its
     /// stream or fails some other way.
@@ -2664,6 +2665,7 @@ impl Engine {
             extension_prompt_block: None,
             constitution_block: None,
             profile_constitution_fallback_noticed: false,
+            turn_account_fence: None,
             repeated_upstream_failure: None,
             api_provider,
             api_provider_identity,
@@ -6927,6 +6929,14 @@ impl Engine {
                 }
             }
         };
+        if provenance.can_authorize_work() {
+            self.turn_account_fence = Some(Arc::new(
+                crate::profile_constitution::AccountFence::capture(
+                    self.api_config.account_profile.as_deref(),
+                )
+                .await,
+            ));
+        }
         let whale_soul = if local_whale_turn {
             self.capture_local_whale_voice().await
         } else if is_review || !provenance.can_authorize_work() {
@@ -8562,6 +8572,7 @@ impl Engine {
             network_access,
         );
         let mut ctx = ctx.with_elevated_sandbox_policy(policy);
+        ctx.account_fence = self.turn_account_fence.clone();
         ctx.live_posture = self
             .child_host
             .as_ref()
