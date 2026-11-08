@@ -1872,10 +1872,10 @@ fn preview_provider_models(
             break;
         }
         let key = &keys[turn % keys.len()];
-        if let Some(rows) = groups.get_mut(key) {
-            if !rows.is_empty() {
-                ordered.push(rows.remove(0));
-            }
+        if let Some(rows) = groups.get_mut(key)
+            && !rows.is_empty()
+        {
+            ordered.push(rows.remove(0));
         }
         turn += 1;
         if turn > keys.len().saturating_mul(limit).saturating_add(2) {

@@ -622,10 +622,9 @@ pub fn identify_listed_default(provider: &str, pinned: &str, listed: &[&str]) ->
         }
         if let (Some(pin_row), Some(next)) =
             (pin_row, facts.iter().find(|row| row.wire_model_id == *id))
+            && offering_regresses(pin_row, next)
         {
-            if offering_regresses(pin_row, next) {
-                continue;
-            }
+            continue;
         }
         if best.as_ref().is_none_or(|(_, best_rest)| rest > *best_rest) {
             best = Some((id, rest));
