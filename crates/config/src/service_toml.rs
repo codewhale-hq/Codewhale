@@ -25,7 +25,7 @@ pub struct WorkflowConfigToml {
     /// Operator-selected total child limit. Zero leaves total work uncapped.
     #[serde(default = "default_workflow_max_children")]
     pub max_children: u32,
-    /// Maximum concurrently live agents inside one Workflow run (product: 16).
+    /// Maximum concurrently live agents inside one Workflow run (product: 64).
     #[serde(default = "default_workflow_max_concurrent")]
     pub max_concurrent: u32,
     /// Maximum structural nesting depth accepted for Workflow IR.
@@ -56,7 +56,7 @@ pub(crate) fn default_workflow_max_children() -> u32 {
 }
 
 pub(crate) fn default_workflow_max_concurrent() -> u32 {
-    16
+    64
 }
 
 pub(crate) fn default_workflow_max_depth() -> u32 {

@@ -348,7 +348,7 @@ async fn operate_never_promotes_wording_to_a_goal() {
         "the host must not infer a goal from wording"
     );
     assert!(!active);
-    assert_eq!(contracts, 1, "Operate appends its contract exactly once");
+    assert_eq!(contracts, 0, "Operate appends no contract");
 
     let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, prompt).await;
     assert_eq!(objective, None, "Work must not promote a prompt to a goal");
@@ -365,7 +365,7 @@ async fn operate_never_promotes_wording_to_a_goal() {
         "prose asking for a goal must not create one host-side"
     );
     assert!(!active);
-    assert_eq!(contracts, 1);
+    assert_eq!(contracts, 0);
 }
 
 #[tokio::test]
@@ -377,7 +377,7 @@ async fn operate_leaves_followup_and_long_questions_as_ordinary_turns() {
         "conversational followup must remain ordinary turn in Operate"
     );
     assert!(!active);
-    assert_eq!(contracts, 1);
+    assert_eq!(contracts, 0);
 
     let long_q =
         "why did the build fail on the last step when running under docker on macos with rust 1.80";
@@ -387,7 +387,7 @@ async fn operate_leaves_followup_and_long_questions_as_ordinary_turns() {
         "long question without punctuation must remain ordinary turn"
     );
     assert!(!active);
-    assert_eq!(contracts, 1);
+    assert_eq!(contracts, 0);
 
     let zh_followup = "那 rust 或者 docker 构建呢";
     let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, zh_followup).await;
@@ -396,7 +396,7 @@ async fn operate_leaves_followup_and_long_questions_as_ordinary_turns() {
         "Chinese followup must remain ordinary turn in Operate"
     );
     assert!(!active);
-    assert_eq!(contracts, 1);
+    assert_eq!(contracts, 0);
 }
 
 #[tokio::test]
@@ -405,14 +405,11 @@ async fn operate_does_not_create_a_goal_when_the_work_request_declines_one() {
     let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, prompt).await;
     assert_eq!(objective, None);
     assert!(!active);
-    assert_eq!(
-        contracts, 1,
-        "the ordinary Operate turn still reaches the model"
-    );
+    assert_eq!(contracts, 0, "Operate appends no contract");
 }
 
 #[tokio::test]
-async fn operate_contract_is_appended_once_and_an_existing_goal_is_never_replaced() {
+async fn operate_turns_append_no_contract_and_never_replace_an_existing_goal() {
     let first_entered = std::sync::Arc::new(tokio::sync::Notify::new());
     let release_first = std::sync::Arc::new(tokio::sync::Notify::new());
     let model = std::sync::Arc::new(IndexedGatedGoalModelClient {
@@ -531,10 +528,7 @@ async fn operate_contract_is_appended_once_and_an_existing_goal_is_never_replace
         .iter()
         .filter(|message| crate::runtime_handoff::is_operate_contract_message(message))
         .count();
-    assert_eq!(
-        contracts, 1,
-        "the contract must not repeat on later Operate turns"
-    );
+    assert_eq!(contracts, 0, "Operate turns append no contract");
     let goal = goal_state.lock().expect("goal lock").snapshot();
     assert_eq!(goal.objective.as_deref(), Some(first_objective));
     assert_eq!(goal.status, "paused");

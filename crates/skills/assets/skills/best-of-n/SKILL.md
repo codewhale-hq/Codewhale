@@ -9,8 +9,8 @@ metadata:
 
 Use this skill when a consequential design, implementation, explanation, or
 debugging task has several plausible solutions and comparison is worth the
-extra model work. In Operate mode this is the preferred ensemble pattern for
-high-stakes or ambiguous approaches. Do not use it for a tiny change or when
+extra model work. It is the preferred ensemble pattern for high-stakes or
+ambiguous approaches. Do not use it for a tiny change or when
 the user has already chosen the approach.
 
 ## Set The Tournament
@@ -20,7 +20,7 @@ the user has already chosen the approach.
    risk, and verification.
 2. Choose `N` from 2 to 4 for a quick comparison (default 3). For an explicit
    experimental search, use the Workflow search option: 2–16 live candidates,
-   with larger validated populations queued at the Workflow host's 16-worker
+   with larger validated populations queued at the Workflow host's
    concurrency gate rather than launched at once.
 3. Give every candidate the same task and rubric. Add only a candidate number;
    do not steer candidates toward different conclusions unless diversity is an
@@ -39,7 +39,7 @@ them read-only:
   "action": "start",
   "name": "candidate_1",
   "prompt": "Produce candidate 1 for the task below. Return the proposal, evidence, risks, and rubric self-score. Do not edit files.\n\n<TASK AND RUBRIC>",
-  "type": "worker",
+  "type": "general",
   "model_strength": "same",
   "write_authority": "read_only"
 }
@@ -51,12 +51,12 @@ candidate's answer before generation finishes.
 
 When candidates must implement code, give each one:
 
-- `type: "builder"`
+- `type: "implement"`
 - `worktree: true`
 - `write_authority: "worktree_write"`
 - the same bounded `write_roots` or `exact_files`
 
-Never run parallel writers in the parent checkout. Each builder must return
+Never run parallel writers in the parent checkout. Each candidate must return
 the structured candidate contract (candidate id, hypothesis, paths, commands,
 self-verdict, risks, and artifact references). A self-verdict is evidence to
 inspect, not a hard-gate result.

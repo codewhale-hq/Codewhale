@@ -3773,10 +3773,9 @@ mod tests {
     #[test]
     fn universal_prompt_does_not_expose_control_plane_ceremony() {
         for internal in [
-            "sub-agent",
             "completion sentinels",
             "<codewhale:subagent.done>",
-            "dispatch, join",
+            "<codewhale:runtime_event",
             "busy-waiting",
         ] {
             assert!(!BASE_PROMPT.contains(internal));

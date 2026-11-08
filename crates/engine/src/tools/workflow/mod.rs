@@ -4005,7 +4005,7 @@ struct SubAgentWorkflowDriver {
     gate_specs: Arc<Vec<GateSpec>>,
     /// Lane-scoped gate and handoff state keyed by run id.
     gate_board: Arc<Mutex<LaneGateBoard>>,
-    /// Caps concurrently live `task()` children for this run (product: 16).
+    /// Caps concurrently live `task()` children for this run (product: 64).
     concurrent_gate: Arc<Semaphore>,
     /// Held permits for in-flight children; released on completion/cancel.
     spawn_permits: Mutex<HashMap<String, OwnedSemaphorePermit>>,
@@ -4825,7 +4825,7 @@ impl SubAgentWorkflowDriver {
             )?;
             None
         };
-        // Take a concurrent slot (max 16 live children per run). A task that
+        // Take a concurrent slot (`max_concurrent` live children per run). A task that
         // has to wait is announced first, so a surface can show it queued
         // instead of leaving it invisible until a slot frees.
         let permit = match self.concurrent_gate.clone().try_acquire_owned() {

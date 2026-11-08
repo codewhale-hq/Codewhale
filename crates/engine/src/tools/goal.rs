@@ -1035,7 +1035,7 @@ impl ToolSpec for CreateGoalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Create the session's one persistent goal: a completion objective Codewhale keeps working toward across turns until it is verified complete, blocked, or the user stops it. A goal is for a durable objective that outlasts one turn: a multi-step outcome the user wants continued and verified. A question, a greeting, or a one-shot edit completes as an ordinary turn. When the user explicitly asks to use `/goal` or to make something the goal, `create_goal` is what records it; acknowledging it in prose records nothing. The objective is the user's full objective, not a shortened one-turn version. token_budget carries a budget the user stated; with none stated it stays unset. Creating a goal shows the user a one-line receipt (they can /goal pause or /goal clear), so it needs no separate confirmation. Only one unfinished goal exists at a time: an existing one is completed or cleared before another is created."
+        "Start the session's persistent goal when a request is an objective that needs more than one turn or verified completion, even if the user did not say \"goal\". Not for questions, greetings, or one-shot edits. Codewhale keeps working toward it across turns until it is verified complete, blocked, or the user stops it. When the user asks for `/goal` or to make something the goal, this call records it; prose records nothing. Keep the user's full objective, not a one-turn version. The user sees a one-line receipt (they can /goal pause or /goal clear), so no confirmation is needed. Only one unfinished goal exists at a time: complete or clear it before creating another."
     }
 
     fn input_schema(&self) -> Value {
@@ -1049,7 +1049,7 @@ impl ToolSpec for CreateGoalTool {
                 "token_budget": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Optional soft token budget for the goal."
+                    "description": "Only set if the user gave a budget."
                 }
             },
             "required": ["objective"],
@@ -1296,11 +1296,11 @@ impl ToolSpec for UpdateGoalTool {
             .is_some_and(|gate| gate.complete || gate.blocked)
         {
             return concat!(
-                "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress cannot continue at all; needing the user's answer is a yield, not a block. Mark yield when you finished a stage and the next step needs the user's decision, or when you need the user's answer before the next pass can do anything useful: the goal stays unfinished, the turn ends, and their next message resumes it.",
+                "Report goal status by calling this tool; a prose status in your answer changes nothing. Mark complete only after checking the real result, with evidence. Mark blocked only when the same concrete obstacle keeps preventing progress; difficulty is not blocked, and needing the user's answer is a yield, not a block. Mark yield when a stage is finished and the next step is the user's decision, or when the next pass needs the user's answer: the goal stays unfinished, the turn ends, and their next message resumes it.",
                 " An independent judge reviews complete and blocked claims; it may decline them and return the gaps, and the goal then stays active."
             );
         }
-        "Update the runtime goal completion gate by calling this tool; a prose status in your answer does not change the goal or stop continuation. Critical verification may seal one immutable completion contract. Advisory review is append-only context and never completes, blocks, or pauses the goal. Mark blocked when progress cannot continue at all; needing the user's answer is a yield, not a block. Mark yield when you finished a stage and the next step needs the user's decision, or when you need the user's answer before the next pass can do anything useful: the goal stays unfinished, the turn ends, and their next message resumes it."
+        "Report goal status by calling this tool; a prose status in your answer changes nothing. Mark complete only after checking the real result, with evidence. Mark blocked only when the same concrete obstacle keeps preventing progress; difficulty is not blocked, and needing the user's answer is a yield, not a block. Mark yield when a stage is finished and the next step is the user's decision, or when the next pass needs the user's answer: the goal stays unfinished, the turn ends, and their next message resumes it."
     }
 
     fn input_schema(&self) -> Value {
@@ -1310,7 +1310,7 @@ impl ToolSpec for UpdateGoalTool {
                 "status": {
                     "type": "string",
                     "enum": ["complete", "blocked", "not_achieved", "advisory", "yield"],
-                    "description": "Use complete only when a critical verifier proves the goal; not_achieved to record verifier gaps; blocked when progress cannot continue at all; a needed user answer is a yield, not a block; yield when a stage is finished and the next step is the user's call, or when you need the user's answer before the next pass can do anything useful; advisory to append best-effort context without changing lifecycle state."
+                    "description": "complete only after checking the real result, with evidence; not_achieved to record verifier gaps; blocked only when the same concrete obstacle keeps preventing progress (difficulty is not blocked; a needed user answer is a yield); yield when a stage is finished and the next step is the user's call, or the next pass needs the user's answer; advisory to add context without changing the goal's state."
                 },
                 "evidence": {
                     "type": "string",

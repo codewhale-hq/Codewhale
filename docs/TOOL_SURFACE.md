@@ -66,10 +66,10 @@ The direct schemas deliberately stay small:
 | `load_skill` | optional `name`, `query` | Load a named skill's `SKILL.md` body and companion-file list; omit `name` or use `name="list"` to list eligible skills, or use `query` to search names and descriptions. |
 | `tool_search` | `query`, optional matching controls | Discover policy-allowed deferred tools and add selected schemas to this conversation's toolbox. |
 
-Mode is an authority decision, not a synonym system. Plan, Work, and Operate
-use the same primitive identities. Plan centrally refuses `write`, `edit`, and
-`bash`; Work and Operate still pass those calls through approval, sandbox,
-trusted-path, repository-law, and managed-policy gates. Full Access changes
+Mode is an authority decision, not a synonym system. Plan and Work use the
+same primitive identities. Plan centrally refuses `write`, `edit`, and `bash`;
+Work still passes those calls through approval, sandbox, trusted-path,
+repository-law, and managed-policy gates. Full Access changes
 ordinary approval behavior but does not bypass hard safety or repository law.
 
 `update_plan` remains registered only for saved-artifact compatibility and is
@@ -266,11 +266,6 @@ Modes and permission postures are separate controls:
 - **Plan** keeps the stable primitive vocabulary but centrally refuses shell
   execution and file mutation.
 - **Work** is ordinary interactive execution.
-- **Operate** uses the same direct-tool authority as Work. Small work stays
-  direct; multi-step delegation uses a compact Workflow plan with dependencies,
-  bounded scopes, and completion evidence. Fleet manages the same sub-agents
-  and roles. One bounded, independent task can use a direct agent; `followup`
-  reuses that agent for continued work.
 - **Ask**, **Auto-Review**, and **Full Access** control approval behavior within
   an action-capable mode. They never widen Plan into write or shell access.
 

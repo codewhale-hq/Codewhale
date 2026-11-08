@@ -1,10 +1,11 @@
 ---
-name: goals
-description: Set, review, and update the user's goals. Use when: goals, resolutions, track progress, what am I working toward, or holding me accountable.
+name: personal-goals
+description: The user's personal goals and resolutions in goals.md: set, review, track progress. Not the session goal (create_goal).
 invocation: model+user
+aliases-for: goals
 ---
 
-# Goals
+# Personal goals
 
 ## When to use
 Recording what the user is working toward, reviewing progress, and updating

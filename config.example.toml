@@ -1758,7 +1758,7 @@ base_url = "https://integrate.api.nvidia.com/v1"
 # # Optional owner-selected total child limit. Zero leaves work uncapped.
 # max_children = 0
 # # Maximum concurrently live agents inside one run (others wait for a slot).
-# max_concurrent = 16
+# max_concurrent = 64
 # # Optional structural Workflow depth limit; zero leaves it uncapped.
 # # This is separate from Runtime child delegation below.
 # max_depth = 0

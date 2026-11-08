@@ -1676,6 +1676,14 @@ pub(super) async fn run_child_agent(
                 .clone()
                 .unwrap_or_else(|| agent_type.as_str().to_owned())
         });
+    let identity = format!(
+        "You are {owner_agent_name}. Scope: {}. Your final answer is delivered to the parent automatically; include the result and its evidence.",
+        if runtime.worker_profile.permissions.write {
+            "you may edit files; keep to what this task assigns"
+        } else {
+            "read-only"
+        }
+    );
     let authority = ChildAuthority::capture(
         runtime.clone(),
         agent_type.clone(),
@@ -1706,7 +1714,7 @@ pub(super) async fn run_child_agent(
         ));
     }
     let prompt = format!(
-        "{prompt}\n\n{}",
+        "{prompt}\n\n{}\n\n{identity}",
         child_runtime_budget_context(&runtime, max_steps)
     );
     let fork = if fork_context {

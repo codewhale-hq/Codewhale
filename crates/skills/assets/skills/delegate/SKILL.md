@@ -7,7 +7,7 @@ metadata:
 
 # Delegate
 
-Use sub-agents when they can do focused work in parallel while the parent keeps architectural judgment, integration, and final verification.
+Use sub-agents when they can do focused work in parallel while the parent keeps architectural judgment, integration, and the final review.
 
 ## Keep vs Delegate
 
@@ -26,7 +26,7 @@ Delegate to sub-agents:
 - Boilerplate generation from an explicit spec
 - Independent checks that can run while parent work continues
 
-Do not delegate tiny one-step tasks, ambiguous product decisions, destructive operations without a clear acceptance criterion, or final verification.
+Do not delegate tiny one-step tasks, ambiguous product decisions, or destructive operations without a clear acceptance criterion.
 
 ## Launch Focused Work
 
@@ -62,7 +62,7 @@ Use `fork_context: true` only when the child genuinely needs the current convers
 
 ## Route the Work
 
-Choose the route per child from `agent(action:"roster")` (no provider request), not from memory. It lists each role's resolved route and the models you may pick.
+Routes are optional: a child inherits a working route by default. To choose one, `agent(action:"roster")` (no provider request) lists each role's resolved route and the models you may pick.
 
 - `thinking` overrides a saved tier on any role. Dial: `off low medium high xhigh max ultra`, plus `inherit` (role default, then session effort) and `auto`.
 - `model` and `model_strength` apply to unpinned routes only. A pinned profile refuses a conflicting model; to choose a model, start an unpinned role such as `general`. `model_strength: "faster"` is the same-family faster sibling, `"same"` the session model.

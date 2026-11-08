@@ -8490,7 +8490,7 @@ fn workflow_config_defaults_match_product_surface() {
     assert!(defaults.auto_start_read_only);
     assert!(defaults.require_approval_for_writes);
     assert_eq!(defaults.max_children, 0);
-    assert_eq!(defaults.max_concurrent, 16);
+    assert_eq!(defaults.max_concurrent, 64);
     assert_eq!(defaults.max_depth, 0);
     // 0 = no shared cap; budgets are opt-in, matching the parent turn loop's
     // advisory policy (#6189).
@@ -8533,7 +8533,7 @@ default_token_budget = 50000
     // Unset keys keep product defaults.
     assert!(workflow.auto_start_read_only);
     assert!(workflow.require_approval_for_writes);
-    assert_eq!(workflow.max_concurrent, 16);
+    assert_eq!(workflow.max_concurrent, 64);
     assert_eq!(workflow.max_depth, 0);
 
     let serialized = toml::to_string_pretty(&workflow).expect("workflow serializes");

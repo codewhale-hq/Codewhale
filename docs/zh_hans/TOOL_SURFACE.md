@@ -65,8 +65,8 @@ Plan 只注册前台 shell 表面（因此没有 `task_shell_wait`），但仅�
 | `load_skill` | 可选的 `name`、`query` | 加载命名技能的 `SKILL.md` 正文及配套文件列表；省略 `name` 或使用 `name="list"` 列出可调用技能，也可用 `query` 搜索名称与描述。 |
 | `tool_search` | `query`、可选的匹配控制项 | 发现策略允许的延迟工具，并把选中的 schema 加入本次对话的工具箱。 |
 
-模式是一项权威决定，而不是同义词体系。Plan、Work 和 Operate 使用同一套原语身份。
-Plan 在中心位置拒绝 `write`、`edit` 和 `bash`；Work 与 Operate 仍会让这些调用通过
+模式是一项权威决定，而不是同义词体系。Plan 和 Work 使用同一套原语身份。
+Plan 在中心位置拒绝 `write`、`edit` 和 `bash`；Work 仍会让这些调用通过
 审批（approval）、沙箱（sandbox）、受信任路径、仓库规则（repository law）和托管策略等闸门。
 Full Access（完全访问）会改变常规审批行为，但不会绕过硬性安全限制或仓库规则。
 
@@ -210,10 +210,6 @@ SHA-256 摘要；更大的载荷保持不可用。提供商（provider）适配�
 
 - **Plan** 保持稳定的原语词汇，但在中心位置拒绝 shell 执行和文件改动。
 - **Work** 是常规的交互式执行。
-- **Operate** 使用与 Work 相同的直接工具权威。小规模工作保持直接进行；
-  多步委派使用一个紧凑的 Workflow 计划，带依赖关系、有界范围和完成证据。
-  Fleet（智能体团队）管理同一批智能体和角色。一个独立的有界任务可以直接使用 `agent`；
-  `followup` 会复用该智能体继续工作。
 - **Ask**、**Auto-Review** 和 **Full Access** 控制在具备行动能力的模式内的审批行为。
   它们绝不会把 Plan 放宽为写入或 shell 访问。
 

@@ -469,7 +469,7 @@ Runtime policy.
 Default Workflow-to-fleet validation is intentionally bounded:
 
 - 1,000 total worker agents per Workflow run;
-- 16 live worker agents at once; larger populations queue (block) on the host's
+- 64 live worker agents at once by default (`[workflow] max_concurrent`, at most 128); larger populations queue (block) on the host's
   per-run concurrency gate until a live slot frees, then route through fleet;
 - Workflow IR structural nesting no deeper than 5;
 - Runtime child delegation defaults to 3 levels and has an opt-in hard ceiling

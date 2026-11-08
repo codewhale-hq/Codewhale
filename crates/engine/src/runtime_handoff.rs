@@ -102,24 +102,15 @@ const AGENT_TOPOLOGY_TURN_META: &str = concat!(
 );
 const MAX_AGENT_TOPOLOGY_ROWS: usize = 24;
 
-/// The Operate contract (docs/MODES.md, "Operate" and "Operate loop"), stated
-/// once to the model when a session first works in Operate.
+/// The last Operate contract wording, which earlier builds appended once to an
+/// Operate session as a user-role runtime message. The engine no longer appends
+/// any wording: its delegation, review and stopping lines live in `BASE_PROMPT`.
 ///
-/// KV-cache effect: append-only history. This is a user-role runtime message,
-/// never part of the pinned system prompt or tool catalog, so Plan, Work, and
-/// Operate keep one shared prefix (`every_mode_shares_one_prompt_per_host`).
-/// The engine appends it only when the session log does not already hold one.
-///
-/// The host does not create the goal, and Operate is not a quieter Work.
-/// Same tools, same authority. The difference is that a durable request is
-/// worked until verified: `create_goal` when it will outlast this turn,
-/// parallel children for separable work, evidence before a claim of done.
-/// A session that already holds an older wording gets this text once. Every
-/// wording that reached a saved session stays recognizable: the pre-0.10.0
-/// one ([`LEGACY_OPERATE_CONTRACT_EVENT`]) and the one v0.10.0 shipped
-/// ([`LEGACY_V0_10_0_OPERATE_CONTRACT_EVENT`]). Rewording this constant means
-/// moving the outgoing text into a new legacy constant in the same change, or
-/// a resumed session keeps the old contract as if the user had typed it.
+/// Every wording that reached a saved session stays recognizable, so a
+/// restored session replays it as internal runtime state rather than as text
+/// the user typed: this one, the pre-0.10.0 one
+/// ([`LEGACY_OPERATE_CONTRACT_EVENT`]) and the one v0.10.0 shipped
+/// ([`LEGACY_V0_10_0_OPERATE_CONTRACT_EVENT`]).
 const OPERATE_CONTRACT_EVENT: &str = concat!(
     "<codewhale:runtime_event kind=\"operate_contract\" visibility=\"internal\">\n",
     "This is an internal runtime event, not user input. This session is in Operate: ",
@@ -138,8 +129,7 @@ const OPERATE_CONTRACT_EVENT: &str = concat!(
     "you trust it. Report what is done, what is blocked, and what is next.\n",
     "</codewhale:runtime_event>",
 );
-// Keep old persisted runtime messages recognizable for restore/display while
-// allowing the Engine to append the current scheduling contract once. This is
+// Keep old persisted runtime messages recognizable for restore/display. This is
 // the pre-0.10.0 wording.
 const LEGACY_OPERATE_CONTRACT_EVENT: &str = concat!(
     "<codewhale:runtime_event kind=\"operate_contract\" visibility=\"internal\">\n",
@@ -154,9 +144,8 @@ const LEGACY_OPERATE_CONTRACT_EVENT: &str = concat!(
     "and stay free for the next ask.\n",
     "</codewhale:runtime_event>",
 );
-// The wording v0.10.0 shipped, byte for byte. It tells the model the host
-// creates the goal, the opposite of the current contract, so a v0.10.0 Operate
-// session resumed on a later build must have it recognized and replaced.
+// The wording v0.10.0 shipped, byte for byte, recognized so a v0.10.0 session
+// resumed on a later build replays it as internal runtime state.
 const LEGACY_V0_10_0_OPERATE_CONTRACT_EVENT: &str = concat!(
     "<codewhale:runtime_event kind=\"operate_contract\" visibility=\"internal\">\n",
     "This is an internal runtime event, not user input. This session is in Operate and you ",
@@ -183,7 +172,7 @@ const RUNTIME_TURN_META: &str = concat!(
     "</turn_meta>",
 );
 
-/// Build the one Operate contract message the engine appends to history.
+/// Build the last Operate contract message an earlier build saved to history.
 pub fn operate_contract_runtime_message() -> Message {
     runtime_handoff_message_with_meta(OPERATE_CONTRACT_EVENT.to_string(), RUNTIME_TURN_META)
 }

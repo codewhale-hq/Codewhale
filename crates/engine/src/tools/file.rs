@@ -3370,7 +3370,7 @@ impl ToolSpec for ListDirTool {
     }
 
     fn description(&self) -> &'static str {
-        "List entries in a workspace directory. This bounded, sandbox-aware tool is searchable when the core read/write/edit/bash toolbox is not enough."
+        "List entries in a workspace directory, bounded and sandbox-aware."
     }
 
     fn input_schema(&self) -> Value {

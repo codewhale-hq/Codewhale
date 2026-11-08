@@ -14744,17 +14744,15 @@ fn start_requests_read_only_role(input: &Value) -> bool {
 /// repeat them here on every request.
 static AGENT_TOOL_DESCRIPTION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let description = concat!(
-        "Start with action=start and prompt; returns an agent_id immediately. Read-only roles need no extra fields. Healthy children continue after an ordinary parent response; detached=true also opts out of parent-turn cancellation. ",
-        "Use Workflow for dependencies; use multiple starts for independent tasks. ",
-        "type selects the Fleet role: general (full tool access for multi-step tasks), explore (fast read-only exploration), planner (grounded strategy, read-only probes), reviewer (reads and grades code), implement (lands focused code changes), test (runs tests and reports evidence), advisor (read-only design counsel), or custom (allowed_tools on the parent's posture). ",
-        "profile selects a saved member or built-in role. Saved profile and manual role pins are exact; model/strength choose unpinned routes; thinking overrides the tier. ",
-        "Use action=roster for resolved roles, models, reasoning, context and cost evidence; it makes no provider request. ",
+        "Delegate focused work and keep working. Start early; one agent per independent part, same message. ",
+        "Start with action=start and prompt; it returns an agent_id immediately and results arrive automatically, so continue other work or end your turn instead of polling. Read-only roles need no extra fields. ",
+        "Use multiple starts for independent tasks and `workflow` when steps need order or gates. ",
+        "type selects the Fleet role: general (multi-step work with full tools), explore (find and read code, read-only), planner (plan a change with read-only probes), reviewer (grade a diff or design), implement (make a scoped code change), test (run checks and report evidence), advisor (read-only design counsel), or custom (allowed_tools on the parent's posture). ",
+        "Roster, profile, model and thinking are optional. ",
         "Workers have no default turn or wall-clock budget. Only configured operator, role and inherited limits apply; legacy per-call max_steps, wall_time_secs and max_output_tokens are ignored. There is no token budget. ",
-        "Prefer type=implement for write work and type=test (or the Run tool with action=\"verifiers\") after writes settle — dispatch is not completion. ",
-        "action=claim widens your own enforced write scope: pass write_roots (and optionally exact_files, coordination_contracts) before mutating anything a fail-closed write refusal named. It records a durable claim receipt and fails on contention with a peer claim; it never touches another agent's scope. ",
-        "Action contract: start requires prompt; message/followup require targets and a message; followup accepts one id, agent_ids or all_parked=true and returns continuation mappings. peek/interrupt/cancel require a target; claim requires scope entries; status is compact and paginated unless an addressed detail is requested. ",
-        "In Operate, a child the main session starts edits files and runs the Run tool's built-in checks without a second approval; any other shell command follows the session's approval settings. ",
-        "Legacy action=status|peek|cancel remain for compatibility."
+        "Give write work to type=implement and verify it with type=test or `Run` action=\"verifiers\" after writes settle. action=claim widens your own enforced write scope when a write refusal names a path. ",
+        "Write each prompt as a complete brief: the goal, the files the child owns and must not touch, how to verify, and what to return. ",
+        "Example: \"Own only src/config/loader.rs and its tests. Make missing keys fall back to defaults; do not edit other files. Run the loader tests and return the changed paths and test output.\""
     );
     format!("{description} {}", subagent_followup_recovery("<agent_id>"))
 });
@@ -15262,6 +15260,8 @@ impl ToolSpec for AgentTool {
                 .await;
         let mut value = serde_json::to_value(&projection)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        value["next"] =
+            json!("Results arrive automatically; continue other work or end your turn.");
         compact_spawn_receipt(&mut value, verbose);
         if !ignored_limits.is_empty() {
             value["ignored_limit_fields"] = json!(ignored_limits);

@@ -48,7 +48,7 @@ its own. Real work happens in sub-agents the script launches.
 
 ### Scale
 
-- Up to **16 concurrent** live agents in one run (additional spawns wait for a slot).
+- Up to **64 concurrent** live agents in one run by default (`[workflow] max_concurrent`, at most 128); additional spawns wait for a slot.
 - No default cumulative child limit; `[workflow] max_children = 0` leaves total work uncapped.
 - Owners can set a positive `max_children` limit and configure `max_concurrent`.
 - Automatic launch is model-judged on scope; the host enforces configured owner limits and plan validation.
@@ -182,7 +182,7 @@ Workflow-to-Runtime launch validation applies a conservative default shape
 before any Workflow IR is lowered to selected workers:
 
 - no default total worker limit; a positive owner-configured `max_children` still applies;
-- up to 16 live worker agents at once; larger populations queue (block) on the
+- up to 64 live worker agents at once by default (at most 128); larger populations queue (block) on the
   host's per-run concurrency gate until a live slot frees, then select through
   fleet and execute through Runtime;
 - no default structural nesting cap; positive owner `workflow.max_depth` values apply;

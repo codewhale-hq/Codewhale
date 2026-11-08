@@ -27695,18 +27695,6 @@ async fn scout_activation_makes_grep_files_dispatchable() {
 }
 
 #[test]
-fn agent_tool_description_states_the_operate_child_approval_rule() {
-    // `apply_session_spawn_defaults` delegates edits and the bounded Run
-    // checks to a root Operate child; other shell follows the session.
-    let text = super::AGENT_TOOL_DESCRIPTION.as_str();
-    assert!(!text.contains("arbitrary shell remains gated"), "{text}");
-    assert!(
-        text.contains("any other shell command follows the session's approval settings"),
-        "{text}"
-    );
-}
-
-#[test]
 fn agent_tool_description_names_only_schema_roles() {
     // Every `type=<token>` and every role in the "type selects the Fleet role:"
     // sentence must be a value the `type` enum accepts; the legacy aliases

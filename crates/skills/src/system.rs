@@ -42,7 +42,7 @@ use sha2::{Digest, Sha256};
 /// person; the exact generation-16 body allows a safe upgrade.
 /// Generation 18 recognizes previously shipped bodies by SHA-256 as well as by
 /// retained bytes, so an untouched copy from any earlier generation upgrades.
-const BUNDLED_SKILL_VERSION: &str = "19";
+const BUNDLED_SKILL_VERSION: &str = "20";
 
 // ── system & extension (meta) ───────────────────────────────────────────────
 const SKILL_CREATOR_BODY: &str = include_str!("../assets/skills/skill-creator/SKILL.md");
@@ -90,7 +90,7 @@ const SHOPPING_BODY: &str = include_str!("../assets/skills/shopping/SKILL.md");
 const FLIGHTS_BODY: &str = include_str!("../assets/skills/flights/SKILL.md");
 const PHOTOS_BODY: &str = include_str!("../assets/skills/photos/SKILL.md");
 const IMAGE_SEARCH_BODY: &str = include_str!("../assets/skills/image-search/SKILL.md");
-const GOALS_BODY: &str = include_str!("../assets/skills/goals/SKILL.md");
+const PERSONAL_GOALS_BODY: &str = include_str!("../assets/skills/personal-goals/SKILL.md");
 const FORGET_BODY: &str = include_str!("../assets/skills/forget/SKILL.md");
 const FEEDBACK_BODY: &str = include_str!("../assets/skills/feedback/SKILL.md");
 
@@ -461,8 +461,8 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         introduced_in: 12,
     },
     BundledSkill {
-        name: "goals",
-        body: GOALS_BODY,
+        name: "personal-goals",
+        body: PERSONAL_GOALS_BODY,
         introduced_in: 12,
     },
     BundledSkill {
@@ -664,6 +664,18 @@ pub fn install_system_skills(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, false),
             Err(error) => return Err(error),
         };
+
+    let renamed = skills_dir.join("goals");
+    let renamed_file = renamed.join("SKILL.md");
+    if fs::symlink_metadata(&renamed).is_ok_and(|meta| meta.is_dir())
+        && fs::symlink_metadata(skills_dir.join("personal-goals")).is_err()
+        && fs::symlink_metadata(&renamed_file).is_ok_and(|meta| meta.is_file())
+        && fs::read_dir(&renamed).is_ok_and(|entries| entries.count() == 1)
+        && codewhale_util::fs_confined::read_to_string(skills_dir, &renamed_file)
+            .is_ok_and(|body| hash_is_listed(SHIPPED_BODY_HASHES, "personal-goals", &body))
+    {
+        fs::rename(&renamed, skills_dir.join("personal-goals"))?;
+    }
 
     let mut changed = false;
     for skill in BUNDLED_SKILLS {
