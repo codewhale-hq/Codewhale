@@ -13276,6 +13276,8 @@ struct GuiConfigResponse {
     mcp_config_path: String,
     subagents_enabled: bool,
     subagents_max_depth: u32,
+    subagents_max_concurrent: usize,
+    verbosity: String,
     show_thinking: bool,
     thinking_default_expanded: bool,
     thinking_highlight: bool,
@@ -13394,6 +13396,18 @@ async fn get_config(
         mcp_config_path,
         subagents_enabled: config.subagents_enabled(),
         subagents_max_depth: config.subagent_max_spawn_depth(),
+        subagents_max_concurrent: config
+            .subagents
+            .as_ref()
+            .and_then(|subagents| subagents.max_concurrent)
+            .map_or_else(
+                || config.max_subagents(),
+                |max| max.min(codewhale_runtime::config::MAX_SUBAGENTS),
+            ),
+        verbosity: config
+            .verbosity
+            .clone()
+            .unwrap_or_else(|| "normal".to_string()),
         show_thinking: settings.show_thinking,
         thinking_default_expanded: settings.thinking_default_expanded,
         thinking_highlight: settings.thinking_highlight,
@@ -13508,6 +13522,26 @@ async fn set_config(
             .ok_or_else(|| ApiError::bad_request("No admitted model route"))?;
         value = normalize_runtime_config_model(&config, identity, &value)?;
     }
+    if key == "verbosity" {
+        let choices = codewhale_config::CONFIG_TOML_VERBOSITIES;
+        let normalized = value.trim().to_ascii_lowercase();
+        if !choices.contains(&normalized.as_str()) {
+            return Err(ApiError::bad_request(format!(
+                "Invalid value '{value}' for verbosity: expected one of {}",
+                choices.join(", ")
+            )));
+        }
+        value = normalized;
+    }
+    if key == "subagents_max_concurrent" {
+        let max = codewhale_runtime::config::MAX_SUBAGENTS;
+        let raw = value.trim().parse::<usize>().map_err(|_| {
+            ApiError::bad_request(format!(
+                "Invalid value '{value}' for subagents_max_concurrent: expected an integer from 0 to {max}"
+            ))
+        })?;
+        value = raw.min(max).to_string();
+    }
 
     // All persisted config keys require a reload to take effect in the
     // runtime (including syncing to active engines). The caller should
@@ -13621,6 +13655,21 @@ async fn set_config(
                 })?;
                 let clamped = raw.min(u64::from(codewhale_config::MAX_SPAWN_DEPTH_CEILING));
                 config_persistence::persist_subagents_integer_key(config_path, "max_depth", clamped)
+            }
+            "subagents_max_concurrent" => {
+                let max = value.parse::<u64>().map_err(|_| {
+                    ApiError::bad_request(format!(
+                        "Invalid value '{value}' for subagents_max_concurrent"
+                    ))
+                })?;
+                config_persistence::persist_subagents_integer_key(
+                    config_path,
+                    "max_concurrent",
+                    max,
+                )
+            }
+            "verbosity" => {
+                config_persistence::persist_root_string_key(config_path, "verbosity", &value)
             }
             "sandbox_mode" => {
                 let normalized = match value.to_lowercase().as_str() {
@@ -13856,6 +13905,8 @@ const RUNTIME_CONFIG_KEYS: &[&str] = &[
     "mcp_config_path",
     "subagents_enabled",
     "subagents_max_depth",
+    "subagents_max_concurrent",
+    "verbosity",
     "sandbox_mode",
     "strict_tool_mode",
     "memory_enabled",

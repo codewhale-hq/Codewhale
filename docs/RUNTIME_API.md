@@ -3158,6 +3158,32 @@ validated against the provider's catalog before it is applied, and `persisted`
 reports whether it was written to config or applied to the live session only.
 Rejects an unknown provider id and the `deepseek-cn` alias with `400`.
 
+### `GET` and `POST /v1/config` — reply style and sub-agent limit
+
+```json
+// request
+{ "key": "subagents_max_concurrent", "value": "4", "persist": true }
+
+// response
+{ "key": "subagents_max_concurrent", "value": "4", "persisted": true,
+  "requires_reload": true, "message": "…" }
+```
+
+`GET /v1/config` reports and `POST /v1/config` writes two config.toml keys a
+person chooses:
+
+- `verbosity`, the root reply-style key: `normal` or `concise`, compared
+  without regard to case. Unset reads as `normal`.
+- `subagents_max_concurrent`, the `[subagents] max_concurrent` limit on
+  sub-agents running at once: an integer from `0` to `128`. Larger values are
+  stored as `128`, and `0` turns sub-agents off, as `max_concurrent = 0` does
+  in config.toml. Unset reads as the limit the Engine applies (top-level
+  `max_subagents`, else 64); the Engine never writes that default for you.
+
+Any other value is `400`, also when `persist` is false. The response `value`
+is what was stored. As with the other config.toml keys, a persisted write
+takes effect after `POST /v1/config/reload`.
+
 ## Runtime data model
 
 The runtime uses a durable Thread/Turn/Item lifecycle.

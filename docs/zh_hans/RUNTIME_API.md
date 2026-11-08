@@ -2417,6 +2417,29 @@ URL；任何状态、错误或日志都不携带它、key、授权码或 verifie
 仅应用于活动会话。未知提供商 id 与 `deepseek-cn` 别名
 以 `400` 被拒绝。
 
+### `GET` 与 `POST /v1/config`——回复风格与子代理上限
+
+```json
+// request
+{ "key": "subagents_max_concurrent", "value": "4", "persist": true }
+
+// response
+{ "key": "subagents_max_concurrent", "value": "4", "persisted": true,
+  "requires_reload": true, "message": "…" }
+```
+
+`GET /v1/config` 报告、`POST /v1/config` 写入两个由人选择的 config.toml 键：
+
+- `verbosity`，根级回复风格键：`normal` 或 `concise`，比较时不区分大小写。
+  未设置时读作 `normal`。
+- `subagents_max_concurrent`，即 `[subagents] max_concurrent`，同时运行的
+  子代理上限：`0` 到 `128` 的整数。更大的值按 `128` 保存，`0` 关闭子代理，
+  与 config.toml 中的 `max_concurrent = 0` 一致。未设置时读作引擎实际使用的
+  上限（顶层 `max_subagents`，否则 64）；引擎不会替你写入该默认值。
+
+其他值一律 `400`，即使 `persist` 为 false。响应的 `value` 就是实际保存的值。
+与其他 config.toml 键一样，持久化写入在 `POST /v1/config/reload` 之后生效。
+
 ## 运行时数据模型
 
 运行时使用持久的 Thread/Turn/Item 生命周期。

@@ -133,6 +133,12 @@ until the matching tag, packages, checksums, and release assets exist.
 - **Pinned local thread controls (preview):** initialized App Server clients can list retained loaded Engines with cursor paging and rename the canonical thread through `thread/loaded/list` and `thread/name/set`. Saved but unloaded threads stay out of the loaded list; existing aliases remain available. Full-tool turns and subscription parity remain unfinished.
 
 
+- **Reply style and sub-agent limit over the Runtime API:** `GET /v1/config`
+  reports and `POST /v1/config` writes `verbosity` (`normal` or `concise`) and
+  `subagents_max_concurrent` (how many sub-agents may run at once, `0` to
+  `128`, where `0` turns them off), so the desktop's Settings can show and
+  change both. An unset limit reads as the one the Engine applies; nothing
+  writes a default for you.
 - **Local whale voice (preview):** the host can edit its private, revision-checked SOUL.md through the Runtime API. The Engine captures it for the next turn within the existing instruction budget and records its source; invalid private files refuse the turn with a terminal failure.
 
 - **MCP tool approval rules (preview):** exact tool names in the global server configuration can use Always, Ask or Off across workspaces. Off wins, server edits invalidate the prior grant, and required Computer Use consent and nested-program approval remain in place.
