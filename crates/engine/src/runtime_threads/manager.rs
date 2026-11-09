@@ -7363,6 +7363,15 @@ impl RuntimeThreadManager {
             Ok((thread, evicted))
         })?;
         drop(active);
+        if let Err(error) =
+            crate::tools::terminal_session::kill_owner_sessions(&thread.workspace, thread_id)
+        {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %error,
+                "failed to end terminal sessions for deleted thread"
+            );
+        }
         if let Some(engine) = evicted {
             engine.cancel_with_reason(crate::core::engine::CancelReason::Internal);
             let _ = engine.try_send(Op::Shutdown);

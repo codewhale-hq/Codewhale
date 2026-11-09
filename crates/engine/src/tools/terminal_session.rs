@@ -655,6 +655,40 @@ pub fn kill_session(session: &mut TerminalSession) -> Result<(), String> {
         .map_err(|e| format!("PTY kill failed: {e}"))
 }
 
+#[cfg(unix)]
+pub fn kill_owner_sessions(workspace: &Path, owner: &str) -> Result<usize, String> {
+    let workspace = canonical(workspace);
+    let mut registry = sessions()
+        .lock()
+        .map_err(|_| "terminal session registry lock poisoned".to_string())?;
+    let keys = registry
+        .keys()
+        .filter(|key| key.workspace == workspace && key.owner == owner)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut ended = 0;
+    for key in keys {
+        let Some(registered) = registry.remove(&key) else {
+            continue;
+        };
+        let mut session = registered
+            .session
+            .lock()
+            .map_err(|_| "terminal session lock poisoned".to_string())?;
+        let _ = kill_session(&mut session);
+        session.durable.state = DurableTerminalState::Canceled;
+        session.durable.updated_at = chrono::Utc::now().to_rfc3339();
+        let _ = persist_durable(&session.durable_path, &session.durable);
+        ended += 1;
+    }
+    Ok(ended)
+}
+
+#[cfg(not(unix))]
+pub fn kill_owner_sessions(_workspace: &std::path::Path, _owner: &str) -> Result<usize, String> {
+    Ok(0)
+}
+
 /// Resolve a live session by the identity it was issued, never creating one.
 ///
 /// HTTP clients attach to shells the Engine already owns (the agent's
