@@ -79,6 +79,15 @@ impl From<LlmError> for ErrorEnvelope {
                 "llm_connect_before_dispatch",
                 message,
             ),
+            LlmError::Timeout(duration) if duration.is_zero() => Self::new(
+                ErrorCategory::Timeout,
+                ErrorSeverity::Warning,
+                false,
+                "llm_timeout",
+                "Request timed out (provider request exceeded its transport \
+                 budget; exact duration not recorded)"
+                    .to_string(),
+            ),
             LlmError::Timeout(duration) => Self::new(
                 ErrorCategory::Timeout,
                 ErrorSeverity::Warning,
@@ -279,5 +288,29 @@ mod tests {
         let envelope = ErrorEnvelope::from(LlmError::Other("HTTP 403: forbidden".to_string()));
         assert_eq!(envelope.category, ErrorCategory::Authorization);
         assert!(!envelope.recoverable);
+    }
+
+    #[test]
+    fn zero_timeout_envelope_reports_unknown_duration_not_0ns() {
+        let envelope = ErrorEnvelope::from(LlmError::Timeout(std::time::Duration::from_secs(0)));
+        assert_eq!(envelope.category, ErrorCategory::Timeout);
+        assert_eq!(envelope.code, "llm_timeout");
+        assert!(
+            !envelope.message.contains("0ns"),
+            "zero duration leaked as 0ns: {}",
+            envelope.message
+        );
+        assert!(
+            envelope.message.contains("duration not recorded"),
+            "{}",
+            envelope.message
+        );
+
+        let measured = ErrorEnvelope::from(LlmError::Timeout(std::time::Duration::from_secs(90)));
+        assert!(
+            measured.message.contains("Request timed out after 90s"),
+            "{}",
+            measured.message
+        );
     }
 }

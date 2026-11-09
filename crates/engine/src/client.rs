@@ -4747,10 +4747,12 @@ impl CodewhaleClient {
                         ));
                     }
                     let pending = crate::llm_client::begin_outbound_transmission(request.method());
-                    let result = client
-                        .execute(request)
-                        .await
-                        .map_err(|error| LlmError::from_reqwest(&error.without_url()));
+                    // Measure the attempt: from_reqwest cannot know the spent
+                    // budget (reqwest does not expose it).
+                    let started = std::time::Instant::now();
+                    let result = client.execute(request).await.map_err(|error| {
+                        LlmError::from_reqwest_measured(&error.without_url(), started)
+                    });
                     crate::llm_client::settle_outbound_transmission(pending, &result);
                     result
                 }
@@ -4782,10 +4784,11 @@ impl CodewhaleClient {
                         })?;
                         let pending =
                             crate::llm_client::begin_outbound_transmission(request.method());
-                        let result = client
-                            .execute(request)
-                            .await
-                            .map_err(|error| LlmError::from_reqwest(&error.without_url()));
+                        // Same as the retry loop: measure instead of "0ns".
+                        let started = std::time::Instant::now();
+                        let result = client.execute(request).await.map_err(|error| {
+                            LlmError::from_reqwest_measured(&error.without_url(), started)
+                        });
                         crate::llm_client::settle_outbound_transmission(pending, &result);
                         result.map_err(anyhow::Error::new)
                     }
