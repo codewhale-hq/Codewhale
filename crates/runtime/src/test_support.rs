@@ -197,8 +197,9 @@ where
     Box::pin(make())
 }
 
-/// Drive a test future on a thread with libtest's default 2 MiB stack,
-/// whatever `RUST_MIN_STACK` says (#6362).
+/// Drive a test future on a thread with libtest's default stack (2 MiB, or
+/// 4 MiB on Windows where the same frames are larger), whatever
+/// `RUST_MIN_STACK` says (#6362).
 ///
 /// CI exports a 16 MiB `RUST_MIN_STACK` for every test thread, so a test
 /// that only fits because of that export never learns it overflowed the
@@ -214,6 +215,9 @@ where
     F: std::future::Future<Output = T>,
     T: Send + 'static,
 {
+    #[cfg(windows)]
+    const DEFAULT_TEST_THREAD_STACK: usize = 4 * 1024 * 1024;
+    #[cfg(not(windows))]
     const DEFAULT_TEST_THREAD_STACK: usize = 2 * 1024 * 1024;
     std::thread::Builder::new()
         .name("default-test-stack".into())
