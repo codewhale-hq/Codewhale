@@ -1,7 +1,7 @@
 [
   {
     "name": "bash",
-    "description": "Execute a shell command in the workspace and return stdout and stderr (last 2000 lines or 50KB). Optional timeout is foreground seconds (default 30); a command still running then moves to the background by itself — never killed for time — returning output so far, last-output age, build phase, and a task_id. Call task_shell_wait with that task_id to read more or wait; do not sleep-poll with bash. Before a final answer, collect every still-relevant background task (wait only when genuinely blocked) and cancel any that no longer matter. In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (narrowest wider mode) and a one-sentence justification; the approval prompt asks the user.",
+    "description": "Execute a shell command in the workspace and return stdout and stderr (last 2000 lines or 50KB). Optional timeout is foreground seconds (default 30 seconds); a command still running then moves to the background by itself — never killed for time — returning output so far, last-output age, build phase, and a task_id. Call task_shell_wait with that task_id to read more or wait; do not sleep-poll with bash. Before a final answer, collect every still-relevant background task (wait only when genuinely blocked) and cancel any that no longer matter. In Ask, after a sandbox denial, retry the exact command once with sandbox_permissions (the narrowest wider mode that suffices) and a one-sentence justification; the approval prompt asks the user.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

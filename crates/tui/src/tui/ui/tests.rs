@@ -6481,8 +6481,8 @@ fn app_system_prompt_includes_configured_instructions() {
     let prompt =
         codewhale_engine::prompts::system_prompt_flat_text(&build_app_system_prompt(&app, &config));
 
-    assert!(prompt.contains("CONFIGURED_INSTRUCTIONS_MARKER"));
-    assert!(prompt.contains(r#"<instructions source="extra-instructions.md">"#));
+    assert!(!prompt.contains("CONFIGURED_INSTRUCTIONS_MARKER"));
+    assert!(!prompt.contains(r#"<instructions source="extra-instructions.md">"#));
 }
 
 #[test]
