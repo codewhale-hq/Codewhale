@@ -2080,7 +2080,9 @@ pub const RUNTIME_LISTENING_PREFIX: &str = "Runtime API listening on http://";
 /// the wall clock may pause for — see
 /// [`TaskManagerConfig::human_waits_answerable`]. A local Stdio, Socket or
 /// ACP control frontend binds no listener and cannot deliver a task-owned
-/// answer, so its tasks keep the unanswerable default.
+/// answer, so its tasks keep the unanswerable default. Answerable tasks keep
+/// their human-wait cap unbounded: the cap is a fail-safe for a prompt nobody
+/// can answer, not a deadline for a person.
 #[must_use]
 pub(crate) fn server_task_config(
     config: &Config,
@@ -2092,6 +2094,9 @@ pub(crate) fn server_task_config(
     let mut task_cfg =
         TaskManagerConfig::from_runtime(config, workspace, Some(default_model), Some(workers));
     task_cfg.human_waits_answerable = http_decisions;
+    if http_decisions {
+        task_cfg.execution_limits.human_wait_cap = std::time::Duration::MAX;
+    }
     task_cfg
 }
 

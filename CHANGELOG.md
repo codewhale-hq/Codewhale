@@ -376,6 +376,7 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Fixed
 
+- **A question waits for you.** An answerable prompt from the desktop Runtime API no longer hits the 30-minute durable-task human-wait cap; it waits until you answer or cancel. Headless and unanswerable tasks keep the fail-safe cap.
 - **A plugin refused for its runtime snapshot now says why.** The warning and the enable error carry the reason the saved snapshot was rejected (for example the stage root is not read-only, or its content identity differs) instead of only "no staged snapshot". On Windows, 119 of the 135 hosted test failures were this one message with the cause discarded, so the next run can name it. Not a fix for those failures.
 - **Listing installed agent CLIs no longer blocks the runtime.** `GET /v1/agents/external` looks for each binary with `tokio::fs` instead of synchronous file calls on a runtime worker.
 - **A failed custom-provider switch leaves the provider you were on.** When saving a custom provider succeeds but switching to it fails (its identity cannot be resolved, or the engine refuses the route), the next request keeps going to the provider the footer shows instead of the half-configured one.

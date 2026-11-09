@@ -74,10 +74,20 @@ fn server_task_config_opts_tasks_into_answerable_human_waits() {
         cfg.human_waits_answerable,
         "server task config must arm answerable human waits"
     );
+    assert_eq!(
+        cfg.execution_limits.human_wait_cap,
+        std::time::Duration::MAX,
+        "an answerable prompt waits for the person; the durable-task cap does not apply"
+    );
     let local = server_task_config(&Config::default(), PathBuf::from("."), 2, false);
     assert!(
         !local.human_waits_answerable,
         "a local control frontend binds no HTTP listener, so its tasks stay unanswerable"
+    );
+    assert_eq!(
+        local.execution_limits.human_wait_cap,
+        Config::default().task_human_wait_cap(),
+        "an unanswerable task keeps the fail-safe human-wait cap"
     );
 }
 
