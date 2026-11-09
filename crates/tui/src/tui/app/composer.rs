@@ -595,6 +595,12 @@ impl ComposerState {
         self.remember_draft_for_recovery(draft);
     }
 
+    pub(crate) fn stash_typed_draft_before_restore(&mut self) {
+        if !self.input.trim().is_empty() {
+            self.stash_current_input_for_recovery();
+        }
+    }
+
     fn remember_draft_for_recovery(&mut self, draft: String) {
         if draft.trim().is_empty() {
             return;
@@ -1893,6 +1899,7 @@ impl App {
             self.needs_redraw = true;
             return;
         }
+        self.stash_typed_draft_before_restore();
         self.input = message.display;
         self.resync_command_line_claim();
         self.cursor_position = char_count(&self.input);
