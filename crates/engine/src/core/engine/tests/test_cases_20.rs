@@ -1343,15 +1343,18 @@ async fn configured_mcp_servers_are_named_to_the_model_once_without_loading_them
     assert_eq!(engine.session.messages.len(), messages);
 
     let held = pool.lock().await;
+    let messages = engine.session.messages.len();
     engine.record_mcp_runtime_context(&policy, &mut ready_catalog).await;
+    assert_eq!(engine.session.messages.len(), messages);
     assert!(engine.session.messages.iter().rev().find_map(
         crate::runtime_handoff::mcp_configured_servers_display
-    ).unwrap().contains("no longer applies"));
+    ).unwrap().contains("\n- shoreline: connected"));
     assert!(engine.session.messages.iter().rev().find_map(
         crate::runtime_handoff::mcp_server_instructions_display
-    ).unwrap().contains("no longer applies"));
+    ).unwrap().contains("Use search."));
     drop(held);
     engine.record_mcp_runtime_context(&policy, &mut ready_catalog).await;
+    assert_eq!(engine.session.messages.len(), messages);
     assert!(engine.session.messages.iter().rev().find_map(
         crate::runtime_handoff::mcp_configured_servers_display
     ).unwrap().contains("\n- shoreline: connected"));
@@ -1439,10 +1442,12 @@ async fn no_configured_mcp_servers_adds_nothing_to_history() {
         crate::runtime_handoff::mcp_configured_servers_display
     ).unwrap().contains("\n- fresh: configured"));
     std::fs::remove_file(&path).unwrap();
+    let count = engine.session.messages.len();
     engine.record_mcp_runtime_context(&policy, &mut catalog).await;
+    assert_eq!(engine.session.messages.len(), count);
     assert!(engine.session.messages.iter().rev().find_map(
         crate::runtime_handoff::mcp_configured_servers_display
-    ).unwrap().contains("no longer applies"));
+    ).unwrap().contains("\n- fresh: configured"));
     engine.config.features.disable(Feature::Mcp);
     let count = engine.session.messages.len();
     engine.record_mcp_runtime_context(&policy, &mut catalog).await;

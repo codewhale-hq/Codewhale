@@ -9817,8 +9817,10 @@ impl Engine {
 
     /// Record current MCP guidance and observations after the frozen prefix.
     /// Both share one nonblocking pool capture, current turn ceiling and
-    /// authority check. Empty captures withdraw previous notes, including
-    /// after restore, contention, configuration changes or scope removal.
+    /// authority check. Empty successful captures withdraw previous notes,
+    /// including after restore or scope removal. A failed capture (pool
+    /// contention, changed config sources or a task failure) emits nothing
+    /// and leaves prior notes and the catalog untouched.
     async fn record_mcp_runtime_context(
         &mut self,
         policy: &ToolSurfacePolicy,
@@ -9830,71 +9832,72 @@ impl Engine {
             && !self.is_acp_turn()
             && !self.api_config.runtime_chat_isolated
             && self.config.features.enabled(Feature::Mcp);
-        let (servers, instructions, batch, members) =
-            match self.mcp_pool.as_ref().filter(|_| eligible).cloned() {
-                Some(pool) => {
-                    let visible: HashSet<String> = catalog
-                        .iter()
-                        .filter(|tool| crate::mcp::McpPool::is_mcp_tool(&tool.name))
-                        .filter(|tool| {
-                            !policy.denies_tool(&tool.name) && policy.passes_allow_list(&tool.name)
-                        })
-                        .map(|tool| tool.name.clone())
-                        .collect();
-                    let discovery_available = catalog.iter().any(|tool| {
-                        is_tool_search_tool(&tool.name)
-                            && !policy.denies_tool(&tool.name)
-                            && policy.passes_allow_list(&tool.name)
-                    });
-                    let composition = (policy.mode != AppMode::Plan
-                        && tool_catalog::composition_eager(catalog))
-                    .then(|| tool_catalog::unique_named_batch(catalog))
-                    .flatten()
-                    .map(|index| catalog[index].name.clone());
-                    let permitted = policy.mcp_discovery_filter();
-                    let failed: HashSet<String> =
-                        self.mcp_connection_errors.keys().cloned().collect();
-                    tokio::task::spawn_blocking(move || {
-                        let Ok(pool) = pool.try_lock() else {
-                            return Default::default();
-                        };
-                        if !pool.config_sources_unchanged() {
-                            return Default::default();
-                        }
-                        let routes = pool.resolved_tool_servers();
-                        let servers = pool.model_server_statuses_for(
-                            &permitted,
-                            &visible,
-                            discovery_available,
-                            &failed,
-                            &routes,
-                        );
-                        let composition = composition.filter(|batch| {
-                            routes.get(batch).is_some_and(|owner| {
-                                servers.iter().any(|(name, status)| {
-                                    name == owner
-                                        && *status == codewhale_mcp::ModelServerStatus::Connected
-                                })
-                            })
-                        });
-                        let (mut instructions, members) = pool.model_server_instructions_for(
-                            |tool| visible.contains(tool),
-                            composition.as_deref(),
-                            &routes,
-                        );
-                        instructions.retain(|(name, _)| {
-                            servers.iter().any(|(server, status)| {
-                                server == name
+        let capture = match self.mcp_pool.as_ref().filter(|_| eligible).cloned() {
+            Some(pool) => {
+                let visible: HashSet<String> = catalog
+                    .iter()
+                    .filter(|tool| crate::mcp::McpPool::is_mcp_tool(&tool.name))
+                    .filter(|tool| {
+                        !policy.denies_tool(&tool.name) && policy.passes_allow_list(&tool.name)
+                    })
+                    .map(|tool| tool.name.clone())
+                    .collect();
+                let discovery_available = catalog.iter().any(|tool| {
+                    is_tool_search_tool(&tool.name)
+                        && !policy.denies_tool(&tool.name)
+                        && policy.passes_allow_list(&tool.name)
+                });
+                let composition = (policy.mode != AppMode::Plan
+                    && tool_catalog::composition_eager(catalog))
+                .then(|| tool_catalog::unique_named_batch(catalog))
+                .flatten()
+                .map(|index| catalog[index].name.clone());
+                let permitted = policy.mcp_discovery_filter();
+                let failed: HashSet<String> = self.mcp_connection_errors.keys().cloned().collect();
+                tokio::task::spawn_blocking(move || {
+                    let Ok(pool) = pool.try_lock() else {
+                        return None;
+                    };
+                    if !pool.config_sources_unchanged() {
+                        return None;
+                    }
+                    let routes = pool.resolved_tool_servers();
+                    let servers = pool.model_server_statuses_for(
+                        &permitted,
+                        &visible,
+                        discovery_available,
+                        &failed,
+                        &routes,
+                    );
+                    let composition = composition.filter(|batch| {
+                        routes.get(batch).is_some_and(|owner| {
+                            servers.iter().any(|(name, status)| {
+                                name == owner
                                     && *status == codewhale_mcp::ModelServerStatus::Connected
                             })
-                        });
-                        (servers, instructions, composition, members)
-                    })
-                    .await
-                    .unwrap_or_default()
-                }
-                None => Default::default(),
-            };
+                        })
+                    });
+                    let (mut instructions, members) = pool.model_server_instructions_for(
+                        |tool| visible.contains(tool),
+                        composition.as_deref(),
+                        &routes,
+                    );
+                    instructions.retain(|(name, _)| {
+                        servers.iter().any(|(server, status)| {
+                            server == name && *status == codewhale_mcp::ModelServerStatus::Connected
+                        })
+                    });
+                    Some((servers, instructions, composition, members))
+                })
+                .await
+                .ok()
+                .flatten()
+            }
+            None => Some(Default::default()),
+        };
+        let Some((servers, instructions, batch, members)) = capture else {
+            return;
+        };
         if tool_catalog::configure_composition_entry(catalog, batch.as_deref(), &members) {
             self.session
                 .pending_prefix_change_reason
