@@ -1198,6 +1198,8 @@ async fn generic_responses_captures_and_replays_opaque_reasoning() {
         "gpt-5.5".into(),
         codewhale_config::provider::WireFormat::Responses,
         None,
+        Some(crate::client::standard_responses_profile()),
+        false,
         &config,
     )
     .unwrap();

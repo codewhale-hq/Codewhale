@@ -32,6 +32,7 @@ use codewhale_config::catalog::{
 #[cfg(any(test, feature = "test-support"))]
 use codewhale_config::catalog::{CatalogSnapshot, CatalogStatus, ProviderCatalogCache};
 use codewhale_config::provider::WireFormat;
+use codewhale_config::responses_dialect::ResponsesProfileId;
 use codewhale_config::route::{
     LogicalModelRef, ReadyRouteCandidate, RouteLimits, RouteRequest, RouteResolver,
 };
@@ -282,6 +283,8 @@ pub struct CodewhaleClient {
     /// token refresh and absent on custom API-key routes.
     pub(super) chatgpt_reasoning_api: Option<String>,
     wire_format: WireFormat,
+    /// Admitted Responses dialect. Empty for Chat, Messages, and catalog probes.
+    responses_profile_id: Option<ResponsesProfileId>,
     retry: RetryPolicy,
     /// Auxiliary inspection calls use the normal bounded retry schedule but
     /// never publish retry/rate-limit state into process-global UI cells.
@@ -589,6 +592,7 @@ impl Clone for CodewhaleClient {
             codex_account_id: self.codex_account_id.clone(),
             chatgpt_reasoning_api: self.chatgpt_reasoning_api.clone(),
             wire_format: self.wire_format,
+            responses_profile_id: self.responses_profile_id,
             retry: self.retry.clone(),
             isolated_request_state: self.isolated_request_state,
             remote_control_inference_participant: self.remote_control_inference_participant,
@@ -1518,20 +1522,31 @@ impl CodewhaleClient {
             return Self::from_candidate(&route.config, &route.candidate)
                 .map(|client| client.with_context_window(route.context_window));
         }
-        let resolved = crate::route_runtime::resolve_runtime_route_for_identity(
+        let wire_format = provider_wire_format_for_config(&identity, Some(config));
+        let resolved = match crate::route_runtime::resolve_runtime_route_for_identity(
             config,
             &identity,
             Some(&default_model),
-        )
-        .ok();
+        ) {
+            Ok(route) => Some(route),
+            Err(error) if wire_format == WireFormat::Responses => {
+                return Err(anyhow::Error::msg(error));
+            }
+            Err(_) => None,
+        };
         let route_limits = resolved
             .as_ref()
             .and_then(|route| crate::route_budget::known_route_limits(route.candidate.limits()));
+        let responses_profile_id = resolved
+            .as_ref()
+            .and_then(|route| route.candidate.responses_profile_id());
         Self::from_parts(
             config.active_route_base_url(),
             default_model,
-            provider_wire_format_for_config(&identity, Some(config)),
+            wire_format,
             route_limits,
+            responses_profile_id,
+            false,
             config,
         )
         .map(|mut client| {
@@ -1563,6 +1578,8 @@ impl CodewhaleClient {
             config.default_model(),
             provider_wire_format_for_config(&identity, Some(config)),
             None,
+            None,
+            true,
             config,
         )
     }
@@ -1600,6 +1617,8 @@ impl CodewhaleClient {
             candidate.wire_model_id().as_str().to_string(),
             candidate.protocol(),
             crate::route_budget::known_route_limits(candidate.limits()),
+            candidate.responses_profile_id(),
+            false,
         )
     }
 
@@ -1616,6 +1635,8 @@ impl CodewhaleClient {
             candidate.wire_model_id().as_str().to_string(),
             candidate.protocol(),
             crate::route_budget::known_route_limits(candidate.limits()),
+            candidate.responses_profile_id(),
+            false,
         )
     }
 
@@ -1765,6 +1786,8 @@ impl CodewhaleClient {
         default_model: String,
         wire_format: WireFormat,
         route_limits: Option<RouteLimits>,
+        responses_profile_id: Option<ResponsesProfileId>,
+        catalog_probe: bool,
         config: &Config,
     ) -> Result<Self> {
         let admitted = Self::admit_client_route(config, base_url)?;
@@ -1778,14 +1801,15 @@ impl CodewhaleClient {
             default_model,
             wire_format,
             route_limits,
+            responses_profile_id,
+            catalog_probe,
         )
     }
 
     /// Shared constructor body for every admitted route.
     ///
-    /// `base_url` and `default_model` are the only inputs that differ between
-    /// the entry points; everything else (auth, provider, retry, headers,
-    /// timeouts) is derived from `config` so the paths cannot drift.
+    /// Auth, provider, retry, headers, and timeouts come from `config`.
+    /// The route, wire format, and Responses profile are the entry point's inputs.
     fn from_admitted(
         config: &Config,
         admitted: AdmittedClientRoute,
@@ -1793,6 +1817,8 @@ impl CodewhaleClient {
         default_model: String,
         wire_format: WireFormat,
         route_limits: Option<RouteLimits>,
+        responses_profile_id: Option<ResponsesProfileId>,
+        catalog_probe: bool,
     ) -> Result<Self> {
         anyhow::ensure!(
             admitted.identity == captured.identity && admitted.base_url == captured.base_url,
@@ -1803,6 +1829,12 @@ impl CodewhaleClient {
         let root_cert = captured.root_cert;
         let admitted_identity = admitted.identity;
         let api_provider = admitted_identity.provider;
+        let responses_profile_id = admit_responses_profile(
+            api_provider,
+            wire_format,
+            responses_profile_id,
+            catalog_probe,
+        )?;
         let context_window_override = config.context_window_for_provider_config(&admitted_identity);
         let model_context_windows = config
             .model_context_windows_for(&admitted_identity)
@@ -2028,6 +2060,7 @@ impl CodewhaleClient {
             codex_account_id,
             chatgpt_reasoning_api,
             wire_format,
+            responses_profile_id,
             retry,
             isolated_request_state: false,
             remote_control_inference_participant: !config.runtime_chat_isolated
@@ -2258,7 +2291,9 @@ impl CodewhaleClient {
             base_url_override: Some(self.base_url.clone()),
             limit_overrides: Vec::new(),
             wire_override: (self.api_provider == ProviderKind::Custom).then_some(self.wire_format),
-            responses_profile_override: None,
+            responses_profile_override: (self.api_provider == ProviderKind::Custom)
+                .then(|| self.responses_profile_id.map(|id| id.as_str().to_string()))
+                .flatten(),
         };
         if self.api_provider == ProviderKind::OpenaiCodex {
             static CODEX_RESOLVER: OnceLock<RouteResolver> = OnceLock::new();
@@ -2772,6 +2807,44 @@ fn is_auth_dialect_header(header_name: &HeaderName) -> bool {
     header_name == AUTHORIZATION
         || header_name == HeaderName::from_static("api-key")
         || header_name == HeaderName::from_static("x-api-key")
+}
+
+fn admit_responses_profile(
+    provider: ProviderKind,
+    wire_format: WireFormat,
+    profile: Option<ResponsesProfileId>,
+    catalog_probe: bool,
+) -> Result<Option<ResponsesProfileId>> {
+    if catalog_probe {
+        anyhow::ensure!(
+            profile.is_none(),
+            "catalog refresh cannot carry a responses profile"
+        );
+        return Ok(None);
+    }
+    if wire_format == WireFormat::Responses {
+        let Some(profile) = profile else {
+            bail!(
+                "responses client for {} requires a dialect profile",
+                provider.as_str()
+            );
+        };
+        return Ok(Some(profile));
+    }
+    anyhow::ensure!(
+        profile.is_none(),
+        "client for {} cannot carry a responses profile on {wire_format:?}",
+        provider.as_str()
+    );
+    Ok(None)
+}
+
+fn standard_responses_profile() -> ResponsesProfileId {
+    codewhale_config::responses_dialect::builtin_profiles()
+        .iter()
+        .find(|profile| profile.id.as_str() == "standard")
+        .expect("standard responses profile")
+        .id
 }
 
 fn provider_default_wire_format(provider: ProviderKind) -> WireFormat {
@@ -3443,6 +3516,12 @@ impl CodewhaleClient {
                 .with_omitted_tool_names(omitted_tool_names))
             }
             WireFormat::Responses => {
+                if self.responses_profile_id.is_none() {
+                    bail!(
+                        "responses client for {} has no dialect profile",
+                        self.api_provider.as_str()
+                    );
+                }
                 let (mut body, omitted_tool_names) = responses::build_responses_wire_body(
                     &request,
                     self.api_provider,
@@ -3479,6 +3558,7 @@ impl CodewhaleClient {
                 .with_omitted_tool_names(omitted_tool_names))
             }
         }
+        .map(|prepared| prepared.with_responses_profile_id(self.responses_profile_id))
     }
 
     pub fn apply_provider_routing(&self, body: &mut Value) {
@@ -5302,6 +5382,9 @@ impl CodewhaleClient {
             endpoint_fingerprint: prepared.endpoint_fingerprint(),
             wire_model: prepared.wire_model.clone(),
             wire_dialect: prepared.dialect.as_str().to_owned(),
+            responses_profile_id: prepared
+                .responses_profile_id
+                .map(|id| id.as_str().to_owned()),
             tools: prepared.tool_wire_measurement(),
             image_projection: prepared.image_projection.clone(),
         });
@@ -7234,6 +7317,8 @@ mod configured_model_client_tests {
             "initial-model".into(),
             WireFormat::ChatCompletions,
             None,
+            None,
+            false,
             &config,
         )
         .unwrap();
@@ -7335,6 +7420,8 @@ mod configured_model_client_tests {
             config.default_model(),
             WireFormat::ChatCompletions,
             None,
+            None,
+            false,
             &config,
         )
         .unwrap();
