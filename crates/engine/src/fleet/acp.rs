@@ -12,7 +12,7 @@
 //! the worker log.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -406,6 +406,7 @@ mod tests {
         FleetWorkerTransport, LocalProcessFleetHostAdapter,
     };
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp-agent.mjs")
