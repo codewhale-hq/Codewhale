@@ -171,6 +171,16 @@ fn valid_source(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_:./".contains(&b))
 }
 
+fn token_matches(candidate: &[u8], expected: &[u8]) -> bool {
+    let mut diff = candidate.len() ^ expected.len();
+    for i in 0..candidate.len().max(expected.len()) {
+        diff |= usize::from(
+            candidate.get(i).copied().unwrap_or(0) ^ expected.get(i).copied().unwrap_or(0),
+        );
+    }
+    diff == 0
+}
+
 fn authorized(headers: &HeaderMap, state: &Service) -> bool {
     let origin = format!("http://127.0.0.1:{}", state.descriptor.port);
     let host = format!("127.0.0.1:{}", state.descriptor.port);
@@ -187,11 +197,14 @@ fn authorized(headers: &HeaderMap, state: &Service) -> bool {
     let cookie = format!("cw_pet={}", state.descriptor.token);
     headers
         .get("authorization")
-        .is_some_and(|v| v.as_bytes() == bearer.as_bytes())
+        .is_some_and(|v| token_matches(v.as_bytes(), bearer.as_bytes()))
         || headers
             .get("cookie")
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.split(';').any(|v| v.trim() == cookie))
+            .is_some_and(|v| {
+                v.split(';')
+                    .any(|v| token_matches(v.trim().as_bytes(), cookie.as_bytes()))
+            })
 }
 
 fn answer(result: Result<Value, String>) -> Response {
