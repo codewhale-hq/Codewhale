@@ -472,6 +472,7 @@ impl Engine {
         };
 
         let mut context_update_pending = false;
+        let mut preview_assembly: Option<crate::project_context::InstructionAssembly> = None;
         if !self.session.system_prompt_override
             && self.host_owned_system_prompt().is_none()
             && self.session.pinned_prompt_context.as_ref() == Some(&prompt_context)
@@ -483,6 +484,7 @@ impl Engine {
             );
             match self.observe_context_update(&prompt_context, memory.as_deref()) {
                 Ok(observed) => {
+                    preview_assembly = observed.assembly.clone();
                     context_update_pending = observed.message.is_some()
                         || observed
                             .notice
@@ -557,6 +559,14 @@ impl Engine {
             },
         );
         messages.push(hypothetical_user_message);
+        if let Some(instructions) = Self::planned_project_instructions_message(
+            preview_assembly
+                .as_ref()
+                .or(self.session.instruction_assembly.as_deref()),
+            &messages,
+        ) {
+            messages.push(instructions);
+        }
         if let Some(body) =
             preview_notice.filter(|body| !self.instruction_notice_in_history(body, &messages))
         {

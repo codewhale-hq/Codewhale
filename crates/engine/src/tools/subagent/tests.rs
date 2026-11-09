@@ -8877,18 +8877,16 @@ fn small_surface_starts_with_core_tools_and_read_only_goal_control() {
         [
             "agent",
             "bash",
-            "context_archive_get",
-            "context_archive_search",
             "edit",
             "file_search",
             "get_goal",
+            "grep_files",
             "load_skill",
             "present",
             "read",
             "task_shell_wait",
             "todo_write",
             "tool_search",
-            "workflow",
             "write",
         ]
         .into_iter()
@@ -9264,18 +9262,16 @@ fn small_surface_depth_cap_removes_only_agent() {
         model_tool_names(model_request_tools(&mut surface)),
         [
             "bash",
-            "context_archive_get",
-            "context_archive_search",
             "edit",
             "file_search",
             "get_goal",
+            "grep_files",
             "load_skill",
             "present",
             "read",
             "task_shell_wait",
             "todo_write",
             "tool_search",
-            "workflow",
             "write"
         ]
         .into_iter()

@@ -60,7 +60,7 @@ impl ToolSpec for ReadTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a file. A text file comes back whole in one call when it fits this call's output budget — 100000 bytes by default, raisable to 500000 with max_bytes. There is no line cap. Use offset and limit for an exact line range; when output is budget-limited the footer names the exact offset to continue from. Every text response reports the file's byte size, line count, and whether output was truncated. A PNG, JPEG, GIF or WebP image comes back as image content you can see (large images are downscaled), including one the user attached from outside the workspace; read an image instead of running OCR or taking screenshots of it."
+        "Read a file. Text comes back whole when it fits the output budget — 100000 bytes by default, raisable to 500000 with max_bytes; no line cap. Use offset/limit for an exact line range; a budget-limited footer names the exact continuation offset. Responses report byte size, line count, and truncated. PNG/JPEG/GIF/WebP return as visible image content (large images downscaled); read an image instead of OCR or screenshots."
     }
 
     fn input_schema(&self) -> Value {

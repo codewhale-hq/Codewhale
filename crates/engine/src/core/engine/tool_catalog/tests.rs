@@ -105,18 +105,16 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "write",
             "edit",
             "file_search",
+            "grep_files",
             "bash",
             "agent",
-            "workflow",
             "todo_write",
             "create_goal",
             "get_goal",
             "update_goal",
             "task_shell_wait",
             "present",
-            "load_skill",
-            "context_archive_get",
-            "context_archive_search"
+            "load_skill"
         ]
     );
     let expected = [
@@ -127,13 +125,13 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
         "update_goal",
         "edit",
         "file_search",
+        "grep_files",
         "load_skill",
         "present",
         "read",
         "task_shell_wait",
         "todo_write",
         "tool_search",
-        "workflow",
         "write",
     ]
     .into_iter()
@@ -146,6 +144,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "write",
             "edit",
             "file_search",
+            "grep_files",
             "bash",
             "agent",
             "workflow",
@@ -353,7 +352,7 @@ fn unknown_and_wildcard_allowlists_keep_mcp_startup() {
 }
 
 #[test]
-fn compact_surface_keeps_agent_and_workflow_eager() {
+fn compact_surface_keeps_agent_eager_defers_workflow() {
     let catalog = build_model_tool_catalog_with_surface(
         [
             "read",
@@ -373,13 +372,13 @@ fn compact_surface_keeps_agent_and_workflow_eager() {
         crate::model_profile::ToolSurfaceBudget::Compact,
     );
 
-    for name in ["agent", "workflow"] {
+    for (name, deferred) in [("agent", false), ("workflow", true)] {
         assert_eq!(
             catalog
                 .iter()
                 .find(|definition| definition.name == name)
                 .and_then(|definition| definition.defer_loading),
-            Some(false),
+            Some(deferred),
             "{name}"
         );
     }

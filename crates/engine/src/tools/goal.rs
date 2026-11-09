@@ -1035,7 +1035,7 @@ impl ToolSpec for CreateGoalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Start the session's persistent goal when a request is an objective that needs more than one turn or verified completion, even if the user did not say \"goal\". Not for questions, greetings, or one-shot edits. Codewhale keeps working toward it across turns until it is verified complete, blocked, or the user stops it. When the user asks for `/goal` or to make something the goal, this call records it; prose records nothing. Keep the user's full objective, not a one-turn version. The user sees a one-line receipt (they can /goal pause or /goal clear), so no confirmation is needed. Only one unfinished goal exists at a time: complete or clear it before creating another."
+        "Start the session's persistent goal for an objective needing more than one turn or verified completion, even if the user did not say \"goal\". Not for questions or one-shot edits. Work continues across turns until verified complete, blocked, or stopped. This call records the goal; prose records nothing. Keep the full objective. No confirmation needed (the user sees a receipt and can /goal pause or clear). Only one unfinished goal at a time."
     }
 
     fn input_schema(&self) -> Value {
@@ -1296,11 +1296,11 @@ impl ToolSpec for UpdateGoalTool {
             .is_some_and(|gate| gate.complete || gate.blocked)
         {
             return concat!(
-                "Report goal status by calling this tool; a prose status in your answer changes nothing. Mark complete only after checking the real result, with evidence. Mark blocked only when the same concrete obstacle keeps preventing progress; difficulty is not blocked, and needing the user's answer is a yield, not a block. Mark yield when a stage is finished and the next step is the user's decision, or when the next pass needs the user's answer: the goal stays unfinished, the turn ends, and their next message resumes it.",
+                "Report goal status by calling this tool; prose changes nothing. Complete only after checking the real result, with evidence. Blocked only when the same concrete obstacle keeps preventing progress; difficulty is not blocked, and needing the user's answer is a yield. Yield when the next step is the user's decision or answer: the goal stays unfinished and their next message resumes it.",
                 " An independent judge reviews complete and blocked claims; it may decline them and return the gaps, and the goal then stays active."
             );
         }
-        "Report goal status by calling this tool; a prose status in your answer changes nothing. Mark complete only after checking the real result, with evidence. Mark blocked only when the same concrete obstacle keeps preventing progress; difficulty is not blocked, and needing the user's answer is a yield, not a block. Mark yield when a stage is finished and the next step is the user's decision, or when the next pass needs the user's answer: the goal stays unfinished, the turn ends, and their next message resumes it."
+        "Report goal status by calling this tool; prose changes nothing. Complete only after checking the real result, with evidence. Blocked only when the same concrete obstacle keeps preventing progress; difficulty is not blocked, and needing the user's answer is a yield. Yield when the next step is the user's decision or answer: the goal stays unfinished and their next message resumes it."
     }
 
     fn input_schema(&self) -> Value {
@@ -2526,7 +2526,7 @@ mod tests {
         let update = UpdateGoalTool::new(new_shared_goal_state());
         let description = update.description();
         assert!(
-            description.contains("needing the user's answer is a yield, not a block"),
+            description.contains("needing the user's answer is a yield"),
             "{description}"
         );
     }

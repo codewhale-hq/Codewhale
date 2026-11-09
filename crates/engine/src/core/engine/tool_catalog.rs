@@ -44,21 +44,15 @@ const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 8;
 #[rustfmt::skip]
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // Core work controls are eager; specialized tools stay searchable.
-    "read", "write", "edit", "file_search", "bash", "agent", "workflow", "todo_write",
+    "read", "write", "edit", "file_search", "grep_files", "bash", "agent", "todo_write",
     // Continuation instructions require these controls. Hiding them behind
     // discovery leaves a model unable to stop the work it was asked to run.
     "create_goal", "get_goal", "update_goal", "task_shell_wait",
     "present",
-    // The pinned `## Skills` index tells the model to call `load_skill`, so
-    // the tool has to be on the wire for that instruction to be true. Behind
-    // `tool_search` it cost a discovery hop plus a `change:tool_surface`
-    // re-pin every time a skill was used, against ~134 pinned bytes to have
-    // it eager beside the index the prefix already carries.
+    // The prompt core tells the model to discover skills through
+    // `load_skill`, so the tool has to be on the wire for that instruction
+    // to be true.
     "load_skill",
-    // The compaction handoff note names these two by hand. A model cannot call
-    // a tool it has never seen a schema for, and `tool_search` is not
-    // guaranteed to be the next thing it reaches for mid-task.
-    "context_archive_get", "context_archive_search",
 ];
 
 const CORE_ACTION_TOOL_FALLBACKS: &[CoreActionToolFallback] = &[
@@ -376,7 +370,7 @@ pub fn ensure_advanced_tooling(
         catalog.push(Tool {
             tool_type: Some(TOOL_SEARCH_TYPE.to_string()),
             name: TOOL_SEARCH_NAME.to_string(),
-            description: "Search deferred tool definitions and return matching tool references. Deferred tools commonly include `Git`, `Run` (tests and verifier checks), `Web`, `tasks` (background work; `suggest` offers a follow-up card), `request_user_input` (structured questions), `github`, `automation` (scheduling), `lsp`, `review`, `session_search` (past sessions), `terminal/run` and its siblings, `apply_patch`, and `grep_files`, plus connected MCP servers and the MCP Registry pair (`registry_sync`, `start_registry_mcp_server`) for installing a local MCP server when no available tool covers a needed capability. Calling one by name also loads it.".to_string(),
+            description: "Search deferred tool definitions and return matching references. Deferred tools include `Git`, `Run`, `Web`, `tasks`, `workflow`, `request_user_input`, `github`, `automation`, `lsp`, `review`, `session_search`, `terminal/run`, `apply_patch`, `context_archive_search`/`context_archive_get`, connected MCP servers, and the Registry pair (`registry_sync`, `start_registry_mcp_server`). Calling one by name also loads it.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

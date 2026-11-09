@@ -14791,10 +14791,9 @@ static AGENT_TOOL_DESCRIPTION: std::sync::LazyLock<String> = std::sync::LazyLock
         "Use multiple starts for independent tasks and `workflow` when steps need order or gates. ",
         "type selects the Fleet role: general (multi-step work with full tools), explore (find and read code, read-only), planner (plan a change with read-only probes), reviewer (grade a diff or design), implement (make a scoped code change), test (run checks and report evidence), advisor (read-only design counsel), or custom (allowed_tools on the parent's posture). ",
         "Roster, profile, model and thinking are optional. ",
-        "Workers have no default turn or wall-clock budget. Only configured operator, role and inherited limits apply; legacy per-call max_steps, wall_time_secs and max_output_tokens are ignored. There is no token budget. ",
+        "Workers have no default turn, wall-clock, or token budget; only configured operator, role and inherited limits apply. ",
         "Give write work to type=implement and verify it with type=test or `Run` action=\"verifiers\" after writes settle. action=claim widens your own enforced write scope when a write refusal names a path. ",
-        "Write each prompt as a complete brief: the goal, the files the child owns and must not touch, how to verify, and what to return. ",
-        "Example: \"Own only src/config/loader.rs and its tests. Make missing keys fall back to defaults; do not edit other files. Run the loader tests and return the changed paths and test output.\""
+        "Write each prompt as a complete brief: the goal, the files the child owns and must not touch, how to verify, and what to return."
     );
     format!("{description} {}", subagent_followup_recovery("<agent_id>"))
 });

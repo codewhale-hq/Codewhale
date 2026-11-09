@@ -9914,20 +9914,20 @@ impl Engine {
             .await;
     }
 
-    async fn record_current_project_instructions(&mut self) {
-        let previous = self.session.messages.iter().rev().find(|message| {
+    fn planned_project_instructions_message(
+        assembly: Option<&crate::project_context::InstructionAssembly>,
+        messages: &[Message],
+    ) -> Option<Message> {
+        let previous = messages.iter().rev().find(|message| {
             crate::runtime_handoff::project_instructions_display(message).is_some()
         });
-        let assembly = self.session.instruction_assembly.clone();
         let block = assembly
-            .as_deref()
             .and_then(|assembly| assembly.block.as_deref())
             .filter(|block| !block.trim().is_empty());
         if block.is_none() && previous.is_none() {
-            return;
+            return None;
         }
         let label = assembly
-            .as_deref()
             .and_then(|assembly| {
                 assembly
                     .source_path
@@ -9938,10 +9938,17 @@ impl Engine {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "AGENTS.md".to_string());
         let message = crate::runtime_handoff::project_instructions_runtime_message(block, &label);
-        if previous == Some(&message) {
-            return;
+        (previous != Some(&message)).then_some(message)
+    }
+
+    async fn record_current_project_instructions(&mut self) {
+        let assembly = self.session.instruction_assembly.clone();
+        if let Some(message) = Self::planned_project_instructions_message(
+            assembly.as_deref(),
+            &self.session.messages,
+        ) {
+            self.add_session_message(message).await;
         }
-        self.add_session_message(message).await;
     }
 
     async fn record_current_constitution(&mut self) {

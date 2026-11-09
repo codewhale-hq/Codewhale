@@ -308,7 +308,7 @@ tail selected by token budget, including complete tool exchanges. Long tool outp
 shortened, with a marker where it was cut, and the \
 oldest kept message may be shortened too. The pre-compaction transcript is retained twice: as \
 artifacts/context-transfer-*.json under this session's artifacts directory, and through two \
-tools. Call context_archive_search to find a phrase in it, then context_archive_get with that \
+tools. Load context_archive_search via tool_search to find a phrase in it, then context_archive_get with that \
 hit's id to read the original message. Agent \
 status, when there is any, comes from the separate agent status message, not from this note. \
 The summary immediately below, and only it, is the previous model's own summary: every claim it \
