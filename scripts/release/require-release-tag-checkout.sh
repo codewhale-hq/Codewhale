@@ -11,8 +11,8 @@ if [[ -z "${version}" ]]; then
   version="$(grep -E '^version = "' Cargo.toml | head -n1 | sed -E 's/^version = "([^"]+)".*/\1/')"
 fi
 version="${version#v}"
-if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: release version '${version}' must use X.Y.Z" >&2
+if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "error: release version '${version}' must use X.Y.Z or X.Y.Z-prerelease" >&2
   exit 2
 fi
 

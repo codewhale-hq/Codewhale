@@ -188,6 +188,35 @@ known limitations and publication approval. These proofs are separate.
       Source readiness and build-only CI/RC do not authorize a tag, registry
       write, deployment or public launch.
 
+## 5a. Prerelease checkpoints (`X.Y.Z-prerelease`)
+
+A semver prerelease such as `0.10.3-beta.2` is prepared and tagged like a stable
+version, but it publishes only a GitHub prerelease and the npm `next` dist-tag.
+Use it for optional desktop or Boat checkpoints. The plain `X.Y.Z` path is
+unchanged and remains the authority.
+
+- [ ] Write the CHANGELOG section as `## [X.Y.Z-prerelease] - YYYY-MM-DD` with a
+      compare link from the last published tag, for example
+      `[0.10.3-beta.2]: https://github.com/codewhale-hq/CodeWhale/compare/v0.10.2...v0.10.3-beta.2`.
+- [ ] Prepare the workspace with
+      `./scripts/release/prepare-release.sh X.Y.Z-prerelease`, commit the bump
+      on `main`, and check `./scripts/release/check-versions.sh --require-dated-release`
+      says `Version state OK`. The tagged SHA itself must carry the prerelease
+      version, and the work after the tag restores `X.Y.Z` (last item below).
+- [ ] Exact-SHA full CI and `release-candidate.yml` must be green as in §4; the
+      same RC receipt gates the tag, and §5 approval still applies.
+- [ ] Tag `vX.Y.Z-prerelease` from that `main` SHA as in §6. The Release
+      workflow publishes a GitHub prerelease and the npm `next` tag, and skips
+      GHCR, CNB, GitCode, Homebrew, the web release record and Cargo. It does
+      not publish crates: publish crates only for the stable `X.Y.Z`.
+- [ ] Verify `npm view codewhale@X.Y.Z-prerelease version codewhaleBinaryVersion`
+      and `npm view codewhale dist-tags.next`; `latest` must still name the last
+      stable release.
+- [ ] Restore the workspace with `./scripts/release/prepare-release.sh X.Y.Z`,
+      drop the prerelease CHANGELOG entry once it should no longer be current,
+      and re-run `./scripts/release/check-versions.sh --require-dated-release`
+      before further work. Deferred checkpoint items stay tracked separately.
+
 ## 6. Tag and publish the approved source
 
 - [ ] Fetch `origin/main` again and verify that clean canonical `main`,

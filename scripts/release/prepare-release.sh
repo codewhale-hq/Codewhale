@@ -22,8 +22,8 @@
 set -euo pipefail
 
 new="${1:?usage: $0 <new-version>}"
-if ! [[ "${new}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: '${new}' is not a plain X.Y.Z version" >&2
+if ! [[ "${new}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "error: '${new}' is not X.Y.Z or X.Y.Z-prerelease" >&2
   exit 1
 fi
 
@@ -63,7 +63,7 @@ transaction_paths=(
   crates/config/src/route/providers-export.golden.json
   crates/tui/src/commands/contract/fixtures/config_policy/status.json
 )
-for manifest in crates/*/Cargo.toml; do
+for manifest in crates/*/Cargo.toml tests/*/Cargo.toml; do
   transaction_paths+=("${manifest}")
 done
 for path in "${transaction_paths[@]}"; do
@@ -154,6 +154,22 @@ for manifest in sorted(manifests):
         total += n
 if total == 0:
     sys.exit("error: no internal dependency pins were bumped — wrong old version?")
+
+if "-" in old or "-" in new:
+    normalized = 0
+    for manifest in sorted(pathlib.Path("tests").glob("*/Cargo.toml")):
+        text = manifest.read_text()
+        out, n = re.subn(
+            r'(codewhale-[a-z0-9-]+\s*=\s*\{[^}]*version = ")[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(")',
+            rf"\g<1>{new}\g<3>",
+            text,
+        )
+        if n:
+            manifest.write_text(out)
+            print(f"  {manifest}: {n} test-harness pin(s)")
+            normalized += n
+    if normalized == 0:
+        sys.exit("error: no test-harness internal pins were normalized — wrong workspace layout?")
 
 for lock_path in (pathlib.Path("vendor/codewhale-ratatui/Cargo.lock"), pathlib.Path("pet/tui/Cargo.lock")):
     if not lock_path.is_file():
