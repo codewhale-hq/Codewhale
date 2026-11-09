@@ -14,36 +14,58 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Work in progress and known limits
 
-- **Terminal lifetime:** deleting a conversation does not end its terminal shells; they run until the Engine exits. Scrollback beyond the 512 KiB ring is not recoverable, and an Engine restart loses live shells (reported as a new terminal `instance`).
-- **Codex App Server compatibility:** Codewhale is working toward full Codex
-  wire parity on the existing Engine. The current HTTP/SSE Runtime remains
-  available; full-tool turns, subscriptions, bidirectional interactions, durable
-  settlements, TCP WebSocket and the complete SDK remain unfinished.
-- **DSH plugins and MCP lifecycle:** compatibility with unmodified DeepSeek
-  Harness plugins remains in progress. The source candidate restores missing
-  runtime snapshots only from canonical bytes matching the current review,
-  generation and policy. Existing mismatched or tampered snapshots refuse
-  and require review. Native lifecycle qualification, authenticated DSH UI
-  transport and revocation in Electron, and an end-to-end published-plugin
-  journey remain unfinished.
+This source candidate is not the final 0.10.3 tag. The 2026-11-08 scope
+decision keeps App Server v2, the coarse Engine split and DSH all-33
+compatibility in 0.10.3; the final tag waits for that full list. The near-term
+`0.10.3-beta.2` is a GitHub prerelease for the Boat image and desktop, not this
+tag. Items moved to 0.10.4 by name are marked below.
+
+- **Terminal lifetime (0.10.3 work item):** deleting a conversation must end that
+  conversation's terminal shells and jobs. The source candidate still runs them
+  until the Engine exits; shells survive quitting or updating the app, and an
+  Engine restart loses live shells (reported as a new terminal `instance`).
+  Scrollback beyond the 512 KiB ring is not recoverable.
+- **Windows suite (0.10.3 work item):** the Windows Test job is not green on the
+  current candidate. Scripted journeys are being brought to zero on GitHub-hosted
+  native x64 runners; macOS and Linux results do not establish Windows.
+- **Codex App Server compatibility (0.10.3 work item):** the parity bar is Tiers
+  A and B (about 55 methods) implemented and Tier C (about 50 Codex-product
+  methods) returning "method not found" against a committed inventory. The
+  current HTTP/SSE Runtime remains available; full-tool turns, subscriptions,
+  bidirectional interactions, durable settlements, TCP WebSocket and the
+  complete SDK remain unfinished in this source candidate. The legacy JSON-RPC
+  dialect is removed in 0.10.3, with a breaking-change line here, once the
+  `codewhale thread` CLI has migrated.
+- **DSH plugins and MCP lifecycle (0.10.3 work item):** "full" compatibility
+  means all 33 surveyed plugins, unmodified, each passing its core journey on
+  macOS, Linux and Windows, against DSH 0.2.2-rc.1. The uplift comes first;
+  receipts from 0.2.1-rc.5 and earlier are not carried. The source candidate
+  restores missing runtime snapshots only from canonical bytes matching the
+  current review, generation and policy. Existing mismatched or tampered
+  snapshots refuse and require review. Native lifecycle qualification,
+  authenticated DSH UI transport and revocation in Electron, and an end-to-end
+  published-plugin journey remain unfinished.
   Imported DSH client UIs refuse descriptor and asset grants; their supported
   Native and MCP contributions retain their existing lifecycle.
   Downgrading a newly saved plugin marketplace catalog remains unqualified.
-- **ChatGPT sign-in on Windows:** the reported 0.10.2 post-browser identity
-  verification failure has not been confirmed resolved in the reporter's
-  environment. More specific errors and clock-skew handling are not a
-  successful Windows sign-in receipt. ([#7203](https://github.com/codewhale-hq/Codewhale/issues/7203))
-- **Conversation recovery on Deepin:** scoped interrupted-reply recovery and
-  persistence checks do not establish a fix for the original whole-history
-  disappearance on Deepin 25.2.2. ([#7095](https://github.com/codewhale-hq/Codewhale/issues/7095))
-- **Windows ACP and undo:** the original Paseo approval/sandbox journey and
-  ordinary multi-turn `/undo` through Windows ConPTY remain unqualified on the
-  final candidate. macOS and simulated checks do not establish those Windows
+- **ChatGPT sign-in on Windows (0.10.3 work item):** the reported 0.10.2
+  post-browser identity verification failure has not been confirmed resolved in
+  the reporter's environment. More specific errors and clock-skew handling are
+  not a successful Windows sign-in receipt. The founder's Windows check uses
+  `codewhale auth chatgpt` plus one turn. ([#7203](https://github.com/codewhale-hq/Codewhale/issues/7203))
+- **Moved to 0.10.4 — conversation recovery on Deepin:** scoped
+  interrupted-reply recovery and persistence checks do not establish a fix for
+  the original whole-history disappearance on Deepin 25.2.2. ([#7095](https://github.com/codewhale-hq/Codewhale/issues/7095))
+- **Windows ACP and undo (0.10.3 work item):** the original Paseo
+  approval/sandbox journey and ordinary multi-turn `/undo` through Windows
+  ConPTY remain unqualified on the final candidate. Scripted journeys run on
+  GitHub-hosted native x64 runners; the founder runs Paseo with the reporter's
+  configuration. macOS and simulated checks do not establish those Windows
   results. ([#6992](https://github.com/codewhale-hq/Codewhale/issues/6992), [#6970](https://github.com/codewhale-hq/Codewhale/issues/6970))
-- **Install and update routes:** final-candidate Windows and Linux package,
-  install, update, rollback and uninstall coverage is incomplete. Earlier
-  scoped platform receipts do not qualify the final package matrix or ordinary
-  Windows user journeys. ([#7091](https://github.com/codewhale-hq/Codewhale/issues/7091))
+- **Install and update routes (0.10.3 work item):** final-candidate Windows and
+  Linux package, install, update, rollback and uninstall coverage is incomplete.
+  Earlier scoped platform receipts do not qualify the final package matrix or
+  ordinary Windows user journeys. ([#7091](https://github.com/codewhale-hq/Codewhale/issues/7091))
 - **Workspace downgrade and rollback:** compatibility with older binaries after
   a 0.10.3 workspace migration remains unqualified. The CLI self-updater guard
   refuses recorded targets below 0.10.3 in `codewhale update --rollback` when
@@ -52,9 +74,12 @@ until the matching tag, packages, checksums, and release assets exist.
   unchanged. This does not provide backward-compatible rollback or qualify
   actual workspace migration or an allowed rollback. Manual or package-manager
   downgrades and older builds reporting the same version remain outside the guard.
-- **Long-running ZAI sessions:** scoped watchdog and recovery checks do not
-  establish a fix for the original hours-long, tool-heavy silent stall.
+- **Moved to 0.10.4 — long-running ZAI sessions:** scoped watchdog and recovery
+  checks do not establish a fix for the original hours-long, tool-heavy silent
+  stall; any further CW-6633 hardening moves with it.
   ([#6184](https://github.com/codewhale-hq/Codewhale/issues/6184))
+- **Moved to 0.10.4 — audit trackers:** every open row of CW-6943, CW-6945 and
+  CW-6950 is moved by name; CW-6944 is not moved.
 
 ### Added
 
