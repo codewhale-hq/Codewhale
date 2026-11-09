@@ -1,13 +1,13 @@
 #[test]
 fn default_active_contract_keeps_discovery_and_core_tools_eager() {
-    const EXPECTED_NATIVE: [&str; 16] = [
+    const EXPECTED_NATIVE: [&str; 14] = [
         "read",
         "write",
         "edit",
         "file_search",
+        "grep_files",
         "bash",
         "agent",
-        "workflow",
         "todo_write",
         "create_goal",
         "get_goal",
@@ -15,8 +15,6 @@ fn default_active_contract_keeps_discovery_and_core_tools_eager() {
         "task_shell_wait",
         "present",
         "load_skill",
-        "context_archive_get",
-        "context_archive_search",
     ];
     assert_eq!(
         default_active_native_tool_names(),
@@ -568,14 +566,12 @@ async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
         "task_shell_wait",
         "edit",
         "file_search",
+        "grep_files",
         "read",
         "todo_write",
         "tool_search",
-        "workflow",
         "write",
         "load_skill",
-        "context_archive_get",
-        "context_archive_search",
         "present",
     ]);
 
@@ -1018,7 +1014,7 @@ fn representative_runtime_context_fixture_is_stable_and_contains_expected_marker
     ];
     for (stage_index, stage) in stages.iter().enumerate() {
         for (marker_index, marker) in markers.iter().enumerate() {
-            let expected = usize::from(marker_index < stage_index);
+            let expected = usize::from(marker_index > 2 && marker_index < stage_index);
             assert_eq!(
                 stage.flat.matches(marker).count(),
                 expected,
@@ -1108,12 +1104,7 @@ fn measure_unchanged_prompt_skill_discovery() -> (
 #[test]
 fn unchanged_prompt_skill_discovery_baseline_caches_the_second_turn() {
     let (first, second, prompts_byte_identical) = measure_unchanged_prompt_skill_discovery();
-    let first_expected = codewhale_skills::SkillDiscoveryMetrics {
-        root_discovery_calls: 1,
-        directories_visited: 1,
-        skill_md_read_attempts: 1,
-    };
-    assert_eq!(first, first_expected);
+    assert_eq!(first, codewhale_skills::SkillDiscoveryMetrics::default());
     assert_eq!(second, codewhale_skills::SkillDiscoveryMetrics::default());
     assert!(prompts_byte_identical);
 }

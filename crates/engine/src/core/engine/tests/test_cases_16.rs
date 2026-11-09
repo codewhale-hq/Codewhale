@@ -313,7 +313,7 @@ fn engine_prompt_keeps_reasoning_on_the_user_language_contract() {
     };
 
     assert!(prompt.contains("## Language"));
-    assert!(prompt.contains("latest\nuser message"));
+    assert!(prompt.contains("latest user message"));
     assert!(prompt.contains("reasoning_content"));
     assert!(prompt.contains("## 语言再次提醒"));
     assert!(!prompt.contains("## Hidden Thinking Language"));

@@ -6795,10 +6795,10 @@ command = "echo project"
             // Searches the workspace without caller-named write targets, so it
             // keeps the classification it already had as a deferred tool.
             ("file_search", "other"),
+            ("grep_files", "other"),
             ("bash", "shell"),
             // The router itself touches nothing a hook needs to gate.
             ("agent", "other"),
-            ("workflow", "other"),
             ("todo_write", "safe"),
             // Goal controls retain their existing hook classification when
             // promoted from deferred discovery to the eager catalog.
@@ -6811,13 +6811,6 @@ command = "echo project"
             // the classification it already had as a deferred tool. Making it
             // eager must not silently re-gate it.
             ("load_skill", "other"),
-            // Replay over this session's own compaction archive. Both take a
-            // hash id or a phrase and resolve it against a file the host
-            // already owns, so neither hands the classifier a path to gate on
-            // and a hook that gates file reads or writes has nothing new to
-            // inspect.
-            ("context_archive_get", "other"),
-            ("context_archive_search", "other"),
         ];
         for name in crate::core::engine::tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS {
             let expected = EXPECTED.iter().find(|(n, _)| n == name).map(|(_, c)| *c);

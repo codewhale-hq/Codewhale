@@ -1199,6 +1199,7 @@ pub fn is_internal_runtime_handoff(message: &Message) -> bool {
         || mcp_configured_servers_display(message).is_some()
         || extension_prompt_contributions_display(message).is_some()
         || constitution_display(message).is_some()
+        || project_instructions_display(message).is_some()
     {
         return true;
     }

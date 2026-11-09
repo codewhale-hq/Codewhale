@@ -361,9 +361,14 @@ async fn edit_last_turn_cuts_at_user_prompt_before_tool_results() {
 
     assert_eq!(
         snapshot.messages.len(),
-        2,
+        3,
         "the whole previous turn (prompt, tool_use, tool_result, answer) must be cut: {:?}",
         snapshot.messages
+    );
+    assert!(
+        crate::runtime_handoff::project_instructions_display(&snapshot.messages[1]).is_some(),
+        "the middle survivor is the turn's workspace-instructions record: {:?}",
+        snapshot.messages[1]
     );
     assert!(
         snapshot.messages.iter().all(|message| !message
@@ -933,8 +938,9 @@ async fn preflight_guard_measures_honest_input_against_the_input_ceiling() {
     let request = mock.last_request().expect("the turn reached the model");
     assert_eq!(
         request.messages.len(),
-        history.len(),
-        "history reached the model without an emergency compaction pass"
+        history.len() + 1,
+        "history reached the model without an emergency compaction pass \
+         (plus preparation's workspace-instructions record)"
     );
 }
 

@@ -1133,8 +1133,8 @@ async fn an_answered_question_is_never_retracted() {
     assert!(!engine.retract_unanswered_user_message(mark));
     assert!(
         !engine.retract_unanswered_user_message(crate::core::turn::UnansweredUserMessage {
-            len: 0,
-            revision: engine.session.messages_revision,
+            index: 0,
+            content_sha256: String::new(),
         })
     );
     assert!(session_mentions(&engine, "keep me"));
@@ -1162,7 +1162,7 @@ async fn a_rewritten_session_of_the_same_length_is_never_retracted() {
     engine
         .session
         .replace_messages(vec![user_text("summary"), user_text("retained tail")]);
-    assert_eq!(engine.session.messages.len(), mark.len);
+    assert_eq!(engine.session.messages.len(), mark.index + 1);
 
     assert!(!engine.retract_unanswered_user_message(mark));
     assert!(session_mentions(&engine, "retained tail"));
@@ -1451,8 +1451,12 @@ async fn no_configured_mcp_servers_adds_nothing_to_history() {
     engine.config.features.disable(Feature::Mcp);
     let count = engine.session.messages.len();
     engine.record_mcp_runtime_context(&policy, &mut catalog).await;
-    assert_eq!(engine.session.messages.len(), count);
-
+    assert_eq!(engine.session.messages.len(), count + 1);
+    assert!(engine.session.messages.iter().rev().find_map(
+        crate::runtime_handoff::mcp_configured_servers_display
+    ).unwrap().contains("no longer applies"));
+    engine.record_mcp_runtime_context(&policy, &mut catalog).await;
+    assert_eq!(engine.session.messages.len(), count + 1);
 }
 
 async fn run_computer_use_live_card_case(
