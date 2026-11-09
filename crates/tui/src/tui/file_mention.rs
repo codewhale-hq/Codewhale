@@ -1359,7 +1359,7 @@ fn trim_unquoted_mention(raw: &str) -> &str {
         && trimmed
             .chars()
             .last()
-            .is_some_and(|ch| matches!(ch, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}'))
+            .is_some_and(|ch| ",;:!?)]}，。、；：！？）］｝」』】》〉".contains(ch))
     {
         trimmed = &trimmed[..trimmed.len() - trimmed.chars().last().unwrap().len_utf8()];
     }
@@ -1647,6 +1647,10 @@ mod tests {
             Some(("请看".len(), "src/ma".to_string()))
         );
         assert!(extract_file_mentions("mail me at a@b.com").is_empty());
+        assert_eq!(
+            extract_file_mentions("（@a.rs） 「@b.rs」 看@c.rs。"),
+            vec!["a.rs".to_string(), "b.rs".to_string(), "c.rs".to_string()]
+        );
     }
 
     #[test]
