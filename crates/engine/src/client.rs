@@ -2829,6 +2829,7 @@ fn admit_responses_profile(
     Ok(None)
 }
 
+#[cfg(test)]
 fn standard_responses_profile() -> ResponsesProfileId {
     codewhale_config::responses_dialect::builtin_profiles()
         .iter()
