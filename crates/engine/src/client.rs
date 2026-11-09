@@ -2537,7 +2537,10 @@ impl CodewhaleClient {
         if let Some(cert) = root_cert {
             builder = add_captured_root_cert(builder, cert);
         }
-        Ok(builder)
+        match config.model_http_policy.as_ref() {
+            Some(policy) => policy.configure(builder, base_url),
+            None => Ok(builder),
+        }
     }
 
     /// HTTP/1.1 client for automatic stream-header fallback.

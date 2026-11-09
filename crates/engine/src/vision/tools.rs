@@ -17,7 +17,7 @@ use codewhale_runtime::config::VisionModelConfig;
 
 pub struct ImageAnalyzeTool {
     config: VisionModelConfig,
-    client: reqwest::Client,
+    client: anyhow::Result<reqwest::Client>,
     route_client: Option<CodewhaleClient>,
 }
 
@@ -53,15 +53,26 @@ impl ImageAnalyzeTool {
         config: VisionModelConfig,
         route_client: Option<CodewhaleClient>,
     ) -> Self {
-        let client = crate::platform_client_builder()
-            // Bound only the connect handshake. A client- or request-level
-            // `read_timeout` would start counting at `send()` and never
-            // reset before the response headers, quietly re-introducing a
-            // total deadline on the upload + long non-streaming generation;
-            // the total bound lives in VISION_REQUEST_ENVELOPE instead.
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = (|| -> anyhow::Result<reqwest::Client> {
+            let builder = crate::platform_client_builder()
+                // Bound only the connect handshake. A client- or request-level
+                // `read_timeout` would start counting at `send()` and never
+                // reset before the response headers, quietly re-introducing a
+                // total deadline on the upload + long non-streaming generation;
+                // the total bound lives in VISION_REQUEST_ENVELOPE instead.
+                .connect_timeout(Duration::from_secs(10));
+            let builder = match config.model_http_policy.as_ref() {
+                Some(policy) => policy.configure(
+                    builder,
+                    config
+                        .base_url
+                        .as_deref()
+                        .unwrap_or("https://api.openai.com/v1"),
+                )?,
+                None => builder,
+            };
+            Ok(builder.build()?)
+        })();
         Self {
             config,
             client,
@@ -304,6 +315,9 @@ impl ToolSpec for ImageAnalyzeTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let client = self.client.as_ref().map_err(|error| {
+            ToolError::execution_failed(format!("Vision HTTP transport unavailable: {error:#}"))
+        })?;
         let image_path = required_str(&input, "image_path")?;
         let prompt = input
             .get("prompt")
@@ -343,7 +357,7 @@ impl ToolSpec for ImageAnalyzeTool {
             let response = with_retry(
                 &retry_config,
                 || {
-                    let client = self.client.clone();
+                    let client = client.clone();
                     let url = url.clone();
                     let api_key = api_key.clone();
                     let payload = payload.clone();
@@ -443,6 +457,7 @@ mod tests {
 
     fn fake_config() -> VisionModelConfig {
         VisionModelConfig {
+            model_http_policy: None,
             model: "test-vision-model".to_string(),
             api_key: Some("test-key".to_string()),
             base_url: Some("https://example.invalid/v1".to_string()),
@@ -680,6 +695,7 @@ mod tests {
         ] {
             let tool = ImageAnalyzeTool::new_with_route_client(
                 VisionModelConfig {
+                    model_http_policy: None,
                     model: "fixture/vision".to_string(),
                     api_key: Some("fixture-vision-key".to_string()),
                     base_url: Some(vision_base.to_string()),
@@ -727,6 +743,7 @@ mod tests {
         .expect("bound vLLM client");
         let tool = ImageAnalyzeTool::new_with_route_client(
             VisionModelConfig {
+                model_http_policy: None,
                 model,
                 api_key: None,
                 base_url: Some(base_url),
@@ -813,6 +830,7 @@ mod tests {
 
     fn tool_with_base_url(base_url: String) -> ImageAnalyzeTool {
         ImageAnalyzeTool::new(VisionModelConfig {
+            model_http_policy: None,
             model: "test-vision-model".to_string(),
             api_key: Some("test-key".to_string()),
             base_url: Some(base_url),
