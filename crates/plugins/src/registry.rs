@@ -1746,10 +1746,9 @@ pub(super) fn verify_finalized_stage_root(
         }
     }
     #[cfg(windows)]
-    codewhale_config::private_directory::verify_windows_owner_only_read_execute_handle(&held)
-        .map_err(|error| {
-            format!("Plugin runtime root has not been finalized read-only: {error:#}")
-        })?;
+    codewhale_config::private_directory::verify_windows_finalized_read_only_handle(&held).map_err(
+        |error| format!("Plugin runtime root has not been finalized read-only: {error:#}"),
+    )?;
     #[cfg(not(any(unix, windows)))]
     {
         Err("Plugin runtime root finalization cannot be verified on this platform".to_string())

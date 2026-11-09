@@ -234,7 +234,7 @@ pub fn save_agent_profile_document(
         codewhale_util::files::same_file(
             &guard,
             &codewhale_util::files::WorkspaceFile::open(&root, &lock_relative, false)?
-                .open_file()?,
+                .open_file_shared()?,
         )?,
         "Profile write lock changed; reopen the source"
     );
@@ -270,7 +270,7 @@ pub fn save_agent_profile_document(
         codewhale_util::files::same_file(
             &guard,
             &codewhale_util::files::WorkspaceFile::open(&root, &lock_relative, false)?
-                .open_file()?,
+                .open_file_shared()?,
         )?,
         "Profile write lock changed; reopen the source"
     );

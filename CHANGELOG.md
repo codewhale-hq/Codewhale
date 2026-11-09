@@ -462,6 +462,11 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Fixed
 
+- **Saving a Fleet role on Windows no longer fails with a sharing violation:**
+  choosing a model for a saved project or personal agent profile wrote nothing
+  and reported "The process cannot access the file because it is being used by
+  another process". The write-lock identity check now reopens the lock without
+  denying the writer that already holds it.
 - **A missing or unreachable state directory no longer breaks the turn:**
   when sub-agent state under `.codewhale/state` does not exist or is a
   symlink loop, the session warns once, naming the path, and keeps going
