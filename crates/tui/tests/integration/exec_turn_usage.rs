@@ -436,7 +436,7 @@ async fn plain_exec_runs_one_engine_turn_under_one_prompt_authority() {
     for body in &bodies {
         let messages = body["messages"].to_string();
         assert!(
-            messages.contains("You are Codewhale, an agent working alongside the user"),
+            messages.contains("You are Codewhale, an agent with real tools and a real workspace"),
             "both formats must carry the one base prompt: {messages}"
         );
         assert!(
@@ -847,17 +847,18 @@ async fn one_shot_exec_strips_deepseek_dsml_and_points_at_auto() {
 /// Last user message text of a chat-completions body, without the
 /// `<turn_meta>` block the engine appends.
 fn last_user_text(body: &Value) -> String {
-    let message = body["messages"]
+    let text = body["messages"]
         .as_array()
         .expect("messages array")
         .iter()
         .rev()
-        .find(|message| message["role"] == "user")
+        .filter(|message| message["role"] == "user")
+        .map(|message| match &message["content"] {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        })
+        .find(|text| !text.starts_with("<codewhale:runtime_event"))
         .expect("a user message");
-    let text = match &message["content"] {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    };
     match text.split_once("\n<turn_meta>") {
         Some((prompt, _)) => prompt.to_string(),
         None => text,
