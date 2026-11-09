@@ -367,6 +367,7 @@ fn model_preference(entry: &ProviderConfig) -> Option<&str> {
             kind: None,
             plugin_authority: None,
             api_key_env: None,
+            responses_profile: None,
         } if !model.trim().is_empty() && !model.chars().any(char::is_control) => Some(model),
         _ => None,
     }

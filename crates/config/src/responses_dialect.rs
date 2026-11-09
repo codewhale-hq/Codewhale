@@ -321,6 +321,25 @@ pub fn builtin_profiles() -> &'static [ResponsesDialectProfile] {
     BUILTIN_PROFILES
 }
 
+pub fn accept_custom_responses_profile(
+    profile: &str,
+) -> Result<&'static ResponsesDialectProfile, ResponsesProfileError> {
+    ensure_asset();
+    let Some(found) = find_profile(profile) else {
+        return Err(ResponsesProfileError::UnknownProfile {
+            profile: profile.to_string(),
+            allowed: allowed_list(),
+        });
+    };
+    if !CUSTOM_ALLOWED_PROFILES.contains(&found.id) {
+        return Err(ResponsesProfileError::ProfileNotAllowed {
+            profile: profile.to_string(),
+            allowed: allowed_list(),
+        });
+    }
+    Ok(found)
+}
+
 pub fn select_responses_profile(
     query: ResponsesProfileQuery<'_>,
 ) -> Result<Option<&'static ResponsesDialectProfile>, ResponsesProfileError> {

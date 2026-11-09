@@ -2258,6 +2258,7 @@ impl CodewhaleClient {
             base_url_override: Some(self.base_url.clone()),
             limit_overrides: Vec::new(),
             wire_override: (self.api_provider == ProviderKind::Custom).then_some(self.wire_format),
+            responses_profile_override: None,
         };
         if self.api_provider == ProviderKind::OpenaiCodex {
             static CODEX_RESOLVER: OnceLock<RouteResolver> = OnceLock::new();
@@ -2365,6 +2366,7 @@ impl CodewhaleClient {
             self.model_context_windows.as_ref(),
             &self.configured_models,
             (self.api_provider == ProviderKind::Custom).then_some(self.wire_format),
+            None,
         )
         .ok()
         .filter(|route| {

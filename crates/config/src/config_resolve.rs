@@ -1082,6 +1082,7 @@ impl ConfigToml {
             base_url_override: Some(base_url.clone()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         });
 
         let mut http_headers = self.http_headers.clone();

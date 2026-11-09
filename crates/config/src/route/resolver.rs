@@ -70,6 +70,10 @@ pub struct RouteRequest {
     /// `wire = "responses"` mints a wire-true candidate instead of Custom's
     /// backward-compatible static Chat policy.
     pub wire_override: Option<WireFormat>,
+    /// Explicit Responses profile from a custom provider table. Built-in
+    /// routes leave this empty and take the binding selected after the
+    /// protocol is known. `None` on a Responses route uses the default profile.
+    pub responses_profile_override: Option<String>,
 }
 
 /// Resolves [`RouteRequest`]s into [`ReadyRouteCandidate`]s.
@@ -547,7 +551,7 @@ impl RouteResolver {
                 provider: provider_kind,
                 endpoint_key: &endpoint.endpoint_key,
                 base_url: &endpoint.base_url,
-                explicit_profile: None,
+                explicit_profile: req.responses_profile_override.as_deref(),
             },
         )
         .map_err(|err| RouteError::ResponsesProfile {

@@ -692,7 +692,10 @@ base_url = "https://gateway.example/v1"
 api_key_env = "MY_GATEWAY_API_KEY"
 model = "gpt-5.6"
 wire = "responses"
+responses_profile = "standard"
 ```
+
+`responses_profile` is optional. Leaving it out uses the `standard` Responses dialect. The only profile a custom table may name is `standard`; `codex` and any unknown id are rejected, and the field is rejected unless `wire` selects Responses.
 
 StepFun has a first-class provider entry, so keep Coding Plan credentials and
 base URL scoped to `[providers.stepfun]`:
