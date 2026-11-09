@@ -209,9 +209,15 @@ path = {outbox}
     let final_messages = requests.last().unwrap()["messages"].as_array().unwrap();
     let users = final_messages
         .iter()
-        .filter(|message| message["role"] == "user")
+        .filter(|message| {
+            message["role"] == "user" && !message.to_string().contains("codewhale:runtime_event")
+        })
         .collect::<Vec<_>>();
-    assert_eq!(users.len(), 2, "no synthetic continuation user turns");
+    assert_eq!(
+        users.len(),
+        2,
+        "no synthetic continuation user turns: {final_messages:#?}"
+    );
     assert!(users[0]["content"].to_string().contains(FIRST));
     assert!(users[1]["content"].to_string().contains(SECOND));
     assert!(

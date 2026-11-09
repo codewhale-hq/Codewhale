@@ -739,12 +739,12 @@ workflow({
             );
             if expected_role == "explore" {
                 assert!(
-                    leaf.prompt.contains("use `tool_search` with")
+                    !leaf.prompt.contains("tool_search")
                         && leaf.prompt.contains("Use `grep_files` with")
                         && leaf.prompt.contains(
-                            "the content-search tool is deferred, so this activation is required before it can be called"
+                            "`grep_files` is available directly on your surface; call it without any activation step"
                         ),
-                    "the scout must activate the deferred content-search tool before searching with it"
+                    "the scout must search with the content-search tool that is already on its surface"
                 );
                 assert!(
                     leaf.prompt
