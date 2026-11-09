@@ -2479,7 +2479,7 @@ mod owner_origin_tests {
     use super::*;
 
     #[tokio::test]
-    async fn canonical_child_unbounded_claim_checks_exact_held_origin_before_peer_projection() {
+    async fn canonical_child_bounded_write_checks_exact_held_origin_before_scope_validation() {
         let _environment = crate::test_support::lock_test_env();
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
@@ -2518,14 +2518,13 @@ mod owner_origin_tests {
         );
         let mut registry = ToolRegistry::new(ToolContext::new(selected.clone()));
         registry.register(Arc::new(crate::tools::shell::BashTool::new("Bash")));
-        let input = serde_json::json!({"command":"python3 -c 'print(1)'"});
-        // No peer exists: ordinary work is still admitted under its held root.
-        assert!(
+        let input = serde_json::json!({"path":"src/lib.rs","content":"x"});
+        assert_eq!(
             authority
-                .validate_claim(&registry, "bash", &input)
+                .validate_claim(&registry, "write_file", &input)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            vec!["src/lib.rs".to_string()]
         );
         {
             let mut held = manager.write().await;
@@ -2536,7 +2535,7 @@ mod owner_origin_tests {
                 .scope = Some(foreign);
         }
         let refused = authority
-            .validate_claim(&registry, "bash", &input)
+            .validate_claim(&registry, "write_file", &input)
             .await
             .unwrap_err();
         assert!(
