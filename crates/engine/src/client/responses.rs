@@ -7,15 +7,17 @@
 //! This is intentionally separate from the Chat Completions path
 //! (`client/chat.rs`) to avoid protocol hacks.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::llm_client::StreamEventBox;
 use codewhale_config::ProviderKind;
 use codewhale_config::responses_dialect::{
-    EncryptedReasoningReplayPolicy, IncludePolicy, InstructionsPlacement, OutputTokenFieldPolicy,
-    ParallelToolCallPolicy, PlainReasoningReplayPolicy, ReasoningEffortMapping,
-    ReasoningSummaryPolicy, ResponsesDialectProfile, SamplingPolicy, StorePolicy,
+    AudioUsageFieldPolicy, CacheUsageFieldPolicy, CompletionPolicy, DoneMarkerPolicy,
+    EncryptedReasoningReplayPolicy, IncludePolicy, IncompleteResponsePolicy, InstructionsPlacement,
+    MalformedEventPolicy, OutputTokenFieldPolicy, ParallelToolCallPolicy,
+    PlainReasoningReplayPolicy, ReasoningEffortMapping, ReasoningSummaryPolicy,
+    ReasoningUsageFieldPolicy, ResponsesDialectProfile, SamplingPolicy, StorePolicy,
     SystemRoleReplayPolicy, ToolEnvelopePolicy,
 };
 use codewhale_models::tool_projection::{
@@ -39,10 +41,6 @@ use super::wire::{
 use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
 use crate::llm_client::LlmError;
 
-const CHATGPT_TOOL_NAMESPACE: &str = "codewhale";
-
-/// Build the Responses API request body from a `MessageRequest`.
-#[cfg(test)]
 pub(super) struct ResponsesReplayContext<'a> {
     pub(super) provider_id: &'a str,
     pub(super) wire_model_id: &'a str,
@@ -252,7 +250,29 @@ impl CodewhaleClient {
         // Body, endpoint, and route shape all come from the shared
         // prepared-request seam (`prepare_outbound_request`).
         let body = &prepared.body;
-        let is_chatgpt = self.api_provider == ProviderKind::OpenaiCodex;
+        let Some(profile_id) = self.responses_profile_id else {
+            bail!(
+                "responses client for {} has no dialect profile",
+                self.api_provider.as_str()
+            );
+        };
+        let Some(profile) = codewhale_config::responses_dialect::profile(profile_id.as_str())
+        else {
+            bail!(
+                "responses profile {} is not in the dialect table",
+                profile_id.as_str()
+            );
+        };
+        admit_shared_responses_usage(profile);
+        let malformed_json = profile.stream.malformed_json;
+        let done_marker = profile.stream.done_marker;
+        let incomplete = profile.stream.incomplete;
+        let tool_namespace = profile.tools.namespace;
+        let strict_terminal = matches!(
+            profile.stream.completion,
+            CompletionPolicy::RequireSuccessfulResponseCompleted
+        );
+        let codex_identity = self.api_provider == ProviderKind::OpenaiCodex;
         let url = prepared.endpoint.url.clone();
         // The synthetic MessageStart below is emitted from inside the stream
         // closure, which outlives `prepared`. Clone the wire model — the id
@@ -260,10 +280,12 @@ impl CodewhaleClient {
         // remapping — rather than borrowing the request that no longer exists
         // at this layer.
         let wire_model = prepared.wire_model.clone();
-        let reasoning_api = if is_chatgpt {
-            self.chatgpt_reasoning_api.as_deref()
-        } else {
-            Some("openai-responses")
+        let reasoning_api = match profile.replay.encrypted_state {
+            EncryptedReasoningReplayPolicy::AccountApiModelScoped => {
+                self.chatgpt_reasoning_api.as_deref()
+            }
+            EncryptedReasoningReplayPolicy::ProviderApiModelScoped => Some("openai-responses"),
+            EncryptedReasoningReplayPolicy::Disabled => None,
         };
         let reasoning_origin = reasoning_api.map(|api| {
             (
@@ -396,7 +418,7 @@ impl CodewhaleClient {
                             } else if let Some(value) = extract_sse_data_value(&line)
                                 && let Err(err) = push_sse_event_data(&mut event_data, value)
                             {
-                                if is_chatgpt {
+                                if strict_terminal {
                                     yield Err(LlmError::ParseError(err.to_string()).into());
                                     return;
                                 }
@@ -411,7 +433,7 @@ impl CodewhaleClient {
                         }
                         Ok(None) => break,
                         Err(err) => {
-                            if is_chatgpt {
+                            if strict_terminal {
                                 yield Err(LlmError::ParseError(err.to_string()).into());
                                 return;
                             }
@@ -426,14 +448,16 @@ impl CodewhaleClient {
                     {
                         let data = data.as_str();
                         if data == "[DONE]" {
-                            if !is_chatgpt { done = true; }
+                            if done_marker == DoneMarkerPolicy::Terminal {
+                                done = true;
+                            }
                             break;
                         }
 
                         let event: Value = match serde_json::from_str(data) {
                             Ok(v) => v,
                             Err(e) => {
-                                if is_chatgpt {
+                                if malformed_json == MalformedEventPolicy::Fail {
                                     yield Err(LlmError::ParseError("Invalid ChatGPT response event".into()).into());
                                     return;
                                 }
@@ -468,7 +492,10 @@ impl CodewhaleClient {
                                                 Some(content_block_counter - 1);
                                         }
                                         "function_call" => {
-                                            if is_chatgpt && item.get("namespace").and_then(Value::as_str) != Some(CHATGPT_TOOL_NAMESPACE) {
+                                            if let Some(namespace) = tool_namespace
+                                                && item.get("namespace").and_then(Value::as_str)
+                                                    != Some(namespace)
+                                            {
                                                 yield Err(LlmError::ParseError("ChatGPT returned a function outside the Codewhale tool namespace".into()).into());
                                                 return;
                                             }
@@ -640,15 +667,17 @@ impl CodewhaleClient {
                                 }
                             }
                             "response.completed" | "response.incomplete" => {
-                                if is_chatgpt && !event.get("response").is_some_and(Value::is_object) {
+                                if strict_terminal && !event.get("response").is_some_and(Value::is_object) {
                                     yield Err(LlmError::ParseError("ChatGPT completion event has no response".into()).into());
                                     return;
                                 }
-                                if is_chatgpt && event_type == "response.completed" && string_at(&event, "/response/status") != Some("completed") {
+                                if strict_terminal && event_type == "response.completed" && string_at(&event, "/response/status") != Some("completed") {
                                     yield Err(LlmError::ParseError("ChatGPT completion event has an unsuccessful status".into()).into());
                                     return;
                                 }
-                                if is_chatgpt && event_type == "response.incomplete" {
+                                if event_type == "response.incomplete"
+                                    && incomplete == IncompleteResponsePolicy::Fail
+                                {
                                     if let Some(usage_val) = event.pointer("/response/usage") {
                                         yield Ok(StreamEvent::MessageDelta {
                                             delta: MessageDelta { stop_reason: None, stop_sequence: None },
@@ -682,21 +711,24 @@ impl CodewhaleClient {
                             }
                             "error" | "response.failed" => {
                                 let (code, msg) = responses_event_error_details(&event);
-                                if is_chatgpt {
+                                if strict_terminal {
                                     if let Some(usage_val) = event.pointer("/response/usage") {
                                         yield Ok(StreamEvent::MessageDelta {
                                             delta: MessageDelta { stop_reason: None, stop_sequence: None },
                                             usage: Some(parse_responses_usage(usage_val)),
                                         });
                                     }
-                                    if let Some(error) = LlmError::from_subscription_sharing_error_code(&code) {
+                                    if codex_identity
+                                        && let Some(error) =
+                                            LlmError::from_subscription_sharing_error_code(&code)
+                                    {
                                         yield Err(error.into());
                                         return;
                                     }
                                 }
                                 let code = super::redact_model_bound_text(&code, &error_secrets);
                                 let msg = super::redact_model_bound_text(&msg, &error_secrets);
-                                if is_chatgpt {
+                                if strict_terminal {
                                     yield Err(LlmError::ModelError(format!("Responses API error [{code}]: {msg}")).into());
                                     return;
                                 }
@@ -717,12 +749,12 @@ impl CodewhaleClient {
                 }
             }
 
-            // ChatGPT requires a successful response.completed event; other
-            // Responses routes also accept their documented terminal markers.
-            // A bare HTTP EOF is truncation, and
-            // a MessageStop here would hand the turn a partial answer as done.
+            // A strict completion profile requires a successful response.completed
+            // event. Other Responses profiles also accept their documented
+            // terminal markers. A bare HTTP EOF is truncation, and a
+            // MessageStop here would hand the turn a partial answer as done.
             if !done {
-                if is_chatgpt {
+                if strict_terminal {
                     yield Err(LlmError::ParseError("ChatGPT Responses stream closed before a successful completion event".into()).into());
                     return;
                 }
@@ -1288,6 +1320,20 @@ pub(super) fn parse_tool_use_id(id: &str) -> (String, String) {
         (id[..pipe_pos].to_string(), id[pipe_pos + 1..].to_string())
     } else {
         (id.to_string(), String::new())
+    }
+}
+
+fn admit_shared_responses_usage(profile: &ResponsesDialectProfile) {
+    match (
+        profile.usage.cache_fields,
+        profile.usage.reasoning_fields,
+        profile.usage.audio_fields,
+    ) {
+        (
+            CacheUsageFieldPolicy::TopLevelThenNestedFallback,
+            ReasoningUsageFieldPolicy::OutputTokensDetails,
+            AudioUsageFieldPolicy::NestedDetails,
+        ) => {}
     }
 }
 

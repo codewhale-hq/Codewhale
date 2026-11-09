@@ -32,7 +32,7 @@ use codewhale_config::catalog::{
 #[cfg(any(test, feature = "test-support"))]
 use codewhale_config::catalog::{CatalogSnapshot, CatalogStatus, ProviderCatalogCache};
 use codewhale_config::provider::WireFormat;
-use codewhale_config::responses_dialect::ResponsesProfileId;
+use codewhale_config::responses_dialect::{ResponsesPathPolicy, ResponsesProfileId};
 use codewhale_config::route::{
     LogicalModelRef, ReadyRouteCandidate, RouteLimits, RouteRequest, RouteResolver,
 };
@@ -1200,22 +1200,12 @@ pub fn api_url(base_url: &str, path: &str) -> String {
     api_url_with_suffix(base_url, path, None)
 }
 
-fn responses_api_url(base_url: &str, provider: ProviderKind) -> String {
-    let normalized = base_url.trim_end_matches('/').to_ascii_lowercase();
-    let official_deepseek = matches!(provider, ProviderKind::Deepseek)
-        && matches!(
-            normalized.as_str(),
-            "https://api.deepseek.com"
-                | "https://api.deepseek.com/v1"
-                | "https://api.deepseek.com/beta"
-                | "https://api.deepseeki.com"
-                | "https://api.deepseeki.com/v1"
-                | "https://api.deepseeki.com/beta"
-        );
-    if official_deepseek {
-        format!("{}/responses", unversioned_base_url(base_url))
-    } else {
-        api_url(base_url, "responses")
+fn responses_api_url(base_url: &str, path: ResponsesPathPolicy) -> String {
+    match path {
+        ResponsesPathPolicy::UnversionedResponses => {
+            format!("{}/responses", unversioned_base_url(base_url))
+        }
+        ResponsesPathPolicy::VersionedResponses => api_url(base_url, "responses"),
     }
 }
 
@@ -3543,7 +3533,7 @@ impl CodewhaleClient {
                     body["model"] = json!(model);
                 }
                 let is_codex = self.api_provider == ProviderKind::OpenaiCodex;
-                let url = responses_api_url(&self.base_url, self.api_provider);
+                let url = responses_api_url(&self.base_url, profile.endpoint.path);
                 let shape = if is_codex {
                     RouteShape::CodexResponses
                 } else if self.api_provider == ProviderKind::OpencodeZen {

@@ -326,6 +326,29 @@ pub fn profile(id: &str) -> Option<&'static ResponsesDialectProfile> {
     find_profile(id)
 }
 
+/// Path policy for a base URL that matches an exact binding. Unmatched URLs
+/// stay on the versioned Responses path. Matching strips a trailing slash and
+/// lowercases; it does not trim surrounding whitespace.
+pub fn bound_responses_path(provider: ProviderKind, base_url: &str) -> ResponsesPathPolicy {
+    ensure_asset();
+    let normalized = base_url.trim_end_matches('/').to_ascii_lowercase();
+    for binding in BUILTIN_BINDINGS {
+        if binding.provider_kind != provider {
+            continue;
+        }
+        let Some(urls) = binding.base_urls else {
+            continue;
+        };
+        if !urls.iter().any(|url| *url == normalized) {
+            continue;
+        }
+        if let Some(profile) = find_profile(binding.profile_id.as_str()) {
+            return profile.endpoint.path;
+        }
+    }
+    ResponsesPathPolicy::VersionedResponses
+}
+
 pub fn accept_custom_responses_profile(
     profile: &str,
 ) -> Result<&'static ResponsesDialectProfile, ResponsesProfileError> {
