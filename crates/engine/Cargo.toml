@@ -121,7 +121,7 @@ futures-util = "0.3.31"
 oauth2 = { version = "5", default-features = false }
 regex = "1.11"
 reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2"] }
-rmcp = { version = "3.7.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
+rmcp = { version = "3.9.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
 rustls.workspace = true
 similar = { version = "3", features = ["unicode"] }
 serde.workspace = true

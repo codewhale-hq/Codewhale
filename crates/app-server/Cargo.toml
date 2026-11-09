@@ -84,7 +84,7 @@ ignore = "0.4"
 parking_lot = "0.12"
 qrcode = { version = "0.14", default-features = false }
 regex = "1.11"
-rmcp = { version = "3.7.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
+rmcp = { version = "3.9.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
 semver.workspace = true
 tempfile.workspace = true
 tokio-util = { version = "0.7.16", features = ["io"] }

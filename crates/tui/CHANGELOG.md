@@ -824,6 +824,10 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Security
 
+- **MCP client advisory (RUSTSEC-2026-0462):** the MCP library moves to
+  rmcp 3.9.0, closing unbounded response-body buffering in its Streamable
+  HTTP clients that a hostile or broken MCP server could use to exhaust
+  memory.
 - Saved tool-result reads refuse links in the selected session, including a linked session directory, while preserving deliberately relocated application storage. Owned files and digest-checked legacy results keep their existing access paths.
 - **Pinned marketplace archives:** a Codewhale or Claude marketplace entry whose tarball source carries a `sha256` now installs only when the downloaded bytes match it; a mismatch, a malformed pin or a pin on a non-archive source refuses the install with nothing written. The pin also applies to direct installs as `https://…/x.tar.gz#sha256=<hex>`.
 - **Sandboxed commands cannot plant git hooks or edit git config:** in workspace-write mode, `.git/hooks` and `.git/config` (and a linked worktree's shared `hooks` and `config`) are read-only to sandboxed commands, so a command cannot leave a hook or `core.hooksPath` that later runs outside the sandbox. The workspace's `.codewhale/` is protected even before it exists (on Linux it is created first, because bubblewrap can only protect existing paths). `git commit` and ordinary file writes are unaffected; `git config` writes and hook edits need an approved unsandboxed command.
