@@ -19,31 +19,23 @@ fn ordinary_engine_default_does_not_install_a_step_budget() {
 }
 
 #[test]
-fn registry_instruction_is_in_the_initial_prompt_only_when_mcp_is_enabled() {
-    let enabled = EngineConfig::default();
-    let (engine, _handle) = Engine::new(enabled, &Config::default());
-    let prompt = crate::prompts::system_prompt_flat_text(
-        engine
-            .session
-            .system_prompt
-            .as_ref()
-            .expect("system prompt"),
-    );
-    assert!(prompt.contains(MCP_REGISTRY_FIRST_INSTRUCTION_SOURCE));
-    assert!(prompt.contains("registry_sync"));
-    assert!(prompt.contains("start_registry_mcp_server"));
-
-    let mut disabled = EngineConfig::default();
-    disabled.features.disable(Feature::Mcp);
-    let (engine, _handle) = Engine::new(disabled, &Config::default());
-    let prompt = crate::prompts::system_prompt_flat_text(
-        engine
-            .session
-            .system_prompt
-            .as_ref()
-            .expect("system prompt"),
-    );
-    assert!(!prompt.contains(MCP_REGISTRY_FIRST_INSTRUCTION_SOURCE));
+fn registry_guidance_stays_out_of_the_initial_prompt() {
+    for mcp_enabled in [true, false] {
+        let mut config = EngineConfig::default();
+        if !mcp_enabled {
+            config.features.disable(Feature::Mcp);
+        }
+        let (engine, _handle) = Engine::new(config, &Config::default());
+        let prompt = crate::prompts::system_prompt_flat_text(
+            engine
+                .session
+                .system_prompt
+                .as_ref()
+                .expect("system prompt"),
+        );
+        assert!(!prompt.contains("## MCP Registry"));
+        assert!(!prompt.contains("runtime:mcp-registry-first"));
+    }
 }
 
 /// The engine hands every agent the live posture cell, not a copy: a

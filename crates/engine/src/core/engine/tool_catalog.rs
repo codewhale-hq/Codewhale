@@ -376,7 +376,7 @@ pub fn ensure_advanced_tooling(
         catalog.push(Tool {
             tool_type: Some(TOOL_SEARCH_TYPE.to_string()),
             name: TOOL_SEARCH_NAME.to_string(),
-            description: "Search deferred tool definitions and return matching tool references. Deferred tools commonly include `Git`, `Run` (tests and verifier checks), `Web`, `tasks` (background work; `suggest` offers a follow-up card), `request_user_input` (structured questions), `github`, `automation` (scheduling), `lsp`, `review`, `session_search` (past sessions), `terminal/run` and its siblings, `apply_patch`, and `grep_files`, plus connected MCP servers. Calling one by name also loads it.".to_string(),
+            description: "Search deferred tool definitions and return matching tool references. Deferred tools commonly include `Git`, `Run` (tests and verifier checks), `Web`, `tasks` (background work; `suggest` offers a follow-up card), `request_user_input` (structured questions), `github`, `automation` (scheduling), `lsp`, `review`, `session_search` (past sessions), `terminal/run` and its siblings, `apply_patch`, and `grep_files`, plus connected MCP servers and the MCP Registry pair (`registry_sync`, `start_registry_mcp_server`) for installing a local MCP server when no available tool covers a needed capability. Calling one by name also loads it.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

@@ -150,8 +150,6 @@ fn agent_list_event(manager: &SubAgentManager, active_session_id: &str) -> Event
 /// (`permission_chip_label`). Receipts read it back from saved transcripts,
 /// so the writer and the reader share this prefix.
 pub const PERMISSION_POSTURE_LINE: &str = "Current permission posture: ";
-const MCP_REGISTRY_FIRST_INSTRUCTION_SOURCE: &str = "runtime:mcp-registry-first";
-const MCP_REGISTRY_FIRST_INSTRUCTION: &str = "## MCP Registry\n\nThe Registry installs and connects a local MCP server when this session lacks a capability. It is a fallback for a capability you do not have, not a step before ordinary work.\n\nPrefer what is already available, in order: tools already in this catalog, the project's own scripts, tests, and dev tooling, and platform capabilities. Creating a file, reading a fixture, running a repo command, and checking your own output are ordinary work — do them directly.\n\nReach for the Registry once you have identified a specific capability that no available tool covers and that you would otherwise install or reimplement, such as a document or media converter, access to an external database or service, or a protocol client. Then call `registry_sync` with a `query` naming that capability; it scores the local Registry snapshot host-side and returns at most eight matches, so the full index never enters the conversation. When a returned server plausibly covers that capability, call `start_registry_mcp_server` with its exact name rather than installing or running its package command through the shell. If nothing matches, refine the query once, then continue with local tools.\n\nBoth Registry tools are deferred: load one with `tool_search` before its first call, and use the returned schema. If a call instead reports that it only loaded the schema, retry once with that schema. Do not go searching for them for work you can already do.";
 /// The one system prompt for an isolated Runtime Chat session. The engine owns
 /// it; the Runtime Chat relay sends the same text (plus any account chat
 /// instructions) so the two never drift apart (#6517).
@@ -2186,25 +2184,6 @@ impl Engine {
             config
                 .tools_always_load
                 .insert(codewhale_tools::names::REQUEST_USER_INPUT_NAME.to_string());
-        }
-
-        // Unlike a Skill body, this instruction is visible on the first model
-        // request. Registry discovery is a fallback for missing capabilities;
-        // result matching stays with the model and the index stays host-side.
-        //
-        // It describes when discovery is worth a turn; it is not a gate ahead
-        // of ordinary work. The earlier "must call `registry_sync` before a
-        // manual implementation" phrasing named two deferred tools as
-        // mandatory, so a plain "write an HTML page and read a fixture" turn
-        // spent its steps on `tool_search` for `registry_sync` and on starting
-        // a browser server instead of writing the file.
-        if config.features.enabled(Feature::Mcp) && !api_config.runtime_chat_isolated {
-            config
-                .instructions
-                .push(crate::prompts::InstructionSource::Inline {
-                    name: MCP_REGISTRY_FIRST_INSTRUCTION_SOURCE.to_string(),
-                    content: MCP_REGISTRY_FIRST_INSTRUCTION.to_string(),
-                });
         }
 
         if let Some(objective) = normalized_goal_objective(config.goal_objective.as_deref()) {

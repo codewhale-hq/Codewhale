@@ -196,22 +196,6 @@ so any English prose in your response will block their decision-making."
     )
 }
 
-fn concise_output_discipline_instruction() -> &'static str {
-    "\
-## Concise Output Discipline
-
-To minimize token usage and optimize speed:
-- Output only direct, actionable code, technical steps, or final answers.
-- Eliminate all conversational filler, fluff, introductions, transitions, or summarizing conclusions.
-- Do NOT explain what you are about to do or what you have just completed.
-- Do NOT provide conversational status updates before or after running tools.
-- Keep explanations and comments extremely brief and technical, explaining only non-obvious reasoning."
-}
-
-fn is_concise_verbosity(value: Option<&str>) -> bool {
-    value.is_some_and(|v| v.trim().eq_ignore_ascii_case("concise"))
-}
-
 fn translation_target_language_for_tag(locale_tag: &str) -> &'static str {
     let normalized = locale_tag.trim().to_ascii_lowercase();
     if normalized.starts_with("ja") {
@@ -1246,7 +1230,7 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval_for_host(
 pub fn system_prompt_with_instruction_assembly_for_host(
     workspace: &Path,
     _working_set_summary: Option<&str>,
-    skills_dir: Option<&Path>,
+    _skills_dir: Option<&Path>,
     instructions: Option<&[InstructionSource]>,
     session_context: PromptSessionContext<'_>,
     prompt_host: PromptHost,
@@ -1352,32 +1336,6 @@ pub fn system_prompt_with_instruction_assembly_for_host(
             "{full_prompt}\n\n{}",
             translation_output_instruction(session_context.locale_tag)
         );
-    }
-
-    if is_concise_verbosity(session_context.verbosity) {
-        full_prompt = format!(
-            "{full_prompt}\n\n{}",
-            concise_output_discipline_instruction()
-        );
-    }
-
-    // 3. Skills block. #432: default discovery walks every compatible
-    // workspace/global skill directory so skills installed for other AI-tool
-    // conventions show up in the catalogue. Users can opt into a Codewhale-only
-    // scan with `[skills] scan_codewhale_only = true`. When an explicit
-    // `skills_dir` is configured, union it with the workspace view instead of
-    // treating it as a fallback; the workspace view often returns Some and
-    // would otherwise shadow the configured directory entirely.
-    let skills_block = codewhale_skills::render_index(
-        workspace,
-        skills_dir,
-        &session_context.skills_config,
-        session_context.locale_tag,
-        session_context.plugin_registry,
-        session_context.context_window_override,
-    );
-    if let Some(block) = skills_block {
-        full_prompt = format!("{full_prompt}\n\n{block}");
     }
 
     // 4. Lean, runtime-only coding discipline. Context pressure, prompt-cache
@@ -2365,7 +2323,7 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_merges_workspace_and_configured_skills_dir() {
+    fn system_prompt_carries_no_skills_index() {
         let _env_guard = crate::test_support::lock_test_env();
         let tmp = tempdir().expect("tempdir");
         let _home = ScopedHome::set(tmp.path().join("home"));
@@ -2387,8 +2345,9 @@ mod tests {
             None,
         ));
 
-        assert!(text.contains("workspace-skill"));
-        assert!(text.contains("configured-skill"));
+        assert!(!text.contains("workspace-skill"));
+        assert!(!text.contains("configured-skill"));
+        assert!(text.contains("load_skill"));
     }
 
     struct ScopedHome {
@@ -4136,7 +4095,7 @@ mod tests {
     }
 
     #[test]
-    fn verbosity_concise_appends_discipline_block() {
+    fn verbosity_concise_adds_no_separate_discipline_block() {
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
         let prompt = system_prompt_flat_text(
@@ -4163,9 +4122,10 @@ mod tests {
         );
 
         assert!(
-            prompt.contains("## Concise Output Discipline"),
-            "Concise Output Discipline should be appended"
+            !prompt.contains("## Concise Output Discipline"),
+            "conciseness is one line of Output Formatting, not a separate block"
         );
+        assert!(prompt.contains("Be concise."));
     }
 
     #[test]
