@@ -20,10 +20,10 @@ compatibility in 0.10.3; the final tag waits for that full list. The near-term
 `0.10.3-beta.2` is a GitHub prerelease for the Boat image and desktop, not this
 tag. Items moved to 0.10.4 by name are marked below.
 
-- **Terminal lifetime (0.10.3 work item):** deleting a conversation must end that
-  conversation's terminal shells and jobs. The source candidate still runs them
-  until the Engine exits; shells survive quitting or updating the app, and an
-  Engine restart loses live shells (reported as a new terminal `instance`).
+- **Terminal lifetime (0.10.3 work item):** deleting a conversation now ends the
+  terminal sessions owned by that Runtime thread. The desktop tab-close half and
+  the jobs half remain; shells still survive quitting or updating the app, and
+  an Engine restart loses live shells (reported as a new terminal `instance`).
   Scrollback beyond the 512 KiB ring is not recoverable.
 - **Windows suite (0.10.3 work item):** the Windows Test job is not green on the
   current candidate. Scripted journeys are being brought to zero on GitHub-hosted
@@ -401,6 +401,7 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Fixed
 
+- **Deleting a conversation ends its terminal sessions.** A Runtime thread's terminal PTYs are killed and removed from the live registry when the thread is deleted; the durable record is marked cancelled. The desktop tab-close half and the jobs half remain separate work.
 - **A question waits for you.** An answerable prompt from the desktop Runtime API no longer hits the 30-minute durable-task human-wait cap; it waits until you answer or cancel. Headless and unanswerable tasks keep the fail-safe cap.
 - **A plugin refused for its runtime snapshot now says why.** The warning and the enable error carry the reason the saved snapshot was rejected (for example the stage root is not read-only, or its content identity differs) instead of only "no staged snapshot". On Windows, 119 of the 135 hosted test failures were this one message with the cause discarded, so the next run can name it. Not a fix for those failures.
 - **Listing installed agent CLIs no longer blocks the runtime.** `GET /v1/agents/external` looks for each binary with `tokio::fs` instead of synchronous file calls on a runtime worker.
