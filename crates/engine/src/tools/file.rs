@@ -2093,15 +2093,68 @@ fn normalize_contract_fuzzy(text: &str) -> String {
         }
         trimmed.push_str(line.trim_end());
     }
-    trimmed
-        .chars()
-        .map(|ch| match ch {
-            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
-            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
-            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
-            | '\u{2212}' => '-',
-            '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
-            other => other,
+    trimmed.chars().map(contract_fuzzy_char).collect()
+}
+
+fn contract_fuzzy_char(ch: char) -> char {
+    match ch {
+        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+        '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
+        '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+        | '\u{2212}' => '-',
+        '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => ' ',
+        other => other,
+    }
+}
+
+fn contract_fuzzy_offsets(original: &str, normalized: &str) -> Option<Vec<(usize, usize)>> {
+    fn trim_line(rebuilt: &mut String, line_start: usize, offsets: &mut [(usize, usize)]) {
+        let kept = line_start + rebuilt[line_start..].trim_end().len();
+        rebuilt.truncate(kept);
+        for offset in offsets.iter_mut().rev() {
+            if offset.0 <= kept {
+                break;
+            }
+            offset.0 = kept;
+        }
+    }
+    let mut rebuilt = String::with_capacity(normalized.len());
+    let mut offsets = vec![(0, 0)];
+    let mut line_start = 0;
+    for (index, ch) in original.char_indices() {
+        if ch == '\n' {
+            trim_line(&mut rebuilt, line_start, &mut offsets);
+            rebuilt.push('\n');
+            line_start = rebuilt.len();
+        } else {
+            rebuilt.extend(std::iter::once(ch).nfkc().map(contract_fuzzy_char));
+        }
+        offsets.push((rebuilt.len(), index + ch.len_utf8()));
+    }
+    trim_line(&mut rebuilt, line_start, &mut offsets);
+    (rebuilt == normalized).then_some(offsets)
+}
+
+fn remap_fuzzy_edits(
+    original: &str,
+    normalized: &str,
+    edits: &[ResolvedContractEdit],
+    offset: usize,
+) -> Option<Vec<ResolvedContractEdit>> {
+    let offsets = contract_fuzzy_offsets(original, normalized)?;
+    edits
+        .iter()
+        .map(|edit| {
+            let (start, end) = (edit.start - offset, edit.end - offset);
+            let first = offsets.partition_point(|entry| entry.0 < start);
+            let last = offsets.partition_point(|entry| entry.0 <= end);
+            let start = offsets.get(first).filter(|entry| entry.0 == start)?.1;
+            let end = offsets[..last].last().filter(|entry| entry.0 == end)?.1;
+            Some(ResolvedContractEdit {
+                start,
+                end,
+                ..edit.clone()
+            })
         })
         .collect()
 }
@@ -2296,6 +2349,7 @@ fn apply_fuzzy_edits_preserving_other_lines(
     has_raw_bytes: bool,
 ) -> Result<String, ToolError> {
     let original_lines = lines_with_endings(original);
+    let original_spans = line_spans(original);
     let spans = line_spans(normalized);
     if original_lines.len() != spans.len() {
         return Err(ToolError::execution_failed(
@@ -2336,12 +2390,19 @@ fn apply_fuzzy_edits_preserving_other_lines(
         }
         let group_start = spans[group.start_line].0;
         let group_end = spans[group.end_line - 1].1;
-        let replacement = apply_resolved_edits(
-            &normalized[group_start..group_end],
-            &group.edits,
-            group_start,
-            has_raw_bytes,
-        )?;
+        let group_original =
+            &original[original_spans[group.start_line].0..original_spans[group.end_line - 1].1];
+        let group_normalized = &normalized[group_start..group_end];
+        let replacement =
+            match remap_fuzzy_edits(group_original, group_normalized, &group.edits, group_start) {
+                Some(edits) => apply_resolved_edits(group_original, &edits, 0, has_raw_bytes)?,
+                None => apply_resolved_edits(
+                    group_normalized,
+                    &group.edits,
+                    group_start,
+                    has_raw_bytes,
+                )?,
+            };
         append_contract_text(&mut result, &mut encoded_size, &replacement, has_raw_bytes)?;
         original_line = group.end_line;
     }

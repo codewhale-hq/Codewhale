@@ -539,6 +539,23 @@ fn contract_edit_fuzzy_normalization_preserves_untouched_lines() {
     assert_eq!(updated, "untouched line  \nShe said hello.\ntail  \n");
 }
 
+#[test]
+fn contract_edit_fuzzy_match_keeps_the_rest_of_the_touched_line() {
+    let original = "PRICE = \"价格：１００元（含税）\"  # “促销”\n";
+    let updated = apply_contract_edits(
+        original,
+        &[ContractEdit {
+            index: 0,
+            old_text: "# \"促销\"".to_string(),
+            new_text: "# \"特价\"".to_string(),
+        }],
+        "notes.py",
+        false,
+    )
+    .expect("fuzzy edit");
+    assert_eq!(updated, "PRICE = \"价格：１００元（含税）\"  # \"特价\"\n");
+}
+
 #[tokio::test]
 async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     let temporary = tempfile::tempdir().expect("tempdir");
