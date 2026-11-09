@@ -477,6 +477,31 @@ fn parse_cli_args(args: &[impl AsRef<str>]) -> Result<Cli, clap::Error> {
     Ok(cli)
 }
 
+fn headless_exec_args(
+    resume: Option<String>,
+    continue_session: bool,
+    prompt: &[String],
+) -> Result<ExecArgs> {
+    use clap::{Args as _, FromArgMatches as _};
+    let mut argv: Vec<String> = vec!["exec".to_string()];
+    if let Some(id) = &resume {
+        argv.push("--resume".to_string());
+        argv.push(id.clone());
+    }
+    if continue_session {
+        argv.push("--continue".to_string());
+    }
+    if !prompt.is_empty() {
+        argv.push("--".to_string());
+        argv.extend(prompt.iter().cloned());
+    }
+    let command = ExecArgs::augment_args(clap::Command::new("exec"));
+    let matches = command
+        .try_get_matches_from(argv)
+        .map_err(|error| anyhow!(error.to_string()))?;
+    ExecArgs::from_arg_matches(&matches).map_err(|error| anyhow!(error.to_string()))
+}
+
 #[derive(Args, Debug, Clone)]
 struct WorkflowToolArgs {
     /// Authority provenance stamped by the public `workflow run` command.
@@ -2492,6 +2517,20 @@ async fn run_async_main_inner(
     // ahead of it collects nothing.
     spawn_signal_cleanup_task();
 
+    let mut command = command;
+    if cli.operation_key.is_none()
+        && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
+        && matches!(command, Some(Commands::Resume { .. }))
+        && let Some(Commands::Resume { session_id, last }) = command.take()
+    {
+        let exec = if last || session_id.is_none() {
+            headless_exec_args(None, true, &cli.prompt)?
+        } else {
+            headless_exec_args(session_id, false, &cli.prompt)?
+        };
+        command = Some(Commands::Exec(exec));
+    }
+
     // A due interactive disclosure belongs to the native TUI. Presentation
     // does not gate the default-on policy; unreadable privacy state does.
     // Settings can disable this session and erase its pending aggregates.
@@ -2552,6 +2591,31 @@ async fn run_async_main_dispatch(
     // and every other runtime surface use the same plugin trust decision
     // (#3916, #4399). Discovery never enables, trusts, executes, or persists a
     // bundle.
+
+    let mut command = command;
+    if cli.operation_key.is_none()
+        && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
+        && matches!(command, Some(Commands::Fork { .. }))
+        && let Some(Commands::Fork { session_id, last }) = command.take()
+    {
+        let config = load_config_from_cli(&cli)?;
+        let registry = policy_current_registry(std::sync::Arc::clone(&plugin_registry));
+        let prepared = prepare_interactive_config(&cli, &config, true)?;
+        let source_id = resolve_session_id(session_id, last, &prepared.workspace)?;
+        let (_, new_session_id) = prepare_mounted_session(
+            &cli,
+            prepared,
+            source_id,
+            MountedHistoryIntent::Fork,
+            registry,
+        )
+        .await?;
+        command = Some(Commands::Exec(headless_exec_args(
+            Some(new_session_id),
+            false,
+            &cli.prompt,
+        )?));
+    }
 
     // Handle subcommands first
     if let Some(command) = command {

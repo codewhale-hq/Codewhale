@@ -452,6 +452,11 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Fixed
 
+- **`resume` and `fork` work without a terminal:** run from a pipe, cron job
+  or other non-TTY launcher, `codewhale resume` (and `fork`, which forks
+  first) now continues the session through the headless `exec` path — prompt
+  from stdin or trailing words — instead of refusing to start. In a real
+  terminal both still open the TUI. (CW-7891)
 - **An MCP capture that fails no longer reads as an empty registry.** A
   timed-out or changed-during-capture MCP snapshot emits nothing instead of
   withdrawing every server's instructions; withdrawals now happen only on a
