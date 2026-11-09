@@ -2512,10 +2512,10 @@ fn set_staged_read_only_directory(path: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn set_staged_read_only_directory(path: &Path) -> Result<(), String> {
-    // GENERIC_READ | GENERIC_EXECUTE. The owner can inspect/traverse the
-    // finalized stage but ordinary child processes cannot rewrite it through
-    // inherited full-control directory ACEs.
-    set_windows_owner_only_acl_with_mask(path, 0xa000_0000)
+    // GENERIC_READ | GENERIC_EXECUTE. Descendants are hardened explicitly, so
+    // the root needs no inheriting ACE; an inheritable generic-rights ACE is
+    // stored as more than one explicit ACE on a directory.
+    set_windows_owner_only_acl_with_mask_and_inheritance(path, 0xa000_0000, false)
 }
 
 #[cfg(all(not(unix), not(windows)))]
@@ -2634,6 +2634,15 @@ fn open_windows_acl_target(
 
 #[cfg(windows)]
 fn set_windows_owner_only_acl_with_mask(path: &Path, access_mask: u32) -> Result<(), String> {
+    set_windows_owner_only_acl_with_mask_and_inheritance(path, access_mask, true)
+}
+
+#[cfg(windows)]
+fn set_windows_owner_only_acl_with_mask_and_inheritance(
+    path: &Path,
+    access_mask: u32,
+    inherit_to_children: bool,
+) -> Result<(), String> {
     const ACL_ACCESS_WITH_OWNER: u32 = 0x0002_0000 | 0x0004_0000 | 0x0008_0000;
     const ACL_ACCESS_WITHOUT_OWNER: u32 = 0x0002_0000 | 0x0004_0000;
 
@@ -2657,7 +2666,12 @@ fn set_windows_owner_only_acl_with_mask(path: &Path, access_mask: u32) -> Result
         Err(error) => return Err(error.into_message()),
     };
 
-    apply_windows_owner_only_acl(&target, access_mask, owner_mode)
+    apply_windows_owner_only_acl_with_inheritance(
+        &target,
+        access_mask,
+        owner_mode,
+        inherit_to_children,
+    )
 }
 
 #[cfg(windows)]
@@ -2666,13 +2680,23 @@ fn apply_windows_owner_only_acl(
     access_mask: u32,
     owner_mode: WindowsAclOwnerMode,
 ) -> Result<(), String> {
+    apply_windows_owner_only_acl_with_inheritance(target, access_mask, owner_mode, true)
+}
+
+#[cfg(windows)]
+fn apply_windows_owner_only_acl_with_inheritance(
+    target: &fs::File,
+    access_mask: u32,
+    owner_mode: WindowsAclOwnerMode,
+    inherit_to_children: bool,
+) -> Result<(), String> {
     use std::mem::{MaybeUninit, size_of};
     use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, WIN32_ERROR};
     use windows::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
     use windows::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
-        GetLengthSid, GetTokenInformation, InitializeAcl, OBJECT_INHERIT_ACE,
+        GetLengthSid, GetTokenInformation, InitializeAcl, NO_INHERITANCE, OBJECT_INHERIT_ACE,
         OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
         TokenUser,
     };
@@ -2723,11 +2747,16 @@ fn apply_windows_owner_only_acl(
         // containing the current user SID.
         unsafe { InitializeAcl(acl, acl_bytes as u32, ACL_REVISION) }
             .map_err(|error| format!("failed to initialize a private Windows ACL: {error}"))?;
+        let inheritance = if inherit_to_children {
+            CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE
+        } else {
+            NO_INHERITANCE
+        };
         unsafe {
             windows::Win32::Security::AddAccessAllowedAceEx(
                 acl,
                 ACL_REVISION,
-                CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
+                inheritance,
                 access_mask,
                 sid,
             )
@@ -2864,7 +2893,7 @@ fn preserve_owner_only_file_mode(path: &Path, _source: &fs::Metadata) -> Result<
     // The protected handle-relative DACL is the Windows non-writable
     // authority. Avoid `set_permissions(path)`, which can follow a reparse
     // point substituted after metadata inspection.
-    set_windows_owner_only_acl_with_mask(path, 0xa000_0000)
+    set_windows_owner_only_acl_with_mask_and_inheritance(path, 0xa000_0000, false)
 }
 
 #[cfg(all(not(unix), not(windows)))]
