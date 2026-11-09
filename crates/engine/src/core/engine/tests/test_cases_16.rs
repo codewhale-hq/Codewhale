@@ -172,8 +172,8 @@ fn workspace_drift_arrives_as_one_context_update_and_never_moves_the_header() {
     );
 }
 
-#[test]
-fn agents_md_edit_arrives_as_context_update_carrying_the_new_instructions() {
+#[tokio::test]
+async fn agents_md_edit_arrives_as_history_message_carrying_the_new_instructions() {
     let _lock = lock_test_env();
     let tmp = tempdir().expect("tempdir");
     fs::write(tmp.path().join("AGENTS.md"), "# Rules\n\nAlways run fmt.\n").expect("write");
@@ -189,17 +189,35 @@ fn agents_md_edit_arrives_as_context_update_carrying_the_new_instructions() {
     );
     let pinned = engine.session.system_prompt.clone();
 
+    engine.record_current_project_instructions().await;
+    let recorded = |engine: &Engine| {
+        engine
+            .session
+            .messages
+            .iter()
+            .filter_map(crate::runtime_handoff::project_instructions_display)
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(recorded(&engine).len(), 1);
+    assert!(recorded(&engine)[0].contains("Always run fmt."));
+
     fs::write(
         tmp.path().join("AGENTS.md"),
         "# Rules\n\nAlways run fmt.\nNever push to main.\n",
     )
     .expect("write");
-    let update = engine
-        .refresh_pinned_header_for_turn(&context)
-        .unwrap()
-        .expect("AGENTS.md edit produces a context update");
-    assert!(update.contains("+ Never push to main."), "{update}");
+    assert_eq!(
+        engine.refresh_pinned_header_for_turn(&context).unwrap(),
+        None
+    );
+    engine.record_current_project_instructions().await;
+    assert_eq!(recorded(&engine).len(), 2);
+    assert!(recorded(&engine)[1].contains("Never push to main."));
     assert_eq!(engine.session.system_prompt, pinned);
+
+    engine.record_current_project_instructions().await;
+    assert_eq!(recorded(&engine).len(), 2);
 }
 
 #[test]

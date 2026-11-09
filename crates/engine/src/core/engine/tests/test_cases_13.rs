@@ -214,7 +214,7 @@ async fn set_model_reloads_instruction_sources_and_updates_session_prompt() {
         .await
         .expect("send set model");
 
-    let (model, prompt) = {
+    let (model, prompt, assembly_block) = {
         let mut rx = handle.rx_event.write().await;
         loop {
             let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
@@ -224,6 +224,7 @@ async fn set_model_reloads_instruction_sources_and_updates_session_prompt() {
             if let Event::SessionUpdated {
                 model,
                 system_prompt,
+                instruction_assembly,
                 ..
             } = event
             {
@@ -235,15 +236,19 @@ async fn set_model_reloads_instruction_sources_and_updates_session_prompt() {
                         .collect::<Vec<_>>()
                         .join("\n"),
                 };
-                break (model, prompt);
+                let assembly_block = instruction_assembly
+                    .and_then(|assembly| assembly.block.clone())
+                    .unwrap_or_default();
+                break (model, prompt, assembly_block);
             }
         }
     };
     run.abort();
 
     assert_eq!(model, "deepseek-v4-pro");
-    assert!(prompt.contains("PRO_INSTRUCTIONS_MARKER"));
-    assert!(!prompt.contains("FLASH_INSTRUCTIONS_MARKER"));
+    assert!(assembly_block.contains("PRO_INSTRUCTIONS_MARKER"));
+    assert!(!assembly_block.contains("FLASH_INSTRUCTIONS_MARKER"));
+    assert!(!prompt.contains("PRO_INSTRUCTIONS_MARKER"));
 }
 
 #[tokio::test]

@@ -141,7 +141,8 @@ fn registry_instruction_does_not_gate_ordinary_local_work() {
             .as_ref()
             .expect("system prompt"),
     );
-    assert!(prompt.contains("## MCP Registry"));
+    assert!(!prompt.contains("## MCP Registry"));
+    assert!(!prompt.contains("registry_sync"));
 
     for ordered in [
         "must call `registry_sync`",
@@ -154,18 +155,6 @@ fn registry_instruction_does_not_gate_ordinary_local_work() {
             "Registry guidance must not order discovery ahead of ordinary work: {ordered:?}"
         );
     }
-
-    // Available capability comes first, and the deferred cost is disclosed
-    // where the model reads about the two tools it would have to hunt for.
-    assert!(prompt.contains("Prefer what is already available"));
-    assert!(prompt.contains("not a step before ordinary work"));
-    assert!(prompt.contains("Both Registry tools are deferred"));
-    assert!(prompt.contains("load one with `tool_search`"));
-
-    // The trust boundary the instruction is actually load-bearing for: a
-    // Registry package is started through the approved host path, never
-    // installed or run through the shell.
-    assert!(prompt.contains("rather than installing or running its package command"));
 }
 
 /// A provider's input bill describes one route's tokenization of one prompt.

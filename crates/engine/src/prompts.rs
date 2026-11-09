@@ -1129,11 +1129,9 @@ pub fn system_prompt_for_mode_with_context(
 /// longest possible byte prefix turn-over-turn:
 ///
 ///   1. shared constitution (compile-time constant)
-///   2. project context / fallback (workspace-static)
-///   3. skills block (skills-dir-static)
-///   4. `## Core Execution` (compile-time constant)
-///   5. compaction relay template (compile-time constant)
-///   6. relay block — file-backed; rewritten by `/compact` and on exit
+///   2. `## Core Execution` (compile-time constant)
+///   3. compaction relay template (compile-time constant)
+///   4. relay block — file-backed; rewritten by `/compact` and on exit
 ///
 /// Anything appended after a volatile block forfeits the cache for the rest
 /// of the request. New blocks belong above the relay boundary unless they
@@ -1280,7 +1278,7 @@ pub fn system_prompt_with_instruction_assembly_for_host(
         },
         |input| input.2,
     );
-    let mut assembly =
+    let assembly =
         crate::project_context::assemble_instruction_block(&mut project_context, &[], &budgets);
 
     // 0. Locale-native reinforcement preamble (#1118 follow-up). When the
@@ -1298,22 +1296,12 @@ pub fn system_prompt_with_instruction_assembly_for_host(
     // `load_project_context_with_parents` generates an in-memory bounded
     // overview when no context file exists, so the fallback should usually be
     // available without writing project-local files.
-    let mut full_prompt = if let Some(project_block) = assembly.block.as_deref() {
-        let start = composed.trim().len();
-        assembly.prompt_range = Some(start..start + 2 + project_block.len());
-        format!("{}\n\n{project_block}", composed.trim())
-    } else {
-        // Extremely unlikely: context generation failed (e.g. filesystem error).
-        // Use the shared constitution alone rather than panic.
+    if assembly.block.is_none() {
         tracing::warn!("No project context available and auto-generation failed");
-        composed.trim().to_string()
-    };
+    }
+    let mut full_prompt = composed.trim().to_string();
 
     if let Some(preamble) = preamble {
-        if let Some(range) = assembly.prompt_range.as_mut() {
-            range.start += preamble.len() + 2;
-            range.end += preamble.len() + 2;
-        }
         full_prompt = format!("{preamble}\n\n{full_prompt}");
     }
 
@@ -1894,7 +1882,7 @@ mod tests {
                 )
             });
             assert_eq!(prompts[0], prompts[1]);
-            assert!(prompts[0].contains("Preserve the blue-ocean marker"));
+            assert!(!prompts[0].contains("Preserve the blue-ocean marker"));
             assert!(!prompts[0].contains("##### Mode:"));
             if host == PromptHost::Headless {
                 // One base prompt for every host; headless still omits the
@@ -4067,7 +4055,7 @@ mod tests {
     }
 
     #[test]
-    fn instructions_block_appears_in_system_prompt_when_configured() {
+    fn instructions_block_stays_out_of_system_prompt_when_configured() {
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
         let extra = workspace.join("extra-instructions.md");
@@ -4084,14 +4072,10 @@ mod tests {
             ));
 
         assert!(
-            prompt.contains("EXTRA_INSTRUCTIONS_MARKER_BODY"),
-            "configured instructions file body must appear in the prompt"
+            !prompt.contains("EXTRA_INSTRUCTIONS_MARKER_BODY"),
+            "configured instructions are delivered as history, not in the system prompt"
         );
-        assert!(
-            prompt.contains("source=\"extra-instructions.md\"")
-                && !prompt.contains(&extra.display().to_string()),
-            "instructions block must name its source without the host root"
-        );
+        assert!(!prompt.contains(&extra.display().to_string()));
     }
 
     #[test]

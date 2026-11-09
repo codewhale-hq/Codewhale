@@ -38,6 +38,7 @@ impl Engine {
             .await;
         self.record_current_constitution().await;
         self.record_current_extension_prompt_contributions().await;
+        self.record_current_project_instructions().await;
 
         // R1: the cumulative per-turn wall-clock budget. Checked at the
         // provider-request boundary so a turn that runs out of time stops
@@ -823,6 +824,7 @@ impl Engine {
         }
         self.record_current_constitution().await;
         self.record_current_extension_prompt_contributions().await;
+        self.record_current_project_instructions().await;
         let reasoning_effort = resolve_auto_effort(
             self.session.reasoning_effort.as_deref(),
             self.api_provider,

@@ -9914,6 +9914,36 @@ impl Engine {
             .await;
     }
 
+    async fn record_current_project_instructions(&mut self) {
+        let previous = self.session.messages.iter().rev().find(|message| {
+            crate::runtime_handoff::project_instructions_display(message).is_some()
+        });
+        let assembly = self.session.instruction_assembly.clone();
+        let block = assembly
+            .as_deref()
+            .and_then(|assembly| assembly.block.as_deref())
+            .filter(|block| !block.trim().is_empty());
+        if block.is_none() && previous.is_none() {
+            return;
+        }
+        let label = assembly
+            .as_deref()
+            .and_then(|assembly| {
+                assembly
+                    .source_path
+                    .as_deref()
+                    .or(assembly.constitution_source_path.as_deref())
+            })
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "AGENTS.md".to_string());
+        let message = crate::runtime_handoff::project_instructions_runtime_message(block, &label);
+        if previous == Some(&message) {
+            return;
+        }
+        self.add_session_message(message).await;
+    }
+
     async fn record_current_constitution(&mut self) {
         let previous = self
             .session
@@ -10053,6 +10083,7 @@ impl Engine {
             &self.session.id,
         );
         let observed = self.observe_context_update(context, memory.as_deref())?;
+        self.session.instruction_assembly = observed.assembly.clone().map(Arc::new);
         if let Some(notice) = observed.notice {
             self.queue_instruction_notice_body(notice);
         }
@@ -10123,6 +10154,7 @@ impl Engine {
             current_text,
             message,
             notice,
+            assembly,
         })
     }
 
