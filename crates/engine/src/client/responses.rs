@@ -12,6 +12,12 @@ use serde_json::{Value, json};
 
 use crate::llm_client::StreamEventBox;
 use codewhale_config::ProviderKind;
+use codewhale_config::responses_dialect::{
+    EncryptedReasoningReplayPolicy, IncludePolicy, InstructionsPlacement, OutputTokenFieldPolicy,
+    ParallelToolCallPolicy, PlainReasoningReplayPolicy, ReasoningEffortMapping,
+    ReasoningSummaryPolicy, ResponsesDialectProfile, SamplingPolicy, StorePolicy,
+    SystemRoleReplayPolicy, ToolEnvelopePolicy,
+};
 use codewhale_models::tool_projection::{
     RouteToolProjection, ToolSchemaProjection, description_with_constraint_note, forced_tool_name,
     project_tool_schema,
@@ -37,8 +43,22 @@ const CHATGPT_TOOL_NAMESPACE: &str = "codewhale";
 
 /// Build the Responses API request body from a `MessageRequest`.
 #[cfg(test)]
-pub(super) fn build_responses_body(request: &MessageRequest) -> Value {
-    build_responses_body_for_provider(request, ProviderKind::OpenaiCodex, None)
+pub(super) struct ResponsesReplayContext<'a> {
+    pub(super) provider_id: &'a str,
+    pub(super) wire_model_id: &'a str,
+    pub(super) reasoning_api_id: Option<&'a str>,
+}
+
+#[cfg(test)]
+fn profile_for_provider(provider: ProviderKind) -> &'static ResponsesDialectProfile {
+    let profile_id = match provider {
+        ProviderKind::OpenaiCodex => "codex",
+        ProviderKind::Concentrate => "concentrate",
+        ProviderKind::Deepseek => "deepseek_stateless_plain_reasoning",
+        _ => "standard",
+    };
+    codewhale_config::responses_dialect::profile(profile_id)
+        .unwrap_or_else(|| panic!("responses profile {profile_id}"))
 }
 
 #[cfg(test)]
@@ -47,48 +67,64 @@ pub(super) fn build_responses_body_for_provider(
     provider: ProviderKind,
     reasoning_api: Option<&str>,
 ) -> Value {
-    build_responses_wire_body(request, provider, reasoning_api)
-        .expect("responses body builds")
-        .0
+    build_responses_wire_body(
+        request,
+        profile_for_provider(provider),
+        ResponsesReplayContext {
+            provider_id: provider.as_str(),
+            wire_model_id: request.model.as_str(),
+            reasoning_api_id: reasoning_api,
+        },
+    )
+    .expect("responses body builds")
+    .0
 }
 
-/// Build a provider-aware Responses API request body.
-///
-/// DeepSeek-V4-Flash-0731 implements the Responses wire shape but is stateless
-/// and exposes plain reasoning text rather than OpenAI encrypted summaries.
-/// Keep those exact-route differences here instead of leaking them into the
-/// provider-neutral message model.
-pub(super) fn build_responses_wire_body(
+#[cfg(test)]
+pub(super) fn responses_input_for_provider(
     request: &MessageRequest,
     provider: ProviderKind,
     reasoning_api: Option<&str>,
+) -> Vec<Value> {
+    convert_messages_to_responses_input(
+        request,
+        profile_for_provider(provider),
+        ResponsesReplayContext {
+            provider_id: provider.as_str(),
+            wire_model_id: request.model.as_str(),
+            reasoning_api_id: reasoning_api,
+        },
+    )
+}
+
+/// Build a Responses request body from the admitted dialect profile.
+///
+/// Output limits are already applied to `request.max_tokens`. A mismatched
+/// encrypted reasoning state is dropped and is not rewritten as plain text.
+pub(super) fn build_responses_wire_body(
+    request: &MessageRequest,
+    profile: &ResponsesDialectProfile,
+    context: ResponsesReplayContext<'_>,
 ) -> Result<(Value, Vec<String>)> {
-    let is_deepseek = matches!(provider, ProviderKind::Deepseek);
-    // Concentrate documents `model`, `input`, `stream`, `max_output_tokens`,
-    // `tools` / `tool_choice` / `parallel_tool_calls`, and `reasoning.effort`;
-    // `store`, `include`, `instructions`, and `reasoning.summary` are absent
-    // from its parameter reference, so this route sends only documented
-    // fields and carries the system prompt as a leading `system` message item
-    // (a documented input role) instead of `instructions`.
-    // https://concentrate.ai/docs/api-reference/endpoint/request-parameters
-    let is_concentrate = provider == ProviderKind::Concentrate;
     let model = &request.model;
     let mut body = json!({
         "model": model,
         "stream": true,
     });
-    if !is_deepseek && !is_concentrate {
+    if profile.request.store == StorePolicy::ExplicitFalse {
         body["store"] = json!(false);
     }
     // Every Responses route receives the same resolved request envelope as
     // Chat and Messages. Omitting this field let auxiliary Responses calls
     // escape the central route cap and made preview unable to prove the wire
-    // allowance. The official ChatGPT plan preview contract disallows
-    // max_output_tokens, so that route carries no client-side output cap.
-    if request.max_tokens > 0 && provider != ProviderKind::OpenaiCodex {
+    // allowance. Profiles that omit the field still keep that internal cap;
+    // they only leave it off the JSON.
+    if request.max_tokens > 0
+        && profile.request.max_output_tokens == OutputTokenFieldPolicy::WhenPositive
+    {
         body["max_output_tokens"] = json!(request.max_tokens);
     }
-    if is_deepseek {
+    if profile.request.sampling == SamplingPolicy::TemperatureAndTopP {
         if let Some(temperature) = request.temperature {
             body["temperature"] = json!(temperature);
         }
@@ -97,14 +133,12 @@ pub(super) fn build_responses_wire_body(
         }
     }
 
-    // Supply minimal instructions when the caller did not provide a system prompt.
     let instructions = system_to_instructions(request.system.clone())
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| "You are a helpful assistant.".to_string());
 
-    // Convert messages to Responses input items.
-    let mut input = convert_messages_to_responses_input(request, provider, reasoning_api);
-    if is_concentrate {
+    let mut input = convert_messages_to_responses_input(request, profile, context);
+    if profile.request.instructions == InstructionsPlacement::LeadingSystemInput {
         input.insert(
             0,
             json!({
@@ -158,12 +192,19 @@ pub(super) fn build_responses_wire_body(
             );
         }
         if !responses_tools.is_empty() {
-            body["tools"] = if provider == ProviderKind::OpenaiCodex {
-                json!([{ "type": "namespace", "name": CHATGPT_TOOL_NAMESPACE,
-                    "description": "Codewhale tools running under the user's local permissions.",
-                    "tools": responses_tools }])
-            } else {
-                json!(responses_tools)
+            body["tools"] = match profile.tools.envelope {
+                ToolEnvelopePolicy::NamespaceWrapped => {
+                    let Some(namespace) = profile.tools.namespace else {
+                        anyhow::bail!(
+                            "responses profile {} wraps tools without a namespace",
+                            profile.id.as_str()
+                        );
+                    };
+                    json!([{ "type": "namespace", "name": namespace,
+                        "description": "Codewhale tools running under the user's local permissions.",
+                        "tools": responses_tools }])
+                }
+                ToolEnvelopePolicy::FunctionArray => json!(responses_tools),
             };
             let tool_choice = request.tool_choice.as_ref().and_then(Value::as_str);
             body["tool_choice"] = if tool_choice == Some("none") {
@@ -172,34 +213,30 @@ pub(super) fn build_responses_wire_body(
                 json!("auto")
             };
             // The plan preview decoder tracks one active function-call block.
-            body["parallel_tool_calls"] = json!(provider != ProviderKind::OpenaiCodex);
+            body["parallel_tool_calls"] =
+                json!(profile.tools.parallel_calls == ParallelToolCallPolicy::Allow);
         }
     }
 
-    // Preserve the selected Codex tier through the final wire boundary. The
-    // roster owns each model's available levels; this pure builder must not
-    // collapse newer tiers to an older model's xhigh ceiling. Other Responses
-    // providers retain their own compatibility vocabulary.
+    // The roster owns each model's available levels. This builder only chooses
+    // which existing effort function the profile names.
     if let Some(raw) = request.reasoning_effort.as_deref()
-        && let Some(effort) = if provider == ProviderKind::OpenaiCodex {
-            codex_responses_reasoning_effort(raw)
-        } else {
-            responses_reasoning_effort(raw, is_deepseek)
+        && let Some(effort) = match profile.reasoning.effort_mapping {
+            ReasoningEffortMapping::Codex => codex_responses_reasoning_effort(raw),
+            ReasoningEffortMapping::Deepseek => responses_reasoning_effort(raw, true),
+            ReasoningEffortMapping::OpenaiCompatible => compatible_responses_reasoning_effort(raw),
         }
     {
-        body["reasoning"] = if is_deepseek || is_concentrate {
-            json!({ "effort": effort })
-        } else {
-            json!({
+        body["reasoning"] = match profile.reasoning.summary {
+            ReasoningSummaryPolicy::Omit => json!({ "effort": effort }),
+            ReasoningSummaryPolicy::Auto => json!({
                 "effort": effort,
                 "summary": "auto",
-            })
+            }),
         };
     }
 
-    // OpenAI Codex can replay encrypted reasoning. DeepSeek exposes plain
-    // `reasoning_text` and does not support `include`.
-    if !is_deepseek && !is_concentrate {
+    if profile.request.include == IncludePolicy::EncryptedReasoning {
         body["include"] = json!(["reasoning.encrypted_content"]);
     }
 
@@ -860,10 +897,11 @@ pub(super) fn responses_tool_output(content: &str, content_blocks: Option<&[Valu
 /// Convert Codewhale messages to Responses API input items.
 pub(super) fn convert_messages_to_responses_input(
     request: &MessageRequest,
-    provider: ProviderKind,
-    reasoning_api: Option<&str>,
+    profile: &ResponsesDialectProfile,
+    context: ResponsesReplayContext<'_>,
 ) -> Vec<Value> {
-    let is_deepseek = matches!(provider, ProviderKind::Deepseek);
+    let plain_with_placeholder =
+        profile.replay.plain_reasoning == PlainReasoningReplayPolicy::PlainTextWithToolPlaceholder;
     let mut items = Vec::new();
 
     for msg in &request.messages {
@@ -928,13 +966,18 @@ pub(super) fn convert_messages_to_responses_input(
                         return None;
                     };
                     if let Some(state) = state {
-                        let matches = state.provider == provider.as_str()
-                            && if provider == ProviderKind::OpenaiCodex {
-                                reasoning_api.is_some_and(|api| state.api == api)
-                            } else {
+                        let api_matches = match profile.replay.encrypted_state {
+                            EncryptedReasoningReplayPolicy::AccountApiModelScoped => {
+                                context.reasoning_api_id.is_some_and(|api| state.api == api)
+                            }
+                            EncryptedReasoningReplayPolicy::ProviderApiModelScoped => {
                                 state.api == "openai-responses"
                             }
-                            && state.model == request.model;
+                            EncryptedReasoningReplayPolicy::Disabled => false,
+                        };
+                        let matches = state.provider == context.provider_id
+                            && api_matches
+                            && state.model == context.wire_model_id;
                         if !matches {
                             return None;
                         }
@@ -948,7 +991,12 @@ pub(super) fn convert_messages_to_responses_input(
                         }
                         return Some(item);
                     }
-                    is_deepseek.then(|| {
+                    matches!(
+                        profile.replay.plain_reasoning,
+                        PlainReasoningReplayPolicy::PlainText
+                            | PlainReasoningReplayPolicy::PlainTextWithToolPlaceholder
+                    )
+                    .then(|| {
                         let text = if thinking.trim().is_empty() {
                             REASONING_REPLAY_PLACEHOLDER
                         } else {
@@ -963,7 +1011,7 @@ pub(super) fn convert_messages_to_responses_input(
                         })
                     })
                 };
-                if is_deepseek {
+                if plain_with_placeholder {
                     let before = items.len();
                     items.extend(msg.content.iter().filter_map(&reasoning_item));
                     if items.len() == before
@@ -1012,12 +1060,12 @@ pub(super) fn convert_messages_to_responses_input(
                                 "name": to_api_tool_name(name),
                                 "arguments": serde_json::to_string(input).unwrap_or_default(),
                             });
-                            if provider == ProviderKind::OpenaiCodex {
-                                item["namespace"] = json!(CHATGPT_TOOL_NAMESPACE);
+                            if let Some(namespace) = profile.tools.namespace {
+                                item["namespace"] = json!(namespace);
                             }
                             items.push(item);
                         }
-                        ContentBlock::Thinking { .. } if !is_deepseek => {
+                        ContentBlock::Thinking { .. } if !plain_with_placeholder => {
                             if let Some(item) = reasoning_item(block) {
                                 items.push(item);
                             }
@@ -1069,7 +1117,14 @@ pub(super) fn convert_messages_to_responses_input(
                         if !content_items.is_empty() {
                             items.push(json!({
                                 "type": "message",
-                                "role": if provider == ProviderKind::OpenaiCodex && role == "system" { "developer" } else { role },
+                                "role": if profile.replay.system_role
+                                    == SystemRoleReplayPolicy::SystemToDeveloper
+                                    && role == "system"
+                                {
+                                    "developer"
+                                } else {
+                                    role
+                                },
                                 "content": content_items,
                             }));
                         }

@@ -321,6 +321,11 @@ pub fn builtin_profiles() -> &'static [ResponsesDialectProfile] {
     BUILTIN_PROFILES
 }
 
+pub fn profile(id: &str) -> Option<&'static ResponsesDialectProfile> {
+    ensure_asset();
+    find_profile(id)
+}
+
 pub fn accept_custom_responses_profile(
     profile: &str,
 ) -> Result<&'static ResponsesDialectProfile, ResponsesProfileError> {

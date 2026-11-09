@@ -3516,16 +3516,28 @@ impl CodewhaleClient {
                 .with_omitted_tool_names(omitted_tool_names))
             }
             WireFormat::Responses => {
-                if self.responses_profile_id.is_none() {
+                let Some(profile_id) = self.responses_profile_id else {
                     bail!(
                         "responses client for {} has no dialect profile",
                         self.api_provider.as_str()
                     );
-                }
+                };
+                let Some(profile) =
+                    codewhale_config::responses_dialect::profile(profile_id.as_str())
+                else {
+                    bail!(
+                        "responses profile {} is not in the dialect table",
+                        profile_id.as_str()
+                    );
+                };
                 let (mut body, omitted_tool_names) = responses::build_responses_wire_body(
                     &request,
-                    self.api_provider,
-                    self.chatgpt_reasoning_api.as_deref(),
+                    profile,
+                    responses::ResponsesReplayContext {
+                        provider_id: self.api_provider.as_str(),
+                        wire_model_id: request.model.as_str(),
+                        reasoning_api_id: self.chatgpt_reasoning_api.as_deref(),
+                    },
                 )?;
                 if let Some(model) = &declared_wire_model {
                     body["model"] = json!(model);
