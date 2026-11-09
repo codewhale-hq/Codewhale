@@ -120,7 +120,10 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
     assert_eq!(
         transcript
             .iter()
-            .filter(|message| message.role == "user")
+            .filter(|message| {
+                message.role == "user"
+                    && !crate::runtime_handoff::is_internal_runtime_handoff(message)
+            })
             .count(),
         1,
         "the operator's own turn must be the only user message: {transcript:?}"

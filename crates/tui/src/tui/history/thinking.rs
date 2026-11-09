@@ -207,13 +207,10 @@ pub(crate) fn render_thinking_with_preview_limit(
     let rail_style = Style::default().fg(thinking_state_accent(state));
     let cursor_style = Style::default().fg(palette::ACCENT_REASONING_LIVE);
 
-    if rendered.is_empty() && streaming {
-        let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
-        spans.push(Span::styled("reasoning...", body_style.italic()));
-        if !low_motion {
-            spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
-        }
-        lines.push(Line::from(spans));
+    if rendered.is_empty() && streaming && !low_motion {
+        lines[0]
+            .spans
+            .push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
     }
 
     let last_idx = rendered.len().saturating_sub(1);
@@ -371,6 +368,7 @@ pub(super) fn render_hidden_thinking_activity(
     _width: u16,
     duration_secs: Option<f32>,
     low_motion: bool,
+    locale: Locale,
 ) -> Vec<Line<'static>> {
     let state = ThinkingVisualState::Live;
     let mut header_spans = vec![
@@ -378,9 +376,10 @@ pub(super) fn render_hidden_thinking_activity(
             format!("{REASONING_OPENER} "),
             Style::default().fg(thinking_state_accent(state)),
         ),
-        // A hidden live block needs one receipt, not stacked variants of the
-        // same state ("reasoning live" plus "reasoning hidden; working").
-        Span::styled("reasoning hidden", thinking_title_style()),
+        Span::styled(
+            format!("{}…", tr(locale, MessageId::WhaleStateThinking)),
+            thinking_title_style(),
+        ),
     ];
     if let Some(dur) = duration_secs {
         header_spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));

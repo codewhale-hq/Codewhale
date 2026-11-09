@@ -1350,7 +1350,18 @@ async fn sync_session_without_prompt_repins_full_system_prompt_on_next_turn() {
         .clone()
         .map(system_prompt_text)
         .expect("the first turn after SyncSession must send a full system prompt");
-    assert!(repinned.contains(WORKSPACE_RULE), "{repinned}");
+    assert!(
+        !repinned.contains(WORKSPACE_RULE),
+        "workspace instructions travel as history, not in the pinned prompt: {repinned}"
+    );
+    assert!(
+        requests[0].messages.iter().any(|message| {
+            crate::runtime_handoff::project_instructions_display(message)
+                .is_some_and(|body| body.contains(WORKSPACE_RULE))
+        }),
+        "the first turn must carry the workspace rule as a history message: {:?}",
+        requests[0].messages
+    );
     assert!(
         requests[0].messages.iter().all(|message| {
             message.content.iter().all(|block| {
@@ -1372,7 +1383,14 @@ async fn sync_session_without_prompt_repins_full_system_prompt_on_next_turn() {
         .system_prompt
         .map(system_prompt_text)
         .expect("refreshed session prompt");
-    assert!(refreshed_prompt.contains(WORKSPACE_RULE));
+    assert!(!refreshed_prompt.contains(WORKSPACE_RULE));
+    assert!(
+        refreshed.messages.iter().any(|message| {
+            crate::runtime_handoff::project_instructions_display(message)
+                .is_some_and(|body| body.contains(WORKSPACE_RULE))
+        }),
+        "the refreshed session keeps the workspace rule in history"
+    );
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     task.await.expect("engine task");
 }

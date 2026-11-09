@@ -1271,7 +1271,10 @@ async fn interactive_turn_preserves_partial_reply_and_recovers_after_network_dro
     assert_eq!(
         transcript
             .iter()
-            .filter(|message| message.role == "user")
+            .filter(|message| {
+                message.role == "user"
+                    && !crate::runtime_handoff::is_internal_runtime_handoff(message)
+            })
             .count(),
         1,
         "the operator's own turn must be the only user message: {transcript:?}"

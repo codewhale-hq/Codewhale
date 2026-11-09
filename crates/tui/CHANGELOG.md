@@ -84,6 +84,13 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Added
 
+- **DSH bundles install from tarballs and admit CJS packages:** installing a
+  DeepSeek Harness bundle from a `.tgz` now detects the `dsh.bundle` manifest,
+  converts it during staging, and admits CommonJS packages (including
+  `require` exports and bundled `node_modules`) alongside ESM. Admission
+  checks `engines.dsh` as a real npm semver range against the host's supported
+  DSH versions and refuses bundles whose `dsh.bundle.platforms` excludes this
+  computer; native `.node` addons stay refused. (CW-7051, CW-7054)
 - **Prune pasted images:** `codewhale sessions prune-images` lists pasted
   clipboard images that no saved session, checkpoint, Runtime thread, draft or
   history still names and that are older than 7 days (`--older-than-days`);
@@ -264,6 +271,16 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Changed
 
+- **`read` pages in lines only (breaking).** One `read` call returns at
+  most 2,000 lines — the default and the maximum `limit` — inside a 50 KiB
+  output cap, and a line longer than 2,000 chars comes back truncated with
+  a marker instead of dead-ending the read. The model-facing `max_bytes`
+  parameter is gone: continuation is always the next line offset, and
+  footers say only that ("Showing lines 1-51 of 2000; output cap reached.
+  Continue with offset=52."). The byte cap stays as an internal bound;
+  operators can still widen it process-wide with
+  `[workshop] read_result_max_bytes`.
+
 - **A leaner first request.** The pinned system prompt sheds its duplicate
   guidance: the base layers shrink to about 4,300 characters, the skills index
   no longer rides in every prompt (`load_skill` searches and lists the
@@ -290,6 +307,7 @@ tag. Items moved to 0.10.4 by name are marked below.
   refusal told analysis agents to re-run with `read_only=true`, which cost
   steps without protecting a peer's files.
 - **The footer cost chip shows confirmed dollars only.** A session with some unpriced turns shows exactly the confirmed amount, such as `$0.34`, instead of `subtotal 0.34 + unknown (request outcome unknown)`, and a session with nothing priced shows no cost at all instead of `cost: unknown (…)`. The accounting is unchanged: unpriced turns stay excluded rather than guessed, and `/cost` still lists each one with its reason, now in plain words ("the provider never confirmed the request finished", "this session predates cost tracking"). The price view says `unknown` for a session with no confirmed price.
+- **The transcript shows the work, not the decoration.** The idle footer no longer carries a `Work bar` label (its key still opens the dock); fish, bubbles and the whale cameo swim only on the empty start screen and never behind transcript text; a streaming reasoning block is one `Thinking…` line instead of `Thinking…` above `reasoning...`, and the hidden-reasoning line and window title say thinking too; the tool-card hint reads `⌥V details` in dim text instead of `⌥V:details`.
 - **Sub-agents and goals by default.** The constitution now tells the agent to start independent parts of a request as parallel sub-agents in one message, keep working while their results arrive on their own, and end the turn when only waiting remains; to give each child a complete prompt and its own files; to inspect a write-capable child's evidence, review the diff and run the checks itself; to have an independent reviewer try to refute a non-trivial change before calling it done; and to start a goal for any request, in any language, whose verifiable end state needs more than one turn. Sub-agents, workflows and goals within the current request are in scope; spending real money (purchases, paid providers, billing) still needs the user's express authorization. Cost alone is not a reason to stop; only limits the user or configuration sets apply. **This changes the session-pinned prompt and tool descriptions, so each session re-pins its prompt cache once after upgrade.**
 - **Operate's contract is retired.** The Engine no longer appends the Operate contract to a session; its review, cost and evidence rules now live in the constitution for every session. Saved sessions that contain it still replay.
 - **The Operate mode is gone; Work and Plan are the two modes.** Tab cycles between them, `/mode` and the config editor offer only those two, and a saved `default_mode = "operate"` loads as Work with a one-time notice that `/fleet` runs parallel agents. `operate`, `operation`, `ops` and `3` still parse, as Work, so an old setting or script never errors. Fan-out is unchanged — 64 live sub-agents per message, workflows at a 64 default with a 128 ceiling — while the Operate-only launch-concurrency floor and its top-level child auto-accept posture are gone; a child's edits follow the permission posture like every other action. "Plan stays Read Only; this applies in Work" now says exactly that.

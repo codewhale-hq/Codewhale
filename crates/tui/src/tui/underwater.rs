@@ -826,7 +826,7 @@ pub(crate) fn title_activity_verb(app: &App) -> &'static str {
             LiveActivityKind::Compacting | LiveActivityKind::AutoCompacting => {
                 "compacting context…"
             }
-            LiveActivityKind::Reasoning => "reasoning…",
+            LiveActivityKind::Reasoning => "thinking…",
             LiveActivityKind::Reading => "reading…",
             LiveActivityKind::UsingTool => "using tool…",
             LiveActivityKind::UsingSubagents => "fleet underway…",

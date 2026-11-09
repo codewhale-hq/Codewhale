@@ -323,8 +323,8 @@ impl Engine {
                 // Replacement is permitted only if Core can still retract
                 // this exact unsent user message. A runtime note or rewrite
                 // cannot be silently replayed as the original task.
-                if let Some(mark) = turn.unanswered_user_message
-                    && self.can_retract_unanswered_user_message(mark)
+                if let Some(mark) = turn.unanswered_user_message.clone()
+                    && self.can_retract_unanswered_user_message(&mark)
                 {
                     match self.admit_child_first_request_replacement(&e).await {
                         Ok(true) => match self.retract_child_unsent_message(mark).await {

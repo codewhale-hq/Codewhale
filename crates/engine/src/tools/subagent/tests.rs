@@ -27482,9 +27482,9 @@ async fn agent_claim_is_withheld_from_a_role_with_no_write_authority() {
 }
 
 // Regression (stopship scout repair): the workflow's read-only scout
-// activates `grep_files` with one `tool_search` call before searching. That
-// two-step path only works while the scout surface keeps a first-turn-active
-// `tool_search` and a deferred, searchable `grep_files`; the hidden `File`
+// searches with `grep_files`, eager on the default surface since the lean
+// tool-surface change, and keeps a first-turn-active `tool_search` for the
+// deferred rest; the hidden `File`
 // alias the brief cited before is filtered from every model-visible catalog
 // (`to_api_tools`), which is what silently broke the release-acceptance
 // explore gate. The registry is built with the scope the fixture scout really
@@ -27517,7 +27517,7 @@ async fn scout_surface_keeps_tool_search_grep_files_activation_path() {
     let grep = catalog
         .iter()
         .find(|tool| tool.name == "grep_files")
-        .expect("scout must keep a deferred, searchable grep_files");
+        .expect("scout must keep grep_files");
     assert_eq!(
         search.defer_loading,
         Some(false),
@@ -27525,8 +27525,8 @@ async fn scout_surface_keeps_tool_search_grep_files_activation_path() {
     );
     assert_eq!(
         grep.defer_loading,
-        Some(true),
-        "grep_files must be deferred so the taught tool_search activation is required"
+        Some(false),
+        "grep_files is eager by default; the scout calls it directly"
     );
     assert!(
         !catalog.iter().any(|tool| tool.name == "File"),
@@ -27549,8 +27549,8 @@ fn workflow_briefs_name_catalog_visible_tools() {
         .expect("workflow module must export its definition")
         .1;
     assert!(
-        body.contains("`tool_search`") && body.contains("`grep_files`"),
-        "the scout brief must teach the two-step activation path:\n{body}"
+        body.contains("`grep_files`"),
+        "the scout brief must name the eager content-search tool:\n{body}"
     );
     // Every catalog-invisible execution name (hidden replay aliases and the
     // retired `search_content` action) is denied as a whole word, so an

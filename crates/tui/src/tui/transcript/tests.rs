@@ -1046,7 +1046,7 @@ fn hidden_reasoning_cache_never_advertises_or_leaks_content() {
             "hidden body leaked: {text}"
         );
         assert!(!text.contains("Space:"), "hidden hint leaked: {text}");
-        assert_eq!(text.contains("reasoning hidden"), streaming);
+        assert_eq!(text.contains("Thinking…"), streaming);
     }
 }
 

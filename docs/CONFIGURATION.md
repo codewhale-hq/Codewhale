@@ -2167,7 +2167,7 @@ Common settings keys:
   Aliases such as `whale`, `mono`, `black-white`, `tokyonight`, and `gruvbox`
   are accepted. In Whale, cobalt blue owns action/focus, seafoam owns live
   work, Signal Gold owns human decisions and the whale, coral owns warnings,
-  rose owns danger, violet owns Operate, and green remains completed/verified.
+  rose owns danger, and green remains completed/verified.
   Text labels, markers, and motion policy carry the same states when color is
   unavailable; color is never the only cue.
   User-authored overlays live only at `~/.codewhale/themes/<name>.json` (or

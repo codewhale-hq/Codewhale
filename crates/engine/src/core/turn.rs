@@ -43,10 +43,10 @@ impl StepBudgetSource {
 /// Where a turn's user message sat in the session right after it was added:
 /// the session length and messages revision then. Together they identify
 /// that message; a later append or rewrite changes one of them (#6566).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnansweredUserMessage {
-    pub len: usize,
-    pub revision: u64,
+    pub index: usize,
+    pub content_sha256: String,
 }
 
 /// Context for a single turn (user message + AI response).

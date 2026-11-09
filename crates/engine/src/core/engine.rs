@@ -1809,45 +1809,63 @@ impl Engine {
     }
 
     /// Where the user message just added sits in the session, for
-    /// [`Self::retract_unanswered_user_message`].
+    /// [`Self::retract_unanswered_user_message`]. The content hash pins the
+    /// message's identity so a same-length rewrite is never mistaken for it.
     pub(super) fn mark_unanswered_user_message(&self) -> crate::core::turn::UnansweredUserMessage {
+        let index = self.session.messages.len().saturating_sub(1);
+        let content_sha256 = self
+            .session
+            .messages
+            .last()
+            .map(Self::message_content_sha256)
+            .unwrap_or_default();
         crate::core::turn::UnansweredUserMessage {
-            len: self.session.messages.len(),
-            revision: self.session.messages_revision,
+            index,
+            content_sha256,
         }
     }
 
-    /// Remove this turn's user message when nothing followed it — the request
-    /// was refused before any model output (#6566). The mark is the session
-    /// length and messages revision right after the message was added: an
-    /// append since (an answer, a tool call, a runtime note) changes the
-    /// length, and a rewrite (compaction, context recovery) changes the
-    /// revision even when the length happens to match, so either leaves the
-    /// session as it is rather than delete some other message.
+    fn message_content_sha256(message: &Message) -> String {
+        let value = serde_json::to_value(message).unwrap_or_default();
+        codewhale_runtime::hashing::sha256_hex(
+            codewhale_runtime::hashing::canonical_json(&value).as_bytes(),
+        )
+    }
+
+    /// Remove this turn's user message when no model saw it — the request
+    /// was refused before any model output (#6566). Turn preparation records
+    /// its own runtime messages (workspace instructions, constitution, MCP
+    /// rosters) after the user message and before the provider call; those
+    /// are ours, re-recorded next turn from the history scan, so they go
+    /// with the question. Anything else after it — an answer, a tool call —
+    /// means a model saw it, and a rewrite since the mark changes the
+    /// content hash; either leaves the session as it is rather than delete
+    /// some other message.
     pub(super) fn retract_unanswered_user_message(
         &mut self,
         mark: crate::core::turn::UnansweredUserMessage,
     ) -> bool {
-        if !self.can_retract_unanswered_user_message(mark) {
+        if !self.can_retract_unanswered_user_message(&mark) {
             return false;
         }
-        self.session.messages.truncate_to(mark.len - 1);
+        self.session.messages.truncate_to(mark.index);
         self.session.bump_messages_revision();
         true
     }
 
     pub(super) fn can_retract_unanswered_user_message(
         &self,
-        mark: crate::core::turn::UnansweredUserMessage,
+        mark: &crate::core::turn::UnansweredUserMessage,
     ) -> bool {
-        mark.len > 0
-            && self.session.messages.len() == mark.len
-            && self.session.messages_revision == mark.revision
-            && self
-                .session
-                .messages
-                .last()
-                .is_some_and(|message| message.role == Role::User)
+        let Some(message) = self.session.messages.get(mark.index) else {
+            return false;
+        };
+        message.role == Role::User
+            && !crate::runtime_handoff::is_internal_runtime_handoff(message)
+            && Self::message_content_sha256(message) == mark.content_sha256
+            && self.session.messages[mark.index + 1..]
+                .iter()
+                .all(crate::runtime_handoff::is_internal_runtime_handoff)
     }
 
     pub(super) fn decorate_auth_error_message(&self, message: String) -> String {

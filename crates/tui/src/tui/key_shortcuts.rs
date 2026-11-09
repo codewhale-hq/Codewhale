@@ -64,10 +64,10 @@ pub(super) fn tool_details_shortcut_label() -> Cow<'static, str> {
     crate::tui::shell_key_routing::tool_details_chord()
 }
 
-/// Compact affordance: platform chord + short verb (`⌥V:output`, `Alt+V:list`).
-/// Matches footer notation (`cap:verb`); not a sentence.
+/// Compact affordance: platform chord + short verb (`⌥V output`, `Alt+V list`).
+/// Not a sentence.
 pub(super) fn tool_details_shortcut_action_hint(verb: &str) -> String {
-    format!("{}:{verb}", tool_details_shortcut_label())
+    format!("{} {verb}", tool_details_shortcut_label())
 }
 
 /// Open the full reasoning detail pager for the selected or current turn.
@@ -356,7 +356,7 @@ mod tests {
         assert_ne!(label, "v");
         assert_eq!(
             tool_details_shortcut_action_hint("output"),
-            format!("{label}:output")
+            format!("{label} output")
         );
     }
 
@@ -390,7 +390,7 @@ mod tests {
         );
         assert!(!label.eq_ignore_ascii_case("v"));
         let details_hint = tool_details_shortcut_action_hint("details");
-        assert_eq!(details_hint, format!("{label}:details"));
+        assert_eq!(details_hint, format!("{label} details"));
         assert!(!details_hint.starts_with('v'));
 
         let plain_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE);

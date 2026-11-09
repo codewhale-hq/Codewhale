@@ -155,8 +155,6 @@ impl ChatWidget {
         .map(|started| started.elapsed().as_millis());
         let completion_elapsed_ms = completion_life_clock
             .filter(|elapsed| *elapsed < crate::tui::ocean::COMPLETION_SETTLE_MS);
-        let completion_life_active = completion_life_clock
-            .is_some_and(|elapsed| elapsed < crate::tui::ocean::COMPLETION_SETTLE_MS);
         let render_empty_state = should_render_empty_state(app);
         let phase = ShellPhase::from_app(app);
         // Keep the selected underwater scene alive while a turn is doing
@@ -577,7 +575,7 @@ impl ChatWidget {
         // terminal-owned themes and a black hole on painted surfaces
         // (Underwater, Shoreline): the cell's text sat on the terminal's own
         // background, and CJK trailing columns left black remnants when the
-        // cell scrolled (#6704). The footer's `Alt+V:details` hint names it.
+        // cell scrolled (#6704). The footer's `Alt+V details` hint names it.
         apply_selection(&mut lines, top, app);
 
         if let Some(pin) = pinned_prompt {
@@ -623,15 +621,7 @@ impl ChatWidget {
             ocean_animated,
             life_presence_fixed,
             fish_flee_elapsed_ms,
-            // Fish also accompany intentional transcript browsing in the
-            // selected underwater scene. They only occupy blank cells and are
-            // collision-checked, so history stays legible while the ocean
-            // remains playful when scrolling upward.
-            ambient_life: underwater_atmosphere
-                && !app.attention_hold_active()
-                && (browsing_history
-                    || matches!(phase, ShellPhase::Working | ShellPhase::Verifying)
-                    || completion_life_active),
+            ambient_life: false,
             scroll_track,
             scroll_thumb,
             jump_border,

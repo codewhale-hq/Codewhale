@@ -307,7 +307,7 @@ fn context_expectations_preserve_counts_for_each_host() {
             .replace("- 21 tokens", "- 22 tokens")
             .replace("environment (21)", "environment (22)")
             .replace("\"estimated_tokens\": 21,", "\"estimated_tokens\": 22,")
-            .replace("2207", "2208");
+            .replace("1878", "1879");
         let expected = context_fixture_for_host(&baseline, "windows", "pwsh.exe");
         assert_eq!(expected, windows, "{name}");
         // A fixture that carries no host-dependent number (the top-source list
@@ -321,7 +321,7 @@ fn context_expectations_preserve_counts_for_each_host() {
             assert_ne!(expected, windows.replace("22", "23"));
         }
         // A regression in another source still fails on every fixture.
-        assert_ne!(expected, windows.replace("2414", "2415"));
+        assert_ne!(expected, windows.replace("1474", "1475"));
     }
 }
 

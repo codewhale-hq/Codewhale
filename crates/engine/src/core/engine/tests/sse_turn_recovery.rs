@@ -407,7 +407,10 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|message| message["role"] == "user")
+            .filter(|message| {
+                message["role"] == "user"
+                    && !message.to_string().contains("codewhale:runtime_event")
+            })
             .count(),
         2
     );

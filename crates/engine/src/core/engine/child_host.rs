@@ -372,14 +372,14 @@ impl Engine {
         &mut self,
         mark: crate::core::turn::UnansweredUserMessage,
     ) -> Result<bool> {
-        if !self.can_retract_unanswered_user_message(mark) {
+        if !self.can_retract_unanswered_user_message(&mark) {
             return Ok(false);
         }
         if let Some(job) = self.child_job() {
             let old = self.session.messages.to_vec();
             // Preserve durable dispatch/history evidence before changing the
             // live projection. The one actor owns both sides of this await.
-            if let Err(error) = job.before_replace(&old, &old[..mark.len - 1]).await {
+            if let Err(error) = job.before_replace(&old, &old[..mark.index]).await {
                 self.child_host
                     .as_mut()
                     .expect("captured child")

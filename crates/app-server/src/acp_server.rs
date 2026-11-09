@@ -2342,8 +2342,9 @@ mod tests {
             requests[0].system.as_ref().unwrap(),
         );
         assert!(prompt.contains(codewhale_engine::prompts::text::BASE_PROMPT.trim()));
-        assert!(prompt.contains("initial-project-law"));
+        assert!(!prompt.contains("initial-project-law"));
         assert!(!prompt.contains("new-self-authored-law"));
+        assert!(serde_json::to_string(&requests[0].messages)?.contains("initial-project-law"));
         let chunks: Vec<_> = wire
             .iter()
             .filter(|v| {

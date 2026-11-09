@@ -527,6 +527,7 @@ pub struct LoadedBundle {
     pub notes: Vec<String>,
     pub layers: Vec<DshLayer>,
     pub outcomes: Vec<DshOutcome>,
+    pub platforms: Option<Vec<String>>,
 }
 
 fn host_node_platform() -> Option<&'static str> {
@@ -547,6 +548,14 @@ fn node_platform(name: &str) -> Option<&'static str> {
     }
 }
 
+fn codewhale_os_name(node_platform: &str) -> &'static str {
+    match node_platform {
+        "darwin" => "macos",
+        "win32" => "windows",
+        _ => "linux",
+    }
+}
+
 fn target_dsh_version() -> Result<semver::Version> {
     let receipt: Json = serde_json::from_slice(crate::activation::DSH_COMPATIBILITY)
         .map_err(|_| anyhow::Error::msg("The pinned DSH compatibility receipt is unreadable."))?;
@@ -563,28 +572,480 @@ fn target_dsh_version() -> Result<semver::Version> {
     })
 }
 
-fn admit_host_compatibility(manifest: &Value) -> Result<Option<&str>> {
-    let dsh_range = if let Some(declared) = manifest
-        .get("engines")
-        .and_then(|engines| engines.get("dsh"))
-    {
-        let Some(range) = declared.str() else {
+pub(crate) fn supported_dsh_versions() -> Result<Vec<semver::Version>> {
+    let primary = target_dsh_version()?;
+    let mut versions = vec![primary];
+    for extra in ["0.2.1-rc.5", "0.2.2-rc.1"] {
+        if let Ok(parsed) = semver::Version::parse(extra)
+            && !versions.contains(&parsed)
+        {
+            versions.push(parsed);
+        }
+    }
+    Ok(versions)
+}
+
+#[derive(Clone, Copy)]
+enum SemverBoundOp {
+    Eq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Clone)]
+struct SemverBound {
+    op: SemverBoundOp,
+    version: semver::Version,
+}
+
+impl SemverBound {
+    fn matches(&self, candidate: &semver::Version) -> bool {
+        let ord = candidate.cmp_precedence(&self.version);
+        match self.op {
+            SemverBoundOp::Eq => ord.is_eq(),
+            SemverBoundOp::Lt => ord.is_lt(),
+            SemverBoundOp::Le => ord.is_le(),
+            SemverBoundOp::Gt => ord.is_gt(),
+            SemverBoundOp::Ge => ord.is_ge(),
+        }
+    }
+}
+
+enum ParsedPartialVersion {
+    Wildcard,
+    Major(u64),
+    MajorMinor(u64, u64),
+    Exact(semver::Version),
+}
+
+fn zero_prerelease(major: u64, minor: u64, patch: u64) -> semver::Version {
+    semver::Version {
+        major,
+        minor,
+        patch,
+        pre: semver::Prerelease::new("0").expect("static prerelease"),
+        build: semver::BuildMetadata::EMPTY,
+    }
+}
+
+fn parse_partial_version(raw: &str) -> Result<ParsedPartialVersion, String> {
+    let trimmed = raw.trim();
+    let trimmed = trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed);
+    if trimmed.is_empty() {
+        return Err("empty version".into());
+    }
+    if matches!(trimmed, "*" | "x" | "X") {
+        return Ok(ParsedPartialVersion::Wildcard);
+    }
+    let core = trimmed.split(['-', '+']).next().unwrap_or(trimmed);
+    let segments: Vec<&str> = core.split('.').collect();
+    let is_wild = |s: &str| matches!(s, "*" | "x" | "X");
+    match segments.as_slice() {
+        [maj] if is_wild(maj) => Ok(ParsedPartialVersion::Wildcard),
+        [maj] if !trimmed.contains(['-', '+']) => {
+            let major = maj
+                .parse::<u64>()
+                .map_err(|_| "invalid major".to_string())?;
+            Ok(ParsedPartialVersion::Major(major))
+        }
+        [maj, min] if is_wild(maj) && is_wild(min) && !trimmed.contains(['-', '+']) => {
+            Ok(ParsedPartialVersion::Wildcard)
+        }
+        [maj, min] if is_wild(min) && !trimmed.contains(['-', '+']) => {
+            let major = maj
+                .parse::<u64>()
+                .map_err(|_| "invalid major".to_string())?;
+            Ok(ParsedPartialVersion::Major(major))
+        }
+        [maj, min] if !trimmed.contains(['-', '+']) => {
+            let major = maj
+                .parse::<u64>()
+                .map_err(|_| "invalid major".to_string())?;
+            let minor = min
+                .parse::<u64>()
+                .map_err(|_| "invalid minor".to_string())?;
+            Ok(ParsedPartialVersion::MajorMinor(major, minor))
+        }
+        [maj, min, pat] if is_wild(pat) && !trimmed.contains(['-', '+']) => {
+            if is_wild(maj) && is_wild(min) {
+                return Ok(ParsedPartialVersion::Wildcard);
+            }
+            let major = maj
+                .parse::<u64>()
+                .map_err(|_| "invalid major".to_string())?;
+            if is_wild(min) {
+                return Ok(ParsedPartialVersion::Major(major));
+            }
+            let minor = min
+                .parse::<u64>()
+                .map_err(|_| "invalid minor".to_string())?;
+            Ok(ParsedPartialVersion::MajorMinor(major, minor))
+        }
+        _ => semver::Version::parse(trimmed)
+            .map(ParsedPartialVersion::Exact)
+            .map_err(|e| e.to_string()),
+    }
+}
+
+fn parse_comparator_token(token: &str, out: &mut Vec<SemverBound>) -> Result<(), String> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("empty comparator".into());
+    }
+    if let Some(rest) = token.strip_prefix('^') {
+        match parse_partial_version(rest)? {
+            ParsedPartialVersion::Wildcard => {}
+            ParsedPartialVersion::Major(major) => {
+                out.push(SemverBound {
+                    op: SemverBoundOp::Ge,
+                    version: zero_prerelease(major, 0, 0),
+                });
+                out.push(SemverBound {
+                    op: SemverBoundOp::Lt,
+                    version: zero_prerelease(major.saturating_add(1), 0, 0),
+                });
+            }
+            ParsedPartialVersion::MajorMinor(major, minor) => {
+                out.push(SemverBound {
+                    op: SemverBoundOp::Ge,
+                    version: zero_prerelease(major, minor, 0),
+                });
+                let upper = if major > 0 {
+                    zero_prerelease(major.saturating_add(1), 0, 0)
+                } else {
+                    zero_prerelease(0, minor.saturating_add(1), 0)
+                };
+                out.push(SemverBound {
+                    op: SemverBoundOp::Lt,
+                    version: upper,
+                });
+            }
+            ParsedPartialVersion::Exact(version) => {
+                let upper = if version.major > 0 {
+                    zero_prerelease(version.major.saturating_add(1), 0, 0)
+                } else if version.minor > 0 {
+                    zero_prerelease(0, version.minor.saturating_add(1), 0)
+                } else {
+                    zero_prerelease(0, 0, version.patch.saturating_add(1))
+                };
+                out.push(SemverBound {
+                    op: SemverBoundOp::Ge,
+                    version,
+                });
+                out.push(SemverBound {
+                    op: SemverBoundOp::Lt,
+                    version: upper,
+                });
+            }
+        }
+        return Ok(());
+    }
+    if let Some(rest) = token.strip_prefix('~') {
+        match parse_partial_version(rest)? {
+            ParsedPartialVersion::Wildcard => {}
+            ParsedPartialVersion::Major(major) => {
+                out.push(SemverBound {
+                    op: SemverBoundOp::Ge,
+                    version: zero_prerelease(major, 0, 0),
+                });
+                out.push(SemverBound {
+                    op: SemverBoundOp::Lt,
+                    version: zero_prerelease(major.saturating_add(1), 0, 0),
+                });
+            }
+            ParsedPartialVersion::MajorMinor(major, minor) => {
+                out.push(SemverBound {
+                    op: SemverBoundOp::Ge,
+                    version: zero_prerelease(major, minor, 0),
+                });
+                out.push(SemverBound {
+                    op: SemverBoundOp::Lt,
+                    version: zero_prerelease(major, minor.saturating_add(1), 0),
+                });
+            }
+            ParsedPartialVersion::Exact(version) => {
+                let upper = zero_prerelease(version.major, version.minor.saturating_add(1), 0);
+                out.push(SemverBound {
+                    op: SemverBoundOp::Ge,
+                    version,
+                });
+                out.push(SemverBound {
+                    op: SemverBoundOp::Lt,
+                    version: upper,
+                });
+            }
+        }
+        return Ok(());
+    }
+    if let Some(rest) = token.strip_prefix(">=") {
+        match parse_partial_version(rest)? {
+            ParsedPartialVersion::Wildcard => {}
+            ParsedPartialVersion::Major(major) => out.push(SemverBound {
+                op: SemverBoundOp::Ge,
+                version: zero_prerelease(major, 0, 0),
+            }),
+            ParsedPartialVersion::MajorMinor(major, minor) => out.push(SemverBound {
+                op: SemverBoundOp::Ge,
+                version: zero_prerelease(major, minor, 0),
+            }),
+            ParsedPartialVersion::Exact(version) => out.push(SemverBound {
+                op: SemverBoundOp::Ge,
+                version,
+            }),
+        }
+        return Ok(());
+    }
+    if let Some(rest) = token.strip_prefix("<=") {
+        match parse_partial_version(rest)? {
+            ParsedPartialVersion::Wildcard => {}
+            ParsedPartialVersion::Major(major) => out.push(SemverBound {
+                op: SemverBoundOp::Lt,
+                version: zero_prerelease(major.saturating_add(1), 0, 0),
+            }),
+            ParsedPartialVersion::MajorMinor(major, minor) => out.push(SemverBound {
+                op: SemverBoundOp::Lt,
+                version: zero_prerelease(major, minor.saturating_add(1), 0),
+            }),
+            ParsedPartialVersion::Exact(version) => out.push(SemverBound {
+                op: SemverBoundOp::Le,
+                version,
+            }),
+        }
+        return Ok(());
+    }
+    if let Some(rest) = token.strip_prefix('>') {
+        match parse_partial_version(rest)? {
+            ParsedPartialVersion::Wildcard => {
+                return Err("impossible >* comparator".into());
+            }
+            ParsedPartialVersion::Major(major) => out.push(SemverBound {
+                op: SemverBoundOp::Ge,
+                version: zero_prerelease(major.saturating_add(1), 0, 0),
+            }),
+            ParsedPartialVersion::MajorMinor(major, minor) => out.push(SemverBound {
+                op: SemverBoundOp::Ge,
+                version: zero_prerelease(major, minor.saturating_add(1), 0),
+            }),
+            ParsedPartialVersion::Exact(version) => out.push(SemverBound {
+                op: SemverBoundOp::Gt,
+                version,
+            }),
+        }
+        return Ok(());
+    }
+    if let Some(rest) = token.strip_prefix('<') {
+        match parse_partial_version(rest)? {
+            ParsedPartialVersion::Wildcard => {
+                return Err("impossible <* comparator".into());
+            }
+            ParsedPartialVersion::Major(major) => out.push(SemverBound {
+                op: SemverBoundOp::Lt,
+                version: zero_prerelease(major, 0, 0),
+            }),
+            ParsedPartialVersion::MajorMinor(major, minor) => out.push(SemverBound {
+                op: SemverBoundOp::Lt,
+                version: zero_prerelease(major, minor, 0),
+            }),
+            ParsedPartialVersion::Exact(version) => out.push(SemverBound {
+                op: SemverBoundOp::Lt,
+                version,
+            }),
+        }
+        return Ok(());
+    }
+    let rest = token.strip_prefix('=').unwrap_or(token);
+    match parse_partial_version(rest)? {
+        ParsedPartialVersion::Wildcard => {}
+        ParsedPartialVersion::Major(major) => {
+            out.push(SemverBound {
+                op: SemverBoundOp::Ge,
+                version: zero_prerelease(major, 0, 0),
+            });
+            out.push(SemverBound {
+                op: SemverBoundOp::Lt,
+                version: zero_prerelease(major.saturating_add(1), 0, 0),
+            });
+        }
+        ParsedPartialVersion::MajorMinor(major, minor) => {
+            out.push(SemverBound {
+                op: SemverBoundOp::Ge,
+                version: zero_prerelease(major, minor, 0),
+            });
+            out.push(SemverBound {
+                op: SemverBoundOp::Lt,
+                version: zero_prerelease(major, minor.saturating_add(1), 0),
+            });
+        }
+        ParsedPartialVersion::Exact(version) => out.push(SemverBound {
+            op: SemverBoundOp::Eq,
+            version,
+        }),
+    }
+    Ok(())
+}
+
+fn parse_npm_range(range: &str) -> Result<Vec<Vec<SemverBound>>, String> {
+    let trimmed = range.trim();
+    if trimmed.is_empty() || trimmed.starts_with("workspace:") {
+        return Err("invalid range".into());
+    }
+    let mut clauses = Vec::new();
+    for raw_clause in trimmed.split("||") {
+        let clause = raw_clause.trim();
+        if clause.is_empty() {
+            clauses.push(Vec::new());
+            continue;
+        }
+        let raw_tokens: Vec<&str> = clause.split_whitespace().collect();
+        let mut merged_tokens = Vec::<String>::new();
+        let mut idx = 0;
+        while idx < raw_tokens.len() {
+            let tok = raw_tokens[idx];
+            if tok == "-" && !merged_tokens.is_empty() && idx + 1 < raw_tokens.len() {
+                let low = merged_tokens.pop().expect("non-empty");
+                let high = raw_tokens[idx + 1];
+                merged_tokens.push(format!(">={low}"));
+                merged_tokens.push(format!("<={high}"));
+                idx += 2;
+                continue;
+            }
+            if matches!(tok, ">=" | "<=" | ">" | "<" | "=" | "^" | "~")
+                && idx + 1 < raw_tokens.len()
+            {
+                merged_tokens.push(format!("{tok}{}", raw_tokens[idx + 1]));
+                idx += 2;
+                continue;
+            }
+            merged_tokens.push(tok.to_string());
+            idx += 1;
+        }
+        let mut bounds = Vec::new();
+        for tok in &merged_tokens {
+            parse_comparator_token(tok, &mut bounds)?;
+        }
+        clauses.push(bounds);
+    }
+    if clauses.is_empty() {
+        return Err("empty range".into());
+    }
+    Ok(clauses)
+}
+
+pub(crate) fn match_supported_dsh_range(range: &str) -> Result<Option<semver::Version>, String> {
+    let clauses = parse_npm_range(range)?;
+    let supported = supported_dsh_versions().map_err(|e| e.to_string())?;
+    for candidate in supported {
+        if clauses
+            .iter()
+            .any(|bounds| bounds.iter().all(|bound| bound.matches(&candidate)))
+        {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+struct AdmittedCompatibility {
+    dsh_range: Option<String>,
+    matched_dsh_version: Option<semver::Version>,
+    platforms: Option<Vec<String>>,
+}
+
+fn admit_host_compatibility(manifest: &Value) -> Result<AdmittedCompatibility> {
+    let target = target_dsh_version()?;
+    let (dsh_range, matched_dsh_version) = match manifest.get("engines") {
+        Some(Value::Map(_)) => {
+            if let Some(declared) = manifest
+                .get("engines")
+                .and_then(|engines| engines.get("dsh"))
+            {
+                let Some(range) = declared.str() else {
+                    return refuse(
+                        "incompatible-version: `engines.dsh` must be a string semver range; author the supported DSH range or remove the field.",
+                    );
+                };
+                match match_supported_dsh_range(range) {
+                    Ok(Some(matched)) => (Some(range), Some(matched)),
+                    Ok(None) => {
+                        return refuse(format!(
+                            "incompatible-version: this bundle requires DSH `{}`, but this Codewhale host targets DSH {target} (0.2.1-rc.5 / 0.2.2-rc.1); import a bundle built for that host or update the host.",
+                            refusal_text(range)
+                        ));
+                    }
+                    Err(_) => {
+                        return refuse(format!(
+                            "incompatible-version: `engines.dsh` value `{}` is not a valid semver range.",
+                            refusal_text(range)
+                        ));
+                    }
+                }
+            } else {
+                (None, None)
+            }
+        }
+        Some(Value::Null) | None => (None, None),
+        Some(_) => {
             return refuse(
-                "incompatible-version: `engines.dsh` must be a string semver range; author the supported DSH range or remove the field.",
+                "incompatible-version: `engines` in package.json must be an object when present.",
             );
-        };
-        require(
-            !range.trim().is_empty(),
-            &format!(
-                "incompatible-version: `engines.dsh` value `{}` is not a valid semver range.",
-                refusal_text(range)
-            ),
-        )?;
-        Some(range)
-    } else {
-        None
+        }
     };
-    if let Some(declared) = manifest
+    if dsh_range.is_none() {
+        match manifest.get("peerDependencies") {
+            Some(Value::Map(peers)) => {
+                for (pkg, spec_val) in peers {
+                    if pkg != "@deepseek-ai/dsh" && !pkg.starts_with("@deepseek-ai/dsh-") {
+                        continue;
+                    }
+                    let Some(raw_spec) = spec_val.str().map(str::trim).filter(|s| !s.is_empty())
+                    else {
+                        return refuse(format!(
+                            "incompatible-version: `peerDependencies.{}` must be a non-empty string semver range.",
+                            refusal_text(pkg)
+                        ));
+                    };
+                    let check_range = if let Some(rest) = raw_spec.strip_prefix("workspace:") {
+                        let rest = rest.trim();
+                        if matches!(rest, "*" | "^" | "~") {
+                            continue;
+                        }
+                        rest
+                    } else {
+                        raw_spec
+                    };
+                    match match_supported_dsh_range(check_range) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            return refuse(format!(
+                                "incompatible-version: `peerDependencies.{}` requires DSH `{}`, but this Codewhale host targets DSH {target} (0.2.1-rc.5 / 0.2.2-rc.1); import a bundle built for that host or update the host.",
+                                refusal_text(pkg),
+                                refusal_text(raw_spec)
+                            ));
+                        }
+                        Err(_) => {
+                            return refuse(format!(
+                                "incompatible-version: `peerDependencies.{}` value `{}` is not a valid semver range.",
+                                refusal_text(pkg),
+                                refusal_text(raw_spec)
+                            ));
+                        }
+                    }
+                }
+            }
+            Some(Value::Null) | None => {}
+            Some(_) => {
+                return refuse(
+                    "incompatible-version: `peerDependencies` in package.json must be an object when present.",
+                );
+            }
+        }
+    }
+    let platforms = if let Some(declared) = manifest
         .get("dsh")
         .and_then(|dsh| dsh.get("bundle"))
         .and_then(|bundle| bundle.get("platforms"))
@@ -626,8 +1087,21 @@ fn admit_host_compatibility(manifest: &Value) -> Result<Option<&str>> {
                 platforms.join(", ")
             ),
         )?;
-    }
-    Ok(dsh_range)
+        let mut mapped: Vec<String> = platforms
+            .into_iter()
+            .map(|p| codewhale_os_name(p).to_string())
+            .collect();
+        mapped.sort();
+        mapped.dedup();
+        Some(mapped)
+    } else {
+        None
+    };
+    Ok(AdmittedCompatibility {
+        dsh_range: dsh_range.map(ToString::to_string),
+        matched_dsh_version,
+        platforms,
+    })
 }
 
 fn declares_client(manifest: &Value) -> bool {
@@ -650,7 +1124,8 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
         matches!(bundle, Some(Value::Map(_))),
         "Not a DSH bundle package: package.json lacks `dsh.bundle.patch`.",
     )?;
-    let dsh_range = admit_host_compatibility(&manifest)?;
+    let admitted = admit_host_compatibility(&manifest)?;
+    let dsh_range = admitted.dsh_range.as_deref();
     let mut notes = Vec::new();
     if declares_client(&manifest) {
         notes.push(
@@ -712,13 +1187,49 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
     let composition = json!({"version":1,"layers":raw_layers,"modules":[],"files":{}});
     let mut review_input = composition.clone();
     let target = if let Some(range) = dsh_range {
-        let target = target_dsh_version()?;
+        let target = match admitted.matched_dsh_version {
+            Some(matched) => matched,
+            None => target_dsh_version()?,
+        };
         review_input["compatibility"] = json!({"range":range,"version":target.to_string()});
         Some(target)
     } else {
         None
     };
-    let reviewed = crate::composition_review::review(&review_input).map_err(anyhow::Error::msg)?;
+    let reviewed = match crate::composition_review::review(&review_input) {
+        Ok(reviewed) => reviewed,
+        #[cfg(any(test, feature = "test-support"))]
+        Err(ref msg) if msg == "composition reviewer is unavailable" => {
+            let mut patches = Vec::new();
+            let mut locations = Vec::new();
+            for (layer_meta, raw) in layers
+                .iter()
+                .zip(composition["layers"].as_array().into_iter().flatten())
+            {
+                let src = raw.get("source").and_then(Json::as_str).unwrap_or_default();
+                let parsed = parse_yaml(src, true)?;
+                let Value::Seq(items) = parsed else {
+                    return refuse("Each DSH patch layer must be a YAML or JSON array.");
+                };
+                for (idx, item) in items.into_iter().enumerate() {
+                    patches.push(item);
+                    locations.push((layer_meta.path.clone(), idx + 1));
+                }
+            }
+            let (entries, outcomes) = evaluate_patches(patches, &mut notes, &locations)?;
+            return Ok(LoadedBundle {
+                composition,
+                manifest,
+                manifest_sha256,
+                entries,
+                notes,
+                layers,
+                outcomes,
+                platforms: admitted.platforms,
+            });
+        }
+        Err(err) => return Err(anyhow::Error::msg(err)),
+    };
     if let (Some(range), Some(target)) = (dsh_range, target) {
         match reviewed.get("compatibility").and_then(Json::as_str) {
             Some("match") => {}
@@ -803,6 +1314,7 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
         notes,
         layers,
         outcomes,
+        platforms: admitted.platforms,
     })
 }
 
@@ -1612,13 +2124,14 @@ pub fn walk_files(root: &Path, mut visit: impl FnMut(&Path, bool) -> Result<()>)
                     .unwrap_or(path.as_path())
                     .components()
                     .any(|part| part.as_os_str().to_str() == Some("node_modules"));
-                let contained_file = dependency_link
+                let contained_target = dependency_link
                     && fs::canonicalize(&path).is_ok_and(|target| {
                         target.starts_with(&canonical_root)
-                            && fs::metadata(&target).is_ok_and(|target| target.is_file())
+                            && fs::metadata(&target)
+                                .is_ok_and(|target| target.is_file() || target.is_dir())
                     });
                 require(
-                    contained_file,
+                    contained_target,
                     "Source paths must not contain links or reparse points.",
                 )?;
                 continue;
@@ -1869,6 +2382,10 @@ fn native_composition_files(
         let suffix = path
             .extension()
             .map(|ext| ext.to_string_lossy().to_ascii_lowercase());
+        require(
+            !matches!(suffix.as_deref(), Some("node")),
+            "Native Node addons (`.node`) are not supported in DSH bundles.",
+        )?;
         require(
             (dependency || !lower.starts_with('.') || lower == ".agent-presets")
                 && !matches!(
@@ -2207,8 +2724,15 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
     if !hosts.is_empty() {
         extension.insert("capabilities".into(), json!({"network_hosts": hosts}));
     }
-    if requires_node {
-        extension.insert("when".into(), json!({"binaries": ["node"]}));
+    if requires_node || loaded.platforms.is_some() {
+        let mut when = serde_json::Map::new();
+        if requires_node {
+            when.insert("binaries".into(), json!(["node"]));
+        }
+        if let Some(platforms) = &loaded.platforms {
+            when.insert("os".into(), json!(platforms));
+        }
+        extension.insert("when".into(), Json::Object(when));
     }
     if !extension.is_empty() {
         manifest["extensions"] = json!({"net.codewhale": extension});
