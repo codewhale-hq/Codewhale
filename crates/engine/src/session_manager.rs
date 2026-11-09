@@ -3962,7 +3962,21 @@ impl SessionManager {
         use std::io::Read;
         let mut file = match open_private_read_file(path) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if path
+                    .parent()
+                    .is_some_and(|parent| parent.exists() && !parent.is_dir())
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        format!(
+                            "private sidecar parent {} is not a directory",
+                            path.parent().unwrap_or(path).display()
+                        ),
+                    ));
+                }
+                return Ok(None);
+            }
             Err(error) => return Err(error),
         };
         let mut digest = Sha256::new();

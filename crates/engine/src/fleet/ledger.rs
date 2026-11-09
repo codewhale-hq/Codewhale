@@ -342,7 +342,7 @@ pub struct FleetLedger {
     ledger_file: WorkspaceFile,
     lock_file: WorkspaceFile,
     original_lock: std::fs::File,
-    durable_barrier: parking_lot::Mutex<Option<(std::fs::File, u64)>>,
+    durable_barrier: parking_lot::Mutex<Option<u64>>,
     /// Stable advisory-lock inode shared by every manager for this workspace.
     ///
     /// The ledger itself is replaced during compaction, so locking
@@ -549,7 +549,7 @@ impl FleetLedger {
         file.sync_data()
             .with_context(|| format!("syncing fleet ledger {}", self.ledger_path.display()))?;
         let length = file.metadata()?.len();
-        *self.durable_barrier.lock() = Some((file, length));
+        *self.durable_barrier.lock() = Some(length);
         // Wake SSE subscribers after the bytes are durable (#6211 R7b). Every
         // record kind funnels through here, so a wake only promises "something
         // changed" — subscribers re-poll with their cursor.
@@ -1186,17 +1186,12 @@ impl FleetLedger {
         let file = self.ledger_file.open_update(false, false)?;
         let length = file.metadata()?.len();
         let mut cached = self.durable_barrier.lock();
-        if let Some((previous, durable_length)) = cached.take()
-            && durable_length == length
-            && same_file(&previous, &file)?
-        {
-            *cached = Some((previous, durable_length));
+        if *cached == Some(length) {
             return Ok(());
         }
         file.sync_data()
             .context("acknowledging Fleet ledger durability")?;
-        let length = file.metadata()?.len();
-        *cached = Some((file, length));
+        *cached = Some(file.metadata()?.len());
         Ok(())
     }
 

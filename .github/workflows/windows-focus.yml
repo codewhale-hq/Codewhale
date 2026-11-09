@@ -26,6 +26,7 @@ jobs:
       CARGO_INCREMENTAL: 0
       RUSTFLAGS: -Dwarnings
       RUST_MIN_STACK: 8388608
+      RUST_BACKTRACE: full
       FILTER: ${{ inputs.filter }}
     steps:
       - uses: actions/checkout@v7
