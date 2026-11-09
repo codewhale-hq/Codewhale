@@ -60,7 +60,7 @@ impl ToolSpec for ReadTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a file. Text comes back whole when it fits the output budget — 100000 bytes by default, raisable to 500000 with max_bytes; no line cap. Use offset/limit for an exact line range; a budget-limited footer names the exact continuation offset. Responses report byte size, line count, and truncated. PNG/JPEG/GIF/WebP return as visible image content (large images downscaled); read an image instead of OCR or screenshots."
+        "Read a file. Returns up to 2000 lines per call within a 51200-byte output cap; a line longer than 2000 chars is truncated with a marker. Use offset and limit to read a line range or continue a large file; the footer names the next offset. Responses report byte size, line count, and truncated. PNG/JPEG/GIF/WebP return as visible image content (large images downscaled); read an image instead of OCR or screenshots."
     }
 
     fn input_schema(&self) -> Value {
@@ -77,11 +77,7 @@ impl ToolSpec for ReadTool {
                 },
                 "limit": {
                     "type": "number",
-                    "description": "Maximum number of lines to read."
-                },
-                "max_bytes": {
-                    "type": "number",
-                    "description": "Output budget in bytes for this one call. Defaults to 100000; values above the 500000 maximum are clamped down rather than rejected, and a value below the active default leaves the default in place."
+                    "description": "Maximum number of lines to return. Defaults to 2000."
                 }
             },
             "required": ["path"],

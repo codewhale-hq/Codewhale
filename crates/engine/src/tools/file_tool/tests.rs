@@ -554,8 +554,8 @@ fn primitive_schemas_are_separate_and_small_contract_shaped() {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
-        // `max_bytes` is the model-requested per-call output budget (C05).
-        ["limit", "max_bytes", "offset", "path"]
+        // Lines are the only paging vocabulary; there is no byte knob.
+        ["limit", "offset", "path"]
             .into_iter()
             .map(str::to_string)
             .collect()

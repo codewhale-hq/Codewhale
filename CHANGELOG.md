@@ -264,6 +264,16 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Changed
 
+- **`read` pages in lines only (breaking).** One `read` call returns at
+  most 2,000 lines — the default and the maximum `limit` — inside a 50 KiB
+  output cap, and a line longer than 2,000 chars comes back truncated with
+  a marker instead of dead-ending the read. The model-facing `max_bytes`
+  parameter is gone: continuation is always the next line offset, and
+  footers say only that ("Showing lines 1-51 of 2000; output cap reached.
+  Continue with offset=52."). The byte cap stays as an internal bound;
+  operators can still widen it process-wide with
+  `[workshop] read_result_max_bytes`.
+
 - **A leaner first request.** The pinned system prompt sheds its duplicate
   guidance: the base layers shrink to about 4,300 characters, the skills index
   no longer rides in every prompt (`load_skill` searches and lists the
