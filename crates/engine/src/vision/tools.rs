@@ -17,7 +17,7 @@ use codewhale_runtime::config::VisionModelConfig;
 
 pub struct ImageAnalyzeTool {
     config: VisionModelConfig,
-    client: Result<reqwest::Client, ()>,
+    client: anyhow::Result<reqwest::Client>,
     route_client: Option<CodewhaleClient>,
 }
 
@@ -72,8 +72,7 @@ impl ImageAnalyzeTool {
                 None => builder,
             };
             Ok(builder.build()?)
-        })()
-        .map_err(|_| ());
+        })();
         Self {
             config,
             client,
@@ -316,10 +315,9 @@ impl ToolSpec for ImageAnalyzeTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let client = self
-            .client
-            .as_ref()
-            .map_err(|_| ToolError::execution_failed("Vision HTTP transport unavailable"))?;
+        let client = self.client.as_ref().map_err(|error| {
+            ToolError::execution_failed(format!("Vision HTTP transport unavailable: {error:#}"))
+        })?;
         let image_path = required_str(&input, "image_path")?;
         let prompt = input
             .get("prompt")

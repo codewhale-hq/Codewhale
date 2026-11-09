@@ -6974,8 +6974,9 @@ impl Config {
 
     /// Return the configured vision model config. A `[vision_model]` that
     /// used to inherit the top-level `api_key` carries its own copy since
-    /// parsing moved that key (#6394); nothing else is inherited, so a
-    /// DeepSeek key never follows `vision_model.base_url` to another host.
+    /// parsing moved that key (#6394). An unset runtime HTTP policy inherits
+    /// from the main config; provider credentials never follow
+    /// `vision_model.base_url` to another host.
     #[must_use]
     pub fn vision_model_config(&self) -> Option<VisionModelConfig> {
         let mut config = self.vision_model.clone()?;
