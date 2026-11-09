@@ -21,9 +21,10 @@ compatibility in 0.10.3; the final tag waits for that full list. The near-term
 tag. Items moved to 0.10.4 by name are marked below.
 
 - **Terminal lifetime (0.10.3 work item):** deleting a conversation now ends the
-  terminal sessions owned by that Runtime thread. The desktop tab-close half and
-  the jobs half remain; shells still survive quitting or updating the app, and
-  an Engine restart loses live shells (reported as a new terminal `instance`).
+  terminal sessions and background jobs owned by that Runtime thread. The
+  desktop tab-close half remains; shells still survive quitting or updating the
+  app, and an Engine restart loses live shells (reported as a new terminal
+  `instance`).
   Scrollback beyond the 512 KiB ring is not recoverable.
 - **Windows suite (0.10.3 work item):** the Windows Test job is not green on the
   current candidate. Scripted journeys are being brought to zero on GitHub-hosted
@@ -263,6 +264,24 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Changed
 
+- **A leaner first request.** The pinned system prompt sheds its duplicate
+  guidance: the base layers shrink to about 4,300 characters, the skills index
+  no longer rides in every prompt (`load_skill` searches and lists the
+  catalogue on demand), and MCP Registry guidance moved into the
+  `registry_sync` and `tool_search` descriptions, where it is read when the
+  tool is used instead of on every turn. **This changes the session-pinned
+  prompt, so each session re-pins its prompt cache once after upgrade.**
+- **Workspace instructions arrive as a conversation message.** `AGENTS.md` and
+  other standing instructions are delivered once as a user-role history
+  message instead of being pinned inside the system prompt, capped at 64 KiB.
+  The guidance is unchanged; editing the file now takes effect as a visible
+  message rather than silently rewriting the pinned prefix.
+- **`grep_files` is eager; `workflow` and the context archive load on demand.**
+  The default first-turn tool set trades `workflow`, `context_archive_get`
+  and `context_archive_search` (now one `tool_search` away, including after
+  compaction) for `grep_files`, and tool descriptions are trimmed to the
+  first-relevant detail without changing any schema.
+
 - **Sub-agent shell runs no longer wait on a peer's write claim.** A child that
   holds a shared write claim can run `bash` while another child writes; the
   claim still coordinates bounded `File`/`Edit`/`Patch` targets, and the
@@ -401,7 +420,12 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Fixed
 
-- **Deleting a conversation ends its terminal sessions.** A Runtime thread's terminal PTYs are killed and removed from the live registry when the thread is deleted; the durable record is marked cancelled. The desktop tab-close half and the jobs half remain separate work.
+- **An MCP capture that fails no longer reads as an empty registry.** A
+  timed-out or changed-during-capture MCP snapshot emits nothing instead of
+  withdrawing every server's instructions; withdrawals now happen only on a
+  successful empty capture.
+
+- **Deleting a conversation ends its terminal sessions and background jobs.** A Runtime thread's terminal PTYs and running background shell jobs are killed when the thread is deleted, and the PTYs leave the live registry with their durable record marked cancelled. Jobs that already exited and other conversations' shells are untouched. The desktop tab-close half remains separate work.
 - **A question waits for you.** An answerable prompt from the desktop Runtime API no longer hits the 30-minute durable-task human-wait cap; it waits until you answer or cancel. Headless and unanswerable tasks keep the fail-safe cap.
 - **A plugin refused for its runtime snapshot now says why.** The warning and the enable error carry the reason the saved snapshot was rejected (for example the stage root is not read-only, or its content identity differs) instead of only "no staged snapshot". On Windows, 119 of the 135 hosted test failures were this one message with the cause discarded, so the next run can name it. Not a fix for those failures.
 - **Listing installed agent CLIs no longer blocks the runtime.** `GET /v1/agents/external` looks for each binary with `tokio::fs` instead of synchronous file calls on a runtime worker.
