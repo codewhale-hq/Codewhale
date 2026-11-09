@@ -84,6 +84,16 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Added
 
+- **DSH market indexes are readable:** `/plugin marketplace add` and
+  `GET /v1/apps/marketplaces` now parse the DeepSeek Harness plugin market
+  index (format 1) alongside the Kimi, Claude, Codex and Codewhale catalogs.
+  Entries keep npm package identity, localized title and description, a
+  resolved icon, declared category and label ids, and every version ordered
+  by SemVer precedence; the highest version decides the row. A version whose
+  `engines.dsh` range admits none of the DSH versions this host targets is
+  refused before any download. npm sources are listed but not installable
+  (Codewhale does not execute npm), and a commit-pinned GitHub source without
+  a package subdirectory installs from the pinned commit. (CW-7051)
 - **Plugin catalog over the Runtime API:** `GET /v1/apps/plugins/catalog`
   lists the built-in plugin settings (Subagent, Web search, Shell, Agent
   loop), the experimental features and the remaining features as rows the
