@@ -7368,6 +7368,9 @@ impl RuntimeThreadManager {
         {
             guard.kill_all_owned_running();
         }
+        // Terminal sessions are a Unix PTY surface; the module is absent on
+        // OpenHarmony, where there is no terminal to end.
+        #[cfg(not(target_env = "ohos"))]
         if let Err(error) =
             crate::tools::terminal_session::kill_owner_sessions(&thread.workspace, thread_id)
         {
