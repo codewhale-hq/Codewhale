@@ -34,8 +34,6 @@ jobs:
           fetch-depth: 1
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@nextest
-      - uses: actions/setup-node@v7
-      - uses: oven-sh/setup-bun@v2
       - name: Run focused tests
         shell: bash
         run: cargo nextest run -p codewhale-engine -p codewhale-plugins -p codewhale-tui -p codewhale-app-server --lib --locked --profile ci -E "$FILTER"
