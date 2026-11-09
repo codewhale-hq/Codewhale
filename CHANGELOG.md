@@ -84,6 +84,13 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Added
 
+- **DSH bundles install from tarballs and admit CJS packages:** installing a
+  DeepSeek Harness bundle from a `.tgz` now detects the `dsh.bundle` manifest,
+  converts it during staging, and admits CommonJS packages (including
+  `require` exports and bundled `node_modules`) alongside ESM. Admission
+  checks `engines.dsh` as a real npm semver range against the host's supported
+  DSH versions and refuses bundles whose `dsh.bundle.platforms` excludes this
+  computer; native `.node` addons stay refused. (CW-7051, CW-7054)
 - **Prune pasted images:** `codewhale sessions prune-images` lists pasted
   clipboard images that no saved session, checkpoint, Runtime thread, draft or
   history still names and that are older than 7 days (`--older-than-days`);
