@@ -84,6 +84,20 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Added
 
+- **Plugin catalog over the Runtime API:** `GET /v1/apps/plugins/catalog`
+  lists the built-in plugin settings (Subagent, Web search, Shell, Agent
+  loop), the experimental features and the remaining features as rows the
+  desktop Plugins page renders directly. Enable, disable and the subagents
+  concurrency setting persist through the same config writer and reload as
+  `/v1/config`; the agent loop itself cannot be turned off. (CW-7051,
+  CW-7929)
+- **Optional host policy on model HTTP clients:** embedders can install an
+  in-memory `ModelHttpPolicy` that vets or configures the HTTP builder for
+  the primary, model-list, HTTP/1.1 and vision transports before a client is
+  built. Config files cannot install the hook, and transport behavior
+  without a policy is unchanged. Thanks
+  [@zhuowp](https://github.com/zhuowp)
+  ([#7251](https://github.com/codewhale-hq/Codewhale/pull/7251)).
 - **DSH bundles install from tarballs and admit CJS packages:** installing a
   DeepSeek Harness bundle from a `.tgz` now detects the `dsh.bundle` manifest,
   converts it during staging, and admits CommonJS packages (including

@@ -19421,6 +19421,100 @@ async fn plugin_api_404s_for_unknown_selector() -> Result<()> {
 }
 
 #[tokio::test]
+async fn plugin_catalog_over_http_lists_and_toggles_feature_rows() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("runtime");
+    let workspace = tmp.path().join("ws");
+    fs::create_dir_all(&root)?;
+
+    let Some((addr, handle)) = spawn_plugin_api_server(root, workspace).await? else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let catalog_url = format!("http://{addr}/v1/apps/plugins/catalog");
+
+    let catalog: serde_json::Value = client
+        .get(&catalog_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let builtin = catalog["builtin"].as_array().expect("builtin rows");
+    let builtin_ids: Vec<&str> = builtin
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect();
+    assert_eq!(
+        builtin_ids,
+        ["subagents", "web_search", "shell_tool", "agent_loop"]
+    );
+    assert!(
+        catalog["experimental"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["id"] == "extension_host")),
+        "extension_host is an experimental row"
+    );
+
+    let ghost = client
+        .get(format!("http://{addr}/v1/apps/plugins/ghost"))
+        .send()
+        .await?;
+    assert_eq!(ghost.status(), StatusCode::NOT_FOUND);
+
+    let disabled: serde_json::Value = client
+        .post(format!("{catalog_url}/web_search/disable"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(disabled["row"]["enabled"], false);
+
+    let after: serde_json::Value = client
+        .get(&catalog_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(
+        after["builtin"].as_array().is_some_and(|rows| rows
+            .iter()
+            .any(|row| row["id"] == "web_search" && row["enabled"] == false)),
+        "the toggle persists across reads"
+    );
+
+    let loop_off = client
+        .post(format!("{catalog_url}/agent_loop/disable"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(loop_off.status(), StatusCode::CONFLICT);
+
+    let unknown = client
+        .post(format!("{catalog_url}/nope/enable"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+    let settings: serde_json::Value = client
+        .put(format!("{catalog_url}/subagents/settings"))
+        .json(&serde_json::json!({"settings": {"max_concurrent": 2}}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(settings["row"]["settings"]["max_concurrent"], 2);
+
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn dsh_package_preview_then_exact_install_over_http() -> Result<()> {
     let _home = codewhale_engine::test_support::SealedHome::new();
     let tmp = tempfile::tempdir()?;

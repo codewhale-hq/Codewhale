@@ -1629,6 +1629,330 @@ pub(super) async fn install_marketplace_candidate_api(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Plugin catalog: built-in and experimental rows backed by `[features]`
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub(super) struct CatalogRow {
+    pub(super) id: String,
+    pub(super) title: String,
+    pub(super) description: Option<String>,
+    pub(super) icon: Option<String>,
+    pub(super) experimental: bool,
+    pub(super) enabled: bool,
+    pub(super) available: bool,
+    pub(super) unavailable_reason: Option<String>,
+    pub(super) settings_schema: Option<Value>,
+    pub(super) settings: Option<Value>,
+    pub(super) restart_required: bool,
+    pub(super) backing: &'static str,
+    pub(super) dsh_package: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct CatalogResponse {
+    pub(super) builtin: Vec<CatalogRow>,
+    pub(super) experimental: Vec<CatalogRow>,
+    pub(super) more: Vec<CatalogRow>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct CatalogRowEnvelope {
+    pub(super) row: CatalogRow,
+}
+
+const CATALOG_BUILTIN_KEYS: &[&str] = &["subagents", "web_search", "shell_tool"];
+const AGENT_LOOP_ID: &str = "agent_loop";
+
+fn catalog_title(key: &str) -> String {
+    match key {
+        "subagents" => "Subagent".to_string(),
+        "web_search" => "Web search".to_string(),
+        "shell_tool" => "Shell".to_string(),
+        other => super::humanize_schema_key(other),
+    }
+}
+
+fn catalog_description(key: &str) -> Option<String> {
+    let text = match key {
+        "subagents" => "Delegate bounded tasks to focused child agents with isolated context.",
+        "web_search" => "Search and fetch live web pages while answering.",
+        "shell_tool" => "Run commands in your workspace terminal with approval controls.",
+        "apply_patch" => "Apply structured multi-file patches as one reviewed change.",
+        "mcp" => "Connect Model Context Protocol servers and their tools.",
+        "exec_policy" => "Check shell commands against your exec policy before they run.",
+        "vision_model" => "Send images to a vision-capable model for analysis.",
+        "verify_tool" => "Let the agent run an adversarial self-critique before finishing.",
+        "code_mode" => "Compose MCP and plugin tools through one eager execute_tools call.",
+        "extension_host" => {
+            "Run reviewed plugins' native code in the TypeScript extension host. Changing this re-reviews every plugin after a restart."
+        }
+        "finance_host" => "Normalize finance data with the pinned TypeScript adapter.",
+        "data_host" => "Present data validation results with the pinned TypeScript presenter.",
+        "speech_host" => "Prepare speech input and output with the pinned TypeScript adapter.",
+        "pdf_host" => "Orchestrate PDF outcomes with the pinned TypeScript adapter.",
+        "ocr_host" => "Choose the OCR engine with the pinned TypeScript adapter.",
+        "web_search_host" => "Run web queries through the pinned TypeScript provider adapters.",
+        "web_extract_host" => "Select readable page regions with the pinned TypeScript adapter.",
+        "github_host" => "Present GitHub and local reports with the pinned TypeScript adapter.",
+        "review_host" => "Present captured reviews with the pinned TypeScript adapter.",
+        _ => return None,
+    };
+    Some(text.to_string())
+}
+
+fn subagents_settings(config: &codewhale_runtime::config::Config) -> (Value, Value) {
+    let max_concurrent = config
+        .subagents
+        .as_ref()
+        .and_then(|subagents| subagents.max_concurrent)
+        .map_or_else(
+            || config.max_subagents(),
+            |max| max.min(codewhale_runtime::config::MAX_SUBAGENTS),
+        );
+    let schema = serde_json::json!({
+        "fields": [{
+            "key": "max_concurrent",
+            "label": "Maximum concurrent subagents",
+            "kind": "number",
+            "default": max_concurrent,
+        }]
+    });
+    let settings = serde_json::json!({ "max_concurrent": max_concurrent });
+    (schema, settings)
+}
+
+fn catalog_feature_row(
+    config: &codewhale_runtime::config::Config,
+    spec: &codewhale_runtime::features::FeatureSpec,
+) -> CatalogRow {
+    let (settings_schema, settings) = if spec.key == "subagents" {
+        let (schema, settings) = subagents_settings(config);
+        (Some(schema), Some(settings))
+    } else {
+        (None, None)
+    };
+    CatalogRow {
+        id: spec.key.to_string(),
+        title: catalog_title(spec.key),
+        description: catalog_description(spec.key),
+        icon: Some(spec.key.to_string()),
+        experimental: spec.stage == codewhale_runtime::features::Stage::Experimental,
+        enabled: config.features().enabled(spec.id),
+        available: true,
+        unavailable_reason: None,
+        settings_schema,
+        settings,
+        restart_required: spec.key == "extension_host",
+        backing: "feature",
+        dsh_package: None,
+    }
+}
+
+fn agent_loop_row() -> CatalogRow {
+    CatalogRow {
+        id: AGENT_LOOP_ID.to_string(),
+        title: "Agent loop".to_string(),
+        description: Some(
+            "The planning, tool-use and verification loop every turn runs in. Always on."
+                .to_string(),
+        ),
+        icon: Some(AGENT_LOOP_ID.to_string()),
+        experimental: false,
+        enabled: true,
+        available: true,
+        unavailable_reason: None,
+        settings_schema: None,
+        settings: None,
+        restart_required: false,
+        backing: "native",
+        dsh_package: None,
+    }
+}
+
+fn build_catalog(config: &codewhale_runtime::config::Config) -> CatalogResponse {
+    let mut builtin = Vec::new();
+    let mut experimental = Vec::new();
+    let mut more = Vec::new();
+    for spec in codewhale_runtime::features::FEATURES {
+        let row = catalog_feature_row(config, spec);
+        if CATALOG_BUILTIN_KEYS.contains(&spec.key) {
+            builtin.push(row);
+        } else if spec.stage == codewhale_runtime::features::Stage::Experimental {
+            experimental.push(row);
+        } else {
+            more.push(row);
+        }
+    }
+    builtin.sort_by_key(|row| {
+        CATALOG_BUILTIN_KEYS
+            .iter()
+            .position(|key| *key == row.id)
+            .unwrap_or(usize::MAX)
+    });
+    builtin.push(agent_loop_row());
+    CatalogResponse {
+        builtin,
+        experimental,
+        more,
+    }
+}
+
+fn find_catalog_row(config: &codewhale_runtime::config::Config, id: &str) -> Option<CatalogRow> {
+    let catalog = build_catalog(config);
+    catalog
+        .builtin
+        .into_iter()
+        .chain(catalog.experimental)
+        .chain(catalog.more)
+        .find(|row| row.id == id)
+}
+
+/// `GET /v1/apps/plugins/catalog`
+pub(super) async fn list_plugin_catalog(
+    State(state): State<RuntimeApiState>,
+) -> Result<Json<CatalogResponse>, ApiError> {
+    let config = state.config.read();
+    Ok(Json(build_catalog(&config)))
+}
+
+async fn reload_after_catalog_write(state: RuntimeApiState) -> Result<(), ApiError> {
+    tokio::spawn(async move {
+        let _credential_change = state.provider_switches.lock().await;
+        let mut reloaded = codewhale_plugins::providers::load_config(
+            state.config_path.clone(),
+            state.config_profile.as_deref(),
+        )
+        .map_err(|e| ApiError::internal(format!("Failed to reload config: {e}")))?;
+        reloaded.preserve_runtime_credentials(&state.config.read());
+        state
+            .runtime_threads
+            .reload_config(reloaded.clone())
+            .await
+            .map_err(|err| ApiError::bad_request(format!("Config reload rejected: {err}")))?;
+        *state.config.write() = reloaded;
+        Ok(())
+    })
+    .await
+    .map_err(|_| ApiError::internal("config reload task failed"))?
+}
+
+async fn set_catalog_enabled(
+    state: RuntimeApiState,
+    id: String,
+    on: bool,
+) -> Result<Json<CatalogRowEnvelope>, ApiError> {
+    if id == AGENT_LOOP_ID {
+        if !on {
+            return Err(ApiError::conflict(
+                "The agent loop is always on; it cannot be turned off.",
+            ));
+        }
+        return Ok(Json(CatalogRowEnvelope {
+            row: agent_loop_row(),
+        }));
+    }
+    let Some(spec) = codewhale_runtime::features::FEATURES
+        .iter()
+        .find(|spec| spec.key == id)
+    else {
+        return Err(ApiError::not_found(format!(
+            "catalog plugin '{id}' not found"
+        )));
+    };
+    codewhale_runtime::config_persistence::persist_table_bool_key(
+        state.config_path.as_deref(),
+        "features",
+        spec.key,
+        on,
+    )
+    .map_err(|e| ApiError::internal(format!("Failed to persist setting: {e}")))?;
+    reload_after_catalog_write(state.clone()).await?;
+    let config = state.config.read();
+    let row = find_catalog_row(&config, &id).ok_or_else(|| {
+        ApiError::internal(format!("catalog plugin '{id}' vanished after reload"))
+    })?;
+    Ok(Json(CatalogRowEnvelope { row }))
+}
+
+/// `POST /v1/apps/plugins/catalog/{id}/enable`
+pub(super) async fn enable_catalog_plugin(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<CatalogRowEnvelope>, ApiError> {
+    set_catalog_enabled(state, id, true).await
+}
+
+/// `POST /v1/apps/plugins/catalog/{id}/disable`
+pub(super) async fn disable_catalog_plugin(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<CatalogRowEnvelope>, ApiError> {
+    set_catalog_enabled(state, id, false).await
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct CatalogSettingsRequest {
+    settings: Value,
+}
+
+/// `PUT /v1/apps/plugins/catalog/{id}/settings`
+pub(super) async fn put_catalog_settings(
+    State(state): State<RuntimeApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<CatalogSettingsRequest>,
+) -> Result<Json<CatalogRowEnvelope>, ApiError> {
+    {
+        let config = state.config.read();
+        if find_catalog_row(&config, &id).is_none() {
+            return Err(ApiError::not_found(format!(
+                "catalog plugin '{id}' not found"
+            )));
+        }
+    }
+    if id != "subagents" {
+        return Err(ApiError::bad_request(format!(
+            "catalog plugin '{id}' has no editable settings"
+        )));
+    }
+    let Value::Object(settings) = &req.settings else {
+        return Err(ApiError::bad_request("settings must be an object"));
+    };
+    for key in settings.keys() {
+        if key != "max_concurrent" {
+            return Err(ApiError::bad_request(format!(
+                "unknown subagents setting '{key}'"
+            )));
+        }
+    }
+    if let Some(value) = settings.get("max_concurrent") {
+        let Some(max) = value.as_u64() else {
+            return Err(ApiError::bad_request(
+                "max_concurrent must be a positive integer",
+            ));
+        };
+        if max == 0 || max > codewhale_runtime::config::MAX_SUBAGENTS as u64 {
+            return Err(ApiError::bad_request(format!(
+                "max_concurrent must be between 1 and {}",
+                codewhale_runtime::config::MAX_SUBAGENTS
+            )));
+        }
+        codewhale_runtime::config_persistence::persist_subagents_integer_key(
+            state.config_path.as_deref(),
+            "max_concurrent",
+            max,
+        )
+        .map_err(|e| ApiError::internal(format!("Failed to persist setting: {e}")))?;
+        reload_after_catalog_write(state.clone()).await?;
+    }
+    let config = state.config.read();
+    let row = find_catalog_row(&config, &id).ok_or_else(|| {
+        ApiError::internal(format!("catalog plugin '{id}' vanished after reload"))
+    })?;
+    Ok(Json(CatalogRowEnvelope { row }))
+}
+
 #[cfg(test)]
 mod review_tests {
     use super::mcp_server_review;

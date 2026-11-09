@@ -3327,6 +3327,22 @@ pub fn build_router(state: RuntimeApiState) -> Router {
             post(plugins::preview_dsh_plugin_api),
         )
         .route(
+            "/v1/apps/plugins/catalog",
+            get(plugins::list_plugin_catalog),
+        )
+        .route(
+            "/v1/apps/plugins/catalog/{id}/enable",
+            post(plugins::enable_catalog_plugin),
+        )
+        .route(
+            "/v1/apps/plugins/catalog/{id}/disable",
+            post(plugins::disable_catalog_plugin),
+        )
+        .route(
+            "/v1/apps/plugins/catalog/{id}/settings",
+            put(plugins::put_catalog_settings),
+        )
+        .route(
             "/v1/apps/plugins/{selector}",
             get(plugins::get_plugin).delete(plugins::uninstall_plugin_api),
         )
