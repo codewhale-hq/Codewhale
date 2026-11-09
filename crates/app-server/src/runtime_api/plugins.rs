@@ -238,7 +238,7 @@ pub(super) struct TrustPluginRequest {
 #[derive(Debug, Deserialize)]
 pub(super) struct AddMarketplaceRequest {
     pub(super) name: String,
-    /// LOCAL catalog document path (kimi/claude/codex/codewhale format,
+    /// LOCAL catalog document path (kimi/claude/codex/dsh/codewhale format,
     /// auto-detected). Never fetched over the network.
     pub(super) path: String,
 }

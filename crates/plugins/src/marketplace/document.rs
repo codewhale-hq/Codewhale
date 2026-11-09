@@ -82,7 +82,7 @@ pub fn load_catalog_document(
     // nothing useful was parsed; do not persist it.
     if catalog.candidates.is_empty() && catalog.error_count() > 0 {
         return Err(format!(
-            "Catalog `{name}` could not be parsed as any known marketplace format (kimi, claude, codex, codewhale):\n{}",
+            "Catalog `{name}` could not be parsed as any known marketplace format (kimi, claude, codex, dsh, codewhale):\n{}",
             render_diagnostics_inline(&catalog.diagnostics)
         ));
     }

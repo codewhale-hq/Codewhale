@@ -50,6 +50,10 @@ pub enum MarketplaceFormat {
     /// Codex `.agents/plugins/marketplace.json`: `name` + `plugins[]` with
     /// `source` objects (`local`/`url`/`git-subdir`/`npm`) and `policy`.
     Codex,
+    /// DeepSeek Harness plugin market index, format 1: `format: 1` + `title`
+    /// + `plugins[]` with npm-valid `name`, localized display text, and
+    ///   `versions[]` carrying exact `source` (`npm`/`git`) and `engines.dsh`.
+    Dsh,
 }
 
 impl MarketplaceFormat {
@@ -61,6 +65,7 @@ impl MarketplaceFormat {
             Self::Kimi => "kimi",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Dsh => "dsh",
         }
     }
 }

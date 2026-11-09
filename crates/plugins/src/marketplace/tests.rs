@@ -736,3 +736,210 @@ fn catalog_local_sources_cannot_leave_the_catalog_directory() {
         tmp.path().join("./plugins/inside")
     );
 }
+
+/// DSH plugin market index, format 1 (`reference/dsh`
+/// `packages/util/plugin-market-index`): numeric `format`, localized display
+/// text, and one installable record per version.
+const DSH_MARKET_INDEX: &str = r#"{
+  "format": 1,
+  "title": {"en": "Team market"},
+  "description": {"en": "Reviewed bundles"},
+  "metadata": {"categories": {"workflow": {"title": {"en": "Workflow"}}}},
+  "plugins": [
+    {
+      "name": "@acme/review",
+      "title": {"en": "Code review"},
+      "description": {"en": "Review a diff before it lands."},
+      "icon": "./icons/review.png",
+      "author": "Acme",
+      "homepage": "https://example.com/review",
+      "repository": {"url": "https://github.com/acme/review"},
+      "metadata": {"category": "workflow", "keywords": ["review", "diff"]},
+      "versions": [
+        {"version": "1.9.0", "publishTimestamp": 1760000000,
+         "source": {"type": "npm"}, "engines": {"dsh": ">=0.2.0 <0.3.0"}},
+        {"version": "1.10.0", "publishTimestamp": 1761000000,
+         "source": {"type": "npm"}, "engines": {"dsh": ">=0.2.0 <0.3.0"}}
+      ]
+    },
+    {
+      "name": "acme-badge",
+      "title": "Badge",
+      "versions": [
+        {"version": "2.0.0", "publishTimestamp": 1762000000,
+         "source": {"type": "git", "url": "https://github.com/acme/badge",
+                    "commit": "0123456789abcdef0123456789abcdef01234567"},
+         "engines": {"dsh": "0.2.1-rc.5"}}
+      ]
+    }
+  ]
+}"#;
+
+fn parse_dsh(id: &str, body: &str, base: Option<&str>) -> super::types::MarketplaceCatalog {
+    let root: Value = serde_json::from_str(body).expect("fixture parses as JSON");
+    parse_catalog(MarketplaceDocument {
+        catalog_id: MarketplaceCatalogId::new(id),
+        format: MarketplaceFormat::Auto,
+        root,
+        base: base.map(str::to_string),
+    })
+}
+
+#[test]
+fn dsh_market_index_detects_and_keeps_the_highest_version() {
+    let catalog = parse_dsh(
+        "dsh",
+        DSH_MARKET_INDEX,
+        Some("https://example.com/market/index.json"),
+    );
+    assert_eq!(catalog.format, MarketplaceFormat::Dsh);
+    assert_eq!(catalog.total_candidates(), 2);
+    assert_eq!(catalog.display_name.as_deref(), Some("Team market"));
+
+    let review = catalog.candidate_by_name("@acme/review").unwrap();
+    assert_eq!(
+        review.version.as_deref(),
+        Some("1.10.0"),
+        "versions sort by SemVer precedence"
+    );
+    assert_eq!(review.display_name.as_deref(), Some("Code review"));
+    assert_eq!(review.author.as_deref(), Some("Acme"));
+    assert_eq!(
+        review.icon.as_deref(),
+        Some("https://example.com/market/icons/review.png"),
+        "a relative icon resolves against the index URL"
+    );
+    assert_eq!(
+        review.keywords,
+        vec!["review".to_string(), "diff".to_string()]
+    );
+    assert_eq!(review.categories, vec!["workflow".to_string()]);
+    assert!(matches!(
+        review.source,
+        MarketplaceSourceSpec::Npm { ref package } if package == "@acme/review"
+    ));
+    match &review.install_plan {
+        MarketplaceInstallPlan::Unsupported { reason, .. } => {
+            assert!(reason.contains("does not execute npm"), "{reason}");
+        }
+        other => panic!("an npm source must stay unsupported, got {other:?}"),
+    }
+
+    let badge = catalog.candidate_by_name("acme-badge").unwrap();
+    assert_eq!(badge.display_name.as_deref(), Some("Badge"));
+    assert_eq!(badge.icon, None, "no icon declared, none invented");
+    match &badge.install_plan {
+        MarketplaceInstallPlan::Supported { spec, .. } => {
+            assert_eq!(
+                spec,
+                "git:github.com/acme/badge@0123456789abcdef0123456789abcdef01234567"
+            );
+        }
+        other => panic!("a pinned GitHub source is installable, got {other:?}"),
+    }
+}
+
+#[test]
+fn dsh_index_refuses_an_incompatible_dsh_range_before_download() {
+    let body = r#"{
+      "format": 1,
+      "title": "t",
+      "plugins": [{
+        "name": "future-bundle",
+        "versions": [{"version": "3.0.0", "publishTimestamp": 1,
+          "source": {"type": "npm"}, "engines": {"dsh": ">=0.3.0"}}]
+      }]
+    }"#;
+    let catalog = parse_dsh("dsh", body, None);
+    let plugin = catalog.candidate_by_name("future-bundle").unwrap();
+    match &plugin.install_plan {
+        MarketplaceInstallPlan::Unsupported { reason, .. } => {
+            assert!(reason.contains("incompatible-version"), "{reason}");
+            assert!(reason.contains(">=0.3.0"), "{reason}");
+        }
+        other => panic!("an incompatible engine range must refuse, got {other:?}"),
+    }
+}
+
+#[test]
+fn dsh_index_git_subdirectory_and_non_github_hosts_stay_unsupported() {
+    let body = r#"{
+      "format": 1,
+      "title": "t",
+      "plugins": [
+        {"name": "sub", "versions": [{"version": "1.0.0", "publishTimestamp": 1,
+          "source": {"type": "git", "url": "https://github.com/acme/mono",
+                     "commit": "0123456789abcdef0123456789abcdef01234567",
+                     "path": "packages/sub"}}]},
+        {"name": "elsewhere", "versions": [{"version": "1.0.0", "publishTimestamp": 1,
+          "source": {"type": "git", "url": "https://gitlab.com/acme/plugin",
+                     "commit": "0123456789abcdef0123456789abcdef01234567"}}]}
+      ]
+    }"#;
+    let catalog = parse_dsh("dsh", body, None);
+    let sub = catalog.candidate_by_name("sub").unwrap();
+    assert!(matches!(
+        sub.install_plan,
+        MarketplaceInstallPlan::Unsupported { ref reason, .. }
+            if reason.contains("subdirectory")
+    ));
+    let elsewhere = catalog.candidate_by_name("elsewhere").unwrap();
+    assert!(matches!(
+        elsewhere.source,
+        MarketplaceSourceSpec::GitUrl { .. }
+    ));
+    assert!(!elsewhere.install_plan.is_supported());
+}
+
+#[test]
+fn dsh_index_degrades_one_malformed_entry_and_requires_format_one() {
+    let body = r#"{
+      "format": 1,
+      "title": "t",
+      "plugins": [
+        {"title": "no name", "versions": []},
+        {"name": "ok", "versions": [{"version": "1.0.0", "publishTimestamp": 1,
+          "source": {"type": "npm"}}]}
+      ]
+    }"#;
+    let catalog = parse_dsh("dsh", body, None);
+    assert_eq!(
+        catalog.total_candidates(),
+        1,
+        "the malformed entry alone is dropped"
+    );
+    assert!(catalog.candidate_by_name("ok").is_some());
+    assert!(catalog.diagnostics.iter().any(|d| d.code == "MISSING_NAME"));
+
+    let not_format_one = parse_dsh("dsh", r#"{"format": 2, "plugins": []}"#, None);
+    assert_eq!(not_format_one.total_candidates(), 0);
+    assert!(
+        not_format_one
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "UNDECLARED_FORMAT")
+    );
+}
+
+#[test]
+fn dsh_index_unknown_fields_and_undeclared_category_are_reported_not_guessed() {
+    let body = r#"{
+      "format": 1,
+      "title": "t",
+      "plugins": [{"name": "x", "unexpected": true,
+        "metadata": {"category": "undeclared", "keywords": ["k"]},
+        "versions": [{"version": "1.0.0", "publishTimestamp": 1,
+          "source": {"type": "npm"}}]}]
+    }"#;
+    let catalog = parse_dsh("dsh", body, None);
+    let plugin = catalog.candidate_by_name("x").unwrap();
+    assert!(plugin.diagnostics.iter().any(|d| d.code == "UNKNOWN_FIELD"));
+    assert!(
+        plugin
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "UNDECLARED_CATEGORY")
+    );
+    assert!(plugin.categories.is_empty());
+    assert_eq!(plugin.keywords, vec!["k".to_string()]);
+}
