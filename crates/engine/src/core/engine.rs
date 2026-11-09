@@ -9943,10 +9943,9 @@ impl Engine {
 
     async fn record_current_project_instructions(&mut self) {
         let assembly = self.session.instruction_assembly.clone();
-        if let Some(message) = Self::planned_project_instructions_message(
-            assembly.as_deref(),
-            &self.session.messages,
-        ) {
+        if let Some(message) =
+            Self::planned_project_instructions_message(assembly.as_deref(), &self.session.messages)
+        {
             self.add_session_message(message).await;
         }
     }

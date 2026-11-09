@@ -13,11 +13,11 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::host::FleetWorkerIo;
 
@@ -51,7 +51,9 @@ pub struct AcpError {
 
 impl AcpError {
     fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into() }
+        Self {
+            message: message.into(),
+        }
     }
 
     fn timeout(method: &str) -> Self {
@@ -99,7 +101,10 @@ pub struct AcpCanceller {
 
 impl AcpCanceller {
     pub fn cancel(&self) -> Result<(), AcpError> {
-        let mut stdin = self.stdin.lock().map_err(|_| AcpError::new("the agent's stdin lock was poisoned"))?;
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| AcpError::new("the agent's stdin lock was poisoned"))?;
         let line = serde_json::to_string(&json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": self.session}}))
             .map_err(|err| AcpError::new(format!("encoding a cancel failed: {err}")))?;
         stdin
@@ -111,7 +116,9 @@ impl AcpCanceller {
 
 impl std::fmt::Debug for AcpClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AcpClient").field("next_id", &self.next_id).finish_non_exhaustive()
+        f.debug_struct("AcpClient")
+            .field("next_id", &self.next_id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -139,13 +146,21 @@ impl AcpClient {
                 }
             }
         });
-        Self { stdin: Arc::new(Mutex::new(stdin)), lines, next_id: 1 }
+        Self {
+            stdin: Arc::new(Mutex::new(stdin)),
+            lines,
+            next_id: 1,
+        }
     }
 
     fn write(&self, message: &Value) -> Result<(), AcpError> {
-        let mut line = serde_json::to_string(message).map_err(|err| AcpError::new(format!("encoding a request failed: {err}")))?;
+        let mut line = serde_json::to_string(message)
+            .map_err(|err| AcpError::new(format!("encoding a request failed: {err}")))?;
         line.push('\n');
-        let mut stdin = self.stdin.lock().map_err(|_| AcpError::new("the agent's stdin lock was poisoned"))?;
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| AcpError::new("the agent's stdin lock was poisoned"))?;
         stdin
             .write_all(line.as_bytes())
             .and_then(|()| stdin.flush())
@@ -154,7 +169,10 @@ impl AcpClient {
 
     /// A handle that can settle a blocked prompt from another thread.
     pub fn canceller(&self, session: &str) -> AcpCanceller {
-        AcpCanceller { stdin: Arc::clone(&self.stdin), session: session.to_string() }
+        AcpCanceller {
+            stdin: Arc::clone(&self.stdin),
+            session: session.to_string(),
+        }
     }
 
     fn next(&mut self) -> u64 {
@@ -168,14 +186,25 @@ impl AcpClient {
         if left.is_zero() {
             return Err(AcpError::timeout(method));
         }
-        let line = self.lines.recv_timeout(left).map_err(|_| AcpError::timeout(method))?;
-        serde_json::from_str(&line).map_err(|err| AcpError::new(format!("the agent sent a line that is not JSON: {err}")))
+        let line = self
+            .lines
+            .recv_timeout(left)
+            .map_err(|_| AcpError::timeout(method))?;
+        serde_json::from_str(&line)
+            .map_err(|err| AcpError::new(format!("the agent sent a line that is not JSON: {err}")))
     }
 
     /// Send a request and wait for its response, answering the agent's
     /// permission requests with `policy` and reporting every other
     /// notification to `on_update`.
-    fn request<F>(&mut self, method: &str, params: Value, policy: PermissionPolicy, deadline: Instant, mut on_update: F) -> Result<Value, AcpError>
+    fn request<F>(
+        &mut self,
+        method: &str,
+        params: Value,
+        policy: PermissionPolicy,
+        deadline: Instant,
+        mut on_update: F,
+    ) -> Result<Value, AcpError>
     where
         F: FnMut(&Value),
     {
@@ -183,14 +212,21 @@ impl AcpClient {
         self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         loop {
             let message = self.read(deadline, method)?;
-            if message.get("id").and_then(Value::as_u64) == Some(id) && (message.get("result").is_some() || message.get("error").is_some()) {
+            if message.get("id").and_then(Value::as_u64) == Some(id)
+                && (message.get("result").is_some() || message.get("error").is_some())
+            {
                 if let Some(error) = message.get("error") {
-                    let text = error.get("message").and_then(Value::as_str).unwrap_or("the agent refused");
+                    let text = error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("the agent refused");
                     return Err(AcpError::new(format!("{method} failed: {text}")));
                 }
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
             }
-            let Some(incoming) = message.get("method").and_then(Value::as_str) else { continue };
+            let Some(incoming) = message.get("method").and_then(Value::as_str) else {
+                continue;
+            };
             let incoming_id = message.get("id").cloned();
             let incoming_params = message.get("params").cloned().unwrap_or(Value::Null);
             if incoming == "session/request_permission" {
@@ -201,7 +237,12 @@ impl AcpClient {
         }
     }
 
-    fn answer_permission(&mut self, id: Option<Value>, params: &Value, policy: PermissionPolicy) -> Result<(), AcpError> {
+    fn answer_permission(
+        &mut self,
+        id: Option<Value>,
+        params: &Value,
+        policy: PermissionPolicy,
+    ) -> Result<(), AcpError> {
         let Some(id) = id else { return Ok(()) };
         let outcome = if policy == PermissionPolicy::Cancel {
             json!({"outcome": "cancelled"})
@@ -211,7 +252,9 @@ impl AcpClient {
                 .get("options")
                 .and_then(Value::as_array)
                 .and_then(|options| {
-                    options.iter().find(|option| option.get("kind").and_then(Value::as_str) == Some(wanted))
+                    options
+                        .iter()
+                        .find(|option| option.get("kind").and_then(Value::as_str) == Some(wanted))
                 })
                 .and_then(|option| option.get("optionId").and_then(Value::as_str));
             match chosen {
@@ -237,9 +280,20 @@ impl AcpClient {
         )?;
         let info = result.get("agentInfo").cloned().unwrap_or(Value::Null);
         Ok(AgentIdentity {
-            name: info.get("name").and_then(Value::as_str).unwrap_or("agent").to_string(),
-            version: info.get("version").and_then(Value::as_str).unwrap_or("0").to_string(),
-            protocol_version: result.get("protocolVersion").and_then(Value::as_u64).unwrap_or(1),
+            name: info
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("agent")
+                .to_string(),
+            version: info
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or("0")
+                .to_string(),
+            protocol_version: result
+                .get("protocolVersion")
+                .and_then(Value::as_u64)
+                .unwrap_or(1),
         })
     }
 
@@ -261,7 +315,13 @@ impl AcpClient {
 
     /// One prompt. Streams are collected into the outcome, which is enough for
     /// a caller that has not yet mapped ACP updates onto journal items.
-    pub fn prompt(&mut self, session: &str, text: &str, policy: PermissionPolicy, timeout: Duration) -> Result<PromptOutcome, AcpError> {
+    pub fn prompt(
+        &mut self,
+        session: &str,
+        text: &str,
+        policy: PermissionPolicy,
+        timeout: Duration,
+    ) -> Result<PromptOutcome, AcpError> {
         let deadline = Instant::now() + timeout;
         let mut outcome = PromptOutcome::default();
         let result = self.request(
@@ -273,23 +333,46 @@ impl AcpClient {
                 if message.get("method").and_then(Value::as_str) != Some("session/update") {
                     return;
                 }
-                let Some(update) = message.get("params").and_then(|params| params.get("update")) else { return };
-                match update.get("sessionUpdate").and_then(Value::as_str).unwrap_or("") {
+                let Some(update) = message
+                    .get("params")
+                    .and_then(|params| params.get("update"))
+                else {
+                    return;
+                };
+                match update
+                    .get("sessionUpdate")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                {
                     "agent_message_chunk" => {
-                        if let Some(chunk) = update.get("content").and_then(|content| content.get("text")).and_then(Value::as_str) {
+                        if let Some(chunk) = update
+                            .get("content")
+                            .and_then(|content| content.get("text"))
+                            .and_then(Value::as_str)
+                        {
                             outcome.text.push_str(chunk);
                         }
                     }
                     "tool_call" => {
-                        let title = update.get("title").and_then(Value::as_str).unwrap_or("tool");
-                        let kind = update.get("kind").and_then(Value::as_str).unwrap_or("other");
+                        let title = update
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool");
+                        let kind = update
+                            .get("kind")
+                            .and_then(Value::as_str)
+                            .unwrap_or("other");
                         outcome.tool_calls.push(format!("{kind}:{title}"));
                     }
                     _ => {}
                 }
             },
         )?;
-        outcome.stop_reason = result.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_string();
+        outcome.stop_reason = result
+            .get("stopReason")
+            .and_then(Value::as_str)
+            .unwrap_or("end_turn")
+            .to_string();
         Ok(outcome)
     }
 
@@ -305,7 +388,11 @@ impl AcpClient {
         params
             .get("options")
             .and_then(Value::as_array)
-            .and_then(|options| options.iter().find(|option| option.get("kind").and_then(Value::as_str) == Some(wanted)))
+            .and_then(|options| {
+                options
+                    .iter()
+                    .find(|option| option.get("kind").and_then(Value::as_str) == Some(wanted))
+            })
             .and_then(|option| option.get("optionId").and_then(Value::as_str))
             .map(str::to_string)
     }
@@ -325,11 +412,17 @@ mod tests {
     }
 
     fn node() -> Option<String> {
-        let output = std::process::Command::new("node").arg("--version").output().ok()?;
+        let output = std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .ok()?;
         output.status.success().then(|| "node".to_string())
     }
 
-    fn json_rpc_request(env: BTreeMap<String, String>, allow: BTreeSet<String>) -> FleetWorkerStartRequest {
+    fn json_rpc_request(
+        env: BTreeMap<String, String>,
+        allow: BTreeSet<String>,
+    ) -> FleetWorkerStartRequest {
         let mut request = FleetWorkerStartRequest::new(
             "w-acp",
             FleetWorkerCommand::new("node", [fixture().display().to_string()]),
@@ -348,39 +441,72 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let mut host = LocalProcessFleetHostAdapter::new(workspace.path());
         let mut request = json_rpc_request(
-            BTreeMap::from([("CODEWHALE_TEST_SECRET".to_string(), "must-not-travel".to_string())]),
+            BTreeMap::from([(
+                "CODEWHALE_TEST_SECRET".to_string(),
+                "must-not-travel".to_string(),
+            )]),
             BTreeSet::from(["PATH".to_string()]),
         );
         request.cwd = Some(workspace.path().to_path_buf());
         host.start_worker(request).unwrap();
 
-        let io = host.take_worker_io("w-acp").expect("a JsonRpc worker yields its pipes");
-        assert!(host.take_worker_io("w-acp").is_none(), "the stream is taken exactly once");
+        let io = host
+            .take_worker_io("w-acp")
+            .expect("a JsonRpc worker yields its pipes");
+        assert!(
+            host.take_worker_io("w-acp").is_none(),
+            "the stream is taken exactly once"
+        );
         let mut client = AcpClient::new(io);
 
         let identity = client.initialize(Duration::from_secs(20)).unwrap();
         assert_eq!(identity.name, "fixture-agent");
         assert_eq!(identity.protocol_version, 1);
 
-        let session = client.new_session(workspace.path(), Duration::from_secs(20)).unwrap();
+        let session = client
+            .new_session(workspace.path(), Duration::from_secs(20))
+            .unwrap();
         let allowed = client
-            .prompt(&session, "hello fleet", PermissionPolicy::AllowOnce, Duration::from_secs(20))
+            .prompt(
+                &session,
+                "hello fleet",
+                PermissionPolicy::AllowOnce,
+                Duration::from_secs(20),
+            )
             .unwrap();
         assert_eq!(allowed.stop_reason, "end_turn");
-        assert!(allowed.text.contains("hello fleet"), "streamed text: {:?}", allowed.text);
         assert!(
-            allowed.tool_calls.iter().any(|call| call == "edit:Write fixture.txt"),
+            allowed.text.contains("hello fleet"),
+            "streamed text: {:?}",
+            allowed.text
+        );
+        assert!(
+            allowed
+                .tool_calls
+                .iter()
+                .any(|call| call == "edit:Write fixture.txt"),
             "tool calls: {:?}",
             allowed.tool_calls
         );
-        assert!(workspace.path().join("fixture.txt").exists(), "an allowed edit wrote its file");
+        assert!(
+            workspace.path().join("fixture.txt").exists(),
+            "an allowed edit wrote its file"
+        );
 
         std::fs::remove_file(workspace.path().join("fixture.txt")).unwrap();
         let rejected = client
-            .prompt(&session, "hello again", PermissionPolicy::RejectOnce, Duration::from_secs(20))
+            .prompt(
+                &session,
+                "hello again",
+                PermissionPolicy::RejectOnce,
+                Duration::from_secs(20),
+            )
             .unwrap();
         assert_eq!(rejected.stop_reason, "end_turn");
-        assert!(!workspace.path().join("fixture.txt").exists(), "a rejected edit wrote nothing");
+        assert!(
+            !workspace.path().join("fixture.txt").exists(),
+            "a rejected edit wrote nothing"
+        );
 
         let dumped = std::fs::read_to_string(workspace.path().join("fixture-env.json")).unwrap();
         assert!(
@@ -402,7 +528,10 @@ mod tests {
         );
         request.cwd = Some(workspace.path().to_path_buf());
         let handle = host.start_worker(request).unwrap();
-        assert!(host.take_worker_io("w-logs").is_none(), "a Logs worker has no duplex io");
+        assert!(
+            host.take_worker_io("w-logs").is_none(),
+            "a Logs worker has no duplex io"
+        );
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut log = String::new();
@@ -434,11 +563,18 @@ mod tests {
         let io = host.take_worker_io("w-acp").expect("duplex io");
         let mut client = AcpClient::new(io);
         client.initialize(Duration::from_secs(20)).unwrap();
-        let session = client.new_session(workspace.path(), Duration::from_secs(20)).unwrap();
+        let session = client
+            .new_session(workspace.path(), Duration::from_secs(20))
+            .unwrap();
         let canceller = client.canceller(&session);
         let prompt_session = session.clone();
         let blocked = std::thread::spawn(move || {
-            client.prompt(&prompt_session, "hang", PermissionPolicy::AllowOnce, Duration::from_secs(30))
+            client.prompt(
+                &prompt_session,
+                "hang",
+                PermissionPolicy::AllowOnce,
+                Duration::from_secs(30),
+            )
         });
         std::thread::sleep(Duration::from_millis(400));
         canceller.cancel().unwrap();
