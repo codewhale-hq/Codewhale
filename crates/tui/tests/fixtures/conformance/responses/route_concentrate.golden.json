@@ -1,0 +1,5 @@
+{
+  "protocol": "responses",
+  "profile_id": "concentrate",
+  "endpoint_path_policy": "versioned_responses"
+}

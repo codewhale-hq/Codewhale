@@ -1,0 +1,11 @@
+{
+  "kind": "request",
+  "provider": "concentrate",
+  "model": "gpt-5.6-sol",
+  "base_url": "https://api.concentrate.ai/v1",
+  "system": "You are a coding assistant.",
+  "user": "Inspect the project.",
+  "max_tokens": 64,
+  "reasoning_effort": "high",
+  "tool": true
+}

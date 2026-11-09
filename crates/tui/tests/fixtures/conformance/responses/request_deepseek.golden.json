@@ -1,0 +1,50 @@
+{
+  "profile_id": "deepseek_stateless_plain_reasoning",
+  "method": "POST",
+  "path": "/responses",
+  "wire_model": "deepseek-v4-flash",
+  "body": {
+    "model": "deepseek-v4-flash",
+    "stream": true,
+    "max_output_tokens": 64,
+    "temperature": 0.5,
+    "top_p": 0.25,
+    "instructions": "You are a coding assistant.",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Inspect the project."
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "read_file",
+        "description": "Read a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "strict": false
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "reasoning": {
+      "effort": "high"
+    }
+  }
+}
