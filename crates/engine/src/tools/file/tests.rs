@@ -556,6 +556,31 @@ fn contract_edit_fuzzy_match_keeps_the_rest_of_the_touched_line() {
     assert_eq!(updated, "PRICE = \"价格：１００元（含税）\"  # \"特价\"\n");
 }
 
+#[test]
+fn contract_edit_fuzzy_adjacent_matches_do_not_overlap_at_trimmed_whitespace() {
+    for (replacement, expected) in [("\nY", "X\nY\n"), ("", "X\n")] {
+        let updated = apply_contract_edits(
+            "“A”  \nB\n",
+            &[
+                ContractEdit {
+                    index: 0,
+                    old_text: "\"A\"".to_string(),
+                    new_text: "X".to_string(),
+                },
+                ContractEdit {
+                    index: 1,
+                    old_text: "\nB".to_string(),
+                    new_text: replacement.to_string(),
+                },
+            ],
+            "notes.txt",
+            false,
+        )
+        .expect("fuzzy edit");
+        assert_eq!(updated, expected);
+    }
+}
+
 #[tokio::test]
 async fn contract_edit_preserves_bom_and_crlf_without_prior_read() {
     let temporary = tempfile::tempdir().expect("tempdir");

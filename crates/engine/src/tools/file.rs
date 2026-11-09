@@ -2142,7 +2142,7 @@ fn remap_fuzzy_edits(
     offset: usize,
 ) -> Option<Vec<ResolvedContractEdit>> {
     let offsets = contract_fuzzy_offsets(original, normalized)?;
-    edits
+    let mut remapped = edits
         .iter()
         .map(|edit| {
             let (start, end) = (edit.start - offset, edit.end - offset);
@@ -2156,7 +2156,13 @@ fn remap_fuzzy_edits(
                 ..edit.clone()
             })
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()?;
+    for index in 1..remapped.len() {
+        let next_start = remapped[index].start;
+        let previous = &mut remapped[index - 1];
+        previous.end = previous.end.min(next_start);
+    }
+    Some(remapped)
 }
 
 fn text_matches(haystack: &str, needle: &str) -> Vec<(usize, usize)> {
