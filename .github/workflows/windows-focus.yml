@@ -1,0 +1,45 @@
+name: Windows focus
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact 40-character commit selected by --ref
+        required: true
+        type: string
+      filter:
+        description: nextest expression, for example 'test(compaction_lock) | test(persistence_actor)'
+        required: true
+        default: all()
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    name: Focused tests (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: -Dwarnings
+      RUST_MIN_STACK: 8388608
+      FILTER: ${{ inputs.filter }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: Enable sccache
+        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/setup-node@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: Run focused tests
+        shell: bash
+        run: cargo nextest run -p codewhale-engine -p codewhale-plugins -p codewhale-tui -p codewhale-app-server --lib --locked --profile ci -E "$FILTER"
