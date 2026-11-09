@@ -674,16 +674,27 @@ const MAX_BRACE_COMBINATIONS: usize = 64;
 /// Simple glob pattern matching
 /// Supports: * (any chars), ** (any path), ? (single char), {a,b} (either)
 pub fn matches_glob(path: &str, pattern: &str) -> bool {
-    if let Some(alternatives) = expand_braces(pattern) {
-        return alternatives.iter().any(|alt| matches_glob(path, alt));
+    match expand_braces(pattern) {
+        Some(alternatives) => alternatives
+            .iter()
+            .any(|alt| matches_expanded_glob(path, alt)),
+        None => matches_expanded_glob(path, pattern),
     }
+}
 
-    if let Some(rest) = pattern.strip_prefix("**/")
-        && rest.contains('/')
-    {
-        return std::iter::once(path)
-            .chain(path.match_indices('/').map(|(i, _)| &path[i + 1..]))
-            .any(|tail| matches_glob(tail, rest));
+fn matches_expanded_glob(path: &str, pattern: &str) -> bool {
+    if let Some(mut rest) = pattern.strip_prefix("**/") {
+        while let Some(shorter) = rest.strip_prefix("**/") {
+            rest = shorter;
+        }
+        if rest.contains('/') {
+            return std::iter::once(path)
+                .chain(path.match_indices('/').map(|(i, _)| &path[i + 1..]))
+                .any(|tail| matches_expanded_glob(tail, rest));
+        }
+        if rest.len() + 3 < pattern.len() {
+            return matches_expanded_glob(path, &format!("**/{rest}"));
+        }
     }
 
     if let Some((head, tail)) = pattern.split_once("/**/")
@@ -693,7 +704,7 @@ pub fn matches_glob(path: &str, pattern: &str) -> bool {
         return path
             .strip_prefix(head)
             .and_then(|rest| rest.strip_prefix('/'))
-            .is_some_and(|rest| matches_glob(rest, &format!("**/{tail}")));
+            .is_some_and(|rest| matches_expanded_glob(rest, &format!("**/{tail}")));
     }
 
     // Handle ** for any path
@@ -748,55 +759,57 @@ pub fn matches_glob(path: &str, pattern: &str) -> bool {
 }
 
 fn expand_braces(pattern: &str) -> Option<Vec<String>> {
-    let open = pattern.find('{')?;
-    let combinations = pattern.split('{').skip(1).fold(1_usize, |total, group| {
-        let alternatives = group
-            .split('}')
-            .next()
-            .unwrap_or(group)
-            .matches(',')
-            .count()
-            + 1;
-        total.saturating_mul(alternatives)
-    });
-    if combinations > MAX_BRACE_COMBINATIONS {
+    if pattern.matches('{').count() > MAX_BRACE_COMBINATIONS {
         return None;
     }
-    let mut depth = 0;
-    let mut bounds = vec![open];
-    let mut close = None;
-    for (i, c) in pattern.char_indices().skip_while(|(i, _)| *i < open) {
-        match c {
-            '{' => depth += 1,
-            ',' if depth == 1 => bounds.push(i),
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    close = Some(i);
-                    break;
+    let mut leaves = Vec::new();
+    if !expand_braces_into(pattern, 0, &mut leaves) || leaves.len() < 2 {
+        return None;
+    }
+    Some(leaves)
+}
+
+fn expand_braces_into(pattern: &str, from: usize, leaves: &mut Vec<String>) -> bool {
+    let Some((open, bounds, close)) = next_brace_group(pattern, from) else {
+        leaves.push(pattern.to_string());
+        return leaves.len() <= MAX_BRACE_COMBINATIONS;
+    };
+    bounds.windows(2).all(|pair| {
+        let alternative = &pattern[pair[0] + 1..pair[1]];
+        let expanded = format!("{}{alternative}{}", &pattern[..open], &pattern[close + 1..]);
+        expand_braces_into(&expanded, open, leaves)
+    })
+}
+
+fn next_brace_group(pattern: &str, from: usize) -> Option<(usize, Vec<usize>, usize)> {
+    let mut search = from;
+    while let Some(offset) = pattern[search..].find('{') {
+        let open = search + offset;
+        let mut depth = 0;
+        let mut bounds = vec![open];
+        let mut close = None;
+        for (i, c) in pattern[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                ',' if depth == 1 => bounds.push(open + i),
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + i);
+                        break;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        let close = close?;
+        if bounds.len() > 1 {
+            bounds.push(close);
+            return Some((open, bounds, close));
+        }
+        search = open + 1;
     }
-    let close = close?;
-    if bounds.len() < 2 {
-        return None;
-    }
-    bounds.push(close);
-    Some(
-        bounds
-            .windows(2)
-            .map(|pair| {
-                format!(
-                    "{}{}{}",
-                    &pattern[..open],
-                    &pattern[pair[0] + 1..pair[1]],
-                    &pattern[close + 1..]
-                )
-            })
-            .collect(),
-    )
+    None
 }
 
 /// Simple glob matching for single path component
