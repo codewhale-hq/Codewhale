@@ -123,7 +123,7 @@ fn unsupported_platform() -> DaemonSocketError {
 }
 
 #[cfg(any(unix, windows))]
-pub use codewhale_runtime::runtime_control::owner_work;
+use codewhale_runtime::runtime_control::owner_work;
 
 // Blocking endpoint mutations retain the actual captured manager through
 // its existing frontend, even after cancellation of the async caller.

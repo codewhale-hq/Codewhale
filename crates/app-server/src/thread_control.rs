@@ -112,7 +112,7 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
-    daemon_socket::owner_work(work).await
+    codewhale_runtime::runtime_control::owner_work(work).await
 }
 #[cfg(not(any(unix, windows)))]
 async fn store_work<T, F>(_work: F) -> Result<T>

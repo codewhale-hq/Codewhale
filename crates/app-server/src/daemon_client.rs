@@ -11,7 +11,6 @@ mod platform {
     use crate::daemon_socket::AuthorizedPeer;
     #[cfg(windows)]
     use crate::daemon_socket::default_socket_path;
-    use crate::daemon_socket::owner_work;
     use crate::stdio::{
         BoundedLines, ParsedStdioLine, is_frame_refusal, parse_stdio_line, serialize_control_frame,
         write_control_line, write_stdio_line,
@@ -25,6 +24,7 @@ mod platform {
     #[cfg(unix)]
     use codewhale_paths::daemon_socket::default_socket_path;
     use codewhale_protocol::RuntimeOwnerReceipt;
+    use codewhale_runtime::runtime_control::owner_work;
     use serde_json::{Value, json};
     use std::sync::Arc;
     use std::time::Duration;

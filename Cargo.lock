@@ -1149,7 +1149,6 @@ dependencies = [
  "codewhale-memory",
  "codewhale-models",
  "codewhale-net",
- "codewhale-palette",
  "codewhale-paths",
  "codewhale-plugins",
  "codewhale-protocol",

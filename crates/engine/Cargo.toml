@@ -89,7 +89,6 @@ codewhale-lane = { path = "../lane", version = "0.10.3" }
 codewhale-mcp = { path = "../mcp", version = "0.10.3" }
 codewhale-models = { path = "../models", version = "0.10.3" }
 codewhale-net = { path = "../net", version = "0.10.3" }
-codewhale-palette = { path = "../palette", version = "0.10.3" }
 codewhale-paths = { path = "../paths", version = "0.10.3" }
 codewhale-protocol = { path = "../protocol", version = "0.10.3" }
 codewhale-release = { path = "../release", version = "0.10.3" }

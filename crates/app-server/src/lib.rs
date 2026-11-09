@@ -791,7 +791,7 @@ async fn build_state_off_runtime(
     auth_token: Option<String>,
     transport: AppTransport,
 ) -> Result<AppState> {
-    daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         build_state_with_transport(config_path, auth_token, transport)
     })
     .await
