@@ -4111,6 +4111,7 @@ pub struct SubAgentManager {
     /// isolate it without changing child execution cwd or file authority.
     state_root: PathBuf,
     state_path: Option<PathBuf>,
+    state_unreachable_warned: bool,
     coordination_process_lock: std::sync::Mutex<Option<Arc<CoordinationProcessLock>>>,
     coordination_process_lock_required: bool,
     coordination_exclusive: bool,
@@ -4757,6 +4758,7 @@ impl SubAgentManager {
             workspace,
             state_root,
             state_path: None,
+            state_unreachable_warned: false,
             coordination_process_lock: std::sync::Mutex::new(None),
             coordination_process_lock_required: false,
             coordination_exclusive: false,
@@ -11359,6 +11361,19 @@ impl SubAgentManager {
         let result = self.with_store_transaction(|held| held.cleanup_inner(None, max_age));
         self.last_cleanup_at = Some(Instant::now());
         result
+    }
+
+    pub(crate) fn note_state_unreachable(&mut self) -> bool {
+        if self.state_unreachable_warned {
+            false
+        } else {
+            self.state_unreachable_warned = true;
+            true
+        }
+    }
+
+    pub(crate) fn state_path(&self) -> Option<&Path> {
+        self.state_path.as_deref()
     }
 
     pub fn cleanup_for_session(

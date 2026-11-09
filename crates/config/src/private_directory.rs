@@ -17,6 +17,22 @@ use std::sync::Mutex;
 #[cfg(not(windows))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub fn error_is_filesystem_loop(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(1921)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = error;
+        false
+    }
+}
+
 /// Anchored current-user-owned directory and file mechanism. Credential and
 /// Runtime policies remain with their callers; this type owns no authority.
 #[derive(Debug)]
@@ -673,9 +689,18 @@ fn open_owned_directory(
             };
         }
         if fd < 0 {
-            return Err(std::io::Error::last_os_error()).with_context(|| {
+            let error = std::io::Error::last_os_error();
+            let situation = if error_is_filesystem_loop(&error) {
+                "is a symlink loop"
+            } else if error.kind() == std::io::ErrorKind::NotFound {
+                "does not exist"
+            } else {
+                "could not be opened without following links"
+            };
+            return Err(error).with_context(|| {
                 format!(
-                    "opening Codewhale credentials directory without following links: {}",
+                    "Codewhale credentials directory {}: {}",
+                    situation,
                     crate::quote_os_path(directory)
                 )
             });

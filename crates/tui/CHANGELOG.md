@@ -452,6 +452,12 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Fixed
 
+- **A missing or unreachable state directory no longer breaks the turn:**
+  when sub-agent state under `.codewhale/state` does not exist or is a
+  symlink loop, the session warns once, naming the path, and keeps going
+  without durable sub-agent cleanup instead of erroring every cycle. A
+  state directory that exists but is invalid still refuses, and the
+  credentials-directory error now says which case it hit. (CW-7875)
 - **`resume` and `fork` work without a terminal:** run from a pipe, cron job
   or other non-TTY launcher, `codewhale resume` (and `fork`, which forks
   first) now continues the session through the headless `exec` path — prompt
