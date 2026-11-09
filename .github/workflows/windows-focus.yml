@@ -33,10 +33,6 @@ jobs:
           ref: ${{ inputs.expected_sha }}
           fetch-depth: 1
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.11
-      - name: Enable sccache
-        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - uses: actions/setup-node@v7
       - uses: oven-sh/setup-bun@v2
