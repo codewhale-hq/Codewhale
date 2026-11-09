@@ -238,6 +238,13 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Changed
 
+- **Sub-agent shell runs no longer wait on a peer's write claim.** A child that
+  holds a shared write claim can run `bash` while another child writes; the
+  claim still coordinates bounded `File`/`Edit`/`Patch` targets, and the
+  execution envelope, sandbox and approval posture govern executable work. A
+  bounded write tool whose target overlaps a live peer still refuses. The old
+  refusal told analysis agents to re-run with `read_only=true`, which cost
+  steps without protecting a peer's files.
 - **The footer cost chip shows confirmed dollars only.** A session with some unpriced turns shows exactly the confirmed amount, such as `$0.34`, instead of `subtotal 0.34 + unknown (request outcome unknown)`, and a session with nothing priced shows no cost at all instead of `cost: unknown (…)`. The accounting is unchanged: unpriced turns stay excluded rather than guessed, and `/cost` still lists each one with its reason, now in plain words ("the provider never confirmed the request finished", "this session predates cost tracking"). The price view says `unknown` for a session with no confirmed price.
 - **Sub-agents and goals by default.** The constitution now tells the agent to start independent parts of a request as parallel sub-agents in one message, keep working while their results arrive on their own, and end the turn when only waiting remains; to give each child a complete prompt and its own files; to inspect a write-capable child's evidence, review the diff and run the checks itself; to have an independent reviewer try to refute a non-trivial change before calling it done; and to start a goal for any request, in any language, whose verifiable end state needs more than one turn. Sub-agents, workflows and goals within the current request are in scope; spending real money (purchases, paid providers, billing) still needs the user's express authorization. Cost alone is not a reason to stop; only limits the user or configuration sets apply. **This changes the session-pinned prompt and tool descriptions, so each session re-pins its prompt cache once after upgrade.**
 - **Operate's contract is retired.** The Engine no longer appends the Operate contract to a session; its review, cost and evidence rules now live in the constitution for every session. Saved sessions that contain it still replay.

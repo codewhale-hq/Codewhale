@@ -1011,7 +1011,7 @@ async fn full_mailbox_posture_update_supersedes_queued_change_mode() {
     .expect("snapshot after mailbox drain")
     .expect("session snapshot");
 
-    assert_eq!(snapshot.mode, "operate");
+    assert_eq!(snapshot.mode, "agent");
     let authority = handle.runtime_permission_authority();
     assert_eq!(authority.approval_mode, ApprovalMode::Auto);
     assert!(!authority.auto_approve);

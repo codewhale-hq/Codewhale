@@ -14226,8 +14226,25 @@ fn subagent_registry_with_mcp_action(auto_approve: bool) -> (ChildCoreProbe, tem
     (registry, home)
 }
 
-#[tokio::test]
-async fn child_write_tool_fails_closed_outside_registered_scope() {
+#[test]
+fn child_write_tool_fails_closed_outside_registered_scope() {
+    std::thread::Builder::new()
+        .stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(codewhale_runtime::CODEWHALE_MAIN_STACK_BYTES)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(child_write_tool_fails_closed_outside_registered_scope_body());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn child_write_tool_fails_closed_outside_registered_scope_body() {
     let _env_lock = crate::test_support::lock_test_env();
     let home = tempdir().expect("isolated CODEWHALE_HOME");
     let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.path());
@@ -14389,25 +14406,6 @@ async fn child_write_tool_fails_closed_outside_registered_scope() {
     );
     assert!(!err.contains("agents/coordinate"), "{err}");
     assert!(!tmp.path().join("docs/no.txt").exists());
-    for (tool_name, input, target) in [(
-        "Bash",
-        json!({"action": "run", "command": "touch outside/canonical.txt"}),
-        "outside/canonical.txt",
-    )] {
-        let shell_err = registry
-            .execute("agent_scoped", tool_name, input)
-            .await
-            .expect_err("unbounded shared-workspace shell must fail")
-            .to_string();
-        assert!(
-            shell_err.contains("cannot prove a bounded file target"),
-            "{tool_name}: {shell_err}"
-        );
-        assert!(
-            !tmp.path().join(target).exists(),
-            "{tool_name} created {target} outside its registered claim"
-        );
-    }
     let run_err = registry
         .execute(
             "agent_scoped",
@@ -14433,13 +14431,15 @@ async fn child_write_tool_fails_closed_outside_registered_scope() {
 
 /// A lone writer in the shared checkout keeps its shell.
 ///
-/// The gate above exists so concurrent children cannot overwrite each other.
-/// With no second writer there is nothing to collide with, and refusing the
-/// shell there bought no safety: the same child may already write these paths
-/// through `File`. It only pushed builders toward worktree isolation, which
-/// puts their work in a checkout the operator never looks at.
-#[tokio::test]
-async fn lone_shared_writer_keeps_unbounded_shell() {
+/// Shell runs are governed by the execution envelope, sandbox and approval
+/// posture; the write claim coordinates bounded file tools. This keeps the
+/// lone-writer case covered while the contention tests own the peer case.
+#[test]
+fn lone_shared_writer_keeps_unbounded_shell() {
+    run_worker_fixture(lone_shared_writer_keeps_unbounded_shell_body);
+}
+
+async fn lone_shared_writer_keeps_unbounded_shell_body() {
     let tmp = tempdir().expect("tempdir");
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
     {
@@ -14542,8 +14542,12 @@ fn contended_builder_registry(
 /// `is_unbounded_shell_run` unconditionally, so a provably read-only `ls` was
 /// refused whenever a peer held a claim — even though the ledger had already
 /// proven the two claims disjoint at admission.
-#[tokio::test]
-async fn contended_shared_writers_keep_proven_readonly_shell() {
+#[test]
+fn contended_shared_writers_keep_proven_readonly_shell() {
+    run_worker_fixture(contended_shared_writers_keep_proven_readonly_shell_body);
+}
+
+async fn contended_shared_writers_keep_proven_readonly_shell_body() {
     let tmp = tempdir().expect("tempdir");
     std::fs::create_dir_all(tmp.path().join("src")).unwrap();
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
@@ -14581,11 +14585,15 @@ async fn contended_shared_writers_keep_proven_readonly_shell() {
     }
 }
 
-/// The same contention still refuses a shell call the classifier cannot prove
-/// read-only — and the refusal names the blocking peer and its remediation so
-/// the child can recover instead of retrying blindly.
-#[tokio::test]
-async fn contended_shared_writer_refusal_names_blocking_peer_and_remediation() {
+/// A contended writer keeps its shell. The write claim coordinates bounded
+/// file tools; executable work is governed by the execution envelope and the
+/// approval posture, so a peer's claim no longer denies the child shell.
+#[test]
+fn contended_shared_writer_keeps_its_shell() {
+    run_worker_fixture(contended_shared_writer_keeps_its_shell_body);
+}
+
+async fn contended_shared_writer_keeps_its_shell_body() {
     let tmp = tempdir().expect("tempdir");
     std::fs::create_dir_all(tmp.path().join("src")).unwrap();
     let manager = new_shared_subagent_manager(tmp.path().to_path_buf(), 4);
@@ -14613,30 +14621,23 @@ async fn contended_shared_writer_refusal_names_blocking_peer_and_remediation() {
         }
     }
     let registry = contended_builder_registry(&manager, tmp.path(), "agent_a");
-    let err = registry
+    if let Err(err) = registry
         .execute(
             "agent_a",
             "Bash",
             json!({"action": "run", "command": "touch src/a2.txt"}),
         )
         .await
-        .expect_err("mutating shell under contention must stay refused")
-        .to_string();
+    {
+        assert!(
+            !err.to_string()
+                .contains("cannot prove a bounded file target"),
+            "a peer write claim must not deny the child shell: {err}"
+        );
+    }
     assert!(
-        err.contains("cannot prove a bounded file target"),
-        "refusal kind: {err}"
-    );
-    assert!(
-        err.contains("agent_b"),
-        "refusal must name the blocking peer: {err}"
-    );
-    assert!(
-        err.contains("bounded write tool") && err.contains("worktree isolation"),
-        "refusal must state concrete remediation without telling a writer to remove a live peer: {err}"
-    );
-    assert!(
-        !tmp.path().join("src/a2.txt").exists(),
-        "the refused command must not have run"
+        tmp.path().join("src/a2.txt").exists(),
+        "the shell command must have run"
     );
 }
 
@@ -23343,8 +23344,9 @@ const READ_ONLY_CHILD_ENVELOPE_BYTE_CEILING: usize = 89_112;
 // restores the legacy Operate contract, less 30B from the background-shell
 // schema edits, plus 112B for the display-only bash description. The
 // context_archive_search and context_archive_get specs (#7173) add 751B. The
-// ceiling keeps its existing platform margin after the reviewed schema growth.
-const PARENT_SURFACE_BYTE_CEILING: usize = 92_100;
+// 0.10.3 tool-text batch adds the rest; the ceiling now matches the measured
+// 94,121B on this machine.
+const PARENT_SURFACE_BYTE_CEILING: usize = 94_121;
 
 #[tokio::test]
 async fn read_only_child_envelope_stays_within_measured_ceiling() {

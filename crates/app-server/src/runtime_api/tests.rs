@@ -289,7 +289,7 @@ async fn http_and_web_server_thread_manager_installs_configured_workshop_byte_bu
 }
 
 #[test]
-fn runtime_tui_settings_reject_legacy_modes_and_do_not_save_env_overlays() -> Result<()> {
+fn runtime_tui_settings_normalize_legacy_modes_and_do_not_save_env_overlays() -> Result<()> {
     let _lock = lock_test_env();
     let tmp = tempfile::tempdir()?;
     let settings_dir = tmp.path().join(".codewhale");
@@ -315,10 +315,10 @@ fn runtime_tui_settings_reject_legacy_modes_and_do_not_save_env_overlays() -> Re
     );
 
     persist_runtime_tui_setting("default_mode", "operate")
-        .expect("operate is a valid startup mode");
+        .expect("operate is a retired spelling accepted as Work");
     assert_eq!(
         codewhale_runtime::settings::Settings::load_persisted()?.default_mode,
-        "operate"
+        "agent"
     );
     persist_runtime_tui_setting("default_mode", "agent")
         .expect("agent should be a valid startup mode");

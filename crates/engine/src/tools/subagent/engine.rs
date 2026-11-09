@@ -417,30 +417,29 @@ impl ChildAuthority {
             // The typed read-only boundary above already rejected mutation.
             && !self.write_is_denied()
             && !is_internal_coordination_state_tool(name)
-            // A shell run the read-only classifier proves mutation-free cannot
-            // collide with the peer's writes no matter how contended the
-            // checkout is, so the gate below does not apply to it.
-            && !proven_readonly_shell_run(name, input)
-            && (is_unbounded_shell_run(name, input)
-                || registry.get(name).is_some_and(|spec| {
-                    let canonical = canonical_action_alias(name, input);
-                    let is_shell_control = matches!(
-                        canonical,
-                        "exec_shell_wait" | "exec_shell_interact" | "exec_shell_cancel"
-                    );
-                    let capabilities = spec.capabilities();
-                    !is_shell_control
-                        && (spec.approval_requirement_for(input) == ApprovalRequirement::Suggest
-                            || (!spec.is_read_only_for(input)
-                                && capabilities.iter().any(|capability| {
-                                    matches!(
-                                        capability,
-                                        ToolCapability::WritesFiles
-                                            | ToolCapability::ExecutesCode
-                                            | ToolCapability::Network
-                                    )
-                                })))
-                }))
+            // Shell runs are governed by the execution envelope, sandbox and
+            // approval posture. The write claim coordinates bounded file
+            // tools; it no longer denies a child its shell while a peer writes.
+            && !is_unbounded_shell_run(name, input)
+            && registry.get(name).is_some_and(|spec| {
+                let canonical = canonical_action_alias(name, input);
+                let is_shell_control = matches!(
+                    canonical,
+                    "exec_shell_wait" | "exec_shell_interact" | "exec_shell_cancel"
+                );
+                let capabilities = spec.capabilities();
+                !is_shell_control
+                    && (spec.approval_requirement_for(input) == ApprovalRequirement::Suggest
+                        || (!spec.is_read_only_for(input)
+                            && capabilities.iter().any(|capability| {
+                                matches!(
+                                    capability,
+                                    ToolCapability::WritesFiles
+                                        | ToolCapability::ExecutesCode
+                                        | ToolCapability::Network
+                                )
+                            })))
+            })
         {
             let held = self.coordination_manager.clone().read_owned().await;
             let owner = self.owner_agent_id.clone();
@@ -459,7 +458,7 @@ impl ChildAuthority {
             .map_err(|error| admission_denied(error.to_string()))?;
             if !blocking_peers.is_empty() {
                 return Err(admission_denied(format!(
-                    "Tool {name} cannot prove a bounded file target or read-only execution while peers are writing in this shared checkout (blocking peers: {}). Use a bounded write tool, a proven read-only command, or bash with read_only=true for analysis under native enforcement. Executable work that needs writes requires worktree isolation. Disjoint write_roots alone do not constrain arbitrary code.",
+                    "Tool {name} cannot prove a bounded file target while peers are writing in this shared checkout (blocking peers: {}). Use a bounded write tool, or run executable work that needs writes in an isolated worktree. Disjoint write_roots alone do not constrain arbitrary code.",
                     blocking_peers.join(", ")
                 )));
             }

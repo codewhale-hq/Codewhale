@@ -21890,22 +21890,6 @@ fn is_unbounded_shell_run(name: &str, input: &Value) -> bool {
     canonical_action_alias(name, input) == "exec_shell"
 }
 
-/// Whether this exact call is a shell run the agent read-only classifier
-/// proves mutation-free, or native read-only mode enforces — the contention carve-out.
-///
-/// This shares its classifier with `bounded_readonly_bash_evidence` but not
-/// its role restriction, deliberately: the envelope helper's carve-out
-/// *grants* shell to inspection roles that otherwise lack it, so it is scoped
-/// to them; the contention gate grants nothing — shell authority, posture, and
-/// the envelope have already settled by the time it runs — and asks only
-/// whether this call can collide with a live peer's writes. A proven
-/// read-only `ls` cannot, whichever role runs it. An explicit read_only=true
-/// call likewise cannot: the shared bash executor requires native read-only
-/// enforcement or refuses the call before process spawn.
-fn proven_readonly_shell_run(name: &str, input: &Value) -> bool {
-    is_unbounded_shell_run(name, input) && crate::tools::shell::agent_readonly_bash_input(input)
-}
-
 /// Parameter names whose *value* is a location to reach, rather than content.
 ///
 /// Deliberately a name list and not a scan of every string: a network-denied
