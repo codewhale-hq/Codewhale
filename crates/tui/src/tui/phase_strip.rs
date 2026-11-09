@@ -1066,40 +1066,6 @@ fn live_counts(
         counts.push((automation, app.automation_panel.activity_ink()));
         panels.push(InteractionAction::OpenAutomations);
     }
-    // With nothing live there is still one bottom affordance that opens the
-    // dock (founder, 2026-09-03: the bar opens when used, or when you click
-    // something at the bottom to ask for it). The word is the dock's own
-    // TODO view title; it disappears while the dock is up.
-    //
-    // It reads at `MetadataValue`, not `MetadataDim`: `TEXT_DIM` is aliased to
-    // `TEXT_HINT` in every theme but Solarized, so a dim affordance paints the
-    // exact grey as the separators around it and the one clickable word in an
-    // idle footer disappears into punctuation. Live counts already carry
-    // `Active`; this is the idle case earning the same "you can click this".
-    if counts.is_empty()
-        && app.work_surface.last_area.is_none()
-        && !crate::tui::pet_watch::main_view(app)
-    {
-        // The word alone did not say it was an affordance, let alone which
-        // key opened it — founder live-test: "what do we press at the bottom
-        // to get the workbar to show up?". It carries its chord until the
-        // binding has been used, exactly like the permission and mode chips.
-        let label = "Work bar".to_string();
-        let chord = crate::tui::shell_key_routing::binding(
-            crate::tui::shell_key_routing::ShellBindingId::ViewCycle,
-        )
-        .footer_chord;
-        let label = if crate::tui::footer_hints::retired(
-            &app.footer_hint_uses,
-            crate::tui::footer_hints::DOCK_OPEN,
-        ) {
-            label
-        } else {
-            format!("{label} ({chord})")
-        };
-        counts.push((label, ChromeInk::Info));
-        panels.push(InteractionAction::ShowDockPanel(RailPanel::Tasks));
-    }
     (counts, panels)
 }
 

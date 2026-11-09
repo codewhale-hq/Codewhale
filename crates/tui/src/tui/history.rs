@@ -466,7 +466,12 @@ impl HistoryCell {
                 ..
             } if !options.show_thinking => {
                 if *streaming {
-                    render_hidden_thinking_activity(width, *duration_secs, options.low_motion)
+                    render_hidden_thinking_activity(
+                        width,
+                        *duration_secs,
+                        options.low_motion,
+                        options.locale,
+                    )
                 } else {
                     Vec::new()
                 }
@@ -527,7 +532,7 @@ impl HistoryCell {
                     lines.truncate(TOOL_SUMMARY_CARD_LINES.saturating_sub(1));
                     lines.push(details_affordance_line(
                         &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("details"),
-                        Style::default().fg(palette::TEXT_MUTED).italic(),
+                        Style::default().fg(palette::TEXT_DIM).italic(),
                     ));
                 }
                 lines
@@ -542,7 +547,7 @@ impl HistoryCell {
                 lines.truncate(1);
                 lines.push(details_affordance_line(
                     &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("details"),
-                    Style::default().fg(palette::TEXT_MUTED).italic(),
+                    Style::default().fg(palette::TEXT_DIM).italic(),
                 ));
                 lines
             }

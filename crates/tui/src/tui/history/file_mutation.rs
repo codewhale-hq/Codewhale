@@ -467,19 +467,19 @@ mod tests {
         assert!(full.len() <= MAX_INLINE_DIFF_LINES + 2, "{full_text}");
         assert!(full_text.contains("line 0"), "{full_text}");
         assert!(full_text.contains("diff lines"), "{full_text}");
-        assert!(full_text.contains(":change"), "{full_text}");
+        assert!(full_text.contains(" change"), "{full_text}");
         assert!(!full_text.contains("summary:"), "{full_text}");
 
         let summary = plain(&receipt.render_inline(80, InlineDiffMode::Summary, Locale::En));
         assert!(!summary.contains("Created src/lib.rs"), "{summary}");
         assert!(!summary.contains("+30 -0"), "{summary}");
         assert!(!summary.contains("line 0"), "{summary}");
-        assert!(summary.contains(":change"), "{summary}");
+        assert!(summary.contains(" change"), "{summary}");
 
         let off = plain(&receipt.render_inline(80, InlineDiffMode::Off, Locale::En));
         assert!(!off.contains("line 0"), "{off}");
         assert!(!off.contains("+30 -0"), "{off}");
-        assert!(off.contains(":change"), "{off}");
+        assert!(off.contains(" change"), "{off}");
     }
 
     #[test]
