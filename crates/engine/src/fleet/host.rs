@@ -98,6 +98,31 @@ impl FleetWorkerCommand {
     }
 }
 
+/// How the adapter wires a worker's stdio.
+///
+/// `Logs` is the dispatcher shape: stdin is the parent-death pipe and both
+/// output streams go to the worker log. `JsonRpc` keeps the parent-death
+/// property (the write end of stdin lives in this adapter) but hands the
+/// caller a duplex channel for a line-framed protocol such as ACP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FleetWorkerTransport {
+    #[default]
+    Logs,
+    JsonRpc,
+}
+
+/// The duplex stdio of a `JsonRpc` worker, taken once by its owner.
+pub struct FleetWorkerIo {
+    pub stdin: std::process::ChildStdin,
+    pub stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl std::fmt::Debug for FleetWorkerIo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FleetWorkerIo").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FleetWorkerStartRequest {
     pub worker_id: String,
@@ -107,6 +132,7 @@ pub struct FleetWorkerStartRequest {
     pub env: BTreeMap<String, String>,
     pub env_allowlist: BTreeSet<String>,
     pub log_limit_bytes: usize,
+    pub transport: FleetWorkerTransport,
 }
 
 impl FleetWorkerStartRequest {
@@ -119,6 +145,7 @@ impl FleetWorkerStartRequest {
             env: BTreeMap::new(),
             env_allowlist: BTreeSet::new(),
             log_limit_bytes: DEFAULT_LOG_LIMIT_BYTES,
+            transport: FleetWorkerTransport::Logs,
         }
     }
 }
@@ -170,6 +197,12 @@ pub trait FleetHostAdapter {
     fn restart_worker(&mut self, worker_id: &str) -> FleetHostResult<FleetWorkerHandle>;
     fn stop_worker(&mut self, worker_id: &str) -> FleetHostResult<FleetHostWorkerStatus>;
     fn cleanup_worker(&mut self, worker_id: &str) -> FleetHostResult<()>;
+
+    /// Take the duplex stdio of a `JsonRpc` worker. The first call wins, so
+    /// two readers can never split one stream.
+    fn take_worker_io(&mut self, _worker_id: &str) -> Option<FleetWorkerIo> {
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -193,6 +226,7 @@ struct LocalWorkerProcess {
     stopped: bool,
     last_exit: Option<ExitStatus>,
     last_memory_mb: Option<u64>,
+    io: Option<FleetWorkerIo>,
     /// When `ps` last sampled this worker. Status polls can run every few
     /// milliseconds; memory is display data, so one sample a second is ample.
     last_memory_sample: Option<std::time::Instant>,
@@ -242,25 +276,42 @@ impl LocalProcessFleetHostAdapter {
             .map_err(|err| FleetHostError::retryable(format!("cloning worker log: {err}")))?;
 
         let mut command = Command::new(&request.command.program);
-        // Parent-death watch (R7): the worker's stdin is the read end of a pipe
-        // whose write end lives only in this adapter process. If the manager
-        // dies (crash, kill, power loss), the kernel closes the write end, the
-        // worker sees stdin EOF, and `--parent-death-watch` shuts the worker
-        // tree down instead of letting it spend forever. Windows workers are
-        // contained in a Job Object that the OS terminates on parent death.
+        // Parent-death watch (R7): a `Logs` worker's stdin is the read end of a
+        // pipe whose write end lives only in this adapter process. If the
+        // manager dies (crash, kill, power loss), the kernel closes the write
+        // end, the worker sees stdin EOF, and `--parent-death-watch` shuts the
+        // worker tree down instead of letting it spend forever. A `JsonRpc`
+        // worker keeps the same property: this adapter holds the write end of
+        // its stdin, so adapter death still reaches it as EOF. Windows workers
+        // are contained in a Job Object that the OS terminates on parent death.
+        let duplex = request.transport == FleetWorkerTransport::JsonRpc;
         #[cfg(unix)]
-        let (parent_death_writer, stdin) = {
-            let (reader, writer) = std::io::pipe().map_err(|err| {
-                FleetHostError::retryable(format!("creating parent-death pipe: {err}"))
-            })?;
-            (Some(writer), std::process::Stdio::from(reader))
+        let mut parent_death_writer = None;
+        let stdin = if duplex {
+            Stdio::piped()
+        } else {
+            #[cfg(unix)]
+            {
+                let (reader, writer) = std::io::pipe().map_err(|err| {
+                    FleetHostError::retryable(format!("creating parent-death pipe: {err}"))
+                })?;
+                parent_death_writer = Some(writer);
+                std::process::Stdio::from(reader)
+            }
+            #[cfg(not(unix))]
+            {
+                Stdio::null()
+            }
         };
-        #[cfg(not(unix))]
-        let stdin = Stdio::null();
+        let stdout = if duplex {
+            Stdio::piped()
+        } else {
+            Stdio::from(log)
+        };
         command
             .args(&request.command.args)
             .stdin(stdin)
-            .stdout(Stdio::from(log))
+            .stdout(stdout)
             .stderr(Stdio::from(stderr))
             .env_clear()
             .envs(env);
@@ -288,6 +339,8 @@ impl LocalProcessFleetHostAdapter {
         let child = command.spawn().map_err(|err| {
             classify_spawn_error(err, format!("starting worker {}", request.worker_id))
         })?;
+        #[cfg(unix)]
+        let mut child = child;
         #[cfg(windows)]
         let (child, windows_job) = attach_fleet_windows_job(child).map_err(|err| {
             FleetHostError::retryable(format!(
@@ -296,6 +349,27 @@ impl LocalProcessFleetHostAdapter {
             ))
         })?;
         let pid = child.id();
+        let io = match request.transport {
+            FleetWorkerTransport::JsonRpc => {
+                let stdin = child.stdin.take().ok_or_else(|| {
+                    FleetHostError::retryable(format!(
+                        "worker {} has no stdin pipe",
+                        request.worker_id
+                    ))
+                })?;
+                let stdout = child.stdout.take().ok_or_else(|| {
+                    FleetHostError::retryable(format!(
+                        "worker {} has no stdout pipe",
+                        request.worker_id
+                    ))
+                })?;
+                Some(FleetWorkerIo {
+                    stdin,
+                    stdout: std::io::BufReader::new(stdout),
+                })
+            }
+            FleetWorkerTransport::Logs => None,
+        };
         let handle = FleetWorkerHandle {
             transport_receipt: None,
             worker_id: request.worker_id.clone(),
@@ -321,6 +395,7 @@ impl LocalProcessFleetHostAdapter {
                 stopped: false,
                 last_exit: None,
                 last_memory_mb: None,
+                io,
                 last_memory_sample: None,
             },
         );
@@ -498,6 +573,10 @@ impl FleetHostAdapter for LocalProcessFleetHostAdapter {
         }
         self.processes.remove(worker_id);
         Ok(())
+    }
+
+    fn take_worker_io(&mut self, worker_id: &str) -> Option<FleetWorkerIo> {
+        self.processes.get_mut(worker_id)?.io.take()
     }
 }
 
@@ -748,6 +827,11 @@ impl SshFleetHostAdapter {
         &self,
         request: FleetWorkerStartRequest,
     ) -> FleetHostResult<FleetWorkerStartRequest> {
+        if request.transport != FleetWorkerTransport::Logs {
+            return Err(FleetHostError::configuration(
+                "a JSON-RPC worker cannot run over the SSH host adapter yet",
+            ));
+        }
         let command = self.build_ssh_command(&request)?;
         let mut env = ssh_client_env();
         env.extend(filtered_env(&request.env, &self.config.env_allowlist)?);
@@ -760,6 +844,7 @@ impl SshFleetHostAdapter {
             env,
             env_allowlist,
             log_limit_bytes: request.log_limit_bytes,
+            transport: request.transport,
         })
     }
 
