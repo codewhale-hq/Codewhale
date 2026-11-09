@@ -677,26 +677,24 @@ pub fn matches_glob(path: &str, pattern: &str) -> bool {
     match expand_braces(pattern) {
         Some(alternatives) => alternatives
             .iter()
-            .any(|alt| matches_expanded_glob(path, &collapse_globstars(alt))),
-        None => matches_expanded_glob(path, &collapse_globstars(pattern)),
+            .any(|alt| matches_expanded_glob(path, alt)),
+        None => matches_expanded_glob(path, pattern),
     }
-}
-
-fn collapse_globstars(pattern: &str) -> String {
-    let mut pattern = pattern.to_string();
-    while pattern.contains("**/**/") {
-        pattern = pattern.replace("**/**/", "**/");
-    }
-    pattern
 }
 
 fn matches_expanded_glob(path: &str, pattern: &str) -> bool {
-    if let Some(rest) = pattern.strip_prefix("**/")
-        && rest.contains('/')
-    {
-        return std::iter::once(path)
-            .chain(path.match_indices('/').map(|(i, _)| &path[i + 1..]))
-            .any(|tail| matches_expanded_glob(tail, rest));
+    if let Some(mut rest) = pattern.strip_prefix("**/") {
+        while let Some(shorter) = rest.strip_prefix("**/") {
+            rest = shorter;
+        }
+        if rest.contains('/') {
+            return std::iter::once(path)
+                .chain(path.match_indices('/').map(|(i, _)| &path[i + 1..]))
+                .any(|tail| matches_expanded_glob(tail, rest));
+        }
+        if rest.len() + 3 < pattern.len() {
+            return matches_expanded_glob(path, &format!("**/{rest}"));
+        }
     }
 
     if let Some((head, tail)) = pattern.split_once("/**/")
@@ -761,6 +759,9 @@ fn matches_expanded_glob(path: &str, pattern: &str) -> bool {
 }
 
 fn expand_braces(pattern: &str) -> Option<Vec<String>> {
+    if pattern.matches('{').count() > MAX_BRACE_COMBINATIONS {
+        return None;
+    }
     let mut leaves = Vec::new();
     if !expand_braces_into(pattern, 0, &mut leaves) || leaves.len() < 2 {
         return None;

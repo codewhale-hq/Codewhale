@@ -642,6 +642,14 @@ fn pathological_globs_stay_bounded() {
     assert!(matches_glob(&deep, &repeated));
     assert!(!matches_glob(&format!("{}x/c", "d/".repeat(30)), &repeated));
 
+    let deep_nesting = format!("{}x{}", "{".repeat(8000), ",y}".repeat(8000));
+    assert!(!matches_glob("x", &deep_nesting));
+
+    assert!(matches_glob("src/a/src", "src/**/**/src"));
+    assert!(!matches_glob("src", "src/**/**/src"));
+    assert!(!matches_glob("src/foo.rs", "src/**/**/src"));
+    assert!(matches_glob("src1/a/b/file.rs", "src*/**/**/file.rs"));
+
     assert!(
         started.elapsed() < std::time::Duration::from_secs(2),
         "took {:?}",
