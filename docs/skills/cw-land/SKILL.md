@@ -24,8 +24,9 @@ Stage 5 of the loop: [cw-orient](../cw-orient/SKILL.md) →
 
 ## Workflow
 
-1. **Land on the canonical checkout's `main`.** `AGENTS.md` owns this: no
-   maintainer PR branches, worktrees, nested clones or integration lanes.
+1. **Land on `main`.** `AGENTS.md` owns this: work in your own short-lived
+   worktree, rebase onto `origin/main`, push `HEAD:main`, then remove the
+   worktree. No maintainer PR branches, nested clones or integration lanes.
    Several agents share the checkout, so partition by file, check
    `git status` before staging, stage only your paths (never `git add -A`),
    and retry a commit that fails on `index.lock`. Push verified `main`

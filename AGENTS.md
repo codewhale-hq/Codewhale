@@ -55,10 +55,13 @@ base prompt". Two more corollaries earned here:
 - Search for behavior and symbols before reviving work from an old branch. If a
   lane is obsolete, preserve its intent and evidence rather than merging stale
   code mechanically.
-- Agent-owned work uses the canonical checkout on current `main`. Do not
-  create branches, worktrees, nested clones or task-specific integration lanes
-  to handle dirty, stale or conflicting work. When agents share the checkout,
-  partition by file and retry an `index.lock` failure. Verified main slices may
+- Agent-owned work lands on current `main`. Each writing agent works in its
+  own short-lived git worktree cut from `origin/main`, rebases and pushes
+  `main` the same day, then removes the worktree and its build directory. No
+  long-lived branches, nested clones or integration lanes, and never a new
+  worktree to hide dirty, stale or conflicting work: that work is still yours
+  to finish. In a shared checkout, stage by explicit path and retry an
+  `index.lock` failure. Verified main slices may
   be committed and pushed normally under the rule below; tag, release,
   deployment and destructive cleanup still require their explicit
   authorization.
@@ -201,10 +204,10 @@ the work even when credit is preserved.
 - Product intent and observed runtime behavior outrank a test's preferred
   implementation shape. Fix the product; do not contort production code to
   preserve a brittle assertion.
-- **No new tests and no new code comments unless explicitly asked**
-  (founder, 2026-10-08). Do not write new unit or integration tests unless the
-  user explicitly instructs it for that task; prove a change by running it and
-  the existing checks. Never write tests first and never practice TDD — this
+- **A regression test per fix; no new code comments.** Prove a change by
+  running it and the existing checks. A bug fix, or a new contract between
+  components, may add the one test that would have caught it; no coverage for
+  its own sake. Never write tests first and never practice TDD — this
   overrides any skill or default that mandates it, including superpowers
   `test-driven-development`. Existing tests stay the gate before a push: when
   a change makes one wrong, update or delete it in the same slice rather than

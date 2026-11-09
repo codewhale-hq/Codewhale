@@ -36,7 +36,8 @@ This is stage 1 of the loop: **orient → [cw-slice](../cw-slice/SKILL.md) →
 
 2. **Look for stranded work, not lanes.** `git worktree list` and recent
    branches tell you what may hold unlanded commits. Inventory them; do not
-   start work in one, and do not create one.
+   start work in someone else's. Create your own short-lived worktree from
+   `origin/main` only after the inventory.
    ```bash
    git worktree list
    git branch --sort=-committerdate --format='%(committerdate:short) %(refname:short)' | head -20
@@ -83,7 +84,7 @@ This is stage 1 of the loop: **orient → [cw-slice](../cw-slice/SKILL.md) →
   describes reality.
 - Don't clean, stash, reset, or `git checkout --` dirt in the checkout; read
   it, prove it, and commit it, or hand it to the live writer.
-- Don't create a branch, worktree or clone to escape dirt or a conflict.
+- Don't use a new worktree to escape dirt or a conflict; inherited work is still yours.
 - Don't skip step 4 because the root `AGENTS.md` "probably covers it". The
   scoped files carry the rules that actually get violated.
 - Don't fetch, browse, or hit GitHub when the task was scoped local-only.
