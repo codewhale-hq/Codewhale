@@ -342,7 +342,7 @@ impl LocalProcessFleetHostAdapter {
         #[cfg(unix)]
         let mut child = child;
         #[cfg(windows)]
-        let (child, windows_job) = attach_fleet_windows_job(child).map_err(|err| {
+        let (mut child, windows_job) = attach_fleet_windows_job(child).map_err(|err| {
             FleetHostError::retryable(format!(
                 "containing worker {} in a Windows Job Object: {err}",
                 request.worker_id
