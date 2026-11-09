@@ -18980,6 +18980,46 @@ fn context_usage_cache_refreshes_after_compaction_replaces_messages() {
 }
 
 #[test]
+fn context_usage_cache_resets_when_a_smaller_session_is_restored() {
+    let small = vec![
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+                cache_control: None,
+            }],
+        },
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+                cache_control: None,
+            }],
+        },
+    ];
+    let mut fresh = create_test_app();
+    fresh.restore_api_messages(small.clone(), &saved_session_with_messages(small.clone()));
+    let expected = estimated_context_tokens(&fresh);
+
+    let mut app = create_test_app();
+    app.api_messages = std::sync::Arc::new(
+        (0..3)
+            .map(|_| Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "context ".repeat(2_000),
+                    cache_control: None,
+                }],
+            })
+            .collect(),
+    );
+    estimated_context_tokens(&app);
+    app.restore_api_messages(small.clone(), &saved_session_with_messages(small));
+
+    assert_eq!(estimated_context_tokens(&app), expected);
+}
+
+#[test]
 fn context_usage_snapshot_prefers_estimate_when_reported_is_inflated_by_old_reasoning() {
     let mut app = create_test_app();
     app.session.last_prompt_tokens = Some(980_000);
