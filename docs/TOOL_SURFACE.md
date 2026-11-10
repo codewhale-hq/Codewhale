@@ -19,15 +19,17 @@ Implementation sources:
 
 ## Default-active contract
 
-New turns start with sixteen eager native names plus synthetic `tool_search`:
+The 0.10.3 source candidate starts new turns with fourteen eager native names
+plus synthetic `tool_search`. This is the current source contract, not a
+claim about the published v0.10.2 release.
 
 1. `read`
 2. `write`
 3. `edit`
 4. `file_search`
-5. `bash`
-6. `agent`
-7. `workflow`
+5. `grep_files`
+6. `bash`
+7. `agent`
 8. `todo_write`
 9. `create_goal`
 10. `get_goal`
@@ -35,16 +37,15 @@ New turns start with sixteen eager native names plus synthetic `tool_search`:
 12. `task_shell_wait`
 13. `present`
 14. `load_skill`
-15. `context_archive_get`
-16. `context_archive_search`
-17. `tool_search` (synthetic, always active)
+15. `tool_search` (synthetic, always active)
 
-The sixteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
-`crates/engine/src/core/engine/tool_catalog.rs`, pinned by
-`default_active_contract_keeps_discovery_and_core_tools_eager`. An authority
-boundary may remove `agent` at the maximum child depth, and Plan registers only
-the foreground shell surface (so no `task_shell_wait`), but route size alone
-must not change this core vocabulary.
+The fourteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+`crates/engine/src/core/engine/tool_catalog.rs`. An authority boundary may
+remove `agent` at the maximum child depth, and Plan registers only the
+foreground shell surface (so no `task_shell_wait`). Route size alone must not
+change this core vocabulary. `workflow`, `context_archive_get` and
+`context_archive_search` remain available through `tool_search` when policy
+permits; they are no longer eager names.
 
 The direct schemas deliberately stay small:
 
@@ -56,7 +57,7 @@ The direct schemas deliberately stay small:
 | `file_search` | `query`, optional `path`, `limit`, `extensions`, `exclude` | Find files by name, path fragment or glob and return bounded, ranked matches. Respects ignore files; `exclude` replaces default exclusions. |
 | `bash` | `command`, optional `timeout`, optional `description` | Run one cancellable foreground shell command and return a bounded tail. The optional description is display-only. |
 | `agent` | delegated task and optional scope/context controls | Start or inspect focused child work. |
-| `workflow` | plan/script/source_path plus run controls | Coordinate multi-agent phases with dependencies and completion checks. |
+| `grep_files` | `pattern`, optional search controls | Find matching content in workspace files. |
 | `todo_write` | complete replacement list of `{content, status}` items | Keep optional, agent-owned progress notes for genuinely multi-step work. |
 | `create_goal` | objective plus optional budget | Start the session goal the turn works toward. |
 | `get_goal` | none | Read the active goal and its progress. |

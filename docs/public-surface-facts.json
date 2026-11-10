@@ -74,20 +74,20 @@
   "control": {
     "modes": [
       "Plan",
-      "Work",
-      "Operate"
+      "Work"
     ],
     "permissionPostures": [
       "Ask",
+      "Accept Edits",
       "Auto-Review",
       "Full Access"
     ],
     "shortcuts": {
-      "mode": {
+      "completion": {
         "chord": "Tab",
-        "when": "composer empty"
+        "when": "composer completion only"
       },
-      "permissionPosture": {
+      "permissionDial": {
         "chord": "Shift+Tab",
         "when": "always (suppressed only under a non-Config modal)"
       }
@@ -95,8 +95,22 @@
     "sources": [
       "docs/MODES.md",
       "docs/KEYBINDINGS.md",
-      "crates/runtime/src/settings.rs"
-    ]
+      "crates/runtime/src/settings.rs",
+      "crates/config/src/app_mode.rs",
+      "crates/tui/src/tui/app.rs"
+    ],
+    "scope": "0.10.3 source candidate; not the v0.10.2 published release",
+    "permissionDial": [
+      "Ask",
+      "Accept Edits",
+      "Plan",
+      "Auto-Review",
+      "Full Access"
+    ],
+    "defaultPermissionPosture": "Accept Edits",
+    "retiredModeAliases": {
+      "Operate": "Work"
+    }
   },
   "toolSurface": {
     "defaultActive": [
@@ -104,18 +118,16 @@
       "write",
       "edit",
       "file_search",
+      "grep_files",
       "bash",
       "agent",
-      "workflow",
       "todo_write",
       "create_goal",
       "get_goal",
       "update_goal",
       "task_shell_wait",
       "present",
-      "load_skill",
-      "context_archive_get",
-      "context_archive_search"
+      "load_skill"
     ],
     "schemas": {
       "read": [
@@ -164,7 +176,8 @@
       "crates/engine/src/core/engine/tool_catalog.rs",
       "crates/engine/src/tools/registry.rs",
       "crates/runtime/src/config/subagent_limits.rs"
-    ]
+    ],
+    "scope": "0.10.3 source candidate; not the v0.10.2 published release"
   },
   "surfaces": {
     "availableInSourceCandidate": [
