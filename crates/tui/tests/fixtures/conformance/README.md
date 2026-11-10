@@ -26,7 +26,7 @@ are failures in both modes and cannot be recorded as goldens. Provider timeout
 errors are legitimate observable outcomes; a harness timing out is missing
 evidence.
 
-Platforms: `sse` and `mcp` run everywhere. `events`, `prompt` and `hooks`
+Platforms: `sse`, `responses`, and `mcp` run everywhere. `events`, `prompt` and `hooks`
 goldens were recorded on Unix and compile only there — hook fixtures are POSIX
 shell, and a Windows turn differs in shell and path facts no golden covers
 yet. Recording Windows goldens is open work, not an implied capability.
@@ -57,6 +57,7 @@ more `<name>.golden.*` files (output, recorded).
 | family | input | production path | proves |
 |---|---|---|---|
 | `sse/` | `<name>.sse` recorded bytes + route | `CodewhaleClient::create_message_stream` via a loopback HTTP server | wire adapter: bytes → normalized stream events, incl. tool-call deltas, reasoning, usage, mid-stream errors, truncation |
+| `responses/` | route, request, or `.sse` bytes | `RouteResolver`, `prepare_outbound_request`, and the same loopback stream | profile id, Responses request body, and termination differences |
 | `events/` | scripted provider + host driver | `Engine::run` → `Engine::run_turn` | one turn → protocol `EventMsg` sequence + provider request count + workspace side effects |
 | `mcp/` | scripted MCP server transcript + host steps | `McpPool` behind `Engine::execute_mcp_tool_with_pool` | catalog normalization and call results for one dispatch |
 | `prompt/` | session config + workspace files | first `MessageRequest` of a real turn | model-visible prefix bytes (system prompt + tool catalog) |

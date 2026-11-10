@@ -59,9 +59,10 @@ export default async function (args) {
     const arm = ["single", "independent", "serial", "fixed_policy", "evolution"].includes(args.evolution.arm)
       ? args.evolution.arm : "evolution";
     const evolutionaryPopulation = Math.floor(Math.min(8, Math.max(2, Number(args?.n ?? 4) || 4)));
-    const evolutionaryGenerations = args.evolution.generations === 3 ? 3 : 2;
+    const requestedGenerations = args.evolution.generations === 3 ? 3 : 2;
     const executionBudget = Math.floor(Math.min(16, Math.max(2,
-      Number(args.evolution.executionBudget ?? evolutionaryPopulation * evolutionaryGenerations) || 8)));
+      Number(args.evolution.executionBudget ?? evolutionaryPopulation * requestedGenerations) || 8)));
+    const evolutionaryGenerations = arm === "serial" ? executionBudget : requestedGenerations;
     const population = ["single", "serial"].includes(arm) ? 1
       : arm === "independent" ? executionBudget : evolutionaryPopulation;
     const generations = ["serial", "fixed_policy", "evolution"].includes(arm)
@@ -165,7 +166,7 @@ export default async function (args) {
         description: [
           "You are one isolated Codewhale coding candidate. Implement the brief in this worktree only.",
           "Do not inspect other candidates, hidden tests, evaluator internals or the parent checkout.",
-          "Use only the permitted file-writing tools. The host runs all tests after you finish.",
+          "Read the target file before editing it. Use only the permitted file tools. The host runs all tests after you finish.",
           "Do not push or merge. Your self_verdict is informational.",
           `BRIEF: ${String(brief)}`,
           `RUBRIC: ${String(rubric)}`,
@@ -182,19 +183,20 @@ export default async function (args) {
             plan.parent.status === "FAIL"
               ? "Trace the failing assertion to one code path and repair that path."
               : "Preserve the verified core approach while exploring the declared policy change.",
-            "You start from a fresh baseline. Reuse only public parent material in the host feedback packet.",
+            "You start from the host-sealed parent code tree. Read its target files and repair the verified failure.",
           ] : ["Make an independent first-generation attempt."]),
           `CANDIDATE ID: ${plan.id}`,
           "Summarize the files changed and local checks. The host evaluates your worktree.",
         ].join("\n"),
         label: plan.id,
         type: "implementer",
-        allowedTools: ["write_file", "apply_patch"],
+        allowedTools: ["read", "write_file", "apply_patch"],
         maxSteps: 4,
         schemaRepairAttempts: 0,
         model,
         ...(thinking ? { thinking } : {}),
         worktree: true,
+        ...(applied.parent_base_ref ? { worktreeBase: applied.parent_base_ref } : {}),
         writeAuthority: "worktree_write",
         writeRoots,
         ...(exactFiles.length ? { exactFiles } : {}),
@@ -288,7 +290,8 @@ export default async function (args) {
       if (replay.status === "PASS" && replay.artifact_id === provisional.receipt.artifact_id
         && provisional.receipt.review_complete) {
         phase("Independent read-only review");
-        review = await task({
+        try {
+          review = await task({
           description: [
             "Review this verified coding patch adversarially. Do not edit or apply it.",
             `BRIEF: ${String(brief)}`,
@@ -313,7 +316,10 @@ export default async function (args) {
               reasons: { type: "array", items: { type: "string" } },
             },
           },
-        });
+          });
+        } catch (error) {
+          review = { verdict: "unknown", reasons: [String(error)] };
+        }
         review = { ...review,
           artifact_id: provisional.receipt.artifact_id,
           tree_hash: provisional.receipt.candidate_tree_hash,
@@ -393,7 +399,7 @@ export default async function (args) {
       ].join("\n"),
       label: id,
       type: "implementer",
-      allowedTools: ["write_file", "apply_patch"],
+      allowedTools: ["read", "write_file", "apply_patch"],
       maxSteps: 4,
       schemaRepairAttempts: 0,
       model,
@@ -433,7 +439,8 @@ export default async function (args) {
       });
       if (replay.status === "PASS" && replay.artifact_id === provisional.artifact_id
         && provisional.review_complete) {
-        review = await task({
+        try {
+          review = await task({
           description: [
             "Review this verified patch without editing or applying it.",
             `BRIEF: ${String(brief)}`,
@@ -454,7 +461,10 @@ export default async function (args) {
               reasons: { type: "array", items: { type: "string" } },
             },
           },
-        });
+          });
+        } catch (error) {
+          review = { verdict: "unknown", reasons: [String(error)] };
+        }
         if (review.verdict === "pass") winner = provisional.id;
       }
     }

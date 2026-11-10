@@ -646,6 +646,7 @@ pub fn resolve_declared_model_candidate(
         model_context_windows,
         models,
         None,
+        None,
     )
 }
 
@@ -687,6 +688,7 @@ pub fn resolve_declared_model_candidate_with_wire_override(
     model_context_windows: Option<&BTreeMap<String, u32>>,
     models: &[codewhale_config::catalog::configured::ConfiguredModel],
     wire_override: Option<codewhale_config::provider::WireFormat>,
+    responses_profile_override: Option<String>,
 ) -> Result<RouteCandidateResolution, String> {
     let (resolver, endpoint_catalog_authoritative, resolver_reads_models_dev) =
         live_route_resolver(provider, Some(identity), base_url);
@@ -704,6 +706,7 @@ pub fn resolve_declared_model_candidate_with_wire_override(
         endpoint_catalog_authoritative,
         resolver_reads_models_dev,
         wire_override,
+        responses_profile_override,
     )
 }
 
@@ -725,6 +728,7 @@ pub fn resolve_route_candidate_with_context_metadata(
         model_context_windows,
         provider_reported_context,
         None,
+        None,
     )
 }
 
@@ -739,6 +743,7 @@ pub fn resolve_route_candidate_with_context_metadata_and_wire_override(
     model_context_windows: Option<&BTreeMap<String, u32>>,
     provider_reported_context: Option<ProviderReportedKimiCodeContext>,
     wire_override: Option<codewhale_config::provider::WireFormat>,
+    responses_profile_override: Option<String>,
 ) -> Result<RouteCandidateResolution, String> {
     let resolver_base_url = base_url_override
         .clone()
@@ -758,6 +763,7 @@ pub fn resolve_route_candidate_with_context_metadata_and_wire_override(
         endpoint_catalog_authoritative,
         resolver_reads_models_dev,
         wire_override,
+        responses_profile_override,
     )
 }
 
@@ -798,6 +804,7 @@ fn resolve_route_candidate_with_catalog_resolver(
     endpoint_catalog_authoritative: bool,
     resolver_reads_models_dev: bool,
     wire_override: Option<codewhale_config::provider::WireFormat>,
+    responses_profile_override: Option<String>,
 ) -> Result<RouteCandidateResolution, String> {
     let effective_base_url = base_url_override
         .as_deref()
@@ -813,6 +820,7 @@ fn resolve_route_candidate_with_catalog_resolver(
         base_url_override,
         limit_overrides: Vec::new(),
         wire_override,
+        responses_profile_override,
     };
     // First pass: resolve the route without overrides to learn the effective
     // endpoint, wire model id, and catalog limits. Candidates are immutable, so
@@ -1130,6 +1138,12 @@ pub fn resolve_runtime_route_for_identity(
             )
         })
         .flatten();
+    let responses_profile_override = codewhale_config::provider::responses_profile_override(
+        provider,
+        identity.key.as_str(),
+        route_config.provider_wire_dialect(&identity),
+        route_config.provider_responses_profile(&identity),
+    )?;
     // Every refreshed provider shares the same exact identity/endpoint gate.
     // Codex keeps its separate authenticated account roster and protocol seam.
     let resolution = if provider != ProviderKind::OpenaiCodex {
@@ -1187,6 +1201,7 @@ pub fn resolve_runtime_route_for_identity(
             catalog.endpoint_catalog_authoritative,
             true,
             wire_override,
+            responses_profile_override.clone(),
         )?
     } else {
         resolve_route_candidate_with_catalog_resolver(
@@ -1202,6 +1217,7 @@ pub fn resolve_runtime_route_for_identity(
             false,
             false,
             wire_override,
+            responses_profile_override,
         )?
     };
     let candidate = resolution.candidate;

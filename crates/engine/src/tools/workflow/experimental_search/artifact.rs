@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
-use super::{git, normalized_path};
+use super::{git, normalized_path, protected_git_path};
 
 const MAX_FILES: usize = 4096;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -165,6 +165,17 @@ fn walk(root: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
 }
 
 impl ArtifactStore {
+    pub(super) fn read_tree_files(root: &Path) -> Result<Vec<(String, u32, Vec<u8>)>, String> {
+        walk(root)?
+            .into_iter()
+            .map(|(path, source)| {
+                let file_mode = mode(&source)?;
+                let bytes = read_file(&source)?;
+                Ok((path, file_mode, bytes))
+            })
+            .collect()
+    }
+
     pub(super) fn freeze(repo: &Path, root: &Path) -> Result<Self, String> {
         fs::create_dir(root.join("blobs")).map_err(|error| error.to_string())?;
         fs::create_dir(root.join("artifacts")).map_err(|error| error.to_string())?;
@@ -185,6 +196,9 @@ impl ArtifactStore {
                 return Err(format!("unsupported baseline tree entry: {path}"));
             }
             let path = normalized_path(path)?;
+            if protected_git_path(&path) {
+                return Err(format!("unsupported Git control file in baseline: {path}"));
+            }
             let bytes = git(repo, &["cat-file", "blob", oid])?.stdout;
             if bytes.len() as u64 > MAX_FILE_BYTES {
                 return Err(format!("baseline file exceeds limit: {path}"));

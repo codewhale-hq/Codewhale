@@ -76,7 +76,7 @@ def write_manifest(directory, workspace, arm, budget, generations, fixtures, bri
         "resolved_provider": "deepseek",
         "resolved_model": "deepseek-flash",
         "max_candidates": 1 if arm == "single" else budget,
-        "max_generations": generations if arm in ("serial", "fixed_policy", "evolution") else 1,
+        "max_generations": budget if arm == "serial" else generations if arm in ("fixed_policy", "evolution") else 1,
         "max_model_turns": (1 if arm == "single" else budget) * 6 + 1,
         "max_wall_secs": 3600,
         "shadow_policy": initial_policy,

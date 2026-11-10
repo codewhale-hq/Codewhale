@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "e955af4bb404a7b128ee2d8c9c215fa0d47ba99c87c3327cacc3ee1a6d84a36b"
+    "sha256": "43e71c6bf051e8b515cc0635288909f465e36b828b8970d4de8cecc79303e7cb"
   },
   "features": [
     {
@@ -1406,6 +1406,19 @@
       "flag": null,
       "docs": "docs/rate-limit-retries.md",
       "registryLine": 1038
+    },
+    {
+      "id": "custom-responses-profile",
+      "name": "Custom Responses profile",
+      "summary": "A custom provider with wire = responses can name an allowlisted responses_profile; omitted means standard.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/CONFIGURATION.md",
+      "registryLine": 1047
     }
   ]
 }

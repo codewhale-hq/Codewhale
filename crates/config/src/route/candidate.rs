@@ -25,6 +25,7 @@ use super::capabilities::RouteCapabilities;
 use super::ids::{LogicalModelRef, ModelId, ProviderId, WireModelId};
 use super::offering::RouteLimits;
 use crate::ProviderKind;
+use crate::responses_dialect::ResponsesProfileId;
 
 /// A concrete, resolved endpoint the route will talk to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +203,10 @@ pub struct ReadyRouteCandidate {
     auth: ResolvedAuthSource,
     /// Selected wire protocol.
     protocol: RequestProtocol,
+    /// Responses dialect selected after the protocol is known.
+    /// Absent for every non-Responses route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    responses_profile_id: Option<ResponsesProfileId>,
     /// Route/offering-scoped token limits, when known (overrides applied).
     limits: RouteLimits,
     /// Capability facts for the exact provider/model offering.
@@ -228,12 +233,18 @@ impl ReadyRouteCandidate {
         endpoint: ResolvedEndpoint,
         auth: ResolvedAuthSource,
         protocol: RequestProtocol,
+        responses_profile_id: Option<ResponsesProfileId>,
         limits: RouteLimits,
         capabilities: RouteCapabilities,
         pricing: Option<PricingSku>,
         validation: ValidationReport,
         applied_limit_overrides: Vec<SourcedLimitOverride>,
     ) -> Self {
+        assert_eq!(
+            protocol == RequestProtocol::Responses,
+            responses_profile_id.is_some(),
+            "a responses route carries a profile id and other routes do not"
+        );
         Self {
             provider_id,
             provider_kind,
@@ -243,6 +254,7 @@ impl ReadyRouteCandidate {
             endpoint,
             auth,
             protocol,
+            responses_profile_id,
             limits,
             capabilities,
             pricing,
@@ -297,6 +309,12 @@ impl ReadyRouteCandidate {
     #[must_use]
     pub fn protocol(&self) -> RequestProtocol {
         self.protocol
+    }
+
+    /// Responses dialect id, present exactly when the protocol is Responses.
+    #[must_use]
+    pub fn responses_profile_id(&self) -> Option<ResponsesProfileId> {
+        self.responses_profile_id
     }
 
     /// Route/offering-scoped token limits, when known (overrides applied).

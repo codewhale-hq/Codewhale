@@ -8,6 +8,9 @@ use std::{
 
 use serde_json::Value;
 
+#[path = "src/responses_dialect_data.rs"]
+mod responses_dialect_data;
+
 fn text<'a>(row: &'a Value, key: &str) -> &'a str {
     row[key]
         .as_str()
@@ -585,4 +588,19 @@ fn main() {
     catalog_constants.push_str("_ => &[], } }\n");
     fs::write(directory.join("catalog_constants.rs"), catalog_constants)
         .expect("write catalog constants");
+    write_responses_dialects();
+}
+
+fn write_responses_dialects() {
+    println!("cargo:rerun-if-changed=assets/responses_dialects.json");
+    println!("cargo:rerun-if-changed=src/responses_dialect_data.rs");
+    let raw = fs::read_to_string("assets/responses_dialects.json").expect("responses dialects");
+    let doc = responses_dialect_data::parse(&raw)
+        .unwrap_or_else(|err| panic!("responses dialects: {err}"));
+    let directory = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    fs::write(
+        directory.join("responses_dialects.rs"),
+        responses_dialect_data::codegen(&doc),
+    )
+    .expect("write responses dialects");
 }

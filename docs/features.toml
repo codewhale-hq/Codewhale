@@ -1042,3 +1042,13 @@ status = "experimental"
 surfaces = { tui = "preview", web = "partial", api = "partial" }
 owner = "crates/engine/src/llm_client/rate_limit.rs"
 docs = "docs/rate-limit-retries.md"
+
+[[feature]]
+id = "custom-responses-profile"
+name = "Custom Responses profile"
+summary = "A custom provider with wire = responses can name an allowlisted responses_profile; omitted means standard."
+status = "stable"
+surfaces = { tui = "stable" }
+since = "unreleased"
+docs = "docs/CONFIGURATION.md"
+owner = "crates/config/src/provider_toml.rs"

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Responses dialect profiles:** Codex, DeepSeek and Concentrate Responses behavior now comes from one checked dialect table instead of per-provider code, a custom `wire = "responses"` provider can set `responses_profile = "standard"` (the default when omitted), and preview shows the profile each Responses request used. A Responses client whose route cannot be resolved now fails when it is created rather than at its first request ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)). Thanks [@SamhandsomeLee](https://github.com/SamhandsomeLee).
+- **Automations:** a run missed while Codewhale was closed now waits on reopen for Run now or Skip instead of catching up silently; each automation can choose "If missed: ask" (default), "run once" or "skip". Tested in the engine only; no HTTP route tests, no desktop client yet, and a Mac asleep longer than the grace window counts as closed.
+
+### Changed
+
+- Codex App Server v2 contract record (paused, not part of 0.10.3): the selected Codex v2 contract is frozen as a generated manifest in the protocol crate, with typed Rust and TypeScript shapes checked against the pinned Codex schema. It changes no wire behavior and adds no dispatch, so nothing is reachable through it yet.
+
+### Fixed
+
+- External agents installed through npm on Windows (`claude.cmd`, `codex.cmd`, ...) are now found instead of the unrunnable shell shim, `GET /v1/agents/external` says whether an agent answered with an unsupported protocol rather than reporting every failure as no answer, and a hung `--version` or handshake probe no longer leaves the agent's child processes running. Verified on macOS and Linux; the Windows code has never been compiled or run, and no agent row is qualified by this change.
+- The Runtime API's `POST /v1/git/push` now pushes exactly one branch at one commit (`<commit>:refs/heads/<branch>`, no follow-tags or submodule recursion), so `push.default`, `remote.<name>.push` and `push.followTags` can no longer publish other branches or tags. Clients can bind a push to a named branch and expected HEAD with `branch` + `expect.head` (advertised as `named_push` in `GET /v1/git`); a stale branch or HEAD answers `409 git_state_changed` and pushes nothing. A bare push from a detached HEAD or an unborn branch is now refused, and the desktop app has not yet adopted the named form. Verified on macOS by unit tests against a local bare remote; no real network remote, Linux, Windows or hosted CI run.
+- Cancelling or timing out a read-only Git tool (git_status, git_diff, git_commit_plan, git_log, git_show, git_blame, git_merge_tree) now stops the git process and anything it started, instead of leaving it running in the background. Verified on macOS by unit tests; Linux, Windows and hosted CI are not yet run, and the filter-override probe is still not contained.
+- TUI: the launch resume confirmation no longer treats Meta+Enter, Meta+Y or Hyper+Enter as "resume"; only a plain Enter/Y or Shift+Y answers it. Verified by the focused unit tests only; not tried in a terminal that sends Meta or Hyper.
+
+### Experimental
+
+- **Evidence-gated coding search (draft, opt-in):** Workflow/Fleet candidates run
+  against a frozen host evaluator, and later generations can inherit a sealed
+  parent code tree and bounded shadow policy. The experiment records independent
+  Best-of-N comparisons, public failures, and held-out replay receipts without
+  applying patches or changing production orchestration. Refs #7250.
+
 ## [0.10.3] - 2026-11-08
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release
@@ -31,17 +53,16 @@ tag. Items moved to 0.10.4 by name are marked below.
   Fleet ledger compaction and the Fleet role profile lock have landed, but only
   a green run on the exact final SHA closes this. Scripted journeys are being brought to zero on GitHub-hosted
   native x64 runners; macOS and Linux results do not establish Windows.
-- **Codex App Server compatibility (0.10.3 work item):** the parity bar is Tiers
-  A and B (about 55 methods) implemented and Tier C (about 50 Codex-product
-  methods) returning "method not found" against a committed inventory. The
-  typed Tier A and B method names and that inventory are now committed in the
-  protocol crate and checked against the pinned Codex export; parameter and
-  response types per method and the dispatch are not part of that change. The
-  current HTTP/SSE Runtime remains available; full-tool turns, subscriptions,
-  bidirectional interactions, durable settlements, TCP WebSocket and the
-  complete SDK remain unfinished in this source candidate. The legacy JSON-RPC
-  dialect is removed in 0.10.3, with a breaking-change line here, once the
-  `codewhale thread` CLI has migrated.
+- **Moved out of 0.10.3 — Codex App Server v2 compatibility:** finishing the
+  Codex App Server v2 contract is paused so this release can focus on ACP (both
+  Codewhale driving installed agents and editors driving Codewhale), the DSH
+  plugins and the rest of the release. The typed Tier A and B method names and
+  the committed inventory stay in the protocol crate, checked against the
+  pinned Codex export; dispatch, subscriptions, bidirectional interactions,
+  durable settlements, a TCP WebSocket transport and the full SDK are not in
+  0.10.3. The HTTP/SSE Runtime API remains the supported way for the desktop,
+  mobile and other clients to reach the Engine, and the legacy JSON-RPC dialect
+  is not retired in this release.
 - **DSH plugins and MCP lifecycle (0.10.3 work item):** "full" compatibility
   means all 33 surveyed plugins, unmodified, each passing its core journey on
   macOS, Linux and Windows, against DSH 0.2.2-rc.1. The uplift comes first;

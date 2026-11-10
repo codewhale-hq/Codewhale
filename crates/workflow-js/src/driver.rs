@@ -55,6 +55,9 @@ pub struct TaskRequest {
     pub cwd: Option<String>,
     /// Run the child in a fresh git worktree for parallel edits.
     pub worktree: bool,
+    /// Optional immutable Git commit to seed that worktree.
+    #[serde(default)]
+    pub worktree_base: Option<String>,
     /// Explicit child mutation authority. A write-capable value remains
     /// fail-closed unless at least one bounded scope below is declared.
     #[serde(default)]

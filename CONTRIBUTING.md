@@ -76,6 +76,17 @@ These are always open, and a pull request needs no issue first:
 Large changes to planned work are easier in layers; see
 [Layered and EPIC-Sized Work](#layered-and-epic-sized-work).
 
+### What a planned-work issue gives you
+
+Every issue a maintainer opens for planned work, and every release tracking issue, has the same parts, so you can pick one up without asking first:
+
+- **Status:** what is on `main` already, with commit links, and what is still missing.
+- **Ways to help:** each piece open to contributors, with the files to read, the command to test it locally (usually `scripts/dev-test.sh <crate> <filter>`) and what "done" means. Pieces that need no Rust, such as trying a feature and reporting exactly what happened, are listed first. A precise report is credited like code.
+- **Being built by maintainers right now:** the parts someone already holds, so you don't build the same thing twice.
+- **How to take a piece:** comment to claim it, then open a pull request that says `Refs #<issue>`.
+
+If an issue for planned work is missing one of these, say so on it. That is a bug in the issue.
+
 ## How we work with you
 
 - We reply by naming what you reported, diagnosed or fixed.

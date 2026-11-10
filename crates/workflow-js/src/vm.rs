@@ -1259,6 +1259,8 @@ struct TaskOptions {
     cwd: Option<String>,
     #[serde(default)]
     worktree: bool,
+    #[serde(alias = "worktree_base")]
+    worktree_base: Option<String>,
     /// `agent`-tool alias for worktree isolation: "shared" | "worktree".
     #[serde(default, alias = "workspace_policy")]
     workspace_policy: Option<String>,
@@ -1362,6 +1364,9 @@ fn parse_task_options(
     if write_authority.as_deref() == Some("worktree_write") && !options.worktree {
         return Err("task(): writeAuthority worktree_write requires worktree: true".to_string());
     }
+    if options.worktree_base.is_some() && !options.worktree {
+        return Err("task(): worktreeBase requires worktree: true".to_string());
+    }
     let role_kind = role.as_deref().and_then(task_role_kind);
     let type_kind = options.subagent_type.as_deref().and_then(task_role_kind);
     if let (Some(role_kind), Some(type_kind)) = (role_kind, type_kind)
@@ -1399,6 +1404,7 @@ fn parse_task_options(
         thinking: options.thinking,
         cwd,
         worktree: options.worktree,
+        worktree_base: options.worktree_base,
         write_authority,
         write_roots: options.write_roots,
         exact_files: options.exact_files,

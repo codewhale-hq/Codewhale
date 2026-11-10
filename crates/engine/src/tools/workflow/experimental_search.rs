@@ -214,6 +214,15 @@ fn protected_test_path(path: &str) -> bool {
         || file.ends_with(".spec.ts")
 }
 
+fn protected_git_path(path: &str) -> bool {
+    path.split('/').any(|part| {
+        matches!(
+            part,
+            ".git" | ".gitattributes" | ".gitmodules" | ".gitconfig" | ".lfsconfig"
+        )
+    })
+}
+
 fn same_json(actual: &Value, expected: &Value) -> bool {
     match (actual, expected) {
         (Value::Number(a), Value::Number(b)) => {
@@ -472,7 +481,7 @@ impl ExperimentalSearch {
             || spec.max_candidates == 0
             || spec.max_candidates > 16
             || spec.max_generations == 0
-            || spec.max_generations > 3
+            || spec.max_generations > spec.max_candidates
             || spec.max_model_turns == 0
             || spec.max_model_turns > 113
             || spec.max_wall_secs == 0
@@ -649,6 +658,105 @@ impl ExperimentalSearch {
         })
     }
 
+    fn seed_parent_commit(
+        &self,
+        candidate_id: &str,
+        parent_id: &str,
+        expected_artifact_id: &str,
+    ) -> Result<(String, String), String> {
+        let artifact = self.store.load(parent_id)?;
+        if artifact.artifact_id != expected_artifact_id {
+            return Err("parent artifact identity changed before seeding".to_string());
+        }
+        let seed = self.root.join(format!("{candidate_id}-parent-seed"));
+        self.store.materialize(&artifact, &seed)?;
+        let git_dir = git_text(&self.repo, &["rev-parse", "--absolute-git-dir"])?;
+        let index = self.root.join(format!("{candidate_id}-parent.index"));
+        if index.exists() {
+            return Err("parent seed index already exists".to_string());
+        }
+        let run = |args: &[&str], input: Option<&[u8]>| -> Result<String, String> {
+            let mut child = Command::new("git")
+                .current_dir(&seed)
+                .env("GIT_DIR", &git_dir)
+                .env("GIT_WORK_TREE", &seed)
+                .env("GIT_INDEX_FILE", &index)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_AUTHOR_NAME", "Codewhale experiment host")
+                .env("GIT_AUTHOR_EMAIL", "experiment@localhost")
+                .env("GIT_COMMITTER_NAME", "Codewhale experiment host")
+                .env("GIT_COMMITTER_EMAIL", "experiment@localhost")
+                .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00+00:00")
+                .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00+00:00")
+                .args([
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                ])
+                .args(args)
+                .stdin(if input.is_some() {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("git {}: {error}", args.join(" ")))?;
+            if let Some(bytes) = input {
+                child
+                    .stdin
+                    .take()
+                    .ok_or("git input pipe missing")?
+                    .write_all(bytes)
+                    .map_err(|error| error.to_string())?;
+            }
+            let output = child
+                .wait_with_output()
+                .map_err(|error| format!("git {}: {error}", args.join(" ")))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git {}: {}",
+                    args.join(" "),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            String::from_utf8(output.stdout)
+                .map(|value| value.trim().to_string())
+                .map_err(|error| error.to_string())
+        };
+        run(&["read-tree", "--empty"], None)?;
+        let mut index_input = Vec::new();
+        for (path, mode, bytes) in ArtifactStore::read_tree_files(&seed)? {
+            let oid = run(
+                &["hash-object", "-w", "--no-filters", "--stdin"],
+                Some(&bytes),
+            )?;
+            index_input.extend_from_slice(format!("{mode:o} {oid}\t{path}\0").as_bytes());
+        }
+        run(&["update-index", "-z", "--index-info"], Some(&index_input))?;
+        let tree = run(&["write-tree"], None)?;
+        let commit_message = format!("experimental parent artifact {expected_artifact_id}");
+        let commit = run(
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &self.baseline_sha,
+                "-m",
+                &commit_message,
+            ],
+            None,
+        )?;
+        let tree_ref = format!("{commit}^{{tree}}");
+        if git_text(&self.repo, &["rev-parse", &tree_ref])? != tree {
+            return Err("parent seed Git tree verification failed".to_string());
+        }
+        Ok((commit, tree))
+    }
+
     pub(super) fn apply_policy(
         &mut self,
         candidate_id: &str,
@@ -671,6 +779,8 @@ impl ExperimentalSearch {
         }
         let mut feedback = String::new();
         let mut parent_artifact_id = None;
+        let mut parent_base_ref = None;
+        let mut parent_base_tree = None;
         let mut repair_root = None;
         let mut repair_parent = false;
         if generation > 0 {
@@ -809,6 +919,14 @@ impl ExperimentalSearch {
                 );
             }
             parent_artifact_id = parent.get("artifact_id").cloned();
+            let expected_artifact_id = parent_artifact_id
+                .as_ref()
+                .and_then(Value::as_str)
+                .ok_or("verified parent artifact missing")?;
+            let (base_ref, base_tree) =
+                self.seed_parent_commit(candidate_id, parent_id, expected_artifact_id)?;
+            parent_base_ref = Some(base_ref);
+            parent_base_tree = Some(base_tree);
         }
         let policy_id = hash(&serde_json::to_vec(&genome).map_err(|error| error.to_string())?);
         let plan = json!({
@@ -849,6 +967,8 @@ impl ExperimentalSearch {
             ],
             "inherited_authority_hash": authority_hash,
             "parent_artifact_id": parent_artifact_id,
+            "parent_base_ref": parent_base_ref,
+            "parent_base_tree": parent_base_tree,
             "feedback_packet_sha256": hash(feedback.as_bytes()),
             "feedback_packet": feedback,
             "receipt_path": path, "events_path": events,
@@ -1049,11 +1169,17 @@ impl ExperimentalSearch {
                 || self.admitted >= self.spec.max_candidates
                 || applied.planner_calls != applied.genome.planning_budget
                 || !request.allowed_tools.as_ref().is_some_and(|tools| {
-                    tools.len() == 2
+                    tools.len() == 3
+                        && tools.iter().any(|tool| tool == "read")
                         && tools.iter().any(|tool| tool == "write_file")
                         && tools.iter().any(|tool| tool == "apply_patch")
                 })
                 || !request.worktree
+                || request.worktree_base.as_deref()
+                    != applied
+                        .receipt
+                        .get("parent_base_ref")
+                        .and_then(Value::as_str)
                 || request.write_authority.as_deref() != Some("worktree_write")
                 || request.model.as_deref() != Some(self.spec.requested_model.as_str())
                 || turns != 4
@@ -1341,9 +1467,15 @@ impl ExperimentalSearch {
                     .join(".git")
                     .canonicalize()
                     .map_err(|error| error.to_string())?
-                || git_text(&workspace, &["rev-parse", "HEAD"])? != self.baseline_sha
+                || git_text(&workspace, &["rev-parse", "HEAD"])?
+                    != self
+                        .applied
+                        .get(candidate_id)
+                        .and_then(|applied| applied.receipt.get("parent_base_ref"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(&self.baseline_sha)
             {
-                return Err("candidate worktree is not at the frozen baseline".to_string());
+                return Err("candidate worktree is not at the frozen starting tree".to_string());
             }
             self.store.capture(&workspace, candidate_id, parent_ids)?
         };
@@ -1363,7 +1495,7 @@ impl ExperimentalSearch {
                     .protected_paths
                     .iter()
                     .any(|root| in_scope(path, root))
-                || path.starts_with(".git/")
+                || protected_git_path(path)
                 || path.starts_with(".codewhale/")
                 || protected_test_path(path)
         });

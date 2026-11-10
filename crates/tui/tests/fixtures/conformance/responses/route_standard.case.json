@@ -1,0 +1,7 @@
+{
+  "kind": "route",
+  "provider": "custom",
+  "model": "gpt-5.6",
+  "base_url": "https://gateway.example/v1",
+  "wire": "responses"
+}

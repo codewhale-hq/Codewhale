@@ -1005,7 +1005,8 @@ fn configured_secret_redaction_reaches_all_protocol_bodies() {
     let chat = serde_json::to_string(&build_chat_messages_for_request(&prepared))
         .expect("serialize Chat Completions body");
     let anthropic = client.build_anthropic_body(&prepared, false).to_string();
-    let responses = build_responses_body(&prepared).to_string();
+    let responses =
+        build_responses_body_for_provider(&prepared, ProviderKind::OpenaiCodex, None).to_string();
 
     for (route, body) in [
         ("chat", chat.as_str()),
