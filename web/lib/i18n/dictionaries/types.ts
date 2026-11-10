@@ -87,6 +87,7 @@ export interface ChromeDict {
   footerFaq: string;
   footerIssues: string;
   footerContribute: string;
+  footerRoadmap: string;
   footerLicense: string;
   /** Footer link to the terms route, e.g. "Terms". */
   footerTerms: string;
@@ -206,9 +207,6 @@ export interface HomeDict {
   chinaMirrors: string;
   installGuideLink: string;
 
-  communityHeading: string;
-  communityBody: string;
-  communityLinksAria: string;
   contribute: string;
 }
 
@@ -748,3 +746,5 @@ export interface ComputerUseDict {
   contributeGuide: string;
   contributeIssue: string;
 }
+
+export type ProjectDict = typeof import("./en/project").project;

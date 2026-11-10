@@ -24,8 +24,8 @@
 .install-guide ol { list-style: decimal; }
 .install-guide li { margin-block: var(--space-1); }
 .install-guide ::marker { color: var(--muted); }
-.install-guide a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.2em; }
-.install-guide a:hover { text-decoration-color: var(--accent); }
+.install-guide a:not(.btn) { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.2em; }
+.install-guide a:not(.btn):hover { text-decoration-color: var(--accent); }
 .install-guide a[id] { scroll-margin-top: 6rem; }
 .install-guide strong { font-weight: 600; }
 .install-guide blockquote { padding-inline-start: var(--space-4); border-inline-start: 2px solid var(--line-strong); color: var(--muted); }

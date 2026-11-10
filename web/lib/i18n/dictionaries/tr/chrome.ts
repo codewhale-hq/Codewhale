@@ -45,8 +45,7 @@ export const chrome: ChromeDict = {
   themeAria: "Tema: {mode} (geçiş için tıkla)",
   themeTitle: "Tema · otomatik / açık / koyu",
 
-  footerTagline:
-    "Terminalin ve seçtiğin modeller için açık kaynak kodlama ajanı.",
+  footerTagline: "Her modeli, okuyabileceğiniz bir ajanla kullanın.",
   footerProduct: "Ürün",
   footerProject: "Proje",
   footerDocs: "Belgeler",
@@ -57,6 +56,7 @@ export const chrome: ChromeDict = {
   footerFaq: "SSS",
   footerIssues: "Issues",
   footerContribute: "Katkı",
+  footerRoadmap: "Yol haritası",
   footerLicense: "MIT lisansı",
   footerTerms: "Hizmet şartları",
   footerPrivacy: "Gizlilik",

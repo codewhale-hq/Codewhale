@@ -2666,6 +2666,8 @@ fn sample_thread(thread_id: &str) -> ThreadRecord {
         session_id: None,
         saved_session_checkpoint: None,
         last_read: None,
+        executor: None,
+        environment: None,
     }
 }
 
@@ -11254,7 +11256,7 @@ async fn start_turn_can_override_thread_auto_approve_to_false() -> Result<()> {
             },
         )
         .await?;
-    assert_eq!(turn.permission_posture.as_deref(), Some("ask"));
+    assert_eq!(turn.permission_posture.as_deref(), Some("accept_edits"));
 
     match rx_op.recv().await {
         Some(Op::SendMessage(TurnSpec {
@@ -11263,7 +11265,7 @@ async fn start_turn_can_override_thread_auto_approve_to_false() -> Result<()> {
             ..
         })) => {
             assert!(!auto_approve);
-            assert_eq!(approval_mode, ApprovalMode::Suggest);
+            assert_eq!(approval_mode, ApprovalMode::AcceptEdits);
         }
         other => panic!("expected SendMessage op, got {other:?}"),
     }
@@ -13559,9 +13561,11 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
 
         assert!(
             manager
-                .deliver_external_approval(
+                .deliver_approval_from(
                     &approval_id,
+                    None,
                     ExternalApprovalDecision::Allow { remember: false },
+                    Some(ApprovalResponder::Phone),
                 )
                 .await
                 .expect("durable approval decision")
@@ -13587,8 +13591,9 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
                         == Some(approval_id.as_str())
                     && event.payload.get("tool_call_id").and_then(Value::as_str) == Some(call_id)
                     && event.payload.get("decision").and_then(Value::as_str) == Some("allow")
+                    && event.payload.get("responder").and_then(Value::as_str) == Some("phone")
             }),
-            "approval.decided must correlate the opaque id with the tool call it settled"
+            "approval.decided must correlate the opaque id with the tool call it settled and name the client that answered"
         );
 
         harness
@@ -13609,6 +13614,72 @@ async fn approval_required_awaits_external_decision_allow() -> Result<()> {
             })
             .await?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_approval_is_never_acknowledged_when_its_decision_append_fails() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "needs approval".to_string(),
+                ..StartTurnRequest::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage(TurnSpec { .. }))
+    ));
+    harness
+        .tx_event
+        .send(EngineEvent::ApprovalRequired {
+            publication: None,
+            approval_key: "key_append_fault".to_string(),
+            approval_grouping_key: "key_append_fault".to_string(),
+            id: "tool_append_fault".to_string(),
+            tool_name: "exec_command".to_string(),
+            description: "append fault".to_string(),
+            input: json!({"command": "echo fixture"}),
+            intent_summary: None,
+            approval_force_prompt: false,
+        })
+        .await?;
+    let approval_id = await_approval_identity(&manager, &thread.id, "tool_append_fault").await?;
+
+    let fault = EventAppendFaultGuard::arm(&thread.id, EventAppendTestFault::AfterSync);
+    let decision = ExternalApprovalDecision::Allow { remember: false };
+    let error = manager
+        .deliver_external_approval(&approval_id, decision)
+        .await
+        .expect_err("a decision whose journal append failed must not be acknowledged");
+    drop(fault);
+    assert!(
+        format!("{error:#}").contains("decision append failed"),
+        "unexpected settlement error: {error:#}"
+    );
+    assert!(
+        !manager
+            .events_since(&thread.id, None)?
+            .iter()
+            .any(|event| event.event == "approval.decided"),
+        "the rolled-back decision must not be in the journal"
+    );
+    assert!(
+        !matches!(
+            manager
+                .deliver_external_approval(&approval_id, decision)
+                .await,
+            Ok(true)
+        ),
+        "a repeat after the failed append must not report success"
+    );
     Ok(())
 }
 
@@ -19894,6 +19965,8 @@ fn opening_manager_recovers_stale_queued_and_in_progress_work() -> Result<()> {
         session_id: None,
         saved_session_checkpoint: None,
         last_read: None,
+        executor: None,
+        environment: None,
     };
     manager.store.save_thread(&thread)?;
 
@@ -21685,6 +21758,7 @@ async fn report_store_failure_names_the_item_file_without_terminalizing() -> Res
     Ok(())
 }
 
+mod external_agent;
 mod task_ownership;
 
 mod runtime_image_inputs {

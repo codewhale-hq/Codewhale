@@ -1,7 +1,7 @@
 /**
  * <GettingStartedSteps> — renders the shared new-user path from
  * web/lib/content/getting-started.ts: install → provider connection →
- * first task → optional Fleet setup.
+ * first task → verify the answer → optional Fleet setup.
  *
  * Used by the homepage and the /docs/guide page so the path reads
  * identically in both places. Server component, SSG-safe.
@@ -21,24 +21,27 @@ export function GettingStartedSteps({
   headingLevel?: 2 | 3;
 }) {
   const StepHeading = headingLevel === 2 ? "h2" : "h3";
-  return (
-    <ol className="gs-steps">
-      {GETTING_STARTED_STEPS.map((step, index) => (
-        <li key={step.id} data-step-id={step.id}>
-          <span className="gs-step-index" aria-hidden="true">
-            {index + 1}
-          </span>
+  const renderStep = (step: (typeof GETTING_STARTED_STEPS)[number], index: number) => (
+        <li key={step.id} id={step.id} data-step-id={step.id} className="scroll-mt-32">
+          {!step.optional && <span className="gs-step-index" aria-hidden="true">{index + 1}</span>}
           <StepHeading className="gs-step-title">{pickText(step.title, locale)}</StepHeading>
           <p>{pickText(step.body, locale)}</p>
           {step.commands.length > 0 && (
             <pre tabIndex={0} className="code-block gs-step-commands"><code>{step.commands.join("\n")}</code></pre>
           )}
+          {step.prompt && <pre tabIndex={0} className="code-block gs-step-commands"><code>{pickText(step.prompt, locale)}</code></pre>}
           <Link href={`/${locale}${step.link.href}`} className="gs-step-link">
             {pickText(step.link.label, locale)}
             <Icon name="arrow-right" className="icon icon-flip" />
           </Link>
         </li>
-      ))}
-    </ol>
+      );
+  return (
+    <div className="space-y-8">
+      <ol className="gs-steps">{GETTING_STARTED_STEPS.filter((step) => !step.optional).map(renderStep)}</ol>
+      <aside className="hairline-t pt-6">
+        <ul className="gs-steps !grid-cols-1">{GETTING_STARTED_STEPS.filter((step) => step.optional).map(renderStep)}</ul>
+      </aside>
+    </div>
   );
 }

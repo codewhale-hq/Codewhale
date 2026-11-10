@@ -1344,6 +1344,114 @@ explicit empty array (`"allowed_tools": []`) exposes no tools to the model.
 Both fields are additive: older thread records and clients that omit them
 retain their previous behavior.
 
+### Sessions on other agents (external agent threads)
+
+`POST /v1/threads` with `executor` runs the thread's turns on an agent CLI
+already installed and signed in on this computer, over Agent Client Protocol,
+instead of Codewhale's own agent:
+
+```json
+{
+  "workspace": "/Users/you/projects/app",
+  "permission_posture": "ask",
+  "executor": { "kind": "acp", "agent_id": "opencode", "config": { "model": "<the agent's own option value>" } }
+}
+```
+
+`agent_id` is an `id` from `GET /v1/agents/external` whose row says
+`runnable: true`; `kind` is always `acp`; `config.model` is optional and is the
+agent's own config value, never a Codewhale provider route. When the agent cannot be driven the
+request is refused with a sentence and a stable `error.code`:
+`unknown_agent`, `not_installed`, `adapter_missing`, `below_min_version` or
+`no_acp` (`424`), and `needs_sign_in` (`409`) when the agent refuses to start a
+session because the person is not signed in to it. Turn starts and `resume`
+use the same codes. Codewhale never
+downloads an agent or adapter.
+
+The thread record carries the executor; native threads have none:
+
+```json
+"executor": { "version": 1, "kind": "acp", "agent_id": "opencode",
+  "agent_name": "OpenCode", "agent_version": "1.15.10", "protocol_version": 1,
+  "foreign_session_id": "ses_…", "model": null }
+```
+
+`agent_name`, `agent_version`, `protocol_version` and `foreign_session_id` are
+filled when the agent first starts (the first turn, or `POST
+/v1/threads/{id}/resume`). The record never holds an environment value, token
+or credential: the agent uses its own login. `model_provider` is absent and
+`model` is the agent's model value or name.
+
+Everything else is the ordinary thread API, and the Engine's records stay the
+one authority. `POST .../turns` sends the prompt as one `session/prompt`; the
+agent's updates become the usual `turn.started`, `item.started`,
+`item.delta` (`kind` `agent_message` or `agent_reasoning`), `item.completed`
+/ `item.failed` and `turn.completed` events. Item kinds: `agent_message_chunk`
+→ `agent_message`, `agent_thought_chunk` → `agent_reasoning`, tool calls of
+kind `execute` → `command_execution`, `edit`/`delete`/`move` →
+`file_change`, `switch_mode` → `status`, any other → `tool_call`, and a plan
+→ one `status` item. Tool items carry `metadata.external_agent` with the
+agent's `tool_call_id`, `kind` and `locations`. Everything the agent sends is
+bounded (8 MiB per message, 256 KiB per item, 512 tool items per turn,
+control characters removed) and ignored when it names another session.
+
+The agent's `session/request_permission` becomes an ordinary
+`approval.required` (with `external_agent`, `options` and `locations`) and is
+answered through `POST /v1/approvals/{id}`. The answer is recorded in
+`approval.decided` before the agent hears it. The thread's dial decides
+what is asked:
+
+| Dial (`permission_posture` / `mode`) | Answer to `session/request_permission` |
+| --- | --- |
+| `ask` | always an approval card |
+| `accept_edits` | `allow_once` without asking for an `edit`, `delete` or `move` whose every location resolves inside the workspace or an added folder; an approval card otherwise |
+| `auto_review` | an approval card (no model review exists for another agent) |
+| `full_access` | `allow_once` (or `allow_always` if that is all it offers) without asking |
+| `plan` (mode) | `reject_once` without asking, whatever the posture |
+
+A card's Allow selects `allow_once` (`allow_always` when `remember` is set and
+offered); Deny selects `reject_once` (`reject_always` when `remember`); an
+answer the agent offered no option for, a withdrawn card and a stopped turn
+answer `cancelled`. Automatic answers are recorded with `auto: true` and
+`decided_by: "policy"`. Codewhale sees only what the agent routes through
+ACP: its own tools are not sandboxed by Codewhale.
+
+`POST .../interrupt` sends `session/cancel`, withdraws pending approvals as
+cancelled and, if the agent has not stopped after 10 s, ends its process; the
+turn is `interrupted`. A stop reason other than `end_turn` or `cancelled`
+fails the turn with it. After a restart, the next turn or resume reopens the
+same agent session with `session/resume` or `session/load` (whose replay is
+not re-recorded); an agent that supports neither says so instead of starting
+a new session. `steer`, `compact`, `fork`, images, dynamic tools and a
+per-turn provider, model, reasoning setting, output allowance or tool allowlist
+are refused on an external thread. Thread creation uses only
+`executor.config.model` for the agent's model; Codewhale provider settings,
+tool allowlists and system prompts are refused. `PATCH` cannot change its
+model, provider, system prompt or workspace. Usage is what the agent itself reports, labelled
+`agent reported`; cost is `unknown` because the agent bills through its own
+account.
+
+Three thread events describe the agent process itself: `executor.started`
+(`agent_id`, `agent_name`, `agent_version`, `protocol_version`,
+`foreign_session_id`, `reopened`) when the agent starts or is reopened,
+`executor.stopped` (`reason`) when it exits or is stopped between turns, and
+`turn.agent_usage` (`used`, `size`: the agent's own context-window token
+figures, `source: "agent reported"`, `cost: "unknown"`) whenever the agent
+sends ACP `usage_update`. `turn.completed` carries `turn.error` with the
+reason a turn failed or was ended. Stopping an idle agent process is the
+Engine call `stop_external_agent`; no HTTP route exposes it yet.
+
+Two shapes are reserved and refused today with `error.code`
+`executor_not_supported` or `environment_not_supported` (`424`), so a record
+written by a later build never runs here by mistake: `executor.kind:
+"engine"` (a child session run by another environment's own Engine), and
+`environment: {"id", "provider_kind"}` on `POST /v1/threads` and on the
+session record (absent means this computer; the names follow
+`codewhale_protocol::placement`). Summary rows carry `environment` when set.
+
+`CODEWHALE_ACP_FIXTURE_AGENT=<absolute path to a Node ACP script>` in the
+Engine's environment adds a `fixture` agent for end-to-end proofs.
+
 `GET /v1/threads/summary` is the read-only summary surface used by the VS Code
 Agent View. `search` matches thread `id`, `title`, and `model` (and, when the
 title is unset, the latest turn's input summary — the displayed title). It
@@ -1371,6 +1479,10 @@ plus workspace metadata:
   "latest_turn_status": "completed"
 }
 ```
+
+A conversation run by an external agent also carries
+`executor: {"kind": "acp", "agent_id": "opencode", "agent_name": "OpenCode"}`,
+so a sidebar can label and group rows by agent; native rows omit it.
 
 Rows also carry `last_read_item_id` and `unread` from the thread's read marker
 (see "Read markers" below). Both are `null` for a thread no client has marked
@@ -1618,7 +1730,11 @@ an incomplete admission before a later lookup, but GET itself never does so.
 
 **Approvals**
 - `POST /v1/approvals/{approval_id}` with body
-  `{ "decision": "allow" | "deny", "remember": false }`
+  `{ "decision": "allow" | "deny", "remember": false, "client": "desktop" }`.
+  `client` is optional and names the surface that answered: `desktop`, `phone`,
+  `web`, `tui` or `acp`. The answer's `approval.decided` event carries it as
+  `responder`. It is a label the client declares, not an authenticated device
+  identity; an answer without it records no `responder`.
 - `GET /v1/approvals?limit=` (1-500, default 100) is the read-only history:
   decided and still-pending approvals across all sessions, newest ask first.
 
@@ -3048,15 +3164,16 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
   { "id": "opencode", "name": "OpenCode", "state": "installed",
     "version": "1.19.5", "acp": "native",
     "auth_methods": [{ "id": "login", "name": "Log in", "type": "agent" }],
-    "website": "https://opencode.ai", "runnable": false },
+    "website": "https://opencode.ai", "adapter_installed": false, "runnable": true },
   { "id": "qoder", "name": "Qoder", "state": "not_installed", "version": null,
-    "acp": null, "auth_methods": [], "website": "https://qoder.com", "runnable": false }
+    "acp": null, "auth_methods": [], "website": "https://qoder.com",
+    "adapter_installed": false, "runnable": false }
 ] }
 ```
 
 Reports which external agent CLIs this computer already has, without starting a
-session. It covers Claude, Codex, Gemini CLI, OpenCode, Kimi Code, Mistral Vibe,
-Qoder, CodeBuddy and Grok. `state` is `installed` or `not_installed`; a binary is
+session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
+OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy and Grok. `state` is `installed` or `not_installed`; a binary is
 looked up on `PATH` and in the usual per-user bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
@@ -3065,7 +3182,23 @@ process, and `unreachable` when the handshake did not answer. `auth_methods`
 comes from the handshake; `type: "terminal"` means the agent can only be signed
 in by running it in a terminal. The probes time out after 8 s (5 s for
 `--version`), receive no Codewhale or provider credentials, and leave nothing
-stored. `runnable` is `false`: this route reports, it does not start an agent.
+stored. `runnable` is `true` when a thread can run on the agent now: the CLI is
+not below `min_version` and either answered the handshake or has its ACP adapter
+(`adapter`) installed, which `adapter_installed` reports. See "Sessions on other
+agents" for starting one.
+
+Each row also carries `depth`, `auth_status` and `reason` for the agents
+screen. `depth` is `driven` when a thread can run on the agent now,
+`observed` when the agent is installed but cannot be driven, and `null` when
+it is not installed; a per-agent stored choice of depth is not built.
+`auth_status` is `unknown`: the handshake lists sign-in methods but does not
+say whether the person is signed in, and Codewhale never reads an agent's
+credential files to find out. A signed-out agent is reported when a thread
+first starts it ("… needs you to sign in to it first. Run `<login>` in a
+terminal"). `reason` is a sentence to show when the agent is not `driven`
+(not installed, below `min_version`, no handshake answer, adapter missing),
+and `null` otherwise; `reason_code` is the matching code (`not_installed`,
+`below_min_version`, `no_acp`, `adapter_missing`).
 
 ### `DELETE /v1/providers/{id}/key` — clear a Codewhale-owned credential
 

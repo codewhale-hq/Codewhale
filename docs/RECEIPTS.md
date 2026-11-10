@@ -1,5 +1,7 @@
 # Receipts
 
+> 阅读简体中文版：[zh_hans/RECEIPTS.md](zh_hans/RECEIPTS.md)。
+
 A receipt answers "what did this session do?" from the records Codewhale
 already keeps. It lists, in order, the files changed, commands run, web and
 MCP calls, agents started, approvals (and who decided each one), and

@@ -21,13 +21,15 @@
 
 阅读以下文档，可以帮助你快速入门，掌握 Codewhale 的使用方法
 
-1. [GUIDE.md](./GUIDE.md) —— 最基础的入门教程：首次运行、会话、命令与日常工作流，适用于所有平台
-2. [KEYBINDINGS.md](./KEYBINDINGS.md) —— TUI 页面的快捷键列表，在这里可以了解 Codewhale 的日常操作方式
-3. [MODES.md](./MODES.md) —— 各个模式（Plan / Work / Operate）与权限姿态的说明（强烈建议每个 Codewhale 用户都阅读此项）
-4. [PROVIDERS.md](./PROVIDERS.md) —— 查看你所用模型的提供商是否在 Codewhale 官方支持的列表中，以及各提供商的配置方法
-5. [DOCKER.md](./DOCKER.md) —— 用容器运行 Codewhale，含挂载、权限与常见坑
-6. [ACCESSIBILITY.md](./ACCESSIBILITY.md) —— 无障碍与低动态模式、对比度与屏幕阅读器
-7. [PET_MODE.md](./PET_MODE.md) —— Pet 模式：每个终端一头鲸鱼，一眼看清工作中、等你、完成或失败，按需查看回复与智能体
+1. [PROVIDER_QUICKSTART.md](./PROVIDER_QUICKSTART.md) —— 装好以后先读这页：怎么配提供商、API 密钥和模型，拿到第一个回答（中文新手页）
+2. [GUIDE.md](./GUIDE.md) —— 最基础的入门教程：首次运行、会话、命令与日常工作流，适用于所有平台
+3. [KEYBINDINGS.md](./KEYBINDINGS.md) —— TUI 页面的快捷键列表，在这里可以了解 Codewhale 的日常操作方式
+4. [MODES.md](./MODES.md) —— 各个模式（Plan / Work / Operate）与权限姿态的说明（强烈建议每个 Codewhale 用户都阅读此项）
+5. [PROVIDERS.md](./PROVIDERS.md) —— 查看你所用模型的提供商是否在 Codewhale 官方支持的列表中，以及各提供商的配置方法
+6. [DOCKER.md](./DOCKER.md) —— 用容器运行 Codewhale，含挂载、权限与常见坑
+7. [ACCESSIBILITY.md](./ACCESSIBILITY.md) —— 无障碍与低动态模式、对比度与屏幕阅读器
+8. [PET_MODE.md](./PET_MODE.md) —— Pet 模式：每个终端一头鲸鱼，一眼看清工作中、等你、完成或失败，按需查看回复与智能体
+9. [RECEIPTS.md](./RECEIPTS.md) —— 回执：查看一个会话改了哪些文件、运行了哪些命令、谁批准了什么，以及哪些操作未经询问就运行
 
 ## 三、进阶用户（已经有充足了解，追求效率、安全与定制）
 
@@ -51,6 +53,7 @@
 16. [CATALOG_REFRESH.md](./CATALOG_REFRESH.md) —— 模型目录从哪来、怎么刷新
 17. [WEB.md](./WEB.md) —— 本地浏览器客户端：启动方式、会话验证边界与故障排查
 18. [VOICE.md](./VOICE.md) —— 语气与终端视觉章程（产品文案与界面的一致性原则）
+19. [CLAUDE_PLUGIN_COMPAT.md](./CLAUDE_PLUGIN_COMPAT.md) —— Claude Code 技能与插件包的兼容范围：支持哪些、拒绝哪些
 
 ## 四、开发者（阅读源码或为 Codewhale 贡献）
 
@@ -77,6 +80,7 @@
 19. [TELEMETRY.md](./TELEMETRY.md) —— 产品遥测：默认行为与关闭方式
 20. [LSP_PHP_CUSTOM.md](./LSP_PHP_CUSTOM.md) —— LSP：PHP 支持与自定义语言服务器
 21. [TOOL_LIFECYCLE.md](./TOOL_LIFECYCLE.md) —— 工具面生命周期策略（v0.8.53，历史设计记录，非当前运行时文档）
+22. [GITHUB_ACTION.md](./GITHUB_ACTION.md) —— GitHub PR 审查机器人：用 Action 在自己的仓库里搭建代码审查工作流
 
 > 我们强烈建议，成为 Codewhale 贡献者之前，您需要具备一定的英语阅读能力。如果您在英语方面较为薄弱，当然可以使用 LLM 来翻译。但是在 LLM 翻译完原文之后，建议您强忍着看不懂外文的不适，即使皱着眉头，也要审查一遍 LLM 翻译后的语义是否与你的原文语义相同。LLM 幻觉是会把事情搞砸的。
 

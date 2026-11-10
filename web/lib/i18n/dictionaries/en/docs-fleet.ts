@@ -14,7 +14,7 @@ export const docsFleet: DocsFleetDict = {
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Run a workflow",
   lede:
-    "For most multi-step work you only need to ask: in Operate, Codewhale plans the steps and runs independent ones in parallel. Write a Workflow when you want the same ordered plan every time — phases, parallel branches, and a summary — with a record of each run.",
+    "In Work, ask Codewhale to plan a larger task and delegate independent steps to agents. Write a Workflow when you want to repeat an ordered plan with phases, parallel branches and a record of each run.",
   sections: [
     {
       id: "fleet",

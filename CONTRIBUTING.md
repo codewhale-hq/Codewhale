@@ -1,6 +1,92 @@
-# Contributing to codewhale
+# Contributing to Codewhale
 
-Thank you for your interest in contributing to codewhale! This document provides guidelines and instructions for contributing.
+Codewhale is what it is because of the people who used it, reported what broke,
+translated it, added their providers and sent fixes. Thank you for being here.
+Everyone is welcome, in English or 中文, with or without code.
+
+All feedback is a gift to this project, including "this looked wrong" or "I got
+lost here" with no fix attached. The [roadmap](docs/ROADMAP.md) says where
+Codewhale is going and where help counts most.
+
+## Where things go
+
+| You have | Best place |
+| --- | --- |
+| A bug, a crash, or behavior that surprised you | [Bug report](https://github.com/codewhale-hq/CodeWhale/issues/new?template=bug_report.yml) |
+| An idea or a feature you want | [Feature request](https://github.com/codewhale-hq/CodeWhale/issues/new?template=feature_request.yml), or [Ideas](https://github.com/codewhale-hq/CodeWhale/discussions/categories/ideas) to talk it through first |
+| Feedback on how something looks, reads or feels | [Feedback](https://github.com/codewhale-hq/CodeWhale/issues/new?template=feedback.yml) |
+| A question | [Q&A](https://github.com/codewhale-hq/CodeWhale/discussions/categories/q-a) or [Discord](https://discord.gg/37gfS3ksug) |
+| A security problem | A [private advisory](https://github.com/codewhale-hq/CodeWhale/security/advisories/new), never a public issue ([policy](.github/SECURITY.md)) |
+| A fix for an open issue | A pull request that links the issue |
+| A translation, a provider or model, a docs fix | A pull request, no issue needed ([standing projects](#standing-projects)) |
+| A new feature, already written or not | An issue first ([why](#new-features-start-as-an-issue)) |
+
+If you are not sure, open an issue. Nothing is filed in the wrong place for
+long: a maintainer moves it.
+
+## New features start as an issue
+
+Issues are the best place for feature requests, ideas and bugs. A pull request
+is the best place for work we have already agreed on.
+
+A feature that first appears as a pull request takes longer to land than one
+that starts as an issue, even when we want it. The questions that decide a
+feature are about the product, not the diff: does it belong in the engine or in
+a plugin, what does it do in each permission mode, how does it show up in
+receipts, what is it called in 19 languages. Answering those in a review means
+rewriting code you already finished. Answering them in an issue costs you a few
+sentences.
+
+So for a new feature:
+
+1. Open a [feature request](https://github.com/codewhale-hq/CodeWhale/issues/new?template=feature_request.yml).
+   Say what you are trying to do and what gets in the way. A proposed design is
+   welcome and optional.
+2. Tick "I would like to open a pull request" if you want to build it.
+3. A maintainer answers with the shape that fits, or with what is still
+   undecided. Then the pull request is small and merges quickly.
+
+A feature pull request that arrives without an issue is still read, and it is
+never closed for that reason. We will most likely ask the same questions there
+and it will take longer.
+
+## Standing projects
+
+These are always open, and a pull request needs no issue first:
+
+- **Translations.** You can improve the terminal language packs, the translated
+  READMEs in `docs/i18n/`, the website, and the translated docs in
+  `docs/zh_hans/` and `docs/id/`. The [localization matrix](docs/LOCALIZATION.md)
+  shows what each language has and how to add one, and the
+  [Chinese localization group](https://github.com/codewhale-hq/CodeWhale/issues/6804)
+  is recruiting.
+- **Providers and models.** You can add a missing provider or a new model, or
+  correct a price, a context size or a provider quirk.
+  [Providers](docs/PROVIDERS.md) lists what ships, and
+  `python3 scripts/check-provider-registry.py` checks your change.
+- **Documentation.** You can fix a typo, an unclear step, a missing example or
+  an instruction that no longer matches the product.
+- **Bug fixes.** If there is no issue yet, describe the bug in the pull request
+  by saying what you ran, what happened and what you expected.
+- **Planned work.** You can take anything in a
+  [milestone](docs/ROADMAP.md#releases) or anything labelled
+  [help wanted](https://github.com/codewhale-hq/CodeWhale/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
+  Comment on the issue to claim it so two people do not build the same thing.
+
+Large changes to planned work are easier in layers; see
+[Layered and EPIC-Sized Work](#layered-and-epic-sized-work).
+
+## How we work with you
+
+- We reply by naming what you reported, diagnosed or fixed.
+- Your pull request merges as itself, with you as the author
+  ([details](#how-your-contribution-lands)).
+- You do not rebase around our changes, and a red check you did not cause is
+  ours to fix.
+- We credit you in the changelog and in
+  [the contributors list](docs/CONTRIBUTORS.md).
+- If something is not ready or not a fit, we say what is blocked and what would
+  change the answer.
 
 ## Getting Started
 
@@ -400,51 +486,34 @@ them from the title and form answers.
 
 Release targeting uses milestones, not version labels.
 
-## Agent-Assisted Improvements
+## Working with an agent
 
-Codewhale is allowed to help improve Codewhale, but the contribution still has
-to be shaped for human review. The recommended workflow is the recursive self-improvement prompt
-in the private `codewhale-ops` repo: run it
-from a fresh fork or branch, let the agent find exactly one small friction point,
-and stop after one patch. DeepSeek V4 Pro is the reference path for this loop
-today, but any configured provider works — the review shape matters more than
-the provider.
+Using an AI assistant is welcome and needs no disclosure. Codewhale is used to
+work on Codewhale, and many fixes here began as a person pointing an agent at
+an issue.
 
-Agents and maintainers should follow the stewardship posture in
-[docs/AGENT_ETHOS.md](docs/AGENT_ETHOS.md): use automation for evidence,
-verification, and narrow patches while keeping the final community decision
-human-reviewed.
+What makes agent-assisted work easy to merge is the same as for any other: a
+specific reproduction, a small diff, the checks you ran, and a description of
+the trade-off. Keep each pull request to one friction point, and put a list of
+ideas for improvement in an issue.
 
-The useful output is not "ideas for improvement." The useful output is a
-specific reproduction, a minimal diff, focused checks, and a PR description that
-explains the trade-off. Do not use an agent to touch auth, credentials, sandbox
-policy, publishing/release plumbing, provider policy, telemetry, sponsorship,
-branding, or global prompts without prior maintainer sign-off.
+Do not point an agent at auth, credentials, sandbox policy, publishing and
+release plumbing, provider policy, telemetry, sponsorship, branding or global
+prompts without a maintainer's agreement on the issue first.
 
-## How maintainers and agents ship
+Maintainers write some issues with the
+[Agent task](.github/ISSUE_TEMPLATE/agent-task.yml) form so that an agent with
+no other context can finish them; those carry the `agent-ready` label and are
+open to anyone. Agents and maintainers follow
+[docs/AGENT_ETHOS.md](docs/AGENT_ETHOS.md).
+
+## How maintainers ship
 
 Maintainers, and the agents working for them, land small verified slices
-directly on `main` with the local checks they ran and their counts in the
-commit message. A push to `main` starts no GitHub build or test workflow:
-GitHub only mirrors `main` to CNB and GitCode. CNB then runs its own Linux
-gates on the mirror and reports them on CNB, not on GitHub. Do not write
-`[skip ci]`; nothing needs skipping, and it would also skip the mirrors.
-
-The exhaustive gate runs once, at the final release step, from one dispatch on
-the frozen candidate commit:
-
-```bash
-git fetch origin main
-candidate_sha="$(git rev-parse origin/main)"
-gh workflow run ci.yml --repo codewhale-hq/CodeWhale --ref main \
-  -f expected_sha="${candidate_sha}"
-```
-
-It stops if `main` no longer resolves to that commit. Otherwise it runs every
-CI gate on Linux, macOS and Windows, the budget measurements, the
-documentation build, `cargo-deny`, the cargo and npm audits and the
-OpenHarmony build. Publishing also needs a green `release-candidate.yml` run
-on the same commit, which `release.yml` checks; the full sequence is in
+directly on `main` with the checks they ran in the commit message. Every push
+to `main` runs a fast preflight and the full CI suite on Linux, macOS and
+Windows. A release also needs a green `release-candidate.yml` run on the exact
+commit being released; the sequence is in
 [docs/RELEASE_RUNBOOK.md](docs/RELEASE_RUNBOOK.md).
 
 Contributor pull requests still merge as pull requests, as described in
@@ -487,91 +556,37 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the runtime data flow and
 [the build guide](docs/BUILD_PERFORMANCE.md) for crate dependencies and local
 verification.
 
-## Submitting Changes
+## Writing the pull request
 
-1. Create a feature branch from `main`:
-   ```bash
-   git checkout -b feat/your-feature
-   ```
-
-2. Make your changes and commit them
-
-3. Run the pre-push verification commands (see
-   [Pre-push verification](#pre-push-verification) above for the exact
-   gate and the stricter release clippy form)
-
-4. Push your branch and create a Pull Request
-
-5. Describe your changes clearly in the PR description
-
-## Pull Request Guidelines
-
-- Use the [pull request template](.github/PULL_REQUEST_TEMPLATE.md) when opening
-  a PR — what and why, the issue line, and how you tested it
-- An issue line in the PR description is optional: `Closes #N` (or `Fixes` /
-  `Resolves`) when the PR finishes the issue, `Refs #N` for related or partial
-  work. Never write a closing keyword inside a negation such as "does not
-  close #N": GitHub closes the issue anyway
-- If you add a new layer, module, or abstraction, say which one it replaces
-  or deletes
-- Keep PRs focused on a single change
-- Update documentation if needed
-- Add tests for new functionality
-- If a check is red for a reason your change did not cause, a maintainer will
-  deal with it
-
-## Shape of a Typical PR
-
-A well-structured PR follows a consistent pattern. Recent exemplars include:
-
-- **#386** — `/init` command: new `crates/tui/src/commands/groups/project/init.rs` module, project-type detection,
-  AGENTS.md generation, command registration in `commands/mod.rs`, localization strings.
-- **#389** — Inline LSP diagnostics: LSP subsystem in `crates/lsp/src/`, engine hooks in
-  `crates/engine/src/core/engine/lsp_hooks.rs`, config toggle, test coverage.
-- **#387** — Self-update: new `crates/cli/src/update.rs` module, CLI subcommand registration,
-  HTTP download + SHA256 verification + atomic binary replacement.
-- **#393** — `/share` session URL: new `crates/tui/src/commands/groups/project/share.rs`, HTML rendering,
-  `gh gist create` integration, command registration.
-- **#343/#346** — (v0.8.5) Runtime thread/turn timeline and durable task manager refactors.
-
-Typically each PR touches 1–3 new files, modifies 2–5 existing files for wiring
-(registries, dispatch matches, localization), and adds or updates tests. Changes
-are scoped to a single feature or fix — if you discover related work that needs
-doing, open a separate issue rather than expanding the PR scope.
-
-Before submitting, run the commands in
-[Pre-push verification](#pre-push-verification).
-
-## Reporting Issues
-
-When reporting issues, please use one of the issue templates:
-
-- [Bug report](.github/ISSUE_TEMPLATE/bug_report.yml) — for reproducible problems
-  or regressions
-- [Feature request](.github/ISSUE_TEMPLATE/feature_request.yml) — for ideas and
-  improvements
-
-The forms ask for what a report needs (`codewhale --version`, OS, how you got
-Codewhale, and steps to reproduce). Questions go to
-[Discussions](https://github.com/codewhale-hq/CodeWhale/discussions) or
-[Discord](https://discord.gg/37gfS3ksug).
+- Use the [pull request template](.github/PULL_REQUEST_TEMPLATE.md): what and
+  why, where it came from, and how you tested it.
+- Link the issue: `Closes #N` (or `Fixes` / `Resolves`) when the pull request
+  finishes it, `Refs #N` for related or partial work. Never write a closing
+  keyword inside a negation such as "does not close #N": GitHub closes the
+  issue anyway.
+- Keep it to one change. If you find related work, open an issue for it.
+- If you add a layer, module or abstraction, say which one it replaces.
+- Update the docs your change makes wrong.
+- A draft is fine, and so is asking for direction before it is finished.
 
 ## Security
 
-If you discover a security vulnerability, please do **not** open a public issue.
-See [SECURITY.md](.github/SECURITY.md) for the responsible disclosure process and
-contact information.
+Please do **not** open a public issue for a vulnerability. See
+[SECURITY.md](.github/SECURITY.md) for private reporting.
 
 ## Code of Conduct
 
 Be respectful and inclusive. We welcome contributors of all backgrounds and
-experience levels. See [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md) for the full
-code of conduct.
+experience levels. See [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md).
 
 ## License
 
-By contributing to codewhale, you agree that your contributions will be licensed under the MIT License.
+By contributing to Codewhale, you agree that your contributions will be
+licensed under the MIT License.
 
 ## Questions?
 
-Feel free to open an issue for any questions about contributing.
+Ask in [Discussions](https://github.com/codewhale-hq/CodeWhale/discussions) or
+on [Discord](https://discord.gg/37gfS3ksug), or add the maintainer, Hunter, on
+WeChat (`hunterbown`) and ask to join the Whale Brothers group. Everyone is
+welcome.

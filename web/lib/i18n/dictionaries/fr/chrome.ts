@@ -48,8 +48,7 @@ export const chrome: ChromeDict = {
   themeAria: "Thème : {mode} (cliquer pour changer)",
   themeTitle: "Thème · auto / clair / sombre",
 
-  footerTagline:
-    "L’agent de programmation open source pour votre terminal et les modèles de votre choix.",
+  footerTagline: "Utilisez n’importe quel modèle avec un agent que vous pouvez lire.",
   footerProduct: "Produit",
   footerProject: "Projet",
   footerDocs: "Documentation",
@@ -60,6 +59,7 @@ export const chrome: ChromeDict = {
   footerFaq: "FAQ",
   footerIssues: "Issues",
   footerContribute: "Contribuer",
+  footerRoadmap: "Feuille de route",
   footerLicense: "Licence MIT",
   footerTerms: "Conditions d’utilisation",
   footerPrivacy: "Confidentialité",

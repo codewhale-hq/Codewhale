@@ -554,6 +554,8 @@ fn messages_from_thread_detail_batches_tool_results() {
         session_id: None,
         saved_session_checkpoint: None,
         last_read: None,
+        executor: None,
+        environment: None,
     };
     let turn = TurnRecord {
         source_usage_origin_turn_id: None,
@@ -784,6 +786,8 @@ fn legacy_exact_thread_export_normalizes_provider_kind_and_id() {
             session_id: None,
             saved_session_checkpoint: None,
             last_read: None,
+            executor: None,
+            environment: None,
         },
         turns: Vec::new(),
         items: Vec::new(),
@@ -11326,7 +11330,7 @@ async fn start_turn_accepts_dynamic_tools_and_environment_id() -> Result<()> {
             .json()
             .await?;
         assert_eq!(started["turn"]["thread_id"], thread_id);
-        assert_eq!(started["thread"]["permission_posture"], "ask");
+        assert_eq!(started["thread"]["permission_posture"], "accept_edits");
         assert_eq!(started["turn"]["permission_posture"], "auto_review");
 
         let stored: serde_json::Value = client

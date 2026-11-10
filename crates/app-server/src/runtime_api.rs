@@ -1336,6 +1336,17 @@ struct ThreadSummary {
     unread: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    executor: Option<ThreadSummaryExecutor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment: Option<codewhale_engine::runtime_threads::ThreadEnvironment>,
+}
+
+#[derive(Debug, Serialize)]
+struct ThreadSummaryExecutor {
+    kind: String,
+    agent_id: String,
+    agent_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1523,6 +1534,8 @@ struct DecideApprovalBody {
     decision: String,
     #[serde(default)]
     remember: bool,
+    #[serde(default)]
+    client: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3852,7 +3865,11 @@ async fn create_thread(
         )
         .await
         .map_err(|e| {
-            if e.is::<codewhale_engine::runtime_threads::manager::RuntimeThreadCreateConflict>() {
+            if let Some(refusal) = external_agent_refusal(&e) {
+                refusal
+            } else if e
+                .is::<codewhale_engine::runtime_threads::manager::RuntimeThreadCreateConflict>()
+            {
                 ApiError::conflict(e.to_string())
             } else {
                 ApiError::bad_request(e.to_string())
@@ -4109,6 +4126,12 @@ async fn list_threads_summary(
             last_read_item_id,
             unread,
             parent_thread_id: thread.parent_thread_id,
+            executor: thread.executor.map(|executor| ThreadSummaryExecutor {
+                kind: executor.kind,
+                agent_id: executor.agent_id,
+                agent_name: executor.agent_name,
+            }),
+            environment: thread.environment,
         });
     }
 
@@ -6888,7 +6911,7 @@ async fn decide_approval(
         }
     };
     Ok(Json(
-        settle_approval_request(&state, approval_id, None, decision).await?,
+        settle_approval_request(&state, approval_id, None, decision, req.client).await?,
     ))
 }
 
@@ -6897,10 +6920,11 @@ async fn settle_approval_request(
     approval_id: String,
     binding: Option<&codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
     decision: ExternalApprovalDecision,
+    responder: Option<codewhale_engine::runtime_threads::manager::ApprovalResponder>,
 ) -> Result<DecideApprovalResponse, ApiError> {
     let delivered = state
         .runtime_threads
-        .deliver_bound_approval(&approval_id, binding, decision)
+        .deliver_approval_from(&approval_id, binding, decision, responder)
         .await
         .map_err(|error| {
             if error
@@ -14748,7 +14772,24 @@ fn map_automation_err(err: anyhow::Error) -> ApiError {
     }
 }
 
+fn external_agent_refusal(err: &anyhow::Error) -> Option<ApiError> {
+    use codewhale_engine::fleet::agents::ExecutorUnavailable;
+    let error = err.downcast_ref::<ExecutorUnavailable>()?;
+    Some(ApiError {
+        status: if error.code == ExecutorUnavailable::NEEDS_SIGN_IN {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::FAILED_DEPENDENCY
+        },
+        message: error.message.clone(),
+        code: Some(error.code),
+    })
+}
+
 fn map_thread_err(err: anyhow::Error) -> ApiError {
+    if let Some(refusal) = external_agent_refusal(&err) {
+        return refusal;
+    }
     if let Some(error) = err.downcast_ref::<codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError>() {
         use codewhale_engine::runtime_threads::manager::RuntimeTurnOperationLookupError;
         return match error {

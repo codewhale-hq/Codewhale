@@ -557,6 +557,8 @@ impl RuntimeChatRelayHost {
             .manager
             .create_thread(CreateThreadRequest {
                 parent_thread_id: None,
+                executor: None,
+                environment: None,
                 operation_key: None,
                 model: Some(command.model.clone()),
                 model_provider: Some(command.model_provider.clone()),
@@ -717,6 +719,8 @@ impl RuntimeChatRelayHost {
                     )),
                     task_id: None,
                     parent_thread_id: None,
+                    executor: None,
+                    environment: None,
                     dynamic_tools: Vec::new(),
                     environments: Vec::new(),
                 })

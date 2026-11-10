@@ -140,9 +140,6 @@ const HOME_PROSE_KEYS = [
   "runtimeLink",
   "installBandHeading",
   "installGuideLink",
-  "communityHeading",
-  "communityBody",
-  "communityLinksAria",
 ] as const satisfies readonly (keyof HomeDict)[];
 
 function templateTokens(value: string): string[] {

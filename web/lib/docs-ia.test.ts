@@ -221,7 +221,7 @@ describe("navigation parity and accessibility", () => {
     const moreReference = buildSecondaryNavLinks("en", getChrome("en")).map((l) =>
       l.href.replace(/^\/en\//, ""),
     );
-    expect(moreReference).toEqual(["features", "docs/guide", "install", "changelog", "ratatui", "faq", "community", "contribute"]);
+    expect(moreReference).toEqual(["features", "docs/guide", "install", "changelog", "ratatui", "faq", "community", "contribute", "roadmap"]);
     for (const locale of locales) {
       const links = buildNavLinks(locale, getChrome(locale));
       expect(
@@ -259,6 +259,7 @@ describe("navigation parity and accessibility", () => {
         "https://github.com/codewhale-hq/CodeWhale/issues",
         "https://discord.gg/37gfS3ksug",
         `/${locale}/contribute`,
+        `/${locale}/roadmap`,
         "https://github.com/codewhale-hq/CodeWhale/blob/main/LICENSE",
       ]);
       const legal = footerLegalLinks(locale, getChrome(locale));

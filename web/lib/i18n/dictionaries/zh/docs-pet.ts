@@ -14,7 +14,7 @@ export const docsPet: DocsPetDict = {
       id: "turn-on",
       title: "开启",
       blocks: [
-        { note: "Pet 模式自 0.9.13 起就已提供。0.10.2 即将带来：消息框始终可用的动态鲸鱼、/pet style、/pet language，以及用 Ctrl+] 切换的多种视图。现在可从 main 构建试用。" },
+        { note: "Pet 模式自 0.9.13 起就已提供。0.10.2 已加入动态鲸鱼、始终可用的消息框、/pet style、/pet language，以及用 Ctrl+] 切换的多种视图。" },
         {
           code: "/pet on        # pet mode becomes the main view\n/pet off       # back to the standard view\n/pet status    # on or off, and the companion's identity",
           lang: "Codewhale",

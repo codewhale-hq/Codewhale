@@ -159,6 +159,30 @@ Next: [INSTALL.md](INSTALL.md) covers platform-specific install paths,
 
 ## 3. Your First Task
 
+For a bounded first task, open an existing project folder and launch Codewhale:
+
+```bash
+cd /path/to/your/project
+codewhale
+```
+
+Replace `/path/to/your/project` with your folder. Choose Plan, then paste this
+into the message box:
+
+```text
+Read one source file in this project and explain what it does. Cite its file
+path and the lines that support your explanation. Do not edit files or run
+commands.
+```
+
+The model receives the file content it needs to answer. Open the cited file
+yourself and compare the cited lines with the explanation. This task is
+complete when you can confirm what the file does and the cited evidence
+supports the answer. Ask about any mismatch. If setup fails or no reply
+arrives, follow [the troubleshooting steps](INSTALL.md#13-troubleshooting).
+You can configure a Fleet after this; it is not required for your first task.
+
+
 Start with a read-only task in a real workspace:
 
 ```text

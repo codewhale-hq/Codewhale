@@ -411,6 +411,8 @@ fn wire_thread(thread: Thread) -> codewhale_app_server_protocol::rpc::ThreadList
         project_id: None,
         turns: Vec::new(),
         name: thread.name,
+        executor: None,
+        environment: None,
     }
 }
 

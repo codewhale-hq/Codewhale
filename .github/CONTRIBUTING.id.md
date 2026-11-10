@@ -1,62 +1,68 @@
 # Berkontribusi pada Codewhale
 
-Terima kasih atas minat Anda untuk berkontribusi pada Codewhale! Dokumen ini memberikan panduan dan instruksi untuk berkontribusi.
+Codewhale berkembang berkat orang yang menggunakannya, melaporkan masalah,
+menerjemahkan dokumentasi, menambahkan penyedia model, dan mengirim perbaikan.
+Anda dapat berkontribusi tanpa menulis kode. Semua masukan diterima.
 
----
+[Roadmap](../docs/ROADMAP.md) menjelaskan tujuan proyek dan pekerjaan yang masih
+terbuka. [Panduan utama](../CONTRIBUTING.md) memuat prosedur pengembangan,
+pengujian, dan peninjauan yang lengkap dan terbaru.
 
-## Memulai (Getting Started)
+## Pilih tempat yang sesuai
 
-### Prasyarat
+| Yang ingin Anda sampaikan | Tempatnya |
+| --- | --- |
+| Bug, crash, atau perilaku yang tidak diharapkan | [Laporan bug](https://github.com/codewhale-hq/CodeWhale/issues/new?template=bug_report.yml) |
+| Ide atau permintaan fitur | [Permintaan fitur](https://github.com/codewhale-hq/CodeWhale/issues/new?template=feature_request.yml) |
+| Masukan tentang tampilan, tulisan, atau pengalaman penggunaan | [Formulir masukan](https://github.com/codewhale-hq/CodeWhale/issues/new?template=feedback.yml) |
+| Pertanyaan | [Tanya jawab](https://github.com/codewhale-hq/CodeWhale/discussions/categories/q-a) atau [Discord](https://discord.gg/37gfS3ksug) |
+| Masalah keamanan | [Laporan keamanan privat](https://github.com/codewhale-hq/CodeWhale/security/advisories/new), bukan issue publik |
+| Perbaikan untuk issue yang sudah ada | Pull request yang menautkan issue tersebut |
+| Terjemahan, penyedia model, atau perbaikan dokumentasi | Pull request; tidak perlu membuka issue terlebih dahulu |
 
-- Rust 1.88 atau lebih baru (edisi 2024)
-- Pengelola paket Cargo
-- Git
+Jika ragu, buka issue dan jelaskan apa yang Anda coba lakukan, apa yang terjadi,
+dan apa yang Anda harapkan. Pengelola akan membantu mengarahkannya.
 
-### Menyiapkan Lingkungan Pengembangan
+## Mulai fitur baru dengan issue
 
-1. Fork dan klon repositori:
-   ```bash
-   git clone https://github.com/USERNAME_ANDA/CodeWhale.git
-   cd CodeWhale
-   ```
+Untuk fitur baru, buka issue sebelum mulai menulis kode. Jelaskan kebutuhan dan
+hambatannya; rancangan solusi boleh disertakan, tetapi tidak wajib. Jika ingin
+mengerjakannya sendiri, centang pilihan untuk membuka pull request pada formulir.
 
-2. Kompilasi proyek:
-   ```bash
-   cargo build
-   ```
+Pengelola dapat membahas cakupan dan perilaku fitur sebelum Anda menghabiskan
+waktu untuk implementasi. Pull request fitur tanpa issue tetap dibaca, tetapi
+pembahasannya biasanya membutuhkan waktu lebih lama.
 
-3. Jalankan pengujian (tests):
-   ```bash
-   cargo test --workspace --all-features
-   ```
+## Pekerjaan yang dapat langsung Anda kirim
 
-4. Jalankan dalam mode pengembangan:
-   ```bash
-   cargo run --bin codewhale
-   ```
+Anda dapat langsung mengirim pull request untuk terjemahan, penyedia dan model,
+perbaikan dokumentasi, atau perbaikan bug. Jika bug belum memiliki issue,
+jelaskan cara memunculkannya, hasil yang terjadi, dan hasil yang diharapkan di
+pull request.
 
----
+Untuk pekerjaan yang sudah direncanakan, pilih issue di
+[milestone](../docs/ROADMAP.md#releases) atau yang berlabel
+[help wanted](https://github.com/codewhale-hq/CodeWhale/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
+Beri komentar bahwa Anda ingin mengerjakannya agar pekerjaan tidak tumpang tindih.
+[Lihat proyek terbuka](../CONTRIBUTING.md#standing-projects) untuk tautan ke
+panduan terjemahan dan penyedia model.
 
-## Alur Kerja Pengembangan
+## Siapkan perubahan Anda
 
-### Gaya Kode (Code Style)
+Ikuti [petunjuk persiapan pengembangan](../CONTRIBUTING.md#getting-started)
+untuk persyaratan Rust, perintah build, dan cara menjalankan versi sumber.
+Versi di `main` dapat lebih baru daripada unduhan rilis; sertakan keluaran
+`codewhale --version` ketika melaporkan masalah.
 
-- Jalankan `cargo fmt` sebelum melakukan commit untuk memastikan format kode konsisten.
-- Jalankan `cargo clippy` dan atasi seluruh peringatan.
-- Ikuti konvensi penamaan Rust (`snake_case` untuk fungsi/variabel, `CamelCase` untuk tipe data/struct).
-- Tambahkan komentar dokumentasi untuk API publik.
+Jalankan pemeriksaan yang sesuai dengan bagian yang Anda ubah, mengikuti
+[panduan pengujian lokal](../CONTRIBUTING.md#fast-local-loop). Sebelum mengirim
+pull request, baca perubahan Anda sendiri dan jelaskan apa yang berubah serta
+bagaimana Anda memeriksanya. Jangan sertakan kunci API atau data pribadi.
 
-### Pengujian
+## Peninjauan dan kredit
 
-- Tulis pengujian untuk fungsionalitas baru.
-- Pastikan seluruh pengujian yang ada lulus: `cargo test --workspace --all-features`.
-- Tempatkan unit test di samping kode yang diuji (`#[cfg(test)]`), serta tambahkan pengujian integrasi di bawah direktori `tests/` pada crate yang bersangkutan.
-
----
-
-## Pengajuan Pull Request (PR)
-
-1. Buat branch baru dari `main` untuk fitur atau perbaikan Anda.
-2. Pastikan `cargo fmt`, `cargo clippy`, dan pengujian lulus sebelum mengajukan PR.
-3. Tulis judul dan deskripsi PR yang jelas yang menjelaskan tujuan perubahan.
-4. Setiap kontributor akan mendapatkan kredit dalam changelog dan `docs/CONTRIBUTORS.md`.
+Pull request Anda digabungkan sebagai kontribusi Anda sendiri. Pengelola
+membantu menyelesaikan konflik akibat perubahan di `main`; pemeriksaan yang
+merah karena masalah lain bukan tanggung jawab Anda. Jika perubahan belum siap,
+pengelola menjelaskan alasannya. Kontribusi dicatat di changelog dan
+[daftar kontributor](../docs/CONTRIBUTORS.md).

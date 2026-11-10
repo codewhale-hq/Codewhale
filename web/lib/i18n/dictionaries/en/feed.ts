@@ -18,5 +18,5 @@ export const feed: FeedDict = {
   shownCount: "{count} shown",
   openIssue: "Open an issue",
   openPull: "Open a pull request",
-  startDiscussion: "Start a discussion",
+  startDiscussion: "Ask the community a question",
 };

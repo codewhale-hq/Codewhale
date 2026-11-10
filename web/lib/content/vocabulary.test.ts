@@ -96,8 +96,15 @@ describe("shared getting-started path", () => {
       "install",
       "connect-provider",
       "first-session",
+      "verify-answer",
       "fleet-workflow",
     ]);
+    const required = GETTING_STARTED_STEPS.filter((step) => !step.optional);
+    expect(required.map((step) => step.id)).toEqual([
+      "install", "connect-provider", "first-session", "verify-answer",
+    ]);
+    expect(GETTING_STARTED_STEPS.find((step) => step.id === "fleet-workflow")?.optional).toBe(true);
+    expect(required.find((step) => step.id === "first-session")?.prompt).toBeDefined();
   });
 
   it("points every step and next link at a real on-site route", () => {

@@ -258,14 +258,19 @@ that. More in [authorization order](docs/AUTHORIZATION_ORDER.md),
 
 ## Community
 
-If a provider is missing or a workflow is awkward,
-[open an issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) or
-[send a pull request](CONTRIBUTING.md). Contributors keep credit for the work
-that lands, and the [repository layout](CONTRIBUTING.md#project-structure)
-shows where things live.
+Codewhale is what it is because of its community, and all feedback is
+welcome: a bug, an idea, or something that looked or felt wrong.
+[Open an issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) for any
+of these; an issue is also the best place to start a new feature. Pull requests
+are welcome for fixes, translations, providers and planned work. The
+[contributing guide](CONTRIBUTING.md) shows where each kind of help goes, and
+the [roadmap](docs/ROADMAP.md) shows where the project is headed. Contributors
+keep credit for the work that lands, and the
+[repository layout](CONTRIBUTING.md#project-structure) shows where things live.
 
 Chat on [Discord](https://discord.gg/37gfS3ksug), or add the maintainer,
 Hunter, on WeChat (`hunterbown`) and ask to join the Whale Brothers group.
+Everyone is welcome.
 
 ## History and license
 

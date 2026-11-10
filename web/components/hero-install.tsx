@@ -48,7 +48,7 @@ export function HeroInstall({
           </button>
         ))}
       </div>
-      <InstallCodeBlock cmd={option.cmd} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+      <InstallCodeBlock installIntent cmd={option.cmd} copyLabel={copyLabel} copiedLabel={copiedLabel} />
       {note ? <p className="install-head-note" lang={pickTextLocale(locale)}>{pickText(note, locale)}</p> : null}
     </div>
   );

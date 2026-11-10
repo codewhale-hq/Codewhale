@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -225,11 +225,13 @@ Windows にはまだ OS のサンドボックスがなく、フルアクセス�
 
 ## コミュニティ
 
-プロバイダーが足りない、あるいはワークフローが使いにくいと感じたら、[issue を作成](https://github.com/codewhale-hq/CodeWhale/issues/new/choose)するか、[プルリクエストを送って](../../CONTRIBUTING.md)ください。
-取り込まれた作業のクレジットはコントリビューターに残ります。
-どこに何があるかは[リポジトリの構成](../../CONTRIBUTING.md#project-structure)で確認できます。
+Codewhale が今の姿になったのはコミュニティのおかげです。バグ、アイデア、見た目や使い心地の違和感など、どんなフィードバックも歓迎します。
+いずれも [issue を作成](https://github.com/codewhale-hq/CodeWhale/issues/new/choose)してください。新機能も issue から始めるのが最善です。
+修正、翻訳、プロバイダーの追加、計画済みの作業については、プルリクエストを歓迎します。
+[コントリビューションガイド](../../CONTRIBUTING.md)には協力の種類ごとの窓口を、[ロードマップ](../ROADMAP.md)にはプロジェクトの方向をまとめています。
+取り込まれた作業のクレジットはコントリビューターに残ります。[リポジトリ構成](../../CONTRIBUTING.md#project-structure)で各部分の場所を確認できます。
 
-[Discord](https://discord.gg/37gfS3ksug) で話すか、WeChat でメンテナーの Hunter（`hunterbown`）を追加して、Whale Brothers グループへの参加を依頼してください。
+[Discord](https://discord.gg/37gfS3ksug) で話すか、WeChat でメンテナーの Hunter（`hunterbown`）を追加して、Whale Brothers グループへの参加を依頼してください。どなたでも歓迎します。
 
 ## 歴史とライセンス
 

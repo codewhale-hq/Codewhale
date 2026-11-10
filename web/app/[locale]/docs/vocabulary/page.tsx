@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { getTopic } from "@/lib/docs-map";
 import { StatusBadge } from "@/components/status-badge";
 import {
   ADVISORY_ROLE,
@@ -60,6 +62,9 @@ export default async function VocabularyPage({ params }: { params: Promise<{ loc
         <p className={`${t.bodyClassName} mt-3`}>
           {t.controlLead}
         </p>
+        <Link href={`/${locale}/docs/modes`} className="body-link">
+          {pickText(getTopic("modes")!.label, locale)}
+        </Link>
         <div className="hairline-t mt-4">
           {[...CONTROL_MODES, ...PERMISSION_POSTURES].map((row) => (
             <section key={row.term} className="py-4 hairline-b">

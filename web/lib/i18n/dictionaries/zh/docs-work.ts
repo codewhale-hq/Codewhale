@@ -88,7 +88,7 @@ export const docsWork: DocsWorkDict = {
     {
       href: "/docs/modes",
       label: "设置模式与审批",
-      note: "Operate 会规划有名字的步骤，并逐一核对结果。",
+      note: "选择 Plan 或 Work，并决定 Codewhale 何时询问审批。",
     },
     {
       href: "/docs/review",

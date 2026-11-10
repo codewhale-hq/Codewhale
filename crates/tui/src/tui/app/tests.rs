@@ -4609,7 +4609,7 @@ fn leaving_yolo_after_startup_restores_baseline_policies() {
     app.set_mode(AppMode::Agent);
     assert!(!app.allow_shell);
     assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    assert_eq!(app.approval_mode, ApprovalMode::AcceptEdits);
 }
 
 #[test]

@@ -108,51 +108,34 @@
 .home-whale .living-whale {
   --whale-size: clamp(18rem, 36vw, 29rem);
   width: var(--whale-size);
-  /* The rig fills the middle 72% of the canvas; lower its belly toward
-     the terminal below. */
   margin-bottom: calc(var(--whale-size) * -0.26);
   position: relative;
   z-index: 2;
 }
 
 .living-whale {
+  color: var(--accent);
   position: relative;
   aspect-ratio: 1;
 }
-.living-whale > .whale-live {
-  width: 100%;
-  transition: opacity var(--dur-spring) var(--ease-spring);
-}
-.living-whale:not([data-stage="whale"]) > .whale-live { opacity: 0; }
-.living-whale-lights {
+.living-whale-lights,
+.living-whale-mark {
   position: absolute;
   inset: 14%;
   width: 72%;
   height: 72%;
-  overflow: visible;
   pointer-events: none;
 }
+.living-whale-lights { color: light-dark(#647e9b, #c8e6f3); }
 .living-whale-mark {
-  fill: light-dark(#142352, #faf8f5);
+  background: var(--ink);
+  mask: url("/brand/mark-mono.svg") center / contain no-repeat;
   opacity: 0;
-  transition: opacity var(--dur-spring) var(--ease-spring);
+  transition: opacity 960ms linear;
 }
 .living-whale[data-stage="mark"] .living-whale-mark { opacity: 1; }
-.living-whale-beads {
-  fill: var(--accent);
-  opacity: 0;
-  transition: opacity var(--dur-spring) var(--ease-spring);
-}
-.living-whale[data-stage="lights"] .living-whale-beads { opacity: 1; }
-.living-whale-beads circle[data-star] { fill: color-mix(in oklab, var(--accent) 70%, white); }
-@media (prefers-reduced-motion: no-preference) {
-  .living-whale[data-stage="pending"] > .whale-live { animation: living-whale-late 0s 1.2s forwards; }
-  @keyframes living-whale-late { to { opacity: 1; } }
-}
 @media (prefers-reduced-motion: reduce) {
-  .living-whale-lights { display: none; }
-  .living-whale:not([data-stage="whale"]) > .whale-live,
-  .living-whale > .whale-live { opacity: 1; transition: none; animation: none; }
+  .living-whale-mark { display: none; transition: none; }
 }
 
 /* ---------- the live whale ---------- */
@@ -331,11 +314,6 @@
 .home-computer-use .section-title { max-width: 19ch; }
 .home-computer-use .btn { margin-top: var(--space-6); }
 .home-computer-use .ruled-list dt { font-family: var(--font-body); font-size: var(--text-body); font-weight: 600; }
-.home-contribution-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-6) clamp(2rem, 6vw, 5rem);
-}
 
 /* Terms read as words, not as code: the brand face, a little weight. */
 .home-body .ruled-list dt {
@@ -347,21 +325,6 @@
 }
 
 .product-start-links { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-5); margin-top: var(--space-5); }
-
-.home-skill {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-5);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sheet);
-  background: var(--surface);
-  text-decoration: none;
-}
-.home-skill h3 { color: var(--text); font-size: var(--text-heading); }
-.home-skill p { color: var(--muted); line-height: 1.6; }
-.home-skill code { margin-top: var(--space-4); color: var(--muted); font-size: var(--text-ui); }
-.home-skill > .icon { color: var(--accent); }
-.home-skill:hover { border-color: var(--accent); }
 
 /* ---------- the sea: install, into the footer ---------- */
 .home-install-inner {
@@ -384,7 +347,6 @@
   .home-whale { justify-content: flex-end; }
   .home-whale .living-whale { --whale-size: clamp(11rem, 48vw, 16rem); }
   .home-work-patterns,
-  .home-contribution-grid,
   .release-cards { grid-template-columns: minmax(0, 1fr); }
   .home-work-patterns > div + div { padding-top: var(--space-5); border-top: 1px solid var(--line); }
 }
@@ -392,4 +354,32 @@
 @media (forced-colors: active) {
   .home-install::before { background: CanvasText; }
   .home-water { display: none; }
+}
+
+/* ---------- the deep: where the project is going ---------- */
+.home-goals {
+  position: relative;
+  color: var(--text);
+  background: var(--sea), var(--ocean-floor);
+}
+.home-goals::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--horizon-light);
+}
+.home-goals-inner {
+  width: var(--container);
+  margin-inline: auto;
+  padding-block: clamp(4rem, 8vw, 7rem);
+}
+.home-goals-inner > .home-section { padding-block: 0; }
+.home-goals .section-title { max-width: 14ch; }
+.home-goals .btn { margin-top: var(--space-6); }
+
+.home-community .actions { margin-top: var(--space-7); }
+.home-install .actions { margin: 0; }
+@media (forced-colors: active) {
+  .home-goals::before { background: CanvasText; }
 }

@@ -314,13 +314,15 @@ impl AcpServer {
                 .and_then(Value::as_str)
                 == Some("allow-once");
         self.runtime
-            .deliver_external_approval(
+            .deliver_approval_from(
                 &permission.approval_id,
+                None,
                 if allow {
                     ExternalApprovalDecision::Allow { remember: false }
                 } else {
                     ExternalApprovalDecision::Deny { remember: false }
                 },
+                Some(codewhale_engine::runtime_threads::manager::ApprovalResponder::Acp),
             )
             .await?;
         Ok(())

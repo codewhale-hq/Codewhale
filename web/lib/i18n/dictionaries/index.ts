@@ -568,14 +568,12 @@ export function getRuntime(locale: string): RuntimeDict {
 }
 
 /**
- * Select one side of a legacy `{ en, zh }` content pair by locale. This is
- * the transitional bridge for `web/lib/content/` modules that still carry
- * two-language pairs (#5337 Phase 3 dissolves them into dictionaries): it
- * moves the branch out of page TSX and into the i18n layer, so call sites
- * stay locale-agnostic.
+ * Select the exact available locale from shared content, with English fallback.
+ * Legacy two-language content keeps the same fallback; migrated content can
+ * supply the remaining routed locales through the dictionary spine.
  */
-export function pickText(pair: { en: string; zh: string }, locale: string): string {
-  return pair[pickTextLocale(locale)];
+export function pickText(pair: { en: string; zh: string; [locale: string]: string | undefined }, locale: string): string {
+  return pair[locale] ?? pair.en;
 }
 
 /** The actual language selected by the legacy two-language content bridge. */

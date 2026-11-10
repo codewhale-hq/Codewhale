@@ -2,11 +2,11 @@ import type { HomeDict } from "../types";
 
 /** English reference home copy: useful work with chosen models and connected tools. */
 export const home: HomeDict = {
-  metaTitle: "Codewhale · An open-source agent for your computer",
-  metaDescription: "Build apps, fix code and automate work with an open-source agent in your terminal. Choose hosted or local models. Help build Codewhale with code, docs and feedback.",
+  metaTitle: "Codewhale · Use any model through an agent you can read",
+  metaDescription: "Codewhale is the open-source agent between you and any model. Read its code, or ask it to explain itself. An international community improves it with every release.",
 
-  heroTitle: "An open-source agent for your computer",
-  heroIntro: "Build software and run repeatable workflows with {brand} in your terminal. Add Computer Use to work in Mac apps.",
+  heroTitle: "Use any model through an agent you can read",
+  heroIntro: "{brand} is the open-source agent between you and the model. Read its code, or ask it to read its own code and explain what it does. An international community improves it with every release.",
   getCodewhale: "Install Codewhale",
   heroInstallAria: "Install command",
   exploreProduct: "Explore Codewhale",
@@ -132,9 +132,5 @@ export const home: HomeDict = {
   chinaMirrors: "China mirrors",
   installGuideLink: "Read the install guide",
 
-  communityHeading: "Contribute to Codewhale",
-  communityBody:
-    "{count} contributors. Code, docs, translations and skills all help.",
-  communityLinksAria: "Community links",
   contribute: "Contribute",
 };

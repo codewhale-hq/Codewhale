@@ -28,6 +28,7 @@ const tuiLocaleDir = path.join(repoRoot, "crates", "tui", "locales");
 const promptPath = path.join(repoRoot, "crates", "tui", "src", "prompts", "text.rs");
 
 const STEMS = {
+  project: { exportName: "project", typeName: "ProjectDict" },
   features: { exportName: "features", typeName: "FeaturesDict" },
   "docs-skills": { exportName: "docsSkills", typeName: "DocsPageDict" },
   "docs-claude-code": { exportName: "docsClaudeCode", typeName: "DocsPageDict" },

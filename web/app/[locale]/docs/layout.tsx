@@ -1,3 +1,4 @@
+import { DocsArticleSearch } from "@/components/docs-search";
 import { DocsBreadcrumb } from "@/components/docs-breadcrumb";
 import { DocsHelp } from "@/components/docs-help";
 import { DocsSidebar } from "@/components/docs-sidebar";
@@ -50,6 +51,7 @@ export default async function DocsLayout({
       <div className="portal-container docs-shell min-w-0">
         <article className="docs-content min-w-0">
           <DocsBreadcrumb locale={locale} />
+          <DocsArticleSearch locale={locale} />
           {children}
           <DocsHelp locale={locale} />
         </article>

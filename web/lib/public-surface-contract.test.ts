@@ -53,11 +53,15 @@ type PublicSurfaceMatrix = {
     };
   };
   control: {
+    scope: string;
     modes: string[];
     permissionPostures: string[];
+    permissionDial: string[];
+    defaultPermissionPosture: string;
+    retiredModeAliases: Record<string, string>;
     shortcuts: {
-      mode: { chord: string; when: string };
-      permissionPosture: { chord: string; when: string };
+      completion: { chord: string; when: string };
+      permissionDial: { chord: string; when: string };
     };
   };
   toolSurface: {
@@ -382,22 +386,29 @@ done
     );
   });
 
-  it("keeps modes, permission postures, and idle shortcuts exact", () => {
+  it("keeps source-candidate modes and permission controls aligned with runtime authority", () => {
     const modes = text("docs/MODES.md");
     const keys = text("docs/KEYBINDINGS.md");
-    const homepage = text("web/app/[locale]/page.tsx");
-    const docsMap = text("web/lib/docs-map.ts");
-    const matrixText = text("docs/public-surface-facts.json");
+    const appModes = text("crates/config/src/app_mode.rs");
+    const approvals = text("crates/execpolicy/src/approval_mode.rs");
+    const app = text("crates/tui/src/tui/app.rs");
+    const init = text("crates/tui/src/tui/app/init.rs");
 
-    expect(matrix.control.modes).toEqual(["Plan", "Work", "Operate"]);
-    expect(matrix.control.permissionPostures).toEqual(["Ask", "Auto-Review", "Full Access"]);
-    // Tab is gated on the composer being EMPTY, not idle
-    // (crates/tui/src/tui/ui.rs:6978 `if !app.input.is_empty() { continue; }`
-    // immediately before `app.cycle_mode()`); Shift+Tab has no composer
-    // precondition at all (ui.rs:6363-6367 gates only on the modal stack).
+    expect(matrix.control.scope).toContain(`${FACTS.version} source candidate`);
+    expect(matrix.control.modes).toEqual(["Plan", "Work"]);
+    expect(appModes).toMatch(/pub enum AppMode\s*\{\s*Agent,\s*Plan,\s*\}/);
+    expect(matrix.control.permissionPostures).toEqual(["Ask", "Accept Edits", "Auto-Review", "Full Access"]);
+    expect(approvals).toMatch(/PERMISSION_CYCLE:[\s\S]*?Self::Suggest, Self::AcceptEdits, Self::Auto, Self::Bypass/);
+    expect(matrix.control.permissionDial).toEqual(["Ask", "Accept Edits", "Plan", "Auto-Review", "Full Access"]);
+    expect(app).toContain("ApprovalMode::AcceptEdits => (AppMode::Plan, ApprovalMode::AcceptEdits)");
+    expect(matrix.control.defaultPermissionPosture).toBe("Accept Edits");
+    expect(init).toMatch(/explicit_approval_mode\s*\.or\(saved_permission_posture\)/);
+    expect(init).toMatch(/unwrap_or\(if approval_policy_locked \{\s*ApprovalMode::Suggest\s*\} else \{\s*ApprovalMode::AcceptEdits/);
+    expect(matrix.control.retiredModeAliases).toEqual({ Operate: "Work" });
+    expect(appModes).toContain("Self::is_retired_operate_alias(other) => Some(Self::Agent)");
     expect(matrix.control.shortcuts).toEqual({
-      mode: { chord: "Tab", when: "composer empty" },
-      permissionPosture: {
+      completion: { chord: "Tab", when: "composer completion only" },
+      permissionDial: {
         chord: "Shift+Tab",
         when: "always (suppressed only under a non-Config modal)",
       },
@@ -407,14 +418,10 @@ done
     }
     expect(PRODUCT_COPY.modes.map(({ title }) => title.en)).toEqual(matrix.control.modes);
     expect(PRODUCT_COPY.permissions.map(({ title }) => title.en)).toEqual(matrix.control.permissionPostures);
-    expect(modes).toContain("when the composer is empty");
-    expect(keys).toContain("When the composer is empty, cycle TUI mode");
-    expect(keys).toContain("`Shift+Tab`");
-    // Detailed key semantics belong to the canonical keybinding/mode docs, not
-    // the concise README or every translation.
-    expect(keys).not.toContain("When the composer is idle");
-    expect(`${modes}\n${homepage}\n${docsMap}`).not.toContain("approval posture");
-    expect(matrixText).not.toContain('"approvalPostures"');
+    expect(modes).toContain("it never changes the mode");
+    expect(modes).toContain("Operate is retired");
+    expect(keys).toContain("Tab never changes the mode");
+    expect(keys).toContain("Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask");
   });
 
   it("keeps public tool facts aligned with the native core and discovery boundaries", () => {
@@ -422,8 +429,6 @@ done
     const toolsPage = text("web/app/[locale]/docs/tools/page.tsx") + text("web/lib/content/tools.ts");
     const registry = text("crates/engine/src/tools/registry.rs");
     const limits = text("crates/runtime/src/config/subagent_limits.rs");
-    const roadmap = text("web/app/[locale]/roadmap/page.tsx");
-
     const catalog = text("crates/engine/src/core/engine/tool_catalog.rs");
     const nativeCore = catalog.match(/const DEFAULT_ACTIVE_NATIVE_TOOLS: &[\s\S]*?= &\[([\s\S]*?)\];/);
     expect(nativeCore, "native core declaration must be found").not.toBeNull();
@@ -455,11 +460,11 @@ done
     expect(limits).toContain("DEFAULT_MAX_SUBAGENTS: usize = 64");
     expect(limits).toContain("MAX_SUBAGENTS: usize = 128");
     expect(limits).toContain("MAX_SUBAGENT_ADMISSION: usize = 1024");
-    expect(roadmap).toContain("64 concurrent sessions by default, configurable to 128");
-    expect(roadmap.indexOf('{ title: "Local web client"')).toBeLessThan(
-      roadmap.indexOf('title: "Underway"'),
-    );
-    expect(roadmap).toContain("In published releases: `codewhale web`");
+    for (const deferred of ["workflow", "context_archive_get", "context_archive_search"]) {
+      expect(nativeNames).not.toContain(deferred);
+      expect(catalog).toContain(deferred);
+      expect(toolDoc).toContain(deferred);
+    }
     for (const name of matrix.toolSurface.defaultActive) {
       expect(toolDoc, name).toContain(`\`${name}\``);
       expect(toolsPage, name).toContain(name);
