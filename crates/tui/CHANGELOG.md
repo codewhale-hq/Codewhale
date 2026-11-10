@@ -31,17 +31,16 @@ tag. Items moved to 0.10.4 by name are marked below.
   Fleet ledger compaction and the Fleet role profile lock have landed, but only
   a green run on the exact final SHA closes this. Scripted journeys are being brought to zero on GitHub-hosted
   native x64 runners; macOS and Linux results do not establish Windows.
-- **Codex App Server compatibility (0.10.3 work item):** the parity bar is Tiers
-  A and B (about 55 methods) implemented and Tier C (about 50 Codex-product
-  methods) returning "method not found" against a committed inventory. The
-  typed Tier A and B method names and that inventory are now committed in the
-  protocol crate and checked against the pinned Codex export; parameter and
-  response types per method and the dispatch are not part of that change. The
-  current HTTP/SSE Runtime remains available; full-tool turns, subscriptions,
-  bidirectional interactions, durable settlements, TCP WebSocket and the
-  complete SDK remain unfinished in this source candidate. The legacy JSON-RPC
-  dialect is removed in 0.10.3, with a breaking-change line here, once the
-  `codewhale thread` CLI has migrated.
+- **Moved out of 0.10.3 — Codex App Server v2 compatibility:** finishing the
+  Codex App Server v2 contract is paused so this release can focus on ACP (both
+  Codewhale driving installed agents and editors driving Codewhale), the DSH
+  plugins and the rest of the release. The typed Tier A and B method names and
+  the committed inventory stay in the protocol crate, checked against the
+  pinned Codex export; dispatch, subscriptions, bidirectional interactions,
+  durable settlements, a TCP WebSocket transport and the full SDK are not in
+  0.10.3. The HTTP/SSE Runtime API remains the supported way for the desktop,
+  mobile and other clients to reach the Engine, and the legacy JSON-RPC dialect
+  is not retired in this release.
 - **DSH plugins and MCP lifecycle (0.10.3 work item):** "full" compatibility
   means all 33 surveyed plugins, unmodified, each passing its core journey on
   macOS, Linux and Windows, against DSH 0.2.2-rc.1. The uplift comes first;
