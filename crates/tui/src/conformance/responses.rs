@@ -159,7 +159,21 @@ fn resolve_route(case: &Value) -> codewhale_config::route::ReadyRouteCandidate {
 
 fn prepare_case(case: &Value, transport_base: Option<&str>) -> Result<Value, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let config = config_for(case, transport_base);
+    let mut config = config_for(case, transport_base);
+    let _codex_grant =
+        if case["provider"].as_str() == Some("openai-codex") && transport_base.is_none() {
+            let home = tempfile::tempdir().map_err(|error| format!("codex home: {error}"))?;
+            let root = home
+                .path()
+                .canonicalize()
+                .map_err(|error| format!("codex home: {error}"))?;
+            let guard = EnvVarGuard::set("CODEWHALE_HOME", &root);
+            codewhale_runtime::oauth::install_test_chatgpt_registration(&mut config)
+                .map_err(|error| format!("codex grant: {error:#}"))?;
+            Some((home, guard))
+        } else {
+            None
+        };
     let provider = provider_kind(case);
     let resolved = codewhale_engine::route_runtime::resolve_runtime_route(
         &config,
