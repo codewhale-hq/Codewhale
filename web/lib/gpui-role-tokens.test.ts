@@ -3,8 +3,8 @@ import { resolveWhale } from "./whale-tokens";
 import { siteCss } from "./site-css";
 
 // The role layer (app/styles/tokens-roles.css): every role in every scheme,
-// restored brand colors, every ink measured against every
-// ground at WCAG AA.
+// drawn from the codewhale-design 5.x tokens, every ink measured against
+// every ground at WCAG AA.
 const CSS = siteCss();
 const ROLES = [
   "bg", "surface", "panel", "text", "muted", "line", "line-strong", "accent", "on-accent",
@@ -58,25 +58,29 @@ describe("role tokens", () => {
     for (const [name, scheme] of [["light", light()], ["pinned", pinnedDark()], ["stage", stage()]] as const) {
       for (const role of ROLES) expect(scheme, `${name}.${role}`).toHaveProperty(role);
     }
-    // Paper is the site's appearance: dark is a reader's pin, never the OS.
+    // Light is the site's appearance: dark is a reader's pin, never the OS.
     expect(CSS).not.toMatch(/@media \(prefers-color-scheme: dark\)/);
   });
 
-  it("uses recovered paper and the Moda brand inks in both appearances", () => {
-    const kit = (name: string) => hex(`var(--kit-${name})`);
+  it("takes every role from the codewhale-design 5.x light and dark tokens", () => {
+    const gpui = (mode: string, name: string) => hex(`var(--gpui-${mode}-${name})`);
     const inks: Record<string, Record<string, string>> = {
-      light: { text: "ink", muted: "slate", accent: "whale-blue", ring: "whale-blue", live: "kelp-deep", attention: "amber", danger: "rust", "on-accent": "white" },
-      dark: { text: "foam", muted: "mist", accent: "bioluminescence", ring: "bioluminescence", live: "kelp", attention: "lantern", danger: "coral", "on-accent": "abyss" },
+      light: { bg: "bg", panel: "panel", surface: "sidebar", text: "text", muted: "text-muted", line: "border", "line-strong": "border-strong", accent: "primary", "on-accent": "on-primary", ring: "accent", live: "live", attention: "attention", danger: "danger", hover: "hover", selected: "list-active" },
+      dark: { bg: "bg", panel: "sidebar", surface: "panel", text: "text", muted: "text-muted", line: "border", "line-strong": "border-strong", accent: "accent", ring: "accent", live: "live", attention: "attention", danger: "danger", hover: "hover", selected: "list-active" },
     };
-    for (const [mode, scheme] of [["light", light()], ["dark", pinnedDark()], ["dark", stage()]] as const) {
+    for (const [mode, scheme] of [["light", light()], ["dark", pinnedDark()]] as const) {
       for (const [role, name] of Object.entries(inks[mode])) {
-        expect(scheme[role], `${mode}.${role}`).toBe(`var(--kit-${name})`);
-        expect(hex(scheme[role]), `${mode}.${role}`).toBe(kit(name));
+        expect(scheme[role], `${mode}.${role}`).toBe(`var(--gpui-${mode}-${name})`);
+        expect(hex(scheme[role]), `${mode}.${role}`).toBe(gpui(mode, name));
       }
     }
-    expect(hex(light().bg)).toBe("#faf8f5");
-    expect(hex(light().panel)).toBe(kit("white"));
-    for (const role of GROUNDS) expect(pinnedDark()[role], role).toMatch(/^var\(--ocean-[\w-]+\)$/);
+    for (const role of ["text", "muted", "accent", "ring", "live", "attention", "danger"]) {
+      expect(stage()[role], `stage.${role}`).toMatch(/^var\(--gpui-dark-[\w-]+\)$/);
+    }
+    expect(hex(light().bg)).toBe("#f1f5f9");
+    expect(hex(pinnedDark().bg)).toBe("#030508");
+    expect(CSS).not.toMatch(/--kit-(warm-paper|foam|mist|bioluminescence|ink|slate)/);
+    for (const role of ["bg", "surface", "panel"]) expect(stage()[role], role).toMatch(/^var\(--ocean-[\w-]+\)$/);
   });
 
   it("keeps every text ink at WCAG AA on every ground, in every scheme", () => {
@@ -103,7 +107,7 @@ describe("role tokens", () => {
     expect(hex("var(--brand-light)")).toBe("#1e8fd8");
   });
 
-  it("keeps stage text readable across the sea and deep tide", () => {
+  it("keeps stage text readable across the sea", () => {
     const stops = (token: string): string[] => {
       const ramp = CSS.match(new RegExp(`--${token}:\\s*linear-gradient\\(([^;]+)\\);`))?.[1] ?? "";
       return [...ramp.matchAll(/#[0-9a-f]{6}|var\(--[\w-]+\)/gi)].map((m) => hex(m[0]));
@@ -115,17 +119,6 @@ describe("role tokens", () => {
         expect(contrast(hex(stage().muted), stop), `${token}: muted on ${stop}`).toBeGreaterThanOrEqual(4.5);
         expect(contrast(hex(stage().text), stop), `${token}: text on ${stop}`).toBeGreaterThanOrEqual(4.5);
       }
-    }
-    const tide = stops("tide");
-    const deep = tide.indexOf(hex("var(--brand-deep)"));
-    const mid = tide.indexOf(hex("var(--sea-mid)"));
-    expect(deep).toBeGreaterThan(0);
-    expect(mid).toBeGreaterThan(deep);
-    for (const stop of tide.slice(deep)) {
-      expect(contrast(hex(stage().text), stop), `text on ${stop}`).toBeGreaterThanOrEqual(4.5);
-    }
-    for (const stop of tide.slice(mid)) {
-      expect(contrast(hex(stage().muted), stop), `muted on ${stop}`).toBeGreaterThanOrEqual(4.5);
     }
   });
 });

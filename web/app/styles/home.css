@@ -32,7 +32,7 @@
   --strata-2: rgb(11 72 187 / 0.18);
   --strata-3: rgb(11 72 187 / 0.28);
   --strata-4: var(--ocean-sky);
-  --strata-line: var(--kit-bioluminescence);
+  --strata-line: var(--gpui-dark-accent);
 }
 
 /* ---------- paper: the hero ---------- */

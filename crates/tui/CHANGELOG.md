@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; these website changes still await deployment.
 
 ### Changed
+- codewhale.net now uses the desktop app's 5.3 light and dark colour roles and Geist / Geist Mono, replacing the warm-paper palette and Shannon Sans; the vendored design copy is synced to 5.3.0 and the whale-road ocean bands are unchanged.
 
 - Codex App Server v2 contract record (paused, not part of 0.10.3): the selected Codex v2 contract is frozen as a generated manifest in the protocol crate, with typed Rust and TypeScript shapes checked against the pinned Codex schema. It changes no wire behavior and adds no dispatch, so nothing is reachable through it yet.
 
