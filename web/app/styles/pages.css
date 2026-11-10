@@ -187,3 +187,44 @@
 .feature-entry h2 { margin-block: 0 0.5rem; }
 .feature-entry p { overflow-wrap: anywhere; }
 .feature-states { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem; margin-block: 1rem; }
+
+/* ---------- the project: goals, the loop, releases, routes ---------- */
+.goal-list { display: grid; border-top: 1px solid var(--line-strong); }
+.goal {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  gap: var(--space-4);
+  padding-block: var(--space-5);
+  border-bottom: 1px solid var(--line);
+}
+.goal-number {
+  padding-top: 0.2em;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  letter-spacing: 0.04em;
+}
+.goal-text { display: grid; gap: var(--space-2); min-width: 0; }
+.goal-text h3 { font-size: var(--text-heading); font-weight: 600; }
+.goal-text p { color: var(--muted); line-height: 1.6; }
+.goal-open { padding-inline-start: var(--space-4); border-inline-start: 2px solid var(--accent); }
+.goal-open-label {
+  display: block;
+  color: var(--text);
+  font-size: var(--text-label);
+  font-weight: 600;
+}
+.goal-links { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-5); }
+.goal-list-detail .goal { padding-block: var(--space-6); }
+
+.release-plan dt a { color: var(--text); font-family: var(--font-mono); font-size: var(--text-heading); font-weight: 600; text-decoration: none; }
+.release-plan dt a:hover { color: var(--accent); }
+
+.route-list .dir-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+.route-place { color: var(--accent); font-size: var(--text-ui); font-weight: 500; text-align: end; }
+@media (max-width: 640px) {
+  .route-list .dir-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .route-place { grid-column: 1; text-align: start; }
+  .route-list .dir-action { grid-row: 1 / span 2; grid-column: 2; }
+}
+.section-split-head .section-title + .btn { margin-top: var(--space-5); }

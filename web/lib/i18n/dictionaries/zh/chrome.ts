@@ -48,6 +48,7 @@ export const chrome: ChromeDict = {
   footerFaq: "常见问题",
   footerIssues: "议题",
   footerContribute: "参与贡献",
+  footerRoadmap: "路线图",
   footerLicense: "MIT 许可证",
   footerTerms: "服务条款",
   footerPrivacy: "隐私政策",

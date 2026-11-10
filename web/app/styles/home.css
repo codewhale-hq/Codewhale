@@ -331,11 +331,6 @@
 .home-computer-use .section-title { max-width: 19ch; }
 .home-computer-use .btn { margin-top: var(--space-6); }
 .home-computer-use .ruled-list dt { font-family: var(--font-body); font-size: var(--text-body); font-weight: 600; }
-.home-contribution-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-6) clamp(2rem, 6vw, 5rem);
-}
 
 /* Terms read as words, not as code: the brand face, a little weight. */
 .home-body .ruled-list dt {
@@ -347,21 +342,6 @@
 }
 
 .product-start-links { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-5); margin-top: var(--space-5); }
-
-.home-skill {
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-5);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sheet);
-  background: var(--surface);
-  text-decoration: none;
-}
-.home-skill h3 { color: var(--text); font-size: var(--text-heading); }
-.home-skill p { color: var(--muted); line-height: 1.6; }
-.home-skill code { margin-top: var(--space-4); color: var(--muted); font-size: var(--text-ui); }
-.home-skill > .icon { color: var(--accent); }
-.home-skill:hover { border-color: var(--accent); }
 
 /* ---------- the sea: install, into the footer ---------- */
 .home-install-inner {
@@ -384,7 +364,6 @@
   .home-whale { justify-content: flex-end; }
   .home-whale .living-whale { --whale-size: clamp(11rem, 48vw, 16rem); }
   .home-work-patterns,
-  .home-contribution-grid,
   .release-cards { grid-template-columns: minmax(0, 1fr); }
   .home-work-patterns > div + div { padding-top: var(--space-5); border-top: 1px solid var(--line); }
 }
@@ -392,4 +371,48 @@
 @media (forced-colors: active) {
   .home-install::before { background: CanvasText; }
   .home-water { display: none; }
+}
+
+/* ---------- the deep: where the project is going ---------- */
+.home-goals {
+  position: relative;
+  color: var(--text);
+  background: var(--sea), var(--ocean-floor);
+}
+.home-goals::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--horizon-light);
+}
+.home-goals-inner {
+  width: var(--container);
+  margin-inline: auto;
+  padding-block: clamp(4rem, 8vw, 7rem);
+}
+.home-goals-inner > .home-section { padding-block: 0; }
+.home-goals .section-title { max-width: 14ch; }
+.home-goals .btn { margin-top: var(--space-6); }
+
+.home-loop {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-6);
+  margin-top: var(--space-7);
+  counter-reset: none;
+}
+.home-loop li { display: grid; align-content: start; gap: var(--space-2); padding-top: var(--space-4); border-top: 1px solid var(--line-strong); }
+.home-loop h3 { font-size: var(--text-heading); font-weight: 600; }
+.home-loop p { color: var(--muted); line-height: 1.6; }
+.home-community .actions { margin-top: var(--space-7); }
+.home-install .actions { margin: 0; }
+@media (max-width: 900px) {
+  .home-loop { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  .home-loop { grid-template-columns: minmax(0, 1fr); }
+}
+@media (forced-colors: active) {
+  .home-goals::before { background: CanvasText; }
 }

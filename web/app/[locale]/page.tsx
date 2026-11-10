@@ -9,12 +9,13 @@ import { ReleaseUpdates } from "@/components/release-updates";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { LivingHeroWhale } from "@/components/living-hero-whale";
 import { getFacts } from "@/lib/facts";
-import { CONTRIBUTION_PATHS, SKILL_CONTRIBUTION } from "@/lib/content/contributing";
+import { GoalList } from "@/components/goal-list";
+import { PROJECT_COPY } from "@/lib/content/project";
 import { PLUGINS_COPY } from "@/lib/content/plugins";
 import { PRODUCT_COPY } from "@/lib/content/product";
 import { PARTNER_PROMO } from "@/lib/content/partner-promo";
 import { fill, getChrome, getComputerUse, getHome, pickText, splitToken } from "@/lib/i18n/dictionaries";
-import { DISCORD_URL } from "@/lib/i18n/links";
+import { REPO_ISSUES_URL } from "@/lib/i18n/links";
 import { serializeJsonLd } from "@/lib/json-ld";
 import { TERMINAL_SCREENSHOT } from "@/lib/media-manifest";
 import { buildSoftwareApplicationJsonLd } from "@/lib/software-application-schema";
@@ -118,6 +119,8 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             >
               <Link href={`/${locale}/changelog`} className="section-link">{getChrome(locale).footerChangelog}</Link>
               <span>{facts.license ?? "MIT"}</span>
+              <Link href={`/${locale}/contribute`} className="section-link">{fill(d.proofContributors, { count: facts.contributorCount })}</Link>
+              <Link href={`/${locale}/roadmap`} className="section-link">{getChrome(locale).footerRoadmap}</Link>
             </div>
           </div>
         </section>
@@ -177,42 +180,49 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           link={<Link href={`/${locale}/models`} className="section-link">{d.modelsLink}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
         />
 
+      </div>
+
+      <div className="home-goals stage">
+        <div className="home-goals-inner">
+          <Section
+            id="home-goals"
+            layout="split"
+            className="home-section"
+            label={pickText(PROJECT_COPY.goalsLabel, locale)}
+            title={pickText(PROJECT_COPY.goalsHeading, locale)}
+            scope={pickText(PROJECT_COPY.goalsScope, locale)}
+            link={<Link href={`/${locale}/roadmap`} className="btn btn-secondary">{pickText(PROJECT_COPY.goalsLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+          >
+            <GoalList locale={locale} />
+          </Section>
+        </div>
+      </div>
+
+      <div className="home-body">
         <Section
           id="home-community"
           className="home-section home-community"
-          title={d.communityHeading}
-          scope={fill(d.communityBody, { count: facts.contributorCount })}
-          link={<Link href={`/${locale}/contribute`} className="section-link">{d.contribute}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+          title={pickText(PROJECT_COPY.loopHeading, locale)}
+          scope={fill(pickText(PROJECT_COPY.loopScope, locale), { count: facts.contributorCount })}
         >
-          <div className="home-contribution-grid">
-            <a href={SKILL_CONTRIBUTION.href} className="home-skill">
-              <h3>{pickText(SKILL_CONTRIBUTION.title, locale)}</h3>
-              <p>{pickText(SKILL_CONTRIBUTION.body, locale)}</p>
-              <code dir="ltr">plugin.json<br />skills/hello/SKILL.md</code>
-              <Icon name="arrow-right" className="icon icon-flip" />
+          <ol className="home-loop" role="list">
+            {PROJECT_COPY.loop.map((step, index) => (
+              <li key={step.title.en}>
+                <span className="goal-number tabular" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+                <h3>{pickText(step.title, locale)}</h3>
+                <p>{pickText(step.body, locale)}</p>
+              </li>
+            ))}
+          </ol>
+          <div className="actions">
+            <a href={`${REPO_ISSUES_URL}/new/choose`} className="btn btn-primary btn-lg">
+              {pickText(PROJECT_COPY.loopFeedback, locale)}
+              <Icon name="external" className="icon" />
             </a>
-            <nav aria-label={d.communityLinksAria}>
-              <ul className="dir-list" role="list">
-                {CONTRIBUTION_PATHS.map((path) => (
-                  <li key={path.href}>
-                    <a href={path.href} className="dir-row">
-                      <span className="dir-mark" aria-hidden="true"><Icon name={path.icon} /></span>
-                      <span className="dir-text">
-                        <span className="dir-title">{pickText(path.title, locale)}</span>
-                      </span>
-                      <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
-                    </a>
-                  </li>
-                ))}
-                <li>
-                  <a href={DISCORD_URL} className="dir-row">
-                    <span className="dir-mark" aria-hidden="true"><Icon name="message" /></span>
-                    <span className="dir-text"><span className="dir-title">Discord</span></span>
-                    <span className="dir-action" aria-hidden="true"><Icon name="external" /></span>
-                  </a>
-                </li>
-              </ul>
-            </nav>
+            <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
+              {pickText(PROJECT_COPY.loopHelp, locale)}
+              <Icon name="arrow-right" className="icon icon-flip" />
+            </Link>
           </div>
         </Section>
 
@@ -247,10 +257,13 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
       <section className="home-install stage sea-continues" aria-labelledby="home-install">
         <div className="home-install-inner">
           <h2 className="section-title" id="home-install">{d.startHeading}</h2>
-          <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
-            {d.getCodewhale}
-            <Icon name="arrow-right" className="icon icon-flip" />
-          </Link>
+          <div className="actions">
+            <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
+              {d.getCodewhale}
+              <Icon name="arrow-right" className="icon icon-flip" />
+            </Link>
+            <Link href={`/${locale}/community`} className="btn btn-ghost btn-lg">{getChrome(locale).navCommunity}</Link>
+          </div>
         </div>
       </section>
     </div>

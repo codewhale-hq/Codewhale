@@ -87,6 +87,7 @@ export interface ChromeDict {
   footerFaq: string;
   footerIssues: string;
   footerContribute: string;
+  footerRoadmap: string;
   footerLicense: string;
   /** Footer link to the terms route, e.g. "Terms". */
   footerTerms: string;

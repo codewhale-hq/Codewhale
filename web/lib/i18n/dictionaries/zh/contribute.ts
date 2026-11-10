@@ -3,10 +3,10 @@ import type { ContributeDict } from "../types";
 /** Chinese dictionary for `app/[locale]/contribute/page.tsx`. */
 export const contribute: ContributeDict = {
   metaTitle: "参与贡献 · Codewhale",
-  metaDescription: "用问题报告、文档修正、翻译、验证结果或代码参与构建 Codewhale，找到适合你的第一步。",
+  metaDescription: "所有反馈都在帮助 Codewhale，不论是否包含代码。看看 bug、想法、翻译、提供商或修复应该提交到哪里。",
   kicker: "一起构建 Codewhale",
-  title: "参与 Codewhale",
-  lede: "报告问题、改进指南或分享技能。",
+  title: "一起构建 Codewhale",
+  lede: "所有反馈都有帮助，不论是否包含代码。一个 bug、一个想法，或一个看起来不对劲的界面，都足以开始。",
   fileIssue: "提交 issue",
   browsePulls: "查看 pull requests",
   fullGuide: "贡献指南",

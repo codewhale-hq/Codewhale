@@ -55,6 +55,7 @@ export function secondaryNavLinks(locale: string, chrome: ChromeDict): ChromeLin
     { href: `/${locale}/faq`, label: chrome.navFaq },
     { href: `/${locale}/community`, label: chrome.navCommunity },
     { href: `/${locale}/contribute`, label: chrome.navContribute },
+    { href: `/${locale}/roadmap`, label: chrome.footerRoadmap },
   ];
 }
 
@@ -83,6 +84,7 @@ export function footerProjectLinks(locale: string, chrome: ChromeDict): ChromeLi
     { href: REPO_ISSUES_URL, label: chrome.footerIssues },
     { href: DISCORD_URL, label: "Discord" },
     { href: `/${locale}/contribute`, label: chrome.footerContribute },
+    { href: `/${locale}/roadmap`, label: chrome.footerRoadmap },
     { href: REPO_LICENSE_URL, label: chrome.footerLicense },
   ];
 }

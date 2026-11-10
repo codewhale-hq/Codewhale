@@ -4,7 +4,9 @@ import { PageHeader, Section } from "@/components/page-header";
 import { Status, type StatusTone } from "@/components/status-badge";
 import { getCachedRoadmap, type RoadmapItem } from "@/lib/roadmap-feed";
 import { getEnv } from "@/lib/kv";
-import { fill, getRoadmap, pickTextLocale } from "@/lib/i18n/dictionaries";
+import { GoalList } from "@/components/goal-list";
+import { PROJECT_COPY, PROJECT_RELEASES, RELEASE_STATE_LABEL, type ReleaseState } from "@/lib/content/project";
+import { fill, getRoadmap, pickText, pickTextLocale } from "@/lib/i18n/dictionaries";
 import { buildPageMetadata } from "@/lib/page-meta";
 
 export const revalidate = 1800;
@@ -144,6 +146,7 @@ const tracksZh: Track[] = [
 // Track order is shared by both languages: shipped, underway, considered,
 // ruled out, and the open model platform direction (not started).
 const TRACK_TONES: StatusTone[] = ["ready", "accent", "idle", "idle", "idle"];
+const RELEASE_TONES: Record<ReleaseState, StatusTone> = { progress: "accent", planned: "idle", later: "idle" };
 
 const roadmapText = (text: string) =>
   text.replace(/^>\s*/, "").replaceAll("**", "").replaceAll("CodeWhale", "Codewhale");
@@ -190,9 +193,54 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
 
   return (
     <>
-      <PageHeader kicker={t.eyebrow} title={t.title} lede={t.introduction} pose="browse" />
+      <PageHeader
+        kicker={t.eyebrow}
+        title={t.title}
+        lede={t.introduction}
+        pose="browse"
+        actions={
+          <>
+            <Link href={`/${locale}/contribute`} className="btn btn-primary btn-lg">
+              {pickText(PROJECT_COPY.loopHelp, locale)}
+              <Icon name="arrow-right" className="icon icon-flip" />
+            </Link>
+            <Link href="https://github.com/codewhale-hq/CodeWhale/blob/main/docs/ROADMAP.md" className="btn btn-secondary btn-lg">
+              GitHub
+              <Icon name="external" className="icon" />
+            </Link>
+          </>
+        }
+      />
 
       <div className="page-body">
+        <Section
+          id="roadmap-goals"
+          title={pickText(PROJECT_COPY.goalsListHeading, locale)}
+          scope={pickText(PROJECT_COPY.goalsListScope, locale)}
+        >
+          <GoalList locale={locale} detail />
+        </Section>
+
+        <Section
+          id="roadmap-releases"
+          title={pickText(PROJECT_COPY.releasesHeading, locale)}
+          scope={pickText(PROJECT_COPY.releasesScope, locale)}
+        >
+          <dl className="ruled-list release-plan">
+            {PROJECT_RELEASES.map((release) => (
+              <div key={release.name}>
+                <dt>
+                  <Link href={release.href} className="tabular">{release.name}</Link>
+                </dt>
+                <dd>
+                  <Status tone={RELEASE_TONES[release.state]}>{pickText(RELEASE_STATE_LABEL[release.state], locale)}</Status>
+                  {pickText(release.body, locale)}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </Section>
+
         <Section
           id="roadmap-status"
           title={t.sectionTitle}

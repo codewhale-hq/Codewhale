@@ -54,6 +54,7 @@ export const chrome: ChromeDict = {
   footerFaq: "Tanya jawab",
   footerIssues: "Masalah",
   footerContribute: "Kontribusi",
+  footerRoadmap: "Peta jalan",
   footerLicense: "Lisensi MIT",
   footerTerms: "Ketentuan layanan",
   footerPrivacy: "Privasi",

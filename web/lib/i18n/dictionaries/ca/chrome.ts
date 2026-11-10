@@ -60,6 +60,7 @@ export const chrome: ChromeDict = {
   footerFaq: "PMF",
   footerIssues: "Issues",
   footerContribute: "Col·laborar",
+  footerRoadmap: "Full de ruta",
   footerLicense: "Llicència MIT",
   footerTerms: "Termes del servei",
   footerPrivacy: "Privadesa",

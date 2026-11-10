@@ -56,6 +56,7 @@ export const chrome: ChromeDict = {
   // The GitHub tracker, named as GitHub names it — the same choice id/ja/pt-BR made.
   footerIssues: "Issues",
   footerContribute: "Đóng góp",
+  footerRoadmap: "Lộ trình",
   footerLicense: "Giấy phép MIT",
   footerTerms: "Điều khoản dịch vụ",
   footerPrivacy: "Quyền riêng tư",

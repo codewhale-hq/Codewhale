@@ -55,6 +55,7 @@ export const chrome: ChromeDict = {
   footerFaq: "الأسئلة الشائعة",
   footerIssues: "Issues",
   footerContribute: "المساهمة",
+  footerRoadmap: "خارطة الطريق",
   footerLicense: "رخصة MIT",
   footerTerms: "شروط الخدمة",
   footerPrivacy: "الخصوصية",
