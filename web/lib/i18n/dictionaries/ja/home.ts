@@ -119,8 +119,5 @@ export const home: HomeDict = {
   binaries: "バイナリ",
   chinaMirrors: "中国ミラー",
   installGuideLink: "インストールガイドを読む",
-  communityHeading: "Codewhale に貢献する",
-  communityBody: "{count} 人が Codewhale の開発に参加しています。GitHub でバグを報告したり、ドキュメントを改善したり、コードを提供したりできます。",
-  communityLinksAria: "コミュニティリンク",
   contribute: "GitHub で参加",
 };

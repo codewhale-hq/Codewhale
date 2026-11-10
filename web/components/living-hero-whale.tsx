@@ -44,6 +44,9 @@ export function LivingHeroWhale({ locale = "en" }: { locale?: string }) {
     const duration = seen ? REPEAT_MS : ASSEMBLE_MS;
     const updateStage = (next: Stage) => {
       if (next === current) return;
+      if (next === "rest") {
+        try { sessionStorage.setItem(SEEN, "1"); } catch {}
+      }
       current = next;
       setStage(next);
     };
@@ -88,9 +91,6 @@ export function LivingHeroWhale({ locale = "en" }: { locale?: string }) {
         return;
       }
       updateStage(elapsed < hold ? "mark" : elapsed < hold + duration ? "assembling" : "rest");
-      if (current === "rest") {
-        try { sessionStorage.setItem(SEEN, "1"); } catch {}
-      }
       if (current === "assembling" || now - painted >= FRAME_MS) {
         painted = now;
         paint();

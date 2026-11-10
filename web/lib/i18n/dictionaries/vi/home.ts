@@ -123,9 +123,5 @@ export const home: HomeDict = {
   binaries: "Bản nhị phân",
   chinaMirrors: "Mirror Trung Quốc",
   installGuideLink: "Đọc hướng dẫn cài đặt",
-  communityHeading: "Đóng góp cho Codewhale",
-  communityBody:
-    "{count} người đã góp phần xây dựng Codewhale. Báo lỗi, cải thiện tài liệu hoặc đóng góp mã trên GitHub.",
-  communityLinksAria: "Liên kết cộng đồng",
   contribute: "Đóng góp trên GitHub",
 };

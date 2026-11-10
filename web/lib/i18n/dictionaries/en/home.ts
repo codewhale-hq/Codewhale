@@ -132,9 +132,5 @@ export const home: HomeDict = {
   chinaMirrors: "China mirrors",
   installGuideLink: "Read the install guide",
 
-  communityHeading: "Contribute to Codewhale",
-  communityBody:
-    "{count} contributors. Code, docs, translations and skills all help.",
-  communityLinksAria: "Community links",
   contribute: "Contribute",
 };

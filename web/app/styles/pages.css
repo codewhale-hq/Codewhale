@@ -283,3 +283,6 @@
 @media (prefers-reduced-motion: reduce) {
   .face-wall a:has(.face):hover { transform: none; }
 }
+
+.github-star { flex-wrap: wrap; }
+.github-star-count { border-inline-start: 1px solid var(--line-strong); padding-inline-start: var(--space-3); font-family: var(--font-mono); }

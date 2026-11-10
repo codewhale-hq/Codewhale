@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
-import { FaceWall, MergedList } from "@/components/project-pulse";
+import { GitHubStar, FaceWall, MergedList } from "@/components/project-pulse";
 import { getFacts } from "@/lib/facts";
 import { fetchLabelled, type OpenIssue } from "@/lib/github";
 import { getEnv } from "@/lib/kv";
@@ -53,6 +53,7 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
               {t.fileIssue}
               <Icon name="external" className="icon" />
             </Link>
+            <GitHubStar stars={pulse.stats?.stars} locale={locale} />
             <Link href={`${REPO_URL}/blob/main/CONTRIBUTING.md`} className="btn btn-secondary btn-lg">
               {t.fullGuide}
               <Icon name="external" className="icon" />

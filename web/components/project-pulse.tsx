@@ -1,4 +1,5 @@
 import { Icon } from "./icon";
+import { GITHUB_STAR_COPY } from "@/lib/content/github-star";
 import { PROJECT_COPY } from "@/lib/content/project";
 import { formatStars, relativeAge, type Face } from "@/lib/github";
 import { fill, getChrome, pickText } from "@/lib/i18n/dictionaries";
@@ -76,5 +77,17 @@ export function FaceWall({ faces, total, locale }: { faces: Face[]; total: numbe
         <Icon name="external" className="icon" />
       </a>
     </div>
+  );
+}
+
+export function GitHubStar({ stars, locale }: { stars?: number; locale: string }) {
+  const label = pickText(GITHUB_STAR_COPY, locale);
+  const count = stars === undefined ? null : new Intl.NumberFormat(getChrome(locale).dateLocale).format(stars);
+  return (
+    <a href={REPO_URL} className="btn btn-secondary github-star">
+      <span aria-hidden="true">☆</span>
+      <span>{label}</span>
+      {count !== null && <span className="github-star-count tabular">{count}</span>}
+    </a>
   );
 }

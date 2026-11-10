@@ -207,9 +207,6 @@ export interface HomeDict {
   chinaMirrors: string;
   installGuideLink: string;
 
-  communityHeading: string;
-  communityBody: string;
-  communityLinksAria: string;
   contribute: string;
 }
 

@@ -10,7 +10,7 @@ import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { LivingHeroWhale } from "@/components/living-hero-whale";
 import { getFacts } from "@/lib/facts";
 import { GoalList } from "@/components/goal-list";
-import { FaceWall, MergedList, PulseStats } from "@/components/project-pulse";
+import { GitHubStar, FaceWall, MergedList, PulseStats } from "@/components/project-pulse";
 import { WhalePose } from "@/components/whale-pose";
 import { loadProjectPulse } from "@/lib/project-pulse";
 import { PROJECT_COPY } from "@/lib/content/project";
@@ -95,6 +95,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                   {d.contribute}
                   <Icon name="arrow-right" className="icon icon-flip" />
                 </Link>
+                <GitHubStar stars={pulse.stats?.stars} locale={locale} />
               </div>
             </div>
             <div className="home-whale">
@@ -223,6 +224,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               </div>
             ) : null}
           </div>
+          <div className="actions"><GitHubStar stars={pulse.stats?.stars} locale={locale} /></div>
           <FaceWall faces={pulse.faces} total={facts.contributorCount} locale={locale} />
           <div className="actions">
             <a href={`${REPO_ISSUES_URL}/new/choose`} className="btn btn-primary btn-lg">

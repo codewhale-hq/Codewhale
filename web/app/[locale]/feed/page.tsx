@@ -76,7 +76,7 @@ export default async function FeedPage({ params }: { params: Promise<{ locale: s
   const actionLinks: { href: string; icon: IconName; label: string }[] = [
     { href: "https://github.com/codewhale-hq/CodeWhale/issues/new/choose", icon: "alert", label: t.openIssue },
     { href: "https://github.com/codewhale-hq/CodeWhale/compare", icon: "git-pull-request", label: t.openPull },
-    { href: "https://github.com/codewhale-hq/CodeWhale/discussions/new", icon: "message", label: t.startDiscussion },
+    { href: "https://github.com/codewhale-hq/CodeWhale/discussions/categories/q-a", icon: "message", label: t.startDiscussion },
   ];
   const columns = [
     { id: "feed-pulls", title: t.pulls, items: pulls, status: pullsStatus },

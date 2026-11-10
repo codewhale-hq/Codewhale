@@ -119,8 +119,5 @@ export const home: HomeDict = {
   binaries: "预编译包",
   chinaMirrors: "中国镜像",
   installGuideLink: "阅读安装指南",
-  communityHeading: "参与 Codewhale",
-  communityBody: "已有 {count} 位贡献者。代码、文档、翻译和技能都欢迎。",
-  communityLinksAria: "社区链接",
   contribute: "参与贡献",
 };

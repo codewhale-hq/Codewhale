@@ -196,7 +196,7 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
 
   const links = [
     { title: "Issues", detail: t.issuesDetail, href: "https://github.com/codewhale-hq/CodeWhale/issues" },
-    { title: "Discussions", detail: t.discussionsDetail, href: "https://github.com/codewhale-hq/CodeWhale/discussions/new?category=ideas" },
+    { title: pickText(PROJECT_COPY.featureSteps[0].title, locale), detail: pickText(PROJECT_COPY.featureSteps[0].body, locale), href: "https://github.com/codewhale-hq/CodeWhale/issues/new?template=feature_request.yml" },
     { title: "Pull requests", detail: t.pullsDetail, href: "https://github.com/codewhale-hq/CodeWhale/pulls" },
   ];
 

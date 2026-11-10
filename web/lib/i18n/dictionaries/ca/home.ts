@@ -123,9 +123,5 @@ export const home: HomeDict = {
   binaries: "Binaris",
   chinaMirrors: "Mirrors a la Xina",
   installGuideLink: "Llegeix la guia d’instal·lació",
-  communityHeading: "Contribueix a Codewhale",
-  communityBody:
-    "{count} persones han contribuït a crear Codewhale. Informa d’un error, millora la documentació o contribueix amb codi a GitHub.",
-  communityLinksAria: "Enllaços de la comunitat",
   contribute: "Contribueix a GitHub",
 };

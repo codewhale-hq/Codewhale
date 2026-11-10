@@ -123,9 +123,5 @@ export const home: HomeDict = {
   binaries: "Бінарні файли",
   chinaMirrors: "дзеркала в Китаї",
   installGuideLink: "Читати посібник зі встановлення",
-  communityHeading: "Долучайтеся до розробки Codewhale",
-  communityBody:
-    "До створення Codewhale долучилися {count} людей. Повідомте про помилку, покращте документацію або запропонуйте код на GitHub.",
-  communityLinksAria: "Посилання спільноти",
   contribute: "Долучитися на GitHub",
 };
