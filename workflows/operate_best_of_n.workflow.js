@@ -68,18 +68,11 @@ export default async function (args) {
     if (arm === "evolution" && population * generations > executionBudget) {
       throw new Error("Evolution population exceeds its frozen execution budget");
     }
-    const clamp = (value, min, max, fallback) =>
-      Math.max(min, Math.min(max, Number.isFinite(Number(value)) ? Number(value) : fallback));
-    const basePolicy = Object.freeze({
-      planning_budget: clamp(args.evolution.policy?.planning_budget, 0, 3, 1),
-      max_repair_rounds: clamp(args.evolution.policy?.max_repair_rounds, 0, 2, 1),
-      extra_verification: args.evolution.policy?.extra_verification === true,
-      candidate_strategy: ["direct", "focused"].includes(args.evolution.policy?.candidate_strategy)
-        ? args.evolution.policy.candidate_strategy : "direct",
-      trace_preference: ["concise", "evidence_refs"].includes(args.evolution.policy?.trace_preference)
-        ? args.evolution.policy.trace_preference : "evidence_refs",
-    });
+    if (args.evolution.policy !== undefined) {
+      throw new Error("Freeze the initial shadow policy in the host manifest");
+    }
     const frozen = await task.experimentalSearch({ action: "summary" });
+    const basePolicy = Object.freeze({ ...frozen.shadow_policy });
     const all = [];
     let parents = [];
     const seenFailureSignatures = new Set();
@@ -163,6 +156,7 @@ export default async function (args) {
           try {
             receipt = await task.experimentalSearch({
               action: "evaluate", candidate_id: plan.id, generation, lineage: plan.lineage,
+              policy: plan.policy,
             });
           } catch (error) {
             receipt = { status: "UNKNOWN", reason: String(error) };
@@ -201,6 +195,7 @@ export default async function (args) {
       replay = await task.experimentalSearch({
         action: "replay", candidate_id: provisional.id,
         generation: provisional.generation, lineage: provisional.lineage,
+        policy: provisional.policy,
       });
       if (replay.status === "PASS" && replay.patch_sha256 === provisional.receipt.patch_sha256) {
         phase("Independent read-only review");

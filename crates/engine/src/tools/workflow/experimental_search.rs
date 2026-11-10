@@ -23,6 +23,51 @@ struct Gate {
     holdout: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CandidateStrategy {
+    Direct,
+    Focused,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TracePreference {
+    Concise,
+    EvidenceRefs,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExperimentalPolicyGenome {
+    planning_budget: u8,
+    max_repair_rounds: u8,
+    extra_verification: bool,
+    candidate_strategy: CandidateStrategy,
+    trace_preference: TracePreference,
+}
+
+impl Default for ExperimentalPolicyGenome {
+    fn default() -> Self {
+        Self {
+            planning_budget: 1,
+            max_repair_rounds: 1,
+            extra_verification: false,
+            candidate_strategy: CandidateStrategy::Direct,
+            trace_preference: TracePreference::EvidenceRefs,
+        }
+    }
+}
+
+impl ExperimentalPolicyGenome {
+    fn validate(&self) -> Result<(), String> {
+        if self.planning_budget > 3 || self.max_repair_rounds > 2 {
+            return Err("shadow policy gene exceeds its bound".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Spec {
@@ -40,6 +85,8 @@ struct Spec {
     max_candidates: u32,
     max_generations: u32,
     max_wall_secs: u64,
+    #[serde(default)]
+    shadow_policy: ExperimentalPolicyGenome,
 }
 
 pub(super) struct ExperimentalSearch {
@@ -216,6 +263,7 @@ impl ExperimentalSearch {
                 "invalid experimental search bounds, route, objective or gates".to_string(),
             );
         }
+        spec.shadow_policy.validate()?;
         for root in &mut spec.allowed_write_roots {
             *root = normalized_path(root)?;
         }
@@ -327,6 +375,7 @@ impl ExperimentalSearch {
             "max_candidates": spec.max_candidates,
             "max_generations": spec.max_generations,
             "max_wall_secs": spec.max_wall_secs,
+            "shadow_policy": spec.shadow_policy,
             "integration_policy": "review_only"
         });
         fs::write(
@@ -396,6 +445,7 @@ impl ExperimentalSearch {
         candidate_id: &str,
         generation: u32,
         lineage: &Value,
+        policy: &Value,
         result: &SubAgentResult,
         replay: bool,
         cancel: &CancellationToken,
@@ -415,6 +465,23 @@ impl ExperimentalSearch {
         if label_generation != Some(generation) {
             return Err("candidate generation does not match its task label".to_string());
         }
+        let policy: ExperimentalPolicyGenome = if policy.is_null() {
+            self.spec.shadow_policy.clone()
+        } else {
+            serde_json::from_value(policy.clone()).map_err(|error| error.to_string())?
+        };
+        policy.validate()?;
+        if generation == 0 && policy != self.spec.shadow_policy {
+            return Err("first-generation policy differs from the frozen genome".to_string());
+        }
+        if generation > 0 {
+            let declared: ExperimentalPolicyGenome =
+                serde_json::from_value(lineage.get("policy").cloned().unwrap_or(Value::Null))
+                    .map_err(|error| error.to_string())?;
+            if declared != policy {
+                return Err("mutation lineage policy differs from candidate policy".to_string());
+            }
+        }
         if replay {
             if self
                 .evaluated
@@ -433,9 +500,17 @@ impl ExperimentalSearch {
                 .and_then(Value::as_array)
                 .ok_or_else(|| "mutation requires parent_ids".to_string())?;
             if parents.is_empty()
+                || parents.len() > 2
                 || !parents.iter().all(|id| {
-                    id.as_str()
-                        .is_some_and(|id| self.evaluated.contains_key(id))
+                    id.as_str().is_some_and(|id| {
+                        self.evaluated.get(id).is_some_and(|receipt| {
+                            receipt.get("status").and_then(Value::as_str) == Some("FAIL")
+                                && receipt
+                                    .get("public_failure_feedback")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|feedback| !feedback.is_empty())
+                        })
+                    })
                 })
                 || [
                     "hypothesis",
@@ -448,8 +523,20 @@ impl ExperimentalSearch {
                 .any(|key| lineage.get(*key).is_none())
             {
                 return Err(
-                    "mutation lineage lacks verified parents or required fields".to_string()
+                    "mutation lineage lacks verified failed parents or required fields".to_string(),
                 );
+            }
+            if ["hypothesis", "predicted_effect"].iter().any(|key| {
+                lineage
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+            }) || !matches!(
+                lineage.get("mutation_operator").and_then(Value::as_str),
+                Some("targeted_assertion_repair" | "alternate_implementation_strategy")
+            ) || lineage.get("target_scope") != Some(&json!(self.spec.allowed_write_roots))
+            {
+                return Err("mutation operator or target scope is invalid".to_string());
             }
             let refs = lineage
                 .get("evidence_refs")
@@ -554,7 +641,7 @@ impl ExperimentalSearch {
                 || path_has_link(&workspace, path).unwrap_or(true)
         });
         if let Some(path) = rejected {
-            let receipt = json!({"candidate_id": candidate_id, "status": "REJECTED", "reason": format!("protected or out-of-scope path: {path}"), "baseline_sha": self.baseline_sha, "lineage": lineage});
+            let receipt = json!({"candidate_id": candidate_id, "status": "REJECTED", "reason": format!("protected or out-of-scope path: {path}"), "baseline_sha": self.baseline_sha, "lineage": lineage, "shadow_policy": policy});
             self.receipt(candidate_id, replay, &receipt)?;
             if !replay {
                 self.evaluated
@@ -601,14 +688,14 @@ impl ExperimentalSearch {
             return Err("winner patch changed after first evaluation".to_string());
         }
         if !replay && !self.patch_hashes.insert(patch_hash.clone()) {
-            let receipt = json!({"candidate_id": candidate_id, "status": "DUPLICATE", "patch_sha256": patch_hash, "reason": "identical patch already evaluated", "lineage": lineage});
+            let receipt = json!({"candidate_id": candidate_id, "status": "DUPLICATE", "patch_sha256": patch_hash, "reason": "identical patch already evaluated", "lineage": lineage, "shadow_policy": policy});
             self.receipt(candidate_id, false, &receipt)?;
             self.evaluated
                 .insert(candidate_id.to_string(), receipt.clone());
             return Ok(receipt);
         }
         if patch.len() > 2 * 1024 * 1024 || paths.is_empty() {
-            let receipt = json!({"candidate_id": candidate_id, "status": "REJECTED", "patch_sha256": patch_hash, "reason": "empty or oversized patch", "lineage": lineage});
+            let receipt = json!({"candidate_id": candidate_id, "status": "REJECTED", "patch_sha256": patch_hash, "reason": "empty or oversized patch", "lineage": lineage, "shadow_policy": policy});
             self.receipt(candidate_id, replay, &receipt)?;
             if !replay {
                 self.evaluated
@@ -656,7 +743,7 @@ impl ExperimentalSearch {
             Ok(())
         });
         if let Err(reason) = apply_result {
-            let receipt = json!({"candidate_id": candidate_id, "status": "REJECTED", "patch_sha256": patch_hash, "reason": reason, "lineage": lineage});
+            let receipt = json!({"candidate_id": candidate_id, "status": "REJECTED", "patch_sha256": patch_hash, "reason": reason, "lineage": lineage, "shadow_policy": policy});
             self.receipt(candidate_id, replay, &receipt)?;
             if !replay {
                 self.evaluated
@@ -778,6 +865,7 @@ impl ExperimentalSearch {
             "test_count": total_tests,
             "public_failure_feedback": public_feedback,
             "lineage": lineage,
+            "shadow_policy": policy,
             "route": &result.child_route,
             "usage": &result.usage,
             "observed_at_ms": now,
@@ -792,6 +880,6 @@ impl ExperimentalSearch {
     }
 
     pub(super) fn summary(&self) -> Value {
-        json!({"manifest": self.root.join("manifest.json"), "baseline_sha": self.baseline_sha, "admitted": self.admitted, "max_candidates": self.spec.max_candidates, "max_generations": self.spec.max_generations, "receipts": self.root})
+        json!({"manifest": self.root.join("manifest.json"), "baseline_sha": self.baseline_sha, "admitted": self.admitted, "max_candidates": self.spec.max_candidates, "max_generations": self.spec.max_generations, "shadow_policy": self.spec.shadow_policy, "receipts": self.root})
     }
 }

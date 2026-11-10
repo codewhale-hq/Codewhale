@@ -5197,6 +5197,7 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
         let manager = self.manager.clone();
         let cancel = self.runtime.cancel_token.clone();
         let lineage = request.get("lineage").cloned().unwrap_or(Value::Null);
+        let policy = request.get("policy").cloned().unwrap_or(Value::Null);
         let replay = action == "replay";
         let value = tokio::task::spawn_blocking(move || {
             let result = manager
@@ -5210,6 +5211,7 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                     &candidate_id,
                     generation,
                     &lineage,
+                    &policy,
                     &result,
                     replay,
                     &cancel,

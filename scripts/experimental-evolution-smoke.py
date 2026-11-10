@@ -62,10 +62,55 @@ def write_manifest(directory, workspace, arm, budget):
         "max_candidates": 1 if arm == "single" else budget,
         "max_generations": 2 if arm == "evolution" else 1,
         "max_wall_secs": 3600,
+        "shadow_policy": {
+            "planning_budget": 1,
+            "max_repair_rounds": 1,
+            "extra_verification": False,
+            "candidate_strategy": "direct",
+            "trace_preference": "evidence_refs",
+        },
     }
     path = directory / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def summarize_receipts(evaluator_directory):
+    evaluations = []
+    replays = []
+    for path in sorted(evaluator_directory.glob("*-evaluation.json")):
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        evaluations.append({
+            "candidate_id": receipt.get("candidate_id"),
+            "generation": receipt.get("generation"),
+            "status": receipt.get("status"),
+            "reason": receipt.get("reason"),
+            "patch_sha256": receipt.get("patch_sha256"),
+            "test_count": receipt.get("test_count"),
+            "lineage": receipt.get("lineage"),
+            "shadow_policy": receipt.get("shadow_policy"),
+            "usage": receipt.get("usage"),
+            "receipt_path": str(path),
+        })
+    for path in sorted(evaluator_directory.glob("*-replay.json")):
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        holdout = [gate for gate in receipt.get("gates", []) if gate.get("holdout")]
+        replays.append({
+            "candidate_id": receipt.get("candidate_id"),
+            "status": receipt.get("status"),
+            "test_count": receipt.get("test_count"),
+            "heldout_gate_count": len(holdout),
+            "heldout_pass": bool(holdout) and all(gate.get("status") == "PASS" for gate in holdout),
+            "receipt_path": str(path),
+        })
+    return {
+        "evaluations": evaluations,
+        "replays": replays,
+        "public_pass_count": sum(item["status"] == "PASS" for item in evaluations),
+        "heldout_replay_pass": any(item["status"] == "PASS" and item["heldout_pass"]
+                                   for item in replays),
+        "mutant_evaluation_count": sum((item["generation"] or 0) > 0 for item in evaluations),
+    }
 
 
 def main():
@@ -133,6 +178,7 @@ def main():
         (directory / "stdout.log").write_text(completed.stdout.replace(key, "[REDACTED]"), encoding="utf-8")
         (directory / "stderr.log").write_text(completed.stderr.replace(key, "[REDACTED]"), encoding="utf-8")
         evidence = []
+        receipt_summaries = []
         for candidate in Path(tempfile.gettempdir()).glob("codewhale-evolution-workflow_*"):
             if candidate in known_evaluators:
                 continue
@@ -144,9 +190,11 @@ def main():
                     if not destination.exists():
                         shutil.copytree(candidate, destination, ignore=shutil.ignore_patterns("*-eval", "*-replay"))
                         evidence.append(str(destination))
+                        receipt_summaries.append(summarize_receipts(destination))
         row = {"arm": arm, "exit_code": completed.returncode, "wall_seconds": elapsed,
                "baseline_sha": baseline_sha, "execution_budget": 1 if arm == "single" else args.budget,
-               "evidence": evidence}
+               "evidence": evidence, "receipt_summaries": receipt_summaries,
+               "heldout_replay_pass": any(item["heldout_replay_pass"] for item in receipt_summaries)}
         (directory / "run.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
         results.append(row)
         print(json.dumps(row), flush=True)
