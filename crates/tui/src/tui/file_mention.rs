@@ -1346,9 +1346,11 @@ fn is_file_mention_start(chars: &[char], idx: usize) -> bool {
     if idx == 0 {
         return true;
     }
-    chars
-        .get(idx.saturating_sub(1))
-        .is_some_and(|ch| ch.is_whitespace() || matches!(ch, '(' | '[' | '{' | '<' | '"' | '\''))
+    chars.get(idx.saturating_sub(1)).is_some_and(|ch| {
+        ch.is_whitespace()
+            || matches!(ch, '(' | '[' | '{' | '<' | '"' | '\'')
+            || codewhale_tui_kit::translation::is_cjk(*ch)
+    })
 }
 
 fn trim_unquoted_mention(raw: &str) -> &str {
@@ -1357,7 +1359,7 @@ fn trim_unquoted_mention(raw: &str) -> &str {
         && trimmed
             .chars()
             .last()
-            .is_some_and(|ch| matches!(ch, ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}'))
+            .is_some_and(|ch| ",;:!?)]}，。、；：！？）］｝」』】》〉".contains(ch))
     {
         trimmed = &trimmed[..trimmed.len() - trimmed.chars().last().unwrap().len_utf8()];
     }
@@ -1634,6 +1636,23 @@ mod tests {
     /// #101 regression — workspace-vs-cwd divergence: `@bar.txt` typed from
     /// the cwd `<root>/sub` MUST resolve to `<root>/sub/bar.txt`, never to
     /// `<root>/bar.txt` (which doesn't exist).
+    #[test]
+    fn mention_directly_after_cjk_text_is_recognized() {
+        assert_eq!(
+            extract_file_mentions("请看@src/main.rs 讲了什么"),
+            vec!["src/main.rs".to_string()]
+        );
+        assert_eq!(
+            partial_file_mention_at_cursor("请看@src/ma", 9),
+            Some(("请看".len(), "src/ma".to_string()))
+        );
+        assert!(extract_file_mentions("mail me at a@b.com").is_empty());
+        assert_eq!(
+            extract_file_mentions("（@a.rs） 「@b.rs」 看@c.rs。"),
+            vec!["a.rs".to_string(), "b.rs".to_string(), "c.rs".to_string()]
+        );
+    }
+
     #[test]
     fn cwd_pass_resolves_when_workspace_pass_misses() {
         let tmp = TempDir::new().expect("tempdir");
