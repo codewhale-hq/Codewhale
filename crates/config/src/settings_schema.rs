@@ -1552,12 +1552,6 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
         "false",
         None,
     ),
-    def(
-        "ask_to_accept_edits_migrated",
-        SettingKind::Bool(ON_OFF),
-        "false",
-        None,
-    ),
     def("behavioral_tip_impressions", SettingKind::String, "", None),
     // Footer key-hint use counts: a hint retires to its bare state once its
     // binding has been used enough times. Written by the footer, never edited.
