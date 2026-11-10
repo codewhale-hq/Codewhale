@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Chinese docs:** a short setup page for people new to Codewhale ([zh_hans/PROVIDER_QUICKSTART.md](docs/zh_hans/PROVIDER_QUICKSTART.md)) walks through choosing a provider, setting an API key on macOS, Linux or Windows, picking a model and reading `codewhale doctor --probe-api` when the first call fails; the Receipts, Claude plugin compatibility and GitHub review bot pages are now translated into Simplified Chinese and linked from the Chinese index ([#7266](https://github.com/codewhale-hq/Codewhale/pull/7266), [#7264](https://github.com/codewhale-hq/Codewhale/pull/7264), [#7263](https://github.com/codewhale-hq/Codewhale/pull/7263), [#7265](https://github.com/codewhale-hq/Codewhale/pull/7265)). Thanks [@luochen211](https://github.com/luochen211).
+
 - **Recovery safeguards:** workflows reject results that cannot yet exist, implicit session storage refuses an unresolved home, and future-dated provider catalogs cannot stay fresh indefinitely.
 
 - **Permissions:** saved permission choices, including Ask on existing and new installs, survive upgrades and restarts; managed approval policies keep their stricter startup posture when using the new permission dial, and Settings shows Accept Edits as the unconfigured default.
