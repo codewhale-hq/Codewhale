@@ -2000,7 +2000,7 @@
             "codeTerms": true
           },
           {
-            "p": "`codewhale login` 不接收提供商密钥，提供商密钥一律通过 `codewhale auth set` 保存。登录会话优先保存在操作系统的凭据管理器中；没有凭据管理器时（例如通过 SSH 或在容器里），则保存在 Codewhale 的私有密钥文件中。"
+            "p": "`codewhale login` 不接收提供商密钥，提供商密钥一律通过 `codewhale auth set` 保存。登录会话优先保存在操作系统的凭据管理器中；没有凭据管理器时（例如通过 SSH 或在容器里），则保存在 Codewhale 的私有密钥文件中。每个入口的登录步骤见[登录 Codewhale](/docs/account)。"
           }
         ]
       }

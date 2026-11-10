@@ -15,6 +15,7 @@ import { FACTS } from "./facts.generated";
 import { MODELS_COPY, formatModelTokens, formatModelDate } from "./content/models";
 import { PLUGINS_COPY, PLUGIN_COMMANDS, INTEGRATIONS_COPY, INTEGRATION_CHOICES, PLUGIN_EXAMPLES, PLUGIN_COMPATIBILITY, MCP_SETUP_COMMANDS } from "./content/plugins";
 import { CONSTITUTION_LAYERS, CONSTITUTION_SCENES } from "./content/constitution";
+import { getDocsAccount } from "./content/docs-account";
 import type { LocalizedText } from "./content/vocabulary";
 import { TOOLS_COPY } from "./content/tools";
 import {
@@ -23,7 +24,7 @@ import {
 } from "./content/vocabulary";
 
 const ARTICLES: Record<string, (locale: string) => DocsPageDict> = {
-  auth: getDocsAuth, "claude-code": getDocsClaudeCode, configuration: getDocsConfiguration,
+  account: getDocsAccount, auth: getDocsAuth, "claude-code": getDocsClaudeCode, configuration: getDocsConfiguration,
   fleet: getDocsFleet, hooks: getDocsHooks, mcp: getDocsMcp, modes: getDocsModes,
   pet: getDocsPet, review: getDocsReview, "runtime-api": getDocsRuntimeApi,
   sandbox: getDocsSandbox, skills: getDocsSkills, subagents: getDocsSubagents,

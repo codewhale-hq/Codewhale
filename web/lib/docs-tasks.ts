@@ -64,6 +64,17 @@ export const DOC_TASKS: DocTask[] = [
     keywords: { en: "api key byok auth set login account ollama vllm sglang local", zh: "密钥 登录 账户 本地模型" },
   },
   {
+    id: "sign-in",
+    label: { en: "Sign in to Codewhale", zh: "登录 Codewhale" },
+    description: {
+      en: "Sign in to an existing account from the web, the desktop app, or the terminal, and sign out again.",
+      zh: "在网页、桌面应用或终端登录已有账户，并在需要时退出登录。",
+    },
+    href: "/docs/account",
+    topicId: "account",
+    keywords: { en: "login logout sign out account export delete data privacy api key", zh: "登录 退出 账户 导出 删除 数据 隐私" },
+  },
+  {
     id: "choose-model",
     label: { en: "Choose or switch models", zh: "选择或切换模型" },
     description: {

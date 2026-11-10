@@ -95,7 +95,7 @@ codewhale --provider ollama --model <model-tag>`,
           codeTerms: true,
         },
         {
-          p: "`codewhale login` does not accept provider keys; those always go through `codewhale auth set`. The session is kept in your operating system's credential manager when one is available, and in the private Codewhale secrets file otherwise — for example over SSH or in a container.",
+          p: "`codewhale login` does not accept provider keys; those always go through `codewhale auth set`. The session is kept in your operating system's credential manager when one is available, and in the private Codewhale secrets file otherwise — for example over SSH or in a container. [Sign in to Codewhale](/docs/account) covers each surface step by step.",
         },
       ],
     },

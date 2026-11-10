@@ -464,7 +464,7 @@ model = "qwen3:8b"        # 默认：本地守护进程列出的标签
 | `csdn` | [CSDN 星图控制台](https://ai.csdn.net/workbench/api-key)——`glm_for_coding` 套餐路由请选择 Coding Plan 密钥类型；通用密钥按量计费。文档：[Coding Plan](https://ai.csdn.net/coding-plan)。 |
 | `concentrate` | [Concentrate 控制台](https://concentrate.ai/) → API Keys → Create API Key（一个 Universal API 密钥）；文档：[API 简介](https://concentrate.ai/docs/api-reference/introduction)。仅支持自带密钥（BYOK）——密钥保存在本地的密钥存储中。 |
 | `modelstudio-token-plan`, `modelstudio-token-plan-anthropic`, `modelstudio-coding-plan`, `modelstudio-coding-plan-anthropic` | [阿里云百炼 Model Studio（百炼控制台）](https://bailian.console.aliyun.com/) —— 创建或复制 Model Studio API 密钥。 |
-| `codewhale` | [Codewhale 账户设置](https://app.codewhale.net/settings?section=api)——创建带 `models:infer` 权限范围的 API 密钥，或运行 `codewhale account api-keys create --name <name> --use`。 |
+| `codewhale` | Codewhale 账户 API 密钥（`models:infer` 权限范围）——在已登录的终端运行 `codewhale account api-keys create --name <name> --use`。 |
 | `custom` | 设置该具名提供商的 `base_url` 和 `api_key_env` 或 `api_key`；不存在规范的厂商凭据页面。 |
 
 对于 Kimi，官方[快速入门](https://platform.kimi.ai/docs/overview)引导用户登录、打开 **API 密钥**、创建并复制密钥，并保守秘密。Codewhale 直接链接到该控制台并接受复制的密钥。它从不探测或冒充 `kimi_cli`/`kimi_code_cli`；一等 Kimi OAuth 仍然受阻于厂商注册的 Codewhale 身份。

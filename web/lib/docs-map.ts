@@ -78,6 +78,18 @@ export const DOC_TOPICS: DocTopic[] = [
     category: "getting-started",
   },
   {
+    id: "account",
+    slug: "account",
+    label: { en: "Sign in to Codewhale", zh: "登录 Codewhale" },
+    description: {
+      en: "Sign in to an existing account from the web, the desktop app, or the terminal, sign out, and find data export and deletion.",
+      zh: "在网页、桌面应用或终端登录已有账户、退出登录，以及找到数据导出和删除的入口。",
+    },
+    repoSource: ["docs/CONFIGURATION.md", "docs/PROVIDERS.md"],
+    hasPage: true,
+    category: "getting-started",
+  },
+  {
     id: "providers",
     slug: "providers",
     label: { en: "Choose a model", zh: "选择模型" },
