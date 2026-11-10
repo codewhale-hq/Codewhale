@@ -12,6 +12,22 @@ CASES = [
     ({"header": "EN-us;q=0.7", "available": ["en-US"]}, "en-US"),
     ({"header": "*;q=0.3", "available": ["ja", "en"]}, "ja"),
     ({"header": "", "available": ["en"]}, None),
+    ({"header": "en;q=.5,fr;q=0.4", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en;q=0.1234,fr;q=0.2", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en;q=01,fr;q=0.3", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en;q=1.001,fr;q=0.9", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en;q=1e0,fr;q=0.8", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en;q=0.2;foo=bar,fr;q=0.1", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en;q=0.2;q=0.8,fr;q=0.1", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en;q=0,en;q=1,fr;q=0.2", "available": ["en", "fr"]}, "fr"),
+    ({"header": "*;q=0.8,en;q=0", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en--US,fr;q=0.2", "available": ["en-US", "fr"]}, "fr"),
+    ({"header": "en_US,fr;q=0.2", "available": ["en-US", "fr"]}, "fr"),
+    ({"header": "en;q=0.5, fr;q=0.5", "available": ["en", "fr"]}, "en"),
+    ({"header": "en-UK;q=0.5,en;q=0.3", "available": ["en-US", "en-UK"]}, "en-UK"),
+    ({"header": " EN ; Q = 0.7 , fr;q=0.6", "available": ["en", "fr"]}, "en"),
+    ({"header": "en;q=0.000,fr;q=0.001", "available": ["en", "fr"]}, "fr"),
+    ({"header": "en;q=1.000,fr;q=0.9", "available": ["en", "fr"]}, "en"),
 ]
 
 
