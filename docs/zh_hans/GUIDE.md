@@ -400,7 +400,7 @@ Codewhale 还可以在 `.codewhale/harness/state.json` 维护一个小型项目�
 
 如果仓库有自己的指令，请把它们当作活动工作的一部分。编辑前先读本地指南，并让你的贡献保持在仓库约定之内。
 
-下一步：见 [SKILLS.md](SKILLS.md) 了解管理器、所有权和来源规则；[CLAUDE_PLUGIN_COMPAT.md](../CLAUDE_PLUGIN_COMPAT.md) 了解 Claude Code 技能/插件兼容性；[CONFIGURATION.md](CONFIGURATION.md) 了解配置路径与项目权威。
+下一步：见 [SKILLS.md](SKILLS.md) 了解管理器、所有权和来源规则；[CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md) 了解 Claude Code 技能/插件兼容性；[CONFIGURATION.md](CONFIGURATION.md) 了解配置路径与项目权威。
 
 ## 10. 获取帮助
 
