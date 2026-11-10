@@ -658,3 +658,53 @@ backward-compatible ingest before the website emits schema 5. Old ingest
 rejects schema 5; the website must treat `{ accepted: false }` as non-acceptance,
 even if its local forwarding route returned HTTP 200. Neither deploy is
 authorized by this documentation or by a passing local test.
+
+### Run the owner reports without changing collection
+
+Run these from `telemetry-ingest/`. Offline fixtures are explicitly synthetic
+and establish report arithmetic only:
+
+```sh
+npm run report:funnel -- --input test/golden/funnel-report-synthetic.json
+npm run report:contributions -- --input test/golden/contributions-synthetic.json
+npm run report:funnel -- --sql --from 2026-10-01T00:00:00Z --to 2026-11-01T00:00:00Z
+```
+
+Without `--input` or `--sql`, the funnel report uses the existing operator's
+`CF_ACCOUNT_ID` and `CF_API_TOKEN` to query the existing Analytics Engine SQL
+API. It does not write credentials or deploy anything. Dates are UTC,
+`--from` is inclusive, and `--to` is exclusive; the default covers the previous
+30 complete UTC days. Queries stop at a bounded row limit and fail rather than
+silently calling a truncated result complete. `--sql` prints a query plan only,
+without credentials or a network request. Local tests do not qualify those
+queries against the hosted SQL service.
+
+The offline format is `codewhale-funnel-receipt-v1`, with a labelled `source`,
+`coverage` containing `from`, `to`, `complete` and `accepted_only`, plus
+`website_rows` and `native_rows`. The synthetic fixture shows the normalized
+shape. Raw local buffers are not accepted as received-traffic evidence. The
+report prints source, coverage, freshness, counts and caveats, and never
+prints the native rotating IDs it uses internally.
+
+Website output contains fixed interaction counters only. It does not divide
+site-wide installer copies by install-page views or claim that one caused the
+other. Native follow-up is separate: its denominator is distinct observed
+native IDs with `install_or_upgrade(kind=install)` and a full seven-day
+follow-up before the report boundary. Its numerator is those same IDs with an
+observed `model_usage(turns_ok > 0)` during that follow-up. Sampled or incomplete
+native coverage and an empty eligible cohort make the fraction unavailable,
+not zero. An ID with an observed CI start is excluded in full because aggregate
+model rows cannot be assigned to that particular session. This fraction is
+neither human retention nor website conversion.
+
+Without `--input`, the contribution report reads the canonical public
+repository through the operator's existing authenticated `gh` CLI. It verifies
+that the repository is public, reads all issue and pull-request pages within
+100 pages per endpoint, and refuses to produce a cohort if pagination has not
+finished. The report counts earliest issue creation and earliest PR merge by
+public author separately, excludes bots and deleted authors, and emits only
+aggregate daily counts. It does not use GitHub's mutable first-time-contributor
+badge as historical proof. `--from` and `--to` filter the resulting cohorts,
+not the history needed to establish them. No public author handles or API
+response content are printed or sent to telemetry. A complete accessible
+export still cannot recover deleted history or become an atomic snapshot.

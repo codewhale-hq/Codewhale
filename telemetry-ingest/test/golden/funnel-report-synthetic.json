@@ -1,0 +1,56 @@
+{
+  "format": "codewhale-funnel-receipt-v1",
+  "source": "synthetic",
+  "coverage": {
+    "from": "2026-10-01T00:00:00Z",
+    "to": "2026-11-01T00:00:00Z",
+    "complete": true,
+    "accepted_only": true
+  },
+  "website_rows": [
+    {
+      "day": "2026-10-04",
+      "counters": {
+        "home_view": 4,
+        "install_view": 2,
+        "quickstart_view": 0,
+        "contribute_view": 0,
+        "install_intent": 1,
+        "install_confirmed": 1,
+        "star_exit": 0,
+        "issue_exit": 0,
+        "help_wanted_exit": 0,
+        "guide_exit": 0,
+        "docs_search": 0,
+        "docs_search_empty": 0,
+        "docs_search_result": 0,
+        "quickstart_confirmed": 1
+      },
+      "weight": 1
+    }
+  ],
+  "native_rows": [
+    {
+      "install_id": "3f2a9c1e-0000-4000-8000-000000000001",
+      "event": "install_or_upgrade",
+      "surface": "tui",
+      "install_kind": "install",
+      "session_source": "interactive",
+      "received_at": "2026-10-02T00:00:00Z",
+      "schema_version": 4,
+      "turns_ok": 1,
+      "weight": 1
+    },
+    {
+      "install_id": "3f2a9c1e-0000-4000-8000-000000000001",
+      "event": "model_usage",
+      "surface": "tui",
+      "install_kind": "install",
+      "session_source": "interactive",
+      "received_at": "2026-10-03T00:00:00Z",
+      "schema_version": 4,
+      "turns_ok": 1,
+      "weight": 1
+    }
+  ]
+}

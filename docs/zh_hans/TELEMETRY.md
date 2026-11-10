@@ -399,3 +399,41 @@ GitHub 首个公开 issue 和首个已合并 PR 群组使用另外的完整公�
 生产流量或转化有所改善。获得明确部署授权后，先部署向后兼容的采集服务，再让
 网站发送 schema 5。旧采集服务会拒绝 schema 5；即使网站转发路由返回 HTTP 200，
 客户端也必须将 `{ accepted: false }` 视为未接收。本文档和本地测试通过均不授权部署。
+
+### 使用维护者报告，不改变采集行为
+
+以下命令在 `telemetry-ingest/` 中运行。离线夹具明确标记为合成数据，只验证报告
+计算，不代表真实流量：
+
+```sh
+npm run report:funnel -- --input test/golden/funnel-report-synthetic.json
+npm run report:contributions -- --input test/golden/contributions-synthetic.json
+npm run report:funnel -- --sql --from 2026-10-01T00:00:00Z --to 2026-11-01T00:00:00Z
+```
+
+不传 `--input` 或 `--sql` 时，漏斗报告通过现有的 `CF_ACCOUNT_ID` 和
+`CF_API_TOKEN` 查询现有 Analytics Engine SQL API，不写入凭据，也不部署。
+日期使用 UTC，`--from` 包含起点，`--to` 不包含终点，默认覆盖此前 30 个完整
+UTC 日。查询达到行数上限时会失败，不会把截断结果当作完整数据。`--sql` 只输出
+查询计划，不读取凭据或访问网络。本地测试不证明查询已经通过托管 SQL 服务验证。
+
+离线格式为 `codewhale-funnel-receipt-v1`，包含明确的 `source`、带 `from`、
+`to`、`complete` 和 `accepted_only` 的 `coverage`，以及 `website_rows` 和
+`native_rows`。合成夹具展示规范化格式，本地原始缓冲不能当作已接收流量。
+报告输出来源、范围、新鲜度、计数和局限，不输出内部使用的运行时轮换 ID。
+
+网站输出只有固定交互计数，不会将全站安装命令复制数除以安装页浏览数，也不作
+因果推断。运行时的七日后续观察独立计算：分母为出现
+`install_or_upgrade(kind=install)` 且报告截止前已有完整七日观察期的不同运行时
+ID；分子为其中在该观察期内出现 `model_usage(turns_ok > 0)` 的 ID。
+运行时数据有抽样、覆盖不完整或没有合格群组时，比例显示为不可用，而不是零。
+任何观察到 CI 启动的 ID 都会整体排除，因为聚合模型行不能分配给具体会话。
+此比例既不是人的留存率，也不是网站转化率。
+
+不传 `--input` 时，贡献报告通过维护者现有登录状态的 `gh` CLI 读取标准公开
+仓库。它先确认仓库公开，再在每个端点最多 100 页的范围内读取全部 issue 和 PR；
+若分页未结束，就拒绝生成群组报告。报告按公开作者分别计算最早 issue 创建和
+最早 PR 合并，排除机器人和已删除作者，只输出每日聚合计数。它不会将 GitHub
+可变的首次贡献徽章当作历史证据。`--from` 和 `--to` 过滤的是计算后的群组，而非
+确立首次记录所需的历史。不输出公开作者账号或 API 响应内容，也不向遥测发送。
+完整的可访问导出仍无法恢复已删除的历史，也不是原子快照。

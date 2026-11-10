@@ -39,3 +39,5 @@ export function formatReport(
 ): string;
 export function main(argv?: string[], env?: NodeJS.ProcessEnv): Promise<void>;
 export function runCli(label: string): void;
+
+export function querySql(options: { accountId: string; apiToken: string; sql: string; fetchImpl?: typeof fetch }): Promise<unknown>;
