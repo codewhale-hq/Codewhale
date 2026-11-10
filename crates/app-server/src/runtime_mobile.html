@@ -704,7 +704,7 @@
       try {
         const result = await api("/v1/approvals/" + encodeURIComponent(approvalId), {
           method: "POST",
-          body: JSON.stringify({ decision, remember })
+          body: JSON.stringify({ decision, remember, client: "phone" })
         });
         const decided = result?.decision ?? decision;
         container.innerHTML = "<span class='meta'>Decision sent: " + escapeHtml(decided) + "</span>";

@@ -1,6 +1,7 @@
 use super::*;
 use codewhale_app_server_protocol::runtime::watch_event::WatchEventReceipt;
 
+mod external_agent;
 pub mod history;
 
 pub(super) const EVENT_CHANNEL_CAPACITY: usize = 1024;
@@ -19,6 +20,47 @@ pub(super) const STEER_DROPPED_REASON: &str =
     "the turn moved on before the engine committed it, so the model never saw it — resend it";
 pub(super) const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 pub(super) const REDACTED_USER_INPUT_RECEIPT: &str = "User input submitted";
+
+async fn external_executor_record(requested: &CreateThreadExecutor) -> Result<ExecutorRecord> {
+    if requested.kind != EXECUTOR_KIND_ACP {
+        let kind: String = requested.kind.chars().take(32).collect();
+        return Err(crate::fleet::agents::ExecutorUnavailable::new(
+            crate::fleet::agents::ExecutorUnavailable::EXECUTOR_NOT_SUPPORTED,
+            format!("Sessions run by `{kind}` are not supported in this build of Codewhale."),
+        )
+        .into());
+    }
+    let agent_id = requested.agent_id.trim();
+    anyhow::ensure!(
+        !agent_id.is_empty()
+            && agent_id.len() <= 64
+            && agent_id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')),
+        "executor agent_id must name an agent from GET /v1/agents/external"
+    );
+    let model = match requested.config.model.as_deref().map(str::trim) {
+        Some(model) if !model.is_empty() => {
+            anyhow::ensure!(
+                model.len() <= 128 && !model.chars().any(|ch| ch.is_control()),
+                "executor config.model must be the agent's own option value"
+            );
+            Some(model.to_string())
+        }
+        _ => None,
+    };
+    let launch = crate::fleet::agents::launch(agent_id).await?;
+    Ok(ExecutorRecord {
+        version: EXECUTOR_RECORD_VERSION,
+        kind: EXECUTOR_KIND_ACP.to_string(),
+        agent_id: launch.agent_id,
+        agent_name: Some(launch.agent_name),
+        agent_version: None,
+        protocol_version: None,
+        foreign_session_id: None,
+        model,
+    })
+}
 
 fn validate_add_dirs(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     paths
@@ -1419,6 +1461,25 @@ pub struct CreateThreadRequest {
     pub environments: Vec<TurnEnvironmentParams>,
     #[serde(default, alias = "parentThreadId")]
     pub parent_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<CreateThreadExecutor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<ThreadEnvironment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateThreadExecutor {
+    pub kind: String,
+    #[serde(alias = "agentId")]
+    pub agent_id: String,
+    #[serde(default)]
+    pub config: CreateThreadExecutorConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateThreadExecutorConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Mutable fields accepted by `PATCH /v1/threads/{id}`.
@@ -2922,6 +2983,7 @@ pub(super) struct ActiveThreads {
     /// stay reachable through the jobs API; an entry is removed only when the
     /// thread itself is removed, which drops the manager and kills its jobs.
     pub(super) shell_managers: HashMap<String, SharedShellManager>,
+    pub(super) external: HashMap<String, external_agent::ExternalThreadState>,
 }
 
 pub(super) struct NativeForkSource {
@@ -3513,6 +3575,16 @@ pub enum ExternalApprovalDecision {
     Deny { remember: bool },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalResponder {
+    Desktop,
+    Phone,
+    Web,
+    Tui,
+    Acp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalApprovalBinding {
     pub thread_id: String,
@@ -3530,6 +3602,8 @@ pub(super) struct PendingApprovalEntry {
     pub(super) sender: Option<oneshot::Sender<ExternalApprovalDecision>>,
     pub(super) publication: Option<crate::core::engine::NativeApprovalPublication>,
     pub(super) proposed: Option<ExternalApprovalDecision>,
+    pub(super) responder: Option<ApprovalResponder>,
+    pub(super) agent_settled: Option<watch::Receiver<Option<bool>>>,
 }
 
 pub(super) struct PendingUserInputEntry {
@@ -4466,6 +4540,7 @@ impl RuntimeThreadManager {
     pub async fn shutdown_and_wait(&self) -> Result<()> {
         let _drain = self.shutdown_drain.lock().await;
         self.close_execution_admission().await;
+        let mut failure = self.stop_all_external_sessions().await.err();
         let (engines, active_turns) = {
             let active = self.active.lock().await;
             (
@@ -4486,7 +4561,6 @@ impl RuntimeThreadManager {
                     .collect::<Vec<_>>(),
             )
         };
-        let mut failure = None;
         for (thread_id, turn_id) in active_turns {
             if let Err(error) = self.interrupt_turn(&thread_id, &turn_id).await
                 && !self
@@ -4564,7 +4638,18 @@ impl RuntimeThreadManager {
             .lock()
             .retain(|(_, _, worker)| !completion_finished(worker));
         let mut active = self.active.lock().await;
+        let unsettled = active
+            .external
+            .values()
+            .filter(|state| state.active_turn.is_some())
+            .count();
+        if unsettled > 0 {
+            failure = Some(anyhow!(
+                "Runtime shutdown left {unsettled} external turns unsettled"
+            ));
+        }
         active.engines.clear();
+        active.external.clear();
         active.lru.clear();
         failure.map_or(Ok(()), Err)
     }
@@ -4695,6 +4780,8 @@ impl RuntimeThreadManager {
                     sender: Some(tx),
                     publication,
                     proposed: None,
+                    responder: None,
+                    agent_settled: None,
                 });
                 return (id, rx);
             }
@@ -4984,6 +5071,17 @@ impl RuntimeThreadManager {
         binding: Option<&ExternalApprovalBinding>,
         decision: ExternalApprovalDecision,
     ) -> Result<bool> {
+        self.deliver_approval_from(approval_id, binding, decision, None)
+            .await
+    }
+
+    pub async fn deliver_approval_from(
+        &self,
+        approval_id: &str,
+        binding: Option<&ExternalApprovalBinding>,
+        decision: ExternalApprovalDecision,
+        responder: Option<ApprovalResponder>,
+    ) -> Result<bool> {
         let publication = {
             let mut pending = self.pending_approvals.lock();
             let Some(entry) = pending.get_mut(approval_id) else {
@@ -5011,13 +5109,18 @@ impl RuntimeThreadManager {
                 let Some(sender) = entry.sender.take() else {
                     return Ok(false);
                 };
+                entry.responder = responder;
                 if sender.send(decision).is_err() {
                     return Ok(false);
                 }
                 entry.proposed = Some(decision);
             }
-            entry.publication.clone()
+            (entry.publication.clone(), entry.agent_settled.clone())
         };
+        let (publication, agent_settled) = publication;
+        if let Some(settled) = agent_settled {
+            return external_agent::await_agent_settlement(settled).await;
+        }
         let Some(publication) = publication else {
             #[cfg(any(test, feature = "test-support"))]
             {
@@ -7065,39 +7168,69 @@ impl RuntimeThreadManager {
     ) -> Result<ThreadRecord> {
         let now = Utc::now();
         let reasoning_effort = canonical_runtime_reasoning_effort(req.reasoning_effort.as_deref())?;
-        let (model_provider, model_provider_id, default_model) = {
-            let config = self.read_config().clone();
-            let requested_kind = req
-                .model_provider
-                .as_deref()
-                .filter(|provider| !provider.trim().is_empty());
-            // `Some("")` is malformed provenance, not absence. Pass it to
-            // the resolver so an imported/API-created record cannot silently
-            // acquire the root custom route.
-            let requested_id = req.model_provider_id.as_deref().map(str::trim);
-            let identity = if requested_kind.is_some() || requested_id.is_some() {
-                config.resolve_persisted_provider_identity(requested_kind, requested_id)
-            } else {
-                config.active_provider_identity()
+        if let Some(environment) = req.environment.as_ref() {
+            return Err(environment.refusal().into());
+        }
+        let executor = match req.executor.as_ref() {
+            Some(requested) => {
+                anyhow::ensure!(
+                    req.dynamic_tools.is_empty() && req.environments.is_empty(),
+                    "dynamic tools and environments are not available in a session with another agent"
+                );
+                anyhow::ensure!(
+                    req.model.is_none()
+                        && req.model_provider.is_none()
+                        && req.model_provider_id.is_none()
+                        && req.reasoning_effort.is_none(),
+                    "set another agent's model through executor.config.model; Codewhale provider controls are unavailable"
+                );
+                anyhow::ensure!(
+                    req.allowed_tools.is_none() && req.system_prompt.is_none(),
+                    "a session with another agent uses its own tools and instructions; tool allowlists and system prompts are unavailable"
+                );
+                Some(external_executor_record(requested).await?)
             }
-            .map_err(|reason| anyhow!(reason))?;
-            // A caller-selected model must not depend on an unrelated default
-            // being available (notably an unset local Ollama catalog).
-            let default_model = resolve_runtime_route_for_identity(
-                &config,
-                &identity,
-                req.model
-                    .as_deref()
-                    .filter(|model| !model.trim().is_empty()),
-            )
-            .map_err(|reason| anyhow!(reason))?
-            .model;
-            (
-                identity.persisted_kind().to_string(),
-                identity.persisted_id().map(str::to_string),
-                default_model,
-            )
+            None => None,
         };
+        let (model_provider, model_provider_id, default_model) =
+            if let Some(record) = executor.as_ref() {
+                (
+                    None,
+                    None,
+                    record
+                        .model
+                        .clone()
+                        .or_else(|| record.agent_name.clone())
+                        .unwrap_or_else(|| record.agent_id.clone()),
+                )
+            } else {
+                let config = self.read_config().clone();
+                let requested_kind = req
+                    .model_provider
+                    .as_deref()
+                    .filter(|provider| !provider.trim().is_empty());
+                let requested_id = req.model_provider_id.as_deref().map(str::trim);
+                let identity = if requested_kind.is_some() || requested_id.is_some() {
+                    config.resolve_persisted_provider_identity(requested_kind, requested_id)
+                } else {
+                    config.active_provider_identity()
+                }
+                .map_err(|reason| anyhow!(reason))?;
+                let default_model = resolve_runtime_route_for_identity(
+                    &config,
+                    &identity,
+                    req.model
+                        .as_deref()
+                        .filter(|model| !model.trim().is_empty()),
+                )
+                .map_err(|reason| anyhow!(reason))?
+                .model;
+                (
+                    Some(identity.persisted_kind().to_string()),
+                    identity.persisted_id().map(str::to_string),
+                    default_model,
+                )
+            };
         let model = req
             .model
             .filter(|m| !m.trim().is_empty())
@@ -7155,7 +7288,7 @@ impl RuntimeThreadManager {
             created_at: now,
             updated_at: now,
             model,
-            model_provider: Some(model_provider),
+            model_provider,
             model_provider_id,
             reasoning_effort,
             allowed_tools: req.allowed_tools,
@@ -7176,6 +7309,8 @@ impl RuntimeThreadManager {
             session_id: None,
             saved_session_checkpoint: None,
             last_read: None,
+            executor,
+            environment: None,
         };
         if let Some(operation_key) = req.operation_key {
             let key_fingerprint = runtime_turn_operation_key_fingerprint(
@@ -7203,6 +7338,7 @@ impl RuntimeThreadManager {
                     "task_id": thread.task_id,
                     "dynamic_tools": req.dynamic_tools,
                     "environments": req.environments,
+                    "executor": thread.executor,
                 }))?);
             let _emit_order = self.event_emit.lock().await;
             let store = self.store.clone();
@@ -7333,6 +7469,10 @@ impl RuntimeThreadManager {
             .engines
             .get(thread_id)
             .is_some_and(|state| state.active_turn.is_some())
+            || active
+                .external
+                .get(thread_id)
+                .is_some_and(|state| state.active_turn.is_some())
         {
             bail!("thread {thread_id} already has an active turn; stop it before deleting");
         }
@@ -7350,6 +7490,7 @@ impl RuntimeThreadManager {
             active.lru.retain(|id| id != thread_id);
             let shell_manager = active.shell_managers.remove(thread_id);
             let evicted = active.engines.remove(thread_id).map(|state| state.engine);
+            let external = active.external.remove(thread_id);
             for turn in self.store.list_turns_for_thread(thread_id)? {
                 for item_id in &turn.item_ids {
                     self.store.remove_item(item_id)?;
@@ -7360,9 +7501,13 @@ impl RuntimeThreadManager {
             remove_file_if_exists(&self.store.goal_path(thread_id)?)?;
             self.store.remove_seed_journal(thread_id)?;
             self.store.remove_thread(thread_id)?;
-            Ok((thread, evicted, shell_manager))
+            Ok((thread, (evicted, external), shell_manager))
         })?;
         drop(active);
+        let (evicted, external) = evicted;
+        if let Some(state) = external {
+            let _ = tokio::task::spawn_blocking(move || state.session.stop_blocking()).await;
+        }
         if let Some(manager) = shell_manager
             && let Ok(mut guard) = manager.lock()
         {
@@ -8243,6 +8388,20 @@ impl RuntimeThreadManager {
             && req.model_provider_id.is_none()
         {
             bail!("At least one thread field is required");
+        }
+        if (req.model.is_some()
+            || req.model_provider.is_some()
+            || req.model_provider_id.is_some()
+            || req.system_prompt.is_some()
+            || req.workspace.is_some())
+            && self
+                .store
+                .load_thread(id)
+                .is_ok_and(|thread| thread.executor.is_some())
+        {
+            bail!(
+                "A session with another agent keeps its agent, models and folder for its whole life; start a new session instead"
+            );
         }
 
         if let Some(model) = req.model.as_ref()
@@ -9503,6 +9662,13 @@ impl RuntimeThreadManager {
 
     pub async fn resume_thread(&self, id: &str) -> Result<ThreadRecord> {
         let thread = self.get_thread(id).await?;
+        if let Some(environment) = thread.environment.as_ref() {
+            return Err(environment.refusal().into());
+        }
+        if thread.executor.is_some() {
+            self.external_session(&thread).await?;
+            return self.get_thread(id).await;
+        }
         self.ensure_engine_loaded(&thread).await?;
         self.grants.resume_thread(id);
         Ok(thread)
@@ -9801,6 +9967,10 @@ impl RuntimeThreadManager {
 
     async fn fork_thread_under_guard(&self, id: &str, sessions_dir: &Path) -> Result<ThreadRecord> {
         let source = self.get_thread(id).await?;
+        anyhow::ensure!(
+            source.executor.is_none(),
+            "a session with another agent cannot be forked; its history lives in the agent"
+        );
         let mut forked = source.clone();
         let now = Utc::now();
         forked.id = runtime_record_id("thr");
@@ -10165,6 +10335,10 @@ impl RuntimeThreadManager {
         sessions_dir: &Path,
     ) -> Result<PreparedThreadFork> {
         let source = self.get_thread(id).await?;
+        anyhow::ensure!(
+            source.executor.is_none(),
+            "a session with another agent cannot be forked; its history lives in the agent"
+        );
         let source_turns = self.store.list_turns_for_thread(&source.id)?;
         // Every item of every turn in one read: see `prepared_items_for_turns`.
         let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
@@ -10220,6 +10394,10 @@ impl RuntimeThreadManager {
         sessions_dir: &Path,
     ) -> Result<PreparedThreadFork> {
         let source = self.get_thread(id).await?;
+        anyhow::ensure!(
+            source.executor.is_none(),
+            "a session with another agent cannot be forked; its history lives in the agent"
+        );
         let source_turns = self.store.list_turns_for_thread(&source.id)?;
         let items_by_turn = self.prepared_items_for_turns(&source_turns)?;
         let (cutoff_turn_idx, receipt_turn_idx, depth_from_tail) =
@@ -12990,10 +13168,17 @@ impl RuntimeThreadManager {
         }
 
         let thread = self.get_thread(thread_id).await?;
-        let input_metadata = input_source.item_metadata(&self.store.owner_id, &thread, &prompt);
+        if let Some(environment) = thread.environment.as_ref() {
+            return Err(environment.refusal().into());
+        }
         if req.expected_workspace.as_ref().is_some_and(|workspace| workspace != &thread.workspace) {
             bail!("Thread workspace changed from the selected frontend admission");
         }
+        if thread.executor.is_some() {
+            anyhow::ensure!(!narrowing.is_acp(), "an ACP frontend turn cannot run in a session with another agent");
+            return self.start_external_turn(thread, req, &input_source, reserved_turn_id, prompt).await;
+        }
+        let input_metadata = input_source.item_metadata(&self.store.owner_id, &thread, &prompt);
         let expected_workspace = req.expected_workspace.clone();
         let turn_reasoning_preference = req
             .reasoning_effort
@@ -13759,6 +13944,9 @@ source_usage_records: Default::default(),
     }
 
     pub async fn interrupt_turn(&self, thread_id: &str, turn_id: &str) -> Result<TurnRecord> {
+        if self.external_thread_loaded(thread_id).await {
+            return self.interrupt_external_turn(thread_id, turn_id).await;
+        }
         {
             let mut active = self.active.lock().await;
             let Some(active_thread) = active.engines.get_mut(thread_id) else {
@@ -13809,6 +13997,11 @@ source_usage_records: Default::default(),
         let prompt = req.prompt.trim().to_string();
         if prompt.is_empty() {
             bail!("prompt is required");
+        }
+        if self.external_thread_loaded(thread_id).await {
+            bail!(
+                "This agent cannot be steered during a turn; send the message after the turn ends"
+            );
         }
 
         let engine = {
@@ -14203,6 +14396,16 @@ source_usage_records: Default::default(),
 
     async fn ensure_engine_loaded(&self, thread_hint: &ThreadRecord) -> Result<EngineHandle> {
         self.ensure_accepting_execution()?;
+        if let Some(environment) = thread_hint.environment.as_ref() {
+            return Err(environment.refusal().into());
+        }
+        if let Some(executor) = thread_hint.executor.as_ref() {
+            bail!(
+                "Session {} runs on the agent `{}`; this needs Codewhale's own agent",
+                thread_hint.id,
+                executor.agent_id
+            );
+        }
         {
             let mut active = self.active.lock().await;
             self.ensure_accepting_execution()?;
@@ -14938,6 +15141,9 @@ source_usage_records: Default::default(),
         create: bool,
     ) -> Result<Option<SharedShellManager>> {
         let thread = self.get_thread(thread_id).await?;
+        if let Some(environment) = thread.environment.as_ref() {
+            return Err(environment.refusal().into());
+        }
         let (prefer_bwrap, bwrap_extensions, denied_read_paths) = {
             let cfg = self.read_config();
             (
@@ -17094,6 +17300,13 @@ source_usage_records: Default::default(),
                     });
                     if is_automatic {
                         payload["auto"] = json!(true);
+                    } else if let Some(responder) = self
+                        .pending_approvals
+                        .lock()
+                        .get(&approval_id)
+                        .and_then(|entry| entry.responder)
+                    {
+                        payload["responder"] = json!(responder);
                     }
                     if let Some(posture) = denied_posture {
                         payload["posture"] = json!(posture);

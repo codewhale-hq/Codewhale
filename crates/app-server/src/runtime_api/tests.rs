@@ -554,6 +554,8 @@ fn messages_from_thread_detail_batches_tool_results() {
         session_id: None,
         saved_session_checkpoint: None,
         last_read: None,
+        executor: None,
+        environment: None,
     };
     let turn = TurnRecord {
         source_usage_origin_turn_id: None,
@@ -784,6 +786,8 @@ fn legacy_exact_thread_export_normalizes_provider_kind_and_id() {
             session_id: None,
             saved_session_checkpoint: None,
             last_read: None,
+            executor: None,
+            environment: None,
         },
         turns: Vec::new(),
         items: Vec::new(),

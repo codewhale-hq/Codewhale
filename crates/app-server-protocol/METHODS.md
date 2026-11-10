@@ -235,3 +235,18 @@ Status: `implemented` means a Codex-shaped handler is on main (response goldens 
 | `windows/worldWritableWarning` | undecided | missing | Codex Windows sandbox | C |
 | `windowsSandbox/setupCompleted` | undecided | missing | Codex Windows sandbox | C |
 | `account/login/completed` | undecided | missing | OpenAI account state | C |
+
+## Codewhale extensions
+
+These ride on Codex shapes without changing any pinned field. The pinned
+`Thread` schema allows additional properties, so a Codex client ignores the
+fields. Codewhale notifications live under `codewhale/`, because Codex already
+uses `thread/environment/*` for its own environments.
+
+| Name | Kind | Tier | Status | Shape |
+| --- | --- | --- | --- | --- |
+| `Thread.executor` | field | A | defined, unpopulated | `rpc::ThreadExecutor` `{ kind, agentId, agentName? }`: a thread driven by an external agent over ACP; absent for a native thread. Never an environment value or a credential. |
+| `Thread.environment` | field | B | defined, unpopulated | `rpc::ThreadEnvironment` `{ id, providerKind }`: where the thread runs; absent means this computer. |
+| `codewhale/environment/*` | server notifications | B | reserved, not implemented | environment state changes for placement |
+| `ThreadItem.placement` | field | B | reserved, not implemented | where a child or job ran |
+| `approval.decided.responder` | Runtime journal field | A | implemented | the client that answered (`desktop`, `phone`, `web`, `tui`, `acp`), as declared by that client |

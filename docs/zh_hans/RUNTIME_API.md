@@ -1283,7 +1283,10 @@ Runtime 的正常启动可能在之后的某次查询之前恢复一次不完整
 
 **审批**
 - `POST /v1/approvals/{approval_id}`，请求体
-  `{ "decision": "allow" | "deny", "remember": false }`
+  `{ "decision": "allow" | "deny", "remember": false, "client": "desktop" }`。
+  `client` 可选，标明作答的界面：`desktop`、`phone`、`web`、`tui` 或 `acp`。
+  该回答的 `approval.decided` 事件以 `responder` 字段携带它。这是客户端自行声明的标签，
+  不是经过认证的设备身份；不带该字段的回答不记录 `responder`。
 
 `approval_id` 由 Runtime 铸造，而不是由模型或提供商铸造。它是一个
 不透明的 `approval_<32 hex>` 能力，每个提示词唯一，绑定到发起它的线程，

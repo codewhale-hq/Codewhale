@@ -12,6 +12,8 @@ let sessionId = null;
 let cwd = process.cwd();
 let permissionWaiter = null;
 let pendingPrompt = null;
+let calls = 0;
+let configModel = null;
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const result = (id, value) => send({ jsonrpc: '2.0', id, result: value });
@@ -38,19 +40,25 @@ function askPermission(toolCall) {
 
 async function prompt(request) {
   const text = (request.params?.prompt ?? []).map((block) => block.text ?? '').join('');
+  notify('session/update', { sessionId, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Thinking about it.' } } });
   for (const chunk of [`You said: `, text, `.`]) {
     notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } } });
   }
-  const toolCall = { toolCallId: 'call-1', title: 'Write fixture.txt', kind: 'edit', status: 'pending' };
+  const toolCall = { toolCallId: `call-${++calls}`, title: 'Write fixture.txt', kind: 'edit', status: 'pending', locations: [{ path: join(cwd, 'fixture.txt') }], rawInput: { path: 'fixture.txt' } };
   notify('session/update', { sessionId, update: { sessionUpdate: 'tool_call', ...toolCall } });
   const answer = await askPermission(toolCall);
   const outcome = answer?.outcome ?? {};
   if (outcome.outcome === 'selected' && outcome.optionId === 'allow') {
     writeFileSync(join(cwd, 'fixture.txt'), 'written by the fixture agent\n');
-    notify('session/update', { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'completed' } });
+    notify('session/update', { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: toolCall.toolCallId, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'wrote fixture.txt' } }] } });
   } else {
-    notify('session/update', { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: 'call-1', status: 'failed' } });
+    notify('session/update', { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: toolCall.toolCallId, status: 'failed' } });
   }
+  if (outcome.outcome === 'cancelled') {
+    result(request.id, { stopReason: 'cancelled' });
+    return;
+  }
+  notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' Done.' } } });
   result(request.id, { stopReason: 'end_turn' });
 }
 
@@ -73,9 +81,20 @@ function handle(message) {
       });
       break;
     case 'session/new':
-      sessionId = 'fixture-session-1';
+      sessionId = `fixture-session-${process.pid}`;
       cwd = message.params?.cwd ?? cwd;
       result(message.id, { sessionId });
+      break;
+    case 'session/load':
+      sessionId = message.params?.sessionId ?? null;
+      cwd = message.params?.cwd ?? cwd;
+      notify('session/update', { sessionId, update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'replayed history' } } });
+      notify('session/update', { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed answer' } } });
+      result(message.id, {});
+      break;
+    case 'session/set_config_option':
+      configModel = message.params?.value ?? null;
+      result(message.id, { configOptions: [] });
       break;
     case 'session/prompt':
       if (HANG) {
