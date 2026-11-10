@@ -1,5 +1,6 @@
 import { fetchFaces, fetchRepoStats, loadFeed, type Face } from "./github";
 import { getEnv } from "./kv";
+import { RELEASE_CONTRIBUTORS, RELEASE_HELPERS, UNRELEASED_CONTRIBUTORS } from "./release-credits";
 import type { FeedItem, RepoStats } from "./types";
 
 export interface ProjectPulse {
@@ -26,7 +27,10 @@ export async function loadProjectPulse(mergedLimit = 6, faceLimit = 60): Promise
   const seen = new Set<string>();
   const faces: Face[] = [];
   const recent = merged.map((item) => ({ login: item.author, avatar: item.authorAvatar }));
-  for (const face of [...recent, ...(people.status === "fulfilled" ? people.value : [])]) {
+  const credited = [...UNRELEASED_CONTRIBUTORS, ...RELEASE_CONTRIBUTORS, ...RELEASE_HELPERS]
+    .map((handle) => handle.replace(/^@/, ""))
+    .map((login) => ({ login, avatar: `https://avatars.githubusercontent.com/${login}` }));
+  for (const face of [...recent, ...(people.status === "fulfilled" ? people.value : []), ...credited]) {
     if (!face.login || !face.avatar || seen.has(face.login)) continue;
     seen.add(face.login);
     faces.push(face);
