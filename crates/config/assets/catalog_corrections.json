@@ -1872,6 +1872,55 @@
       },
       "qwen3.6-35b-a3b": {
         "source": "preserved public presentation facts, not route availability"
+      },
+      "mistral-large-4": {
+        "source": "models.dev mistral/mistral-large-4, discovered 2026-11-10; unreviewed",
+        "context_window": 1048576,
+        "max_output": 262144,
+        "reasoning": true,
+        "family": "Mistral"
+      },
+      "mistral-large-4-0-8": {
+        "source": "models.dev mistral/mistral-large-4-0-8, discovered 2026-11-10; unreviewed",
+        "context_window": 1048576,
+        "max_output": 262144,
+        "reasoning": true,
+        "family": "Mistral"
+      },
+      "minimax-m3.1-flash": {
+        "source": "models.dev minimax/MiniMax-M3.1-Flash, discovered 2026-11-10; unreviewed",
+        "context_window": 1000000,
+        "max_output": 524288,
+        "reasoning": true,
+        "family": "MiniMax"
+      },
+      "kimi-k3.1-pro": {
+        "source": "models.dev moonshotai/kimi-k3.1-pro, discovered 2026-11-10; unreviewed",
+        "context_window": 1048576,
+        "max_output": 1048576,
+        "reasoning": true,
+        "family": "Moonshot/Kimi"
+      },
+      "kimi-k3.1-pro-highspeed": {
+        "source": "models.dev moonshotai/kimi-k3.1-pro-highspeed, discovered 2026-11-10; unreviewed",
+        "context_window": 1048576,
+        "max_output": 1048576,
+        "reasoning": true,
+        "family": "Moonshot/Kimi"
+      },
+      "gpt-6.1-terra": {
+        "source": "models.dev openai/gpt-6.1-terra, discovered 2026-11-10; unreviewed",
+        "context_window": 1050000,
+        "max_output": 128000,
+        "reasoning": true,
+        "family": "OpenAI"
+      },
+      "muse-ember-1.0": {
+        "source": "models.dev meta/muse-ember-1.0, discovered 2026-11-10; unreviewed",
+        "context_window": 1048576,
+        "max_output": 524288,
+        "reasoning": true,
+        "family": "Meta"
       }
     },
     "official_deepseek_aliases": {
@@ -4520,6 +4569,62 @@
         "added_at": "2026-03-02",
         "aliases": [
           "deepseek-reasoner"
+        ]
+      },
+      {
+        "id": "mistral-large-4",
+        "label": "Mistral",
+        "added_at": "2026-10-06",
+        "aliases": [
+          "mistral-large-4"
+        ]
+      },
+      {
+        "id": "mistral-large-4-0-8",
+        "label": "Mistral",
+        "added_at": "2026-10-06",
+        "aliases": [
+          "mistral-large-4-0-8"
+        ]
+      },
+      {
+        "id": "MiniMax-M3.1-Flash",
+        "label": "MiniMax",
+        "added_at": "2026-10-19",
+        "aliases": [
+          "MiniMax-M3.1-Flash"
+        ]
+      },
+      {
+        "id": "kimi-k3.1-pro",
+        "label": "Moonshot/Kimi",
+        "added_at": "2026-10-23",
+        "aliases": [
+          "kimi-k3.1-pro"
+        ]
+      },
+      {
+        "id": "kimi-k3.1-pro-highspeed",
+        "label": "Moonshot/Kimi",
+        "added_at": "2026-10-23",
+        "aliases": [
+          "kimi-k3.1-pro-highspeed"
+        ]
+      },
+      {
+        "id": "gpt-6.1-terra",
+        "label": "OpenAI",
+        "added_at": "2026-10-26",
+        "aliases": [
+          "gpt-6.1-terra"
+        ]
+      },
+      {
+        "id": "muse-ember-1.0",
+        "label": "Meta",
+        "added_at": "2026-11-09",
+        "aliases": [
+          "muse-ember-1.0"
         ]
       }
     ],

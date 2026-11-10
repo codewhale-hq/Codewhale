@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-11-10T21:14:00Z",
-    "sha256": "019e248c87ca384d63f16bfd2fde60f8e26b2c6fa1126927a1dac25fe88c9740"
+    "fetched_at": "2026-11-10T22:14:03Z",
+    "sha256": "2d85d334089340e30ae6d3c6bbbcd8c7591e27b954e8089494348bb59d1bd7af"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -2588,6 +2588,71 @@
       }
     },
     "meta": {
+      "muse-ember-1.0": {
+        "id": "muse-ember-1.0",
+        "canonical_model_id": "meta/muse-ember-1.0",
+        "name": "Muse Ember",
+        "description": "Muse Ember is Meta's smallest and most efficient reasoning model, built for the work agents repeat all day: tool calls, coding subtasks, routing, extraction, and long-document parsing. It pairs with Muse Wonder or Muse Spark, which plan while Muse Ember handles the volume.",
+        "family": "muse",
+        "release_date": "2026-11-09",
+        "last_updated": "2026-11-09",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "pdf",
+            "audio"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 524288
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.004,
+          "tiers": [
+            {
+              "input": 0.3,
+              "output": 1.5,
+              "cache_read": 0.012,
+              "tier": {
+                "type": "context",
+                "size": 200000
+              }
+            }
+          ],
+          "context_over_200k": {
+            "input": 0.3,
+            "output": 1.5,
+            "cache_read": 0.012
+          }
+        }
+      },
       "muse-spark-1.1": {
         "id": "muse-spark-1.1",
         "canonical_model_id": "meta/muse-spark-1.1",
@@ -4524,9 +4589,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.95526,
-          "output": 1.91052,
-          "cache_read": 0.079605
+          "input": 0.894012,
+          "output": 1.788024,
+          "cache_read": 0.074501
         }
       },
       "dots-studio/dots-3-note-preview:free": {

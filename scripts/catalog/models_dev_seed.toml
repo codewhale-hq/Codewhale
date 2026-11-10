@@ -210,6 +210,7 @@ models = [
   "muse-spark-1.3",
   "muse-spark-1.3-contributor",
   "muse-wonder-1.0",
+  "muse-ember-1.0",
 ]
 
 [[providers]]

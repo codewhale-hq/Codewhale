@@ -38,7 +38,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-10T21:14:57.804Z",
+  "generatedAt": "2026-11-10T22:14:03.917Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -364,12 +364,52 @@ export const FACTS: RepoFacts = {
       "addedAt": "2026-11-09"
     },
     {
+      "id": "muse-ember-1.0",
+      "provider": "Meta",
+      "contextWindow": 1048576,
+      "maxOutput": 524288,
+      "reasoning": true,
+      "addedAt": "2026-11-09"
+    },
+    {
       "id": "tencent/hy4",
       "provider": "OpenRouter",
       "contextWindow": 1048576,
       "maxOutput": 65536,
       "reasoning": true,
       "addedAt": "2026-11-05"
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-26"
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 1048576,
+      "maxOutput": 1048576,
+      "reasoning": true,
+      "addedAt": "2026-10-23"
+    },
+    {
+      "id": "kimi-k3.1-pro-highspeed",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 1048576,
+      "maxOutput": 1048576,
+      "reasoning": true,
+      "addedAt": "2026-10-23"
+    },
+    {
+      "id": "MiniMax-M3.1-Flash",
+      "provider": "MiniMax",
+      "contextWindow": 1000000,
+      "maxOutput": 524288,
+      "reasoning": true,
+      "addedAt": "2026-10-19"
     },
     {
       "id": "claude-fable-5-1",
@@ -482,6 +522,22 @@ export const FACTS: RepoFacts = {
       "maxOutput": null,
       "reasoning": true,
       "addedAt": "2026-10-17"
+    },
+    {
+      "id": "mistral-large-4",
+      "provider": "Mistral",
+      "contextWindow": 1048576,
+      "maxOutput": 262144,
+      "reasoning": true,
+      "addedAt": "2026-10-06"
+    },
+    {
+      "id": "mistral-large-4-0-8",
+      "provider": "Mistral",
+      "contextWindow": 1048576,
+      "maxOutput": 262144,
+      "reasoning": true,
+      "addedAt": "2026-10-06"
     },
     {
       "id": "grok-4.7",
