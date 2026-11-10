@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Responses dialect profiles:** Codex, DeepSeek and Concentrate Responses behavior now comes from one checked dialect table instead of per-provider code, a custom `wire = "responses"` provider can set `responses_profile = "standard"` (the default when omitted), and preview shows the profile each Responses request used. A Responses client whose route cannot be resolved now fails when it is created rather than at its first request ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)). Thanks [@SamhandsomeLee](https://github.com/SamhandsomeLee).
 
+### Fixed
+
+- TUI: the launch resume confirmation no longer treats Meta+Enter, Meta+Y or Hyper+Enter as "resume"; only a plain Enter/Y or Shift+Y answers it. Verified by the focused unit tests only; not tried in a terminal that sends Meta or Hyper.
+
 ## [0.10.3] - 2026-11-08
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release
