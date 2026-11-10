@@ -594,6 +594,7 @@ fn load_staged_skill_snapshots_with_roots(
     expected_capability_hash: &str,
     roots: Option<&[PathBuf]>,
 ) -> Result<Vec<PluginSkillSnapshot>, String> {
+    let finalized = super::registry::verify_finalized_stage_root(staged_root, None)?;
     let staged_manifest = resolve_manifest_path(staged_root)
         .ok_or_else(|| "staged plugin has no plugin.json, .claude-plugin/plugin.json, kimi.plugin.json, or plugin.toml".to_string())?;
     let validated = PluginManifest::validate_from_path(&staged_manifest)?;
@@ -623,6 +624,7 @@ fn load_staged_skill_snapshots_with_roots(
     {
         return Err("staged plugin changed while its Skill snapshots were parsed".to_string());
     }
+    super::registry::verify_finalized_stage_root(staged_root, Some(&finalized))?;
     Ok(snapshots)
 }
 

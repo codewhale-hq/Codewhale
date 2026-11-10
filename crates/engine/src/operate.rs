@@ -1545,6 +1545,7 @@ auth_mode = "none"
                 allow_shell: false,
                 trust_mode: false,
                 execution_limits: Default::default(),
+                human_waits_answerable: false,
             },
             std::sync::Arc::new(RouteRecordingExecutor(observations.clone())),
         )

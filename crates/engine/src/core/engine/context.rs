@@ -19,6 +19,7 @@ pub(super) struct ObservedContextUpdate {
     pub(super) current_text: String,
     pub(super) message: Option<String>,
     pub(super) notice: Option<String>,
+    pub(super) assembly: Option<crate::project_context::InstructionAssembly>,
 }
 
 /// Allow a few emergency recovery attempts before failing the turn.

@@ -1,8 +1,8 @@
 # Pinned hook protocol and configuration parsers
 
-Source: DeepSeek Harness rc.5 commit `b830ec950faba0a46dda564be3e2d854afed94f1`.
+Source: DeepSeek Harness rc.1 commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`.
 Packages: `@deepseek-ai/dsh-hook-protocol`, `@deepseek-ai/dsh-hooks-claude-code`, and
-`@deepseek-ai/dsh-hooks-codex`, each version `0.2.1-rc.5`, MIT.
+`@deepseek-ai/dsh-hooks-codex`, each version `0.2.2-rc.1`, MIT.
 
 `UPSTREAM.json` records every original and adapted hash. Matcher, codec and merge
 are verbatim. Types remove session-writer declaration merging; the two parsers

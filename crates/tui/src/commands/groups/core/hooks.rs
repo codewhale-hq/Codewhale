@@ -125,10 +125,7 @@ fn events() -> CommandResult {
             HookEvent::ToolCallAfter,
             "fires after each tool call (observer-only)",
         ),
-        (
-            HookEvent::ModeChange,
-            "fires on Plan/Work/Operate transitions",
-        ),
+        (HookEvent::ModeChange, "fires on Plan/Work transitions"),
         (
             HookEvent::OnError,
             "fires on transport / capacity / tool errors",

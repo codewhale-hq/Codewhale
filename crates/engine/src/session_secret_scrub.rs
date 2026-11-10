@@ -139,7 +139,7 @@ fn canonical_store_root(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Option<Pat
     }
 }
 
-fn entry_has_type(
+pub(crate) fn entry_has_type(
     entry: &std::fs::DirEntry,
     directory: bool,
     unreadable: &mut Vec<PathBuf>,
@@ -159,7 +159,10 @@ fn entry_has_type(
     }
 }
 
-fn directory_entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<std::fs::DirEntry> {
+pub(crate) fn directory_entries(
+    dir: &Path,
+    unreadable: &mut Vec<PathBuf>,
+) -> Vec<std::fs::DirEntry> {
     let entries = match std::fs::symlink_metadata(dir) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Vec::new(),
         Ok(meta) if meta.is_dir() => std::fs::read_dir(dir).ok(),
@@ -525,11 +528,19 @@ mod tests {
         let output = format!("{{\"access_token\": \"{TOKEN}\"}}");
         let manager =
             crate::session_manager::SessionManager::new(dir.path().to_path_buf()).expect("manager");
-        std::fs::write(
-            dir.path().join("gone.json"),
-            session_with_tool_output("nothing").to_string(),
-        )
-        .unwrap();
+        manager
+            .save_session(
+                &crate::session_manager::create_saved_session_with_id_and_mode(
+                    "gone".to_string(),
+                    &[],
+                    "test-model",
+                    dir.path(),
+                    0,
+                    None,
+                    None,
+                ),
+            )
+            .expect("save");
         manager.delete_session("gone").expect("delete");
         let archive_dir = dir
             .path()

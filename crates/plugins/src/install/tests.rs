@@ -1449,3 +1449,151 @@ fn claude_metadata_and_mcp_links_cannot_escape_bundle_validation() {
         .is_err()
     );
 }
+
+#[test]
+fn dsh_admission_validates_engines_peer_ranges_and_platforms_and_admits_cjs_and_node_modules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let patch_body = "- insert:\n  - id: entry\n    name: ./lib/index.cjs\n";
+
+    let make_bundle = |dir_name: &str, manifest: serde_json::Value| -> PathBuf {
+        let dir = tmp.path().join(dir_name);
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(dir.join("package.json"), manifest.to_string()).unwrap();
+        fs::write(dir.join("cordis.patch.yml"), patch_body).unwrap();
+        fs::write(
+            dir.join("lib/index.cjs"),
+            "module.exports = { apply() {} };\n",
+        )
+        .unwrap();
+        dir
+    };
+
+    let bad_engines = make_bundle(
+        "bad-engines",
+        serde_json::json!({
+            "name": "@demo/bad-engines",
+            "version": "1.0.0",
+            "engines": { "dsh": ">=0.3.0" },
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        }),
+    );
+    let err = dsh::convert_package(&bad_engines, &tmp.path().join("out-bad-engines"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("incompatible-version"), "{err}");
+    assert!(err.contains(">=0.3.0"), "{err}");
+    assert!(err.contains("0.2.1-rc.5"), "{err}");
+
+    let bad_peer = make_bundle(
+        "bad-peer",
+        serde_json::json!({
+            "name": "@demo/bad-peer",
+            "version": "1.0.0",
+            "peerDependencies": { "@deepseek-ai/dsh-tools": "^1.0.0" },
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        }),
+    );
+    let err = dsh::convert_package(&bad_peer, &tmp.path().join("out-bad-peer"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("incompatible-version"), "{err}");
+    assert!(err.contains("@deepseek-ai/dsh-tools"), "{err}");
+    assert!(err.contains("^1.0.0"), "{err}");
+
+    let other_platform = if cfg!(target_os = "windows") {
+        "darwin"
+    } else {
+        "win32"
+    };
+    let bad_platform = make_bundle(
+        "bad-platform",
+        serde_json::json!({
+            "name": "@demo/bad-platform",
+            "version": "1.0.0",
+            "engines": { "dsh": "^0.2.1-rc.5" },
+            "dsh": {
+                "bundle": {
+                    "patch": "./cordis.patch.yml",
+                    "platforms": [other_platform]
+                }
+            }
+        }),
+    );
+    let err = dsh::convert_package(&bad_platform, &tmp.path().join("out-bad-platform"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unsupported-platform"), "{err}");
+    assert!(err.contains(other_platform), "{err}");
+
+    let host_platform = if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else {
+        "linux"
+    };
+    for (idx, range) in ["^0.2.1-rc.5", "^0.2.2-rc.1", ">=0.2.0-rc.1 <0.3.0-0"]
+        .iter()
+        .enumerate()
+    {
+        let bundle = make_bundle(
+            &format!("valid-{idx}"),
+            serde_json::json!({
+                "name": format!("@demo/valid-{idx}"),
+                "version": "1.0.0",
+                "main": "lib/index.cjs",
+                "engines": { "dsh": range },
+                "dsh": {
+                    "bundle": {
+                        "patch": "./cordis.patch.yml",
+                        "platforms": [host_platform]
+                    }
+                }
+            }),
+        );
+        let dep_dir = bundle.join("node_modules/fflate");
+        fs::create_dir_all(&dep_dir).unwrap();
+        fs::write(
+            dep_dir.join("package.json"),
+            r#"{"name":"fflate","version":"0.8.2","main":"lib/index.cjs"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(dep_dir.join("lib")).unwrap();
+        fs::write(dep_dir.join("lib/index.cjs"), "module.exports = {};\n").unwrap();
+        let pkg = dsh::Package::open(&bundle).unwrap();
+        assert_eq!(
+            dsh::presets::contained_module(&pkg, "fflate").unwrap(),
+            dep_dir.join("lib/index.cjs").canonicalize().unwrap()
+        );
+        let out = tmp.path().join(format!("out-valid-{idx}"));
+        let converted = dsh::convert_package(&bundle, &out).unwrap();
+        assert!(converted.requires_native);
+        assert!(
+            out.join("source/node_modules/fflate/lib/index.cjs")
+                .is_file()
+        );
+        let validated =
+            crate::manifest::PluginManifest::validate_from_path(&out.join("plugin.json")).unwrap();
+        assert!(validated.applicable);
+    }
+
+    let addon_bundle = make_bundle(
+        "addon-bundle",
+        serde_json::json!({
+            "name": "@demo/addon-bundle",
+            "version": "1.0.0",
+            "engines": { "dsh": "^0.2.1-rc.5" },
+            "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+        }),
+    );
+    fs::create_dir_all(addon_bundle.join("node_modules/native-dep")).unwrap();
+    fs::write(
+        addon_bundle.join("node_modules/native-dep/binding.node"),
+        b"ELF",
+    )
+    .unwrap();
+    let err = dsh::convert_package(&addon_bundle, &tmp.path().join("out-addon"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(".node"), "{err}");
+}

@@ -1590,10 +1590,7 @@ fn turn_route_lines(app: &App) -> Vec<String> {
             lines.push("Cost: local".to_string());
         }
         codewhale_engine::route_billing::UsageChip::Unknown(_) => {
-            lines.push(
-                codewhale_engine::route_billing::format_usage_chip(&chip, app.ui_locale)
-                    .unwrap_or_default(),
-            );
+            lines.push("Cost (session): not priced yet".to_string());
         }
         codewhale_engine::route_billing::UsageChip::Hidden => {}
     }

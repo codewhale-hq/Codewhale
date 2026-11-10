@@ -12,19 +12,72 @@
 
 ### Show the agent a screenshot
 
-- Paste a clipboard image into the composer with the normal terminal paste
-  shortcut, or run `/attach <path>` for an existing PNG, JPEG, GIF, or WebP.
+- Paste a clipboard image into the composer with `Ctrl+V`, or run
+  `/attach <path>` for an existing PNG, JPEG, GIF, or WebP.
 - Drag an image file onto the terminal, or paste its absolute path (plain,
   quoted, shell-escaped, or as a `file://` URL), and it attaches the same way.
   A paste becomes an attachment only when every path in it names an existing
   image; otherwise it stays text. A text-only model gets a notice instead of
   the image.
-- A visible attachment row appears above the composer before the turn is sent.
-  Temporary macOS `NSIRD_screencaptureui` paths are copied into Codewhale's
+- Every attached image is drawn above the composer as a truecolor cell
+  thumbnail, laid out left to right and sharing the row, with the file name
+  (one image) or the count (several) under it. The
+  picture is ordinary cell output (`▀` half blocks, top pixel as foreground,
+  bottom as background), not a graphics protocol, so it renders on Windows
+  Terminal, iTerm2, Terminal.app, GNOME Terminal, Konsole and WezTerm alike.
+  A terminal that reports only 256 or 16 colors - Terminal.app among them -
+  receives a downsampled palette.
+  It is skipped in ASCII-safe mode, and it costs no rows while the decode is
+  still running.
+- Temporary macOS `NSIRD_screencaptureui` paths are copied into Codewhale's
   stable attachment store when ingested.
 - Ask the agent to inspect the screenshot. The image is sent only as part of
   that explicit turn action; merely having a screenshot path or artifact does
   not trigger background analysis.
+
+### Pasted image storage
+
+A pasted clipboard image is saved as `clipboard-<number>.png` under
+`~/.codewhale/clipboard-images/` (or `<workspace>/clipboard-images/` when no
+home directory is available), and the attachment names that absolute path.
+The image bytes enter the request when the message is built, so a later
+missing file never fails a resume; editing and resending an old message
+reattaches from the path and reports a missing image instead of sending it.
+
+Nothing deletes these files on its own. To reclaim space:
+
+```sh
+codewhale sessions prune-images                 # report only
+codewhale sessions prune-images --apply         # delete what the report lists
+codewhale sessions prune-images --older-than-days 30
+```
+
+The command lists only images that no file under the Codewhale state
+directory, the sessions directory or the Runtime task store still names
+(saved sessions, checkpoints, archives, Runtime threads, the composer stash
+and history) and that are older than the grace window (7 days by default),
+so a draft or a running turn keeps its picture. If any file there cannot be
+read, it reports what it found and deletes nothing. A file another process
+still holds open (common on Windows) is reported and skipped. Close open
+Codewhale sessions before `--apply`.
+
+### How `Ctrl+V` reaches Codewhale
+
+Most terminals own the paste chord, and Windows Terminal turns `Ctrl+V` into a
+paste of the clipboard's *text*. When the clipboard holds only a picture there
+is no text — but Windows Terminal still sends an **empty** bracketed paste.
+That is deliberate (`// LOAD BEARING: Send an empty bracketed paste even if the
+clipboard was empty` in its paste handler): it is how an application learns
+that the person pasted even when the clipboard carried nothing the terminal
+could read. Codewhale treats an empty paste as "ask the clipboard yourself"
+and attaches the picture.
+
+If a paste does nothing at all:
+
+- The terminal may not honor bracketed paste. Codewhale enables it at startup,
+  but a terminal that ignores the request never sends the event.
+- In an SSH session with no forwarded graphical display the remote host cannot
+  read your clipboard; paste stays terminal-owned and delivers text only.
 
 `read_media` is the corresponding agent-side path for inspecting another
 image later in the task without requiring the operator to attach it again.

@@ -70,19 +70,32 @@ impl PluginExecutor {
     }
     async fn run(
         &self,
-        mut command: tokio::process::Command,
+        program: &str,
+        args: Vec<String>,
         label: &str,
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         match self {
             Self::Legacy if !codewhale_plugins::activation::extension_host_policy_enabled() => {
+                let mut command = crate::tools::shell::sandboxed_runner_command(
+                    context,
+                    program,
+                    args,
+                    &context.workspace,
+                    PLUGIN_EXECUTION_TIMEOUT,
+                )?;
                 run_plugin_child_raw(&mut command, label, input).await
             }
             Self::Legacy => Err(ToolError::not_available(
                 "script catalogue predates enabled execution; prepare tools again",
             )),
-            Self::Host(manager) => manager.execute_script(command, input, context).await,
+            Self::Host(manager) => {
+                let mut command = tokio::process::Command::new(program);
+                codewhale_util::utils::suppress_tokio_console_window(&mut command);
+                command.args(args);
+                manager.execute_script(command, input, context).await
+            }
         }
     }
 }
@@ -183,12 +196,10 @@ impl ToolSpec for ScriptPluginTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let (interpreter, script_args) = script_command_parts(&self.script_path, &self.args);
-        let mut command = tokio::process::Command::new(&interpreter);
-        codewhale_util::utils::suppress_tokio_console_window(&mut command);
-        command.args(script_args);
         self.executor
             .run(
-                command,
+                &interpreter,
+                script_args,
                 &self.script_path.display().to_string(),
                 input,
                 context,
@@ -255,19 +266,19 @@ impl ToolSpec for CommandPluginTool {
         // On Windows, if the command doesn't have an extension, try wrapping
         // in `cmd /c` or use `powershell` for `.ps1` files. For portability
         // we let tokio::process::Command resolve via PATH.
-        let mut cmd = if cfg!(windows) && !self.command.contains('.') {
-            let mut c = tokio::process::Command::new("cmd");
-            codewhale_util::utils::suppress_tokio_console_window(&mut c);
-            c.arg("/c").arg(&self.command);
-            c
+        let (program, mut args) = if cfg!(windows) && !self.command.contains('.') {
+            (
+                "cmd".to_string(),
+                vec!["/c".to_string(), self.command.clone()],
+            )
         } else {
-            let mut c = tokio::process::Command::new(&self.command);
-            codewhale_util::utils::suppress_tokio_console_window(&mut c);
-            c
+            (self.command.clone(), Vec::new())
         };
-        cmd.args(&self.args);
+        args.extend(self.args.iter().cloned());
         let label = format!("command '{}'", self.command);
-        self.executor.run(cmd, &label, input, context).await
+        self.executor
+            .run(&program, args, &label, input, context)
+            .await
     }
 }
 

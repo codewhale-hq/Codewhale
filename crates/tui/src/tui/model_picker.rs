@@ -1137,8 +1137,7 @@ impl ModelPickerView {
         }
         if let Some((provider, model)) = self.provider_qualified_custom_query(query) {
             if visible_rows.iter().any(|row| {
-                row.admitted_identity.as_ref() == Some(&provider)
-                    && row.id.eq_ignore_ascii_case(model.trim())
+                row.admitted_identity.as_ref() == Some(&provider) && row.id == model.trim()
             }) {
                 return None;
             }
@@ -1151,8 +1150,7 @@ impl ModelPickerView {
             return None;
         }
         if visible_rows.iter().any(|row| {
-            row.admitted_identity.as_ref() == self.initial_identity.as_ref()
-                && row.id.eq_ignore_ascii_case(query)
+            row.admitted_identity.as_ref() == self.initial_identity.as_ref() && row.id == query
         }) {
             return None;
         }
@@ -2348,9 +2346,8 @@ fn assign_default_sections(
     let empty = codewhale_engine::model_relevance::RouteUsageIndex::default();
     let usage = guard.as_deref().unwrap_or(&empty);
     let find = |rows: &[ModelPickerRow], identity: &str, model: &str| {
-        rows.iter().position(|row| {
-            row_provider_identity(row) == Some(identity) && row.id.eq_ignore_ascii_case(model)
-        })
+        rows.iter()
+            .position(|row| row_provider_identity(row) == Some(identity) && row.id == model)
     };
     for row in rows.iter_mut() {
         row.default_rank = None;

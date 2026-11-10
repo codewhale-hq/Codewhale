@@ -39,13 +39,12 @@ describe("site-wide theme contract", () => {
 
   it("shows the toggle on every page with one light|dark storage contract", () => {
     const toggle = readFileSync(new URL("../components/theme-toggle.tsx", import.meta.url), "utf8");
-    expect(toggle).not.toMatch(/isDocsPath|return null/);
+    expect(toggle).not.toMatch(/isDocsPath/);
     expect(toggle).toMatch(/type Mode = "light" \| "dark"/);
     expect(toggle).toContain('const KEY = "cw-theme"');
-    const layout = readFileSync(new URL("../app/[locale]/layout.tsx", import.meta.url), "utf8");
     // The boot script pins only an explicit light/dark; anything else (a
     // legacy "system" or "auto", nothing) stays on paper.
-    expect(layout).toContain("localStorage.getItem('cw-theme');if(t==='light'||t==='dark')");
+    expect(toggle).toContain("localStorage.getItem('cw-theme');if(t==='light'||t==='dark')");
   });
 });
 

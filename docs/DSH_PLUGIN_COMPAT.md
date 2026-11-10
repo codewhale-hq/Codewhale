@@ -2,7 +2,7 @@
 
 Codewhale runs reviewed DeepSeek Harness (DSH) plugins in its experimental
 Native extension host ([EXTENSIONS.md](EXTENSIONS.md)). The target is DSH
-**0.2.1-rc.5** with Cordis **4.0.5**, pinned in `crates/engine/extension-host/src/dsh/compatibility.json`.
+**0.2.2-rc.1** with Cordis **4.1.0**, pinned in `crates/engine/extension-host/src/dsh/compatibility.json`.
 The Rust Engine keeps turns, sessions, approvals, credentials and receipts; a
 DSH service is offered only where it maps onto one of those existing owners.
 Everything else is refused by name when the plugin activates, never faked.
@@ -49,12 +49,19 @@ compatibility services, not services declared by DSH. This reclassification
 keeps the same injectable names. Its changed table digest requires fresh
 Native review and trust for previously reviewed plugins.
 
-The rc.5 update reuses loader 1.0.6, include 1.0.10 and group 1.0.5 while
-keeping reviewed module imports and non-writing composition. The legacy
-preset adapter remains explicitly pinned to `0d1f5000`; its replacement
-upstream runtime packages are not adopted. Node support remains
-`^22.19.0 || >=24.0.0`, and Bun remains `>=1.4.0`. rc.5 is a prerelease.
-Local checks of this upgrade do not repeat the live walkthroughs below.
+The rc.1 update reuses loader 1.1.0, include 1.1.0 and group 1.1.0 while
+keeping reviewed module imports and non-writing composition: tree mutations
+now report through `commit(change)`, which a reviewed composition ignores, and
+bare specifiers keep the native import fallback instead of upstream's
+writable `.cordis/resolve.mjs` helper. The `dsh-tools` definition excerpt is
+taken from rc.1's split build with unchanged definition semantics. The
+injectable and refused service lists are unchanged; the changed table digest
+requires fresh Native review and trust. The legacy preset adapter remains
+explicitly pinned to `0d1f5000`; its replacement upstream runtime packages
+are not adopted. Node support remains `^22.19.0 || >=24.0.0`, and Bun remains
+`>=1.4.0`. rc.1 is a prerelease. Earlier rc.5 receipts are not evidence for
+this target, and local checks of this upgrade do not repeat the live
+walkthroughs below.
 
 ## Headless services
 
@@ -122,12 +129,19 @@ the `agent/created` hook fires only for children the same plugin starts.
 
 ## Plugin UI (`dsh.client`)
 
-Not supported. The DSH import receipt says so: the UI half of a package is not
-converted and stays off until Codewhale has a renderer that can keep plugin UI
-off the network. A macOS probe showed WebRTC traffic leaving a WebKit view
-despite every available restriction (content rules, CSP, an opaque sandboxed
-frame and a restrictive Permissions-Policy), so a process-level boundary is
-required first.
+Imported DSH client UIs are not supported. The Engine refuses their client
+descriptor and asset grants when the reviewed conversion report identifies a
+DSH import; the plugin's supported Native and MCP contributions keep their
+existing lifecycle. Code Review 1.0.8's client decorates global command
+candidates through DSH services that the current detail-slot renderer does
+not provide.
+
+The selected Electron host's reviewed asset transport and isolated frame do
+not establish compatibility with those services. Its real network containment
+and revocation still need qualification. An earlier macOS WebKit probe found
+WebRTC traffic despite content rules, CSP, an opaque sandboxed frame and a
+restrictive Permissions-Policy; that historical result does not qualify the
+current Electron/Chromium host.
 
 ## Containment
 

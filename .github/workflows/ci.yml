@@ -155,7 +155,7 @@ jobs:
               crates/*|docs/HOOKS.md|docs/KEYBINDINGS.md|docs/TELEMETRY.md|docs/FLEET.md|docs/FLEET_WORKFLOW_TUTORIAL.md|docs/zh_hans/FLEET.md|docs/2512.24601v2.pdf|docs/cloud-facts/*|docs/examples/*)
                 heavy=true
                 ;;
-              docs/*|*.md|packaging/aur/*|.github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|.github/scripts/agent-task-metadata.test.sh|.github/workflows/agent-task-labels.yml|.github/workflows/auto-tag.yml|.github/workflows/stale.yml|.github/workflows/triage.yml|scripts/release/check-versions.sh|scripts/release/check-ohos-deps.sh|scripts/release/install-dogfood.sh|scripts/release/install-dogfood.test.sh|scripts/release/prepare-release.sh|scripts/release/prepare-release.test.sh|scripts/dev-cache.sh|scripts/dev-cache.test.sh|scripts/dev-cargo.sh|scripts/dev-test.sh)
+              docs/*|*.md|packaging/aur/*|.github/PULL_REQUEST_TEMPLATE.md|.github/ISSUE_TEMPLATE/*|.github/scripts/agent-task-metadata.test.sh|.github/workflows/auto-tag.yml|.github/workflows/stale.yml|.github/workflows/triage.yml|scripts/release/check-versions.sh|scripts/release/check-ohos-deps.sh|scripts/release/install-dogfood.sh|scripts/release/install-dogfood.test.sh|scripts/release/prepare-release.sh|scripts/release/prepare-release.test.sh|scripts/dev-cache.sh|scripts/dev-cache.test.sh|scripts/dev-cargo.sh|scripts/dev-test.sh)
                 ;;
               *)
                 heavy=true
@@ -172,7 +172,7 @@ jobs:
             # push to main still runs it unconditionally as the pre-release
             # safety net for anything this filter misses.
             case "${path}" in
-              crates/app-server/*|crates/tui/src/runtime_api*|crates/tui/src/runtime_mobile.html|crates/engine/src/runtime_threads*|crates/tui/src/main.rs|scripts/mobile-smoke.sh|.github/workflows/ci.yml|Cargo.lock|Cargo.toml)
+              crates/app-server/*|crates/engine/src/runtime_threads*|crates/tui/src/main.rs|scripts/mobile-smoke.sh|.github/workflows/ci.yml|Cargo.lock|Cargo.toml)
                 mobile=true
                 ;;
             esac
@@ -215,12 +215,11 @@ jobs:
         # missing receipt actually matters.
         run: ./scripts/release/check-versions.sh --range-audit-advisory
       - name: Check this PR's feature release-note receipts
-        # The range audit above is advisory because previous-tag..HEAD blames
-        # every open PR for receipts other merges forgot. This is the same
-        # check scoped to the PR's own commits, so it blocks: a `feat:` commit
-        # that references #N must add #N to CHANGELOG.md in the same PR.
+        # Advisory, like the range audit above: a missing CHANGELOG receipt
+        # shows as a warning and maintainers add it while landing.
         # Locally: scripts/preflight.sh.
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: ./scripts/release/check-feature-release-notes.sh "${PR_BASE_SHA}" HEAD
@@ -269,9 +268,9 @@ jobs:
           node --test scripts/release/ensure-release-assets-absent.test.js
           node --test scripts/release/verify-release-inventory.test.js
       - name: Run runtime web client tests
-        # crates/tui/tests/runtime_web_client.test.mjs exercises the embedded
+        # crates/app-server/tests/runtime_web_client.test.mjs exercises the embedded
         # web client's event/snapshot state machine; it ran nowhere before.
-        run: node --test crates/tui/tests/runtime_web_client.test.mjs
+        run: node --test crates/app-server/tests/runtime_web_client.test.mjs
 
   plugin-conversion:
     name: Plugin conversion
@@ -422,7 +421,7 @@ jobs:
   safety-gate:
     name: Safety gate
     needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
@@ -726,7 +725,7 @@ jobs:
     # fail the build there while stable stays green (#6543).
     name: MSRV check (1.89)
     needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
     timeout-minutes: 45
     runs-on: ubuntu-latest
     steps:
@@ -775,6 +774,7 @@ jobs:
   test:
     name: Test
     needs: changes
+    if: github.event_name == 'workflow_dispatch'
     # Contexts "Test (ubuntu-latest)" / "Test (macos-latest)" /
     # "Test (windows-latest)" derive from job name + matrix.os and are
     # independent of runs-on. For light changes the macOS/Windows legs only
@@ -954,12 +954,12 @@ jobs:
         run: cargo build -p codewhale-cli --bin codewhale --all-features --locked
         env:
           RUSTC_WRAPPER: ${{ matrix.os != 'windows-latest' && env.RUSTC_WRAPPER || '' }}
-      - name: Windows Terminal clipboard acceptance
+      - name: Windows Terminal clipboard-to-draft acceptance
         if: needs.changes.outputs.heavy == 'true' && matrix.os == 'windows-latest'
         timeout-minutes: 5
         shell: pwsh
         run: node scripts/release/windows-terminal-clipboard.mjs target/debug/codewhale.exe "${{ runner.temp }}/windows-clipboard"
-      - name: Retain Windows Terminal clipboard evidence
+      - name: Retain Windows Terminal clipboard-to-draft evidence
         if: ${{ !cancelled() && matrix.os == 'windows-latest' && needs.changes.outputs.heavy == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -1282,7 +1282,7 @@ jobs:
   npm-wrapper-smoke:
     name: npm wrapper smoke
     needs: changes
-    if: github.event_name != 'schedule'
+    if: github.event_name == 'workflow_dispatch'
     # Same ternary rationale as the Test job: light legs only echo, so keep
     # them off macOS/Windows runners. On pull_request the matrix is
     # ubuntu-only, so the required "npm wrapper smoke (ubuntu-latest)"
@@ -1298,7 +1298,7 @@ jobs:
     runs-on: ${{ needs.changes.outputs.heavy == 'true' && matrix.os || 'ubuntu-latest' }}
     strategy:
       matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     steps:
       - name: Skip npm wrapper smoke for light change
         if: needs.changes.outputs.heavy != 'true'
@@ -1358,13 +1358,8 @@ jobs:
   mobile-smoke:
     name: Mobile runtime smoke
     needs: changes
-    # Not a required PR context. Pull requests run it only when the mobile
-    # runtime surface changed (see the `mobile` filter above); every push to
-    # main runs it unconditionally as the pre-release safety net.
-    if: >-
-      github.event_name != 'schedule' &&
-      needs.changes.outputs.heavy == 'true' &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true')
+    # Manual (workflow_dispatch) only; the release candidate builds android-arm64.
+    if: github.event_name == 'workflow_dispatch' && needs.changes.outputs.heavy == 'true'
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:

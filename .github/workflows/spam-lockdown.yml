@@ -27,11 +27,6 @@ jobs:
 
             const blob = `${issue.title || ''}\n${issue.body || ''}`;
             const patterns = [
-              /\bcrypto\b/i,
-              /\bairdrop\b/i,
-              /\bnft\b/i,
-              /\bpresale\b/i,
-              /\busdt\b/i,
               /\btg\s*@/i,
               /\btelegram\s+@/i,
               /\bt\.me\//i,
@@ -40,8 +35,6 @@ jobs:
               /\bguest\s+post/i,
               /\bbacklink/i,
               /\bbuy\s+followers/i,
-              /\bjoin\s+our\s+(community|server|group)/i,
-              /\bpromot[ei]\s+your\b/i,
             ];
             const hit = patterns.find(p => p.test(blob));
             if (!hit) return;

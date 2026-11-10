@@ -460,6 +460,7 @@ pub enum Op {
 
     /// Sync engine session state (used for resume/load)
     SyncSession {
+        expected: Option<Box<SessionSnapshot>>,
         control: SessionControlId,
         session_id: Option<String>,
         messages: Vec<Message>,

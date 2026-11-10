@@ -5144,7 +5144,7 @@ fn mistral_provider_resolves_defaults_and_metadata() {
     );
     assert_eq!(
         help.credential_url,
-        Some("https://console.mistral.ai/api-keys")
+        Some("https://chat.mistral.ai/code/extensions")
     );
 
     let config: ConfigToml = toml::from_str(
@@ -5851,7 +5851,11 @@ fn provider_metadata_preserves_alias_and_config_key_semantics() {
 fn provider_metadata_defaults_match_runtime_helpers() {
     for kind in ProviderKind::ALL {
         let provider = kind.provider();
-        assert_eq!(provider.default_model(), default_model_for_provider(kind));
+        assert_eq!(
+            provider.default_model(),
+            default_model_for_provider(kind).as_str(),
+            "{kind:?} descriptor must match the model list's identified default"
+        );
         assert_eq!(
             provider.default_base_url(),
             default_base_url_for_provider(kind)
@@ -8490,7 +8494,7 @@ fn workflow_config_defaults_match_product_surface() {
     assert!(defaults.auto_start_read_only);
     assert!(defaults.require_approval_for_writes);
     assert_eq!(defaults.max_children, 0);
-    assert_eq!(defaults.max_concurrent, 16);
+    assert_eq!(defaults.max_concurrent, 64);
     assert_eq!(defaults.max_depth, 0);
     // 0 = no shared cap; budgets are opt-in, matching the parent turn loop's
     // advisory policy (#6189).
@@ -8533,7 +8537,7 @@ default_token_budget = 50000
     // Unset keys keep product defaults.
     assert!(workflow.auto_start_read_only);
     assert!(workflow.require_approval_for_writes);
-    assert_eq!(workflow.max_concurrent, 16);
+    assert_eq!(workflow.max_concurrent, 64);
     assert_eq!(workflow.max_depth, 0);
 
     let serialized = toml::to_string_pretty(&workflow).expect("workflow serializes");

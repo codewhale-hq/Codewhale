@@ -652,7 +652,6 @@ async fn planned_route_builds_subagent_catalog_without_installed_client() {
                 reasoning_effort_auto: planned.auto_controls_reasoning,
             },
             "",
-            None,
         )
         .await;
     assert!(
@@ -805,6 +804,7 @@ async fn plan_with_reasoning(
     prompt: &str,
 ) -> crate::turn_route_plan::PlannedTurnRoute {
     crate::turn_route_plan::plan_turn_route(crate::turn_route_plan::TurnRoutePlanRequest {
+        accounting_origin: None,
         route_config: config,
         app_route_identity: identity,
         api_provider: provider,
@@ -2227,7 +2227,6 @@ async fn preview_tool_snapshot_has_no_mcp_or_event_side_effects() {
                 reasoning_effort_auto: false,
             },
             "",
-            None,
         )
         .await;
 

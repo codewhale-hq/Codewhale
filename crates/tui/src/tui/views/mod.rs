@@ -14,10 +14,12 @@ use unicode_width::UnicodeWidthStr;
 use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 use crate::tui::focus_texture::FocusTextureMode;
-use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
+use crate::tui::history::HistoryCell;
+use crate::tui::history::SubAgentCell;
 use crate::tui::tideline::{SettingApplySemantics, SettingAuthority, SettingFact, UiSnapshot};
 use crate::tui::widgets::agent_card::AgentLifecycle;
 use codewhale_agent_contract::role::FleetRole;
+use codewhale_app_server::exec_agent::summarize_tool_output;
 use codewhale_config::ProviderKind;
 use codewhale_engine::tools::UserInputResponse;
 use codewhale_engine::tools::subagent::{
@@ -60,6 +62,7 @@ pub enum ModalKind {
     Config,
     ModelPicker,
     ProviderPicker,
+    AccountLogin,
     ModePicker,
     FleetRoster,
     FleetSetup,
@@ -708,6 +711,20 @@ pub enum ExtensionMenuVerb {
 
 #[derive(Debug, Clone)]
 pub enum ViewEvent {
+    AccountModelSelected {
+        access: codewhale_runtime::config::AccountModelAccess,
+        api_base: String,
+        account_id: String,
+        expected_revision: String,
+        model: String,
+    },
+    AccountConnectionChoice {
+        account: Option<bool>,
+    },
+    AccountOperationCompleted {
+        signing_out: bool,
+        outcome: crate::tui::account_login::AccountOperationOutcome,
+    },
     CommandPaletteSelected {
         action: CommandPaletteAction,
     },
@@ -942,7 +959,6 @@ pub enum ViewEvent {
     },
     /// Emitted by provider/setup UI when xAI device-code OAuth is requested.
     ProviderPickerXaiOAuthRequested,
-    ProviderPickerClaudeOAuthRequested,
     /// Emitted by provider/setup UI when native ChatGPT PKCE sign-in is requested.
     ProviderPickerChatgptOAuthRequested,
     /// Emitted by provider/setup UI when OrcaRouter OAuth 2.0 + PKCE sign-in is
@@ -1075,8 +1091,10 @@ pub enum ViewEvent {
     /// renders TOML deterministically from the validated draft and persists it
     /// atomically in the explicitly selected project or personal scope.
     FleetProfileDraftCommitRequested {
+        editor_id: uuid::Uuid,
         draft: Box<codewhale_engine::fleet::profile::FleetProfileDraft>,
         scope: codewhale_engine::fleet::profile::FleetProfileScope,
+        expected: Option<String>,
     },
     /// Emitted by the Fleet setup Model step when the user selects a route that
     /// has structurally valid external-consent credentials but is not the
@@ -1229,6 +1247,9 @@ pub trait ModalView: std::any::Any {
     fn occupied_region(&self, area: Rect) -> Rect {
         area
     }
+    fn input_anchor(&self) -> Option<(u16, u16)> {
+        None
+    }
     fn update_subagents(&mut self, _agents: &[SubAgentResult]) -> bool {
         false
     }
@@ -1290,9 +1311,9 @@ pub struct ViewTick {
 /// an unrelated approval that happens to be on top.
 fn view_is_approval_for_gate(view: &dyn ModalView, gate: &str) -> bool {
     view.kind() == ModalKind::Approval
-        && view
-            .approval_request_id()
-            .is_some_and(|tool_id| crate::remote_control::projected_approval_id(tool_id) == gate)
+        && view.approval_request_id().is_some_and(|tool_id| {
+            codewhale_app_server::remote_control::projected_approval_id(tool_id) == gate
+        })
 }
 
 impl ViewStack {
@@ -1348,6 +1369,22 @@ impl ViewStack {
 
     pub fn top_kind(&self) -> Option<ModalKind> {
         self.views.last().map(|view| view.kind())
+    }
+
+    pub fn cursor_anchor(&self, area: Rect) -> Option<(u16, u16)> {
+        let view = self.views.last()?;
+        view.input_anchor().or_else(|| {
+            let region = view.occupied_region(area);
+            (region.width > 0 && region.height > 0).then(|| {
+                (
+                    region
+                        .x
+                        .saturating_add(1)
+                        .min(region.right().saturating_sub(1)),
+                    region.bottom().saturating_sub(2).max(region.y),
+                )
+            })
+        })
     }
 
     pub(crate) fn remove_owned_evidence_pagers(&mut self) {
@@ -2234,6 +2271,7 @@ pub struct ConfigView {
     /// Selection-anchored scroll actually used by the last render; keeps the
     /// panel scroll rail truthful when the stored scroll predates a resize.
     last_render_scroll: Cell<usize>,
+    last_input_anchor: Cell<Option<(u16, u16)>>,
     /// Exact painted cells of each list row; a click selects a row only when
     /// it lands inside one of these rects.
     last_row_hitboxes: RefCell<Vec<(Rect, usize)>>,
@@ -2312,7 +2350,7 @@ impl ConfigView {
                 value: settings
                     .permission_posture
                     .as_deref()
-                    .unwrap_or("ask")
+                    .unwrap_or("accept-edits")
                     .to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
@@ -2980,6 +3018,7 @@ impl ConfigView {
             locale: app.ui_locale,
             last_visible_rows: Cell::new(0),
             last_render_scroll: Cell::new(0),
+            last_input_anchor: Cell::new(None),
             last_row_hitboxes: RefCell::new(Vec::new()),
             last_choice_hitboxes: RefCell::new(Vec::new()),
             last_editor_controls: RefCell::new(Vec::new()),
@@ -4047,12 +4086,14 @@ fn canonical_config_choice(key: &str, value: &str) -> String {
         },
         "approval_mode" | "permission_posture" => match normalized.as_str() {
             "ask" | "suggest" | "on-request" | "untrusted" => "ask".to_string(),
+            "accept-edits" | "acceptedits" | "edits" => "accept-edits".to_string(),
             "auto" | "auto-review" => "auto-review".to_string(),
             "full" | "full-access" | "bypass" | "yolo" => "full-access".to_string(),
             _ => normalized,
         },
         "approval_policy" => match normalized.as_str() {
             "ask" | "suggest" | "on-request" | "untrusted" => "ask".to_string(),
+            "accept-edits" | "acceptedits" | "edits" => "accept-edits".to_string(),
             "auto" | "auto-review" => "auto-review".to_string(),
             "full" | "full-access" | "bypass" | "yolo" => "full-access".to_string(),
             "never" | "deny" => "never".to_string(),
@@ -4073,7 +4114,6 @@ fn canonical_config_choice(key: &str, value: &str) -> String {
         },
         "default_mode" => match normalized.as_str() {
             "plan" => "plan".to_string(),
-            "operate" | "operation" | "ops" => "operate".to_string(),
             _ => "agent".to_string(),
         },
         "locale" => normalize_configured_locale(value)
@@ -4184,6 +4224,10 @@ fn render_config_editor_value_line(
 impl ModalView for ConfigView {
     fn kind(&self) -> ModalKind {
         ModalKind::Config
+    }
+
+    fn input_anchor(&self) -> Option<(u16, u16)> {
+        self.last_input_anchor.get()
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -4429,7 +4473,9 @@ impl ModalView for ConfigView {
 
         let inner =
             render_underwater_surface(area, buf, self.tr(MessageId::ConfigModalTitle).to_string());
+        self.last_input_anchor.set(None);
         let mut choice_rail = None;
+        let mut value_line_row = None;
         let (lines, footer) = if let Some(edit) = self.editing.as_ref() {
             *self.last_choice_hitboxes.borrow_mut() = Vec::new();
             *self.last_editor_controls.borrow_mut() = Vec::new();
@@ -4587,6 +4633,7 @@ impl ModalView for ConfigView {
                     )));
                 }
             } else {
+                value_line_row = Some(lines.len());
                 lines.push(render_config_editor_value_line(edit, self.locale));
                 if spacious {
                     lines.push(Line::from(""));
@@ -4625,6 +4672,27 @@ impl ModalView for ConfigView {
             .style(Style::default().fg(palette::TEXT_PRIMARY))
             .scroll((0, 0))
             .render(body, buf);
+        if let (Some(edit), Some(row)) = (self.editing.as_ref(), value_line_row)
+            && let Ok(row) = u16::try_from(row)
+            && row < body.height
+            && body.width > 0
+        {
+            use codewhale_tui_kit::ui_text::text_display_width;
+            let caret = if edit.select_all {
+                edit.buffer.len()
+            } else {
+                edit.cursor
+            };
+            let typed: String = edit.buffer.iter().take(caret).collect();
+            let offset = text_display_width(&self.tr(MessageId::ConfigEditNewLabel))
+                .saturating_add(text_display_width(&typed));
+            let x = body
+                .x
+                .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX))
+                .min(body.right().saturating_sub(1));
+            self.last_input_anchor
+                .set(Some((x, body.y.saturating_add(row))));
+        }
         if let Some((rail, total, offset, visible)) = choice_rail {
             render_panel_scroll_rail(rail, buf, total, offset, visible, true);
         }
@@ -5387,22 +5455,11 @@ impl ConfigView {
         let approval = value_of("approval_mode")
             .or_else(|| value_of("permission_posture"))
             .and_then(|value| codewhale_execpolicy::ApprovalMode::from_config_value(&value))
-            .unwrap_or(codewhale_execpolicy::ApprovalMode::Suggest);
-        let mode_label = crate::tui::underwater::mode_label(self.locale, mode);
-        let permission =
-            codewhale_engine::core::authority::permission_label_for(self.locale, mode, approval);
-        let footer = crate::tui::phase_strip::TidelineFooter::new(
-            &theme,
-            (
-                permission.as_ref(),
-                crate::tui::underwater::header_permission_ink(approval),
-            ),
-        )
-        .mode_chip(Some((
-            mode_label.as_ref(),
-            crate::tui::underwater::header_mode_ink(mode),
-        )))
-        .context_percent(context_percent);
+            .unwrap_or(codewhale_execpolicy::ApprovalMode::AcceptEdits);
+        let (dial, dial_ink) = crate::tui::underwater::dial_chip_for(self.locale, mode, approval);
+        let footer =
+            crate::tui::phase_strip::TidelineFooter::new(&theme, (dial.as_ref(), dial_ink))
+                .context_percent(context_percent);
         crate::tui::phase_strip::render_tideline_footer(
             Rect {
                 x: area.x.saturating_add(label_width),
@@ -5602,6 +5659,17 @@ impl ConfigView {
                 },
                 buf,
             );
+            if header.width > 0 {
+                use codewhale_tui_kit::ui_text::text_display_width;
+                let offset = text_display_width(&self.tr(MessageId::ConfigSearchLabel))
+                    .saturating_add(text_display_width(&self.filter));
+                let x = header
+                    .x
+                    .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX))
+                    .min(header.right().saturating_sub(1));
+                self.last_input_anchor
+                    .set(Some((x, header.y.saturating_add(1))));
+            }
         }
 
         // Groups column: the active tab's `ui.group` names, the one holding
@@ -8228,6 +8296,16 @@ consent_version = 1
 
     #[test]
     fn config_view_permission_row_tracks_the_controlling_saved_source() {
+        let _guard = ConfigSettingsEnvGuard::new("");
+        let default_view = ConfigView::new_for_app(&create_test_app());
+        let default_row = default_view
+            .rows
+            .iter()
+            .find(|row| row.key == "permission_posture")
+            .expect("default permission posture row");
+        assert_eq!(default_row.value, "accept-edits");
+        assert!(default_row.editable);
+
         let explicit_dir = TempDir::new().expect("explicit config tempdir");
         let explicit_path = explicit_dir.path().join("config.toml");
         fs::write(&explicit_path, "approval_policy = \"auto\"\n").expect("explicit config");
@@ -8261,6 +8339,7 @@ consent_version = 1
             &vec![
                 "use-tui-default".to_string(),
                 "ask".to_string(),
+                "accept-edits".to_string(),
                 "auto-review".to_string(),
                 "full-access".to_string(),
             ]
@@ -8270,7 +8349,7 @@ consent_version = 1
         explicit.render(area, &mut buf);
         let dump = buffer_text(&buf, area);
         assert!(
-            dump.contains("4. Full Access"),
+            dump.contains("5. Full Access"),
             "root permission chooser must expose the product posture:\n{dump}"
         );
         assert!(
@@ -10117,13 +10196,7 @@ context_window = 131072
         let edit = view.editing.as_ref().expect("choice editor");
         assert_eq!(
             edit.choices.as_deref(),
-            Some(
-                &[
-                    "agent".to_string(),
-                    "plan".to_string(),
-                    "operate".to_string(),
-                ][..]
-            )
+            Some(&["agent".to_string(), "plan".to_string()][..])
         );
         assert!(
             edit.choices
@@ -10133,7 +10206,7 @@ context_window = 131072
                 .all(|choice| choice != "yolo")
         );
 
-        let _ = view.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+        let _ = view.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
         let apply = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match apply {
             ViewAction::Emit(ViewEvent::ConfigUpdated {
@@ -10142,21 +10215,18 @@ context_window = 131072
                 persist,
             }) => {
                 assert_eq!(key, "default_mode");
-                assert_eq!(value, "operate");
+                assert_eq!(value, "plan");
                 assert!(persist);
             }
             other => panic!("expected startup choice update, got {other:?}"),
         }
 
+        assert_eq!(canonical_config_choice("default_mode", "Operate"), "agent");
         assert_eq!(
-            canonical_config_choice("default_mode", "Operate"),
-            "operate"
+            config_choice_label(Locale::En, "default_mode", "plan"),
+            "Plan (read only)"
         );
-        assert_eq!(
-            config_choice_label(Locale::En, "default_mode", "operate"),
-            "Operate"
-        );
-        assert!(!config_choice_detail(Locale::En, "default_mode", "operate").is_empty());
+        assert!(!config_choice_detail(Locale::En, "default_mode", "plan").is_empty());
     }
 
     #[test]
@@ -11673,18 +11743,18 @@ context_window = 131072
                 "{w}x{h}:\n{dump}"
             );
             let choices = view.last_choice_hitboxes.borrow().clone();
-            let (operate_rect, operate_idx) = choices
+            let (plan_rect, plan_idx) = choices
                 .iter()
                 .copied()
-                .find(|(_, idx)| *idx == 2)
-                .unwrap_or_else(|| panic!("{w}x{h} third choice painted:\n{dump}"));
+                .find(|(_, idx)| *idx == 1)
+                .unwrap_or_else(|| panic!("{w}x{h} second choice painted:\n{dump}"));
             // Clicking a choice selects it; clicking beside the controls does
             // nothing; clicking Apply emits exactly that choice.
             assert!(matches!(
-                click(&mut view, operate_rect.x + 2, operate_rect.y),
+                click(&mut view, plan_rect.x + 2, plan_rect.y),
                 ViewAction::None
             ));
-            assert_eq!(view.editing.as_ref().unwrap().selected_choice, operate_idx);
+            assert_eq!(view.editing.as_ref().unwrap().selected_choice, plan_idx);
             let beside = apply.right().saturating_add(1);
             if beside < cancel.x {
                 assert!(matches!(
@@ -11700,7 +11770,7 @@ context_window = 131072
                     persist,
                 }) => {
                     assert_eq!(key, "default_mode");
-                    assert_eq!(value, "operate");
+                    assert_eq!(value, "plan");
                     assert!(persist);
                 }
                 other => panic!("{w}x{h} Apply click should emit: {other:?}"),
@@ -11867,7 +11937,6 @@ context_window = 131072
             MessageId::ConfigEditChooseLabel,
             MessageId::ConfigChoiceModeAct,
             MessageId::ConfigChoiceModePlan,
-            MessageId::ConfigChoiceModeOperate,
             MessageId::ConfigChoiceDetailModeAgent,
             MessageId::ConfigEditorApply,
             MessageId::ConfigEditorCancel,
@@ -12299,6 +12368,7 @@ context_window = 131072
                 .expect("session permission choices"),
             &vec![
                 "ask".to_string(),
+                "accept-edits".to_string(),
                 "auto-review".to_string(),
                 "full-access".to_string(),
             ]
@@ -12313,5 +12383,37 @@ context_window = 131072
             dump.contains("Choose:") && dump.contains("Full Access"),
             "the choice list must stay visible at 40x12:\n{dump}"
         );
+    }
+
+    #[test]
+    fn view_gate_matching_never_confuses_two_approval_cards() {
+        use crate::tui::approval::ApprovalRequest;
+        use crate::tui::approval::ApprovalView;
+        use crate::tui::views::ViewStack;
+
+        let request = ApprovalRequest::new(
+            "tool_A",
+            "edit",
+            "Edit A",
+            &serde_json::json!({ "file": "a" }),
+            "approval_key_A",
+        );
+        let card = ApprovalView::new(request);
+        let gate_a = codewhale_app_server::remote_control::projected_approval_id("tool_A");
+        let gate_b = codewhale_app_server::remote_control::projected_approval_id("tool_B");
+
+        let mut stack = ViewStack::new();
+        stack.push(card);
+        assert!(
+            !stack.remove_approval_for_gate(&gate_b),
+            "a different gate must NEVER match this card — the whole point of identity-aware dismissal"
+        );
+        assert!(!stack.remove_approval_for_gate("local_approval_missing"));
+        assert!(!stack.is_empty());
+        assert!(
+            stack.remove_approval_for_gate(&gate_a),
+            "the matching gate must match"
+        );
+        assert!(stack.is_empty());
     }
 }

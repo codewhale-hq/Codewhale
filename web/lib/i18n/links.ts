@@ -29,7 +29,7 @@ export interface ChromeLink {
 }
 
 /**
- * The primary nav links — Product / Models / Plugins / Docs — identical
+ * The primary nav links — Product / Computer Use / Models / Plugins / Docs — identical
  * in shape for every routed locale. This is the strip a serious product
  * shows; discovery and community routes live in `secondaryNavLinks` (the
  * compact sheet's second group) and the footer.
@@ -37,18 +37,20 @@ export interface ChromeLink {
 export function navLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
     { href: `/${locale}/product`, label: chrome.navProduct },
-    { href: `/${locale}/features`, label: chrome.navFeatures },
+    { href: `/${locale}/computer-use`, label: "Computer Use" },
     { href: `/${locale}/models`, label: chrome.navModels },
     { href: `/${locale}/plugins`, label: chrome.navPlugins },
     { href: `/${locale}/docs`, label: chrome.navDocs },
   ];
 }
 
-/** The compact sheet's second group: getting started, install, and community. */
+/** The compact sheet's second group: getting started, releases, and community. */
 export function secondaryNavLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
+    { href: `/${locale}/features`, label: chrome.navFeatures },
     { href: `/${locale}/docs/guide`, label: chrome.navStart },
     { href: `/${locale}/install`, label: chrome.navInstall },
+    { href: `/${locale}/changelog`, label: chrome.footerChangelog },
     { href: `/${locale}/ratatui`, label: "Ratatui" },
     { href: `/${locale}/faq`, label: chrome.navFaq },
     { href: `/${locale}/community`, label: chrome.navCommunity },
@@ -60,6 +62,7 @@ export function secondaryNavLinks(locale: string, chrome: ChromeDict): ChromeLin
 export function footerProductLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
     { href: `/${locale}/product`, label: chrome.navProduct },
+    { href: `/${locale}/computer-use`, label: "Computer Use" },
     { href: `/${locale}/features`, label: chrome.navFeatures },
     { href: `/${locale}/docs`, label: chrome.footerDocs },
     { href: `/${locale}/docs/guide`, label: chrome.footerGuide },

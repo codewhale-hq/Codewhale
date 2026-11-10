@@ -83,15 +83,13 @@ describe("public website copy contracts", () => {
     expect(homepage).toContain("facts.latestPublishedRelease");
     // The machine-readable source-state attribute stays a literal.
     expect(homepage).toContain('data-source-state={sourceIsPublished ? "published release" : "source candidate"}');
-    expect(homepage).toContain("publishedRelease.url");
+    expect(homepage).toContain("getReleaseUpdates(facts.latestPublishedRelease)");
+    expect(homepage).toContain("initial={updates}");
+    expect(readFileSync(new URL("../components/release-updates.tsx", import.meta.url), "utf8")).toContain("href={release.url}");
     // The visible wording moved into the dictionary layer (#4934). Assert the
     // rendered contract — the EN reference value plus the page's use of it —
     // instead of a raw TSX string, and hold every locale to a real value.
     expect(homepage).toContain("d.sourceCandidate");
-    expect(homepage).toContain("d.currentSource");
-    // Plain words on the marketing surface (docs/design/WEB_VOICE.md): the
-    // reader sees "Unreleased v0.9.x" next to "Latest release v0.9.y", not
-    // the internal "source candidate" / "provider routes" vocabulary.
     expect(EN_HOME.sourceCandidate).toBe("Unreleased");
     expect(EN_HOME.currentSource).toBe("Source");
     // A development-source route count is not a released-provider total.

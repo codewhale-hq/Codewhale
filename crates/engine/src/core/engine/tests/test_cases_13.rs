@@ -217,7 +217,7 @@ async fn set_model_reloads_instruction_sources_and_updates_session_prompt() {
         .await
         .expect("send set model");
 
-    let (model, prompt) = {
+    let (model, prompt, assembly_block) = {
         let mut rx = handle.rx_event.write().await;
         loop {
             let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
@@ -227,6 +227,7 @@ async fn set_model_reloads_instruction_sources_and_updates_session_prompt() {
             if let Event::SessionUpdated {
                 model,
                 system_prompt,
+                instruction_assembly,
                 ..
             } = event
             {
@@ -238,15 +239,19 @@ async fn set_model_reloads_instruction_sources_and_updates_session_prompt() {
                         .collect::<Vec<_>>()
                         .join("\n"),
                 };
-                break (model, prompt);
+                let assembly_block = instruction_assembly
+                    .and_then(|assembly| assembly.block.clone())
+                    .unwrap_or_default();
+                break (model, prompt, assembly_block);
             }
         }
     };
     run.abort();
 
     assert_eq!(model, "deepseek-v4-pro");
-    assert!(prompt.contains("PRO_INSTRUCTIONS_MARKER"));
-    assert!(!prompt.contains("FLASH_INSTRUCTIONS_MARKER"));
+    assert!(assembly_block.contains("PRO_INSTRUCTIONS_MARKER"));
+    assert!(!assembly_block.contains("FLASH_INSTRUCTIONS_MARKER"));
+    assert!(!prompt.contains("PRO_INSTRUCTIONS_MARKER"));
 }
 
 #[tokio::test]
@@ -361,7 +366,7 @@ async fn live_runtime_authority_applies_latest_posture_and_sandbox_before_tools(
 
     for (mode, posture, auto_approve, sandbox_mode, expected_sandbox) in [
         (
-            AppMode::Operate,
+            AppMode::Agent,
             ApprovalMode::Auto,
             false,
             Some("read-only".to_string()),
@@ -851,24 +856,34 @@ async fn compaction_completed_reports_complete_post_input_tokens() {
         crate::compaction::estimate_input_tokens_for_pressure(&engine.session.messages, None);
     let expected = engine.estimated_input_tokens();
     assert!(expected > messages_only);
+    engine.active_context_window = Some(crate::route_runtime::ContextWindowResolution {
+        tokens: 1_000_000,
+        source: crate::route_runtime::ContextWindowSource::Configured,
+    });
 
     engine
         .emit_compaction_completed(
             "compact_test".to_string(),
             false,
             "Made room".to_string(),
-            Some(4),
-            Some(1),
             super::compaction::CompactionPass {
                 trigger: "manual",
-                path: crate::compaction::CompactionPath::Summary,
+                path: Some(crate::compaction::CompactionPath::Summary),
+                messages_before: 4,
+                messages_after: Some(1),
                 tokens_before: 9000,
                 threshold_tokens: 8000,
+                configured_threshold_tokens: 8000,
                 usage: Usage {
                     input_tokens: 120,
                     output_tokens: 15,
                     ..Default::default()
                 },
+                elapsed_ms: 42,
+                reported_input_tokens: Some(8_500),
+                gate_input_tokens: None,
+                calibration: (2, 1),
+                compaction_window_tokens: Some(1_000_000),
             },
         )
         .await;
@@ -901,9 +916,23 @@ async fn compaction_completed_reports_complete_post_input_tokens() {
     assert_eq!(details["estimated_tokens_before"], 9000);
     assert_eq!(details["estimated_tokens_after"], expected);
     assert_eq!(details["threshold_tokens"], 8000);
+    assert_eq!(details["configured_threshold_tokens"], 8000);
     assert_eq!(details["summarizer_usage"]["input_tokens"], 120);
     assert_eq!(details["trigger"], "manual");
     assert_eq!(details["path"], "summary");
+    assert_eq!(details["outcome"], "success");
+    assert_eq!(details["elapsed_ms"], 42);
+    assert_eq!(details["reported_input_tokens"], 8_500);
+    assert_eq!(details["gate_input_tokens"], Value::Null);
+    assert_eq!(details["calibration"]["numerator"], 2);
+    assert_eq!(details["calibration"]["denominator"], 1);
+    assert_eq!(details["compaction_window_tokens"], 1_000_000);
+    assert_eq!(details["effective_context_window_tokens"], 1_000_000);
+    assert_eq!(details["effective_context_window_source"], "configured");
+    assert_eq!(
+        details["route_model"],
+        Value::String(engine.session.model.clone())
+    );
     assert!(!log.contains("post-compaction message"));
     engine
         .record_compaction_event(
@@ -1011,6 +1040,7 @@ async fn unchanged_compaction_config_is_acknowledged_silently() {
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("resumed-session".to_string()),
             messages: restored_messages.clone(),
@@ -1205,6 +1235,7 @@ async fn sync_session_restores_current_mode() {
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("plan-session".to_string()),
             messages: Vec::new(),
@@ -1286,6 +1317,7 @@ async fn sync_session_without_prompt_repins_full_system_prompt_on_next_turn() {
 
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("fresh-session".to_string()),
             messages: Vec::new(),
@@ -1323,7 +1355,18 @@ async fn sync_session_without_prompt_repins_full_system_prompt_on_next_turn() {
         .clone()
         .map(system_prompt_text)
         .expect("the first turn after SyncSession must send a full system prompt");
-    assert!(repinned.contains(WORKSPACE_RULE), "{repinned}");
+    assert!(
+        !repinned.contains(WORKSPACE_RULE),
+        "workspace instructions travel as history, not in the pinned prompt: {repinned}"
+    );
+    assert!(
+        requests[0].messages.iter().any(|message| {
+            crate::runtime_handoff::project_instructions_display(message)
+                .is_some_and(|body| body.contains(WORKSPACE_RULE))
+        }),
+        "the first turn must carry the workspace rule as a history message: {:?}",
+        requests[0].messages
+    );
     assert!(
         requests[0].messages.iter().all(|message| {
             message.content.iter().all(|block| {
@@ -1345,7 +1388,14 @@ async fn sync_session_without_prompt_repins_full_system_prompt_on_next_turn() {
         .system_prompt
         .map(system_prompt_text)
         .expect("refreshed session prompt");
-    assert!(refreshed_prompt.contains(WORKSPACE_RULE));
+    assert!(!refreshed_prompt.contains(WORKSPACE_RULE));
+    assert!(
+        refreshed.messages.iter().any(|message| {
+            crate::runtime_handoff::project_instructions_display(message)
+                .is_some_and(|body| body.contains(WORKSPACE_RULE))
+        }),
+        "the refreshed session keeps the workspace rule in history"
+    );
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     task.await.expect("engine task");
 }
@@ -1368,6 +1418,7 @@ async fn sync_session_same_id_does_not_finalize_live_worker() {
     // construction-time UUID.
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("session-keep".to_string()),
             messages: Vec::new(),
@@ -1389,6 +1440,7 @@ async fn sync_session_same_id_does_not_finalize_live_worker() {
     // A same-id re-sync is a reload, not a conversation boundary.
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("session-keep".to_string()),
             messages: Vec::new(),
@@ -1431,6 +1483,7 @@ async fn sync_session_different_id_finalizes_live_worker() {
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("session-a".to_string()),
             messages: Vec::new(),
@@ -1455,6 +1508,7 @@ async fn sync_session_different_id_finalizes_live_worker() {
     // finalized with the session-closed reason.
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("session-b".to_string()),
             messages: Vec::new(),
@@ -1512,6 +1566,7 @@ async fn sync_session_migrates_one_checkpoint_and_strips_its_system_carrier() {
     for round in 0..2 {
         handle
             .send(Op::SyncSession {
+                expected: None,
                 control: crate::core::ops::SessionControlId::new(),
                 session_id: Some("compacted-session".to_string()),
                 messages,

@@ -957,7 +957,7 @@ fn export_entry_registers_through_portable_bridge_with_exact_metadata() {
     assert_eq!(command.info().aliases, &["daochu"]);
     assert_eq!(
         command.info().usage,
-        "/export [clipboard|file [--force] <path>|turn [clipboard|file [--force] <path>]]"
+        "/export [clipboard|file [path]|turn [clipboard|file [path]]] [--format md|html|json] [--no-tools] [--force]"
     );
     assert!(
         crate::commands::registry().get("daochu").is_some(),
@@ -1071,7 +1071,7 @@ fn command_clipboard_export_preserves_structure_and_redacts_secrets() {
     let system = markdown.find("## 1. system").expect("system role");
     let user = markdown.find("## 2. user").expect("user role");
     let assistant = markdown.find("## 3. assistant").expect("assistant role");
-    let tool_result = markdown.find("## 4. user").expect("tool-result role");
+    let tool_result = markdown.find("## 4. tool").expect("tool-result role");
     assert!(system < user && user < assistant && assistant < tool_result);
     assert!(markdown.contains("[internal context omitted]"));
     assert!(markdown.contains("call-1"));
@@ -1208,8 +1208,6 @@ fn command_file_export_rejects_traversal_missing_parent_and_invalid_usage() {
     for arg in [
         "file ../outside.md",
         "file missing/export.md",
-        "file",
-        "file --force",
         "clipboard extra.md",
         "turn clipboard extra.md",
     ] {

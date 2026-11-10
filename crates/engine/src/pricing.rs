@@ -560,7 +560,9 @@ fn is_official_default_endpoint(provider: ProviderKind, shape: &EndpointShape) -
         ProviderKind::Deepseek => {
             matches!(shape.path.as_str(), "" | "/v1" | "/beta")
         }
-        ProviderKind::DeepseekAnthropic => shape.path == "/anthropic",
+        ProviderKind::DeepseekAnthropic => {
+            matches!(shape.path.as_str(), "/anthropic" | "/anthropic/v1")
+        }
         ProviderKind::Openai => matches!(shape.path.as_str(), "" | "/v1"),
         ProviderKind::Anthropic => matches!(shape.path.as_str(), "" | "/v1"),
         _ => false,
@@ -873,6 +875,11 @@ pub enum UnpricedReason {
     /// over-count input, so the call is retained but fails closed.
     InconsistentUsage,
     MissingUsageBreakdown,
+    RequestOutcomeUnknown,
+    RequestInProgress,
+    ProviderSuccessMissingUsage,
+    LegacyUsageUnverified,
+    UsageCorrectionUnverified,
 }
 
 impl UnpricedReason {
@@ -898,6 +905,13 @@ impl UnpricedReason {
             "missing_usage_breakdown" => Self::MissingUsageBreakdown,
             "late_usage_ledger_unavailable" => Self::LateUsageUnavailable,
             "late_usage_ledger_overflow" => Self::LateUsageOverflow,
+            "request_outcome_unknown" => Self::RequestOutcomeUnknown,
+            "request_in_progress" => Self::RequestInProgress,
+            "provider_success_missing_usage" | "success_without_usage" => {
+                Self::ProviderSuccessMissingUsage
+            }
+            "legacy_usage_unverified" => Self::LegacyUsageUnverified,
+            "usage_correction_unverified" => Self::UsageCorrectionUnverified,
             _ => Self::UnrecordedCoverage,
         }
     }
@@ -924,6 +938,11 @@ impl UnpricedReason {
             Self::UnsupportedCurrency => MessageId::CostReasonCurrencyMissing,
             Self::InconsistentUsage => MessageId::CostReasonUsageConflict,
             Self::MissingUsageBreakdown => MessageId::CostReasonUsageBreakdown,
+            Self::RequestOutcomeUnknown => MessageId::CostReasonOutcomeUnknown,
+            Self::RequestInProgress => MessageId::CostReasonInProgress,
+            Self::ProviderSuccessMissingUsage => MessageId::CostReasonProviderUsageMissing,
+            Self::LegacyUsageUnverified => MessageId::CostReasonLegacyUsageUnverified,
+            Self::UsageCorrectionUnverified => MessageId::CostReasonUsageCorrectionUnverified,
         }
     }
 
@@ -949,6 +968,11 @@ impl UnpricedReason {
             Self::UnsupportedCurrency => "unsupported_currency",
             Self::InconsistentUsage => "inconsistent_usage",
             Self::MissingUsageBreakdown => "missing_usage_breakdown",
+            Self::RequestOutcomeUnknown => "request_outcome_unknown",
+            Self::RequestInProgress => "request_in_progress",
+            Self::ProviderSuccessMissingUsage => "provider_success_missing_usage",
+            Self::LegacyUsageUnverified => "legacy_usage_unverified",
+            Self::UsageCorrectionUnverified => "usage_correction_unverified",
         }
     }
 
@@ -2035,7 +2059,7 @@ fn request_token_usage_for_pricing(usage: &Usage) -> TokenUsage {
     }
 }
 
-fn usage_cache_partition_is_consistent(usage: &Usage) -> bool {
+pub fn usage_cache_partition_is_consistent(usage: &Usage) -> bool {
     let reported = u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0))
         + u64::from(usage.prompt_cache_miss_tokens.unwrap_or(0))
         + u64::from(usage.prompt_cache_write_tokens.unwrap_or(0));

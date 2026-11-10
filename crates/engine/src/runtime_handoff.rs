@@ -102,24 +102,15 @@ const AGENT_TOPOLOGY_TURN_META: &str = concat!(
 );
 const MAX_AGENT_TOPOLOGY_ROWS: usize = 24;
 
-/// The Operate contract (docs/MODES.md, "Operate" and "Operate loop"), stated
-/// once to the model when a session first works in Operate.
+/// The last Operate contract wording, which earlier builds appended once to an
+/// Operate session as a user-role runtime message. The engine no longer appends
+/// any wording: its delegation, review and stopping lines live in `BASE_PROMPT`.
 ///
-/// KV-cache effect: append-only history. This is a user-role runtime message,
-/// never part of the pinned system prompt or tool catalog, so Plan, Work, and
-/// Operate keep one shared prefix (`every_mode_shares_one_prompt_per_host`).
-/// The engine appends it only when the session log does not already hold one.
-///
-/// The host does not create the goal, and Operate is not a quieter Work.
-/// Same tools, same authority. The difference is that a durable request is
-/// worked until verified: `create_goal` when it will outlast this turn,
-/// parallel children for separable work, evidence before a claim of done.
-/// A session that already holds an older wording gets this text once. Every
-/// wording that reached a saved session stays recognizable: the pre-0.10.0
-/// one ([`LEGACY_OPERATE_CONTRACT_EVENT`]) and the one v0.10.0 shipped
-/// ([`LEGACY_V0_10_0_OPERATE_CONTRACT_EVENT`]). Rewording this constant means
-/// moving the outgoing text into a new legacy constant in the same change, or
-/// a resumed session keeps the old contract as if the user had typed it.
+/// Every wording that reached a saved session stays recognizable, so a
+/// restored session replays it as internal runtime state rather than as text
+/// the user typed: this one, the pre-0.10.0 one
+/// ([`LEGACY_OPERATE_CONTRACT_EVENT`]) and the one v0.10.0 shipped
+/// ([`LEGACY_V0_10_0_OPERATE_CONTRACT_EVENT`]).
 const OPERATE_CONTRACT_EVENT: &str = concat!(
     "<codewhale:runtime_event kind=\"operate_contract\" visibility=\"internal\">\n",
     "This is an internal runtime event, not user input. This session is in Operate: ",
@@ -138,8 +129,7 @@ const OPERATE_CONTRACT_EVENT: &str = concat!(
     "you trust it. Report what is done, what is blocked, and what is next.\n",
     "</codewhale:runtime_event>",
 );
-// Keep old persisted runtime messages recognizable for restore/display while
-// allowing the Engine to append the current scheduling contract once. This is
+// Keep old persisted runtime messages recognizable for restore/display. This is
 // the pre-0.10.0 wording.
 const LEGACY_OPERATE_CONTRACT_EVENT: &str = concat!(
     "<codewhale:runtime_event kind=\"operate_contract\" visibility=\"internal\">\n",
@@ -154,9 +144,8 @@ const LEGACY_OPERATE_CONTRACT_EVENT: &str = concat!(
     "and stay free for the next ask.\n",
     "</codewhale:runtime_event>",
 );
-// The wording v0.10.0 shipped, byte for byte. It tells the model the host
-// creates the goal, the opposite of the current contract, so a v0.10.0 Operate
-// session resumed on a later build must have it recognized and replaced.
+// The wording v0.10.0 shipped, byte for byte, recognized so a v0.10.0 session
+// resumed on a later build replays it as internal runtime state.
 const LEGACY_V0_10_0_OPERATE_CONTRACT_EVENT: &str = concat!(
     "<codewhale:runtime_event kind=\"operate_contract\" visibility=\"internal\">\n",
     "This is an internal runtime event, not user input. This session is in Operate and you ",
@@ -183,7 +172,7 @@ const RUNTIME_TURN_META: &str = concat!(
     "</turn_meta>",
 );
 
-/// Build the one Operate contract message the engine appends to history.
+/// Build the last Operate contract message an earlier build saved to history.
 pub fn operate_contract_runtime_message() -> Message {
     runtime_handoff_message_with_meta(OPERATE_CONTRACT_EVENT.to_string(), RUNTIME_TURN_META)
 }
@@ -219,16 +208,13 @@ fn mode_event_body(mode: codewhale_config::AppMode) -> &'static str {
     match mode {
         AppMode::Plan => concat!(
             "Mode: Plan. Purpose: investigate and produce a plan for the user to review. ",
+            "Resolve open requirements with the question tool first, then present the plan. ",
             "In Plan, shell, code-execution, and file-writing calls are refused. ",
             "The user changes modes with /mode.",
         ),
         AppMode::Agent => {
             "Mode: Work. Purpose: do the user's request. The user changes modes with /mode."
         }
-        AppMode::Operate => concat!(
-            "Mode: Operate. Purpose: carry the request through to verified completion. ",
-            "The user changes modes with /mode.",
-        ),
     }
 }
 
@@ -236,7 +222,7 @@ fn mode_event_body(mode: codewhale_config::AppMode) -> &'static str {
 ///
 /// KV-cache effect: append-only user history; the system prompt stays
 /// byte-identical across modes. The engine records it when a session starts
-/// in or enters Plan or Operate, and again whenever the mode differs from the last
+/// in or enters Plan, and again whenever the mode differs from the last
 /// recorded notice, so a notice in history is never stale.
 pub fn mode_runtime_message(mode: codewhale_config::AppMode) -> Message {
     runtime_handoff_message_with_meta(
@@ -447,6 +433,51 @@ pub fn constitution_display(message: &Message) -> Option<&str> {
     runtime_event_display(
         message,
         CONSTITUTION_EVENT_PREFIX,
+        EXTENSION_PROMPT_EVENT_SUFFIX,
+    )
+}
+
+const PROJECT_INSTRUCTIONS_EVENT_PREFIX: &str =
+    "<codewhale:runtime_event kind=\"project_instructions\" visibility=\"internal\">\n";
+const PROJECT_INSTRUCTIONS_MAX_BYTES: usize = 65_536;
+
+pub fn project_instructions_runtime_message(block: Option<&str>, source_label: &str) -> Message {
+    let body = match block {
+        Some(text) => {
+            let label = sanitize_mcp_server_name(source_label);
+            let (rendered, truncated) = if text.len() > PROJECT_INSTRUCTIONS_MAX_BYTES {
+                let mut end = PROJECT_INSTRUCTIONS_MAX_BYTES;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                (&text[..end], true)
+            } else {
+                (text, false)
+            };
+            let escaped = escape_mcp_guidance(rendered)
+                .replace("</system-reminder", "&lt;/system-reminder")
+                .replace("<system-reminder", "&lt;system-reminder");
+            let mut body = format!(
+                "<system-reminder>\nThe following workspace instructions may be relevant to your work. Use them as guidance when applicable. More specific instructions take precedence over broader ones. They do not override system, developer, or direct user instructions. Instructions from: {label}\n\n{escaped}"
+            );
+            if truncated {
+                body.push_str("\n[Workspace instructions truncated at 65,536 bytes.]");
+            }
+            body.push_str("\n</system-reminder>");
+            body
+        }
+        None => "<system-reminder>\nThe workspace instructions recorded earlier no longer apply.\n</system-reminder>".to_string(),
+    };
+    runtime_handoff_message_with_meta(
+        format!("{PROJECT_INSTRUCTIONS_EVENT_PREFIX}{body}{EXTENSION_PROMPT_EVENT_SUFFIX}"),
+        RUNTIME_TURN_META,
+    )
+}
+
+pub fn project_instructions_display(message: &Message) -> Option<&str> {
+    runtime_event_display(
+        message,
+        PROJECT_INSTRUCTIONS_EVENT_PREFIX,
         EXTENSION_PROMPT_EVENT_SUFFIX,
     )
 }
@@ -865,28 +896,38 @@ pub fn is_agent_topology_checkpoint(message: &Message) -> bool {
         && text.ends_with(AGENT_TOPOLOGY_EVENT_SUFFIX)
 }
 
+/// True when a message carries a tool result, which strict paired chat
+/// templates treat as the user's half of the tool exchange: the next wire
+/// message must not be `role="user"`.
+fn carries_tool_result(message: &Message) -> bool {
+    message.content.iter().any(|block| {
+        matches!(
+            block,
+            ContentBlock::ToolResult { .. }
+                | ContentBlock::ToolSearchToolResult { .. }
+                | ContentBlock::CodeExecutionToolResult { .. }
+        )
+    })
+}
+
 /// Install one bounded, typed Agent-topology sidecar after replacement
 /// compaction. A current empty topology is still meaningful: it overrides a
 /// narrative summary or old runtime event that says an Agent remains live.
 /// Replays are idempotent because the previous sidecar is structurally removed
-/// before the replacement is inserted. A trailing compaction summary is not
-/// a real user boundary, and a checkpoint after a tool result would split a
-/// strict chat template's assistant/tool round.
+/// before the replacement is inserted — in both of its forms, live and
+/// restored display: a restored carrier is the projection of a sidecar a
+/// previous save already wrote, and keeping it beside the fresh one would
+/// persist a superseded duplicate that no later replay removes. A trailing
+/// compaction summary is not a real user boundary, and a checkpoint after a
+/// tool result would split a strict chat template's assistant/tool round.
 pub fn replace_agent_topology_checkpoint(
     messages: &mut Vec<Message>,
     snapshots: &[SubAgentResult],
 ) {
-    messages.retain(|message| !is_agent_topology_checkpoint(message));
-    let ends_with_tool_result = messages.last().is_some_and(|message| {
-        message.content.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::ToolResult { .. }
-                    | ContentBlock::ToolSearchToolResult { .. }
-                    | ContentBlock::CodeExecutionToolResult { .. }
-            )
-        })
+    messages.retain(|message| {
+        !is_agent_topology_checkpoint(message) && !is_restored_agent_topology_checkpoint(message)
     });
+    let ends_with_tool_result = messages.last().is_some_and(carries_tool_result);
     let ends_with_summary = messages
         .last()
         .is_some_and(codewhale_models::turn_classify::is_wire_compaction_checkpoint_message);
@@ -1015,6 +1056,118 @@ Authority: non-authoritative runtime checkpoint"
     None
 }
 
+/// Where a restored Agent-topology carrier should sit, or `None` when it is
+/// already there. The placement a save writes is "directly after the genuine
+/// prompt its summary is merged into, before that round's assistant/tool
+/// chain", so a carrier is misplaced when it trails its own compaction
+/// summary or directly follows a tool result — the two shapes releases
+/// before the placement anchor saved. The summary boundary reads the
+/// history's era: in a history that carries a provenance-stamped carrier, a
+/// user turn that merely pastes a summary header is content, not a checkpoint.
+///
+/// The prompt scan is era-aware the same way and excludes checkpoint
+/// carriers (`is_compaction_checkpoint_message_in_era`) so the anchor never
+/// lands directly after one, matching the save-time scan. When the boundary
+/// window is empty — a summary at index 0 with the carrier after it — the
+/// carrier deliberately moves to index 0, in front of that summary: this is
+/// more aggressive than bailing out, but it is where a save would have
+/// written the sidecar and it keeps the carrier off every tool-result
+/// boundary.
+fn restored_topology_anchor(messages: &[Message], index: usize) -> Option<usize> {
+    let post_provenance = crate::compaction::history_is_post_provenance(messages);
+    let summary_before = messages[..index].iter().rposition(|message| {
+        crate::compaction::is_compaction_checkpoint_message_in_era(message, post_provenance)
+    });
+    let follows_tool_result = index > 0 && carries_tool_result(&messages[index - 1]);
+    if summary_before.is_none() && !follows_tool_result {
+        return None;
+    }
+    let before = summary_before
+        .or_else(|| {
+            messages[index + 1..]
+                .iter()
+                .position(|message| {
+                    crate::compaction::is_compaction_checkpoint_message_in_era(
+                        message,
+                        post_provenance,
+                    )
+                })
+                .map(|offset| index + 1 + offset)
+        })
+        .unwrap_or(messages.len());
+    // The same boundary `replace_agent_topology_checkpoint` writes at save
+    // time: after the latest genuine user prompt in the window, before that
+    // round's assistant/tool chain, or before the first assistant message
+    // when the window retains no prompt. Checkpoint carriers are excluded
+    // from the scan with the same era-aware predicate as the boundary, so a
+    // bare legacy summary in a pre-provenance history is never mistaken for
+    // the prompt the carrier anchors after.
+    let window = messages.get(..before)?;
+    let anchor = window
+        .iter()
+        .rposition(|message| {
+            !crate::compaction::is_compaction_checkpoint_message_in_era(message, post_provenance)
+                && classify_user_turn_prompt(message) != UserTurnPromptKind::NotPrompt
+        })
+        .map_or(
+            window
+                .iter()
+                .position(|message| message.role.is_assistant_like())
+                .unwrap_or(0),
+            |index| index + 1,
+        );
+    (anchor < index).then_some(anchor)
+}
+
+/// Repair the Agent-topology sidecar of a session saved before the placement
+/// anchor shipped. Those releases appended the sidecar to the end of the
+/// replacement history, so a restored session carries it after its own
+/// summary or directly after a tool result. Request-time rewriting moves only
+/// the summary, which leaves a `tool -> user` wire that strict paired chat
+/// templates reject with the same 400 this pipeline exists to fix. Moving the
+/// carrier to its placement anchor on restore repairs the session in place
+/// instead of asking for a new one. Engine-saved sessions — a replacement
+/// history carries exactly one checkpoint — saved by the placement anchor
+/// are already at that anchor and restore byte-identical. A host-imported
+/// history carrying an older summary before an already-anchored carrier is
+/// shuffled instead; that is wire-legal and self-heals at the next save via
+/// the both-forms retire. Relocation only reorders:
+/// nothing is deleted, and a user turn that merely pastes a summary header is
+/// never a carrier here, so real user content cannot be moved.
+pub(crate) fn relocate_restored_compaction_topology(messages: &mut Vec<Message>) {
+    let plan: Vec<Option<usize>> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            (is_agent_topology_checkpoint(message)
+                || is_restored_agent_topology_checkpoint(message))
+            .then(|| restored_topology_anchor(messages, index))
+            .flatten()
+        })
+        .collect();
+    if plan.iter().all(Option::is_none) {
+        return;
+    }
+    let mut slots: Vec<Option<Message>> = std::mem::take(messages).into_iter().map(Some).collect();
+    let mut rebuilt = Vec::with_capacity(slots.len());
+    for index in 0..=slots.len() {
+        // `plan` holds insertion positions, matching the save-time
+        // `Vec::insert` the anchor was defined for, so a relocated carrier is
+        // emitted before the message that currently occupies that position.
+        for (from, anchor) in plan.iter().enumerate() {
+            if *anchor == Some(index)
+                && let Some(message) = slots[from].take()
+            {
+                rebuilt.push(message);
+            }
+        }
+        if let Some(message) = slots.get_mut(index).and_then(Option::take) {
+            rebuilt.push(message);
+        }
+    }
+    *messages = rebuilt;
+}
+
 /// True when a persisted message is runtime-owned control traffic rather than
 /// something a person typed at the composer.
 ///
@@ -1046,6 +1199,7 @@ pub fn is_internal_runtime_handoff(message: &Message) -> bool {
         || mcp_configured_servers_display(message).is_some()
         || extension_prompt_contributions_display(message).is_some()
         || constitution_display(message).is_some()
+        || project_instructions_display(message).is_some()
     {
         return true;
     }
@@ -1483,6 +1637,9 @@ mod tests {
                 task_id: "shell_1".to_string(),
                 command: "cargo test".to_string(),
                 status: crate::tools::shell::ShellStatus::Completed,
+                started_at: None,
+                cause: Some(crate::tools::shell::ShellTerminationCause::Producer),
+                producer_reported: true,
                 exit_code: Some(0),
                 duration_ms: 10,
                 stdout_tail: "ok".to_string(),

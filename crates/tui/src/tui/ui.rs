@@ -158,10 +158,13 @@ use super::app::{
 use super::approval::{
     ApprovalRequest, ApprovalView, ElevationRequest, ElevationView, ReviewDecision,
 };
-use super::history::{
-    CellFoldAction, ExecCell, HistoryCell, ToolCell, ToolStatus, TranscriptFold,
-    history_cells_from_message, summarize_tool_output,
-};
+use super::history::CellFoldAction;
+use super::history::ExecCell;
+use super::history::HistoryCell;
+use super::history::ToolCell;
+use super::history::ToolStatus;
+use super::history::TranscriptFold;
+use super::history::history_cells_from_message;
 use super::slash_menu::{
     apply_slash_menu_selection, partial_inline_skill_mention_at_cursor,
     try_autocomplete_slash_command, visible_slash_menu_entries,
@@ -169,6 +172,7 @@ use super::slash_menu::{
 use super::views::{ConfigView, HelpView, ModalKind, ViewAction, ViewEvent};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
 use super::widgets::{ChatWidget, ComposerWidget, Renderable};
+use codewhale_app_server::exec_agent::summarize_tool_output;
 
 // Activity Detail / raw-detail / pager-text helpers extracted into `activity_detail`
 // (issue #4103). Re-export the cross-module entry points so existing
@@ -333,6 +337,7 @@ pub(crate) enum OnboardingKeyRoute {
     Quit,
     /// Hand the key to the provider picker on the view stack.
     ProviderPicker,
+    AccountLogin,
     /// Take the advertised offline exit (#3927). Reachable from Provider
     /// setup even while the provider picker owns the screen, so the choice is
     /// never hidden behind a modal the user cannot satisfy.
@@ -568,6 +573,7 @@ async fn spawn_tui_engine_with_session(
         {
             handle
                 .send(Op::SyncSession {
+                    expected: None,
                     control: app.session_sync_control(),
                     session_id: app.current_session_id.clone(),
                     messages: app.api_messages.as_ref().clone(),
@@ -639,7 +645,7 @@ const BALANCE_FETCH_COOLDOWN: Duration = Duration::from_secs(60);
 /// Shared `reqwest::Client` for balance fetches so connection pools are
 /// reused across successive background polls.
 static BALANCE_CLIENT: LazyLock<::reqwest::Client> = LazyLock::new(|| {
-    codewhale_release::tls::reqwest_client_builder()
+    codewhale_net::proxy::install_loopback_proxy(codewhale_release::tls::reqwest_client_builder())
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default()
@@ -1031,6 +1037,10 @@ async fn execute_command_input(
     config: &mut Config,
     input: &str,
 ) -> Result<bool> {
+    if app.pending_fresh_session.is_some() && !commands::pending_session_control_command(input) {
+        app.status_message = Some("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string());
+        return Ok(false);
+    }
     let _ = app.note_manual_command_for_tip(input);
     if let Some(parsed_index) = parse_queue_send_command(input) {
         match parsed_index {

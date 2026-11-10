@@ -600,7 +600,11 @@ impl App {
         };
         let configured_approval_mode = explicit_approval_mode
             .or(saved_permission_posture)
-            .unwrap_or_default();
+            .unwrap_or(if approval_policy_locked {
+                ApprovalMode::Suggest
+            } else {
+                ApprovalMode::AcceptEdits
+            });
         let configured_trust_mode = configured_approval_mode == ApprovalMode::Bypass;
         let mode_prefs = ModeSessionPrefs {
             agent_allow_shell: if yolo_compat {
@@ -791,6 +795,7 @@ impl App {
                 ..ViewportState::default()
             },
             pet_watch: crate::tui::pet_watch::PetWatch::default(),
+            attachment_preview: Box::new(crate::tui::image_preview::ThumbnailCache::new()),
             work_surface: {
                 let mut state = crate::tui::work_surface::WorkSurfaceState::with_layout(
                     work_surface_placement,
@@ -823,7 +828,8 @@ impl App {
             completed_assistant_outputs: Vec::new(),
             pending_plan_handoff: None,
             context_token_cache: std::cell::RefCell::new(Default::default()),
-            remote_control: crate::remote_control::RemoteControlController::default(),
+            remote_control: codewhale_app_server::remote_control::RemoteControlController::default(
+            ),
             start_remote_control_on_launch: start_remote_control,
             is_loading: false,
             feedback_dispatch: None,
@@ -831,6 +837,7 @@ impl App {
             dispatch_in_flight: false,
             dispatch_cancel: None,
             last_enter_instant: None,
+            last_clipboard_paste: None,
             provider_wait_incident_logged: false,
             prompt_suggestion: None,
             notification_settings: config.notifications_config(),
@@ -940,7 +947,6 @@ impl App {
             focus_texture,
             launch,
             pending_launch_action: None,
-            pending_claude_login: None,
             pending_composer_submit: None,
             pending_hotbar_slot: None,
             synchronized_output_enabled,
@@ -1034,6 +1040,7 @@ impl App {
             lifecycle_outbox,
             yolo: yolo_compat,
             yolo_compat_notified: false,
+            operate_retired_notified: false,
             startup_defaults: Default::default(),
             keybinding_migration_notified: false,
             mode_prefs,
@@ -1062,6 +1069,7 @@ impl App {
             last_known_work_state: None,
             last_known_goal_state: None,
             pending_goal_controls: VecDeque::new(),
+            pending_fresh_session: None,
             current_session_metadata: None,
             session_artifacts: Vec::new(),
             session_turn_outcomes: Vec::new(),
@@ -1246,6 +1254,9 @@ impl App {
         }
         if yolo_compat {
             app.notify_yolo_compat_once();
+        }
+        if settings.legacy_operate_default_detected() {
+            app.notify_operate_retired_once();
         }
         app
     }

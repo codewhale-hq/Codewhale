@@ -50,8 +50,8 @@ export const NATIVE_TERMINAL_VIEWS = {
 export const NATIVE_TERMINAL_COPY = {
   title: { en: "Explore the terminal", zh: "探索终端界面" },
   description: {
-    en: "Captured views from a Codewhale demo session. Explore the conversation, task workbar, model connections and help.",
-    zh: "Codewhale 演示会话的实录画面。查看对话、任务工作栏、模型连接与帮助。",
+    en: "Captured views from a local Codewhale demo.",
+    zh: "Codewhale 本地演示的实录画面。",
   },
   viewsLabel: { en: "Terminal views", zh: "终端视图" },
   showFull: { en: "Show full terminal", zh: "查看完整终端" },

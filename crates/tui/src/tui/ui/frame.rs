@@ -524,6 +524,65 @@ fn render_info_row(
         .style(Style::default().bg(app.ui_theme.header_bg))
         .render(area, buf);
     ratatui::widgets::Widget::render(info, area, buf);
+    if !identity_only
+        && !app.viewport.working_glow_visible
+        && app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Full
+        && !crate::tui::pet_watch::main_view(app)
+        && !app.onboarding_needs_api_key
+        && hovered != Some(InfoSegmentId::Model)
+        && !app.last_mouse_pos.is_some_and(|(x, y)| {
+            route_area.is_some_and(|route| route.x <= x && x < route.right() && route.y == y)
+        })
+        && app.motion_policy().should_request_animation_frames()
+        && matches!(
+            crate::tui::underwater::ShellPhase::from_app(app),
+            crate::tui::underwater::ShellPhase::Working
+        )
+        && matches!(
+            crate::tui::underwater::LiveActivity::from_app(app).kind(),
+            crate::tui::underwater::LiveActivityKind::Working
+                | crate::tui::underwater::LiveActivityKind::Reasoning
+        )
+        && let Some((mut caps, started)) = app.viewport.ocean_caps.zip(app.turn_started_at)
+        && caps.depth == codewhale_ratatui::color::ColorDepth::TrueColor
+        && let Some(appearance) =
+            codewhale_ratatui::detect::appearance_for_background(app.ui_theme.header_bg)
+        && app.ui_theme.header_bg != app.ui_theme.surface_bg
+        && matches!(app.ui_theme.status_working, ratatui::style::Color::Rgb(..))
+        && let Some(model_area) = model_area
+        && let Some(model) = match route_fields.as_deref() {
+            Some(fields) => fields
+                .iter()
+                .find(|field| field.kind == crate::tui::phase_strip::RouteFieldKind::Model)
+                .map(|field| field.text.as_str()),
+            None => segments
+                .iter()
+                .find(|segment| segment.id == InfoSegmentId::Model && segment.label.is_empty())
+                .map(|segment| segment.value.as_str()),
+        }
+    {
+        use unicode_width::UnicodeWidthStr as _;
+        let width = model.width().min(usize::from(model_area.width));
+        if width > 0 {
+            caps.appearance = appearance;
+            let theme = codewhale_ratatui::Theme::new(caps);
+            let mode =
+                codewhale_ratatui::MotionMode::from_settings(app.low_motion, app.fancy_animations);
+            codewhale_ratatui::paint_working_glow(
+                buf,
+                Rect {
+                    width: width as u16,
+                    ..model_area
+                },
+                model,
+                started.elapsed(),
+                codewhale_ratatui::MotionPolicy::new(mode, &theme),
+                app.ui_theme.status_working,
+                app.ui_theme.header_bg,
+            );
+            app.viewport.working_glow_visible = true;
+        }
+    }
     app.viewport.last_infoline_hitboxes = hitboxes;
     interaction_hitboxes
 }
@@ -920,6 +979,7 @@ pub(crate) async fn build_preview_request_inputs(
         Err(error) => return posture(None, PreviewUnresolved::PlanFailed(error)),
     };
     let planned = plan_turn_route(TurnRoutePlanRequest {
+        accounting_origin: None,
         route_config: &route_config,
         app_route_identity: &app_route_identity,
         api_provider: app.api_provider,
@@ -998,6 +1058,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         subagent_state_root: None,
         allow_shell: app.allow_shell,
         trust_mode: app.trust_mode,
+        extra_trusted_paths: config.extra_trusted_paths.clone(),
         notes_path: config.notes_path(),
         mcp_config_path: config.mcp_config_path(),
         mcp_auth_context: Default::default(),
@@ -1019,12 +1080,10 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
                 |identity| config.max_admitted_subagents_for_provider(identity),
             )
             .max(max_subagents),
-        launch_concurrency: identity
-            .map_or_else(
-                || config.launch_concurrency(),
-                |identity| config.launch_concurrency_for_provider(identity),
-            )
-            .max(app.mode.mode_delegation_launch_floor()),
+        launch_concurrency: identity.map_or_else(
+            || config.launch_concurrency(),
+            |identity| config.launch_concurrency_for_provider(identity),
+        ),
         subagents_enabled: identity
             .is_some_and(|identity| config.subagents_enabled_for_provider(identity)),
         features: config.features(),
@@ -1047,6 +1106,8 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
                 )
             },
         ),
+        goal_complete_judge: config.goal_complete_judge(),
+        goal_blocked_judge: config.goal_blocked_judge(),
         max_spawn_depth: identity.map_or_else(
             || config.subagent_max_spawn_depth(),
             |identity| config.subagent_max_spawn_depth_for_provider(identity),
@@ -1559,12 +1620,21 @@ pub(crate) fn build_pending_input_preview(app: &App) -> PendingInputPreview {
 }
 
 pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(u16, u16)> {
+    app.viewport.working_glow_visible = false;
     app.viewport.ocean_semantic_surfaces.clear();
     let size = f.area();
     // Hover targets belong to the whole composed frame. Resetting inside the
     // transcript erased targets registered later by the composer and modals.
     crate::tui::hover_layer::begin_frame();
     app.pet_watch.prepare_frame();
+    // Image previews decode off-thread. `poll` runs at the top of the event
+    // loop, before the draw decision, so a preview that just finished can
+    // request its own frame; this reconciles the cache with the attachment
+    // list, which is a vector comparison when the draft has not changed.
+    let attached_images = crate::tui::widgets::attachment_preview::attached_image_paths(app);
+    if !attached_images.is_empty() && !crate::tui::color_compat::ascii_safe_enabled() {
+        app.attachment_preview.track(&attached_images);
+    }
     let shell_area = session_shell_area(size);
     // Keep the view stack's focus-context texture prototype (#4823) in step
     // with the parsed setting each frame: a plain enum/theme copy, no
@@ -1758,9 +1828,32 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
     // back to controls-only when just one row remains). Mixed previews retain
     // up to three compact rows at the release floor.
     let preview_cap = if size.height >= 20 { 4 } else { 3 };
-    let preview_height = desired_preview_height.min(auxiliary_budget.min(preview_cap));
-    let workbar_height =
-        desired_workbar_height.min(auxiliary_budget.saturating_sub(preview_height));
+    // The image thumbnail sits between the queued-input preview and the
+    // composer. It competes for the same spare rows as the queued preview,
+    // and the queued preview wins: a draft the person typed is worth more
+    // than a picture they can still see in its own window. On a short
+    // terminal the thumbnail also gives way on its own (a quarter of the
+    // body), so the transcript never collapses to make room for it.
+    let desired_attachment_preview_height = if (mini && !mini_cfg.keep_input) || pet_main {
+        0
+    } else {
+        crate::tui::widgets::attachment_preview::AttachmentPreviewWidget::for_app(app)
+            .map(|widget| widget.desired_height(shell_area.width))
+            .unwrap_or(0)
+    };
+    let attachment_preview_height = desired_attachment_preview_height
+        .min(body_height / 4)
+        .min(auxiliary_budget.saturating_sub(desired_preview_height.min(preview_cap)));
+    let preview_height = desired_preview_height.min(
+        auxiliary_budget
+            .saturating_sub(attachment_preview_height)
+            .min(preview_cap),
+    );
+    let workbar_height = desired_workbar_height.min(
+        auxiliary_budget
+            .saturating_sub(attachment_preview_height)
+            .saturating_sub(preview_height),
+    );
 
     // Two pinned rows bracket the composer from below (SHELL-DESIGN-20260901
     // §2.0 item 3, §2.3b): the posture bar — permission · mode · live counts
@@ -1792,6 +1885,7 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(strip_above_height), // Tasks + To-do above transcript (`top`)
             Constraint::Min(1),                     // Chat area
             Constraint::Length(preview_height),     // Pending input preview (0 if empty)
+            Constraint::Length(attachment_preview_height), // Image thumbnail (0 if none)
             Constraint::Length(plugin_cta_height),  // Live plugin CTA (0 unless matched)
             Constraint::Length(composer_height),    // Composer
             Constraint::Length(footer_height),      // Posture bar
@@ -1800,13 +1894,14 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
             Constraint::Length(strip_below_height), // Roster + To-do under the chrome (`bottom`)
         ])
         .split(body_area);
-    let strip_slot = if strip_below { 8 } else { 0 };
+    let strip_slot = if strip_below { 9 } else { 0 };
     let preview_slot = 2;
-    let plugin_cta_slot = 3;
-    let composer_slot = 4;
-    let footer_slot = 5;
-    let workbar_slot = 6;
-    let info_slot = 7;
+    let attachment_preview_slot = 3;
+    let plugin_cta_slot = 4;
+    let composer_slot = 5;
+    let footer_slot = 6;
+    let workbar_slot = 7;
+    let info_slot = 8;
 
     if matches!(
         app.view_stack.top_kind(),
@@ -1952,6 +2047,16 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
         pending_preview.render(body_chunks[preview_slot], buf);
     }
 
+    // The cell thumbnail of the attached image, above the composer so the
+    // picture is visible before the turn is sent.
+    if attachment_preview_height > 0
+        && let Some(widget) =
+            crate::tui::widgets::attachment_preview::AttachmentPreviewWidget::for_app(app)
+    {
+        let area = body_chunks[attachment_preview_slot];
+        widget.render(area, f.buffer_mut());
+    }
+
     if plugin_cta_height > 0 {
         let buf = f.buffer_mut();
         crate::tui::plugin_suggestions::draw_plugin_cta(app, body_chunks[plugin_cta_slot], buf);
@@ -1992,12 +2097,40 @@ pub(crate) fn render(f: &mut Frame, app: &mut App, _config: &Config) -> Option<(
                 facts.hint = None;
             }
         }
+        let working_glow = if matches!(
+            crate::tui::underwater::ShellPhase::from_app(app),
+            crate::tui::underwater::ShellPhase::Working
+                | crate::tui::underwater::ShellPhase::Verifying
+        ) {
+            app.viewport
+                .ocean_caps
+                .zip(app.turn_started_at)
+                .map(|(caps, started)| {
+                    (
+                        caps,
+                        started.elapsed(),
+                        codewhale_ratatui::MotionMode::from_settings(
+                            app.low_motion,
+                            app.fancy_animations,
+                        ),
+                    )
+                })
+        } else {
+            None
+        };
         let footer = facts
             .widget(
                 &app.ui_theme,
                 crate::tui::color_compat::ascii_safe_enabled(),
             )
-            .compact(app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Compact);
+            .compact(app.posture_bar == codewhale_runtime::config::ChromeRowPreset::Compact)
+            .working_glow(working_glow);
+        app.viewport.working_glow_visible = footer.working_clock_visible(area)
+            && working_glow.is_some_and(|(caps, _, mode)| {
+                caps.depth == codewhale_ratatui::color::ColorDepth::TrueColor && mode.animates()
+            })
+            && matches!(app.ui_theme.footer_bg, ratatui::style::Color::Rgb(..))
+            && matches!(app.ui_theme.text_body, ratatui::style::Color::Rgb(..));
         let buf = f.buffer_mut();
         Block::default()
             .style(Style::default().bg(app.ui_theme.footer_bg))
@@ -2194,9 +2327,18 @@ pub(crate) fn draw_app_frame_inner(
             terminal.clear()?;
         }
         let mut cursor_pos = None;
-        terminal.draw(|f| cursor_pos = render(f, app, config))?;
+        let mut frame_area = ratatui::layout::Rect::default();
+        terminal.draw(|f| {
+            frame_area = f.area();
+            cursor_pos = render(f, app, config);
+        })?;
         app.pet_watch.present(terminal.backend_mut())?;
         finish_frame_cursor(terminal, cursor_pos)?;
+        if cursor_pos.is_none()
+            && let Some(anchor) = app.view_stack.cursor_anchor(frame_area)
+        {
+            terminal.set_cursor_position(anchor)?;
+        }
         Ok(())
     });
     if resized.is_some() {
@@ -2976,9 +3118,10 @@ mod tests {
         assert_eq!(super::billing_tier_label(&app, peak), None);
     }
 
-    /// A provider switch must not hide missing historical coverage.
+    /// A provider switch must not fabricate a price: the glance carries
+    /// confirmed dollars, so an unpriced session renders no cost at all.
     #[test]
-    fn cost_unknown_preserves_saved_coverage_across_route_changes() {
+    fn cost_shows_confirmed_dollars_only_across_route_changes() {
         use codewhale_engine::route_billing::BillingPresentation;
         let mut app = app_with_context_percent(10);
         app.session.cost_coverage_unknown_legacy = true;
@@ -2990,39 +3133,34 @@ mod tests {
         ));
         assert_eq!(
             super::session_cost_label(&app),
-            "cost: unknown (saved coverage unavailable)"
+            "",
+            "an unpriced session shows no money"
         );
         let row = metrics_row(&app, 200);
-        assert!(
-            row.contains("cost: unknown"),
-            "a priceable route keeps the honesty: {row:?}"
-        );
+        assert!(!row.contains('$'), "no invented price: {row:?}");
 
         app.billing_presentation = BillingPresentation::Unknown;
         assert!(matches!(
             app.cumulative_usage_chip(),
             codewhale_engine::route_billing::UsageChip::Unknown(_)
         ));
-        assert_eq!(
-            super::session_cost_label(&app),
-            "cost: unknown (saved coverage unavailable)"
-        );
+        assert_eq!(super::session_cost_label(&app), "");
         let ids: Vec<InfoSegmentId> = super::info_segments(&app, 200)
             .iter()
             .map(|segment| segment.id)
             .collect();
-        assert!(ids.contains(&InfoSegmentId::Cost), "{ids:?}");
+        assert!(!ids.contains(&InfoSegmentId::Cost), "{ids:?}");
         let row = metrics_row(&app, 200);
         assert!(
-            row.contains("saved coverage unavailable"),
-            "an unclassified route preserves the reason: {row:?}"
+            !row.contains('$'),
+            "a route change invents nothing: {row:?}"
         );
         assert!(
             row.contains("context 10%"),
             "and nothing else moves: {row:?}"
         );
 
-        // A real price on an otherwise unclassified route still prints.
+        // A confirmed price on an otherwise unclassified route still prints.
         app.session.cost_coverage_unknown_legacy = false;
         app.session.cost_priced_turns = 1;
         app.session.session_cost = 0.42;

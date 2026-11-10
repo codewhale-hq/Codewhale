@@ -120,7 +120,10 @@ async fn interactive_thinking_only_drop_preserves_nothing_and_never_claims_it_di
     assert_eq!(
         transcript
             .iter()
-            .filter(|message| message.role == "user")
+            .filter(|message| {
+                message.role == "user"
+                    && !crate::runtime_handoff::is_internal_runtime_handoff(message)
+            })
             .count(),
         1,
         "the operator's own turn must be the only user message: {transcript:?}"
@@ -880,6 +883,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
     // Construct a minimal EngineHandle with the tiny channel.
     let cancel_token = CancellationToken::new();
     let handle = EngineHandle {
+        run_completion: None,
         mcp_auth_context: crate::mcp::process_mcp_auth_context(),
         goal_state: new_shared_goal_state(),
         sandbox_enforcement: codewhale_sandbox::policy::SandboxEnforcement::Unavailable,
@@ -888,6 +892,8 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
         cancel_token: Arc::new(StdMutex::new(cancel_token)),
         cancel_reason: Arc::new(StdMutex::new(None)),
         tx_approval: mpsc::channel(1).0,
+        current_approval: Arc::new(parking_lot::Mutex::new(None)),
+        mock_approval_publications: None,
         tx_user_input: mpsc::channel(1).0,
         tx_steer: mpsc::channel(1).0,
         turn_controls: Arc::new(StdMutex::new(handle::TurnControls::default())),
@@ -923,7 +929,7 @@ fn engine_handle_try_send_does_not_block_when_op_channel_is_full() {
     // cannot fit. The already-queued operation will wake the engine, which
     // applies this pending authority before handling it.
     let result = handle.try_send(Op::ChangeMode {
-        mode: AppMode::Operate,
+        mode: AppMode::Agent,
         allow_shell: true,
         trust_mode: false,
         auto_approve: false,
@@ -987,7 +993,7 @@ async fn full_mailbox_posture_update_supersedes_queued_change_mode() {
     }
 
     let result = handle.try_send(Op::ChangeMode {
-        mode: AppMode::Operate,
+        mode: AppMode::Agent,
         allow_shell: true,
         trust_mode: false,
         auto_approve: false,
@@ -1008,7 +1014,7 @@ async fn full_mailbox_posture_update_supersedes_queued_change_mode() {
     .expect("snapshot after mailbox drain")
     .expect("session snapshot");
 
-    assert_eq!(snapshot.mode, "operate");
+    assert_eq!(snapshot.mode, "agent");
     let authority = handle.runtime_permission_authority();
     assert_eq!(authority.approval_mode, ApprovalMode::Auto);
     assert!(!authority.auto_approve);
@@ -1207,7 +1213,6 @@ readline.createInterface({ input: process.stdin }).on('line', async line => {
             McpAccess::Connect,
             route,
             "",
-            None,
         );
         tokio::pin!(build);
         std::future::poll_fn(|cx| {
@@ -1748,7 +1753,6 @@ readline.createInterface({input:process.stdin}).on('line', line => {
             McpAccess::Connect,
             route,
             "discovery",
-            None,
         )
         .await;
     (

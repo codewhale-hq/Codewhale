@@ -687,8 +687,30 @@ pub fn run_rollback() -> Result<()> {
         println!("v{} is already the running version.", previous.version);
         return Ok(());
     }
-    preflight_downloaded_binary(&autoupdate::binary_name(), &bytes)?;
     let current = env!("CARGO_PKG_VERSION");
+    let current_version = codewhale_release::parse_release_version(current).context(
+        "Cannot determine the running version; rollback did not replace the executable.",
+    )?;
+    let previous_version = codewhale_release::parse_release_version(&previous.version).context(
+        "Cannot determine the previous version; rollback did not replace the executable.",
+    )?;
+    if (
+        current_version.major,
+        current_version.minor,
+        current_version.patch,
+    ) >= (0, 10, 3)
+        && (
+            previous_version.major,
+            previous_version.minor,
+            previous_version.patch,
+        ) <= (0, 10, 3)
+    {
+        bail!(
+            "Rollback to v{} is disabled because its compatibility with migrated workspace state cannot be verified. Rollback did not replace the executable or change workspace state. Continue using v{current} and keep your workspace data.",
+            previous.version
+        );
+    }
+    preflight_downloaded_binary(&autoupdate::binary_name(), &bytes)?;
     let plan = update_plan_for_exe(&identity.path);
     for target in &plan.target_paths {
         validate_update_target(target, &identity)?;

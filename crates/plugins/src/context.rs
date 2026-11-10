@@ -126,7 +126,10 @@ impl PluginDiscoveryContext {
     }
 
     #[must_use]
-    pub fn registry_for_workspace(self: &Arc<Self>, workspace: &Path) -> Arc<PluginRegistry> {
+    pub fn inspect_registry_for_workspace(
+        self: &Arc<Self>,
+        workspace: &Path,
+    ) -> Arc<PluginRegistry> {
         let config = DiscoveryConfig {
             workspace: workspace.to_path_buf(),
             user_plugins_dir: self.user_plugins_dir.clone(),
@@ -134,15 +137,26 @@ impl PluginDiscoveryContext {
             builtin_plugin_dirs: self.builtin_plugin_dirs.to_vec(),
             state_path: self.state_path.clone(),
         };
-        let mut registry = super::discovery::discover_with_context(&config, Arc::clone(self));
+        Arc::new(super::discovery::discover_with_context(
+            &config,
+            Arc::clone(self),
+        ))
+    }
+
+    #[must_use]
+    pub fn registry_for_workspace(self: &Arc<Self>, workspace: &Path) -> Arc<PluginRegistry> {
+        let mut registry = self.inspect_registry_for_workspace(workspace);
+        let registry_mut = Arc::make_mut(&mut registry);
         // An upgrade re-roots the built-ins; keep their review (K4).
-        registry.carry_forward_builtin_trust();
+        registry_mut.carry_forward_builtin_trust();
         // Only after carry-forward: retiring superseded built-in records is
         // safe once this build holds its own. Unit tests call the collector
         // directly so that no test ever mutates a home implicitly.
         #[cfg(not(any(test, feature = "test-support")))]
-        registry.collect_garbage_at_startup();
-        Arc::new(registry)
+        registry_mut.collect_garbage_at_startup();
+        #[cfg(not(any(test, feature = "test-support")))]
+        registry_mut.reconcile_missing_stages();
+        registry
     }
 
     #[must_use]

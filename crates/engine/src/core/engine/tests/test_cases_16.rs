@@ -172,8 +172,8 @@ fn workspace_drift_arrives_as_one_context_update_and_never_moves_the_header() {
     );
 }
 
-#[test]
-fn agents_md_edit_arrives_as_context_update_carrying_the_new_instructions() {
+#[tokio::test]
+async fn agents_md_edit_arrives_as_history_message_carrying_the_new_instructions() {
     let _lock = lock_test_env();
     let tmp = tempdir().expect("tempdir");
     fs::write(tmp.path().join("AGENTS.md"), "# Rules\n\nAlways run fmt.\n").expect("write");
@@ -189,17 +189,35 @@ fn agents_md_edit_arrives_as_context_update_carrying_the_new_instructions() {
     );
     let pinned = engine.session.system_prompt.clone();
 
+    engine.record_current_project_instructions().await;
+    let recorded = |engine: &Engine| {
+        engine
+            .session
+            .messages
+            .iter()
+            .filter_map(crate::runtime_handoff::project_instructions_display)
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(recorded(&engine).len(), 1);
+    assert!(recorded(&engine)[0].contains("Always run fmt."));
+
     fs::write(
         tmp.path().join("AGENTS.md"),
         "# Rules\n\nAlways run fmt.\nNever push to main.\n",
     )
     .expect("write");
-    let update = engine
-        .refresh_pinned_header_for_turn(&context)
-        .unwrap()
-        .expect("AGENTS.md edit produces a context update");
-    assert!(update.contains("+ Never push to main."), "{update}");
+    assert_eq!(
+        engine.refresh_pinned_header_for_turn(&context).unwrap(),
+        None
+    );
+    engine.record_current_project_instructions().await;
+    assert_eq!(recorded(&engine).len(), 2);
+    assert!(recorded(&engine)[1].contains("Never push to main."));
     assert_eq!(engine.session.system_prompt, pinned);
+
+    engine.record_current_project_instructions().await;
+    assert_eq!(recorded(&engine).len(), 2);
 }
 
 #[test]
@@ -295,7 +313,7 @@ fn engine_prompt_keeps_reasoning_on_the_user_language_contract() {
     };
 
     assert!(prompt.contains("## Language"));
-    assert!(prompt.contains("latest\nuser message"));
+    assert!(prompt.contains("latest user message"));
     assert!(prompt.contains("reasoning_content"));
     assert!(prompt.contains("## 语言再次提醒"));
     assert!(!prompt.contains("## Hidden Thinking Language"));
@@ -1645,18 +1663,13 @@ fn mode_notice_is_recorded_on_entering_plan_or_operate_and_on_leaving_it() {
     assert!(recorded[1].starts_with("Mode: Work."), "{recorded:?}");
 
     engine.session.messages.clear();
-    engine.record_mode_notice(AppMode::Operate);
-    engine.record_mode_notice(AppMode::Operate);
-    assert_eq!(notices(&engine).len(), 1);
     engine
         .session
         .add_message(crate::runtime_handoff::operate_contract_runtime_message());
-    engine.record_mode_notice(AppMode::Operate);
-    assert_eq!(notices(&engine).len(), 1);
     engine.record_mode_notice(AppMode::Agent);
     let recorded = notices(&engine);
-    assert_eq!(recorded.len(), 2);
-    assert!(recorded[1].starts_with("Mode: Work."));
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].starts_with("Mode: Work."));
 
     engine.session.messages.clear();
     engine

@@ -113,10 +113,55 @@ impl Engine {
             .map(|_| turn.steps_used().saturating_add(1));
         let retry_observation = self.request_retry_observation();
         let transport_retries = retry_observation.retries.clone();
+        let request_route =
+            client.effective_route_envelope(&stream_request.model, chrono::Utc::now());
+        let accounting_origin = match self
+            .config
+            .compaction
+            .runtime_cost_owner
+            .as_deref()
+            .map(|owner| {
+                crate::cost_status::NativeUsageOrigin::runtime(
+                    crate::cost_status::scope_token(),
+                    owner,
+                )
+            })
+            .transpose()
+        {
+            Ok(origin) => origin.or_else(|| self.config.runtime_services.accounting_origin.clone()),
+            Err(error) => {
+                return PhaseResult::Return((
+                    TurnOutcomeStatus::Failed,
+                    Some(format!("provider accounting admission failed: {error}")),
+                ));
+            }
+        };
+        let accounting_source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            retry_observation.request_id.clone(),
+            crate::cost_status::UsageSpendOwner::Primary,
+            accounting_origin.filter(|_| self.child_host.is_none() && self.rlm_host.is_none()),
+        );
+        if let Err(error) = accounting_source.bind_dispatch(&request_route, &retry_observation) {
+            return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(error.to_string())));
+        }
+        if self.child_host.is_none()
+            && self.rlm_host.is_none()
+            && let Err(error) = accounting_source.admit_dispatch(&request_route).await
+        {
+            return PhaseResult::Return((
+                TurnOutcomeStatus::Failed,
+                Some(format!("provider source admission failed: {error}")),
+            ));
+        }
+        let dispatch_observation = retry_observation.clone();
         let mut request_receipt = Some(PendingProviderRequestReceipt {
             request_id: retry_observation.request_id.clone(),
-            route: client.effective_route_envelope(&stream_request.model, chrono::Utc::now()),
+            accounting_source,
+            accounting_scope: crate::cost_status::scope_token(),
+            accounting_owner: self.config.compaction.runtime_cost_owner.clone(),
+            route: request_route,
             primary: self.child_host.is_none() && self.rlm_host.is_none(),
+            accounting_owned_elsewhere: false,
             invoked: false,
             turn_id: turn.id.clone(),
             request_index: turn
@@ -132,7 +177,7 @@ impl Engine {
         let rlm_request = tokio::select! {
             biased;
             () = request_cancel.cancelled() => {
-                self.settle_provider_request_receipt(&mut request_receipt, None, "cancelled_before_stream").await;
+                let _ = self.settle_provider_request_receipt(&mut request_receipt, None, "cancelled_before_stream").await;
                 let _ = self.send_event(Event::status("Request cancelled")).await;
                 return PhaseResult::Return((TurnOutcomeStatus::Interrupted, None));
             }
@@ -144,6 +189,14 @@ impl Engine {
             Err(error) => Some(Err(error)),
             Ok(request) => {
                 rlm_dispatch = request;
+                if let Some(dispatch) = rlm_dispatch.as_mut()
+                    && let Err(error) = dispatch.bind_dispatch(&dispatch_observation).await
+                {
+                    return PhaseResult::Return((
+                        TurnOutcomeStatus::Failed,
+                        Some(error.to_string()),
+                    ));
+                }
                 let opening =
                     crate::llm_client::observe_request_retries(Some(retry_observation), async {
                         request_started = true;
@@ -175,6 +228,9 @@ impl Engine {
                                 source,
                                 route,
                             ));
+                            if let Some(dispatch) = child_dispatch.as_mut() {
+                                dispatch.bind_dispatch(&dispatch_observation).await?;
+                            }
                         }
                         if let Some(job) = child_job.as_ref() {
                             tokio::time::timeout(
@@ -208,21 +264,22 @@ impl Engine {
             .transport_retries
             .saturating_add(transport_retries.load(std::sync::atomic::Ordering::Relaxed));
         let Some(stream_result) = stream_result else {
-            self.settle_provider_request_receipt(
-                &mut request_receipt,
-                None,
-                if opening_steer.is_some() {
-                    "steered_before_stream"
-                } else {
-                    "cancelled_before_stream"
-                },
-            )
-            .await;
+            let _ = self
+                .settle_provider_request_receipt(
+                    &mut request_receipt,
+                    None,
+                    if opening_steer.is_some() {
+                        "steered_before_stream"
+                    } else {
+                        "cancelled_before_stream"
+                    },
+                )
+                .await;
             if let Some(dispatch) = rlm_dispatch.as_mut() {
                 if request_started {
                     dispatch.settle(&Usage::default(), false).await;
                 } else {
-                    dispatch.cancel_unexecuted();
+                    dispatch.cancel_unexecuted().await;
                     if let Some(state) = self.rlm_host.as_mut() {
                         state.model_rounds = state.model_rounds.saturating_sub(1);
                     }
@@ -261,7 +318,8 @@ impl Engine {
                 s
             }
             Err(e) => {
-                self.settle_provider_request_receipt(&mut request_receipt, None, "open_failed")
+                let _ = self
+                    .settle_provider_request_receipt(&mut request_receipt, None, "open_failed")
                     .await;
                 if let Some(dispatch) = rlm_dispatch.as_mut() {
                     dispatch.settle_open_error(&e).await;
@@ -277,8 +335,8 @@ impl Engine {
                 // Replacement is permitted only if Core can still retract
                 // this exact unsent user message. A runtime note or rewrite
                 // cannot be silently replayed as the original task.
-                if let Some(mark) = turn.unanswered_user_message
-                    && self.can_retract_unanswered_user_message(mark)
+                if let Some(mark) = turn.unanswered_user_message.clone()
+                    && self.can_retract_unanswered_user_message(&mark)
                 {
                     match self.admit_child_first_request_replacement(&e).await {
                         Ok(true) => match self.retract_child_unsent_message(mark).await {
@@ -481,6 +539,7 @@ impl Engine {
             mut tool_uses,
             usage,
             usage_reported,
+            accounting,
             stop_reason,
             pending_message_complete,
             last_text_index,
@@ -490,7 +549,7 @@ impl Engine {
             stream_start,
             first_token_at,
             request_dispatched_at,
-            stream_error,
+            mut stream_error,
         } = self
             .process_stream(
                 stream,
@@ -515,6 +574,12 @@ impl Engine {
         // C02-05: a response whose stream failed or was steered — a provider error
         // frame, a transport error, a stall, or a cap — is not a complete
         // response. Nothing it collected may execute or continue the turn.
+        if rlm_dispatch
+            .as_ref()
+            .is_some_and(|dispatch| !dispatch.settlement_acknowledged())
+        {
+            stream_error.get_or_insert_with(|| "RLM usage settlement failed".to_string());
+        }
         let response_stream_failed = steer_preempted || stream_error.is_some();
         progress.turn_error = progress.turn_error.take().or(stream_error.clone());
         turn.stop_diagnostics
@@ -577,6 +642,12 @@ impl Engine {
                 )
                 .await;
         }
+        if child_dispatch
+            .as_ref()
+            .is_some_and(|dispatch| !dispatch.settlement_acknowledged())
+        {
+            tracing::warn!("child usage settlement was not acknowledged; the turn continues");
+        }
         drop(child_dispatch.take());
         if let Some(job) = child_job.as_ref() {
             job.response_settled(!response_stream_failed);
@@ -625,6 +696,7 @@ impl Engine {
         if usage_reported {
             let _ = self
                 .send_event(Event::TurnUsage {
+                    accounting,
                     max_output_tokens: turn.max_output_tokens.map(|_| stream_request.max_tokens),
                     usage: usage.clone(),
                     duration_ms: u64::try_from(stream_start.elapsed().as_millis())

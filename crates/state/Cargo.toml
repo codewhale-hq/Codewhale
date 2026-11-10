@@ -13,8 +13,8 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-protocol = { path = "../protocol", version = "0.10.2" }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-protocol = { path = "../protocol", version = "0.10.3" }
 fd-lock = "4.0.4"
 rusqlite.workspace = true
 serde.workspace = true

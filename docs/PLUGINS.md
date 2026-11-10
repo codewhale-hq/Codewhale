@@ -12,9 +12,64 @@ format (`plugin.json`, compatible `kimi.plugin.json` or
 the trust/enable lifecycle — this document covers how bits get onto disk in
 the first place.
 
+## Choose a plugin, skill, or MCP connection
+
+| What you need | Use | Starting point |
+| --- | --- | --- |
+| Reusable instructions that work through your existing tools | A skill | `/skills`, then `/skill <name>`; [Skills](SKILLS.md) |
+| A reviewed bundle of workflows, tools, commands or agent profiles | A plugin | `/plugin marketplace list`; [first-party catalog](https://github.com/codewhale-hq/codewhale-plugin-marketplace) |
+| Tools or context from a particular local process or remote service | A direct MCP connection | `/mcp`; [MCP setup](MCP.md) |
+
+A plugin can combine skills, Markdown commands, Fleet agent profiles, hooks,
+MCP servers and AI-provider declarations. Tools come from an MCP server or an
+experimental native extension; there is no generic application-UI component in
+the bundle manifest. Computer Use's Mac helper and Chromewhale's browser
+extension have their own setup after plugin review.
+
+MCP has two connection kinds: a local process over stdio, or a remote URL over
+Streamable HTTP. Legacy SSE is available when the server still supports it.
+User-configured remote servers can use environment-backed credentials or the
+host's OAuth login. Plugin-contributed remote servers require explicit
+environment-backed credentials when authentication is needed; their interactive
+OAuth path is not supported. Installing a skill or plugin does not connect an
+account or establish that a service works.
+
+A local stdio server runs with your operating-system user's access. Requested
+filesystem roots in a plugin manifest do not sandbox that process.
+
+For example, configure [Cloudflare's public documentation server](https://developers.cloudflare.com/changelog/post/2026-10-22-cloudflare-mcp-servers-retire-sse/)
+directly, or install the `cloudflare-docs` plugin when you also want its skill:
+
+```sh
+codewhale mcp add cloudflare-docs --url https://docs.mcp.cloudflare.com/mcp
+codewhale mcp connect cloudflare-docs
+codewhale mcp tools cloudflare-docs
+```
+
+Choose one setup for that server. `connect` is a diagnostic connection; it does
+not attach tools to an already running session. In an existing terminal session,
+run `/mcp reload` after changing configuration.
+
+## Bundle compatibility
+
+| Format | Supported boundary |
+| --- | --- |
+| Native `plugin.json` or legacy `plugin.toml` | Reviewed declarative adapters above; [manifest contract](PLUGIN_BUNDLES.md) |
+| Claude `.claude-plugin/plugin.json` | Skills, commands, agent profiles and MCP subset; hooks, LSP, custom MCP paths and plugin-root expansion are rejected; [compatibility details](CLAUDE_PLUGIN_COMPAT.md) |
+| `kimi.plugin.json` | Compatible skills, commands, agents and MCP declarations; unsupported runtime fields fail closed |
+| Local DSH package | Explicit preview and exact-hash import through `/plugin import dsh`; experimental native runtime, not blanket DSH compatibility or release qualification; [current evidence and limits](DSH_PLUGIN_COMPAT.md) |
+
+Native TypeScript extensions require `extension_host = true` under `[features]`
+and fresh capability review. LSP, requested filesystem roots and lifecycle mutation
+remain inventory-only. Current DSH adapters include work beyond the published
+v0.10.2 CLI; third-party DSH plugins' complete workflows are not established by
+an import succeeding. DSH plugin UI is unsupported. Other applications' plugin
+directories and credentials are not borrowed.
+
 `/plugin suggest <task>` is a local, read-only companion: it ranks already
 installed bundles (name, keywords, description, bundled skill names, declared
-hosts) and any marketplace catalogs you have added with `/plugin marketplace add`.
+hosts) and available marketplace catalogs, including the bundled snapshot and
+catalogs you have added with `/plugin marketplace add`.
 It explains the match and gives the next review, enable, or catalog-install
 step, but never installs, trusts, or enables a bundle on its own.
 
@@ -34,8 +89,10 @@ Codewhale is helpful about plugins, not pushy. The rules:
   `request_plugin_install` once per session to ask you to review a plugin the
   task needs; a second call fails. Exec, ACP, and runtime-API sessions do not
   get the tool.
-- **Built-ins are never advertised.** Bundled plugins such as Computer Use
-  appear only in `/plugin list` and Extensions.
+- **Built-ins are never advertised.** Inspect existing bundles in `/plugin list`
+  and Extensions before installing another copy. The published v0.10.2 CLI
+  includes Computer Use; its layout differs from the current source candidate.
+  See [Computer Use across versions](PLUGIN_MARKETPLACE.md#computer-use-across-versions).
 - **Specific terms only.** Generic words (accessibility, browser, chrome,
   docs, screenshot, web, wiki, …) and Codewhale's own vocabulary (agent, code,
   data, MCP, model, session, tool) never trigger an offer, so asking why an
@@ -57,7 +114,7 @@ Codewhale is helpful about plugins, not pushy. The rules:
   `/plugin marketplace list`, Extensions, and the browser guide below.
 
 Codewhale does not invent a remote plugin URL; missing plugins are suggested
-only from catalogs you added. On-disk bundle changes still toast
+only from available catalogs. On-disk bundle changes still toast
 `/plugin reload` on send and between turns.
 
 ## Browser: pick one
@@ -69,7 +126,7 @@ what it can see.
 | --- | --- | --- |
 | `chrome-devtools` MCP (`/mcp recommendations`) | A Chrome it drives, which can include signed-in pages | DevTools-level inspection and performance work |
 | Playwright MCP (`/mcp recommendations`) | A fresh, isolated profile with `--isolated` | Scripted flows and testing without your identity |
-| Computer Use `browser_*` tools (bundled, off until reviewed) | One it launches, in a profile of its own | Browser steps inside a wider desktop task |
+| Computer Use browser tools (off until reviewed) | One it launches, in a profile of its own | Browser steps inside a wider desktop task |
 | Chromewhale (developer preview, `codewhale-hq/codewhale-plugin-marketplace`) | Yours, already open, in your own Chrome profile; load unpacked | Reading or acting on the tab you are looking at, one granted site at a time |
 
 None of these is offered to you proactively. Add the one that fits the job.
@@ -168,10 +225,14 @@ matching and the plugin goes inactive until you review again.
 - `update` re-downloads the recorded source. Identical bytes are a no-op; a
   changed bundle is swapped atomically and its trust receipt is automatically
   invalidated (the hash no longer matches), so re-review is forced before the
-  plugin can activate again. Plugins installed from a local path cannot be
-  re-downloaded. To replace their installed copy, disable and uninstall it,
-  then run `/plugin install <path>` and review the new bundle; the original
-  source directory is left intact. See the [local authoring loop](PLUGIN_AUTHORING.md#4-iterate-and-review-changes).
+  plugin can activate again. For a local install, it stages a fresh copy of the
+  recorded source directory; keep that authoring directory available. Editing
+  the installed copy does not update its source. See the
+  [local authoring loop](PLUGIN_AUTHORING.md#4-iterate-and-review-changes).
+- `update` retains the recorded repository revision, npm version, archive URL
+  and bundle selector. Refreshing a catalog does not retarget that source. To
+  select a newer catalog pin, follow
+  [Changing an installed pin](PLUGIN_MARKETPLACE.md#changing-an-installed-pin).
 - `uninstall` refuses enabled plugins (disable first), deletes the bundle
   directory, and removes its persisted trust/enablement entry.
 

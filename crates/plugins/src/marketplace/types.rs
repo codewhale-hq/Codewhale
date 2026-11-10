@@ -50,6 +50,10 @@ pub enum MarketplaceFormat {
     /// Codex `.agents/plugins/marketplace.json`: `name` + `plugins[]` with
     /// `source` objects (`local`/`url`/`git-subdir`/`npm`) and `policy`.
     Codex,
+    /// DeepSeek Harness plugin market index, format 1: `format: 1` + `title`
+    /// + `plugins[]` with npm-valid `name`, localized display text, and
+    ///   `versions[]` carrying exact `source` (`npm`/`git`) and `engines.dsh`.
+    Dsh,
 }
 
 impl MarketplaceFormat {
@@ -61,6 +65,7 @@ impl MarketplaceFormat {
             Self::Kimi => "kimi",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Dsh => "dsh",
         }
     }
 }
@@ -195,8 +200,7 @@ pub enum MarketplaceSourceSpec {
     /// Directory path. May be relative to the catalog's own location;
     /// resolution happens at install time, not parse time.
     LocalPath { path: PathBuf },
-    /// GitHub `owner/repo`, optionally with a pinned ref or commit the
-    /// current installer cannot yet honor (recorded, warned).
+    /// GitHub `owner/repo`, optionally with a pinned ref or commit.
     GitHub {
         owner: String,
         repo: String,

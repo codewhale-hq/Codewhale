@@ -1367,7 +1367,7 @@ async fn operate_conversation_reaches_provider_when_workers_are_disabled() {
     operate_handle
         .send(external_user_message_op(
             "what is a Rust worktree?",
-            AppMode::Operate,
+            AppMode::Agent,
             &api_config,
         ))
         .await

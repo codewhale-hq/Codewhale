@@ -21,13 +21,23 @@ pub fn contained_module(package: &Package, name: &str) -> Result<PathBuf> {
         "Bare module must name one contained package export.",
     )?;
     let identity = parts[..count].join("/");
-    let root = format!("node_modules/{identity}");
-    let manifest = package.contained(Path::new(&format!("{root}/package.json")))?;
+    let own_manifest = package.contained(Path::new("package.json"))?;
+    let own_data = parse_json(&utf8(read_file(&own_manifest, MAX_DOCUMENT)?)?)?;
+    let root = if own_data.get("name").and_then(Value::str) == Some(identity.as_str()) {
+        PathBuf::new()
+    } else {
+        PathBuf::from(format!("node_modules/{identity}"))
+    };
+    let manifest = package.contained(&root.join("package.json"))?;
     let data = parse_json(&utf8(read_file(&manifest, MAX_DOCUMENT)?)?)?;
+    let valid_type = match data.get("type") {
+        None => true,
+        Some(Value::Str(kind)) => matches!(kind.as_str(), "module" | "commonjs"),
+        Some(_) => false,
+    };
     require(
-        data.get("name").and_then(Value::str) == Some(identity.as_str())
-            && data.get("type").and_then(Value::str) == Some("module"),
-        "Bare module requires an exact contained ESM package identity.",
+        data.get("name").and_then(Value::str) == Some(identity.as_str()) && valid_type,
+        "Bare module requires an exact contained package identity.",
     )?;
     fn target(value: &Value) -> Result<Option<&str>> {
         match value {
@@ -35,6 +45,13 @@ pub fn contained_module(package: &Package, name: &str) -> Result<PathBuf> {
             Value::Map(items) => {
                 for (key, child) in items {
                     if matches!(key.as_str(), "node" | "import" | "default")
+                        && let Some(picked) = target(child)?
+                    {
+                        return Ok(Some(picked));
+                    }
+                }
+                for (key, child) in items {
+                    if key == "require"
                         && let Some(picked) = target(child)?
                     {
                         return Ok(Some(picked));
@@ -52,18 +69,41 @@ pub fn contained_module(package: &Package, name: &str) -> Result<PathBuf> {
     } else {
         format!("./{}", parts[count..].join("/"))
     };
+    let has_exports = data.get("exports").is_some();
     let selected = match data.get("exports") {
-        Some(Value::Map(items)) if items.iter().any(|(key, _)| key.starts_with('.')) => match items.iter().find(|(key,_)|key==&subpath) { Some((_,value))=>target(value)?,None=>None },
+        Some(Value::Map(items)) if items.iter().any(|(key, _)| key.starts_with('.')) => {
+            match items.iter().find(|(key, _)| key == &subpath) {
+                Some((_, value)) => target(value)?,
+                None => None,
+            }
+        }
         Some(value) if subpath == "." => target(value)?,
         Some(_) => None,
-        None if subpath == "." => Some(data.get("main").and_then(Value::str).unwrap_or("./index.js")),
+        None if subpath == "." => Some(
+            data.get("main")
+                .and_then(Value::str)
+                .unwrap_or("./index.js"),
+        ),
         None => Some(subpath.as_str()),
-    }.ok_or_else(|| anyhow::Error::msg("Bare package export is not admitted; conditional arrays/globs/require-only exports are refused."))?;
-    let selected = selected
-        .strip_prefix("./")
-        .filter(|path| plain_relative(path))
-        .ok_or_else(|| anyhow::Error::msg("Package export must be one plain contained path."))?;
-    package.contained(Path::new(&format!("{root}/{selected}")))
+    }
+    .ok_or_else(|| {
+        anyhow::Error::msg(
+            "Bare package export is not admitted; conditional arrays/globs are refused.",
+        )
+    })?;
+    let selected = if has_exports {
+        selected.strip_prefix("./")
+    } else {
+        Some(selected.strip_prefix("./").unwrap_or(selected))
+    }
+    .filter(|path| plain_relative(path))
+    .ok_or_else(|| anyhow::Error::msg("Package export must be one plain contained path."))?;
+    let resolved = package.contained(&root.join(selected))?;
+    require(
+        resolved.extension().and_then(|ext| ext.to_str()) != Some("node"),
+        "Native Node addons (`.node`) are not supported in DSH bundles.",
+    )?;
+    Ok(resolved)
 }
 
 pub(super) fn has_roster(entries: &[Value]) -> bool {

@@ -196,6 +196,8 @@ impl McpDispatchUnderTest for McpPoolDispatch {
                 &self.disallowed_tools,
                 // Conformance probes cannot supply a person's card decision.
                 None,
+                None,
+                None,
             ) => result,
         }
     }

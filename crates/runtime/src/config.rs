@@ -692,9 +692,73 @@ pub fn read_plugin_settings(
         .map_err(|_| format!("cannot parse {}", path.display()))
 }
 
+/// Independent recovery limits for HTTP 429; other transport errors keep their policy.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(try_from = "RawRateLimitRetryPolicy")]
+pub struct RateLimitRetryPolicy {
+    pub max_attempts: u32,
+    pub recovery_budget_secs: u64,
+    pub initial_delay_secs: u64,
+    pub max_delay_secs: u64,
+}
+
+impl Default for RateLimitRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 20,
+            recovery_budget_secs: 600,
+            initial_delay_secs: 5,
+            max_delay_secs: 60,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct RawRateLimitRetryPolicy {
+    max_attempts: u32,
+    recovery_budget_secs: u64,
+    initial_delay_secs: u64,
+    max_delay_secs: u64,
+}
+
+impl Default for RawRateLimitRetryPolicy {
+    fn default() -> Self {
+        let p = RateLimitRetryPolicy::default();
+        Self {
+            max_attempts: p.max_attempts,
+            recovery_budget_secs: p.recovery_budget_secs,
+            initial_delay_secs: p.initial_delay_secs,
+            max_delay_secs: p.max_delay_secs,
+        }
+    }
+}
+
+impl TryFrom<RawRateLimitRetryPolicy> for RateLimitRetryPolicy {
+    type Error = String;
+    fn try_from(p: RawRateLimitRetryPolicy) -> Result<Self, Self::Error> {
+        if !(1..=1000).contains(&p.max_attempts)
+            || !(1..=86400).contains(&p.recovery_budget_secs)
+            || p.initial_delay_secs == 0
+            || p.initial_delay_secs > p.max_delay_secs
+            || p.max_delay_secs > 86400
+        {
+            return Err("invalid retry.rate_limit policy: attempts 1..1000, budget 1..86400s, 1 <= initial <= max <= 86400s".into());
+        }
+        Ok(Self {
+            max_attempts: p.max_attempts,
+            recovery_budget_secs: p.recovery_budget_secs,
+            initial_delay_secs: p.initial_delay_secs,
+            max_delay_secs: p.max_delay_secs,
+        })
+    }
+}
+
 /// Raw retry configuration loaded from config files.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RetryConfig {
+    #[serde(default)]
+    pub rate_limit: RateLimitRetryPolicy,
     pub enabled: Option<bool>,
     pub max_retries: Option<u32>,
     pub initial_delay: Option<f64>,
@@ -1048,6 +1112,13 @@ pub struct ToolsConfig {
     /// with a warning.
     #[serde(default)]
     pub user_input_timeout_seconds: Option<u64>,
+
+    /// Seconds a durable task may stay parked on an unanswered approval or
+    /// user-input prompt before it fails with `human_wait_timeout`. Absent,
+    /// or an explicit `0`, uses the 1,800-second (30 minute) default. Values
+    /// are clamped to `1..=86_400` (24h) with a warning.
+    #[serde(default)]
+    pub task_human_wait_cap_seconds: Option<u64>,
 }
 
 /// Persistent-goal loop controls (`[goal]` table in config.toml, #5052).
@@ -1084,6 +1155,21 @@ pub struct GoalConfig {
     /// stay unbounded either way.
     #[serde(default)]
     pub enforce_token_budget: Option<bool>,
+
+    /// Gate `update_goal status=complete` behind one independent adversarial
+    /// critique of the completion claim. Upheld completes; refuted or any
+    /// unusable verdict keeps the goal active with the gaps recorded, so a
+    /// persistent outage ends in the `NoProgress` pause. `false`/`None` keeps
+    /// the ungated behavior.
+    #[serde(default)]
+    pub complete_judge: Option<bool>,
+
+    /// Gate `update_goal status=blocked` behind one independent critique of
+    /// the blocker. Upheld blocks; refuted keeps the goal active; an
+    /// unusable verdict hands the goal back as a yield (needs input).
+    /// `false`/`None` keeps the ungated behavior.
+    #[serde(default)]
+    pub blocked_judge: Option<bool>,
 }
 
 /// Reasoning-only recovery controls (`[reasoning_only]` table in config.toml).
@@ -1324,6 +1410,7 @@ pub fn provider_has_balance_api(provider: ProviderKind) -> bool {
 /// Resolved retry policy with defaults applied.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
+    pub rate_limit: RateLimitRetryPolicy,
     pub enabled: bool,
     pub max_retries: u32,
     pub initial_delay: f64,
@@ -1875,9 +1962,19 @@ pub struct AccountModelAccess {
     pub profile: Option<String>,
 }
 
+pub trait ModelHttpPolicy: std::fmt::Debug + Send + Sync {
+    fn configure(
+        &self,
+        builder: reqwest::ClientBuilder,
+        base_url: &str,
+    ) -> Result<reqwest::ClientBuilder>;
+}
+
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
+    #[serde(skip)]
+    pub model_http_policy: Option<std::sync::Arc<dyn ModelHttpPolicy>>,
     #[serde(skip)]
     pub account_profile: Option<String>,
     /// Diagnostic clones must never refresh or mutate plugin OAuth credentials.
@@ -1894,6 +1991,10 @@ pub struct Config {
     >,
     #[serde(skip)]
     pub required_account_model_owner: Option<String>,
+    /// Runtime-only extra roots the tool layer may read and write outside the
+    /// workspace, set by `codewhale exec --add-dir`.
+    #[serde(skip)]
+    pub extra_trusted_paths: Vec<std::path::PathBuf>,
     /// Persisted exact-route declarations, separate from provider credentials.
     #[serde(
         default,
@@ -2551,6 +2652,8 @@ pub enum ToolOverride {
 /// Uses an OpenAI-compatible vision model API.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VisionModelConfig {
+    #[serde(skip)]
+    pub model_http_policy: Option<std::sync::Arc<dyn ModelHttpPolicy>>,
     /// Model identifier (e.g., "gemini-3.1-flash-lite-preview").
     pub model: String,
     /// API key for the vision model. Inherits from main config if not specified.
@@ -3193,6 +3296,7 @@ pub fn approval_policy_baseline_from_permission_posture(
     posture.and_then(
         |posture| match posture.trim().to_ascii_lowercase().as_str() {
             "ask" | "suggest" | "on-request" | "untrusted" => Some("on-request"),
+            "accept-edits" | "accept_edits" | "acceptedits" | "edits" => Some("accept-edits"),
             "auto" | "auto-review" | "auto_review" => Some("auto"),
             "full" | "full-access" | "full_access" | "bypass" => Some("auto"),
             _ => None,
@@ -3766,6 +3870,27 @@ impl Config {
             );
         }
         Some(std::time::Duration::from_secs(seconds.min(MAX_SECONDS)))
+    }
+
+    /// Effective ceiling for how long one durable task may stay parked on a
+    /// human answer. Absent or `0` is the 30 minute default; other values
+    /// clamp to `1..=86_400` seconds.
+    #[must_use]
+    pub fn task_human_wait_cap(&self) -> std::time::Duration {
+        const DEFAULT_SECONDS: u64 = 30 * 60;
+        const MAX_SECONDS: u64 = 86_400;
+        let seconds = self
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.task_human_wait_cap_seconds)
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(DEFAULT_SECONDS);
+        if seconds > MAX_SECONDS {
+            tracing::warn!(
+                "[tools] task_human_wait_cap_seconds={seconds} exceeds 24h; clamping to {MAX_SECONDS}"
+            );
+        }
+        std::time::Duration::from_secs(seconds.min(MAX_SECONDS))
     }
 
     /// Load configuration from disk and merge with environment overrides.
@@ -5905,26 +6030,65 @@ impl Config {
         {
             return None;
         }
-        let access = self.account_model_access.read().clone()?;
-        if access.expires_at <= chrono::Utc::now().timestamp() {
+        if std::env::var(codewhale_secrets::account::ACCOUNT_API_BASE_ENV)
+            .ok()
+            .filter(|base| !base.trim().is_empty())
+            .is_some_and(|base| {
+                base.trim().trim_end_matches('/')
+                    != codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE
+            })
+        {
+            return None;
+        }
+        let access = self.account_model_access.read().clone();
+        let profile = self.account_profile.as_deref();
+        if access.as_ref().is_some_and(|access| {
+            codewhale_secrets::account::normalize_account_profile(access.profile.as_deref())
+                != codewhale_secrets::account::normalize_account_profile(profile)
+        }) {
             return None;
         }
         // Check the shared session again at use, so a late install cannot
         // resurrect a session removed by another local process.
         let secrets = codewhale_secrets::account::secure_account_session_secrets().ok()?;
-        let account = codewhale_secrets::account::AccountSessionStore::new(
+        let snapshot = codewhale_secrets::account::AccountSessionStore::new(
             secrets,
-            access.profile.as_deref(),
+            profile,
             codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE,
         )
-        .runtime_info_at(chrono::Utc::now())
+        .snapshot()
         .ok()?;
+        let now = chrono::Utc::now();
+        let account = snapshot.runtime_info_at(now).ok()?;
+        if access
+            .as_ref()
+            .is_some_and(|access| account.session_id.as_deref() != Some(access.session_id.as_str()))
+        {
+            return None;
+        }
+        if self
+            .required_account_model_owner
+            .as_ref()
+            .is_some_and(|owner| account.account_id.as_ref() != Some(owner))
+        {
+            return None;
+        }
+        if !self.session_provider_keys_only
+            && matches!(
+                account.state,
+                codewhale_secrets::account::AccountSessionState::Authenticated
+                    | codewhale_secrets::account::AccountSessionState::OfflineCached
+            )
+            && let Some(cached) = snapshot.device_access().ok()?
+            && cached.expires_at > now.timestamp()
+            && account.account_id.as_deref() == Some(cached.account_id.as_str())
+            && account.session_id.as_deref() == Some(cached.session_id.as_str())
+        {
+            return Some(cached.credential);
+        }
+        let access = access.filter(|access| access.expires_at > now.timestamp())?;
         (account.state == codewhale_secrets::account::AccountSessionState::Authenticated
-            && account.session_id.as_deref() == Some(access.session_id.as_str())
-            && self
-                .required_account_model_owner
-                .as_ref()
-                .is_none_or(|owner| account.account_id.as_ref() == Some(owner)))
+            && account.session_id.as_deref() == Some(access.session_id.as_str()))
         .then(|| access.credential.expose_secret().to_string())
     }
 
@@ -6202,24 +6366,7 @@ impl Config {
             return Ok(keyless());
         }
         if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
-            anyhow::ensure!(
-                matches!(
-                    self.base_url_for_route(&identity).trim_end_matches('/'),
-                    "https://api.anthropic.com" | "https://api.anthropic.com/v1"
-                ),
-                "Claude subscription credentials require the native Anthropic endpoint"
-            );
-            if read_only {
-                return Ok((
-                    crate::oauth::get_owned_credentials_read_only(
-                        crate::oauth::OAuthProvider::Claude,
-                        self,
-                    )?
-                    .access_token,
-                    "Claude sign-in".to_string(),
-                ));
-            }
-            return Ok((String::new(), "Claude sign-in".to_string()));
+            anyhow::bail!(codewhale_config::credentials::CLAUDE_SIGN_IN_REMOVED);
         }
         let custom_endpoint = self.provider_uses_custom_endpoint(&identity);
         let explicit_cli_key = explicit_cli_api_key_override();
@@ -6748,6 +6895,24 @@ impl Config {
             .unwrap_or(false)
     }
 
+    /// Whether `update_goal complete` is gated by an independent judge (#6013).
+    #[must_use]
+    pub fn goal_complete_judge(&self) -> bool {
+        self.goal
+            .as_ref()
+            .and_then(|goal| goal.complete_judge)
+            .unwrap_or(false)
+    }
+
+    /// Whether `update_goal blocked` is gated by an independent judge (#6013).
+    #[must_use]
+    pub fn goal_blocked_judge(&self) -> bool {
+        self.goal
+            .as_ref()
+            .and_then(|goal| goal.blocked_judge)
+            .unwrap_or(false)
+    }
+
     /// Quiet period between successful interactive goal turns (#5508).
     /// Absent/zero keeps the existing immediate-continuation behavior.
     #[must_use]
@@ -6809,11 +6974,16 @@ impl Config {
 
     /// Return the configured vision model config. A `[vision_model]` that
     /// used to inherit the top-level `api_key` carries its own copy since
-    /// parsing moved that key (#6394); nothing else is inherited, so a
-    /// DeepSeek key never follows `vision_model.base_url` to another host.
+    /// parsing moved that key (#6394). An unset runtime HTTP policy inherits
+    /// from the main config; provider credentials never follow
+    /// `vision_model.base_url` to another host.
     #[must_use]
     pub fn vision_model_config(&self) -> Option<VisionModelConfig> {
-        self.vision_model.clone()
+        let mut config = self.vision_model.clone()?;
+        if config.model_http_policy.is_none() {
+            config.model_http_policy = self.model_http_policy.clone();
+        }
+        Some(config)
     }
 
     #[must_use]
@@ -7601,6 +7771,7 @@ impl Config {
     #[must_use]
     pub fn retry_policy(&self) -> RetryPolicy {
         let defaults = RetryPolicy {
+            rate_limit: RateLimitRetryPolicy::default(),
             enabled: true,
             max_retries: 3,
             initial_delay: 1.0,
@@ -7616,6 +7787,7 @@ impl Config {
         };
 
         RetryPolicy {
+            rate_limit: cfg.rate_limit.clone(),
             enabled: cfg.enabled.unwrap_or(defaults.enabled),
             max_retries: cfg.max_retries.unwrap_or(defaults.max_retries),
             initial_delay: cfg.initial_delay.unwrap_or(defaults.initial_delay),
@@ -9894,7 +10066,13 @@ fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
 
 fn merge_config(base: Config, override_cfg: Config) -> Config {
     Config {
+        model_http_policy: override_cfg.model_http_policy.or(base.model_http_policy),
         custom_models: override_cfg.custom_models.or(base.custom_models),
+        extra_trusted_paths: if override_cfg.extra_trusted_paths.is_empty() {
+            base.extra_trusted_paths
+        } else {
+            override_cfg.extra_trusted_paths
+        },
         provider: override_cfg.provider.or(base.provider),
         telemetry: override_cfg.telemetry.or(base.telemetry),
         http_headers: override_cfg.http_headers.or(base.http_headers),
@@ -11414,15 +11592,6 @@ pub fn save_api_key_for_identity(
     if identity.provider == ProviderKind::Xai {
         return codewhale_config::with_xai_oauth_revocation_transaction(|| {
             save_api_key_for_identity_unlocked(identity, route_config, api_key)
-        });
-    }
-    if identity.provider == ProviderKind::Anthropic {
-        return codewhale_config::with_xai_oauth_lifecycle_lock(|_| {
-            let saved = save_api_key_for_identity_unlocked(identity, route_config, api_key)?;
-            codewhale_config::clear_all_claude_oauth_credentials_locked().context(
-                "API-key billing was selected and saved, but old Claude sign-in cleanup failed",
-            )?;
-            Ok(saved)
         });
     }
     save_api_key_for_identity_unlocked(identity, route_config, api_key)

@@ -68,7 +68,6 @@ pub struct EffectiveModePolicy {
 /// This is the single source of truth for the mode/permission table:
 /// - `Plan`   -> read-only: no shell, no trust, `Suggest` approvals.
 /// - `Agent`  -> the user's durable baseline (`prefs`).
-/// - `Operate` -> Agent baseline plus orchestration capabilities in the runtime.
 ///
 /// The legacy YOLO spelling resolves to Agent plus a `Bypass` approval
 /// posture before it reaches this table; modes no longer carry permission.
@@ -81,7 +80,7 @@ pub fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> Effectiv
             trust_mode: false,
             approval_mode: ApprovalMode::Suggest,
         },
-        AppMode::Agent | AppMode::Operate => EffectiveModePolicy {
+        AppMode::Agent => EffectiveModePolicy {
             mode,
             allow_shell: prefs.agent_allow_shell,
             trust_mode: prefs.agent_trust_mode,
@@ -263,11 +262,18 @@ pub fn effective_input_policy(
     if !provenance_can_inherit_standing_auto_authority(provenance) {
         let from_mode = mode;
         let from_approval = approval_mode;
-        let had_auto_authority =
-            trust_mode || auto_approve || matches!(approval_mode, ApprovalMode::Bypass);
+        let had_auto_authority = trust_mode
+            || auto_approve
+            || matches!(
+                approval_mode,
+                ApprovalMode::Bypass | ApprovalMode::AcceptEdits
+            );
         trust_mode = false;
         auto_approve = false;
-        if matches!(approval_mode, ApprovalMode::Auto | ApprovalMode::Bypass) {
+        if matches!(
+            approval_mode,
+            ApprovalMode::Auto | ApprovalMode::Bypass | ApprovalMode::AcceptEdits
+        ) {
             approval_mode = ApprovalMode::Suggest;
         }
         if had_auto_authority {
@@ -417,7 +423,7 @@ pub fn shell_policy_for_mode(mode: AppMode, allow_shell: bool) -> ShellPolicy {
     }
     match mode {
         AppMode::Plan => ShellPolicy::None,
-        AppMode::Agent | AppMode::Operate => ShellPolicy::Full,
+        AppMode::Agent => ShellPolicy::Full,
     }
 }
 
@@ -485,21 +491,19 @@ pub fn resolve_tool_permission(
 }
 
 /// Whether the session posture is the one the in-workspace write carve-out
-/// (#5185) relaxes: the default Ask posture (`Suggest` approvals, no
-/// auto-approve) in an Agent-family mode.
+/// (#5185) relaxes: Accept Edits (no auto-approve) in an Agent-family mode.
 ///
-/// Every other posture keeps its exact prior meaning: Full Access already
-/// runs these calls, `Never` still denies them, Auto-Review still fails
-/// unresolved holds closed, and Plan is read-only by mode.
+/// Every other posture keeps its exact meaning: Ask asks before every edit,
+/// Full Access already runs these calls, `Never` still denies them,
+/// Auto-Review still fails unresolved holds closed, and Plan is read-only by
+/// mode.
 #[must_use]
 pub fn write_carve_out_posture(
     mode: AppMode,
     approval_mode: ApprovalMode,
     auto_approve: bool,
 ) -> bool {
-    !auto_approve
-        && matches!(mode, AppMode::Agent | AppMode::Operate)
-        && approval_mode == ApprovalMode::Suggest
+    !auto_approve && matches!(mode, AppMode::Agent) && approval_mode == ApprovalMode::AcceptEdits
 }
 
 /// Whether every target path of a file-write call qualifies for the
@@ -592,8 +596,10 @@ fn carve_out_target_allowed(workspace: &Path, workspace_canonical: &Path, raw: &
 
 /// Canonicalize the deepest existing ancestor of `candidate` and re-append
 /// the not-yet-existing tail, so write targets that do not exist yet still
-/// get a real-path check.
-fn resolve_deepest_existing(candidate: &Path) -> Option<PathBuf> {
+/// get a real-path check. Shared crate-wide so the subagent write-claim lane
+/// resolves spellings through the same walk as the carve-out boundary and
+/// cannot drift from it on symlinked or partially-existing targets.
+pub(crate) fn resolve_deepest_existing(candidate: &Path) -> Option<PathBuf> {
     let mut ancestor = candidate;
     let mut suffix: Vec<&OsStr> = Vec::new();
     loop {
@@ -842,6 +848,7 @@ pub fn permission_label_for(
     }
     match approval {
         ApprovalMode::Suggest => tr(locale, MessageId::ChipPermissionAsk),
+        ApprovalMode::AcceptEdits => tr(locale, MessageId::ChipPermissionAcceptEdits),
         ApprovalMode::Auto => tr(locale, MessageId::ChipPermissionAuto),
         ApprovalMode::Bypass => tr(locale, MessageId::ChipPermissionFullAccess),
         ApprovalMode::Never => tr(locale, MessageId::ChipPermissionNever),
@@ -857,14 +864,14 @@ mod tests {
     }
 
     #[test]
-    fn write_carve_out_posture_is_exactly_the_default_ask_posture() {
+    fn write_carve_out_posture_is_exactly_accept_edits() {
         assert!(write_carve_out_posture(
             AppMode::Agent,
-            ApprovalMode::Suggest,
+            ApprovalMode::AcceptEdits,
             false
         ));
-        assert!(write_carve_out_posture(
-            AppMode::Operate,
+        assert!(!write_carve_out_posture(
+            AppMode::Agent,
             ApprovalMode::Suggest,
             false
         ));
@@ -889,7 +896,7 @@ mod tests {
         ));
         assert!(!write_carve_out_posture(
             AppMode::Plan,
-            ApprovalMode::Suggest,
+            ApprovalMode::AcceptEdits,
             false
         ));
     }
@@ -903,10 +910,15 @@ mod tests {
             file_write_asks_without_git(mode, approval_mode, workspace, tool, &edit)
         };
 
-        // The lesson-1 case: default Ask posture, plain folder, a file edit.
+        // The lesson-1 case: Accept Edits, plain folder, a file edit.
         for tool in ["edit_file", "write_file", "apply_patch"] {
             assert!(
-                asks(AppMode::Agent, ApprovalMode::Suggest, plain.path(), tool),
+                asks(
+                    AppMode::Agent,
+                    ApprovalMode::AcceptEdits,
+                    plain.path(),
+                    tool
+                ),
                 "{tool}"
             );
         }
@@ -914,7 +926,7 @@ mod tests {
         // does open there is asking for some other reason.
         assert!(!asks(
             AppMode::Agent,
-            ApprovalMode::Suggest,
+            ApprovalMode::AcceptEdits,
             repo.path(),
             "edit_file"
         ));
@@ -927,22 +939,24 @@ mod tests {
             &["notes.txt".to_string()]
         ));
         // Postures the carve-out never relaxes ask with or without git.
-        assert!(!asks(
-            AppMode::Agent,
-            ApprovalMode::Auto,
-            plain.path(),
-            "edit_file"
-        ));
+        for approval_mode in [ApprovalMode::Suggest, ApprovalMode::Auto] {
+            assert!(!asks(
+                AppMode::Agent,
+                approval_mode,
+                plain.path(),
+                "edit_file"
+            ));
+        }
         assert!(!asks(
             AppMode::Plan,
-            ApprovalMode::Suggest,
+            ApprovalMode::AcceptEdits,
             plain.path(),
             "edit_file"
         ));
         // Git presence never changes whether a command asks.
         assert!(!asks(
             AppMode::Agent,
-            ApprovalMode::Suggest,
+            ApprovalMode::AcceptEdits,
             plain.path(),
             "exec_shell"
         ));

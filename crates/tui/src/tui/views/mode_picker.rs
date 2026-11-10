@@ -22,9 +22,7 @@ use codewhale_localization::Locale;
 use codewhale_palette as palette;
 use codewhale_tui_kit::menu_style;
 
-// Operate is visible because the engine now enforces a coordinator/worker
-// boundary while allowing ordinary conversation and asynchronous dispatch.
-const VISIBLE_MODES: [AppMode; 3] = [AppMode::Agent, AppMode::Plan, AppMode::Operate];
+const VISIBLE_MODES: [AppMode; 2] = [AppMode::Agent, AppMode::Plan];
 
 pub struct ModePickerView {
     cursor: usize,
@@ -313,23 +311,28 @@ mod tests {
     }
 
     #[test]
-    fn operate_is_advertised_as_a_visible_mode() {
+    fn operate_is_not_advertised_as_a_visible_mode() {
         let (buf, area) = render_at(80, 24);
         let text = rows(&buf, area).join("\n");
-        assert!(text.contains("Operate"), "{text}");
+        assert!(!text.contains("Operate"), "{text}");
     }
 
     #[test]
     fn number_keys_select_modes() {
-        // Visible roster: 1 Act, 2 Plan, 3 Operate.
+        // Visible roster: 1 Act, 2 Plan.
         let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
-        let action = view.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
         assert!(matches!(
             action,
             ViewAction::EmitAndClose(ViewEvent::ModeSelected {
-                mode: AppMode::Operate
+                mode: AppMode::Plan
             })
         ));
+
+        // Retired Operate number (3) selects nothing.
+        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let action = view.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
+        assert!(matches!(action, ViewAction::None));
 
         // Legacy YOLO shorthand (4) is not offered by the picker.
         let mut view = ModePickerView::new(AppMode::Agent, Locale::En);

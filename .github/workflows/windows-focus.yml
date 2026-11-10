@@ -1,0 +1,40 @@
+name: Windows focus
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact 40-character commit selected by --ref
+        required: true
+        type: string
+      filter:
+        description: nextest expression, for example 'test(compaction_lock) | test(persistence_actor)'
+        required: true
+        default: all()
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    name: Focused tests (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: -Dwarnings
+      RUST_MIN_STACK: 8388608
+      RUST_BACKTRACE: full
+      FILTER: ${{ inputs.filter }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
+      - name: Run focused tests
+        shell: bash
+        run: cargo nextest run -p codewhale-engine -p codewhale-plugins -p codewhale-tui -p codewhale-app-server --lib --locked --profile ci -E "$FILTER"

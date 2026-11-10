@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "target_dsh_version": "0.2.1-rc.5",
+  "target_dsh_version": "0.2.2-rc.1",
   "provided_services": {
     "dsh": [
       "tools",
@@ -76,24 +76,44 @@
   },
   "definition_api": {
     "package": "@deepseek-ai/dsh-tools",
-    "version": "0.2.1-rc.5",
+    "version": "0.2.2-rc.1",
     "license": "MIT",
-    "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.1-rc.5.tgz",
-    "integrity": "sha512-tOEMsbG1jH4EV80xcGucfeWsKHLjnETjRLtSnyFrVl2oma95tzTHBjti5MK60IvT2ijcCWhx8CrUKcqRksfDPA==",
-    "source_file": "lib/index.js",
-    "source_sha256": "1e53932e7c4213ea24a7d87f06960b7a7702cb21f8a5741c97242b4a470a442a",
-    "source_lines": [
-      [
-        8,
-        888
-      ],
-      [
-        2625,
-        2655
-      ]
-    ],
+    "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-tools/-/dsh-tools-0.2.2-rc.1.tgz",
+    "integrity": "sha512-svB49dLPCHkKHgGwik3dTvEH0sL1vKwIzlQgqjE4qzEqFbSEROW8fByk3g2y2lxDv8TqgEUa0Vp2qFrVbm2lfw==",
     "license_sha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
-    "tarball_sha256": "9614366d61214a304f937d0f3b8481d5827d2aef4529f3bff9eb49ef8ac65283"
+    "tarball_sha256": "bb94ee037bd7d3efe2d0654c6a1fa7084b268b895fa0ca6ceeb7e65d4fd6da72",
+    "sources": [
+      {
+        "file": "lib/shared-DTdn5dXO.js",
+        "sha256": "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+        "lines": [
+          [
+            22,
+            548
+          ]
+        ]
+      },
+      {
+        "file": "lib/index.js",
+        "sha256": "1889cbf718d64518dd83245d4dba1e1f080b2c5326259c3ed5b1be7a7666a2bd",
+        "lines": [
+          [
+            7,
+            377
+          ]
+        ]
+      },
+      {
+        "file": "lib/shared-DTdn5dXO.js",
+        "sha256": "d02f0d8f36878313b0dae3a1bba5b77f7db4cffc77a0b72772048a36bacf2cf0",
+        "lines": [
+          [
+            566,
+            596
+          ]
+        ]
+      }
+    ]
   },
   "command_followup": "one-text-message-submit-on-success",
   "pure_api": {
@@ -117,11 +137,11 @@
     "packages": [
       {
         "package": "@deepseek-ai/dsh-brand",
-        "version": "0.2.1-rc.5",
+        "version": "0.2.2-rc.1",
         "license": "MIT",
-        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.1-rc.5.tgz",
-        "integrity": "sha512-7lUfWjWWAkrb/CFtMbXgjXLYQnL3KJwv+GLMTgY5EZ/4sOH0ufZUX8xlBWyMpdV2LqdvJ1yPKQ+mopH71/wbMQ==",
-        "tarball_sha256": "9a0d30b3466783f7b0e52a636602630ab62f39598df9568600ddfaad97b389ca",
+        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-brand/-/dsh-brand-0.2.2-rc.1.tgz",
+        "integrity": "sha512-ShGNEmNuEQA+bfkspWC2kGrdbrM4dFNhqlrNHIWsHO+PgVH1KoTKTLSraT1pt0A8YYk/moKE0gL2gY9dNBU+rw==",
+        "tarball_sha256": "d953cb5e8dcd69be0b0347ce9a3b36421eefa751820cbe909f4a185348ad5530",
         "source_file": "lib/index.js",
         "source_sha256": "14feb59256b891982b2017d73ed03ee65e2a7365f48e4902a856acb0e52d5eb0",
         "excerpts": [
@@ -140,11 +160,11 @@
       },
       {
         "package": "@deepseek-ai/dsh-util-crypto",
-        "version": "0.2.1-rc.5",
+        "version": "0.2.2-rc.1",
         "license": "MIT",
-        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.1-rc.5.tgz",
-        "integrity": "sha512-7mGcnCH0BzIUzbnnC2Vx17Q/O3/+EfMHNt9iC2VaGr9SK010HYUpei/+6wrZsuGy77rqAUNhU6VB35wQTLM/VA==",
-        "tarball_sha256": "3d99b1120718249a52fe854b84f4bacae21464345073d560019974268e19a089",
+        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-util-crypto/-/dsh-util-crypto-0.2.2-rc.1.tgz",
+        "integrity": "sha512-I9Nhh3/64HPzjdR/mUt0J534FYHgodMUe0coXtA91+kxGcJQcSHOYouewv4hf0NWw0BuLh5zihTdtldZtobOWA==",
+        "tarball_sha256": "c9ef0dfed280c83202f1d7bd5d32b1139a92a2fc375da62962ef709c3d1e4a6a",
         "source_file": "lib/index.js",
         "source_sha256": "640b26c8e5a1156c6c8e8749a22f805c9c0e34444778eb4ee9529be3e88ec862",
         "excerpts": [
@@ -163,13 +183,13 @@
       },
       {
         "package": "@deepseek-ai/dsh-llm",
-        "version": "0.2.1-rc.5",
+        "version": "0.2.2-rc.1",
         "license": "MIT",
-        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.1-rc.5.tgz",
-        "integrity": "sha512-g9mSILkqY7wByl0tpLBhXxWxQ3MoNzXokuJq86R/snPL3v1OonXv1b46wtvldEgyr88aK1gBBlifMsRnXjMWTA==",
-        "tarball_sha256": "6b422d70aee363dcce81be0481dda9d801c2ae03a4f314497e407d184df2313c",
+        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-llm/-/dsh-llm-0.2.2-rc.1.tgz",
+        "integrity": "sha512-XeEvH+6bpkjx0E2P1B5ZE+WWa+VHp4DimQaJDKNUZEFouqHMuN1B61TIz6IzUquRxa/6X4yJy+qXQ9WwAeMw5w==",
+        "tarball_sha256": "cbf45039d3ef63e26987de514928a847a8c2d0b049df8fb24c11684e203b05d4",
         "source_file": "lib/index.js",
-        "source_sha256": "d18d8ae4c8d961e628708c1e4698e09716a0ebb80e55a672e0bde1029bec1155",
+        "source_sha256": "8e541fc98a11897706a122fde1db42f8b2a41b3b354ba3fcb932e9a16929ac6a",
         "excerpts": [
           {
             "name": "createMessage",
@@ -210,13 +230,13 @@
       },
       {
         "package": "@deepseek-ai/dsh-session",
-        "version": "0.2.1-rc.5",
+        "version": "0.2.2-rc.1",
         "license": "MIT",
-        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.1-rc.5.tgz",
-        "integrity": "sha512-A5NdQFgeY4qi29+lBzgZiOloiFe+E1iBbIRjJTplee79rswYGUUmUZYmOvAcdmk4tERkY2S9htuc+V+jNifqRw==",
-        "tarball_sha256": "8571710817dbf5172079168861bfaef581efc26a4b83a4c003f2d1ef632ae7b4",
+        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-session/-/dsh-session-0.2.2-rc.1.tgz",
+        "integrity": "sha512-e0zx9HFNn8EyqrymGQS85SjKOyr61//ChTgIVDlCBSZvBB723fuXyi9LiHIIuPTlkgmWJl3gm5J51ebEXew7PQ==",
+        "tarball_sha256": "b8b1b4a7b9c8efbdbe4c134ed3b18cddf11842b62ad7675c21c05b3afef1cfb5",
         "source_file": "lib/index.js",
-        "source_sha256": "2f5dd07cb5c744a29abbb8003a8a4cefd9e582c6e2538074ca299a0ddd02a3bf",
+        "source_sha256": "6fad466aa1f7aa64bfa038681ead5721f66c88e9891e25d357d2b8edbccd5494",
         "excerpts": [
           {
             "name": "SessionId",
@@ -233,19 +253,19 @@
       },
       {
         "package": "@deepseek-ai/dsh-system-prompt",
-        "version": "0.2.1-rc.5",
+        "version": "0.2.2-rc.1",
         "license": "MIT",
-        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.1-rc.5.tgz",
-        "integrity": "sha512-HWW0k4Ug4XjRbCghLZYFMpLh8Ywcuh/bS7DAnjWfq4HbwwB+hV0XXJRF3iCf5600uYArfbuv4Ttz+4PHKu7k9w==",
-        "tarball_sha256": "f223700954221de8cce2feaf6d6fbf526aa2ea5fd261fc0791edf1f858c31a02",
+        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-system-prompt/-/dsh-system-prompt-0.2.2-rc.1.tgz",
+        "integrity": "sha512-1p9imdrenPnJTkLb6Coq+ELBDjngblM/YGP1Pa/xf1oisjLHcCoK2n9kkOUTIfgvoFtqWfxZJNZeKef71ZmlrA==",
+        "tarball_sha256": "5ecb3f2ff2f0c037287c22c1ef917f1ce5cdd4c8055d51da6646ed5a39fe02a9",
         "source_file": "lib/index.js",
-        "source_sha256": "7be9f7aafbf345d01ddcc12fd297b16e9a1d41283a6a04073b867becca0bf020",
+        "source_sha256": "18b692b03bbb717589085f63b126cbcf22963763c5a0565bb3a7a5d254e8e4a7",
         "excerpts": [
           {
             "name": "PERSONA_PREFIX_SECTION",
             "lines": [
-              59,
-              59
+              61,
+              61
             ],
             "sha256": "11338254c278626eea6887b9cb5dc94d16f2ab4dae4bd7e555ea608c4b15648f"
           }
@@ -256,19 +276,19 @@
       },
       {
         "package": "@deepseek-ai/dsh-util-values",
-        "version": "0.2.1-rc.5",
+        "version": "0.2.2-rc.1",
         "license": "MIT",
-        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.1-rc.5.tgz",
-        "integrity": "sha512-PL8TerJM/4jpZ2ArwgTpFbeDiAVnqkSh8Xinw2iEu8B6a+axmshzL4dCpwpf+uB8GHdXAhGz1cT+SBQwX/2TLQ==",
-        "tarball_sha256": "2472d81f0dc4597bc5c4eeff493686a2b59a6b27cb6eb6654394192066d6ec05",
+        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-util-values/-/dsh-util-values-0.2.2-rc.1.tgz",
+        "integrity": "sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==",
+        "tarball_sha256": "e5de9a3c2600c70d72dba702cd0dfc8097264b7b6a7f393f4cfa799c81ecf759",
         "source_file": "lib/index.js",
-        "source_sha256": "4322a2aacdfe38476d2bbc62338120beea1e1660346d7db5b6c1e1f927a26b7c",
+        "source_sha256": "8b4ffdf40126d48bd22017b4671f7e90612d01833fc865f7a0b60d3de4183e8b",
         "excerpts": [
           {
             "name": "deepFreeze",
             "lines": [
-              824,
-              860
+              809,
+              845
             ],
             "sha256": "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
           }
@@ -279,19 +299,19 @@
       },
       {
         "package": "@deepseek-ai/dsh-user-questions",
-        "version": "0.2.1-rc.5",
+        "version": "0.2.2-rc.1",
         "license": "MIT",
-        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.1-rc.5.tgz",
-        "integrity": "sha512-Yz4c6YO804nvJ6DVJGPZSAF3DCJ7HJgpylBL6KfbI7Au3a6MV49mLLEv5cWs67qL/tyQMsJO9DI2N/xPlczEXA==",
-        "tarball_sha256": "5a2cb8c9451b4288c26a3c132b60aac15229a33bae34ce3c7bb0050906d6a8bc",
+        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-user-questions/-/dsh-user-questions-0.2.2-rc.1.tgz",
+        "integrity": "sha512-COY40boWZ7XEszSvMGZ4CY5ze5ujCdA+Trtqx5C6ioqWzH9e8YbkY7AxyCOadxVO++5zAsqvsAfq65cZUPIMGA==",
+        "tarball_sha256": "e7c1c38234fea9c0634ec95272bd1005c48ce890d2b935c8442b4ae7fee1b51e",
         "source_file": "lib/index.js",
-        "source_sha256": "e1c51afac2e31be8593c6426976e5f31dbe2a709b85ae1ea43ed406146f54265",
+        "source_sha256": "69fee77aa57cc43de583d53a4877394c4cf3b5d58b8d7579fd8095c0a015bfbd",
         "excerpts": [
           {
             "name": "UserQuestionError",
             "lines": [
-              429,
-              434
+              430,
+              435
             ],
             "sha256": "5d49a4ecdf40039b26824f3575a79820b48ed011f90641870f44fe5a41bf5ced"
           }
@@ -303,12 +323,12 @@
     ],
     "reuse": {
       "package": "@deepseek-ai/dsh-util-values",
-      "version": "0.2.1-rc.5",
+      "version": "0.2.2-rc.1",
       "file": "lib/index.js",
       "symbol": "deepFreeze",
       "lines": [
-        824,
-        860
+        809,
+        845
       ],
       "sha256": "66ee7f28877afa912496ba944a581ac74e7b87390e6a47c4c640d8f477bdc6e2"
     },

@@ -205,7 +205,7 @@ fn leading_literal_token(alternative: &str) -> Option<&str> {
         .unwrap_or(alternative.len());
     let token = &alternative[..end];
     // A word only counts when it is spelled the way a typed verb is spelled:
-    // starting lowercase (or a digit, for `/mode [work|plan|1|2|3]`) and made
+    // starting lowercase (or a digit, for `/mode [work|plan|1|2]`) and made
     // of ASCII word characters. `N`, `entry_id`, `--force` and
     // `path/to/export.json` are all values, not verbs.
     let mut chars = token.chars();

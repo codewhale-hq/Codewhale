@@ -4,16 +4,19 @@ import type { DocsReviewDict } from "../types";
 export const docsReview: DocsReviewDict = {
   metaTitle: "查看改动 · Codewhale 文档",
   metaDescription:
-    "查看 Codewhale 在一次会话中改过的每个文件，把工作区回滚到之前的回合，对 diff 做代码审查，并为审查保留一份回执。",
+    "查看已记录的改动、恢复可用的工作区快照，并在推送前进行代码审查。",
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   title: "查看改动",
   lede:
-    "Codewhale 每改一处都会当场展示给你，并在每个回合前后为工作区保存快照。这一页介绍如何查看改了什么、把文件恢复原样，以及在推送之前请它再审一遍。",
+    "查看改动、恢复可用的工作区快照，并在推送前再做一次审阅。",
   sections: [
     {
       "id": "receipts",
       "title": "查看会话做了什么",
       "blocks": [
+        {
+          "p": "用 [/preview-request](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PREVIEW_REQUEST.md) 检查下一次主要模型请求，无需发送。"
+        },
         {
           "p": "会话收据列出已记录的文件修改、命令、工具、智能体、审批与失败。下方的审查收据记录单独的代码审查。"
         },
@@ -45,7 +48,7 @@ export const docsReview: DocsReviewDict = {
       title: "把文件回滚到之前的回合",
       blocks: [
         {
-          p: "每个回合开始前和结束后，Codewhale 都会把工作区快照存进一个独立的 git 存储。它从不写入你仓库自己的 `.git`，在不是 git 仓库的文件夹里也能用。",
+          p: "可用的工作区快照单独存储，不会写入你仓库的 `.git`。文件夹本身不是 git 仓库也能使用快照。",
         },
         {
           code: `/restore           # list the 20 most recent snapshots
@@ -54,10 +57,10 @@ export const docsReview: DocsReviewDict = {
           lang: "Codewhale",
         },
         {
-          p: "恢复会改动文件，所以需要工作区已被信任（`/trust on`）或处于 Full Access；查看快照列表则不受限制。你也可以直接说“撤销你刚才的修改”，Codewhale 可以回滚它自己的那个回合。",
+          p: "恢复会改动文件，所以需要工作区已被信任（`/trust on`）或处于 Full Access；查看快照列表则不受限制。也可以直接要求 Codewhale 撤销上一次改动。",
         },
         {
-          p: "`/undo` 撤回你上一次的请求。在 0.10.1 中，恢复文件需要先运行 `/trust on`，并且每次只回退一次工具调用。从 0.10.2 起，它在任何权限模式下都会恢复该请求改动的每个文件，并从对话中删除该请求及其回复。`/restore` 会把整个工作区回滚到更早的快照。",
+          p: "`/undo` 撤回上一次请求及其记录的文件改动。还原点不可用或文件后来又被修改时，会拒绝恢复文件。`/restore` 用于选择工作区快照。",
         },
         {
           note: "快照保留 7 天。超过 2 GB 的工作区不做快照，Codewhale 会提示你一次；如果仍想要快照，可以在配置中调大 `[snapshots] max_workspace_gb`。如果没有安装 git 或磁盘已满，回合照常运行，只是不做快照。",

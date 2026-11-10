@@ -1906,7 +1906,7 @@ fn provider_native_web_search_requires_exact_direct_endpoint_offering() {
     let automatic = resolver
         .resolve(&req(Some(ProviderKind::Xai), None))
         .expect("xAI default resolves");
-    assert_eq!(automatic.wire_model_id().as_str(), "grok-4.6");
+    assert_eq!(automatic.wire_model_id().as_str(), "grok-4.7");
 
     let direct = resolver
         .resolve(&req(Some(ProviderKind::Xai), Some("grok-4.6")))

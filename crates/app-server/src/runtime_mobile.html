@@ -1,0 +1,994 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Codewhale Mobile</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101214;
+      --panel: #181b1f;
+      --panel-2: #20242a;
+      --line: #323840;
+      --text: #f4f1e8;
+      --muted: #a8a49a;
+      --accent: #48c2a8;
+      --accent-2: #c89543;
+      --danger: #e86458;
+      --ok: #76c46b;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: calc(12px + env(safe-area-inset-top)) 14px 12px;
+      background: rgba(16, 18, 20, 0.96);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(12px);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 740;
+    }
+    main {
+      display: grid;
+      gap: 12px;
+      padding: 12px 12px calc(14px + env(safe-area-inset-bottom));
+    }
+    section {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      min-height: 46px;
+    }
+    .body { padding: 12px; }
+    .grid { display: grid; gap: 10px; }
+    .row { display: flex; align-items: center; gap: 8px; }
+    .row > * { flex: 1; min-width: 0; }
+    button, input, textarea, select {
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+      letter-spacing: 0;
+    }
+    button {
+      min-height: 40px;
+      padding: 8px 11px;
+      font-weight: 680;
+      cursor: pointer;
+    }
+    button.primary {
+      background: #173d36;
+      border-color: #2a8b77;
+    }
+    button.warn {
+      background: #3c2b14;
+      border-color: #8b682b;
+    }
+    button.danger {
+      background: #421f1d;
+      border-color: #9b4038;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 10px;
+    }
+    textarea {
+      min-height: 96px;
+      resize: vertical;
+    }
+    label.toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 40px;
+      padding: 8px 10px;
+      color: var(--muted);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    label.toggle input { width: auto; }
+    .status {
+      min-height: 38px;
+      padding: 9px 10px;
+      border-radius: 8px;
+      background: #121518;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+    .status.ok { color: var(--ok); }
+    .status.bad { color: var(--danger); }
+    .status.warn { color: var(--accent-2); }
+    #threads {
+      display: grid;
+      gap: 8px;
+      max-height: 260px;
+      overflow: auto;
+    }
+    .thread {
+      width: 100%;
+      padding: 10px;
+      text-align: left;
+      border-radius: 8px;
+      background: var(--panel-2);
+    }
+    .thread.active { border-color: var(--accent); }
+    .thread-title {
+      font-weight: 720;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .meta {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    #active-title {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #turn-usage {
+      margin-top: 0;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    #turn-usage.live { color: var(--accent); }
+    #events {
+      display: grid;
+      gap: 8px;
+      max-height: 54vh;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .event {
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #121518;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .event.agent { border-color: #357969; }
+    .event.tool { border-color: #8b682b; }
+    .event.error { border-color: #9b4038; }
+    .event.ok { border-color: #4d8048; }
+    .approval-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 9px;
+    }
+    .approval-actions button {
+      flex: 0 0 auto;
+      min-width: 84px;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #agents-section[hidden] { display: none; }
+    .agent-row {
+      display: grid;
+      grid-template-columns: minmax(0, auto) auto;
+      gap: 2px 8px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    .agent-row:last-child { border-bottom: 0; }
+    .agent-name { font-weight: 600; overflow-wrap: anywhere; }
+    .agent-state { color: var(--muted); text-align: right; }
+    .agent-action {
+      grid-column: 1 / -1;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+    @media (min-width: 900px) {
+      main {
+        grid-template-columns: 330px minmax(0, 1fr);
+        align-items: start;
+      }
+      section.chat {
+        grid-column: 2;
+        grid-row: 1 / span 3;
+      }
+      #threads { max-height: 420px; }
+      #events { max-height: calc(100vh - 150px); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Codewhale Mobile</h1>
+    <button id="refresh" title="Refresh threads">Refresh</button>
+  </header>
+
+  <main>
+    <section>
+      <div class="head">
+        <strong>Connection</strong>
+        <button id="save-token">Connect</button>
+      </div>
+      <div class="body grid">
+        <input id="token" autocomplete="off" spellcheck="false" placeholder="Runtime token (used once)">
+        <div id="conn" class="status">Not connected</div>
+      </div>
+    </section>
+
+    <section>
+      <div class="head">
+        <strong>Threads</strong>
+        <button id="new-thread" class="primary">New</button>
+      </div>
+      <div class="body"><div id="threads"></div></div>
+    </section>
+
+    <section id="agents-section" hidden>
+      <div class="head">
+        <strong>Agents</strong>
+        <span id="agent-count" class="meta"></span>
+      </div>
+      <div class="body"><div id="agents"></div></div>
+    </section>
+
+    <section class="chat">
+      <div class="head">
+        <strong id="active-title">No thread selected</strong>
+        <span id="turn-usage" class="meta" hidden></span>
+        <span id="event-count" class="meta">0 events</span>
+      </div>
+      <div class="body"><div id="events"></div></div>
+    </section>
+
+    <section>
+      <div class="head">
+        <strong>Composer</strong>
+        <button id="interrupt" class="danger">Interrupt</button>
+      </div>
+      <div class="body grid">
+        <textarea id="prompt" spellcheck="true" placeholder="Message"></textarea>
+        <div class="row">
+          <label class="toggle"><input id="allow-shell" type="checkbox"> shell</label>
+          <label class="toggle"><input id="auto-approve" type="checkbox"> auto</label>
+          <label class="toggle"><input id="remember-approval" type="checkbox"> remember</label>
+        </div>
+        <div class="row">
+          <button id="send" class="primary">Send</button>
+          <button id="steer" class="warn">Steer</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const streamMessages = __CODEWHALE_STREAM_MESSAGES__;
+    const $ = (id) => document.getElementById(id);
+    const MAX_VISIBLE_EVENTS = 100;
+    const LEGACY_RUNTIME_TOKEN_STORAGE_KEY = "codewhale_runtime_token";
+    const LEGACY_RUNTIME_TOKEN_COOKIE = "codewhale_runtime_token";
+    const SESSION_STORAGE_KEY = "codewhale_mobile_session_proof";
+    const MOBILE_REQUEST_HEADER = "X-Codewhale-Mobile-Request";
+    const MOBILE_STREAM_TICKET_QUERY = "mobile_stream_ticket";
+    const state = {
+      threadId: "",
+      activeTurnId: "",
+      source: null,
+      // Seq of the last journal event shown for this thread: the resume
+      // cursor. Frames at or below it are replays and are skipped.
+      lastSeq: 0,
+      retryDelay: 750,
+      openedAt: 0,
+      eventCount: 0,
+      requestProof: "",
+      streamTicket: "",
+      // Sub-agents of the open thread, by agent id: rebuilt from the
+      // agent.* events the stream replays, so a reconnect restores it.
+      agents: new Map(),
+      turnUsage: emptyTurnUsage(),
+      turnUsageByThread: new Map()
+    };
+
+    function emptyTurnUsage() {
+      return {
+        input: 0, output: 0, usd: 0, cny: 0,
+        usdPriced: false, cnyPriced: false, live: false,
+        turnId: "", lastSeq: 0
+      };
+    }
+
+    function turnUsageFor(threadId) {
+      if (!threadId) return state.turnUsage;
+      let figure = state.turnUsageByThread.get(threadId);
+      if (!figure) {
+        figure = emptyTurnUsage();
+        state.turnUsageByThread.set(threadId, figure);
+      }
+      return figure;
+    }
+
+    function formatTokens(count) {
+      if (!Number.isFinite(count) || count <= 0) return "0";
+      if (count < 1000) return String(count);
+      if (count < 1000000) return (count / 1000).toFixed(count < 10000 ? 1 : 0) + "K";
+      return (count / 1000000).toFixed(1) + "M";
+    }
+
+    function setStatus(message, tone = "") {
+      const el = $("conn");
+      el.textContent = message;
+      el.className = "status" + (tone ? " " + tone : "");
+    }
+
+    function token() {
+      return $("token").value.trim();
+    }
+
+    function clearLegacyRuntimeToken() {
+      localStorage.removeItem(LEGACY_RUNTIME_TOKEN_STORAGE_KEY);
+      document.cookie = LEGACY_RUNTIME_TOKEN_COOKIE + "=; Max-Age=0; Path=/; SameSite=Strict";
+    }
+
+    function saveMobileSession() {
+      if (!state.requestProof) {
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        return;
+      }
+      sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+        requestProof: state.requestProof,
+        streamTicket: state.streamTicket
+      }));
+    }
+
+    function clearMobileSession() {
+      state.requestProof = "";
+      state.streamTicket = "";
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+
+    function loadMobileSession() {
+      try {
+        const stored = JSON.parse(sessionStorage.getItem(SESSION_STORAGE_KEY) || "null");
+        if (stored && typeof stored.requestProof === "string") {
+          state.requestProof = stored.requestProof;
+          state.streamTicket = typeof stored.streamTicket === "string" ? stored.streamTicket : "";
+        }
+      } catch (_) {
+        clearMobileSession();
+      }
+    }
+
+    function useMobileSession(session) {
+      if (!session || typeof session.request_proof !== "string") {
+        throw new Error("Mobile session bootstrap was incomplete");
+      }
+      state.requestProof = session.request_proof;
+      state.streamTicket = typeof session.stream_ticket === "string" ? session.stream_ticket : "";
+      saveMobileSession();
+    }
+
+    function takeMobileSessionFromUrl() {
+      const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
+      const params = new URLSearchParams(hash);
+      const requestProof = params.get("request_proof");
+      const streamTicket = params.get("stream_ticket");
+      if (!requestProof || !streamTicket) return;
+      useMobileSession({ request_proof: requestProof, stream_ticket: streamTicket });
+      params.delete("request_proof");
+      params.delete("stream_ticket");
+      const nextHash = params.toString();
+      history.replaceState(
+        null,
+        "",
+        location.pathname + location.search + (nextHash ? "#" + nextHash : "")
+      );
+    }
+
+    function headers(extra = {}) {
+      const out = Object.assign({ "Content-Type": "application/json" }, extra);
+      if (state.requestProof) out[MOBILE_REQUEST_HEADER] = state.requestProof;
+      return out;
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, Object.assign({}, options, {
+        credentials: "same-origin",
+        headers: headers(options.headers || {})
+      }));
+      if (!res.ok) {
+        if (res.status === 401) clearMobileSession();
+        let detail = await res.text();
+        try {
+          const parsed = JSON.parse(detail);
+          detail = parsed.error?.message || detail;
+        } catch (_) {}
+        throw new Error(detail || ("HTTP " + res.status));
+      }
+      if (res.status === 204) return null;
+      return res.json();
+    }
+
+    async function connectMobileSession() {
+      const runtimeToken = token();
+      if (!runtimeToken) throw new Error("Enter a Runtime token to connect once");
+      let res;
+      try {
+        res = await fetch("/__codewhale/mobile/session", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Authorization": "Bearer " + runtimeToken }
+        });
+      } finally {
+        $("token").value = "";
+      }
+      if (!res.ok) {
+        let detail = await res.text();
+        try {
+          const parsed = JSON.parse(detail);
+          detail = parsed.error?.message || detail;
+        } catch (_) {}
+        throw new Error(detail || ("HTTP " + res.status));
+      }
+      useMobileSession(await res.json());
+    }
+
+    async function refreshStreamTicket() {
+      const result = await api("/__codewhale/mobile/stream-ticket", {
+        method: "POST",
+        body: "{}"
+      });
+      if (!result || typeof result.stream_ticket !== "string") {
+        throw new Error("Mobile stream ticket was unavailable");
+      }
+      state.streamTicket = result.stream_ticket;
+      saveMobileSession();
+      return state.streamTicket;
+    }
+
+    async function takeStreamTicket() {
+      if (!state.requestProof) return "";
+      const ticket = state.streamTicket || await refreshStreamTicket();
+      state.streamTicket = "";
+      saveMobileSession();
+      return ticket;
+    }
+
+    function escapeHtml(raw) {
+      return String(raw).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#039;"
+      }[char]));
+    }
+
+    function eventPayload(data) {
+      return data && typeof data === "object" && "payload" in data ? data.payload : data;
+    }
+
+    // The name every Codewhale surface shows for an agent (its workflow
+    // label or dispatch name), never its internal id. Hosts that predate the
+    // name get an ordinal instead.
+    function agentName(payload) {
+      const known = state.agents.get(payload.agent_id);
+      if (payload.agent_name) return payload.agent_name;
+      if (known && known.name) return known.name;
+      return "agent " + (known ? known.order : state.agents.size + 1);
+    }
+
+    // The first line of prose in a result summary, not its heading.
+    function resultHeadline(text) {
+      const summary = String(text || "").replace(/^Sub-agent .*? (completed|failed|cancelled|interrupted|budget_exhausted|settled \(outcome unconfirmed\)): /, "");
+      const line = summary.split("\n").map((part) => part.trim())
+        .find((part) => part && !part.startsWith("#") && !part.startsWith("<codewhale:"));
+      return line || "";
+    }
+
+    function noteAgentEvent(name, data) {
+      if (!name.startsWith("agent.")) return;
+      const payload = eventPayload(data) || {};
+      const id = payload.agent_id;
+      if (!id) return;
+      let agent = state.agents.get(id);
+      if (!agent) {
+        agent = { name: "", state: "", action: "", order: state.agents.size + 1 };
+        state.agents.set(id, agent);
+      }
+      if (payload.agent_name) agent.name = payload.agent_name;
+      if (name === "agent.spawned") {
+        agent.state = "running";
+        agent.action = "starting";
+      } else if (name === "agent.progress") {
+        agent.state = "running";
+        agent.action = [String(payload.worker_status || "").replace(/_/g, " "),
+          payload.step ? "step " + payload.step : ""].filter(Boolean).join(" · ");
+      } else if (name === "agent.completed") {
+        agent.state = String(payload.worker_status || "settled").replace(/_/g, " ");
+        agent.action = resultHeadline((payload.item || {}).summary);
+      }
+      renderAgents();
+    }
+
+    function renderAgents() {
+      const list = $("agents");
+      list.innerHTML = "";
+      let running = 0;
+      for (const [id, agent] of state.agents) {
+        if (agent.state === "running") running += 1;
+        const row = document.createElement("div");
+        row.className = "agent-row";
+        row.innerHTML =
+          "<span class='agent-name'>" + escapeHtml(agentName({ agent_id: id })) + "</span>" +
+          "<span class='agent-state'>" + escapeHtml(agent.state) + "</span>" +
+          (agent.action ? "<span class='agent-action'>" + escapeHtml(agent.action) + "</span>" : "");
+        list.appendChild(row);
+      }
+      $("agents-section").hidden = state.agents.size === 0;
+      $("agent-count").textContent = state.agents.size
+        ? running + " running · " + state.agents.size + " total"
+        : "";
+    }
+
+    function eventText(name, data) {
+      const payload = eventPayload(data) || {};
+      if (name === "agent.spawned") return agentName(payload) + " started";
+      if (name === "agent.progress") {
+        return agentName(payload) + ": " + String(payload.worker_status || "working").replace(/_/g, " ") +
+          (payload.step ? " · step " + payload.step : "");
+      }
+      if (name === "agent.completed") {
+        const headline = resultHeadline((payload.item || {}).summary);
+        return agentName(payload) + " " + String(payload.worker_status || "settled").replace(/_/g, " ") +
+          (headline ? ": " + headline : "");
+      }
+      if (name === "item.delta") return payload.delta || "";
+      if (name === "item.started") {
+        const tool = payload.tool;
+        if (tool) return "Tool started: " + tool.name + "\n" + JSON.stringify(tool.input || {}, null, 2);
+      }
+      if (name === "item.completed" || name === "item.failed") {
+        const item = payload.item || {};
+        return (name === "item.completed" ? "Completed: " : "Failed: ") + (item.summary || item.kind || "");
+      }
+      if (name === "approval.required") {
+        return "Approval required: " + (payload.tool_name || "") + "\n" + (payload.description || "");
+      }
+      if (name === "approval.decided") {
+        return "Approval " + (payload.decision || "decided") + ": " + (payload.approval_id || "");
+      }
+      if (name === "approval.timeout") {
+        return "Approval timed out: " + (payload.approval_id || "");
+      }
+      if (name === "sandbox.denied") {
+        return "Sandbox denied: " + (payload.tool_name || "") + "\n" + (payload.reason || "");
+      }
+      if (name === "turn.lifecycle") return "Turn status: " + (payload.status || "");
+      if (name === "turn.completed") return "Turn completed";
+      if (name === "turn.usage") return "";
+      return JSON.stringify(payload, null, 2);
+    }
+
+    function noteTurnUsage(name, data) {
+      if (name !== "turn.started" && name !== "turn.usage" && name !== "turn.completed") return;
+      const payload = eventPayload(data) || {};
+      const turnId = String((data && data.turn_id) || (payload.turn || {}).id || "");
+      if (!turnId) return;
+      let figure = turnUsageFor(state.threadId);
+      const seq = Number(data && data.seq);
+      if (Number.isSafeInteger(seq) && seq > 0) {
+        if (seq <= figure.lastSeq) return;
+        figure.lastSeq = seq;
+      }
+      if (figure.turnId !== turnId) {
+        figure = Object.assign(emptyTurnUsage(), { turnId, lastSeq: figure.lastSeq });
+        if (state.threadId) state.turnUsageByThread.set(state.threadId, figure);
+      }
+      state.turnUsage = figure;
+      if (name === "turn.started") {
+        figure.live = true;
+      } else if (name === "turn.usage") {
+        const usage = payload.usage || {};
+        figure.input += Number(usage.input_tokens || 0) || 0;
+        figure.output += Number(usage.output_tokens || 0) || 0;
+        const cost = payload.cost;
+        if (cost && cost.usd_priced === true && Number.isFinite(Number(cost.usd))) {
+          figure.usd += Number(cost.usd);
+          figure.usdPriced = true;
+        }
+        if (cost && cost.cny_priced === true && Number.isFinite(Number(cost.cny))) {
+          figure.cny += Number(cost.cny);
+          figure.cnyPriced = true;
+        }
+        figure.live = true;
+      } else {
+        const usage = (payload.turn || {}).usage;
+        if (usage) {
+          figure.input = Number(usage.input_tokens || 0) || 0;
+          figure.output = Number(usage.output_tokens || 0) || 0;
+        }
+        figure.live = false;
+      }
+      renderTurnUsage();
+    }
+
+    function renderTurnUsage() {
+      const el = $("turn-usage");
+      if (!el) return;
+      const figure = state.turnUsage;
+      if (!figure.input && !figure.output && !figure.usdPriced && !figure.cnyPriced) {
+        el.hidden = true;
+        el.textContent = "";
+        el.className = "meta";
+        return;
+      }
+      const parts = ["\u2191" + formatTokens(figure.input), "\u2193" + formatTokens(figure.output)];
+      if (figure.cnyPriced) parts.push("~\u00a5" + figure.cny.toFixed(figure.cny < 0.01 ? 4 : 2) + " partial");
+      else if (figure.usdPriced) parts.push("~$" + figure.usd.toFixed(figure.usd < 0.01 ? 4 : 2) + " partial");
+      el.textContent = parts.join(" ");
+      el.className = figure.live ? "meta live" : "meta";
+      el.title = (figure.live ? "This turn so far" : "Last turn") +
+        "; cost is a partial estimate from priced calls, excluding unpriced, child and compaction work";
+      el.hidden = false;
+    }
+
+    function approvalInfo(name, data) {
+      if (name !== "approval.required") return null;
+      const payload = eventPayload(data) || {};
+      const approvalId = payload.approval_id || payload.id;
+      if (!approvalId) return null;
+      return { id: approvalId };
+    }
+
+    function retireApproval(name, data) {
+      if (name !== "approval.decided" && name !== "approval.timeout") return;
+      const payload = eventPayload(data) || {};
+      const approvalId = payload.approval_id || payload.id;
+      if (!approvalId) return;
+      const label = name === "approval.timeout"
+        ? "Timed out"
+        : payload.cancelled ? "Cancelled" : "Decided: " + (payload.decision || "decided");
+      for (const actions of document.querySelectorAll(".approval-actions")) {
+        if (actions.dataset.approvalId !== String(approvalId)) continue;
+        actions.innerHTML = "<span class='meta'>" + escapeHtml(label) + "</span>";
+      }
+    }
+
+    function pruneVisibleEvents() {
+      const events = $("events");
+      while (events.childElementCount > MAX_VISIBLE_EVENTS) {
+        events.firstElementChild.remove();
+      }
+    }
+
+    async function decideApproval(approvalId, decision, container) {
+      for (const button of container.querySelectorAll("button")) button.disabled = true;
+      const remember = $("remember-approval").checked;
+      try {
+        const result = await api("/v1/approvals/" + encodeURIComponent(approvalId), {
+          method: "POST",
+          body: JSON.stringify({ decision, remember, client: "phone" })
+        });
+        const decided = result?.decision ?? decision;
+        container.innerHTML = "<span class='meta'>Decision sent: " + escapeHtml(decided) + "</span>";
+      } catch (err) {
+        for (const button of container.querySelectorAll("button")) button.disabled = false;
+        throw err;
+      }
+    }
+
+    function appendEvent(name, data) {
+      noteAgentEvent(name, data);
+      retireApproval(name, data);
+      noteTurnUsage(name, data);
+      const text = eventText(name, data);
+      if (!text) return;
+      const item = document.createElement("div");
+      item.className = "event";
+      if (name === "item.delta") item.classList.add("agent");
+      if (name === "item.started" || name.includes("tool")) item.classList.add("tool");
+      if (name.includes("failed") || name.includes("denied") || name.includes("timeout")) item.classList.add("error");
+      if (name === "turn.completed" || name === "approval.decided") item.classList.add("ok");
+      if (name.startsWith("agent.")) item.classList.add("tool");
+      item.innerHTML = "<div class='meta'>" + escapeHtml(name) + "</div>" + escapeHtml(text);
+
+      const approval = approvalInfo(name, data);
+      if (approval) {
+        const actions = document.createElement("div");
+        actions.className = "approval-actions";
+        actions.dataset.approvalId = String(approval.id);
+        const allow = document.createElement("button");
+        allow.className = "primary";
+        allow.textContent = "Allow";
+        allow.onclick = () => decideApproval(approval.id, "allow", actions)
+          .catch((err) => setStatus(err.message, "bad"));
+        const deny = document.createElement("button");
+        deny.className = "danger";
+        deny.textContent = "Deny";
+        deny.onclick = () => decideApproval(approval.id, "deny", actions)
+          .catch((err) => setStatus(err.message, "bad"));
+        actions.appendChild(allow);
+        actions.appendChild(deny);
+        item.appendChild(actions);
+      }
+
+      $("events").appendChild(item);
+      pruneVisibleEvents();
+      state.eventCount += 1;
+      const visible = Math.min(state.eventCount, MAX_VISIBLE_EVENTS);
+      $("event-count").textContent = visible + " of " + state.eventCount + " events";
+      $("events").scrollTop = $("events").scrollHeight;
+    }
+
+    async function loadThreads() {
+      const threads = await api("/v1/threads/summary?limit=60&include_archived=false");
+      const list = $("threads");
+      list.innerHTML = "";
+      if (!threads || !threads.length) {
+        list.innerHTML = "<div class='empty'>No active threads.</div>";
+        return;
+      }
+      for (const thread of threads) {
+        const el = document.createElement("button");
+        el.className = "thread" + (thread.id === state.threadId ? " active" : "");
+        el.innerHTML =
+          "<div class='thread-title'>" + escapeHtml(thread.title || thread.id) + "</div>" +
+          "<div class='meta'>" + escapeHtml(thread.mode || "") + " / " +
+          escapeHtml(thread.model || "") + "</div>";
+        el.onclick = () => selectThread(thread.id, thread.title || thread.id);
+        list.appendChild(el);
+      }
+    }
+
+    async function newThread() {
+      const thread = await api("/v1/threads", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: "agent",
+          allow_shell: $("allow-shell").checked,
+          trust_mode: false,
+          auto_approve: $("auto-approve").checked
+        })
+      });
+      await loadThreads();
+      selectThread(thread.id, thread.title || thread.id);
+    }
+
+    async function selectThread(id, title) {
+      state.threadId = id;
+      state.activeTurnId = "";
+      state.lastSeq = 0;
+      state.retryDelay = 750;
+      state.openedAt = 0;
+      state.eventCount = 0;
+      $("event-count").textContent = "0 events";
+      state.turnUsage = turnUsageFor(id);
+      renderTurnUsage();
+      $("active-title").textContent = title || id;
+      $("events").innerHTML = "";
+      state.agents.clear();
+      renderAgents();
+      if (state.source) state.source.close();
+      await openThreadEvents(id);
+      await loadThreads();
+    }
+
+    // What the Runtime said when it ended the stream on purpose (`stream.end`).
+    function streamEndStatus(reason) {
+      switch (reason) {
+        case "replay_failed":
+          return streamMessages.replay_failed;
+        case "catch_up_failed":
+          return streamMessages.catch_up_failed;
+        case "runtime_shutdown":
+          return streamMessages.runtime_shutdown;
+        default:
+          return streamMessages.ended;
+      }
+    }
+
+    // Reconnect from `cursor` (undefined: nothing shown yet, open fresh) after
+    // a bounded backoff. The backoff resets only after a stream stayed open a
+    // while: a Runtime that opens and at once ends the stream (a history it
+    // cannot read) is retried ever more slowly, not hammered. A Runtime that is not
+    // reachable yet fails the stream-ticket fetch itself (a network TypeError):
+    // keep trying. An HTTP refusal (for example an expired session) is final.
+    function scheduleResume(id, cursor) {
+      if (state.openedAt && Date.now() - state.openedAt > 10000) state.retryDelay = 750;
+      state.openedAt = 0;
+      const delay = state.retryDelay;
+      state.retryDelay = Math.min(state.retryDelay * 2, 15000);
+      window.setTimeout(() => {
+        if (state.threadId !== id) return;
+        openThreadEvents(id, cursor).catch((err) => {
+          if (state.threadId !== id) return;
+          if (err instanceof TypeError) {
+            setStatus(streamMessages.reconnecting, "warn");
+            scheduleResume(id, cursor);
+          } else {
+            setStatus(err.message, "bad");
+          }
+        });
+      }, delay);
+    }
+
+    // `resumeFrom` undefined opens the newest tail; a number resumes after it,
+    // so a reconnect never replays (and duplicates) what is already shown.
+    async function openThreadEvents(id, resumeFrom) {
+      const streamTicket = await takeStreamTicket();
+      const query = new URLSearchParams(
+        resumeFrom === undefined
+          ? { since_seq: "0", replay_limit: String(MAX_VISIBLE_EVENTS) }
+          : { since_seq: String(resumeFrom) }
+      );
+      if (streamTicket) query.set(MOBILE_STREAM_TICKET_QUERY, streamTicket);
+      const source = new EventSource(
+        "/v1/threads/" + encodeURIComponent(id) + "/events?" + query.toString()
+      );
+      state.source = source;
+      const names = [
+        "thread.started",
+        "turn.started",
+        "turn.lifecycle",
+        "turn.usage",
+        "turn.steered",
+        "turn.interrupt_requested",
+        "turn.completed",
+        "item.started",
+        "item.delta",
+        "item.completed",
+        "item.failed",
+        "approval.required",
+        "approval.decided",
+        "approval.timeout",
+        "sandbox.denied",
+        "agent.spawned",
+        "agent.progress",
+        "agent.completed"
+      ];
+      for (const name of names) {
+        source.addEventListener(name, (ev) => {
+          if (state.source !== source) return;
+          let data = {};
+          try { data = JSON.parse(ev.data || "{}"); } catch (_) {}
+          if (Number.isSafeInteger(data.seq)) {
+            if (data.seq <= state.lastSeq) return;
+            state.lastSeq = data.seq;
+          }
+          if (data.turn_id) state.activeTurnId = data.turn_id;
+          appendEvent(name, data);
+        });
+      }
+      // The Runtime ended the stream on purpose; `last_seq` is where to resume.
+      source.addEventListener("stream.end", (ev) => {
+        if (state.source !== source || state.threadId !== id) return;
+        source.close();
+        let data = {};
+        try { data = JSON.parse(ev.data || "{}"); } catch (_) {}
+        if (Number.isSafeInteger(data.last_seq)) {
+          state.lastSeq = Math.max(state.lastSeq, data.last_seq);
+        }
+        if (data.retryable !== true) {
+          setStatus(streamMessages.closed, "bad");
+          return;
+        }
+        setStatus(streamEndStatus(data.reason), "warn");
+        scheduleResume(id, state.lastSeq);
+      });
+      // A Runtime that cannot serve this thread answers and at once ends the
+      // stream; claim "Connected" only once the stream has stayed open.
+      source.onopen = () => {
+        state.openedAt = Date.now();
+        window.setTimeout(() => {
+          if (state.source === source && source.readyState === EventSource.OPEN) {
+            setStatus(streamMessages.connected, "ok");
+          }
+        }, 400);
+      };
+      // No `stream.end`: the connection dropped (network, proxy, or a Runtime
+      // that exited without warning). Resume from what is already shown.
+      source.onerror = () => {
+        if (state.source !== source || state.threadId !== id) return;
+        source.close();
+        setStatus(streamMessages.reconnecting, "warn");
+        scheduleResume(id, state.lastSeq > 0 ? state.lastSeq : resumeFrom);
+      };
+    }
+
+    async function sendPrompt() {
+      if (!state.threadId) await newThread();
+      const prompt = $("prompt").value.trim();
+      if (!prompt) return;
+      const res = await api("/v1/threads/" + encodeURIComponent(state.threadId) + "/turns", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt,
+          allow_shell: $("allow-shell").checked,
+          trust_mode: false,
+          auto_approve: $("auto-approve").checked
+        })
+      });
+      state.activeTurnId = res.turn?.id || state.activeTurnId;
+      $("prompt").value = "";
+      await loadThreads();
+    }
+
+    async function steerTurn() {
+      if (!state.threadId || !state.activeTurnId) throw new Error("No active turn");
+      const prompt = $("prompt").value.trim();
+      if (!prompt) return;
+      await api(
+        "/v1/threads/" + encodeURIComponent(state.threadId) +
+        "/turns/" + encodeURIComponent(state.activeTurnId) + "/steer",
+        { method: "POST", body: JSON.stringify({ prompt }) }
+      );
+      $("prompt").value = "";
+    }
+
+    async function interruptTurn() {
+      if (!state.threadId || !state.activeTurnId) throw new Error("No active turn");
+      await api(
+        "/v1/threads/" + encodeURIComponent(state.threadId) +
+        "/turns/" + encodeURIComponent(state.activeTurnId) + "/interrupt",
+        { method: "POST", body: "{}" }
+      );
+    }
+
+    async function boot() {
+      clearLegacyRuntimeToken();
+      loadMobileSession();
+      takeMobileSessionFromUrl();
+      $("save-token").onclick = async () => {
+        await connectMobileSession();
+        await loadThreads().catch((err) => setStatus(err.message, "bad"));
+      };
+      $("refresh").onclick = () => loadThreads().catch((err) => setStatus(err.message, "bad"));
+      $("new-thread").onclick = () => newThread().catch((err) => setStatus(err.message, "bad"));
+      $("send").onclick = () => sendPrompt().catch((err) => setStatus(err.message, "bad"));
+      $("steer").onclick = () => steerTurn().catch((err) => setStatus(err.message, "bad"));
+      $("interrupt").onclick = () => interruptTurn().catch((err) => setStatus(err.message, "bad"));
+      await loadThreads();
+      setStatus(streamMessages.connected, "ok");
+    }
+
+    boot().catch((err) => setStatus(err.message, "bad"));
+  </script>
+</body>
+</html>

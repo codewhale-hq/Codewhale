@@ -87,7 +87,7 @@ describe("Fleet is the canonical public surface", () => {
     expect(step).toBeTruthy();
     expect(step!.link.href).toBe("/docs/fleet");
     expect(step!.commands).toContain("/fleet setup");
-    expect(step!.commands).toContain("/fleet status");
+    expect(step!.commands).toContain("/fleet workers");
   });
 
   it("keeps durable Fleet status separate from current-session workers", () => {

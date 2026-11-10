@@ -193,6 +193,23 @@ jobs:
         with:
           cache-bin: false
           prefix-key: v1-${{ runner.os }}-${{ runner.arch }}-stable
+      - name: Add swap so the aarch64 dist build is not killed for memory
+        if: runner.os == 'Linux' && contains(matrix.target, 'aarch64')
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir=/mnt
+          if ! sudo test -w /mnt; then dir=/; fi
+          avail=$(df -Pk "$dir" | awk 'NR==2 {print int($4 / 1048576)}')
+          if [ "$avail" -ge 30 ]; then size=16; elif [ "$avail" -ge 14 ]; then size=8; else size=0; fi
+          if [ "$size" -gt 0 ]; then
+            sudo fallocate -l "${size}G" "$dir/cw-swapfile"
+            sudo chmod 600 "$dir/cw-swapfile"
+            sudo mkswap "$dir/cw-swapfile" >/dev/null
+            sudo swapon "$dir/cw-swapfile"
+          fi
+          free -g
+          df -h "$dir"
       - name: Build static Linux binaries (musl)
         if: endsWith(matrix.target, '-unknown-linux-musl')
         shell: bash
@@ -270,7 +287,7 @@ jobs:
           mirror: true
       - name: Install Java for the OpenHarmony binary signer
         if: matrix.platform == 'ohos-arm64'
-        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v4
         with:
           distribution: temurin
           java-version: '17'
@@ -289,18 +306,26 @@ jobs:
           cargo build --profile dist --locked --target "${{ matrix.target }}" -p codewhale-cli
 
           bin="target/${{ matrix.target }}/dist/${{ matrix.cli_binary }}"
-          signer="$(dirname "${OHOS_NATIVE_SDK}")/toolchains/lib/binary-sign-tool.jar"
-          if [[ ! -f "${signer}" ]]; then
-            echo "binary-sign-tool.jar is missing from the SDK toolchains component" >&2
+          tools="$(dirname "${OHOS_NATIVE_SDK}")/toolchains/lib"
+          # SDK 6.1 publishes the native `binary-sign-tool` and no jar, while
+          # DevEco ships the Java build; both take the same arguments.
+          if [[ -f "${tools}/binary-sign-tool.jar" ]]; then
+            signer=(java -jar "${tools}/binary-sign-tool.jar")
+          elif [[ -f "${tools}/binary-sign-tool" ]]; then
+            chmod +x "${tools}/binary-sign-tool"
+            signer=("${tools}/binary-sign-tool")
+          else
+            echo "no binary-sign-tool in ${tools}; the device refuses an unsigned ELF" >&2
+            ls -la "${tools}" >&2
             exit 1
           fi
-          java -jar "${signer}" sign -inFile "${bin}" -outFile "${bin}" -selfSign 1
+          "${signer[@]}" sign -inFile "${bin}" -outFile "${bin}" -selfSign 1
 
           # Capture then match. `tool | grep -q` cannot be used under
           # `pipefail`: grep exits at the first match, the tool takes SIGPIPE,
           # and llvm-readelf reports that as exit 74, which reads as a failed
           # verification of a good binary.
-          signature="$(java -jar "${signer}" display-sign -inFile "${bin}")"
+          signature="$("${signer[@]}" display-sign -inFile "${bin}")"
           case "${signature}" in
             *'code signature is self-sign'*) ;;
             *)
@@ -359,12 +384,12 @@ jobs:
           bin_dir="target/${{ matrix.target }}/dist"
           "${bin_dir}/${{ matrix.cli_binary }}" --version
           "${bin_dir}/${{ matrix.shim_binary }}" --version
-      - name: Windows Terminal clipboard acceptance
+      - name: Windows Terminal clipboard-to-draft acceptance
         if: matrix.platform == 'windows-x64'
         timeout-minutes: 5
         shell: pwsh
         run: node scripts/release/windows-terminal-clipboard.mjs "target/${{ matrix.target }}/dist/codewhale.exe" "${{ runner.temp }}/windows-clipboard"
-      - name: Retain Windows Terminal clipboard evidence
+      - name: Retain Windows Terminal clipboard-to-draft evidence
         if: ${{ !cancelled() && matrix.platform == 'windows-x64' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -660,6 +685,7 @@ jobs:
           node --test scripts/release/assemble-release-assets.test.js
           node --test npm/codewhale/test/artifacts.test.js npm/codewhale/test/release-assets.test.js
       - name: Render AUR metadata from candidate Linux archives
+        if: ${{ !contains(inputs.version, '-') }}
         run: bash packaging/aur/render.sh release-assets "${RUNNER_TEMP}/codewhale-bin"
       - name: Smoke packed npm wrapper against candidate assets
         env:

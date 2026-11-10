@@ -120,6 +120,38 @@ impl Locale {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageId {
+    AccountModelsLoadFailed,
+    ConnectionSetupTitle,
+    ConnectionSetupAccount,
+    ConnectionSetupAccountDetail,
+    ConnectionSetupLocal,
+    ConnectionSetupLocalDetail,
+    AccountModelsTitle,
+    AccountModelsLoading,
+    AccountModelsUnavailable,
+    AccountModelsReady,
+    AccountModelsConnectFailed,
+    AccountModelsCancelled,
+
+    AccountLoginTitle,
+    AccountLoginStarting,
+    AccountLoginWaiting,
+    AccountLoginCode,
+    AccountLoginOpenBrowser,
+    AccountLoginCopyLink,
+    AccountLoginLink,
+    AccountLoginSuccess,
+    AccountLoginNeedsModel,
+    AccountLoginCancelled,
+    AccountLoginExpired,
+    AccountLoginFailed,
+    AccountLogoutTitle,
+    AccountLogoutStarting,
+    AccountLogoutSuccess,
+    AccountLogoutLocal,
+    AccountLogoutFailed,
+    AccountLogoutCancelled,
+
     ReasoningOnlyRetryBody,
     OutputLimitAnswerRetryBody,
     AnswerRetryActionBare,
@@ -157,9 +189,11 @@ pub enum MessageId {
     CostReasonCurrencyMissing,
     CostReasonUsageConflict,
     CostReasonUsageBreakdown,
-    CostChipUnknown,
-    CostChipSubtotal,
-    CostChipSavedSubtotal,
+    CostReasonOutcomeUnknown,
+    CostReasonInProgress,
+    CostReasonProviderUsageMissing,
+    CostReasonLegacyUsageUnverified,
+    CostReasonUsageCorrectionUnverified,
     CostChipLocal,
     CostChipAllowance,
     CostChipAllowancePercent,
@@ -520,6 +554,7 @@ pub enum MessageId {
     PostureHintEnterAgain,
     PermissionsPostureHeader,
     PermissionsPostureAsk,
+    PermissionsPostureAcceptEdits,
     PermissionsPostureAuto,
     PermissionsPostureBypass,
     PermissionsPostureNever,
@@ -1110,7 +1145,7 @@ pub enum MessageId {
     KbExternalEditor,
     KbLiveTranscript,
     KbBacktrackMessage,
-    KbCompleteCycleModes,
+    KbTabComplete,
     KbCycleThinking,
     KbCyclePermissions,
     KbJumpPlanAgentYolo,
@@ -2030,6 +2065,7 @@ pub enum MessageId {
     ChipPermissionReadOnly,
     ChipPermissionAsk,
     ChipPermissionAuto,
+    ChipPermissionAcceptEdits,
     ChipPermissionFullAccess,
     ChipPermissionNever,
     PermissionsChangedReceipt,
@@ -2092,6 +2128,7 @@ pub enum MessageId {
     StatusWorkspace,
     StatusApprovalAsk,
     StatusApprovalAuto,
+    StatusApprovalAcceptEdits,
     StatusApprovalFullAccess,
     StatusApprovalNever,
     StatusMcpConfigured,
@@ -2798,6 +2835,7 @@ pub enum MessageId {
     ConfigValueOff,
     ConfigValueProviderDefault,
     ConfigChoiceAsk,
+    ConfigChoiceAcceptEdits,
     ConfigChoiceAutoReview,
     ConfigChoiceUseTuiDefault,
     ConfigChoiceFullAccess,
@@ -2817,6 +2855,7 @@ pub enum MessageId {
     ConfigChoiceDiffFull,
     ConfigChoiceDiffSummary,
     ConfigChoiceDetailAsk,
+    ConfigChoiceDetailAcceptEdits,
     ConfigChoiceDetailAutoReview,
     ConfigChoiceDetailUseTuiDefault,
     ConfigChoiceDetailFullAccess,
@@ -2933,6 +2972,8 @@ pub enum MessageId {
     PlanHandoffQuestion,
     PlanHandoffWorkAsk,
     PlanHandoffWorkAskDetail,
+    PlanHandoffWorkAcceptEdits,
+    PlanHandoffWorkAcceptEditsDetail,
     PlanHandoffWorkAuto,
     PlanHandoffWorkAutoDetail,
     PlanHandoffKeepPlanning,
@@ -3026,6 +3067,36 @@ pub enum MessageId {
 }
 
 pub const ALL_MESSAGE_IDS: &[MessageId] = &[
+    MessageId::AccountModelsLoadFailed,
+    MessageId::ConnectionSetupTitle,
+    MessageId::ConnectionSetupAccount,
+    MessageId::ConnectionSetupAccountDetail,
+    MessageId::ConnectionSetupLocal,
+    MessageId::ConnectionSetupLocalDetail,
+    MessageId::AccountModelsTitle,
+    MessageId::AccountModelsLoading,
+    MessageId::AccountModelsUnavailable,
+    MessageId::AccountModelsReady,
+    MessageId::AccountModelsConnectFailed,
+    MessageId::AccountModelsCancelled,
+    MessageId::AccountLoginTitle,
+    MessageId::AccountLoginStarting,
+    MessageId::AccountLoginWaiting,
+    MessageId::AccountLoginCode,
+    MessageId::AccountLoginOpenBrowser,
+    MessageId::AccountLoginCopyLink,
+    MessageId::AccountLoginLink,
+    MessageId::AccountLoginSuccess,
+    MessageId::AccountLoginNeedsModel,
+    MessageId::AccountLoginCancelled,
+    MessageId::AccountLoginExpired,
+    MessageId::AccountLoginFailed,
+    MessageId::AccountLogoutTitle,
+    MessageId::AccountLogoutStarting,
+    MessageId::AccountLogoutSuccess,
+    MessageId::AccountLogoutLocal,
+    MessageId::AccountLogoutFailed,
+    MessageId::AccountLogoutCancelled,
     MessageId::ReasoningOnlyRetryBody,
     MessageId::OutputLimitAnswerRetryBody,
     MessageId::AnswerRetryActionBare,
@@ -3061,9 +3132,11 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CostReasonCurrencyMissing,
     MessageId::CostReasonUsageConflict,
     MessageId::CostReasonUsageBreakdown,
-    MessageId::CostChipUnknown,
-    MessageId::CostChipSubtotal,
-    MessageId::CostChipSavedSubtotal,
+    MessageId::CostReasonOutcomeUnknown,
+    MessageId::CostReasonInProgress,
+    MessageId::CostReasonProviderUsageMissing,
+    MessageId::CostReasonLegacyUsageUnverified,
+    MessageId::CostReasonUsageCorrectionUnverified,
     MessageId::CostChipLocal,
     MessageId::CostChipAllowance,
     MessageId::CostChipAllowancePercent,
@@ -3415,6 +3488,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::PostureHintEnterAgain,
     MessageId::PermissionsPostureHeader,
     MessageId::PermissionsPostureAsk,
+    MessageId::PermissionsPostureAcceptEdits,
     MessageId::PermissionsPostureAuto,
     MessageId::PermissionsPostureBypass,
     MessageId::PermissionsPostureNever,
@@ -4008,7 +4082,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::KbExternalEditor,
     MessageId::KbLiveTranscript,
     MessageId::KbBacktrackMessage,
-    MessageId::KbCompleteCycleModes,
+    MessageId::KbTabComplete,
     MessageId::KbCycleThinking,
     MessageId::KbCyclePermissions,
     MessageId::KbJumpPlanAgentYolo,
@@ -4859,6 +4933,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ChipPermissionReadOnly,
     MessageId::ChipPermissionAsk,
     MessageId::ChipPermissionAuto,
+    MessageId::ChipPermissionAcceptEdits,
     MessageId::ChipPermissionFullAccess,
     MessageId::ChipPermissionNever,
     MessageId::PermissionsChangedReceipt,
@@ -4918,6 +4993,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::StatusWorkspace,
     MessageId::StatusApprovalAsk,
     MessageId::StatusApprovalAuto,
+    MessageId::StatusApprovalAcceptEdits,
     MessageId::StatusApprovalFullAccess,
     MessageId::StatusApprovalNever,
     MessageId::StatusMcpConfigured,
@@ -5588,6 +5664,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ConfigValueOff,
     MessageId::ConfigValueProviderDefault,
     MessageId::ConfigChoiceAsk,
+    MessageId::ConfigChoiceAcceptEdits,
     MessageId::ConfigChoiceAutoReview,
     MessageId::ConfigChoiceUseTuiDefault,
     MessageId::ConfigChoiceFullAccess,
@@ -5607,6 +5684,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ConfigChoiceDiffFull,
     MessageId::ConfigChoiceDiffSummary,
     MessageId::ConfigChoiceDetailAsk,
+    MessageId::ConfigChoiceDetailAcceptEdits,
     MessageId::ConfigChoiceDetailAutoReview,
     MessageId::ConfigChoiceDetailUseTuiDefault,
     MessageId::ConfigChoiceDetailFullAccess,
@@ -5719,6 +5797,8 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::PlanHandoffQuestion,
     MessageId::PlanHandoffWorkAsk,
     MessageId::PlanHandoffWorkAskDetail,
+    MessageId::PlanHandoffWorkAcceptEdits,
+    MessageId::PlanHandoffWorkAcceptEditsDetail,
     MessageId::PlanHandoffWorkAuto,
     MessageId::PlanHandoffWorkAutoDetail,
     MessageId::PlanHandoffKeepPlanning,
@@ -7497,6 +7577,161 @@ mod tests {
                     "{} should translate {id:?}",
                     locale.tag()
                 );
+            }
+        }
+    }
+
+    /// Upstream rewired Alt+P/Alt+A to jump to Plan/Work and Alt+Y to request
+    /// Full Access as a legacy alias, renamed the rail UI to the workbar, and
+    /// reworded uk "крок" (step) to "хід/ходу" (turn) wherever the English
+    /// counterpart says "turn", but many shipped non-English packs still
+    /// described the deleted Plan / Work / Operate alternate-jump, the removed
+    /// rail panel, and the conflated turn/step wording.
+    /// en.json is the source of truth for every key: keys whose English value
+    /// still says "workbar" must use the pack's workbar term, while keys whose
+    /// English value now talks about a dashed reasoning line or side
+    /// placements must follow that meaning instead.
+    #[test]
+    fn stale_mode_jump_and_rail_copy_is_swept_from_non_english_locales() {
+        let swept_keys = [
+            "KbFocusSidebar",
+            "ConfigChoiceDetailPlacementOff",
+            "ConfigChoiceDetailRailTasks",
+            "ConfigChoiceDetailRailAgents",
+            "ConfigChoiceDetailRailContext",
+            "ConfigChoiceDetailThinkingHighlightOff",
+            "ConfigHintWorkSurfacePlacement",
+            "ConfigHintRailPanel",
+            "ConfigHintThinkingHighlight",
+            "ConfigLabelSessionsRail",
+        ];
+        let english = raw_locale_messages(Locale::En);
+        for locale in Locale::shipped_complete() {
+            if *locale == Locale::En {
+                continue;
+            }
+            let pack = raw_locale_messages(*locale);
+
+            // (a) The deleted Plan / Work / Operate alternate-jump description
+            // must not survive in any pack, in translated form either.
+            let localized = pack
+                .get("KbAltJumpPlanAgentYolo")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| panic!("{} is missing KbAltJumpPlanAgentYolo", locale.tag()));
+            assert!(
+                !localized.is_empty(),
+                "{} empty for KbAltJumpPlanAgentYolo",
+                locale.tag()
+            );
+            let english_jump = english
+                .get("KbAltJumpPlanAgentYolo")
+                .and_then(serde_json::Value::as_str)
+                .unwrap();
+            assert_ne!(
+                localized,
+                english_jump,
+                "{} should translate KbAltJumpPlanAgentYolo",
+                locale.tag()
+            );
+            // Placeholders must match en (en carries none in this key today,
+            // so every pack value must be placeholder-free here as well).
+            assert_eq!(
+                message_placeholders(localized),
+                message_placeholders(english_jump),
+                "{} changed placeholders for KbAltJumpPlanAgentYolo",
+                locale.tag()
+            );
+            let squeezed: String = localized.chars().filter(|c| !c.is_whitespace()).collect();
+            let stale_jump_marker = squeezed.contains("Plan/Work/Operate")
+                || squeezed.contains("Plan-/Work-/Operate")
+                || squeezed.contains("계획/실행/운영");
+            assert!(
+                !stale_jump_marker,
+                "{} still describes the deleted Plan / Work / Operate alternate-jump: {localized}",
+                locale.tag()
+            );
+            // A regression that re-adds only one stale mode (e.g. "Operate")
+            // must not slip past the full-sequence check above. Verified
+            // against all shipped packs: no current value mentions these
+            // words in this key.
+            let squeezed_lower = squeezed.to_lowercase();
+            assert!(
+                !squeezed_lower.contains("operate"),
+                "{} still mentions the deleted Operate alternate-jump mode: {localized}",
+                locale.tag()
+            );
+            if locale.tag() == "ko" {
+                assert!(
+                    !squeezed.contains("운영"),
+                    "ko still mentions the deleted 운영 alternate-jump mode: {localized}"
+                );
+            }
+
+            // (b) No rail-word residue may remain in the swept workbar keys.
+            let rail_markers: &[&str] = match locale.tag() {
+                "ca" | "fr" | "de" => &["rail"],
+                "es-419" => &["riel"],
+                "hi" => &["रेल"],
+                // "rel" catches the local rail rendering, "rail" the English
+                // loanword (e.g. "panel rail") that survived the sweep once.
+                "id" => &["rel", "rail"],
+                "ja" => &["レール"],
+                "ko" => &["레일"],
+                "pt-BR" => &["trilho"],
+                "ru" | "uk" => &["рейк"],
+                "vi" => &["ray"],
+                "zh-Hans" => &["轨道"],
+                "zh-Hant" => &["軌道"],
+                other => panic!("add rail markers for shipped locale {other}"),
+            };
+            for key in swept_keys {
+                let value = pack
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_else(|| panic!("{} is missing {key}", locale.tag()));
+                let english_value = english
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_else(|| panic!("English pack is missing {key}"));
+                assert_eq!(
+                    message_placeholders(value),
+                    message_placeholders(english_value),
+                    "{} changed placeholders for {key}",
+                    locale.tag()
+                );
+                let lowered = value.to_lowercase();
+                for marker in rail_markers {
+                    assert!(
+                        !lowered.contains(marker),
+                        "{} still uses rail wording {:?} in {key}: {value}",
+                        locale.tag(),
+                        marker
+                    );
+                }
+            }
+
+            // (c) The uk turn/step sweep: keys whose English counterpart says
+            // "turn" must keep the established "хід/ходу" forms, not the
+            // stale "крок" (step). The stems cover Ukrainian inflection
+            // (хід / ходу).
+            if *locale == Locale::Uk {
+                for (key, turn_stem) in [
+                    ("KbSteerCurrentTurn", "хід"),
+                    ("CmdTurnInspectDescription", "ходу"),
+                ] {
+                    let value = pack
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_else(|| panic!("uk is missing {key}"));
+                    assert!(
+                        value.contains(turn_stem),
+                        "uk lost the turn wording ({turn_stem}) in {key}: {value}"
+                    );
+                    assert!(
+                        !value.contains("крок"),
+                        "uk still says крок (step) where en says turn in {key}: {value}"
+                    );
+                }
             }
         }
     }

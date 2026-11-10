@@ -195,7 +195,7 @@ name = "Meta Model API"
 api = "https://api.meta.ai/v1"
 npm = "@ai-sdk/openai"
 env = ["META_MODEL_API_KEY", "MODEL_API_KEY"]
-default = "muse-spark-1.2"
+default = "muse-spark-1.3"
 models = [
   "muse-spark-1.1",
   "muse-spark-1.2",
@@ -267,6 +267,7 @@ models = [
   "z-ai/glm-5.3",
   "z-ai/glm-5.3-flash",
   "dots-studio/dots-3-note-preview:free",
+  "tencent/hy4",
 ]
 
 [[providers]]
@@ -336,7 +337,7 @@ name = "xAI"
 api = "https://api.x.ai/v1"
 npm = "@ai-sdk/xai"
 env = ["XAI_API_KEY"]
-default = "grok-4.6"
+default = "grok-4.7"
 models = [
   "grok-4.7",
   "grok-4.6",

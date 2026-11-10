@@ -150,11 +150,21 @@ pub fn parse_claude_catalog(document: MarketplaceDocument) -> MarketplaceCatalog
         };
     };
 
+    let copilot_paths = base.as_deref().is_some_and(|file| {
+        let file = std::path::Path::new(file);
+        file.ends_with(".github/plugin/marketplace.json")
+            || file.ends_with(".plugin/marketplace.json")
+    });
     let mut candidates = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
-        if let Some(candidate) =
-            parse_claude_entry(&catalog_id, index, entry, publisher, &mut diagnostics)
-        {
+        if let Some(candidate) = parse_claude_entry(
+            &catalog_id,
+            index,
+            entry,
+            publisher,
+            copilot_paths,
+            &mut diagnostics,
+        ) {
             candidates.push(candidate);
         }
     }
@@ -201,6 +211,7 @@ fn parse_claude_entry(
     index: usize,
     entry: &Value,
     catalog_publisher: Option<&str>,
+    copilot_paths: bool,
     diagnostics: &mut Vec<MarketplaceDiagnostic>,
 ) -> Option<MarketplaceCandidate> {
     let Some(obj) = entry.as_object() else {
@@ -270,7 +281,7 @@ fn parse_claude_entry(
         ));
         return None;
     };
-    let (source, install_plan, source_diags) = normalize_claude_source(source_value);
+    let (source, install_plan, source_diags) = normalize_claude_source(source_value, copilot_paths);
     entry_diags.extend(source_diags);
 
     let (description, bad_desc) = str_field(obj, "description");
@@ -435,6 +446,7 @@ fn count_declared_components(
 /// discriminators plus the `./`-relative string form are accepted.
 fn normalize_claude_source(
     value: &Value,
+    copilot_paths: bool,
 ) -> (
     MarketplaceSourceSpec,
     MarketplaceInstallPlan,
@@ -442,7 +454,16 @@ fn normalize_claude_source(
 ) {
     let mut diags = Vec::new();
     if let Some(s) = value.as_str() {
-        if s.starts_with("./") || s == "." {
+        let relative = copilot_paths
+            && !s.is_empty()
+            && !s.contains([':', '\\'])
+            && std::path::Path::new(s).components().all(|part| {
+                matches!(
+                    part,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            });
+        if s.starts_with("./") || s == "." || relative {
             return (
                 MarketplaceSourceSpec::LocalPath { path: s.into() },
                 MarketplaceInstallPlan::Supported {
@@ -490,55 +511,9 @@ fn normalize_claude_source(
                 Some((o, r)) if !o.is_empty() && !r.is_empty() => (o, r),
                 _ => return invalid("github `repo` must be \"owner/repo\"", value, &mut diags),
             };
-            let git_ref = field("ref").map(ToString::to_string);
-            let sha = field("sha").map(ToString::to_string);
-            if git_ref.is_some() || sha.is_some() {
-                diags.push(MarketplaceDiagnostic::warning(
-                    "UNAPPLIED_PIN",
-                    "Codewhale's GitHub installer resolves the default branch; ref/sha pins are recorded but not yet applied".to_string(),
-                    None,
-                    None,
-                ));
-            }
-            (
-                MarketplaceSourceSpec::GitHub { owner: owner.to_string(), repo: repo.to_string(), git_ref, sha },
-                MarketplaceInstallPlan::Supported {
-                    spec: format!("github:{owner}/{repo}"),
-                    source_kind: "GitHub repository".to_string(),
-                },
-                diags,
-            )
+            super::github_source(value, owner, repo)
         }
-        "url" | "git-subdir" => {
-            let Some(url) = field("url") else {
-                return invalid(&format!("{discriminator} source requires `url`"), value, &mut diags);
-            };
-            if let Some((owner, repo)) = github_url_parts(url) {
-                diags.push(MarketplaceDiagnostic::warning(
-                    "UNAPPLIED_PIN",
-                    "Codewhale's GitHub installer resolves the default branch; ref/sha pins are recorded but not yet applied".to_string(),
-                    None,
-                    None,
-                ));
-                let spec = format!("github:{owner}/{repo}");
-                return (
-                    MarketplaceSourceSpec::GitHub { owner, repo, git_ref: field("ref").map(ToString::to_string), sha: field("sha").map(ToString::to_string) },
-                    MarketplaceInstallPlan::Supported {
-                        spec,
-                        source_kind: "GitHub repository".to_string(),
-                    },
-                    diags,
-                );
-            }
-            (
-                MarketplaceSourceSpec::GitUrl { url: url.to_string() },
-                MarketplaceInstallPlan::Unsupported {
-                    reason: format!("{discriminator} installs of non-GitHub git URLs are not supported yet"),
-                    raw: value.to_string(),
-                },
-                diags,
-            )
-        }
+        "url" | "git-subdir" => super::git_url_source(value),
         "npm" => {
             let Some(package) = field("package") else {
                 return invalid("npm source requires `package`", value, &mut diags);
@@ -621,19 +596,6 @@ fn invalid(
         },
         std::mem::take(diags),
     )
-}
-
-fn github_url_parts(url: &str) -> Option<(String, String)> {
-    let rest = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))?;
-    let mut parts = rest.trim_end_matches('/').split('/');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(owner), Some(repo), None) if !owner.is_empty() && !repo.is_empty() => {
-            Some((owner.to_string(), repo.trim_end_matches(".git").to_string()))
-        }
-        _ => None,
-    }
 }
 
 fn json_kind(value: &Value) -> &'static str {

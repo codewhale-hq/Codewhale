@@ -64,6 +64,11 @@ and a bounded per-agent transcript pager. This lane replaces the pager with a
     terminal record stays an immutable receipt and `resume_targets` links the
     fork. Focus follows the fork. The model-facing `agents/followup` keeps its
     interrupted-only contract.
+  - Retrying on an id whose `resume_targets` successor already exists: a
+    Running successor takes the text on its live channel; a settled Completed
+    successor answers from its existing result; a settled Failed / Cancelled /
+    BudgetExhausted successor reports the follow-up as undelivered, naming the
+    status.
   - **Failed / Cancelled / BudgetExhausted**: refused with the exact reason.
 - `Event::SubAgentFollowUp { agent_id, outcome }` carries the receipt back.
 - The engine builds the resume runtime from the installed session route

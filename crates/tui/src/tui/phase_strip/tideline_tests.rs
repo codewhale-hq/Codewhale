@@ -13,8 +13,6 @@ use codewhale_palette::UI_THEME;
 struct Fixture {
     permission: (&'static str, ChromeInk),
     permission_key: Option<&'static str>,
-    mode: Option<(&'static str, ChromeInk)>,
-    mode_key: Option<&'static str>,
     turn_clock: Option<(&'static str, ChromeInk)>,
     counts: Vec<(String, ChromeInk)>,
     session_clock: Option<(&'static str, ChromeInk)>,
@@ -23,13 +21,11 @@ struct Fixture {
     right: Option<(&'static str, ChromeInk)>,
 }
 
-/// A working turn with two sub-agents, ask posture, work mode.
+/// A working turn with two sub-agents on the Ask dial stop.
 fn working() -> Fixture {
     Fixture {
         permission: ("ask", ChromeInk::PermissionAsk),
         permission_key: Some("Shift+Tab to change"),
-        mode: Some(("work", ChromeInk::PolicyAct)),
-        mode_key: Some("Tab"),
         turn_clock: Some(("working 1m 15s", ChromeInk::Active)),
         counts: vec![("2 agents".to_string(), ChromeInk::Active)],
         session_clock: Some(("worked 41m 12s", ChromeInk::Active)),
@@ -43,8 +39,6 @@ impl Fixture {
     fn widget<'a>(&'a self, theme: &'a codewhale_palette::UiTheme) -> TidelineFooter<'a> {
         TidelineFooter::new(theme, self.permission)
             .permission_key(self.permission_key)
-            .mode_chip(self.mode)
-            .mode_key(self.mode_key)
             .turn_clock(self.turn_clock)
             .counts(&self.counts)
             .session_clock(self.session_clock)
@@ -74,16 +68,15 @@ fn footer_matches_goldens_at_blocker_sizes() {
     }
 }
 
-/// Permission chip with its cycle key, mode
-/// with its cycle key, the working clock, live counts, then the one hint
-/// that applies now.
+/// The dial chip with its key, the working clock, live counts, then the one
+/// hint that applies now.
 #[test]
-fn posture_bar_reads_permission_mode_clock_counts_hint() {
+fn posture_bar_reads_dial_clock_counts_hint() {
     let text = draw(120, 30, &working().widget(&UI_THEME));
     let band = text.lines().last().unwrap_or_default().trim_end();
     assert_eq!(
         band,
-        " ● ask  Shift+Tab to change   work (Tab)   working 1m 15s   2 agents   worked 41m 12s   Esc to interrupt"
+        " ● ask  Shift+Tab to change   working 1m 15s   2 agents   worked 41m 12s   Esc to interrupt"
     );
 }
 
@@ -181,12 +174,12 @@ fn posture_bar_pins_notice_or_remote_control_right() {
 
 /// Shed ladder, most expendable first: the turn clock, the session clock,
 /// the permission key (a binding reminder, and the widest optional item),
-/// the hint, the counts, mode key, mode. The permission chip
+/// the hint, the counts. The permission chip
 /// never sheds (#5796); the clock is what a glance wants and the hint and
 /// counts are what a keystroke wants, so on a row too narrow for both the
 /// clock goes (#5914).
 #[test]
-fn posture_bar_sheds_the_clocks_then_the_hint_counts_and_posture_chips() {
+fn posture_bar_sheds_the_clocks_then_the_hint_and_counts() {
     let fixture = working();
     let narrowest_showing = |needle: &str| -> u16 {
         (8..=160u16)
@@ -198,19 +191,13 @@ fn posture_bar_sheds_the_clocks_then_the_hint_counts_and_posture_chips() {
     let session_clock = narrowest_showing("worked 41m 12s");
     let hint = narrowest_showing("Esc to interrupt");
     let counts = narrowest_showing("2 agents");
-    // `work` alone would also match `working`, so measure the mode chip by
-    // a needle only the mode paints.
-    let mode_key = narrowest_showing("work (Tab)");
-    let mode = narrowest_showing("   work ");
     let permission_key = narrowest_showing("Shift+Tab to change");
     assert!(
         turn_clock > session_clock
             && session_clock > permission_key
             && permission_key > hint
-            && hint > counts
-            && counts > mode_key
-            && mode_key > mode,
-        "turn_clock@{turn_clock} session_clock@{session_clock} hint@{hint} counts@{counts} mode_key@{mode_key} mode@{mode} permission_key@{permission_key}"
+            && hint > counts,
+        "turn_clock@{turn_clock} session_clock@{session_clock} hint@{hint} counts@{counts} permission_key@{permission_key}"
     );
     for w in 8..=160u16 {
         let text = draw(w, 3, &fixture.widget(&UI_THEME));
@@ -218,17 +205,12 @@ fn posture_bar_sheds_the_clocks_then_the_hint_counts_and_posture_chips() {
             text.contains("ask"),
             "{w}: the permission chip never sheds: {text}"
         );
-        // Whole chips or none — a clipped posture word is worse than none.
-        assert!(
-            !text.contains("(Ta") || text.contains("(Tab)"),
-            "{w}: {text}"
-        );
     }
 }
 
 /// `tui.posture_bar = "compact"` (#5950) starts the ladder past the clocks,
 /// the hint and the counts at any width: the row states its posture — the
-/// permission and mode chips, and the cap warning when it is owed — and
+/// dial chip, and the cap warning when it is owed — and
 /// nothing live. Width still sheds from there, and the right slot is
 /// untouched.
 #[test]
@@ -236,7 +218,7 @@ fn compact_posture_bar_states_posture_and_nothing_live() {
     let mut fixture = working();
     fixture.right = Some(("/rc connected", ChromeInk::Info));
     let wide = draw(160, 3, &fixture.widget(&UI_THEME).compact(true));
-    for kept in [" ● ask", "   work (Tab)", "/rc connected"] {
+    for kept in [" ● ask", "/rc connected"] {
         assert!(wide.contains(kept), "compact keeps {kept}: {wide}");
     }
     for gone in [
@@ -271,39 +253,14 @@ fn compact_posture_bar_states_posture_and_nothing_live() {
     }
 }
 
-/// Permission outranks mode when only one posture chip fits: the longest
-/// mode word must never displace `full access`.
-#[test]
-fn posture_bar_permission_outranks_mode_when_only_one_fits() {
-    let mut fixture = working();
-    fixture.permission = ("full access", ChromeInk::PermissionFullAccess);
-    fixture.mode = Some(("operate", ChromeInk::PolicyOperate));
-    let mut saw_permission_alone = false;
-    for width in 8..=120u16 {
-        let text = draw(width, 12, &fixture.widget(&UI_THEME));
-        let has_mode = text.contains("operate");
-        let has_permission = text.contains("full access");
-        assert!(
-            !(has_mode && !has_permission),
-            "width {width} kept the mode word and shed the permission phrase: {text}"
-        );
-        if has_permission && !has_mode {
-            saw_permission_alone = true;
-        }
-    }
-    assert!(saw_permission_alone, "no width shed the mode word alone");
-}
-
-/// The cycle keys print only when the caller says the binding is live —
-/// the launch stage's Tab moves focus, so the mode chip there has no key.
+/// The dial key prints only when the caller says the binding is live.
 #[test]
 fn posture_bar_prints_cycle_keys_only_when_live() {
     let mut fixture = working();
-    fixture.mode_key = None;
     fixture.permission_key = None;
     let text = draw(120, 30, &fixture.widget(&UI_THEME));
     assert!(
-        text.contains(" ● ask   work   working 1m 15s   2 agents   worked 41m 12s"),
+        text.contains(" ● ask   working 1m 15s   2 agents   worked 41m 12s"),
         "{text}"
     );
     assert!(!text.contains('('), "{text}");
@@ -341,9 +298,7 @@ fn posture_bar_degenerate_sizes_do_not_panic() {
 
 use super::tideline_footer_from_app;
 use crate::tui::app::{App, OnboardingState};
-use crate::tui::footer_hints::{
-    AGENT_ARROWS, ENTER_AGAIN, ESC_INTERRUPT, MODE_CYCLE, PERMISSION_CYCLE,
-};
+use crate::tui::footer_hints::{AGENT_ARROWS, ENTER_AGAIN, ESC_INTERRUPT, PERMISSION_CYCLE};
 
 fn session_app() -> App {
     let mut app = crate::tui::test_support::test_app_with_options(
@@ -351,6 +306,7 @@ fn session_app() -> App {
     );
     app.onboarding = OnboardingState::None;
     app.launch.visible = false;
+    app.sandbox_backend = None;
     app
 }
 
@@ -362,43 +318,33 @@ fn set_uses(app: &mut App, key: &str, uses: u8) {
     }
 }
 
-/// The cycle chords print while their bindings are fresh, and the chips go
-/// bare — never away — once each binding has been used twice.
+/// The dial chord prints while its binding is fresh, and the chip goes
+/// bare — never away — once it has been used twice. The Plan stop is the
+/// chip itself: there is no separate mode chip or Tab hint.
 #[test]
 fn cycle_keys_show_at_zero_and_one_use_and_go_bare_at_two() {
     let mut app = session_app();
     app.approval_mode = codewhale_execpolicy::ApprovalMode::Suggest;
     let facts = tideline_footer_from_app(&mut app, 120);
     assert_eq!(facts.permission_key.as_deref(), Some("Shift+Tab to change"));
-    assert_eq!(facts.mode_key, Some("Tab"));
 
-    for key in [PERMISSION_CYCLE, MODE_CYCLE] {
-        set_uses(&mut app, key, 1);
-    }
+    set_uses(&mut app, PERMISSION_CYCLE, 1);
     let facts = tideline_footer_from_app(&mut app, 120);
     assert_eq!(facts.permission_key.as_deref(), Some("Shift+Tab to change"));
-    assert_eq!(facts.mode_key, Some("Tab"));
 
     set_uses(&mut app, PERMISSION_CYCLE, 2);
     let facts = tideline_footer_from_app(&mut app, 120);
     assert_eq!(facts.permission_key, None);
-    assert_eq!(
-        facts.mode_key,
-        Some("Tab"),
-        "the mode key retires on its own count"
-    );
-
-    set_uses(&mut app, MODE_CYCLE, 2);
-    let facts = tideline_footer_from_app(&mut app, 120);
-    assert_eq!(facts.permission_key, None);
-    assert_eq!(facts.mode_key, None);
     assert!(
         !facts.permission_chip.0.is_empty(),
         "the permission chip never retires with its key"
     );
-    assert!(
-        facts.mode_chip.is_some(),
-        "the mode chip never retires with its key"
+
+    app.mode = codewhale_config::AppMode::Plan;
+    let facts = tideline_footer_from_app(&mut app, 120);
+    assert_eq!(
+        facts.permission_chip.0,
+        "plan · files: read-only (unenforced)"
     );
 }
 
@@ -538,8 +484,9 @@ fn rewind_notice_states_the_file_fact_first_and_names_restore_when_it_fits() {
             .right
             .map(|(text, _)| text)
     };
+    assert_eq!(shown(&mut app, 80).as_deref(), Some("Files not changed."));
     assert_eq!(
-        shown(&mut app, 80).as_deref(),
+        shown(&mut app, 96).as_deref(),
         Some("Files not changed. Use /restore.")
     );
     assert_eq!(

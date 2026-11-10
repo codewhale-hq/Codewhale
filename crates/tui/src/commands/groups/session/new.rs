@@ -1,4 +1,4 @@
-//! `/new` command — start a fresh saved session from the current TUI state.
+//! `/new` requests a fresh session; the host resets after Engine acknowledgement.
 
 use super::{CommandResult, transition_blocked_message};
 
@@ -70,12 +70,11 @@ pub(in crate::commands) fn new_portable(
         return CommandResult::error(message);
     }
     match lifecycle.fresh_session(force) {
-        Ok(receipt) => CommandResult::with_message_and_action(
-            format!(
-                "Started new session {} (New Session). Previous sessions remain available via /resume.",
-                receipt.truncated_id
-            ),
-            codewhale_command_contract::outcome::SessionAction::SyncSession(receipt.sync),
+        Ok(receipt) => CommandResult::action(
+            codewhale_command_contract::outcome::SessionAction::NewSession {
+                sync: receipt.sync,
+                force,
+            },
         ),
         Err(error) => CommandResult::error(error),
     }

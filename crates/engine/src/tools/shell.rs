@@ -11,7 +11,7 @@
 use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::io::{Read, Write};
@@ -147,6 +147,10 @@ fn validate_shell_working_dir(path: &Path, inherited_session_workspace: bool) ->
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("shell launch did not start")]
+pub struct ShellLaunchNotStarted;
+
 /// Status of a shell process.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ShellStatus {
@@ -155,6 +159,15 @@ pub enum ShellStatus {
     Failed,
     Killed,
     TimedOut,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellTerminationCause {
+    Producer,
+    Killed,
+    TimedOut,
+    Unknown,
 }
 
 /// Result from a shell command execution.
@@ -208,9 +221,15 @@ pub struct ShellJobSnapshot {
     /// Explicitly backgrounded or detached from the foreground waiter.
     #[serde(default)]
     pub background: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     /// First observed terminal time; legacy snapshots cannot trigger notices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<ShellTerminationCause>,
+    #[serde(default)]
+    pub producer_reported: bool,
     pub exit_code: Option<i64>,
     pub elapsed_ms: u64,
     pub stdout_tail: String,
@@ -236,12 +255,44 @@ pub struct ShellJobSnapshot {
     pub owner_session_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ShellReceiptWitness {
+    pub cwd: PathBuf,
+    pub status: ShellStatus,
+    pub exit_code: Option<i64>,
+    pub owner_session_id: String,
+    pub wait_failed: bool,
+    pub terminal_confirmed: bool,
+}
+
+impl ShellReceiptWitness {
+    fn from_shell(shell: &mut BackgroundShell) -> Self {
+        let terminal_confirmed = shell.status != ShellStatus::Running
+            && !shell.wait_failed
+            && shell.terminal_exit_confirmed;
+        Self {
+            cwd: shell.working_dir.clone(),
+            status: shell.status.clone(),
+            exit_code: shell.exit_code,
+            owner_session_id: shell.owner_session_id.clone(),
+            wait_failed: shell.wait_failed,
+            terminal_confirmed,
+        }
+    }
+}
+
 /// Once-only completion event for a tracked background shell job.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShellCompletionEvent {
     pub task_id: String,
     pub command: String,
     pub status: ShellStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<ShellTerminationCause>,
+    #[serde(default)]
+    pub producer_reported: bool,
     pub exit_code: Option<i64>,
     pub duration_ms: u64,
     pub stdout_tail: String,
@@ -1084,11 +1135,13 @@ pub struct BackgroundShell {
     background: bool,
     pub exit_code: Option<i64>,
     pub started_at: Instant,
+    started_at_utc: chrono::DateTime<chrono::Utc>,
     /// When the job reached a terminal status. A finished job reports the
     /// duration it finished with; without this, `started_at.elapsed()` kept
     /// growing and `/jobs` showed "2m 07s" for a 12-second command (#5478).
     finished_at: Option<Instant>,
     finished_at_utc: Option<chrono::DateTime<chrono::Utc>>,
+    cause: Option<ShellTerminationCause>,
     last_output_at: Instant,
     last_observed_output_len: usize,
     pub sandbox_type: SandboxType,
@@ -1129,6 +1182,7 @@ pub struct BackgroundShell {
     /// The terminal status came from a failed `try_wait`, not an observed
     /// exit or signal. Such a run gets no execution receipt (#6689).
     wait_failed: bool,
+    terminal_exit_confirmed: bool,
 }
 
 #[derive(Clone)]
@@ -1267,6 +1321,12 @@ impl BackgroundShell {
         if self.finished_at.is_none() && self.status != ShellStatus::Running {
             self.finished_at = Some(Instant::now());
             self.finished_at_utc = Some(chrono::Utc::now());
+            self.cause = Some(match &self.status {
+                ShellStatus::Killed => ShellTerminationCause::Killed,
+                ShellStatus::TimedOut => ShellTerminationCause::TimedOut,
+                ShellStatus::Completed | ShellStatus::Failed => ShellTerminationCause::Producer,
+                ShellStatus::Running => ShellTerminationCause::Unknown,
+            });
         }
     }
 
@@ -1286,6 +1346,7 @@ impl BackgroundShell {
         let completed = if let Some(ref mut child) = self.child {
             match child.try_wait() {
                 Ok(Some(status)) => {
+                    self.terminal_exit_confirmed = true;
                     self.exit_code = status.code;
                     self.status = if status.success {
                         ShellStatus::Completed
@@ -1592,7 +1653,7 @@ impl BackgroundShell {
             unregister_pending_persistent_process_group(process_group_id);
         }
         if let Some(ref mut child) = self.child {
-            match child {
+            match &mut *child {
                 ShellChild::Process(proc) => {
                     #[cfg(windows)]
                     {
@@ -1618,6 +1679,9 @@ impl BackgroundShell {
                     child.kill().context("Failed to kill process")?;
                     let _ = child.wait();
                 }
+            }
+            if child.try_wait().is_ok_and(|status| status.is_some()) {
+                self.terminal_exit_confirmed = true;
             }
         }
         self.status = ShellStatus::Killed;
@@ -1713,6 +1777,8 @@ impl BackgroundShell {
             .unwrap_or((0, String::new()));
         let elapsed_since_output_ms = (self.status == ShellStatus::Running)
             .then(|| u64::try_from(self.last_output_at.elapsed().as_millis()).unwrap_or(u64::MAX));
+        let producer_reported =
+            self.cause == Some(ShellTerminationCause::Producer) && !self.wait_failed;
         ShellJobSnapshot {
             id: self.id.clone(),
             job_id: self.id.clone(),
@@ -1720,7 +1786,10 @@ impl BackgroundShell {
             cwd: self.working_dir.clone(),
             status: self.status.clone(),
             background: self.background,
+            started_at: Some(self.started_at_utc),
             finished_at: self.finished_at_utc,
+            cause: self.cause,
+            producer_reported,
             exit_code: self.exit_code,
             elapsed_ms: self.wall_millis(),
             stdout_tail,
@@ -1765,6 +1834,9 @@ impl BackgroundShell {
             task_id: snapshot.id,
             command: snapshot.command,
             status: snapshot.status,
+            started_at: snapshot.started_at,
+            cause: snapshot.cause,
+            producer_reported: snapshot.producer_reported,
             exit_code: snapshot.exit_code,
             duration_ms: snapshot.elapsed_ms,
             stdout_tail,
@@ -1925,6 +1997,8 @@ pub fn inherited_interactive_terminal_refusal() -> Option<&'static str> {
 pub struct ShellManager {
     processes: HashMap<String, BackgroundShell>,
     stale_jobs: HashMap<String, ShellJobSnapshot>,
+    receipt_pins: HashSet<String>,
+    receipt_witnesses: HashMap<String, ShellReceiptWitness>,
     default_workspace: PathBuf,
     sandbox_manager: SandboxManager,
     sandbox_policy: ExecutionSandboxPolicy,
@@ -1957,6 +2031,28 @@ impl std::fmt::Debug for ShellManager {
 }
 
 impl ShellManager {
+    pub fn pin_job_receipt(&mut self, task_id: &str) -> Result<()> {
+        anyhow::ensure!(self.processes.contains_key(task_id), "job not tracked");
+        self.receipt_pins.insert(task_id.to_string());
+        Ok(())
+    }
+
+    pub fn job_receipt_witness(&mut self, task_id: &str) -> Option<ShellReceiptWitness> {
+        if !self.receipt_pins.contains(task_id) {
+            return None;
+        }
+        if let Some(shell) = self.processes.get_mut(task_id) {
+            shell.poll();
+            return Some(ShellReceiptWitness::from_shell(shell));
+        }
+        self.receipt_witnesses.get(task_id).cloned()
+    }
+
+    pub fn release_job_receipt(&mut self, task_id: &str) {
+        self.receipt_pins.remove(task_id);
+        self.receipt_witnesses.remove(task_id);
+    }
+
     fn require_session_owner(&self, task_id: &str, active_session_id: &str) -> Result<()> {
         let owned = self.processes.get(task_id).is_some_and(|shell| {
             !active_session_id.is_empty() && shell.owner_session_id == active_session_id
@@ -1976,6 +2072,8 @@ impl ShellManager {
         Self {
             processes: HashMap::new(),
             stale_jobs: HashMap::new(),
+            receipt_pins: HashSet::new(),
+            receipt_witnesses: HashMap::new(),
             default_workspace: workspace,
             sandbox_manager: SandboxManager::new(),
             sandbox_policy: ExecutionSandboxPolicy::default(),
@@ -1999,6 +2097,11 @@ impl ShellManager {
     pub fn seed_finished_record_for_test(&mut self, id: impl Into<String>, age: Duration) {
         let now = Instant::now();
         let started_at = now.checked_sub(age).unwrap_or(now);
+        let finished_at_utc = chrono::Utc::now();
+        let started_at_utc = chrono::Duration::from_std(age)
+            .ok()
+            .and_then(|age| finished_at_utc.checked_sub_signed(age))
+            .unwrap_or(finished_at_utc);
         let id = id.into();
         self.processes.insert(
             id.clone(),
@@ -2010,8 +2113,10 @@ impl ShellManager {
                 background: true,
                 exit_code: Some(0),
                 started_at,
+                started_at_utc,
                 finished_at: Some(now),
-                finished_at_utc: Some(chrono::Utc::now()),
+                finished_at_utc: Some(finished_at_utc),
+                cause: Some(ShellTerminationCause::Producer),
                 last_output_at: now,
                 last_observed_output_len: 0,
                 sandbox_type: SandboxType::None,
@@ -2044,6 +2149,7 @@ impl ShellManager {
                 last_lifecycle_status: None,
                 last_lifecycle_bytes: 0,
                 wait_failed: false,
+                terminal_exit_confirmed: false,
             },
         );
     }
@@ -2102,6 +2208,29 @@ impl ShellManager {
         let spec =
             CommandSpec::program(program, args, cwd.to_path_buf(), timeout).with_policy(policy);
         self.sandbox_manager.prepare(&spec)
+    }
+
+    pub fn validate_background_job(
+        &self,
+        command: &str,
+        cwd: &Path,
+        timeout_ms: u64,
+        policy: &ExecutionSandboxPolicy,
+        env: &HashMap<String, String>,
+    ) -> Result<()> {
+        validate_shell_working_dir(cwd, false)?;
+        let spec = CommandSpec::shell(
+            command,
+            cwd.to_path_buf(),
+            Duration::from_millis(timeout_ms.clamp(1_000, 600_000)),
+        )
+        .with_policy(policy.clone())
+        .with_env(env.clone());
+        let prepared = self.sandbox_manager.prepare(&spec);
+        if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. }) {
+            require_native_readonly_execution(&prepared)?;
+        }
+        Ok(())
     }
 
     fn register_shell_wait(&mut self, session_id: &str) -> Arc<AtomicBool> {
@@ -2302,7 +2431,10 @@ impl ShellManager {
         codewhale_sandbox::shell_dispatcher::ShellDispatcher::log_exec(command);
 
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
-        validate_shell_working_dir(&work_dir, working_dir.is_none())?;
+        validate_shell_working_dir(&work_dir, working_dir.is_none()).map_err(|error| {
+            let message = error.to_string();
+            error.context(ShellLaunchNotStarted).context(message)
+        })?;
 
         let timeout_ms = timeout_ms.clamp(timeout_bounds_ms.0, timeout_bounds_ms.1);
 
@@ -2336,7 +2468,10 @@ impl ShellManager {
         {
             // Arbitrary code with a read-only policy needs kernel enforcement;
             // only the separately hardened argv subset may run without it.
-            require_native_readonly_execution(&exec_env)?;
+            require_native_readonly_execution(&exec_env).map_err(|error| {
+                let message = error.to_string();
+                error.context(ShellLaunchNotStarted).context(message)
+            })?;
         }
 
         if background {
@@ -2689,13 +2824,14 @@ impl ShellManager {
             origin_turn_id,
             work_lifecycle,
         } = spawn_context;
-        let task_id = format!("shell_{}", &Uuid::new_v4().to_string()[..8]);
+        let task_id = format!("shell_{}", Uuid::new_v4().simple());
         let mut spawn_guard =
             ShellSpawnIntentGuard::new(work_lifecycle, &task_id, original_command);
         // The guard owns the registration outcome: when bookkeeping could not
         // bind this operation, nothing below may publish to it (#6435).
         let work_lifecycle = spawn_guard.lifecycle.clone();
         let started = Instant::now();
+        let started_at_utc = chrono::Utc::now();
         let sandbox_type = exec_env.sandbox_type;
         let sandboxed = exec_env.is_sandboxed();
 
@@ -2746,6 +2882,7 @@ impl ShellManager {
                         pixel_width: 0,
                         pixel_height: 0,
                     })
+                    .context(ShellLaunchNotStarted)
                     .context("Failed to open PTY")?;
 
                 let mut child = exec_env
@@ -2893,8 +3030,10 @@ impl ShellManager {
             background: true,
             exit_code: None,
             started_at: started,
+            started_at_utc,
             finished_at: None,
             finished_at_utc: None,
+            cause: None,
             last_output_at: started,
             last_observed_output_len: 0,
             sandbox_type,
@@ -2931,6 +3070,7 @@ impl ShellManager {
             last_lifecycle_status: None,
             last_lifecycle_bytes: 0,
             wait_failed: false,
+            terminal_exit_confirmed: false,
         };
 
         #[cfg(unix)]
@@ -3232,6 +3372,33 @@ impl ShellManager {
             results.push(self.kill(&id)?);
         }
         Ok(results)
+    }
+
+    /// End every background job this manager still owns that is running.
+    ///
+    /// Released shells belong to the user and are left alone; already-finished
+    /// shells are not counted. Used when the owning conversation is deleted so
+    /// its jobs do not outlive the thread record.
+    pub fn kill_all_owned_running(&mut self) -> usize {
+        let ids = self
+            .processes
+            .iter()
+            .filter(|(_, shell)| {
+                shell.status == ShellStatus::Running && shell.ownership != ShellOwnership::Released
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        let mut ended = 0;
+        for id in ids {
+            match self.kill(&id) {
+                Ok(result) if result.status == ShellStatus::Killed => ended += 1,
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(shell_id = %id, %error, "failed to end background job");
+                }
+            }
+        }
+        ended
     }
 
     pub fn kill_running_for_session(
@@ -3672,7 +3839,10 @@ impl ShellManager {
                 cwd,
                 status: ShellStatus::Killed,
                 background: true,
+                started_at: None,
                 finished_at: None,
+                cause: Some(ShellTerminationCause::Unknown),
+                producer_reported: false,
                 exit_code: None,
                 elapsed_ms: 0,
                 stdout_tail: String::new(),
@@ -3705,14 +3875,20 @@ impl ShellManager {
     /// age out too: jobs launched over the Runtime API, or owned by a session
     /// that is no longer active, are never drained.
     pub fn cleanup(&mut self, max_age: Duration) {
-        self.processes.retain(|_, shell| {
+        let pins = &self.receipt_pins;
+        let witnesses = &mut self.receipt_witnesses;
+        self.processes.retain(|id, shell| {
             if shell.status == ShellStatus::Running {
                 return true;
             }
             shell.mark_finished();
-            shell
+            let retain = shell
                 .finished_at
-                .is_none_or(|finished| finished.elapsed() < max_age)
+                .is_none_or(|finished| finished.elapsed() < max_age);
+            if !retain && pins.contains(id) {
+                witnesses.insert(id.clone(), ShellReceiptWitness::from_shell(shell));
+            }
+            retain
         });
         self.enforce_finished_job_bounds();
     }
@@ -3769,7 +3945,12 @@ impl ShellManager {
             {
                 break;
             }
-            self.processes.remove(&id);
+            if let Some(mut shell) = self.processes.remove(&id)
+                && self.receipt_pins.contains(&id)
+            {
+                self.receipt_witnesses
+                    .insert(id, ShellReceiptWitness::from_shell(&mut shell));
+            }
             remaining_count -= 1;
             remaining_bytes = remaining_bytes.saturating_sub(bytes);
         }
@@ -6069,7 +6250,7 @@ impl ToolSpec for BashTool {
             }
             if !persistent_services_enabled_for(context) {
                 return Err(ToolError::not_available(
-                    "persistent background services (persist:true) are only available on Unix in the real headless `codewhale exec` host under an explicit danger-full-access / full shell authority. They are rejected in interactive sessions, desktop/app-server hosts, Fleet/sub-agents, restricted or external sandboxes, and TTY/interactive/stdin modes.",
+                    "persistent background services (persist:true) require Unix, a Full Access shell authority and a host that keeps services alive. They are rejected in restricted sandboxes, Fleet/sub-agents, and TTY/interactive/stdin modes.",
                 ));
             }
         }
@@ -6414,7 +6595,7 @@ impl ToolSpec for BashTool {
                 .lock()
                 .map_err(|_| ToolError::execution_failed("shell manager lock poisoned"))?;
             let work_lifecycle = shell_work_lifecycle_from_context(context);
-            let task_id = format!("shell_{}", &Uuid::new_v4().to_string()[..8]);
+            let task_id = format!("shell_{}", Uuid::new_v4().simple());
             let mut spawn_guard = ShellSpawnIntentGuard::new(work_lifecycle, &task_id, command);
             // Only a registered operation is observed (#6435).
             let work_lifecycle = spawn_guard.lifecycle.clone();

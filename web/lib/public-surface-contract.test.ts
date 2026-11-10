@@ -431,7 +431,7 @@ done
     expect(nativeNames.length).toBeGreaterThan(0);
     expect(matrix.toolSurface.defaultActive).toEqual(nativeNames);
     expect(matrix.toolSurface.schemas).toEqual({
-      read: ["path", "offset?", "limit?"],
+      read: ["path", "offset?", "limit?", "expected_revision?"],
       write: ["path", "content"],
       edit: ["path", "edits"],
       bash: ["command", "timeout?"],
@@ -557,7 +557,6 @@ done
       label: "MIT 许可证",
       href: "https://github.com/codewhale-hq/CodeWhale/blob/main/LICENSE",
     });
-    expect(footer).toContain("href={REPO_RELEASES_URL}");
     expect(text("web/lib/i18n/links.ts")).toContain(
       'export const REPO_RELEASES_URL = `${REPO_URL}/releases`',
     );

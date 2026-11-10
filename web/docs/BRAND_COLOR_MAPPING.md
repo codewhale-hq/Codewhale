@@ -1,59 +1,67 @@
 # Site colors and the design tokens
 
-Decision (founder, 2026-10-27): the website uses the same design system as the
-desktop app. `codewhale-design` `tokens.json` (2.3.0, vendored at
-`vendor/codewhale-design`) is the source of truth for color, type roles,
-spacing, radius, motion and elevation. This supersedes the 2026-10-11 decision
-that made the Moda brand kit "Codewhale" the site's color authority.
+Founder clarification, 2026-11-06: recover the earlier warm-paper website,
+clear blue actions, and drawn water accents. The retained Moda homepage
+capture, original brand board and Claude-authored Tidal Folio direction
+anchor this restoration. The website uses its earlier paper neutrals and
+Codewhale blue, with current shared type, spacing, radius, motion and
+elevation tokens.
+
+This supersedes the October 27 website color mapping. It does not change
+the desktop app's palette or the generated design artifact.
 
 ## How the values reach a page
 
 1. `scripts/export-design-tokens.py` reads the vendored `tokens.json` and
-   writes `app/tokens.css`: `--gpui-light-*` / `--gpui-dark-*` colors,
-   `--gpui-type-*`, `--gpui-motion-*`, `--gpui-easing-*`,
-   `--gpui-elevation-*`, `--gpui-radius-*`, `--gpui-spacing-*`,
-   `--gpui-breakpoint-*` and `--gpui-ombre`. `npm run check:tokens` fails when
-   it is stale.
-2. `app/styles/tokens-roles.css` names the roles (`--bg`, `--text`,
-   `--accent`, `--brand-fill`, `--text-ui`, `--dur-state` and so on). Every
-   role is a `var(--gpui-*)`, never a literal.
-3. Pages and components paint only with roles.
-
-To change a color, change `tokens.json` in `codewhale-design`, bump its
-version, run `generate.py`, sync it here with `scripts/sync-to.sh`, then run
-`scripts/export-design-tokens.py`.
+   writes `app/tokens.css`. It supplies shared typography, geometry, motion
+   and elevation; `npm run check:tokens` detects stale generated output.
+2. `app/styles/tokens-roles.css` defines the website's `--kit-*` colors and
+   maps them to the roles pages paint with. Site colors live here; shared
+   dimensions continue to use the generated `--gpui-*` tokens.
+3. Pages and components use roles such as `--bg`, `--text`, `--accent` and
+   `--brand-fill`. They do not import desktop colors directly.
 
 ## Role mapping
 
 | Role | Light | Dark (pinned) and the stage |
 | --- | --- | --- |
-| `--bg` | `background` #faf8f5 | `background` #202123 (stage: `ocean_depth` #202123) |
-| `--surface` (recessed) | `sidebar` #f0ede8 | `sidebar` #191a1c |
-| `--panel` (raised) | `surface` #ffffff | `surface` #2a2b2e |
-| `--text` | `foreground` #28292b | `foreground` #efeeeb |
-| `--muted` | `muted_foreground` #4f504d | `muted_foreground` #b8b8b4 |
-| `--line` / `--line-strong` | `border` / `border_strong` | `border` / `border_strong` |
-| `--accent`, `--ring` (links, focus, selection) | `accent` #425c82 | `accent` #a9c0de |
-| `--brand-fill` / `--on-brand` (filled actions) | `primary` #2e2f31 / `primary_foreground` | `primary` #e6e4df / `primary_foreground` |
-| `--hover` / `--selected` | `hover` / `selected` | `hover` / `selected` |
-| `--live` / `--attention` / `--danger` | token roles | token roles |
-| `--diff-add` / `--diff-del` | `diff_add` / `diff_remove` | `diff_add` / `diff_remove` |
+| `--bg` | Warm paper #faf8f5 | Deep navy #142638 |
+| `--surface` (recessed) | Warm inset #f0ede8 | Abyss #0f1e2d |
+| `--panel` (raised) | White #ffffff | Ocean depth #173b50 |
+| `--text` | Ink #263844 | Foam #e6eef7 |
+| `--muted` | Slate #495a63 | Mist #bbc9d7 |
+| `--line` / `--line-strong` | Warm rule #d9d5cf / slate #495a63 | Night border #31495e / mist #bbc9d7 |
+| `--accent`, `--ring` | Whale blue #0b48bb | Bioluminescence #8fbdff |
+| `--brand-fill` / `--on-brand` | Contrast-adjusted current blue → whale blue / white | Contrast-adjusted current blue → whale blue / white |
+| `--hover` / `--selected` | Warm inset #f0ede8 / shallows #dcefeb | Night surface #20374e / night border #31495e |
+| `--live` / `--attention` / `--danger` | Kelp deep #396554 / amber #84530d / rust #9e3f36 | Kelp #9ecbbd / lantern #eab982 / coral #eea59d |
 
-The logo ombre (`#1e8fd8` → `#0b48bb`, `--ombre`, `--brand-light`,
-`--brand-deep`) is used only on the whale and the mark.
+The logo ombre remains `#1e8fd8` → `#0b48bb`. Filled actions recover the earlier
+#1877c9 → #0b48bb ramp so the blue is clear and white text remains readable. The sea
+ramps from #0f3991 through #142352 to #142638; the footer and home install
+band remain in that sea in both appearances.
 
-The footer and the home install band (`.stage`, `.site-footer`) are painted
-with the dark set in both appearances.
+The homepage reads on paper. Static SVG water rises behind the whale and
+real terminal, using the original hero paths from `48140294df0` with low
+opacity blue washes and fine current lines. The terminal frame keeps its
+own dark roles. Computer Use and release updates sit on paper; deep water
+is reserved for the closing action and footer. The footer recovers the
+original tiny, fading SVG current texture. Decorative water ignores pointer
+input, has no animation, and disappears in forced colors.
 
-## Not from tokens
+The original retained website neutral values are from `168c3c2658c`; the
+water geometry and current texture are from `48140294df0`. These are visual
+references. Current typography, product instructions and captured media
+retain their current owners; historical copy and interface mockups are not
+release evidence.
 
-- `--whale-*`, `--light-*` and `--shoreline-*` in `app/tokens.css` are the
-  terminal's palettes from `crates/palette/src/rgb.rs`. No page reads them.
-- `#0a1e33` / `#f6f2e8` in `primitives.css` are the captured terminal frame's
-  real colors and stay as captured.
-- The fluid editorial sizes (`--text-section`, `--text-display`,
-  `--text-display-lg`) are the website's own layout steps above the token
-  `display` role.
+## Verification
 
-`lib/gpui-role-tokens.test.ts` checks that every role resolves to its token
-and that every ink clears WCAG AA on every ground in every scheme.
+`lib/gpui-role-tokens.test.ts` checks every text ink at WCAG AA against every
+ground in each scheme, control edges at 3:1, filled-action contrast, and
+text over the sea and deep tide stops. `lib/ocean-contract.test.ts` checks
+the shared ocean presentation, accessible horizon and compact navigation.
+
+The `--whale-*`, `--light-*` and `--shoreline-*` exports are terminal
+palettes. Captured terminal colors in `primitives.css` remain as captured;
+the site's fluid editorial display sizes remain its own layout roles.

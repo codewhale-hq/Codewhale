@@ -49,7 +49,7 @@ request orchestration explicitly.
 | `automatic` | `true` | Legacy compatibility field; currently not a launch switch. The model chooses orchestration under the active tool and approval policy. |
 | `auto_start_read_only` | `true` | Read-only plans may start without a write-approval card |
 | `require_approval_for_writes` | `true` | Gates the plan-approval card for writes / elevated starts |
-| `max_children` / `max_concurrent` / `max_depth` | `0` / `16` / `0` | Total children and structural plan depth are uncapped at zero; positive values are owner limits. Concurrency queues excess work. Runtime delegation has no default product depth cap and remains a separate authority setting. |
+| `max_children` / `max_concurrent` / `max_depth` | `0` / `64` / `0` | Total children and structural plan depth are uncapped at zero; positive values are owner limits. Concurrency queues excess work. Runtime delegation has no default product depth cap and remains a separate authority setting. |
 | `default_token_budget` | `0` | Declared token hint retained in receipts; `0` = no hint. It does not cap spend, child lifetime, or admission. |
 
 Elevated work (writes, shell beyond read-only, network, secrets, worktrees, high

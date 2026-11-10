@@ -71,15 +71,26 @@ impl NativeMemoryStore {
             .arg(workspace)
             .args(["config", "--get", "remote.origin.url"])
             .output()?;
-        if !out.status.success() {
-            return Ok(None);
+        if out.status.success() {
+            let value = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            if !value.is_empty() {
+                return Ok(Some(policy::sha256(value.as_bytes())));
+            }
         }
-        let value = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-        Ok(if value.is_empty() {
-            None
-        } else {
-            Some(policy::sha256(value.as_bytes()))
-        })
+        let toplevel = Command::new("git")
+            .arg("-C")
+            .arg(workspace)
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
+        let anchor = toplevel
+            .or_else(|| workspace.canonicalize().ok())
+            .unwrap_or_else(|| workspace.to_path_buf());
+        Ok(Some(policy::sha256(anchor.as_os_str().as_encoded_bytes())))
     }
     pub fn open_structured(&self) -> Result<Store> {
         Ok(Store::open(self.index_path())?)
@@ -280,9 +291,9 @@ impl NativeMemoryStore {
         })
     }
     /// Session-scoped structured access for engine boundaries. Scopes are
-    /// owner + workspace (when the repository has an origin) + this session's
-    /// context scope, so receipts are attributable to the session that made
-    /// them and nothing else can write into them.
+    /// owner + workspace + this session's context scope, so receipts are
+    /// attributable to the session that made them and nothing else can write
+    /// into them.
     fn session_binding(
         &self,
         workspace: &Path,

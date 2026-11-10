@@ -271,6 +271,7 @@ pub(crate) struct UserDispatchPrepare {
     pub(super) auto_compact_threshold_percent: f64,
     pub(super) snapshot: UserDispatchSnapshot,
     pub(super) cost_scope: codewhale_engine::cost_status::CostScopeToken,
+    pub(super) accounting_origin: Option<codewhale_engine::cost_status::NativeUsageOrigin>,
     pub(super) message_index: usize,
     pub(super) history_cell: usize,
 }

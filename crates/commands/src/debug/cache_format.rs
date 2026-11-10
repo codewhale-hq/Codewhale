@@ -3,8 +3,8 @@
 
 use crate::diagnostics_reports::format_cost_amount_precise;
 use codewhale_command_contract::facets::{
-    CommandPresentationContext, DebugCacheTelemetry, DebugCacheTurn, DebugCostProjection,
-    DebugPromptInspection, DebugWarmupKey,
+    CommandPresentationContext, DebugCacheCallCoverage, DebugCacheCallOwner, DebugCacheTelemetry,
+    DebugCacheTurn, DebugCostProjection, DebugPromptInspection, DebugWarmupKey,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -465,6 +465,111 @@ fn turn_cost_cell(
     }
     unpriced_classes.extend(rec.unpriced_classes.iter().cloned());
     "—".to_string()
+}
+
+pub(crate) fn format_cache_calls(telemetry: &DebugCacheTelemetry, count: usize) -> String {
+    let count = count
+        .min(telemetry.calls.len())
+        .min(telemetry.history_capacity);
+    let rows = telemetry
+        .calls
+        .iter()
+        .skip(telemetry.calls.len().saturating_sub(count));
+    let currency = match telemetry.calls_currency {
+        codewhale_command_contract::types::CommandCurrency::Usd => "USD",
+        codewhale_command_contract::types::CommandCurrency::Cny => "CNY",
+    };
+    let mut out = format!(
+        "Cache model-call receipts: {count} of {} retained sources ({currency})\n",
+        telemetry.calls_total
+    );
+    let mut spread: Option<(f64, f64, usize)> = None;
+    for call in rows {
+        let row = &call.row;
+        let owner = match call.owner {
+            Some(DebugCacheCallOwner::Primary) => "parent",
+            Some(DebugCacheCallOwner::Auxiliary) => "auxiliary",
+            None => "unknown owner",
+        };
+        let (coverage, usage_known) = match call.coverage {
+            DebugCacheCallCoverage::Reported => ("reported", true),
+            DebugCacheCallCoverage::Incomplete => ("incomplete", true),
+            DebugCacheCallCoverage::Missing => ("missing", false),
+            DebugCacheCallCoverage::NotDispatched => ("not dispatched", true),
+            DebugCacheCallCoverage::Rejected => ("rejected", true),
+            DebugCacheCallCoverage::Unknown => ("unknown", false),
+        };
+        let accounted = row
+            .priced_cache_read
+            .saturating_add(row.priced_cache_miss)
+            .saturating_add(row.priced_cache_write);
+        let ratio = if usage_known && row.cache_hit_tokens.is_some() && accounted > 0 {
+            let ratio = 100.0 * row.priced_cache_read as f64 / accounted as f64;
+            spread = Some(spread.map_or((ratio, ratio, 1), |(min, max, samples)| {
+                (min.min(ratio), max.max(ratio), samples + 1)
+            }));
+            format!("{ratio:.1}%")
+        } else {
+            "—".into()
+        };
+        let amount = row.priced_amount.map_or_else(
+            || "—".into(),
+            |amount| {
+                let value = format_cost_amount_precise(amount, telemetry.calls_currency);
+                if call.pricing_complete {
+                    value
+                } else {
+                    format!("{value}*")
+                }
+            },
+        );
+        let input = if usage_known {
+            row.input_tokens.to_string()
+        } else {
+            "—".into()
+        };
+        let output = if usage_known {
+            row.output_tokens.to_string()
+        } else {
+            "—".into()
+        };
+        let hit = if usage_known && row.cache_hit_tokens.is_some() {
+            row.priced_cache_read.to_string()
+        } else {
+            "—".into()
+        };
+        let miss = if usage_known && row.cache_miss_tokens.is_some() {
+            row.priced_cache_miss.to_string()
+        } else if usage_known && row.cache_hit_tokens.is_some() {
+            format!("{}*", row.priced_cache_miss)
+        } else {
+            "—".into()
+        };
+        let write = if usage_known && row.cache_write_tokens.is_some() {
+            row.priced_cache_write.to_string()
+        } else {
+            "—".into()
+        };
+        out.push_str(&format!(
+            "\n{}  {owner}  {}  {coverage}\n  input {input} / output {output} / cache read {hit} / miss {miss} / write {write} / hit {ratio} / cost {amount} / quote age {}\n",
+            call.source_fingerprint,
+            format_turn_cache_route(row),
+            codewhale_command_contract::elapsed::format_elapsed_secs(row.age_seconds),
+        ));
+    }
+    if telemetry.calls_total == 0 {
+        out.push_str("No retained native call receipts; /cache still shows legacy turn rows.\n");
+    }
+    if let Some((min, max, samples)) = spread {
+        out.push_str(&format!(
+            "\nReported cache-hit spread in shown rows: {min:.1}%–{max:.1}% ({samples} sources).\n"
+        ));
+    }
+    out.push_str("\n— means not reported or not priced in the selected currency. Cost * is a known subtotal with incomplete coverage; miss * is inferred from the reported input partition. Known prices use saved frozen quotes and are estimates, not invoice charges. Quote age does not prove physical dispatch.\n");
+    if telemetry.calls_legacy_coverage_unknown {
+        out.push_str("Historical source coverage is unknown; legacy totals remain in /cost.\n");
+    }
+    out
 }
 
 pub(crate) fn format_cache_history(

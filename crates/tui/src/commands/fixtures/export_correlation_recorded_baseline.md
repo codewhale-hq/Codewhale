@@ -24,8 +24,6 @@ The 3 most recent workspace restore points, newest first. `/restore <N>` restore
 
 ## 1. user
 
-### Content 1: Text
-
 Fix the login test
 
 - Restore points: N1 `3d0ad76f0222` (pre-turn turn 3), N3 `e24e175a7a57` (pre-turn turn 2)
@@ -33,13 +31,9 @@ Fix the login test
 
 ## 2. assistant
 
-### Content 1: Text
-
 Working on it.
 
 ## 3. user
-
-### Content 1: Text
 
 unrelated question
 

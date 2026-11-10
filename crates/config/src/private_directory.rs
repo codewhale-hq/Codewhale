@@ -6,6 +6,8 @@
 use crate::windows_identity::{CurrentWindowsUser, WindowsLocalAllocation};
 use anyhow::{Context, Result, bail};
 #[cfg(unix)]
+use codewhale_paths::resolve_root_owned_ancestors as resolve_ancestors;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::Write as _;
@@ -14,6 +16,22 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 #[cfg(not(windows))]
 use std::time::{SystemTime, UNIX_EPOCH};
+
+pub fn error_is_filesystem_loop(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(1921)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = error;
+        false
+    }
+}
 
 /// Anchored current-user-owned directory and file mechanism. Credential and
 /// Runtime policies remain with their callers; this type owns no authority.
@@ -573,22 +591,6 @@ fn validate_private_basename(name: &str) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn resolve_ancestors(directory: &Path) -> std::path::PathBuf {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let mut resolved = std::path::PathBuf::new();
-    for component in directory.components() {
-        resolved.push(component);
-        let root_owned_link = std::fs::symlink_metadata(&resolved)
-            .is_ok_and(|meta| meta.file_type().is_symlink() && meta.uid() == 0);
-        if root_owned_link && let Ok(real) = resolved.canonicalize() {
-            resolved = real;
-        }
-    }
-    resolved
-}
-
-#[cfg(unix)]
 fn open_owned_directory(
     directory: &Path,
     protect: bool,
@@ -687,9 +689,18 @@ fn open_owned_directory(
             };
         }
         if fd < 0 {
-            return Err(std::io::Error::last_os_error()).with_context(|| {
+            let error = std::io::Error::last_os_error();
+            let situation = if error_is_filesystem_loop(&error) {
+                "is a symlink loop"
+            } else if error.kind() == std::io::ErrorKind::NotFound {
+                "does not exist"
+            } else {
+                "could not be opened without following links"
+            };
+            return Err(error).with_context(|| {
                 format!(
-                    "opening Codewhale credentials directory without following links: {}",
+                    "Codewhale credentials directory {}: {}",
+                    situation,
                     crate::quote_os_path(directory)
                 )
             });
@@ -1714,8 +1725,151 @@ fn secure_windows_owner_only_handle(file: &File, inherit_to_children: bool) -> R
 
 #[cfg(windows)]
 pub(crate) fn verify_windows_owner_only_handle(file: &File) -> Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    verify_windows_owner_only_handle_access(file, FILE_ALL_ACCESS)
+}
+
+#[cfg(windows)]
+pub fn verify_windows_finalized_read_only_handle(file: &File) -> Result<()> {
     use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Foundation::{
+        ERROR_SUCCESS, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE,
+    };
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, EqualSid, GetAce,
+        GetSecurityDescriptorControl, GetSidIdentifierAuthority, GetSidSubAuthority,
+        GetSidSubAuthorityCount, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SE_DACL_PROTECTED,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    };
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const INHERIT_ONLY_ACE: u8 = 0x08;
+    const APP_PACKAGE_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 15];
+    const APP_PACKAGE_BASE_RID: u32 = 2;
+    const READ_EXECUTE: u32 = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+
+    let user = CurrentWindowsUser::open()?;
+    let mut owner: PSID = std::ptr::null_mut();
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: the handle remains valid and all output pointers are writable.
+    let result = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(result as i32))
+            .context("reading Codewhale-owned read-only storage security descriptor");
+    }
+    let _descriptor = WindowsLocalAllocation(descriptor.cast());
+    let mut control = 0;
+    let mut revision = 0;
+    // SAFETY: `descriptor` is the live descriptor returned above.
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("reading Codewhale-owned storage DACL protection");
+    }
+    anyhow::ensure!(
+        control & SE_DACL_PROTECTED != 0,
+        "Codewhale-owned storage DACL is not protected"
+    );
+    // SAFETY: `owner` is non-null; `user.sid()` is owned by `user`.
+    anyhow::ensure!(
+        !owner.is_null() && unsafe { EqualSid(owner, user.sid()) } != 0,
+        "Codewhale-owned read-only storage owner is not the current user"
+    );
+    anyhow::ensure!(
+        !dacl.is_null(),
+        "Codewhale-owned read-only storage must have a DACL"
+    );
+    let normalized_access = |access: u32| {
+        let mut normalized =
+            access & !(GENERIC_ALL | GENERIC_EXECUTE | GENERIC_READ | GENERIC_WRITE);
+        for (generic, specific) in [
+            (GENERIC_ALL, FILE_ALL_ACCESS),
+            (GENERIC_EXECUTE, FILE_GENERIC_EXECUTE),
+            (GENERIC_READ, FILE_GENERIC_READ),
+            (GENERIC_WRITE, FILE_GENERIC_WRITE),
+        ] {
+            if access & generic != 0 {
+                normalized |= specific;
+            }
+        }
+        normalized
+    };
+    // SAFETY: `dacl` belongs to the live descriptor.
+    let ace_count = u32::from(unsafe { (*dacl).AceCount });
+    let mut user_access = 0;
+    for index in 0..ace_count {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: `index` is below the ACL's own ACE count.
+        if unsafe { GetAce(dacl, index, &mut raw) } == 0 || raw.is_null() {
+            return Err(std::io::Error::last_os_error())
+                .context("reading Codewhale-owned read-only storage DACL entry");
+        }
+        // SAFETY: every ACE begins with ACE_HEADER, which ACCESS_ALLOWED_ACE
+        // starts with; the type is checked before the SID is read.
+        let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+        anyhow::ensure!(
+            ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE,
+            "Codewhale-owned read-only storage DACL holds an unexpected entry type"
+        );
+        let sid: PSID = std::ptr::addr_of!(ace.SidStart).cast_mut().cast();
+        // SAFETY: an access-allowed ACE stores its SID at `SidStart`.
+        anyhow::ensure!(
+            unsafe { IsValidSid(sid) } != 0,
+            "Codewhale-owned read-only storage DACL holds an invalid SID"
+        );
+        let access = normalized_access(ace.Mask);
+        anyhow::ensure!(
+            access & !READ_EXECUTE == 0,
+            "Codewhale-owned read-only storage DACL grants more than read and execute"
+        );
+        // SAFETY: `sid` was validated above; `user.sid()` is owned by `user`.
+        if unsafe { EqualSid(sid, user.sid()) } != 0 {
+            if ace.Header.AceFlags & INHERIT_ONLY_ACE == 0 {
+                user_access |= access;
+            }
+            continue;
+        }
+        // SAFETY: `sid` was validated above, so its authority, count and
+        // first sub-authority are readable.
+        let is_app_container = unsafe {
+            (*GetSidIdentifierAuthority(sid)).Value == APP_PACKAGE_AUTHORITY
+                && *GetSidSubAuthorityCount(sid) > 0
+                && *GetSidSubAuthority(sid, 0) == APP_PACKAGE_BASE_RID
+        };
+        anyhow::ensure!(
+            is_app_container,
+            "Codewhale-owned read-only storage DACL grants another user"
+        );
+    }
+    anyhow::ensure!(
+        user_access == READ_EXECUTE,
+        "Codewhale-owned read-only storage DACL does not grant the current user read and execute"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_windows_owner_only_handle_access(file: &File, expected_access: u32) -> Result<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::{
+        ERROR_SUCCESS, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE,
+    };
     use windows_sys::Win32::Security::Authorization::{
         EXPLICIT_ACCESS_W, GRANT_ACCESS, GetExplicitEntriesFromAclW, GetSecurityInfo,
         SE_FILE_OBJECT, SET_ACCESS, TRUSTEE_IS_SID,
@@ -1724,7 +1878,9 @@ pub(crate) fn verify_windows_owner_only_handle(file: &File) -> Result<()> {
         ACL, DACL_SECURITY_INFORMATION, EqualSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
         PSID,
     };
-    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    };
 
     let user = CurrentWindowsUser::open()?;
     let mut owner: PSID = std::ptr::null_mut();
@@ -1774,13 +1930,28 @@ pub(crate) fn verify_windows_owner_only_handle(file: &File) -> Result<()> {
     // SAFETY: `count == 1` proves the first returned entry is initialized.
     let entry = unsafe { &*entries };
     let trustee_sid: PSID = entry.Trustee.ptstrName.cast();
+    let normalized_access = |access: u32| {
+        let mut normalized =
+            access & !(GENERIC_ALL | GENERIC_EXECUTE | GENERIC_READ | GENERIC_WRITE);
+        for (generic, specific) in [
+            (GENERIC_ALL, FILE_ALL_ACCESS),
+            (GENERIC_EXECUTE, FILE_GENERIC_EXECUTE),
+            (GENERIC_READ, FILE_GENERIC_READ),
+            (GENERIC_WRITE, FILE_GENERIC_WRITE),
+        ] {
+            if access & generic != 0 {
+                normalized |= specific;
+            }
+        }
+        normalized
+    };
     // SAFETY: form and null checked in this expression; sid owned by `user`.
     anyhow::ensure!(
         entry.Trustee.TrusteeForm == TRUSTEE_IS_SID
             && !trustee_sid.is_null()
             && unsafe { EqualSid(trustee_sid, user.sid()) } != 0
             && matches!(entry.grfAccessMode, SET_ACCESS | GRANT_ACCESS)
-            && entry.grfAccessPermissions == FILE_ALL_ACCESS,
+            && normalized_access(entry.grfAccessPermissions) == normalized_access(expected_access),
         "Codewhale-owned xAI OAuth DACL is not current-user-only"
     );
     Ok(())
@@ -2781,7 +2952,7 @@ impl PrivateDirectory {
     /// The same anchored owned-file opener used by credentials, with a bounded
     /// read and retained object for exact receipt retirement.
     pub fn read_private_receipt(&self, name: &str, max: usize) -> Result<Option<(Vec<u8>, File)>> {
-        let Some(file) = self.open_owned_file_for_read(name)? else {
+        let Some(file) = self.open_at(name, libc::O_RDONLY | libc::O_NONBLOCK, 0)? else {
             return Ok(None);
         };
         self.read_private_receipt_file(name, max, file).map(Some)

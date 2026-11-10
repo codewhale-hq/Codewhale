@@ -818,7 +818,7 @@ fn merge_incremental_entries(
 /// memory, and atomically replace the cache file. Retried on failure;
 /// the old snapshot survives any failed sync.
 async fn sync_once(path: &Path) -> Result<(), ToolError> {
-    let client = codewhale_release::tls::reqwest_client_builder()
+    let client = crate::platform_client_builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()
@@ -888,10 +888,15 @@ impl ToolSpec for McpSyncRegistry {
          does not already have, and return at most eight scored matches; the \
          full Registry index stays host-side. Describe the missing capability \
          in the query. The index contains only stdio packages that declare no \
-         environment variables or API keys. Use this when an available tool, a \
-         project script, or ordinary local code cannot do the job — not before \
-         ordinary work. To use a match, call start_registry_mcp_server with its \
-         exact name; do not run its package command through the shell."
+         environment variables or API keys. The Registry is a fallback for a \
+         specific missing capability you would otherwise install or reimplement \
+         (a converter, an external database or service, a protocol client) — \
+         prefer tools already in this catalog, project scripts, and ordinary \
+         local work first, and do not search for work you can already do. To \
+         use a match, call start_registry_mcp_server with its exact name; do \
+         not run its package command through the shell. If nothing matches, \
+         refine the query once, then continue with local tools. If a call \
+         reports it only loaded this schema, retry once with that schema."
     }
 
     fn input_schema(&self) -> Value {

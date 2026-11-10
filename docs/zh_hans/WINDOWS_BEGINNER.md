@@ -27,7 +27,7 @@
 | 终端里输入 codewhale 提示"不是命令" | 环境变量没配好或终端没重开（见 2.3 节） |
 | 提示"禁止运行脚本" | 先检查 PowerShell 的有效执行策略（见第 3 节） |
 | 配置了 pro 却显示在用 flash | 多半是用了 `/model auto` 并开启了 `[auto] cost_saving`，或配置了 `[auto.router]`，不是 bug（见 7.2 节） |
-| 界面停在奇怪的模式 | 按 `Tab` 切回，或输入 `/mode work` |
+| 界面停在奇怪的模式 | 按 `Shift+Tab` 切回，或输入 `/mode work` |
 | 改完配置突然连不上 | 检查 `provider` 和 `base_url` 是否被改坏，改回默认 |
 | cmd 里运行显示异常或崩溃 | 改用 Windows Terminal（见 2.5 节） |
 | GitHub 打不开/下载失败 | 需要配置系统代理后重试 |
@@ -288,9 +288,9 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ---
 
-## 5. 三种模式：Plan / Work / Operate
+## 5. 两种模式：Plan / Work
 
-按 `Tab` 键循环切换（输入框为空时），或输入 `/mode plan|work|operate` 直接切换（`act` 仍是 Work 的兼容别名）。
+按 `Shift+Tab` 在权限拨盘上逐档切换（Ask → Accept Edits → Plan → Auto-Review → Full Access），Plan 档就是 Plan 模式，其余每一档都是 Work；也可以输入 `/mode plan|work` 直接切换（`act` 仍是 Work 的兼容别名）。`Tab` 只做补全，不切换模式。
 
 ### 5.1 Plan 模式——只读，先出方案
 
@@ -300,28 +300,26 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ### 5.2 Work 模式——动手干活
 
-- 普通的多步执行模式，能改文件、跑命令；是否弹窗问你，取决于第 6 节的权限姿态（默认 Ask 对需要审批的调用会先问）
+- 普通的多步执行模式，能改文件、跑命令；是否弹窗问你，取决于第 6 节的权限姿态（默认 Accept Edits：仓库内编辑直接执行，命令会先问）
 - 批准一次调用不等于绕过后续的工具路径检查或其他安全限制
 - **新手第二步：方案满意后切到 Work，让它逐项实现**
 
-### 5.3 Operate 模式——当老板派活
+> Operate 模式已退役：旧配置里的 `operate` 会按 Work 加载并提示一次。需要多个智能体并行干活时用 `/fleet`（舰队）。
 
-- 工具和执行权限与 Work 完全一样（不会更宽松），区别在于调度：大任务会先列出步骤、依赖和完成检查，再派出多个智能体并行干
-- **新手现阶段不用碰**，等做大工程再说
-
-> 模式会被记住：切过的模式写进配置，下次启动默认还是它。如果发现界面"停在奇怪的模式"，按 `Tab` 切回或输入 `/mode work`。
+> 模式会被记住：切过的模式写进配置，下次启动默认还是它。如果发现界面"停在奇怪的模式"，按 `Shift+Tab` 切回或输入 `/mode work`。
 
 ---
 
 ## 6. 权限与安全（小白最重要的保护）
 
-按 `Shift+Tab` 循环切换三种权限姿态（permission posture）：
+按 `Shift+Tab` 在拨盘上切换四种权限姿态（permission posture），Plan 档位于 Accept Edits 与 Auto-Review 之间：
 
 | 姿态 | 行为 | 建议 |
 |---|---|---|
-| **Ask** | 需要审批的调用会先询问；工作区内的普通文件编辑可以直接执行 | 默认档位；先保留重要文件的备份 |
+| Ask | 每次文件编辑和需要审批的调用都会先询问 | 想逐项确认时用 |
+| **Accept Edits**（接受编辑） | git 仓库内的普通文件编辑直接执行；命令仍会先询问 | 默认档位；先保留重要文件的备份 |
 | Auto-Review | 自动审查工具调用；确定性规则判定安全的操作直接放行，其余可审查的拦截交给一次性模型复核，高风险仍会被拦下。模型仍可为需要你决定的事项提问 | 熟悉后可用 |
-| Full Access（完全访问） | 普通工具调用不再弹审批（仓库规则等硬性拦截仍然生效） | 只用于完全信任的文件夹 |
+| Full Access（完全访问） | 工具不经询问直接运行，命令可以访问这台电脑上的任何内容 | 只用于完全信任的文件夹 |
 
 ---
 
@@ -421,8 +419,8 @@ default_text_model = "deepseek-v4-pro"
 
 | 按键 | 作用 |
 |---|---|
-| `Tab` | 输入框为空时循环模式 Plan → Work → Operate |
-| `Shift+Tab` | 循环权限姿态 Ask → Auto-Review → Full Access |
+| `Tab` | 补全命令和文件提及 |
+| `Shift+Tab` | 权限拨盘 Ask → Accept Edits → Plan → Auto-Review → Full Access |
 | `Ctrl+T` | 循环思考强度 |
 | `Ctrl+Alt+O` | 打开 Turn Inspector（查看每回合用了哪个模型、为什么） |
 
@@ -430,18 +428,18 @@ default_text_model = "deepseek-v4-pro"
 
 ## 10. 导出对话（/export）
 
-把当前对话导出为 Markdown 文件：
+把当前对话导出为 Markdown、HTML 或 JSON 文件：
 
 ```
 /export file 对话记录.md
 ```
 
-文件会生成在你**当前工作目录**（启动 Codewhale 的文件夹）下。
+写相对路径时，文件会生成在你**当前工作目录**（启动 Codewhale 的文件夹）下。不写路径（`/export file`）时会自动命名，保存到 Codewhale 主目录的 `exports` 文件夹，并在回执里告诉你完整路径。
 
 ### 基本格式
 
 ```
-/export [clipboard|file [--force] <路径>|turn [clipboard|file [--force] <路径>]]
+/export [clipboard|file [路径]|turn [clipboard|file [路径]]] [--format md|html|json] [--no-tools] [--force]
 ```
 
 ### 完整命令表
@@ -450,14 +448,21 @@ default_text_model = "deepseek-v4-pro"
 |---|---|
 | `/export` | 整个对话复制到剪贴板（默认行为，不带参数就是这个） |
 | `/export clipboard` | 同上，显式写法 |
-| `/export file 文件名.md` | 整个对话导出为 md 文件 |
-| `/export file --force 文件名.md` | 文件已存在时强制覆盖（不加 `--force` 会拒绝覆盖） |
+| `/export file 文件名.md` | 整个对话导出为 Markdown 文件 |
+| `/export file 文件名.html` | 导出为单文件 HTML 页面（自带明暗两套配色，不含脚本） |
+| `/export file 文件名.json` | 导出为带类型标记的结构化 JSON |
+| `/export file` | 不写路径，自动命名并保存到 Codewhale 主目录的 `exports` 文件夹 |
+| `/export --format html` | 同上，格式为 HTML（`--format json` 同理） |
+| `/export file 文件名.md --no-tools` | 不包含工具调用和工具结果 |
+| `/export file 文件名.md --force` | 文件已存在时强制覆盖（不加 `--force` 会拒绝覆盖） |
 | `/export turn` | 只导出当前这一回合（handoff）到剪贴板 |
 | `/export turn file 文件名.md` | 只导出当前这一回合为 md 文件 |
 | `/export turn file --force 文件名.md` | 当前这一回合导出并强制覆盖 |
 | `/daochu` | `/export` 的中文别名，完全等价 |
 
-> 兼容旧写法：`/export 路径.md` 和 `/export turn 路径.md` 也可以直接用（等价于带 `file` 的写法）。
+> 兼容旧写法：`/export 路径.md` 和 `/export turn 路径.md` 也可以直接用（等价于带 `file` 的写法）。`--force`、`--no-tools`、`--format` 可以放在命令里的任意位置。
+>
+> 文件格式默认由扩展名决定（`.md`、`.html`、`.json`），也可以用 `--format` 指定。HTML 和 JSON 只能写入文件，不能复制到剪贴板；`--no-tools` 和 `--format` 只用于整个对话，不用于 `turn`。路径里有空格时请用引号括起来。
 
 ### 导出的文件长什么样
 
@@ -467,6 +472,7 @@ default_text_model = "deepseek-v4-pro"
 # Codewhale conversation export
 
 - Exported: 2026-08-02T...   （导出时间）
+- Title: ...                 （会话标题，没有标题时不出现）
 - Session: xxxx              （会话 ID）
 - Provider: moonshot         （当前提供商）
 - Model: kimi-k3             （当前模型）
@@ -477,7 +483,7 @@ default_text_model = "deepseek-v4-pro"
 
 ### 注意事项
 
-- 只含对话内容，**AI 的内部推理过程被省略**，只有最终回复
+- 只含对话内容，**AI 的内部推理过程和系统提示词被省略**，只有最终回复；工具调用和结果默认包含（可用 `--no-tools` 去掉），工具输出放在代码围栏里
 - 类密钥内容（如 API key）和带凭据的 URL **自动打码**，分享前仍建议检查一遍
 - 导出是只读操作，不影响当前会话
 - 想省 token 而不是导出时，用 `/compact` 压缩上下文（见第 9 节）

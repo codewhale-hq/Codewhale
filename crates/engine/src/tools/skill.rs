@@ -1,11 +1,9 @@
 //! `load_skill` tool — fetch a `SKILL.md` body and its companion-file
 //! list into the model's context (#434).
 //!
-//! ## Why a tool when skills already surface in the system prompt?
-//!
-//! `prompts.rs::system_prompt_for_mode_with_context_and_skills` injects a
-//! budgeted first page of routing metadata. The full catalogue is available
-//! through `name="list"`, and each full body is loaded only by exact name.
+//! Skills are discovered through this tool, not a prompt index: the full
+//! catalogue is available through `name="list"`, search through `query`,
+//! and each full body is loaded only by exact name.
 //!
 //! `load_skill name=<id>` is the canonical progressive-disclosure path. It
 //! performs a name-based host lookup, so native global skills work without
@@ -35,11 +33,10 @@ impl ToolSpec for LoadSkillTool {
     }
 
     fn description(&self) -> &'static str {
-        "Load a named skill's SKILL.md body and companion file list into this turn. Use when \
-         the user names a skill, or when an entry in the system prompt's `## Skills` index \
-         matches the task -- load it before starting the work, not after. Pass query=\"...\" to \
-         search names and descriptions, or name=\"list\" for the whole catalogue. Resolves \
-         global and plugin skills that `read` cannot reach."
+        "Load a named skill's SKILL.md body and companion file list into this turn. There is \
+         no skills index in the prompt: pass query=\"...\" to search names and descriptions, \
+         or name=\"list\" for the whole catalogue, then load the matching skill by name before \
+         starting that work. Resolves global and plugin skills that `read` cannot reach."
     }
 
     fn input_schema(&self) -> Value {
@@ -52,7 +49,7 @@ impl ToolSpec for LoadSkillTool {
                 },
                 "query": {
                     "type": "string",
-                    "description": "Search term matched against skill names and descriptions. Use when the index was truncated or no name is known."
+                    "description": "Search term matched against skill names and descriptions. Use when no exact name is known."
                 }
             },
             "additionalProperties": false

@@ -28,9 +28,6 @@ codewhale auth status --provider deepseek`,
         {
           p: "也可以在 Codewhale 里连接：按 F3（或输入 `/provider`），选择提供商，粘贴密钥，再选一个模型。",
         },
-        {
-          note: "在 v0.10.0 中，`auth set --provider deepseek` 还会把默认模型切换为 DeepSeek Pro。想换回更快、更便宜的模型，运行 `/model` 即可。通过 F3 连接则会保留你当前的模型。",
-        },
       ],
     },
     {
@@ -63,7 +60,7 @@ codewhale auth status --provider deepseek`,
           p: "`codewhale auth list` 会列出 Codewhale 支持的所有提供商，以及每个提供商是否已有密钥。所有提供商的用法都一样：`codewhale auth set --provider <name>`，或者设置该提供商的环境变量。",
         },
         {
-          p: "本地运行器——Ollama、vLLM 和 SGLang——默认不需要密钥，你的提示词也不会离开本机。先启动运行器，再选择它：",
+          p: "本地 Ollama、vLLM 和 SGLang 服务默认无需 API 密钥。使用本机模型时，请连接回环地址，再选择该服务提供的准确模型标签：",
         },
         {
           code: `codewhale auth list

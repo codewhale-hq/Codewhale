@@ -91,9 +91,11 @@ project_overhaul_prompt.md
 
 # Local runtime state
 # Ignore everything under any .codewhale/ (snapshots, auto-generated
-# instructions.md, etc.) at any depth EXCEPT the committed repo authority policy.
+# instructions.md, etc.) at any depth EXCEPT the committed repo authority policy
+# and this repository's own project hooks.
 **/.codewhale/*
 !**/.codewhale/constitution.json
+!/.codewhale/hooks.toml
 .deepseek/
 **/session_*.json
 *.db

@@ -204,7 +204,7 @@ Codewhale works best when you let investigation and implementation happen in
 separate steps for unfamiliar code. For small, well-understood changes, a
 single implementation request is fine.
 
-Next: [MODES.md](MODES.md) explains when to use Plan, Work, and Operate.
+Next: [MODES.md](MODES.md) explains when to use Plan and Work.
 
 ## 4. Understanding the Interface
 
@@ -234,7 +234,7 @@ screen while you type. Keys for the sheet are in [KEYBINDINGS.md](KEYBINDINGS.md
 
 The bottom chrome is configurable. Run `/statusline` to choose what is
 visible, or set `[tui].status_items` in `config.toml`. Each key owns exactly
-one thing on screen: `mode` is the posture bar's plan/act/operate chip, and
+one thing on screen: `mode` is the posture bar's plan/work chip, and
 `model`, `context_percent`, `cost`, `balance` (prepaid providers only:
 DeepSeek, DeepSeekCN, OpenRouter, SiliconFlow), `cache`, `tokens` and
 `ttft`, `output_rate`, `workspace` and `git_branch` are segments of the metrics line below it. Omit
@@ -308,13 +308,12 @@ Next: [KEYBINDINGS.md](KEYBINDINGS.md) is the complete shortcut reference.
 
 ## 5. Modes
 
-Codewhale has three visible TUI modes:
+Codewhale has two visible TUI modes:
 
 | Mode | Use it for | Default posture |
 | --- | --- | --- |
 | Plan | Exploration, design, and review before changes | Read-only investigation |
 | Work | Normal multi-step coding work | Tool use with approval gates |
-| Operate | Direct work plus parallel or background coordination | Tools follow the active posture; delegate when useful |
 
 Switch modes from the TUI with the mode picker:
 
@@ -327,15 +326,16 @@ Or switch directly:
 ```text
 /mode plan
 /mode work
-/mode operate
 ```
+
+`operate` still parses, as Work, so an older setting or script keeps working.
 
 Plan mode is the safest place to start in an unfamiliar repository. It is for
 inspection and decision-making, not file edits.
 When a Plan turn successfully finishes a nonempty response, Codewhale asks
-how to continue, including when the plan is plain text. **Work (Ask)** and
-**Work (Auto-Review)** switch to Work with that permission and send the exact
-approved response as the next message. Existing To-dos from that turn are
+how to continue, including when the plan is plain text. **Work (Ask)**,
+**Work (Accept Edits)** and **Work (Auto-Review)** switch to Work with that
+permission and send the exact approved response as the next message. Existing To-dos from that turn are
 preserved; a prose-only plan adds one pending item without replacing unrelated
 work. If Codewhale cannot prepare the work state, it stays in Plan without
 starting the task. **Keep planning**, or `Esc`, stays in Plan. You can also
@@ -345,22 +345,34 @@ the composer is empty and no other view is open; `/mode work` always works.
 Work mode is the default for most contribution work. It lets Codewhale read,
 run checks, and edit files while keeping risky actions behind approval gates.
 
-Operate keeps that direct tool surface and its approval, sandbox, shell,
+Work keeps that direct tool surface and its approval, sandbox, shell,
 ask-rule, and repository protections. Small or tightly coupled work stays
 direct. Multi-step delegation uses a compact Workflow plan with dependencies,
 bounded scopes, and completion evidence passed between steps. Fleet configures
 and manages those same sub-agents and their roles. One bounded, independent
 task can use a direct agent; continued work reuses it through `followup`.
-`codewhale dispatch "<task>"` (running work on a Codewhale cloud computer) is
-not available: cloud computers and accounts are paused for new users.
+`codewhale dispatch "<task>"` runs work on a Codewhale cloud computer when
+your account has access. Cloud availability and admission come from the account
+service.
+
+Local work needs no Codewhale account. `/login` opens account sign-in inside
+the TUI, with a browser link and code, Copy, and Cancel. `/login status` shows
+account status; `/connect` connects a model provider or local model. Signing in
+preserves your selected model and unsent message. An account connection is
+separate from usable model access.
+
+`/logout`, `codewhale logout` and `codewhale account logout` sign out of
+Codewhale while keeping local model connections and conversations. To remove
+all saved provider credentials as well, use `codewhale logout --all`; that
+operation asks for confirmation (`--all --yes` confirms non-interactively).
 
 For trusted workspaces where you intentionally want actions to proceed without
 approval prompts, select the Full Access permission posture with `Shift+Tab`.
 Do not use Full Access in a repository you do not trust.
 
-Modes are separate from model routing. `Tab` cycles visible modes when the
-composer is idle, while `/model auto` controls model and thinking selection for
-turns.
+Modes are separate from model routing. The `Shift+Tab` permission dial steps
+Ask → Accept Edits → Plan → Auto-Review → Full Access, while `/model auto`
+controls model and thinking selection for turns.
 
 You can also change approval behavior from `/config` by editing the approval
 mode. Use this only when you understand how it changes tool execution.
@@ -392,6 +404,7 @@ Common commands for first-time users:
 | `/receipts` | List what this session did: files changed, commands run, web and MCP calls, agents, approvals and who gave them, failures |
 | `/compact` | Summarize long context to recover token budget |
 | `/copy` | Copy the last completed assistant response to the clipboard |
+| `/export` | Copy the conversation, or save it as Markdown, HTML or JSON; see [Exporting a conversation](#exporting-a-conversation) |
 | `/review` | Ask for a structured review workflow |
 | `/memory` | Inspect or manage memory when enabled |
 | `/mcp` | Configure or inspect MCP server integration |
@@ -443,6 +456,32 @@ or no classification request.
 
 Use `/compact` when a session gets long and the model starts carrying too much
 history. Compaction trades raw transcript detail for a concise working summary.
+
+### Exporting a conversation
+
+`/export` copies a redacted transcript to the clipboard. `/export file` saves
+it instead, and the file format follows the extension:
+
+```text
+/export file                     auto-named Markdown under the Codewhale exports folder
+/export file notes.html          a self-contained HTML page (light and dark, no scripts)
+/export file notes.json          structured JSON with typed message blocks
+/export file notes.md --no-tools Markdown without tool calls and results
+/export file notes.md --force    replace an existing file
+/export turn                     the latest turn as a handoff note
+```
+
+`--format md|html|json` overrides the extension, and `--format html` or
+`--format json` on its own writes an auto-named file. HTML and JSON are
+file-only because a clipboard paste would lose their structure. Auto-named
+files are `codewhale-<title>-<timestamp>.<ext>` in `<codewhale home>/exports`.
+`~` is expanded, quotes keep a path with spaces together, and an existing file
+is never replaced without `--force`.
+
+Every format omits the system prompt and internal reasoning, redacts
+secret-like values and credential-bearing URLs, and fences tool output so it
+cannot forge a heading or a message. `/share` publishes the same HTML page as a
+secret gist after a confirmation.
 
 This guide intentionally does not list every command. The command surface
 changes more often than the onboarding flow, and the TUI command palette is the
@@ -765,7 +804,7 @@ session store. Symlinks are skipped; linked artifact roots, hard links,
 nonportable filenames, and trees exceeding 64 directory levels or 100,000
 entries fail the export without replacing the destination.
 
-Unlike the sanitized Markdown `/export`, these archives retain unredacted
+Unlike the sanitized `/export`, these archives retain unredacted
 session content, including system prompts, thinking, tool calls and results,
 journal branches, and approval receipts. Extract `session.json` and open it
 with `/load` in the TUI; `/resume` imports the conversation only. Extracted

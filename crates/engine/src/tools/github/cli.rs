@@ -3,8 +3,6 @@
 //! Nothing above this file assembles an argv or resolves a binary path, so
 //! "what did the tool actually shell out to" has exactly one answer.
 
-use std::process::Command;
-
 use serde_json::Value;
 
 use crate::tools::spec::{ToolContext, ToolError};
@@ -17,6 +15,8 @@ const FALLBACK_GH_PATHS: &[&str] = &[
     "/home/linuxbrew/.linuxbrew/bin/gh", // Linux Homebrew (official prefix)
     "/opt/homebrew/bin/gh",              // macOS Apple Silicon Homebrew
 ];
+
+const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn gh_bin() -> String {
     if let Ok(bin) = std::env::var("CODEWHALE_GH_BIN").or_else(|_| std::env::var("DEEPSEEK_GH_BIN"))
@@ -31,11 +31,23 @@ fn gh_bin() -> String {
     DEFAULT_GH.to_string()
 }
 
-pub(super) fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, ToolError> {
-    let out = Command::new(gh_bin())
+pub(super) async fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, ToolError> {
+    let mut command = tokio::process::Command::new(gh_bin());
+    codewhale_util::utils::suppress_tokio_console_window(&mut command);
+    command
         .args(args)
-        .current_dir(&context.workspace)
-        .output()
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(&context.workspace);
+    let cancel = context.cancel_token.clone().unwrap_or_default();
+    let stop = async {
+        tokio::select! {
+            () = tokio::time::sleep(GH_TIMEOUT) => {}
+            () = cancel.cancelled() => {}
+        }
+    };
+    let run = codewhale_runtime::process_tree::contained_output_until(&mut command, stop)
+        .await
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 ToolError::not_available("gh CLI not found; install it or set DEEPSEEK_GH_BIN")
@@ -43,6 +55,18 @@ pub(super) fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String
                 ToolError::execution_failed(format!("failed to run gh: {e}"))
             }
         })?;
+    if run.stopped {
+        return Err(if cancel.is_cancelled() {
+            ToolError::cancelled("gh cancelled")
+        } else {
+            ToolError::execution_failed(format!(
+                "gh {} timed out after {}s",
+                args.join(" "),
+                GH_TIMEOUT.as_secs()
+            ))
+        });
+    }
+    let out = run.output;
     if !out.status.success() {
         return Err(ToolError::execution_failed(format!(
             "gh {} failed: {}",
@@ -53,8 +77,8 @@ pub(super) fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-pub(super) fn run_gh_json(context: &ToolContext, args: &[&str]) -> Result<Value, ToolError> {
-    let text = run_gh_text(context, args)?;
+pub(super) async fn run_gh_json(context: &ToolContext, args: &[&str]) -> Result<Value, ToolError> {
+    let text = run_gh_text(context, args).await?;
     serde_json::from_str(&text).map_err(|e| ToolError::execution_failed(e.to_string()))
 }
 
@@ -219,6 +243,16 @@ pub(super) async fn host_git(
     let mut command = codewhale_dependencies::Git::tokio_command()
         .ok_or_else(|| ToolError::not_available("git is unavailable"))?;
     command.args(args).current_dir(&context.workspace);
+    host_output(&mut command, &[], cancel, "Git repository inspection").await
+}
+pub(super) async fn host_git_status(
+    context: &ToolContext,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<String, ToolError> {
+    let command = codewhale_dependencies::Git::status_command(&context.workspace)
+        .map_err(|error| ToolError::not_available(format!("git is unavailable: {error}")))?;
+    let mut command = tokio::process::Command::from(command);
+    command.args(["status", "--porcelain=v1", "--ignore-submodules=dirty"]);
     host_output(&mut command, &[], cancel, "Git repository inspection").await
 }
 async fn host_output(

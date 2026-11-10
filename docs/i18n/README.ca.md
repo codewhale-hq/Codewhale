@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:fb068568394f -->
 <div align="center">
 
 <picture>
@@ -76,8 +76,8 @@ primer.
 ## Inici ràpid
 
 1. Fes un commit o un stash de la teva feina i després executa `codewhale` des
-   de l’arrel d’un repositori git. Per defecte, hi aplica les edicions de
-   fitxers sense preguntar i et mostra el diff.
+   de l’arrel d’un repositori git. Per defecte (**Accept Edits**), edita fitxers al repositori sense preguntar
+   i pregunta abans de cada ordre; `Shift+Tab` recorre el selector de permisos quan vols que pregunti més o menys.
 2. Executa `/provider` (o prem `F3`), tria un proveïdor, enganxa’n la clau API
    i escull un model. DeepSeek és el proveïdor per defecte. Si no tens cap
    clau, tria un entorn local. Si no hi ha cap proveïdor configurat i Ollama ja
@@ -107,12 +107,12 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 ## Modes i permisos
 
-Una instal·lació nova comença en mode Work amb el permís Ask.
+Una instal·lació nova comença en mode Work amb el permís Accept Edits. Un sol selector canvia tots dos: `Shift+Tab` recorre Ask → Accept Edits → Plan → Auto-Review → Full Access.
 
 | | Es canvia amb | Opcions |
 | --- | --- | --- |
-| Mode | `Tab` (amb l’entrada buida) o `/mode` | **Plan** llegeix i cerca però no canvia res. **Work** edita fitxers i executa ordres. **Operate** té el mateix accés que Work, tracta la teva petició com un objectiu i continua fins que l’objectiu està verificat o necessita alguna resposta teva. |
-| Permís | `Shift+Tab` | **Ask** aplica les edicions de fitxers al teu repositori sense preguntar i pregunta abans de les ordres de shell que no són de només lectura. **Auto-Review** deixa que unes regles i un model revisor aprovin les crides rutinàries i rebutja les d’alt risc; canvia a Ask per aprovar-les tu mateix. **Full Access** no pregunta mai i desactiva el sandbox de Codewhale; les regles del repositori i la política gestionada continuen aplicant-se. |
+| Mode | la parada Plan de `Shift+Tab`, o `/mode` | **Plan** llegeix i cerca però no canvia res. **Work** (totes les altres parades) edita fitxers i executa ordres; inicia un objectiu amb `/goal` quan una petició necessiti més d’un torn. |
+| Permís | `Shift+Tab` | **Ask** pregunta abans de cada edició de fitxer i de cada ordre de shell que no és de només lectura. **Accept Edits** aplica les edicions de fitxers al teu repositori git sense preguntar i continua preguntant abans de les ordres. **Auto-Review** deixa que unes regles i un model revisor aprovin les crides rutinàries i rebutja les d’alt risc; canvia a Ask per aprovar-les tu mateix. **Full Access** no pregunta mai, i les ordres poden accedir a tot el que hi ha en aquest ordinador; les regles del repositori i la política gestionada continuen aplicant-se. |
 
 Consulta la [guia de modes i permisos](../MODES.md) per als detalls.
 

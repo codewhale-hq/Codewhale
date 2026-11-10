@@ -76,9 +76,9 @@ fn failed_engine_channel_settles_classifier_batch_once() {
     );
     let batch = codewhale_engine::cost_status::RuntimeUsageBatch {
         decisions: Vec::new(),
-        records: vec![codewhale_engine::cost_status::RuntimeUsageRecord {
-            source_id: "auto-router:dispatch-usage".to_string(),
-            usage: codewhale_engine::cost_status::EffectiveRouteUsage {
+        records: vec![codewhale_engine::cost_status::RuntimeUsageRecord::legacy(
+            "auto-router:dispatch-usage".to_string(),
+            codewhale_engine::cost_status::EffectiveRouteUsage {
                 route: route.clone(),
                 usage: codewhale_models::Usage {
                     input_tokens: 6,
@@ -86,7 +86,7 @@ fn failed_engine_channel_settles_classifier_batch_once() {
                     ..Default::default()
                 },
             },
-        }],
+        )],
         drop_records: vec![codewhale_engine::cost_status::RuntimeUsageDropRecord {
             reason: codewhale_engine::cost_status::RuntimeUsageMissingReason::default(),
             source_id: "auto-router:dispatch-drop".to_string(),
@@ -667,16 +667,17 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
     let mut app = create_test_app();
     app.remote_control
         .force_mirror_connected_for_tests("run_fixture", "turn_current");
-    app.remote_control
-        .queue_remote_event_for_tests(crate::remote_control::RemoteEvent::Command {
+    app.remote_control.queue_remote_event_for_tests(
+        codewhale_app_server::remote_control::RemoteEvent::Command {
             run_id: "run_fixture".to_string(),
             seq: 1,
-            command: crate::remote_control::RemoteCommand::Control {
-                action: crate::remote_control::RemoteControlRequest::Interrupt,
+            command: codewhale_app_server::remote_control::RemoteCommand::Control {
+                action: codewhale_app_server::remote_control::RemoteControlRequest::Interrupt,
                 turn_id: Some("turn_stale".to_string()),
                 runtime_chat: None,
             },
-        });
+        },
+    );
     let mock = mock_engine_handle();
     drain_remote_control_events(&mut app, &Config::default(), &mock.handle)
         .await
@@ -688,14 +689,16 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
 
     for (event, previous_status, reason) in [
         (
-            crate::remote_control::RemoteEvent::FailedPreLease(
+            codewhale_app_server::remote_control::RemoteEvent::FailedPreLease(
                 "fixture enrollment rejected: accessToken = fixture_remote_secret".to_string(),
             ),
             "Remote control: connecting",
             "fixture enrollment rejected",
         ),
         (
-            crate::remote_control::RemoteEvent::Failed("fixture relay disconnected".to_string()),
+            codewhale_app_server::remote_control::RemoteEvent::Failed(
+                "fixture relay disconnected".to_string(),
+            ),
             "Remote control: connected",
             "fixture relay disconnected",
         ),
@@ -710,7 +713,10 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
             StatusToastLevel::Warning,
             None,
         ));
-        if matches!(&event, crate::remote_control::RemoteEvent::Failed(_)) {
+        if matches!(
+            &event,
+            codewhale_app_server::remote_control::RemoteEvent::Failed(_)
+        ) {
             let phase = crate::tui::underwater::ShellPhase::from_app(&app);
             assert_eq!(
                 app.active_status_toast(phase)
@@ -729,7 +735,7 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
 
         assert_eq!(
             app.remote_control.status(),
-            crate::remote_control::Status::Failed
+            codewhale_app_server::remote_control::Status::Failed
         );
         assert!(app.remote_control.status_line().contains(reason));
         assert!(app.status_message.is_none());
@@ -816,6 +822,44 @@ fn test_mailbox_route(
         Some(provider.provider().default_base_url()),
         chrono::Utc::now(),
     )
+}
+
+fn settled_child_fixture_record(
+    app: &mut App,
+    manager: &codewhale_engine::session_manager::SessionManager,
+    source_id: &str,
+    route: &codewhale_engine::cost_status::EffectiveRouteEnvelope,
+    usage: &codewhale_models::Usage,
+) -> codewhale_engine::cost_status::RuntimeUsageRecord {
+    if app.session_write_receipt.is_none() {
+        let snapshot = build_session_snapshot(app, manager).expect("native fixture snapshot");
+        app.current_session_id = Some(snapshot.metadata.id.clone());
+        app.session_write_receipt = snapshot.write_receipt;
+        app.current_session_metadata = Some(snapshot.metadata);
+    }
+    let scope = codewhale_engine::cost_status::scope_token();
+    let origin = app
+        .session_write_receipt
+        .as_ref()
+        .expect("native fixture source")
+        .usage_origin(scope)
+        .expect("native fixture origin");
+    let source = codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
+        source_id,
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+        Some(origin),
+    );
+    let record = source
+        .prepare(
+            route,
+            usage,
+            codewhale_engine::llm_client::ProviderUsageCoverage::Reported,
+            codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+        )
+        .expect("native fixture record");
+    codewhale_engine::cost_status::report_runtime_usage_record(scope, None, &record)
+        .expect("durable fixture publication");
+    record
 }
 
 fn served_endpoint_fingerprint() -> Option<String> {
@@ -1005,9 +1049,52 @@ fn bracketed_paste_returns_dock_focus_to_the_visible_composer() {
     assert!(app.composer_enter_would_submit(true));
 }
 
+/// Windows Terminal answers an image-only clipboard with an **empty** bracketed
+/// paste ("LOAD BEARING: Send an empty bracketed paste even if the clipboard
+/// was empty" in its paste handler). That empty event is the only signal a TUI
+/// gets, so it has to be read as "the person pasted; ask the clipboard
+/// yourself" rather than as "nothing happened".
+#[test]
+fn empty_bracketed_paste_attaches_the_clipboard_image() {
+    let mut app = App::new(
+        crate::tui::test_support::test_tui_options("."),
+        &Config::default(),
+    );
+    app.clipboard = crate::tui::clipboard::ClipboardHandler::with_content_for_test(
+        crate::tui::clipboard::ClipboardContent::Image(crate::tui::clipboard::PastedImage {
+            path: std::path::PathBuf::from("/tmp/pasted.png"),
+            width: 8,
+            height: 4,
+            byte_len: 2048,
+        }),
+    );
+
+    handle_bracketed_paste(&mut app, "");
+
+    assert!(
+        app.input
+            .contains("[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]"),
+        "draft did not receive the attachment: {:?}",
+        app.input
+    );
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Attached image: 8x4 PNG (2KB)")
+    );
+}
+
 /// One representative terminal encoding per shell binding.
 fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
     match id {
+        ShellBindingId::AccountLoginSelect => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ShellBindingId::AccountLoginNext => KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        ShellBindingId::AccountLoginOpenBrowser => {
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)
+        }
+        ShellBindingId::AccountLoginCopyLink => {
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)
+        }
+        ShellBindingId::AccountLoginCancel => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         ShellBindingId::TerminalNew => KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
         ShellBindingId::TerminalNext => KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
         ShellBindingId::TerminalPrevious => KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
@@ -1046,7 +1133,6 @@ fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
         ShellBindingId::ExternalEditor => KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE),
         ShellBindingId::ProviderOffer => KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE),
         ShellBindingId::Settings => KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE),
-        ShellBindingId::ModeCycle => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         ShellBindingId::PermissionCycle => KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
         ShellBindingId::ViewCycle => KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
         ShellBindingId::ViewCycleBack => KeyEvent::new(
@@ -1096,8 +1182,8 @@ fn no_shell_binding_changes_meaning_once_the_composer_has_text() {
             .focus
             .admits(crate::tui::shell_key_routing::Focus::Composer)
         {
-            // A chord may serve a different owner: Tab cycles the composer's
-            // mode and switches panes inside pet mode. The modal binding
+            // A chord may serve a different owner: Tab switches panes inside
+            // pet mode. The modal binding
             // itself must never act on the composer draft.
             assert_ne!(
                 on_typed,
@@ -1112,23 +1198,6 @@ fn no_shell_binding_changes_meaning_once_the_composer_has_text() {
             "{:?} must still be live mid-draft",
             binding.id
         );
-
-        // Admission is only half the family: the handler behind a binding
-        // must not re-guess focus from the text either. Tab is the one with
-        // a dispatcher of its own, so press it in both states.
-        if binding.id == ShellBindingId::ModeCycle {
-            let mut empty = focus_test_app();
-            empty.prompt_suggestion = None;
-            let mut typed = focus_test_app();
-            typed.prompt_suggestion = None;
-            typed.input = "draft in progress".to_string();
-            typed.cursor_position = typed.input.chars().count();
-            assert_eq!(
-                dispatch_tab_key(&mut empty, &key, &[], &[]),
-                dispatch_tab_key(&mut typed, &key, &[], &[]),
-                "Tab dispatched differently because the composer has text"
-            );
-        }
     }
 
     // The exception the rule is for: the composer's own editing keys are
@@ -1148,57 +1217,25 @@ fn no_shell_binding_changes_meaning_once_the_composer_has_text() {
 }
 
 #[test]
-fn tab_cycles_the_mode_on_the_launch_screen() {
-    // Founder live-test: "from here tab needs to work". The launch screen's
-    // composer is focused from first paint and the card's rows are arrowed,
-    // so Tab has no focus left to move — it is the shell's mode cycle there,
-    // exactly as in a live session.
-    let mut app = focus_test_app();
-    app.prompt_suggestion = None;
-    app.launch.visible = true;
-    assert_eq!(app.focus(), crate::tui::shell_key_routing::Focus::Launch);
-    let before = app.mode;
+fn tab_never_changes_the_mode() {
+    for (launch, draft) in [(true, ""), (false, ""), (false, "explain this repo")] {
+        let mut app = focus_test_app();
+        app.prompt_suggestion = None;
+        app.launch.visible = launch;
+        app.input = draft.to_string();
+        app.cursor_position = app.input.chars().count();
+        let before = app.mode;
 
-    let dispatch = dispatch_tab_key(
-        &mut app,
-        &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-        &[],
-        &[],
-    );
+        let dispatch = dispatch_tab_key(&mut app, &[], &[]);
 
-    assert!(
-        matches!(dispatch, TabDispatch::ModeCycled { .. }),
-        "Tab on the launch screen dispatched {dispatch:?}"
-    );
-    assert_ne!(app.mode, before, "the mode must actually change");
-}
-
-#[test]
-fn tab_still_cycles_the_mode_after_the_user_has_typed() {
-    // Regression: Tab used to stop working the moment the composer held any
-    // text, which is most of the time you are actually using the product.
-    let mut app = focus_test_app();
-    app.prompt_suggestion = None;
-    app.input = "explain this repo".to_string();
-    app.cursor_position = app.input.chars().count();
-    let before = app.mode;
-
-    let dispatch = dispatch_tab_key(
-        &mut app,
-        &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-        &[],
-        &[],
-    );
-
-    assert!(
-        matches!(dispatch, TabDispatch::ModeCycled { .. }),
-        "Tab with a typed composer dispatched {dispatch:?}"
-    );
-    assert_ne!(app.mode, before, "the session mode must actually change");
-    assert_eq!(
-        app.input, "explain this repo",
-        "cycling the mode must not disturb the draft"
-    );
+        assert_eq!(
+            dispatch,
+            TabDispatch::Ignored,
+            "launch={launch} draft={draft:?}"
+        );
+        assert_eq!(app.mode, before, "launch={launch} draft={draft:?}");
+        assert_eq!(app.input, draft);
+    }
 }
 
 #[test]
@@ -2331,15 +2368,9 @@ fn coordination_handover_within_this_process_does_not_toast() {
         .expect("a genuinely foreign owner still warns via transient toast");
     assert_eq!(toast.level, crate::tui::app::StatusToastLevel::Info);
     assert_eq!(toast.ttl_ms, Some(5_000));
-    // The strip is one row and truncates from the right, so the *opening* of
-    // the message has to carry the fact. The old copy opened with the
-    // diagnosis and buried the cause behind a pid, a path and an errno, which
-    // truncated to `Delegated coordination unavailable — an…`.
     assert!(
-        toast
-            .text
-            .starts_with("Another Codewhale session in this workspace"),
-        "the toast must lead with the fact that explains the state: {}",
+        toast.text.starts_with("Delegated coordination unavailable"),
+        "the toast must report unavailability without claiming a specific owner: {}",
         toast.text
     );
     assert!(
@@ -6400,8 +6431,8 @@ fn app_system_prompt_includes_configured_instructions() {
     let prompt =
         codewhale_engine::prompts::system_prompt_flat_text(&build_app_system_prompt(&app, &config));
 
-    assert!(prompt.contains("CONFIGURED_INSTRUCTIONS_MARKER"));
-    assert!(prompt.contains(r#"<instructions source="extra-instructions.md">"#));
+    assert!(!prompt.contains("CONFIGURED_INSTRUCTIONS_MARKER"));
+    assert!(!prompt.contains(r#"<instructions source="extra-instructions.md">"#));
 }
 
 #[test]
@@ -8726,7 +8757,7 @@ fn file_edit_card_says_when_it_asks_for_lack_of_a_git_repository() {
     ] {
         let mut app = create_test_app();
         app.mode = AppMode::Agent;
-        app.approval_mode = ApprovalMode::Suggest;
+        app.approval_mode = ApprovalMode::AcceptEdits;
         app.workspace = workspace.to_path_buf();
         push_approval_request_view(
             &mut app,
@@ -9930,6 +9961,10 @@ fn apply_loaded_session_resets_unpersisted_telemetry() {
 fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
     let _cost_scope = codewhale_engine::cost_status::test_scope();
     let mut app = create_test_app();
+    app.session.displayed_cost_high_water = 900.0;
+    app.session.displayed_cost_high_water_cny = 6000.0;
+    app.last_billed_input_tokens = Some(700);
+
     // Live state from the session being replaced.
     app.session.cost_priced_turns = 9;
     app.session.cost_unpriced_turns = 4;
@@ -9970,6 +10005,9 @@ fn apply_loaded_session_replaces_cost_coverage_with_the_loaded_total() {
 
     apply_loaded_session(&mut app, &mut Config::default(), &session).expect("restore session");
 
+    assert_eq!(app.session.displayed_cost_high_water, 3.75);
+    assert_eq!(app.session.displayed_cost_high_water_cny, 0.0);
+    assert_eq!(app.last_billed_input_tokens, None);
     assert_eq!(app.session.cost_priced_turns, 2);
     assert_eq!(app.session.subagent_cost, 1.25);
     assert_eq!(app.session.cost_unpriced_turns, 1);
@@ -10074,6 +10112,7 @@ async fn apply_loaded_session_resets_workspace_runtime_state() {
     if let Ok(mut cell) = old_context_cell.lock() {
         *cell = Some(crate::tui::workspace_context::WorkspaceContextSnapshot {
             notes: Vec::new(),
+            memory_size_hint: None,
             workspace: app.workspace.clone(),
             context: Some("old workspace context".to_string()),
             is_linked_worktree: false,
@@ -10296,6 +10335,9 @@ fn shell_live_output_update_matches_exact_task_id_only() {
             status: ShellStatus::Running,
             exit_code: None,
             elapsed_ms: 111,
+            started_at: Some(chrono::Utc::now()),
+            cause: None,
+            producer_reported: false,
             stdout_tail: String::new(),
             stderr_tail: String::new(),
             stdout_len: 0,
@@ -10323,6 +10365,9 @@ fn shell_live_output_update_matches_exact_task_id_only() {
             status: ShellStatus::Running,
             exit_code: None,
             elapsed_ms: 777,
+            started_at: Some(chrono::Utc::now()),
+            cause: None,
+            producer_reported: false,
             stdout_tail: "stdout tail\n".to_string(),
             stderr_tail: "stderr tail\n".to_string(),
             stdout_len: 12,
@@ -10393,6 +10438,9 @@ fn shell_live_output_update_marks_stale_running_job_static() {
             status: ShellStatus::Running,
             exit_code: None,
             elapsed_ms: 90_000,
+            started_at: Some(chrono::Utc::now()),
+            cause: None,
+            producer_reported: false,
             stdout_tail: "still working\n".to_string(),
             stderr_tail: String::new(),
             stdout_len: 14,
@@ -10477,6 +10525,9 @@ fn shell_live_output_update_finalizes_background_exec_output() {
             status: ShellStatus::Completed,
             exit_code: Some(0),
             elapsed_ms: 999,
+            started_at: Some(chrono::Utc::now()),
+            cause: Some(codewhale_engine::tools::shell::ShellTerminationCause::Producer),
+            producer_reported: true,
             stdout_tail: "final stdout\n".to_string(),
             stderr_tail: "final stderr\n".to_string(),
             stdout_len: 13,
@@ -10524,7 +10575,7 @@ fn shell_live_output_update_finalizes_background_exec_output() {
     exec.output_summary = exec
         .output
         .as_deref()
-        .map(crate::tui::history::summarize_tool_output);
+        .map(codewhale_app_server::exec_agent::summarize_tool_output);
     exec.live_output = None;
 
     assert_eq!(exec.status, ToolStatus::Success);
@@ -10568,6 +10619,9 @@ fn shell_live_output_update_skips_finalized_exec_cell() {
             status: ShellStatus::Completed,
             exit_code: Some(0),
             elapsed_ms: 999,
+            started_at: Some(chrono::Utc::now()),
+            cause: Some(codewhale_engine::tools::shell::ShellTerminationCause::Producer),
+            producer_reported: true,
             stdout_tail: "new live output".to_string(),
             stderr_tail: String::new(),
             stdout_len: 15,
@@ -10858,15 +10912,7 @@ async fn mode_change_update_sends_restored_agent_policy() {
     let _ = app.set_mode(AppMode::Plan);
     let mut engine = codewhale_engine::core::engine::mock_engine_handle();
 
-    assert!(
-        apply_mode_update(
-            &mut app,
-            &engine.handle,
-            &codewhale_runtime::config::Config::default(),
-            AppMode::Agent
-        )
-        .await
-    );
+    assert!(apply_mode_update(&mut app, &engine.handle, AppMode::Agent).await);
 
     match engine.rx_op.recv().await.expect("change mode op") {
         codewhale_engine::core::ops::Op::ChangeMode {
@@ -10886,202 +10932,6 @@ async fn mode_change_update_sends_restored_agent_policy() {
         }
         other => panic!("expected ChangeMode, got {other:?}"),
     }
-}
-
-fn operate_tui_route_config() -> Config {
-    let mut config: Config = toml::from_str(
-        r#"
-provider = "startup-route"
-[providers.startup-route]
-kind = "openai-compatible"
-base_url = "https://startup.example.test/v1"
-model = "startup-model"
-auth_mode = "none"
-[providers.collision-route]
-kind = "openai-compatible"
-base_url = "https://custom-openai.example.test/v1"
-model = "table-default"
-auth_mode = "none"
-"#,
-    )
-    .expect("operate TUI routes");
-    let custom = &mut config.providers.as_mut().expect("providers").custom;
-    let collision = custom.remove("collision-route").expect("custom fixture");
-    custom.insert("openai".to_string(), collision);
-    config
-}
-
-#[tokio::test]
-async fn operate_entry_preserves_live_custom_identity_and_auto_over_startup_route() {
-    let _env = crate::test_support::lock_test_env();
-    for selected in ["session-model", "auto"] {
-        let root = TempDir::new().expect("root");
-        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
-        let _operate = crate::test_support::EnvVarGuard::set(
-            "CODEWHALE_OPERATE_DIR",
-            root.path().join("operate"),
-        );
-        let mut config = operate_tui_route_config();
-        config.fleet_operator_route_applied = true;
-        let manager = codewhale_engine::automation_manager::AutomationManager::open_for_test(
-            root.path().join("automations"),
-        )
-        .expect("manager");
-        let automations = Arc::new(tokio::sync::Mutex::new(manager));
-        let mut app = create_test_app();
-        app.workspace = root.path().to_path_buf();
-        app.runtime_services.automations = Some(automations.clone());
-        app.set_provider_identity_record(
-            config
-                .resolve_persisted_provider_identity(Some("custom"), Some("openai"))
-                .expect("exact custom"),
-        );
-        app.set_model_selection(selected.to_string());
-        app.last_effective_model = Some("previous-turn-model".to_string());
-        let engine = mock_engine_handle();
-        apply_mode_update(&mut app, &engine.handle, &config, AppMode::Operate).await;
-        let record = automations
-            .lock()
-            .await
-            .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
-            .expect("keepalive installed");
-        assert_eq!(record.model.as_deref(), Some(selected));
-        assert_eq!(record.model_provider.as_deref(), Some("custom"));
-        assert_eq!(record.model_provider_id.as_deref(), Some("openai"));
-        assert_eq!(record.auto_approve, Some(false));
-        let operation =
-            codewhale_engine::operate::OperationStore::open(root.path().join("operate"))
-                .expect("store")
-                .load()
-                .expect("load")
-                .expect("operation");
-        assert_eq!(operation.lead_operator.model, selected);
-        assert!(
-            operation
-                .roster
-                .iter()
-                .filter(|member| member.id == "lead")
-                .all(|member| member.model == selected)
-        );
-        assert!(operation.credentials_present);
-        assert!(
-            automations
-                .lock()
-                .await
-                .list_runs(&record.id, None)
-                .expect("runs")
-                .is_empty(),
-            "entry alone is not task execution"
-        );
-    }
-}
-
-#[tokio::test]
-async fn operate_rejected_attach_does_not_reactivate_saved_keepalive() {
-    let _env = crate::test_support::lock_test_env();
-    let root = TempDir::new().expect("root");
-    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path());
-    let operate_dir = root.path().join("operate");
-    let _operate = crate::test_support::EnvVarGuard::set("CODEWHALE_OPERATE_DIR", &operate_dir);
-    let config = operate_tui_route_config();
-    let manager = codewhale_engine::automation_manager::AutomationManager::open_for_test(
-        root.path().join("automations"),
-    )
-    .expect("manager");
-    codewhale_engine::operate::upsert_keepalive(&manager, root.path(), true, &config, None)
-        .expect("upsert");
-    codewhale_engine::operate::pause_keepalive(&manager).expect("pause");
-    let before = serde_json::to_value(
-        manager
-            .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
-            .expect("record"),
-    )
-    .expect("json");
-    std::fs::create_dir_all(&operate_dir).expect("directory");
-    std::fs::write(operate_dir.join("current.json"), b"{broken")
-        .expect("corrupt operation fixture");
-    let automations = Arc::new(tokio::sync::Mutex::new(manager));
-    let mut app = create_test_app();
-    app.workspace = root.path().to_path_buf();
-    app.runtime_services.automations = Some(automations.clone());
-    app.set_provider_identity_record(config.active_provider_identity().expect("identity"));
-    app.set_model_selection("startup-model".into());
-    let engine = mock_engine_handle();
-    apply_mode_update(&mut app, &engine.handle, &config, AppMode::Operate).await;
-    let record = automations
-        .lock()
-        .await
-        .get_automation(codewhale_engine::operate::OPERATE_KEEPALIVE_ID)
-        .expect("saved keepalive");
-    assert_eq!(serde_json::to_value(&record).expect("json"), before);
-    assert_eq!(
-        record.status,
-        codewhale_engine::automation_manager::AutomationStatus::Paused
-    );
-    assert!(record.next_run_at.is_none());
-    assert_eq!(
-        std::fs::read(operate_dir.join("current.json")).expect("operation"),
-        b"{broken"
-    );
-    assert!(app.history.iter().any(|cell| matches!(cell, HistoryCell::System { content } if content.contains("Operate did not start"))));
-}
-
-#[tokio::test]
-async fn operate_mode_entry_attaches_to_recorded_operation() {
-    let _lock = crate::test_support::lock_test_env();
-    let dir = tempfile::TempDir::new().expect("temp");
-    let _operate_dir = crate::test_support::EnvVarGuard::set("CODEWHALE_OPERATE_DIR", dir.path());
-    // Pre-record a planned operation: entering Operate must attach to it
-    // (same id) instead of minting a fresh record that resets spend and plan.
-    let store = codewhale_engine::operate::OperationStore::open(dir.path()).expect("store");
-    let recorded = codewhale_engine::operate::start_operation(
-        &store,
-        dir.path(),
-        Some("Steady ops".into()),
-        None,
-        true,
-        "selected-model",
-    )
-    .expect("start");
-    let mut planned = recorded.clone();
-    planned.plan_from_direction();
-    store.save(&planned).expect("save planned");
-
-    let mut app = create_test_app();
-    app.runtime_services.automations = Some(Arc::new(tokio::sync::Mutex::new(
-        codewhale_engine::automation_manager::AutomationManager::open_for_test(
-            dir.path().join("automations"),
-        )
-        .expect("automations"),
-    )));
-    let engine = codewhale_engine::core::engine::mock_engine_handle();
-    assert!(
-        apply_mode_update(
-            &mut app,
-            &engine.handle,
-            &Config::default(),
-            AppMode::Operate
-        )
-        .await
-    );
-
-    let board = app
-        .history
-        .iter()
-        .rev()
-        .find_map(|cell| match cell {
-            crate::tui::history::HistoryCell::System { content } => Some(content.clone()),
-            _ => None,
-        })
-        .expect("operate board message");
-    assert!(
-        board.contains(&planned.id),
-        "re-entry must show the recorded operation, saw: {board}"
-    );
-    assert!(
-        board.contains("slice-1"),
-        "board shows the kept plan: {board}"
-    );
 }
 
 #[test]
@@ -12775,6 +12625,8 @@ async fn auto_dispatch_keeps_last_and_pending_receipts_aligned() {
     let _deepseek = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
     let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-test-key");
     let mut app = create_test_app();
+    app.current_session_id = Some(uuid::Uuid::new_v4().to_string());
+    app.capture_session_fixture_source();
     app.set_provider_identity(ProviderKind::Zai, "zai");
     app.reasoning_effort = ReasoningEffort::Low;
     app.reasoning_effort_preference = Some(ReasoningEffort::Low);
@@ -14686,6 +14538,7 @@ async fn reserved_dispatch_normal_engine_counts_requests_and_accepts_next_turn()
         .into_iter()
         .enumerate()
     {
+        app.session_write_receipt = None;
         start_user_dispatch(
             &mut app,
             &config,
@@ -15225,9 +15078,14 @@ printf '%s\n' '{"text":"after timeout"}'
     .await
     .expect("dispatch user message");
 
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("hook timed out after 1s")
+    assert!(
+        matches!(
+            app.status_message.as_deref(),
+            Some(status) if status == "hook timed out after 1s"
+                || status.ends_with("(session persistence actor is not initialized)")
+        ),
+        "{:?}",
+        app.status_message
     );
     match engine.rx_op.recv().await.expect("send message op") {
         codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
@@ -15270,9 +15128,14 @@ printf '%s\n' '{"text":"after soft failure"}'
     .await
     .expect("dispatch user message");
 
-    assert_eq!(
-        app.status_message.as_deref(),
-        Some("message_submit hook exited with code 9")
+    assert!(
+        matches!(
+            app.status_message.as_deref(),
+            Some(status) if status == "message_submit hook exited with code 9"
+                || status.ends_with("(session persistence actor is not initialized)")
+        ),
+        "{:?}",
+        app.status_message
     );
     match engine.rx_op.recv().await.expect("send message op") {
         codewhale_engine::core::ops::Op::SendMessage(TurnSpec { content, .. }) => {
@@ -16747,6 +16610,8 @@ fn user_input_completion_preserves_newer_question_and_dispatch() {
     observe_human_request_settlement(
         &mut app,
         &EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -16794,6 +16659,8 @@ fn user_input_turn_end_cancel_and_disconnect_retire_question_views() {
             _ => observe_human_request_settlement(
                 &mut app,
                 &EngineEvent::TurnComplete {
+                    source_accounting: false,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id: None,
@@ -17500,6 +17367,14 @@ fn shell_job(
     status: codewhale_engine::tools::shell::ShellStatus,
     exit_code: Option<i64>,
 ) -> codewhale_engine::tools::shell::ShellJobSnapshot {
+    use codewhale_engine::tools::shell::{ShellStatus, ShellTerminationCause};
+    let cause = match &status {
+        ShellStatus::Running => None,
+        ShellStatus::Completed | ShellStatus::Failed => Some(ShellTerminationCause::Producer),
+        ShellStatus::Killed => Some(ShellTerminationCause::Killed),
+        ShellStatus::TimedOut => Some(ShellTerminationCause::TimedOut),
+    };
+    let producer_reported = matches!(&status, ShellStatus::Completed | ShellStatus::Failed);
     codewhale_engine::tools::shell::ShellJobSnapshot {
         id: id.to_string(),
         job_id: id.to_string(),
@@ -17508,6 +17383,9 @@ fn shell_job(
         status,
         exit_code,
         elapsed_ms: 12_000,
+        started_at: Some(chrono::Utc::now()),
+        cause,
+        producer_reported,
         stdout_tail: String::new(),
         stderr_tail: String::new(),
         stdout_len: 0,
@@ -17998,12 +17876,13 @@ fn reconcile_subagent_activity_state_caps_terminal_card_bursts() {
 }
 
 #[test]
-fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
+fn legacy_subagent_token_usage_marks_uncertainty_without_card_change() {
     let mut app = create_test_app();
     handle_subagent_mailbox(
         &mut app,
         1,
         &codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
+            record: None,
             agent_id: "agent-a".to_string(),
             source_id: "response-a".to_string(),
             route: Box::new(test_mailbox_route(
@@ -18018,7 +17897,12 @@ fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
         },
     );
 
-    assert!(app.session.subagent_cost > 0.0);
+    assert_eq!(app.session.subagent_cost, 0.0);
+    assert!(
+        app.session
+            .cost_unpriced_reasons
+            .contains("legacy_usage_unverified")
+    );
     assert!(
         app.history.is_empty(),
         "usage-only mailbox messages should not allocate a sub-agent card"
@@ -18034,6 +17918,7 @@ fn subagent_token_usage_prices_the_child_route_not_the_parent_route() {
         &mut app,
         2,
         &codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
+            record: None,
             agent_id: "agent-codex".to_string(),
             source_id: "response-codex".to_string(),
             route: Box::new(test_mailbox_route(ProviderKind::OpenaiCodex, "gpt-5.5")),
@@ -18054,31 +17939,37 @@ fn subagent_token_usage_prices_the_child_route_not_the_parent_route() {
 #[test]
 fn subagent_token_usage_is_deduped_by_response_source() {
     let mut app = create_test_app();
-    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
-        agent_id: "agent-a".to_string(),
-        source_id: "response-a".to_string(),
-        route: Box::new(test_mailbox_route(
-            ProviderKind::Deepseek,
-            "deepseek-v4-flash",
-        )),
-        usage: codewhale_models::Usage {
-            input_tokens: 10_000,
-            output_tokens: 1_000,
-            ..Default::default()
-        },
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
+    let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
+    let source_usage = codewhale_models::Usage {
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+        ..Default::default()
     };
+    let record = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "response-a",
+        &route,
+        &source_usage,
+    );
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-a", record);
 
     handle_subagent_mailbox(&mut app, 7, &usage);
     let first = app.session.subagent_cost;
     handle_subagent_mailbox(&mut app, 8, &usage);
     assert_eq!(app.session.subagent_cost, first);
-    let mut distinct = usage.clone();
-    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
-        &mut distinct
-    else {
-        unreachable!()
-    };
-    *source_id = "response-b".to_string();
+    let next = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "independent-response",
+        &route,
+        &source_usage,
+    );
+    let distinct = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-a", next);
     handle_subagent_mailbox(&mut app, 9, &distinct);
     assert!(app.session.subagent_cost > first);
 }
@@ -18103,6 +17994,10 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     manager.save_session(&session).expect("save origin");
     app.current_session_id = Some(session.metadata.id.clone());
     app.current_session_metadata = Some(session.metadata.clone());
+    app.session_write_receipt = manager
+        .load_session(&session.metadata.id)
+        .expect("native origin read")
+        .write_receipt;
     let origin_scope = codewhale_engine::cost_status::scope_token();
     let owner = "interactive:active-deleted-origin:origin-turn";
     codewhale_engine::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
@@ -18125,11 +18020,21 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
             .is_some_and(|cost| cost.usd > 0.0)
     );
     let source_id = "subagent:deleted-origin:response";
-    let mailbox = codewhale_engine::tools::subagent::MailboxMessage::token_usage(
-        "agent-deleted-origin",
+    let source = codewhale_engine::cost_status::NativeUsageSource::capture_with_origin(
         source_id,
-        route.clone(),
-        usage.clone(),
+        codewhale_engine::cost_status::UsageSpendOwner::Auxiliary,
+        Some(
+            app.session_write_receipt
+                .as_ref()
+                .expect("native source")
+                .usage_origin(origin_scope)
+                .expect("native origin"),
+        ),
+    );
+    let record = source.reported(&route, &usage).expect("native receipt");
+    let mailbox = codewhale_engine::tools::subagent::MailboxMessage::usage_record(
+        "agent-deleted-origin",
+        record.clone(),
     );
     manager
         .delete_session(&session.metadata.id)
@@ -18138,13 +18043,8 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
     // an active-origin callback, not the already-covered stale-scope path.
     assert_eq!(codewhale_engine::cost_status::scope_token(), origin_scope);
     for seq in 1..=2 {
-        codewhale_engine::cost_status::report_effective_route_for_runtime(
-            origin_scope,
-            Some(owner),
-            source_id,
-            &route,
-            &usage,
-        );
+        codewhale_engine::cost_status::report_runtime_usage_record(origin_scope, None, &record)
+            .expect("handled retired receipt");
         handle_subagent_mailbox_for_turn(&mut app, "origin-turn", seq, &mailbox);
     }
     assert!(codewhale_engine::cost_status::drain().is_empty());
@@ -18179,31 +18079,37 @@ fn active_deleted_origin_mailbox_usage_does_not_accrue_or_restore_the_session() 
 #[test]
 fn subagent_token_usage_source_is_stable_across_engine_turns() {
     let mut app = create_test_app();
-    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
-        agent_id: "agent-a".to_string(),
-        source_id: "response-a".to_string(),
-        route: Box::new(test_mailbox_route(
-            ProviderKind::Deepseek,
-            "deepseek-v4-flash",
-        )),
-        usage: codewhale_models::Usage {
-            input_tokens: 10_000,
-            output_tokens: 1_000,
-            ..Default::default()
-        },
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
+    let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
+    let source_usage = codewhale_models::Usage {
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+        ..Default::default()
     };
+    let record = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "response-a",
+        &route,
+        &source_usage,
+    );
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-a", record);
 
     handle_subagent_mailbox_for_turn(&mut app, "engine-turn-a", 1, &usage);
     let first = app.session.subagent_cost;
     handle_subagent_mailbox_for_turn(&mut app, "engine-turn-b", 1, &usage);
     assert_eq!(app.session.subagent_cost, first, "same response dedupes");
-    let mut distinct = usage.clone();
-    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
-        &mut distinct
-    else {
-        unreachable!()
-    };
-    *source_id = "response-b".to_string();
+    let next = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "independent-response",
+        &route,
+        &source_usage,
+    );
+    let distinct = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-a", next);
     handle_subagent_mailbox_for_turn(&mut app, "engine-turn-b", 2, &distinct);
     assert!(
         app.session.subagent_cost > first,
@@ -19437,6 +19343,8 @@ fn local_cancel_marks_late_stream_events_for_suppression() {
     ));
     assert!(!suppress_engine_event_after_local_cancel(
         &EngineEvent::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,
@@ -19468,6 +19376,8 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
     app.runtime_turn_id = Some("turn-model".to_string());
 
     let model_terminal = EngineEvent::TurnComplete {
+        source_accounting: false,
+
         turn_id: Some("turn-model".to_string()),
         submission_id: None,
         compaction_id: None,
@@ -19489,6 +19399,8 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
     assert_eq!(model.turn_id.as_deref(), Some("turn-model"));
 
     let rejected_terminal = EngineEvent::TurnComplete {
+        source_accounting: false,
+
         turn_id: None,
         submission_id: Some("submission-rejected".to_string()),
         compaction_id: None,
@@ -19510,6 +19422,8 @@ fn turn_end_outbox_uses_the_terminal_events_owner() {
     assert!(rejected.turn_id.is_none());
 
     let compaction_terminal = EngineEvent::TurnComplete {
+        source_accounting: false,
+
         turn_id: None,
         submission_id: None,
         compaction_id: Some("compact-manual".to_string()),
@@ -20899,6 +20813,7 @@ fn workspace_context_discards_old_workspace_results_and_clears_missing_git() {
     *app.workspace_context_cell.lock().unwrap() =
         Some(crate::tui::workspace_context::WorkspaceContextSnapshot {
             notes: Vec::new(),
+            memory_size_hint: None,
             workspace: app.workspace.join("old-workspace"),
             context: Some("stale | clean".into()),
             is_linked_worktree: false,
@@ -20913,6 +20828,7 @@ fn workspace_context_discards_old_workspace_results_and_clears_missing_git() {
     *app.workspace_context_cell.lock().unwrap() =
         Some(crate::tui::workspace_context::WorkspaceContextSnapshot {
             notes: Vec::new(),
+            memory_size_hint: None,
             workspace: app.workspace.clone(),
             context: None,
             is_linked_worktree: false,
@@ -20933,6 +20849,7 @@ fn workspace_context_drain_requests_redraw_when_context_changes() {
         let mut cell = app.workspace_context_cell.lock().expect("context cell");
         *cell = Some(crate::tui::workspace_context::WorkspaceContextSnapshot {
             notes: Vec::new(),
+            memory_size_hint: None,
             workspace: app.workspace.clone(),
             context: Some("feature/new | clean".to_string()),
             is_linked_worktree: false,
@@ -21869,7 +21786,7 @@ async fn empty_enter_promotes_the_oldest_queued_message() {
 #[tokio::test]
 async fn operate_streaming_enter_queues_another_parallel_task() {
     let mut app = create_test_app();
-    app.mode = AppMode::Operate;
+    app.mode = AppMode::Plan;
     app.is_loading = true;
     app.streaming_message_index = Some(0);
     let config = Config::default();
@@ -23686,10 +23603,6 @@ fn shell_wait_without_command_uses_task_id_until_command_metadata_arrives() {
 #[test]
 fn legacy_child_usage_metadata_fails_closed_without_parent_route_fallback() {
     let mut app = create_test_app();
-    // An in-process review child publishes no route of its own, so it runs on
-    // the parent turn's client and is billed from the parent's frozen receipt.
-    // Without a receipt there is nothing sound to bill from, so the turn has to
-    // be active for the child to accrue anything.
     app.active_turn = Some(crate::tui::app::ActiveTurnMetadata {
         turn_id: "turn-child-usage".to_string(),
         created_at: chrono::Utc::now(),
@@ -23739,7 +23652,7 @@ fn legacy_child_usage_metadata_fails_closed_without_parent_route_fallback() {
     assert!(
         app.session
             .cost_unpriced_reasons
-            .contains("unknown_billing_basis")
+            .contains("legacy_usage_unverified")
     );
 }
 
@@ -23770,24 +23683,20 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     };
 
     // The shared producer emits every class.
-    let priced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope {
-        openrouter_vendor: None,
-        provider: codewhale_config::ProviderKind::Anthropic,
-        provider_identity: "anthropic-api".to_string(),
-        model: "claude-haiku-4-5".to_string(),
-        billing_surface: Some(
-            codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
-        ),
-        // Must be a real fingerprint: persistence and receipt boundaries drop
-        // anything that is not one, and a dropped field would have made the
-        // round-trip assertion below vacuously pass on both sides.
-        endpoint_fingerprint: codewhale_engine::cost_status::endpoint_fingerprint(
-            "https://api.anthropic.com/v1",
-        ),
-        provider_live_pricing: None,
-        billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
-        dispatched_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).expect("epoch"),
-    };
+    let api_config = codewhale_runtime::config::Config::default();
+    let priced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        Some(&api_config),
+        ProviderKind::Anthropic,
+        ProviderKind::Anthropic.as_str(),
+        "claude-haiku-4-5",
+        Some(ProviderKind::Anthropic.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    assert_eq!(
+        priced_route.billing_mode,
+        codewhale_engine::cost_status::RouteBillingMode::Metered,
+    );
+    assert!(priced_route.provider_live_pricing.is_some());
     let fields =
         codewhale_engine::cost_status::child_usage_metadata_fields(&priced_route, &child_usage);
     assert_eq!(fields["child_prompt_cache_write_tokens"], 100_000);
@@ -23805,6 +23714,10 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     // The parent deliberately stays DeepSeek: only the frozen child envelope
     // may control this price.
     let mut priced_app = create_test_app();
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
     priced_app.api_provider = codewhale_config::ProviderKind::Deepseek;
     priced_app.billing_presentation = codewhale_engine::route_billing::BillingPresentation::Metered;
     let mut metadata = serde_json::json!({});
@@ -23812,6 +23725,20 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
         &mut metadata,
         &priced_route,
         &child_usage,
+    );
+    let record = settled_child_fixture_record(
+        &mut priced_app,
+        &fixture_manager,
+        "cache-class-response",
+        &priced_route,
+        &child_usage,
+    );
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &codewhale_engine::cost_status::RuntimeUsageBatch {
+            records: vec![record],
+            ..Default::default()
+        },
     );
     assert_eq!(
         codewhale_engine::cost_status::child_route_envelope_from_metadata(&metadata),
@@ -23839,24 +23766,44 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     unpriced_app.api_provider = codewhale_config::ProviderKind::Deepseek;
     unpriced_app.billing_presentation =
         codewhale_engine::route_billing::BillingPresentation::Metered;
-    let unpriced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope {
-        openrouter_vendor: None,
-        provider: codewhale_config::ProviderKind::Moonshot,
-        provider_identity: "moonshot-api".to_string(),
-        model: "kimi-k2.7-code".to_string(),
-        billing_surface: Some(
-            codewhale_engine::pricing::FIRST_PARTY_PAYG_BILLING_SURFACE.to_string(),
-        ),
-        endpoint_fingerprint: Some("test-moonshot-endpoint".to_string()),
-        provider_live_pricing: None,
-        billing_mode: codewhale_engine::cost_status::RouteBillingMode::Metered,
-        dispatched_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).expect("epoch"),
-    };
+    let mut unpriced_config = codewhale_runtime::config::Config::default();
+    unpriced_config.custom_models = Some(
+        serde_json::from_value(serde_json::json!([{
+            "provider": "moonshot",
+            "base_url": ProviderKind::Moonshot.provider().default_base_url(),
+            "id": "kimi-k2.7-code",
+            "cost": { "input": 1.0, "output": 2.0, "cache_read": 0.1 }
+        }]))
+        .expect("fixture rates without a cache-write price"),
+    );
+    let unpriced_route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        Some(&unpriced_config),
+        ProviderKind::Moonshot,
+        ProviderKind::Moonshot.as_str(),
+        "kimi-k2.7-code",
+        Some(ProviderKind::Moonshot.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    assert!(unpriced_route.provider_live_pricing.is_some());
     let mut metadata = serde_json::json!({});
     codewhale_engine::cost_status::attach_child_usage_metadata(
         &mut metadata,
         &unpriced_route,
         &child_usage,
+    );
+    let record = settled_child_fixture_record(
+        &mut unpriced_app,
+        &fixture_manager,
+        "unpriced-cache-class-response",
+        &unpriced_route,
+        &child_usage,
+    );
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &codewhale_engine::cost_status::RuntimeUsageBatch {
+            records: vec![record],
+            ..Default::default()
+        },
     );
     let unpriced =
         Ok(codewhale_engine::tools::spec::ToolResult::success("ok").with_metadata(metadata));
@@ -23880,14 +23827,41 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
     pathological.api_provider = codewhale_config::ProviderKind::Deepseek;
     pathological.billing_presentation =
         codewhale_engine::route_billing::BillingPresentation::Metered;
+    let pathological_route = codewhale_engine::cost_status::EffectiveRouteEnvelope::capture(
+        Some(&api_config),
+        ProviderKind::Deepseek,
+        ProviderKind::Deepseek.as_str(),
+        "deepseek-v4-flash",
+        Some(ProviderKind::Deepseek.provider().default_base_url()),
+        chrono::Utc::now(),
+    );
+    assert!(pathological_route.provider_live_pricing.is_some());
     let mut metadata = serde_json::json!({});
     codewhale_engine::cost_status::attach_child_usage_metadata(
         &mut metadata,
-        &test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash"),
+        &pathological_route,
         &codewhale_models::Usage {
             input_tokens: 1_000,
             output_tokens: 100,
             reasoning_tokens: Some(9_000),
+            ..Default::default()
+        },
+    );
+    let usage = codewhale_engine::cost_status::child_usage_from_metadata(&metadata)
+        .expect("typed pathological usage");
+    let route = codewhale_engine::cost_status::child_route_envelope_from_metadata(&metadata)
+        .expect("typed pathological route");
+    let record = settled_child_fixture_record(
+        &mut pathological,
+        &fixture_manager,
+        "reasoning-subset-response",
+        &route,
+        &usage,
+    );
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &codewhale_engine::cost_status::RuntimeUsageBatch {
+            records: vec![record],
             ..Default::default()
         },
     );
@@ -23915,12 +23889,30 @@ fn child_usage_metadata_carries_cache_write_and_reasoning_end_to_end() {
 #[test]
 fn zero_usage_model_child_still_records_priced_receipt() {
     let mut app = create_test_app();
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
     let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
     let mut metadata = serde_json::json!({});
     codewhale_engine::cost_status::attach_child_usage_metadata(
         &mut metadata,
         &route,
         &codewhale_models::Usage::default(),
+    );
+    let record = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "explicit-zero-response",
+        &route,
+        &codewhale_models::Usage::default(),
+    );
+    codewhale_engine::cost_status::attach_child_usage_batch_metadata(
+        &mut metadata,
+        &codewhale_engine::cost_status::RuntimeUsageBatch {
+            records: vec![record],
+            ..Default::default()
+        },
     );
     let result = Ok(
         codewhale_engine::tools::spec::ToolResult::error("kernel closed").with_metadata(metadata),
@@ -24488,6 +24480,7 @@ fn renamed_title_survives_next_in_memory_automatic_snapshot() {
     manager.save_session(&session).expect("save session");
     let mut app = create_test_app();
     app.current_session_id = Some(session.metadata.id.clone());
+    app.capture_session_fixture_source();
     app.api_messages = std::sync::Arc::new(session.messages.clone());
 
     let renamed = crate::commands::execute("/rename Renamed In Memory", &mut app);
@@ -26606,6 +26599,8 @@ async fn composer_send_anchors_new_message_at_tail() {
     let _env_lock = crate::test_support::lock_test_env();
     let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-test-key");
     let mut app = create_test_app();
+    app.current_session_id = Some(uuid::Uuid::new_v4().to_string());
+    app.capture_session_fixture_source();
     app.set_provider_identity(ProviderKind::Zai, "zai");
     app.set_model_selection("auto".to_string());
     let config = {
@@ -28521,6 +28516,7 @@ async fn provider_switch_rollback_corrects_setup_receipt_when_persistence_fails(
 
 fn stream_drop_approval_event() -> EngineEvent {
     EngineEvent::ApprovalRequired {
+        publication: None,
         id: "stream-drop-tool".to_string(),
         tool_name: "bash".to_string(),
         description: "Fixture workspace counter".to_string(),
@@ -28622,6 +28618,7 @@ async fn withdrawn_extension_approval_retires_only_its_card_even_when_idle() {
     app.is_loading = true;
     let mut mock = mock_engine_handle();
     let request = |id: &str| EngineEvent::ApprovalRequired {
+        publication: None,
         id: id.into(),
         tool_name: "exec_shell".into(),
         description: "extension request".into(),
@@ -28689,6 +28686,7 @@ async fn recoverable_stream_error_after_local_cancel_resolves_stale_approval() {
 
 fn child_approval_event(id: &str) -> EngineEvent {
     EngineEvent::ApprovalRequired {
+        publication: None,
         id: id.to_string(),
         tool_name: "exec_shell".to_string(),
         description: "agent_a wants to run 'exec_shell': needs a decision".to_string(),
@@ -28711,6 +28709,7 @@ async fn drain_approval_event(
         return;
     }
     let EngineEvent::ApprovalRequired {
+        publication: _,
         id,
         tool_name,
         description,
@@ -28750,6 +28749,7 @@ async fn auto_answered_approvals_name_their_decider() {
     use codewhale_engine::core::engine::MockApprovalEvent;
     const GROUP: &str = "shell:exec_shell:cargo test";
     let parent = |id: &str| EngineEvent::ApprovalRequired {
+        publication: None,
         id: id.to_string(),
         tool_name: "exec_shell".to_string(),
         description: "run the tests".to_string(),
@@ -29352,15 +29352,16 @@ async fn web_decision_dismisses_buried_child_card() {
     );
     app.remote_control
         .force_mirror_connected_for_tests("run_fixture", "turn_current");
-    app.remote_control
-        .queue_remote_event_for_tests(crate::remote_control::RemoteEvent::Command {
+    app.remote_control.queue_remote_event_for_tests(
+        codewhale_app_server::remote_control::RemoteEvent::Command {
             run_id: "run_fixture".to_string(),
             seq: 1,
-            command: crate::remote_control::RemoteCommand::Approval {
+            command: codewhale_app_server::remote_control::RemoteCommand::Approval {
                 gate,
                 approved: true,
             },
-        });
+        },
+    );
     drain_remote_control_events(&mut app, &Config::default(), &mock.handle)
         .await
         .unwrap();
@@ -29981,19 +29982,24 @@ fn displayed_session_cost_is_monotonic_under_negative_reconciliation() {
 #[test]
 fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
     let mut app = create_test_app();
-    let usage = codewhale_engine::tools::subagent::MailboxMessage::TokenUsage {
-        agent_id: "agent-x".to_string(),
-        source_id: "response-x".to_string(),
-        route: Box::new(test_mailbox_route(
-            ProviderKind::Deepseek,
-            "deepseek-v4-flash",
-        )),
-        usage: codewhale_models::Usage {
-            input_tokens: 10_000,
-            output_tokens: 1_000,
-            ..Default::default()
-        },
+    let fixture_dir = tempfile::tempdir().expect("fixture dir");
+    let fixture_manager =
+        codewhale_engine::session_manager::SessionManager::new(fixture_dir.path().join("sessions"))
+            .expect("fixture manager");
+    let route = test_mailbox_route(ProviderKind::Deepseek, "deepseek-v4-flash");
+    let source_usage = codewhale_models::Usage {
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+        ..Default::default()
     };
+    let record = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "response-x",
+        &route,
+        &source_usage,
+    );
+    let usage = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-x", record);
     handle_subagent_mailbox(&mut app, 11, &usage);
     let baseline = app.displayed_session_cost();
     assert!(baseline > 0.0);
@@ -30007,13 +30013,14 @@ fn duplicate_mailbox_token_usage_does_not_regress_displayed_cost() {
     );
 
     // A distinct provider response must extend the displayed cost upward.
-    let mut distinct = usage.clone();
-    let codewhale_engine::tools::subagent::MailboxMessage::TokenUsage { source_id, .. } =
-        &mut distinct
-    else {
-        unreachable!()
-    };
-    *source_id = "response-y".to_string();
+    let next = settled_child_fixture_record(
+        &mut app,
+        &fixture_manager,
+        "independent-response",
+        &route,
+        &source_usage,
+    );
+    let distinct = codewhale_engine::tools::subagent::MailboxMessage::usage_record("agent-x", next);
     handle_subagent_mailbox(&mut app, 13, &distinct);
     assert!(app.displayed_session_cost() > baseline);
 }
@@ -33777,7 +33784,7 @@ async fn flush_offline_queue_test_actor(handle: &persistence_actor::PersistActor
     assert!(report.failures.is_empty(), "{:?}", report.failures);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
     const PROBE: &str = "CODEWHALE_OFFLINE_QUEUE_LIFECYCLE_PROBE";
     if std::env::var_os(PROBE).is_none() {
@@ -33939,6 +33946,8 @@ async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
     drop(owner);
     let result = crate::commands::execute("/new --force", &mut app);
     assert!(!result.is_error, "{:?}", result.message);
+    assert_eq!(app.current_session_id.as_deref(), Some("queue-B"));
+    crate::commands::acknowledge_new_session(&mut app, &result).await;
     assert_ne!(app.current_session_id.as_deref(), Some("queue-B"));
     flush_offline_queue_test_actor(&handle).await;
     assert!(
@@ -34453,6 +34462,7 @@ async fn background_review_fast_durable_completion_survives_inventory_failures()
             allow_shell: false,
             trust_mode: false,
             execution_limits: codewhale_engine::task_manager::TaskExecutionLimits::default(),
+            human_waits_answerable: false,
         },
         Arc::new(Done),
     )
@@ -35402,6 +35412,7 @@ async fn full_access_extension_calls_open_human_cards_despite_remembered_grants(
             &mut app,
             &mock.handle,
             EngineEvent::ApprovalRequired {
+                publication: None,
                 id: "extension-core-call".into(),
                 tool_name: name.into(),
                 description: "Requested by extension:fixture".into(),

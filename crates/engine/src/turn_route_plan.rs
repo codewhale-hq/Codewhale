@@ -30,6 +30,7 @@ use codewhale_runtime::config::{Config, ProviderIdentity};
 /// captured `UserDispatchPrepare` fields and `/preview-request` can pass a
 /// hypothetical prompt, without either one duplicating the other's logic.
 pub struct TurnRoutePlanRequest<'a> {
+    pub accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
     pub route_config: &'a Config,
     pub app_route_identity: &'a ProviderIdentity,
     pub api_provider: ProviderKind,
@@ -158,6 +159,13 @@ pub async fn plan_turn_route(
                     request.reasoning_effort,
                 ),
                 request.allow_auto_router_response_cache,
+                request.accounting_origin.clone().map(|origin| {
+                    crate::cost_status::NativeUsageSource::capture_with_origin(
+                        format!("auto-router:{}", uuid::Uuid::new_v4()),
+                        crate::cost_status::UsageSpendOwner::Auxiliary,
+                        Some(origin),
+                    )
+                }),
             )
             .await
             .map_err(|err| err.to_string())?,
@@ -213,7 +221,7 @@ pub async fn plan_turn_route(
         }
     };
     let turn_route = if request.preflight_required {
-        match turn_route.preflight() {
+        match turn_route.preflight_async().await {
             Ok(route) => route,
             Err(err) => {
                 return Err(settle_failed_parent_route(
@@ -341,9 +349,9 @@ mod tests {
         );
         let batch = crate::cost_status::RuntimeUsageBatch {
             decisions: Vec::new(),
-            records: vec![crate::cost_status::RuntimeUsageRecord {
-                source_id: "auto-router:plan-usage".to_string(),
-                usage: crate::cost_status::EffectiveRouteUsage {
+            records: vec![crate::cost_status::RuntimeUsageRecord::legacy(
+                "auto-router:plan-usage".to_string(),
+                crate::cost_status::EffectiveRouteUsage {
                     route: route.clone(),
                     usage: codewhale_models::Usage {
                         input_tokens: 4,
@@ -351,7 +359,7 @@ mod tests {
                         ..Default::default()
                     },
                 },
-            }],
+            )],
             drop_records: vec![crate::cost_status::RuntimeUsageDropRecord {
                 reason: crate::cost_status::RuntimeUsageMissingReason::default(),
                 source_id: "auto-router:plan-drop".to_string(),
@@ -426,6 +434,7 @@ mod tests {
         let identity = deepseek_identity();
 
         let planned = plan_turn_route(TurnRoutePlanRequest {
+            accounting_origin: None,
             route_config: &config,
             app_route_identity: &identity,
             api_provider: ProviderKind::Deepseek,

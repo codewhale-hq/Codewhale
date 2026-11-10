@@ -661,6 +661,9 @@ fn orcarouter_and_existing_custom_routes_own_live_catalogs() {
 }
 
 pub fn provider_owns_live_catalog(provider: ProviderKind, base_url: &str) -> bool {
+    if crate::client::model_listing_unavailable(provider, base_url) {
+        return false;
+    }
     matches!(
         provider,
         ProviderKind::Openrouter
@@ -1572,7 +1575,9 @@ fn published_pricing_scope(provider: ProviderKind, identity: &str, fingerprint: 
         provider,
         ProviderKind::Custom | ProviderKind::OpenaiCodex | ProviderKind::OpencodeGo
     ) && identity == provider.as_str()
-        && fingerprint == base_url_fingerprint(provider.provider().default_base_url())
+        && codewhale_config::provider_published_pricing_base_urls(provider)
+            .iter()
+            .any(|base_url| fingerprint == base_url_fingerprint(base_url))
 }
 
 #[must_use]
@@ -1725,7 +1730,7 @@ pub fn declared_or_catalog_quote(
 ) -> Option<ProviderLivePricingQuote> {
     match declared {
         Some(quote) if quote.carries_pricing_decision() => Some(quote),
-        declared => catalog()
+        Some(declared) => catalog()
             .filter(|quote| {
                 matches!(
                     quote.provenance,
@@ -1734,7 +1739,8 @@ pub fn declared_or_catalog_quote(
                         | PricingProvenance::CloudFacts
                 )
             })
-            .or(declared),
+            .or(Some(declared)),
+        None => catalog(),
     }
 }
 

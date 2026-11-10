@@ -11,20 +11,24 @@ mod platform {
     use crate::daemon_socket::AuthorizedPeer;
     #[cfg(windows)]
     use crate::daemon_socket::default_socket_path;
-    use crate::daemon_socket::owner_work;
     use crate::stdio::{
         BoundedLines, ParsedStdioLine, is_frame_refusal, parse_stdio_line, serialize_control_frame,
         write_control_line, write_stdio_line,
     };
     use anyhow::{Context as _, bail};
+    use codewhale_app_server_protocol::lifecycle::InitializeResponse;
+    use codewhale_app_server_protocol::rpc::{
+        RequestId, RpcCall, RpcErrorResponse, RpcNotification, RpcResponse,
+    };
     use codewhale_config::private_directory::PrivateDirectory;
     #[cfg(unix)]
     use codewhale_paths::daemon_socket::default_socket_path;
     use codewhale_protocol::RuntimeOwnerReceipt;
+    use codewhale_runtime::runtime_control::owner_work;
     use serde_json::{Value, json};
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::io::{AsyncWriteExt as _, BufReader};
+    use tokio::io::BufReader;
     #[cfg(unix)]
     use tokio::net::UnixStream;
     #[cfg(unix)]
@@ -32,14 +36,47 @@ mod platform {
     #[cfg(windows)]
     type Connection = tokio::net::windows::named_pipe::NamedPipeClient;
 
+    type OwnerTransport = crate::websocket::LocalWebSocket<
+        tokio::io::ReadHalf<Connection>,
+        tokio::io::WriteHalf<Connection>,
+    >;
+
+    fn same_socket_selection(left: &std::path::Path, right: &std::path::Path) -> bool {
+        if left == right {
+            return true;
+        }
+        #[cfg(unix)]
+        {
+            if left.file_name().is_none() || left.file_name() != right.file_name() {
+                return false;
+            }
+            match (
+                left.parent()
+                    .map(codewhale_paths::resolve_root_owned_ancestors),
+                right
+                    .parent()
+                    .map(codewhale_paths::resolve_root_owned_ancestors),
+            ) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            }
+        }
+        #[cfg(windows)]
+        {
+            false
+        }
+    }
+
     pub struct OwnerClient {
-        read: BoundedLines<BufReader<tokio::io::ReadHalf<Connection>>>,
-        write: tokio::io::WriteHalf<Connection>,
+        read: BoundedLines<BufReader<tokio::io::ReadHalf<OwnerTransport>>>,
+        write: tokio::io::WriteHalf<OwnerTransport>,
         peer: Arc<AuthorizedPeer>,
         receipt: RuntimeOwnerReceipt,
         routing: Option<crate::RuntimeOwnerRouting>,
         frontend: crate::daemon_socket::AttachFrontend,
         output_failed: bool,
+        native_initialized: bool,
+        pending_initialize: Option<RequestId>,
     }
 
     /// Host startup is the only caller allowed to acquire the Runtime lease.
@@ -183,7 +220,7 @@ mod platform {
                 old.version == owner.version
                     && old.data_dir == owner.data_dir
                     && old.execution_scope == owner.execution_scope
-                    && old.socket_path == endpoint
+                    && same_socket_selection(&old.socket_path, endpoint)
                     && old.config_path == owner.config_path
                     && old.principal == owner.principal,
                 "captured stale owner belongs to another selected store/config/principal"
@@ -267,7 +304,7 @@ mod platform {
             anyhow::ensure!(
                 receipt.version == 1
                     && receipt.pid > 0
-                    && receipt.socket_path == socket_path
+                    && same_socket_selection(&receipt.socket_path, &socket_path)
                     && !receipt.lease_generation.is_empty(),
                 "selected owner receipt is invalid"
             );
@@ -562,13 +599,20 @@ mod platform {
                 .is_none_or(|expected| expected == &receipt),
             "selected owner changed before frontend admission"
         );
-        let (read, mut write) = tokio::io::split(stream);
+        let (read, write) = tokio::io::split(stream);
+        let transport = crate::websocket::connect(read, write).await?;
+        let (read, mut write) = tokio::io::split(transport);
         let mut replies = BoundedLines::new(BufReader::new(read));
         let attach_id = uuid::Uuid::new_v4().to_string();
-        let attach = json!({"jsonrpc":"2.0","id":attach_id,"method":"daemon/attach","params":{
-            "client":{"name":"codewhale-stdio","version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()},
-            "mode":"attach","frontend":frontend,"listener":listener,"scope":scope,"acp_model":acp_model,"expect_daemon_version":env!("CARGO_PKG_VERSION"),"expect_owner":receipt
-        }});
+        let attach = json!(RpcCall {
+            id: Some(RequestId::String(attach_id.clone())),
+            method: "daemon/attach".into(),
+            params: json!({
+                "client":{"name":"codewhale-stdio","version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()},
+                "mode":"attach","frontend":frontend,"listener":listener,"scope":scope,"acp_model":acp_model,"expect_daemon_version":env!("CARGO_PKG_VERSION"),"expect_owner":receipt
+            }),
+            trace: None
+        });
         tokio::time::timeout(
             Duration::from_secs(5),
             write_stdio_line(&mut write, &attach),
@@ -607,6 +651,8 @@ mod platform {
             routing,
             frontend,
             output_failed: false,
+            native_initialized: false,
+            pending_initialize: None,
         })))
     }
 
@@ -623,7 +669,59 @@ mod platform {
                 !self.output_failed,
                 "owner transport write previously failed; outcomes uncertain, not replayed"
             );
-            let frame = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+            if self.frontend == crate::daemon_socket::AttachFrontend::Acp {
+                return self
+                    .send_frame(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+                    .await;
+            }
+            let id: RequestId = serde_json::from_value(id)?;
+            anyhow::ensure!(
+                self.pending_initialize.is_none(),
+                "receive the pending initialize acknowledgement before sending another request"
+            );
+            if self.frontend == crate::daemon_socket::AttachFrontend::Control
+                && !self.native_initialized
+                && method != "initialize"
+            {
+                let initialize_id = RequestId::String(format!(
+                    "codewhale-native-initialize-{}",
+                    uuid::Uuid::new_v4()
+                ));
+                self.send_call(RpcCall { id: Some(initialize_id.clone()), method: "initialize".into(), params: json!({"clientInfo":{"name":"codewhale-native-control","version":env!("CARGO_PKG_VERSION")}}), trace: None }).await?;
+                self.pending_initialize = Some(initialize_id.clone());
+                let acknowledged: Result<()> = async {
+                    let response = tokio::time::timeout(Duration::from_secs(5), self.recv()).await.context("owner initialize response deadline expired; connection outcome uncertain")??.context("owner input closed before initialize acknowledgement")?;
+                    anyhow::ensure!(response.get("id") == Some(&json!(initialize_id)) && response.get("error").is_none() && response.get("result").is_some(), "owner initialize acknowledgement mismatch or refusal");
+                    Ok(())
+                }.await;
+                if let Err(error) = acknowledged {
+                    self.output_failed = true;
+                    return Err(error);
+                }
+                self.native_initialized = true;
+            }
+            let pending = (self.frontend == crate::daemon_socket::AttachFrontend::Control
+                && method == "initialize"
+                && !self.native_initialized)
+                .then(|| id.clone());
+            self.send_call(RpcCall {
+                id: Some(id),
+                method: method.to_string(),
+                params,
+                trace: None,
+            })
+            .await?;
+            self.pending_initialize = pending;
+            Ok(())
+        }
+        async fn send_call(&mut self, request: RpcCall) -> Result<()> {
+            self.send_frame(json!(request)).await
+        }
+        async fn send_frame(&mut self, frame: Value) -> Result<()> {
+            anyhow::ensure!(
+                !self.output_failed,
+                "owner transport write previously failed; outcomes uncertain, not replayed"
+            );
             let bytes = serialize_control_frame(&frame)?;
             let check = self.peer.clone();
             owner_work(move || check.check()).await?;
@@ -647,7 +745,36 @@ mod platform {
             };
             let check = self.peer.clone();
             owner_work(move || check.check()).await?;
-            serde_json::from_str(&line).map(Some).map_err(Into::into)
+            let value: Value = serde_json::from_str(&line)?;
+            if let Some(id) = self.pending_initialize.as_ref()
+                && value.get("id") == Some(&json!(id))
+            {
+                let response = serde_json::from_value::<RpcResponse>(value.clone());
+                let accepted = response
+                    .ok()
+                    .filter(|_| value.get("error").is_none())
+                    .and_then(|response| {
+                        serde_json::from_value::<InitializeResponse>(response.result).ok()
+                    })
+                    .is_some_and(|response| response.codex_home.is_absolute());
+                let rejected = serde_json::from_value::<RpcErrorResponse>(value.clone()).is_ok();
+                if !accepted && !rejected {
+                    self.output_failed = true;
+                    anyhow::bail!("initialize acknowledgement does not match its typed response");
+                }
+                self.native_initialized = accepted;
+                self.pending_initialize = None;
+                if accepted {
+                    self.send_call(RpcCall {
+                        id: None,
+                        method: "initialized".into(),
+                        params: Value::Null,
+                        trace: None,
+                    })
+                    .await?;
+                }
+            }
+            Ok(Some(value))
         }
         pub async fn forward<I, O>(mut self, input: I, output: O) -> Result<()>
         where
@@ -674,8 +801,7 @@ mod platform {
                         None => {
                             input_open=false;
                             tokio::time::timeout(Duration::from_secs(5), async {
-                                write_stdio_line(&mut self.write,&json!({"jsonrpc":"2.0","method":"daemon/input_closed","params":{}})).await?;
-                                self.write.shutdown().await?;
+                                write_stdio_line(&mut self.write,&json!(RpcNotification { method:"daemon/input_closed".into(), params:Some(json!({})) })).await?;
                                 Ok::<(), anyhow::Error>(())
                             }).await.context("owner input-close write outcome uncertain, not replayed")??;
                         }
@@ -688,9 +814,10 @@ mod platform {
                         }
                         Some(line) => match parse_stdio_line(&line) {
                             ParsedStdioLine::Blank => {},
-                            ParsedStdioLine::Rejected(response) => write_stdio_line(&mut output, &response).await?,
+                            ParsedStdioLine::Ignored => {},
+                            ParsedStdioLine::Response(response) => self.send_frame(response).await?,
                             ParsedStdioLine::Request(request) => {
-                                self.send(request.id.unwrap_or(Value::Null),&request.method,request.params).await?;
+                                self.send_call(request).await?;
                             }
                         }
                     },

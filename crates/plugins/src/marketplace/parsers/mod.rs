@@ -8,6 +8,7 @@
 pub mod claude;
 pub mod codewhale;
 pub mod codex;
+pub mod dsh;
 pub mod kimi;
 
 use serde_json::Value;
@@ -16,6 +17,7 @@ use crate::manifest::{PluginCompatibility, PluginInventory};
 
 use super::types::{
     MarketplaceCatalog, MarketplaceCatalogId, MarketplaceDiagnostic, MarketplaceFormat,
+    MarketplaceInstallPlan, MarketplaceSourceSpec,
 };
 
 /// Catalog-side compatibility. Unlike an installed bundle's reviewed
@@ -82,6 +84,7 @@ pub fn parse_catalog(document: MarketplaceDocument) -> MarketplaceCatalog {
         MarketplaceFormat::Claude => claude::parse_claude_catalog(document),
         MarketplaceFormat::Codex => codex::parse_codex_catalog(document),
         MarketplaceFormat::Codewhale => codewhale::parse_codewhale_catalog(document),
+        MarketplaceFormat::Dsh => dsh::parse_dsh_catalog(document),
         MarketplaceFormat::Auto => unreachable!("resolved above"),
     };
     flag_duplicate_names(&mut catalog);
@@ -125,6 +128,9 @@ fn flag_duplicate_names(catalog: &mut super::types::MarketplaceCatalog) {
 ///   object.
 /// - **Codewhale**: `plugins[]` entries with `name` + a string `source`
 ///   that is a Codewhale install spec (`github:`, `path:`, URL).
+/// - **DSH**: a top-level numeric `format` (the DSH plugin market index
+///   format; version `1` is the only one defined, and any other value is
+///   reported by the parser rather than guessed).
 ///
 /// Documents matching no documented marker are ambiguous, not guessed.
 fn detect_format(root: &Value) -> Result<MarketplaceFormat, MarketplaceDiagnostic> {
@@ -140,12 +146,20 @@ fn detect_format(root: &Value) -> Result<MarketplaceFormat, MarketplaceDiagnosti
         return Err(MarketplaceDiagnostic::error(
             "UNKNOWN_FORMAT",
             "catalog has no documented marker: expected Kimi `plugins` with `id` entries, \
-             Claude `owner`/`plugins`, Codex `policy`/`interface`, or Codewhale `plugins` \
-             with install-spec sources",
+             Claude `owner`/`plugins`, Codex `policy`/`interface`, DSH `format: 1` with \
+             `versions` entries, or Codewhale `plugins` with install-spec sources",
             None,
             None,
         ));
     };
+
+    // DSH market index: the format declares a numeric `format`, and 1 is the
+    // only version of it. Any numeric `format` routes here so the parser can
+    // report the version it cannot read instead of calling the document
+    // ambiguous. No other supported format declares a numeric `format`.
+    if obj.get("format").is_some_and(Value::is_number) {
+        return Ok(MarketplaceFormat::Dsh);
+    }
 
     // Claude: `owner` and `metadata.pluginRoot` are documented top-level
     // fields no other format defines.
@@ -374,4 +388,95 @@ fn type_name(value: &Value) -> &'static str {
         Value::Array(_) => "an array",
         Value::Object(_) => "an object",
     }
+}
+
+fn github_url_parts(url: &str) -> Option<(String, String)> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let mut parts = rest.trim_end_matches('/').split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(owner), Some(repo), None) if !owner.is_empty() && !repo.is_empty() => {
+            Some((owner.to_string(), repo.trim_end_matches(".git").to_string()))
+        }
+        _ => None,
+    }
+}
+
+type GitSourcePlan = (
+    MarketplaceSourceSpec,
+    MarketplaceInstallPlan,
+    Vec<MarketplaceDiagnostic>,
+);
+
+fn git_url_source(value: &Value) -> GitSourcePlan {
+    let url = value["url"].as_str().unwrap_or_default();
+    if value["source"] == "url"
+        && let Some((owner, repo)) = github_url_parts(url)
+    {
+        return github_source(value, &owner, &repo);
+    }
+    let reason = if value["source"] == "git-subdir" {
+        "Git subdirectory installs are unavailable. Install a reviewed local copy of the requested subdirectory."
+    } else {
+        "Git URL sources must point to a GitHub repository."
+    };
+    (
+        MarketplaceSourceSpec::GitUrl {
+            url: url.to_string(),
+        },
+        MarketplaceInstallPlan::Unsupported {
+            reason: reason.to_string(),
+            raw: value.to_string(),
+        },
+        Vec::new(),
+    )
+}
+
+fn github_source(value: &Value, owner: &str, repo: &str) -> GitSourcePlan {
+    let git_ref = value.get("ref").and_then(Value::as_str);
+    let sha = value.get("sha").and_then(Value::as_str);
+    let source = MarketplaceSourceSpec::GitHub {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        git_ref: git_ref.map(str::to_string),
+        sha: sha.map(str::to_string),
+    };
+    if value.get("path").is_some() {
+        return (
+            source,
+            MarketplaceInstallPlan::Unsupported {
+                reason: "Git subdirectory installs are unavailable. Install a reviewed local copy of the requested subdirectory.".to_string(),
+                raw: value.to_string(),
+            },
+            Vec::new(),
+        );
+    }
+    let mut spec = format!("git:github.com/{owner}/{repo}");
+    if let Some(revision) = sha.or(git_ref) {
+        spec.push('@');
+        spec.push_str(revision);
+    }
+    let valid_sha = value.get("sha").is_none()
+        || sha.is_some_and(|pin| pin.len() == 40 && pin.bytes().all(|b| b.is_ascii_hexdigit()));
+    let valid_ref =
+        value.get("ref").is_none() || git_ref.is_some_and(|revision| !revision.is_empty());
+    let plan = if !repo.contains('@')
+        && spec.trim() == spec
+        && valid_sha
+        && valid_ref
+        && crate::install::PluginInstallSource::parse(&spec).is_ok()
+    {
+        MarketplaceInstallPlan::Supported {
+            spec: if git_ref.is_some() || sha.is_some() {
+                spec
+            } else {
+                format!("github:{owner}/{repo}")
+            },
+            source_kind: "GitHub repository".to_string(),
+        }
+    } else {
+        MarketplaceInstallPlan::Unsupported { reason: "The GitHub repository or requested revision cannot be installed exactly as declared.".to_string(), raw: value.to_string() }
+    };
+    (source, plan, Vec::new())
 }

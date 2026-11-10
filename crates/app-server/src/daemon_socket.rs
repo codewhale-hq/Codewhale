@@ -3,10 +3,10 @@
 //! The desktop shell attaches to a long-lived `codewhale app-server --socket`
 //! daemon over a local socket instead of a TCP port: local multi-client,
 //! peer-credential auth, nothing to firewall (CORE-PROTOCOL spec §5). The
-//! wire is *identical* to the `--stdio` transport — newline-delimited
-//! JSON-RPC 2.0 driven by the same `crate::stdio::run_stdio_loop` — with exactly
-//! one addition in front of it: a `daemon/attach` handshake that establishes
-//! who this client is and whether it owns the daemon.
+//! wire carries RPC objects in WebSocket text messages; process stdio uses
+//! JSONL. Both use `crate::stdio::run_stdio_loop` after the private channel's
+//! WebSocket upgrade and `daemon/attach` handshake establish the connection
+//! and whether this client owns the daemon.
 //!
 //! Windows derives a local named-pipe endpoint from the selected home and
 //! current principal. It shares the same dispatcher and ownership handshake;
@@ -123,7 +123,7 @@ fn unsupported_platform() -> DaemonSocketError {
 }
 
 #[cfg(any(unix, windows))]
-pub use codewhale_runtime::runtime_control::owner_work;
+use codewhale_runtime::runtime_control::owner_work;
 
 // Blocking endpoint mutations retain the actual captured manager through
 // its existing frontend, even after cancellation of the async caller.
@@ -145,7 +145,7 @@ use crate::stdio::{
     write_stdio_line,
 };
 use crate::{
-    AppState, AppTransport, JsonRpcError, ShutdownAuthority, StdioLoopExit, StdioLoopPolicy,
+    AppState, AppTransport, DispatchError, ShutdownAuthority, StdioLoopExit, StdioLoopPolicy,
     jsonrpc_error, jsonrpc_result, params_or_object, parse_params,
 };
 use anyhow::Result;
@@ -153,7 +153,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufRead, AsyncWrite, BufReader};
+use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt as _, BufReader};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
@@ -297,13 +297,12 @@ where
         };
         let request = match parse_stdio_line(&line) {
             ParsedStdioLine::Blank => continue,
-            ParsedStdioLine::Rejected(response) => {
-                write_stdio_line(writer, &response).await?;
-                continue;
-            }
+            ParsedStdioLine::Ignored | ParsedStdioLine::Response(_) => continue,
             ParsedStdioLine::Request(request) => request,
         };
-        let id = request.id.clone();
+        let Some(id) = request.id.clone() else {
+            continue;
+        };
         match request.method.as_str() {
             "healthz" | "app/healthz" => {
                 let response = match dispatch_stdio_request_with_writer(
@@ -312,6 +311,8 @@ where
                     &request.method,
                     request.params,
                     AppTransport::Socket,
+                    None,
+                    None,
                 )
                 .await
                 {
@@ -330,7 +331,7 @@ where
             other => {
                 write_stdio_line(
                     writer,
-                    &jsonrpc_error(id, JsonRpcError::attach_required(other)),
+                    &jsonrpc_error(id, DispatchError::attach_required(other)),
                 )
                 .await?;
             }
@@ -341,7 +342,7 @@ where
 async fn attach(
     context: &ConnectionContext,
     params: Value,
-) -> Result<(Value, ConnectionGuard), JsonRpcError> {
+) -> Result<(Value, ConnectionGuard), DispatchError> {
     let params: AttachParams = parse_params(params_or_object(params))?;
     if params.frontend == AttachFrontend::Acp
         && (context.state.owner_frontend.is_none()
@@ -351,21 +352,21 @@ async fn attach(
                 .as_ref()
                 .is_some_and(|routing| routing.acp))
     {
-        return Err(JsonRpcError::invalid_params(
+        return Err(DispatchError::invalid_params(
             "held owner has no narrowed ACP projection; cross-profile attachment refused",
         ));
     }
     if (params.frontend == AttachFrontend::Listener) != params.listener.is_some() {
-        return Err(JsonRpcError::invalid_params(
+        return Err(DispatchError::invalid_params(
             "listener selection does not match frontend",
         ));
     }
     if let Some(listener) = params.listener.as_ref() {
         listener.validate_bounds().map_err(|_| {
-            JsonRpcError::invalid_params("selected frontend input exceeds its bounds")
+            DispatchError::invalid_params("selected frontend input exceeds its bounds")
         })?;
         if context.state.owner_frontend.is_none() {
-            return Err(JsonRpcError::invalid_params(
+            return Err(DispatchError::invalid_params(
                 "held owner has no selected listener projection",
             ));
         }
@@ -374,13 +375,13 @@ async fn attach(
         && (params.frontend == AttachFrontend::Listener || context.state.owner_frontend.is_none())
         || params.acp_model.is_some() && params.frontend != AttachFrontend::Acp
     {
-        return Err(JsonRpcError::invalid_params(
+        return Err(DispatchError::invalid_params(
             "selected scope does not match captured frontend",
         ));
     }
     if let Some(scope) = params.scope.as_ref() {
         scope.validate_bounds().map_err(|_| {
-            JsonRpcError::invalid_params("selected frontend scope exceeds its bounds")
+            DispatchError::invalid_params("selected frontend scope exceeds its bounds")
         })?;
     }
     if params
@@ -388,27 +389,27 @@ async fn attach(
         .as_ref()
         .is_some_and(|model| model.trim().is_empty() || model.len() > 1024)
     {
-        return Err(JsonRpcError::invalid_params("invalid selected ACP model"));
+        return Err(DispatchError::invalid_params("invalid selected ACP model"));
     }
     if let Some(owner) = context.owner.as_ref() {
         if params.expect_owner.as_ref() != Some(owner) {
-            return Err(JsonRpcError::invalid_params(
+            return Err(DispatchError::invalid_params(
                 "captured owner generation or store does not match",
             ));
         }
         if params.mode == AttachMode::Claim {
-            return Err(JsonRpcError::not_daemon_owner());
+            return Err(DispatchError::not_daemon_owner());
         }
     }
     if params.client.name.trim().is_empty() {
-        return Err(JsonRpcError::invalid_params(
+        return Err(DispatchError::invalid_params(
             "client.name must not be empty",
         ));
     }
     if let Some(expected) = params.expect_daemon_version.as_deref()
         && expected != context.info.version
     {
-        return Err(JsonRpcError::daemon_version_skew(
+        return Err(DispatchError::daemon_version_skew(
             expected,
             context.info.version,
         ));
@@ -432,13 +433,13 @@ async fn attach(
             frontend
                 .validate_selection(&selection)
                 .await
-                .map_err(|error| JsonRpcError::invalid_params(error.to_string()))?;
+                .map_err(|error| DispatchError::invalid_params(error.to_string()))?;
         }
     }
     let mut registry = context
         .registry
         .lock()
-        .map_err(|_| JsonRpcError::internal("daemon connection registry poisoned"))?;
+        .map_err(|_| DispatchError::internal("daemon connection registry poisoned"))?;
     let id = registry.register(params.client.clone());
     let role = match params.mode {
         AttachMode::Attach => AttachRole::Attached,
@@ -447,8 +448,8 @@ async fn attach(
             Err(owner) => {
                 registry.remove(id);
                 let owner = serde_json::to_value(owner)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?;
-                return Err(JsonRpcError::daemon_already_claimed(&owner));
+                    .map_err(|err| DispatchError::internal(err.to_string()))?;
+                return Err(DispatchError::daemon_already_claimed(&owner));
             }
         },
     };
@@ -543,7 +544,7 @@ pub(crate) async fn connection_context(
 pub(crate) async fn run_authorized_connection<R, W>(
     context: ConnectionContext,
     read: R,
-    mut writer: W,
+    writer: W,
     peer: AuthorizedPeer,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -554,6 +555,14 @@ pub(crate) async fn run_authorized_connection<R, W>(
     if owner_work(move || check.check()).await.is_err() {
         return;
     }
+    let transport = match crate::websocket::accept(read, writer).await {
+        Ok(transport) => transport,
+        Err(error) => {
+            tracing::debug!(%error, "private WebSocket upgrade refused");
+            return;
+        }
+    };
+    let (read, mut writer) = tokio::io::split(transport);
     let mut lines = crate::stdio::BoundedLines::new(BufReader::new(read));
     let guard = match tokio::time::timeout(
         Duration::from_secs(5),
@@ -597,12 +606,13 @@ pub(crate) async fn run_authorized_connection<R, W>(
                 selection,
                 context.state.clone(),
                 Box::new(lines.into_inner()),
-                Box::new(writer),
+                Box::new(&mut writer),
             )
             .await
         {
             tracing::debug!(%error,"captured frontend connection ended");
         }
+        let _ = tokio::time::timeout(Duration::from_secs(5), writer.shutdown()).await;
         return;
     }
     let policy = StdioLoopPolicy {
@@ -612,7 +622,16 @@ pub(crate) async fn run_authorized_connection<R, W>(
             AttachRole::Attached => ShutdownAuthority::Denied,
         },
     };
-    match run_stdio_loop(&context.state, lines, writer, policy, Some((guard, peer))).await {
+    let result = run_stdio_loop(
+        &context.state,
+        lines,
+        &mut writer,
+        policy,
+        Some((guard, peer)),
+    )
+    .await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), writer.shutdown()).await;
+    match result {
         Ok(StdioLoopExit::Shutdown) => context.shutdown.trigger(),
         Ok(StdioLoopExit::InputClosed) => {}
         Err(error) => tracing::debug!(%error,"local control connection ended"),
@@ -1176,6 +1195,33 @@ mod platform {
             _held: Arc<()>,
         }
         impl crate::RuntimeOwnerFrontend for FrontendLifetime {
+            fn execute(
+                &self,
+                _request: crate::RuntimeOwnerRequest,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + '_,
+                >,
+            > {
+                Box::pin(async {
+                    anyhow::bail!("this captured frontend admits no ordinary native service")
+                })
+            }
+            fn events(
+                &self,
+                _thread_id: String,
+                _since_seq: u64,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = anyhow::Result<crate::RuntimeOwnerEventStream>>
+                        + Send
+                        + '_,
+                >,
+            > {
+                Box::pin(async {
+                    anyhow::bail!("this captured frontend admits no ordinary native observation")
+                })
+            }
             fn validate_selection<'a>(
                 &'a self,
                 _selection: &'a crate::RuntimeOwnerFrontendSelection,
@@ -1183,13 +1229,13 @@ mod platform {
             {
                 Box::pin(async { anyhow::bail!("lifetime-only frontend cannot admit a command") })
             }
-            fn serve(
-                &self,
+            fn serve<'a>(
+                &'a self,
                 _selection: crate::RuntimeOwnerFrontendSelection,
                 _compatibility: AppState,
                 _input: Box<dyn tokio::io::AsyncBufRead + Send + Unpin>,
-                _output: Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>>
+                _output: Box<dyn tokio::io::AsyncWrite + Send + Unpin + 'a>,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>
             {
                 Box::pin(async { anyhow::bail!("lifetime-only frontend cannot serve a command") })
             }
@@ -1617,7 +1663,7 @@ mod tests {
             explicit: None,
             codewhale_home_override: None,
             xdg_runtime_dir: None,
-            user_home: Some(PathBuf::from("/home/whale")),
+            user_home: Some(PathBuf::from("/cw-test-home/whale")),
             macos: false,
         }
     }
@@ -1678,7 +1724,7 @@ mod tests {
         let resolved = resolve_socket_path(&inputs()).expect("resolve");
         assert_eq!(
             resolved,
-            PathBuf::from("/home/whale/.codewhale/run/daemon.sock")
+            PathBuf::from("/cw-test-home/whale/.codewhale/run/daemon.sock")
         );
     }
 
@@ -1688,7 +1734,7 @@ mod tests {
         let resolved = store_selected_socket_path(None, &inputs()).expect("resolve");
         assert_eq!(
             resolved,
-            PathBuf::from("/home/whale/.codewhale/run/daemon.sock")
+            PathBuf::from("/cw-test-home/whale/.codewhale/run/daemon.sock")
         );
     }
 
@@ -1696,18 +1742,18 @@ mod tests {
     #[test]
     fn distinct_stores_derive_distinct_sibling_sockets() {
         let one = store_selected_socket_path(
-            Some(Path::new("/home/whale/.local/state/one/runtime")),
+            Some(Path::new("/cw-test-home/whale/.local/state/one/runtime")),
             &inputs(),
         )
         .expect("resolve");
         let two = store_selected_socket_path(
-            Some(Path::new("/home/whale/.local/state/two/runtime")),
+            Some(Path::new("/cw-test-home/whale/.local/state/two/runtime")),
             &inputs(),
         )
         .expect("resolve");
         assert_eq!(
             one.parent().unwrap(),
-            Path::new("/home/whale/.codewhale/run")
+            Path::new("/cw-test-home/whale/.codewhale/run")
         );
         assert_eq!(one.parent().unwrap(), two.parent().unwrap());
         assert_ne!(one, two);
@@ -1720,7 +1766,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_derived_socket_is_a_pure_function_of_the_store_root() {
-        let store = Path::new("/home/whale/.local/state/one/runtime");
+        let store = Path::new("/cw-test-home/whale/.local/state/one/runtime");
         let first = store_selected_socket_path(Some(store), &inputs()).expect("resolve");
         let second = store_selected_socket_path(Some(store), &inputs()).expect("resolve");
         assert_eq!(first, second);

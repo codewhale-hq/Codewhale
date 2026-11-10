@@ -33,7 +33,6 @@ it never starts the TUI and makes no network calls.
 
 Usage:
     python3 scripts/check-command-crate-boundaries.py           # enforce
-    python3 scripts/check-command-crate-boundaries.py --check   # enforce (default)
 """
 
 from __future__ import annotations

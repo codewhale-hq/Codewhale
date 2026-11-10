@@ -38,6 +38,7 @@ impl Engine {
             .await;
         self.record_current_constitution().await;
         self.record_current_extension_prompt_contributions().await;
+        self.record_current_project_instructions().await;
 
         // R1: the cumulative per-turn wall-clock budget. Checked at the
         // provider-request boundary so a turn that runs out of time stops
@@ -438,6 +439,7 @@ impl Engine {
                 input_budget_ceiling_source = input_ceiling_source,
                 remaining_input_budget_tokens = budget.available_input_tokens,
                 compaction_trigger_tokens = budget.compaction_trigger_tokens,
+                configured_compaction_trigger_tokens = self.config.compaction.token_threshold,
                 trigger = if triggered { "preflight-token-budget" } else { "none" },
                 "resolved route context budget"
             );
@@ -669,10 +671,8 @@ impl Engine {
                     // if a provider ignores the report-only request
                     // (C02-10: the step-budget final report included).
                     Some(json!("none"))
-                } else if strict_tool_mode {
-                    Some(json!("required"))
                 } else {
-                    Some(json!({ "type": "auto" }))
+                    Some(default_tool_choice(strict_tool_mode))
                 }
             } else {
                 None
@@ -849,6 +849,7 @@ impl Engine {
                 &self.api_config,
                 &stream_request.messages,
                 self.config.compaction.runtime_cost_owner.as_deref(),
+                self.config.runtime_services.accounting_origin.clone(),
                 &self.cancel_token,
             ));
         }
@@ -1004,6 +1005,7 @@ impl Engine {
         }
         self.record_current_constitution().await;
         self.record_current_extension_prompt_contributions().await;
+        self.record_current_project_instructions().await;
         let reasoning_effort = resolve_auto_effort(
             self.session.reasoning_effort.as_deref(),
             self.api_provider,

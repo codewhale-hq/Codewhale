@@ -258,7 +258,7 @@ impl ToolSpec for TasksTool {
             );
             properties.insert(
                 "mode".to_string(),
-                json!({ "type": "string", "enum": ["agent", "plan", "operate"], "description": "(action=create)" }),
+                json!({ "type": "string", "enum": ["agent", "plan"], "description": "(action=create)" }),
             );
             properties.insert(
                 "allow_shell".to_string(),
@@ -1469,7 +1469,7 @@ mod tests {
     }
 
     #[test]
-    fn create_mode_enum_advertises_operate_not_yolo() {
+    fn create_mode_enum_advertises_neither_operate_nor_yolo() {
         let create = TasksTool::alias("task_create", "create").input_schema();
         assert_eq!(
             create["properties"]["mode"]["enum"],
@@ -1478,7 +1478,7 @@ mod tests {
         let canonical = TasksTool::new("tasks").input_schema();
         assert_eq!(
             canonical["properties"]["mode"]["enum"],
-            json!(["agent", "plan", "operate"])
+            json!(["agent", "plan"])
         );
     }
 
@@ -1815,6 +1815,7 @@ mod tests {
                 allow_shell: false,
                 trust_mode: false,
                 execution_limits: crate::task_manager::TaskExecutionLimits::default(),
+                human_waits_answerable: false,
             },
             std::sync::Arc::new(NoopExecutor),
         )

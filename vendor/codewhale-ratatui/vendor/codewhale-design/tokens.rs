@@ -1,13 +1,14 @@
-// Generated from Codewhale GPUI design 2.3.0; sha256 9e74fb8f8fbfebb6b90a9740b324c56405277886e61273e2a0cb682797a8a6f9. Do not edit.
+// Generated from Codewhale design 5.0.0; sha256 fa9344ab4f9a21829952bcb1292df965faeed40d2b203366c76aae720bc41b64. Do not edit.
 #![allow(dead_code)]
 
-pub const VERSION: &str = "2.3.0";
+pub const VERSION: &str = "5.0.0";
 #[derive(Clone, Copy, Debug)]
 pub struct Colors {
     pub background: u32,
     pub foreground: u32,
     pub surface: u32,
     pub muted_foreground: u32,
+    pub disabled: u32,
     pub border: u32,
     pub sidebar: u32,
     pub primary: u32,
@@ -24,39 +25,41 @@ pub struct Colors {
     pub diff_remove: u32,
 }
 pub const DARK: Colors = Colors {
-    background: 0x202123,
-    foreground: 0xefeeeb,
-    surface: 0x2a2b2e,
-    muted_foreground: 0xb8b8b4,
+    background: 0x030508,
+    foreground: 0xe8edf2,
+    surface: 0x04070c,
+    muted_foreground: 0xa8b6c3,
+    disabled: 0x848583,
     border: 0x3b3c3f,
-    sidebar: 0x191a1c,
-    primary: 0xe6e4df,
-    primary_foreground: 0x202123,
-    accent: 0xa9c0de,
+    sidebar: 0x0d121b,
+    primary: 0x0b48bb,
+    primary_foreground: 0xffffff,
+    accent: 0x8fbdff,
     hover: 0x303134,
-    selected: 0x37393d,
-    attention: 0xe8b077,
-    live: 0x9ec7b2,
-    danger: 0xe39a90,
+    selected: 0x17191c,
+    attention: 0xeab982,
+    live: 0x9ecbbd,
+    danger: 0xeea59d,
     border_strong: 0x828386,
     ocean_depth: 0x202123,
     diff_add: 0x22392f,
     diff_remove: 0x45302f,
 };
 pub const LIGHT: Colors = Colors {
-    background: 0xfaf8f5,
-    foreground: 0x28292b,
-    surface: 0xffffff,
-    muted_foreground: 0x4f504d,
+    background: 0xf7f4ec,
+    foreground: 0x1b2a35,
+    surface: 0xfcfbf8,
+    muted_foreground: 0x4a545d,
+    disabled: 0x7a7a77,
     border: 0xd9d5cf,
-    sidebar: 0xf0ede8,
-    primary: 0x2e2f31,
-    primary_foreground: 0xfaf8f5,
-    accent: 0x425c82,
+    sidebar: 0xfbfaf6,
+    primary: 0x0b48bb,
+    primary_foreground: 0xffffff,
+    accent: 0x245bc7,
     hover: 0xe8e5e0,
     selected: 0xdfdcd6,
-    attention: 0x86520d,
-    live: 0x3a6352,
+    attention: 0x84530d,
+    live: 0x396554,
     danger: 0x9e3f36,
     border_strong: 0x807c76,
     ocean_depth: 0xfaf8f5,
@@ -66,7 +69,58 @@ pub const LIGHT: Colors = Colors {
 pub fn colors(dark: bool) -> Colors {
     if dark { DARK } else { LIGHT }
 }
-pub const FONT_FAMILY: &str = "Shannon Sans";
+pub const WATER_DARK_0: u32 = 0x0b1e3a;
+pub const WATER_DARK_35: u32 = 0x071326;
+pub const WATER_DARK_75: u32 = 0x04090f;
+pub const WATER_DARK_100: u32 = 0x030508;
+pub const GLASS_DARK_CLEAR_FILL: u32 = 0x141c28;
+pub const GLASS_DARK_CLEAR_FILL_ALPHA: f32 = 0.4;
+pub const GLASS_DARK_CLEAR_BLUR_PX: f32 = 12.0;
+pub const GLASS_DARK_FROSTED_FILL: u32 = 0x141c28;
+pub const GLASS_DARK_FROSTED_FILL_ALPHA: f32 = 0.58;
+pub const GLASS_DARK_FROSTED_BLUR_PX: f32 = 24.0;
+pub const GLASS_DARK_SOLID_FILL: u32 = 0x141c28;
+pub const GLASS_DARK_SOLID_FILL_ALPHA: f32 = 1.0;
+pub const GLASS_DARK_SOLID_BLUR_PX: f32 = 0.0;
+pub const GLASS_DARK_BORDER: u32 = 0xffffff;
+pub const GLASS_DARK_BORDER_ALPHA: f32 = 0.09;
+pub const GLASS_DARK_HIGHLIGHT: u32 = 0xffffff;
+pub const GLASS_DARK_HIGHLIGHT_ALPHA: f32 = 0.14;
+pub const SHEET_DARK_FILL: u32 = 0x05080d;
+pub const SHEET_DARK_FILL_ALPHA: f32 = 0.74;
+pub const SHEET_DARK_BORDER: u32 = 0xffffff;
+pub const SHEET_DARK_BORDER_ALPHA: f32 = 0.05;
+pub const CARD_DARK_FILL: u32 = 0xffffff;
+pub const CARD_DARK_FILL_ALPHA: f32 = 0.035;
+pub const CARD_DARK_BORDER: u32 = 0xffffff;
+pub const CARD_DARK_BORDER_ALPHA: f32 = 0.08;
+pub const WATER_LIGHT_0: u32 = 0xbfe1f2;
+pub const WATER_LIGHT_30: u32 = 0xdceef3;
+pub const WATER_LIGHT_62: u32 = 0xeef3ef;
+pub const WATER_LIGHT_100: u32 = 0xf7f4ec;
+pub const GLASS_LIGHT_CLEAR_FILL: u32 = 0xffffff;
+pub const GLASS_LIGHT_CLEAR_FILL_ALPHA: f32 = 0.4;
+pub const GLASS_LIGHT_CLEAR_BLUR_PX: f32 = 12.0;
+pub const GLASS_LIGHT_FROSTED_FILL: u32 = 0xffffff;
+pub const GLASS_LIGHT_FROSTED_FILL_ALPHA: f32 = 0.55;
+pub const GLASS_LIGHT_FROSTED_BLUR_PX: f32 = 24.0;
+pub const GLASS_LIGHT_SOLID_FILL: u32 = 0xffffff;
+pub const GLASS_LIGHT_SOLID_FILL_ALPHA: f32 = 1.0;
+pub const GLASS_LIGHT_SOLID_BLUR_PX: f32 = 0.0;
+pub const GLASS_LIGHT_BORDER: u32 = 0xffffff;
+pub const GLASS_LIGHT_BORDER_ALPHA: f32 = 0.75;
+pub const GLASS_LIGHT_HIGHLIGHT: u32 = 0xffffff;
+pub const GLASS_LIGHT_HIGHLIGHT_ALPHA: f32 = 0.75;
+pub const SHEET_LIGHT_FILL: u32 = 0xfdfcfa;
+pub const SHEET_LIGHT_FILL_ALPHA: f32 = 0.88;
+pub const SHEET_LIGHT_BORDER: u32 = 0x1f3340;
+pub const SHEET_LIGHT_BORDER_ALPHA: f32 = 0.1;
+pub const CARD_LIGHT_FILL: u32 = 0xffffff;
+pub const CARD_LIGHT_FILL_ALPHA: f32 = 1.0;
+pub const CARD_LIGHT_BORDER: u32 = 0x1f3340;
+pub const CARD_LIGHT_BORDER_ALPHA: f32 = 0.1;
+pub const FONT_FAMILY: &str = "Geist Sans";
+pub const FONT_MONO_FAMILY: &str = "Geist Mono";
 pub const FONT_FALLBACKS: &[&str] = &[
     "PingFang SC",
     "Hiragino Sans GB",
@@ -82,9 +136,13 @@ pub const SPACING_GROUP: f32 = 12.0;
 pub const SPACING_SECTION: f32 = 16.0;
 pub const SPACING_LARGE: f32 = 24.0;
 pub const SPACING_PAGE: f32 = 32.0;
-pub const RADIUS_CONTROL: f32 = 6.0;
-pub const RADIUS_PANEL: f32 = 10.0;
-pub const RADIUS_SHEET: f32 = 14.0;
+pub const RADIUS_CONTROL: f32 = 10.0;
+pub const RADIUS_PANEL: f32 = 18.0;
+pub const RADIUS_SHEET: f32 = 18.0;
+pub const RADIUS_WINDOW: f32 = 14.0;
+pub const RADIUS_CARD: f32 = 14.0;
+pub const RADIUS_COMPOSER: f32 = 24.0;
+pub const RADIUS_CHIP: f32 = 999.0;
 pub const FOCUS_WIDTH: f32 = 2.0;
 pub const FOCUS_OFFSET: f32 = 3.0;
 pub const ICONS_GRID: f32 = 24.0;
@@ -123,24 +181,27 @@ pub const ELEVATION_DIALOG_ALPHA_LIGHT: f32 = 0.2;
 pub const EASING_OUT: [f32; 4] = [0.0, 0.0, 0.2, 1.0];
 pub const EASING_IN: [f32; 4] = [0.4, 0.0, 1.0, 1.0];
 pub const EASING_PANEL: [f32; 4] = [0.2, 0.1, 0.16, 1.0];
-pub const OMBRE_RISE: u32 = 0x1e8fd8;
+pub const OMBRE_RISE: u32 = 0x1775c9;
 pub const OMBRE_DEEP: u32 = 0x0b48bb;
 pub const SELECTION_OPACITY: f32 = 0.28;
 pub const PRIMARY_HOVER_OPACITY: f32 = 0.9;
 pub const MONO_PX: f32 = 13.0;
-pub const TYPE_ROLE_CAPTION_SIZE_PX: f32 = 12.0;
+pub const TYPE_ROLE_CAPTION_SIZE_PX: f32 = 11.5;
 pub const TYPE_ROLE_CAPTION_LINE_PX: f32 = 16.0;
 pub const TYPE_ROLE_CAPTION_WEIGHT: f32 = 400.0;
-pub const TYPE_ROLE_LABEL_SIZE_PX: f32 = 13.0;
+pub const TYPE_ROLE_LABEL_SIZE_PX: f32 = 12.5;
 pub const TYPE_ROLE_LABEL_LINE_PX: f32 = 18.0;
 pub const TYPE_ROLE_LABEL_WEIGHT: f32 = 400.0;
+pub const TYPE_ROLE_CONTROL_SIZE_PX: f32 = 13.0;
+pub const TYPE_ROLE_CONTROL_LINE_PX: f32 = 18.0;
+pub const TYPE_ROLE_CONTROL_WEIGHT: f32 = 400.0;
 pub const TYPE_ROLE_BODY_SIZE_PX: f32 = 14.0;
 pub const TYPE_ROLE_BODY_LINE_PX: f32 = 22.0;
 pub const TYPE_ROLE_BODY_WEIGHT: f32 = 400.0;
 pub const TYPE_ROLE_PROSE_SIZE_PX: f32 = 16.0;
 pub const TYPE_ROLE_PROSE_LINE_PX: f32 = 26.0;
 pub const TYPE_ROLE_PROSE_WEIGHT: f32 = 400.0;
-pub const TYPE_ROLE_HEADING_SIZE_PX: f32 = 17.0;
+pub const TYPE_ROLE_HEADING_SIZE_PX: f32 = 15.0;
 pub const TYPE_ROLE_HEADING_LINE_PX: f32 = 24.0;
 pub const TYPE_ROLE_HEADING_WEIGHT: f32 = 550.0;
 pub const TYPE_ROLE_TITLE_SIZE_PX: f32 = 22.0;
@@ -157,13 +218,13 @@ pub const SIZE_ROW_PX: f32 = 30.0;
 pub const SIZE_TOUCH_TARGET_PX: f32 = 44.0;
 pub const SIZE_ICON_PX: f32 = 16.0;
 pub const SIZE_ICON_LARGE_PX: f32 = 20.0;
-pub const SIZE_SIDEBAR_PX: f32 = 248.0;
-pub const SIZE_PANEL_PX: f32 = 360.0;
+pub const SIZE_SIDEBAR_PX: f32 = 272.0;
+pub const SIZE_PANEL_PX: f32 = 300.0;
 pub const BREAKPOINTS_COMPACT_PX: f32 = 720.0;
-pub const BREAKPOINTS_MEDIUM_PX: f32 = 1024.0;
-pub const BREAKPOINTS_WIDE_PX: f32 = 1440.0;
+pub const BREAKPOINTS_MEDIUM_PX: f32 = 900.0;
+pub const BREAKPOINTS_WIDE_PX: f32 = 1200.0;
 pub const TYPE_BODY_PX: f32 = 14.0;
-pub const TYPE_CAPTION_PX: f32 = 12.0;
+pub const TYPE_CAPTION_PX: f32 = 11.5;
 pub const TYPE_PROSE_PX: f32 = 17.0;
-pub const TYPE_HEADING_PX: f32 = 17.0;
+pub const TYPE_HEADING_PX: f32 = 15.0;
 pub const TYPE_TITLE_PX: f32 = 22.0;

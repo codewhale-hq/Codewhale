@@ -40,13 +40,17 @@ export function WhaleLive({
   className = "",
   follow = true,
   perform = false,
+  asleep = false,
 }: {
   locale?: string;
   className?: string;
   follow?: boolean;
   perform?: boolean;
+  asleep?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const asleepRef = useRef(asleep);
+  const wakeRef = useRef<() => void>(() => {});
   const [ready, setReady] = useState(false);
   const [state, setState] = useState<WhaleStateKey>("rest");
   const labels = whaleStateLabels(locale);
@@ -90,7 +94,7 @@ export function WhaleLive({
 
     const tick = (now: number) => {
       frame = 0;
-      if (!live || live.director.reduced || !visible || document.hidden) return;
+      if (!live || live.director.reduced || !visible || document.hidden || asleepRef.current) return;
       // Never replay time spent hidden: clamp the step like the app does.
       const dt = last ? Math.min((now - last) / 1000, 0.1) : 1 / 30;
       if (now - last >= 1000 / 31) {
@@ -101,11 +105,12 @@ export function WhaleLive({
       frame = requestAnimationFrame(tick);
     };
     const schedule = () => {
-      if (!frame && live && !live.director.reduced && visible && !document.hidden) {
+      if (!frame && live && !live.director.reduced && visible && !document.hidden && !asleepRef.current) {
         last = 0;
         frame = requestAnimationFrame(tick);
       }
     };
+    wakeRef.current = schedule;
 
     loadWhaleReference().then((reference) => {
       if (cancelled) return;
@@ -196,6 +201,11 @@ export function WhaleLive({
       cleanups.forEach((cleanup) => cleanup());
     };
   }, [follow, perform]);
+
+  useEffect(() => {
+    asleepRef.current = asleep;
+    if (!asleep) wakeRef.current();
+  }, [asleep]);
 
   return (
     <div className={`whale-live ${className}`.trim()} data-ready={ready || undefined}>

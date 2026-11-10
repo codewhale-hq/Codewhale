@@ -202,6 +202,7 @@ impl<'a> PostureBar<'a> {
             bold: true,
             joined: false,
             count_index: None,
+            turn_clock: false,
         }];
         if let Some(mode) = self.mode.as_ref().filter(|_| shed < SHED_MODE) {
             items.push(PostureItem {
@@ -216,6 +217,7 @@ impl<'a> PostureBar<'a> {
                 bold: false,
                 joined: false,
                 count_index: None,
+                turn_clock: false,
             });
         }
         // Preserve the native turn-only clock rung: removing the session
@@ -226,7 +228,9 @@ impl<'a> PostureBar<'a> {
             SHED_TURN_CLOCK
         };
         if let Some(clock) = self.turn_clock.as_ref().filter(|_| shed < turn_shed) {
-            items.push(PostureItem::fact(clock, ascii));
+            let mut item = PostureItem::fact(clock, ascii);
+            item.turn_clock = true;
+            items.push(item);
         }
         if shed < SHED_COUNTS {
             for (index, count) in self.counts.iter().enumerate() {
@@ -243,6 +247,7 @@ impl<'a> PostureBar<'a> {
                     bold: false,
                     joined: index > 0,
                     count_index: Some(index),
+                    turn_clock: false,
                 });
             }
         }
@@ -312,6 +317,11 @@ impl<'a> PostureBar<'a> {
         };
         layout.count_hitboxes(theme.ascii())
     }
+
+    #[must_use]
+    pub fn turn_clock_hitbox(&self, area: Rect, theme: &Theme) -> Option<Rect> {
+        self.layout(area, theme)?.turn_clock_hitbox(theme.ascii())
+    }
 }
 
 struct PostureItem {
@@ -322,6 +332,7 @@ struct PostureItem {
     bold: bool,
     joined: bool,
     count_index: Option<usize>,
+    turn_clock: bool,
 }
 
 impl PostureItem {
@@ -334,6 +345,7 @@ impl PostureItem {
             bold: false,
             joined: false,
             count_index: None,
+            turn_clock: false,
         }
     }
 
@@ -399,6 +411,22 @@ impl PostureLayout {
             x += item.width();
         }
         out
+    }
+
+    fn turn_clock_hitbox(&self, ascii: bool) -> Option<Rect> {
+        let mut x = usize::from(self.area.x);
+        for (index, item) in self.items.iter().enumerate() {
+            if index > 0 {
+                x += text::width(&project(item.separator(), ascii));
+            }
+            if item.turn_clock {
+                let width = text::width(&self.clip(x, &item.text));
+                return (width > 0 && x <= usize::from(u16::MAX))
+                    .then(|| Rect::new(x as u16, self.area.y, width as u16, 1));
+            }
+            x += item.width();
+        }
+        None
     }
 }
 

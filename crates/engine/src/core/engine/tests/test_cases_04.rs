@@ -66,7 +66,9 @@ async fn queued_goal_clear_refreshes_prompt_and_cancels_stale_continuation() {
                 }
                 Event::SessionUpdated {
                     source: _,
-                    system_prompt, .. } => {
+                    system_prompt,
+                    ..
+                } => {
                     let prompt = match system_prompt.expect("clear SessionUpdated prompt") {
                         SystemPrompt::Text(text) => text,
                         SystemPrompt::Blocks(blocks) => blocks
@@ -340,13 +342,13 @@ async fn operate_never_promotes_wording_to_a_goal() {
     // The verb-list promotion is gone: an ordinary work prompt is an ordinary
     // turn in every mode, and the model decides goals through `create_goal`
     // (docs/design/TUI_DECONSTRUCTION.md, founder clarification 2026-09-09).
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, prompt).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, prompt).await;
     assert_eq!(
         objective, None,
         "the host must not infer a goal from wording"
     );
     assert!(!active);
-    assert_eq!(contracts, 1, "Operate appends its contract exactly once");
+    assert_eq!(contracts, 0, "Operate appends no contract");
 
     let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, prompt).await;
     assert_eq!(objective, None, "Work must not promote a prompt to a goal");
@@ -357,60 +359,57 @@ async fn operate_never_promotes_wording_to_a_goal() {
     // prose now — the host never parses it, and the model decides goals
     // through `create_goal`.
     let (objective, active, contracts) =
-        operate_goal_probe(AppMode::Operate, "Please set /goal to ship the release").await;
+        operate_goal_probe(AppMode::Agent, "Please set /goal to ship the release").await;
     assert_eq!(
         objective, None,
         "prose asking for a goal must not create one host-side"
     );
     assert!(!active);
-    assert_eq!(contracts, 1);
+    assert_eq!(contracts, 0);
 }
 
 #[tokio::test]
 async fn operate_leaves_followup_and_long_questions_as_ordinary_turns() {
     let report = "what about like rust or docker builds or something";
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, report).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, report).await;
     assert_eq!(
         objective, None,
         "conversational followup must remain ordinary turn in Operate"
     );
     assert!(!active);
-    assert_eq!(contracts, 1);
+    assert_eq!(contracts, 0);
 
     let long_q =
         "why did the build fail on the last step when running under docker on macos with rust 1.80";
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, long_q).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, long_q).await;
     assert_eq!(
         objective, None,
         "long question without punctuation must remain ordinary turn"
     );
     assert!(!active);
-    assert_eq!(contracts, 1);
+    assert_eq!(contracts, 0);
 
     let zh_followup = "那 rust 或者 docker 构建呢";
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, zh_followup).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, zh_followup).await;
     assert_eq!(
         objective, None,
         "Chinese followup must remain ordinary turn in Operate"
     );
     assert!(!active);
-    assert_eq!(contracts, 1);
+    assert_eq!(contracts, 0);
 }
 
 #[tokio::test]
 async fn operate_does_not_create_a_goal_when_the_work_request_declines_one() {
     let prompt = "Run one bounded cancellation check. Do not edit files, inspect other files, create a goal, spawn agents, or start any other tool.";
-    let (objective, active, contracts) = operate_goal_probe(AppMode::Operate, prompt).await;
+    let (objective, active, contracts) = operate_goal_probe(AppMode::Agent, prompt).await;
     assert_eq!(objective, None);
     assert!(!active);
-    assert_eq!(
-        contracts, 1,
-        "the ordinary Operate turn still reaches the model"
-    );
+    assert_eq!(contracts, 0, "Operate appends no contract");
 }
 
 #[tokio::test]
-async fn operate_contract_is_appended_once_and_an_existing_goal_is_never_replaced() {
+async fn operate_turns_append_no_contract_and_never_replace_an_existing_goal() {
     let first_entered = std::sync::Arc::new(tokio::sync::Notify::new());
     let release_first = std::sync::Arc::new(tokio::sync::Notify::new());
     let model = std::sync::Arc::new(IndexedGatedGoalModelClient {
@@ -446,7 +445,7 @@ async fn operate_contract_is_appended_once_and_an_existing_goal_is_never_replace
             max_output_tokens: None,
             content: content.to_string(),
             images: Vec::new(),
-            mode: AppMode::Operate,
+            mode: AppMode::Agent,
             route: resolved_route_for_test(&config, "local-model"),
             compaction: Box::new(CompactionConfig::default()),
             initial_routed_usage: Box::default(),
@@ -529,10 +528,7 @@ async fn operate_contract_is_appended_once_and_an_existing_goal_is_never_replace
         .iter()
         .filter(|message| crate::runtime_handoff::is_operate_contract_message(message))
         .count();
-    assert_eq!(
-        contracts, 1,
-        "the contract must not repeat on later Operate turns"
-    );
+    assert_eq!(contracts, 0, "Operate turns append no contract");
     let goal = goal_state.lock().expect("goal lock").snapshot();
     assert_eq!(goal.objective.as_deref(), Some(first_objective));
     assert_eq!(goal.status, "paused");
@@ -1173,6 +1169,8 @@ async fn headless_host_drains_existing_engine_completion_inbox_before_exit() {
     engine
         .tx_event
         .send(Event::TurnComplete {
+            source_accounting: false,
+
             turn_id: None,
             submission_id: None,
             compaction_id: None,

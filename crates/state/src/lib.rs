@@ -264,7 +264,17 @@ impl StateStore {
     /// `~/.deepseek/state.db` as a legacy fallback) is used.
     /// The database schema is created automatically if it does not exist.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
-        let db_path = path.unwrap_or_else(default_state_db_path);
+        let db_path = match path {
+            Some(path) => path,
+            None => {
+                let default = default_state_db_path();
+                anyhow::ensure!(
+                    default.is_absolute(),
+                    "could not resolve an absolute home directory for the state database; set CODEWHALE_HOME to an absolute path"
+                );
+                default
+            }
+        };
         let session_index_path = db_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -2782,6 +2792,47 @@ mod tests {
         // <CODEWHALE_HOME>/.codewhale/state.db, and the legacy ~/.deepseek
         // fallback is bypassed entirely.
         assert_eq!(default_state_db_path(), dir.join("state.db"));
+    }
+
+    #[test]
+    fn implicit_state_database_refuses_unresolved_home() {
+        const PROBE: &str = "CODEWHALE_STATE_DEFAULT_PATH_PROBE";
+        if std::env::var_os(PROBE).is_some() {
+            let error =
+                StateStore::open(None).expect_err("implicit relative state must be refused");
+            assert!(error.to_string().contains("absolute home directory"));
+            assert!(!Path::new(".codewhale").exists());
+            StateStore::open(Some(PathBuf::from("explicit/state.db")))
+                .expect("an explicitly chosen relative path remains supported");
+            return;
+        }
+        let probe = std::env::temp_dir().join(format!(
+            "cw-state-default-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&probe).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::implicit_state_database_refuses_unresolved_home",
+            ])
+            .env(PROBE, "1")
+            .env_remove("CODEWHALE_HOME")
+            .env("HOME", "relative-home")
+            .current_dir(&probe)
+            .output()
+            .unwrap();
+        fs::remove_dir_all(&probe).unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

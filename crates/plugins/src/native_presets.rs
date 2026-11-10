@@ -59,6 +59,7 @@ pub fn metadata(
         return None;
     }
     let root = plugin.staged_root.as_deref()?;
+    let finalized = super::registry::verify_finalized_stage_root(root, None).ok()?;
     let path = Path::new(&preset.entry.path);
     // Reuse the sole discovery-to-stage translator: it resolves both the
     // root and entry, proves confinement and requires an actual Native entry.
@@ -79,6 +80,7 @@ pub fn metadata(
     {
         return None;
     }
+    super::registry::verify_finalized_stage_root(root, Some(&finalized)).ok()?;
     metadata_from_bytes(&bytes)
 }
 

@@ -317,13 +317,21 @@ impl Drop for InteractiveTerminalGuard {
     }
 }
 
-pub fn emit_tool_audit(event: serde_json::Value) {
+pub async fn emit_tool_audit(event: serde_json::Value) {
     let Some(path) = std::env::var_os("CODEWHALE_TOOL_AUDIT_LOG")
         .or_else(|| std::env::var_os("DEEPSEEK_TOOL_AUDIT_LOG"))
     else {
         return;
     };
-    emit_tool_audit_to_path(&PathBuf::from(path), event);
+    let path = PathBuf::from(path);
+    if let Err(error) = codewhale_runtime::runtime_control::owner_work(move || {
+        emit_tool_audit_to_path(&path, event);
+        Ok(())
+    })
+    .await
+    {
+        tracing::error!("Failed to run the tool audit writer: {error}");
+    }
 }
 
 fn emit_tool_audit_to_path(path: &Path, event: serde_json::Value) {
@@ -356,6 +364,7 @@ fn emit_tool_audit_to_path(path: &Path, event: serde_json::Value) {
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_mcp_tool_with_pool(
         pool: Arc<AsyncMutex<McpPool>>,
         tx_event: &mpsc::Sender<Event>,
@@ -363,6 +372,8 @@ impl Engine {
         input: serde_json::Value,
         disallowed_tools: &[String],
         decision: Option<&super::HumanDecision>,
+        account_fence: Option<&crate::profile_constitution::AccountFence>,
+        always_binding: Option<u64>,
     ) -> Result<RichToolResult, ToolError> {
         McpPool::authorize_call(disallowed_tools, name, &input)
             .map_err(|error| ToolError::not_available(error.to_string()))?;
@@ -413,12 +424,25 @@ impl Engine {
             }
             return Ok(rich);
         }
-        let needs_auth_generation_before = pool.lock().await.needs_auth_generation();
-        let result = pool
-            .lock()
-            .await
-            .call_tool_with_disallowed(name, input, disallowed_tools, decision)
-            .await;
+        let (needs_auth_generation_before, result) = {
+            let mut pool = pool.lock().await;
+            if let Some(expected) = always_binding {
+                pool.reload_if_config_changed()
+                    .await
+                    .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+                if pool.always_allow_binding(name) != Some(expected) {
+                    return Err(ToolError::permission_denied(
+                        "The connector permission changed. Try the call again.",
+                    ));
+                }
+            }
+            crate::profile_constitution::admit_desktop_browser_call(name, account_fence).await?;
+            (
+                pool.needs_auth_generation(),
+                pool.call_tool_with_disallowed(name, input, disallowed_tools, decision)
+                    .await,
+            )
+        };
         match result {
             Ok(result) => {
                 Ok(crate::tools::registry::mcp_result_to_bounded_rich_tool_result(result))
@@ -779,6 +803,10 @@ impl Engine {
                     let decision = context_override
                         .as_ref()
                         .and_then(|context| context.human_decision.as_ref());
+                    let account_fence = context_override
+                        .as_ref()
+                        .or_else(|| registry.map(|registry| registry.context()))
+                        .and_then(|context| context.account_fence.as_deref());
                     Engine::execute_mcp_tool_with_pool(
                         pool,
                         &tx_event,
@@ -786,6 +814,10 @@ impl Engine {
                         tool_input,
                         disallowed_tools,
                         decision,
+                        account_fence,
+                        context_override
+                            .as_ref()
+                            .and_then(|context| context.mcp_always_binding),
                     )
                     .await
                 } else {

@@ -4,7 +4,7 @@ use std::fs;
 
 use tempfile::tempdir;
 
-use crate::eval::{EvalHarness, EvalHarnessConfig, FixtureRecord, ScenarioStepKind};
+use codewhale_app_server::eval::{EvalHarness, EvalHarnessConfig, FixtureRecord, ScenarioStepKind};
 
 const HAPPY_PATH_TOOL_LOOP: [ScenarioStepKind; 6] = [
     ScenarioStepKind::List,

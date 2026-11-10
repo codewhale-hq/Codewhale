@@ -15,10 +15,10 @@ test-support = []
 
 [dependencies]
 anyhow.workspace = true
-codewhale-config = { path = "../config", version = "0.10.2" }
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-runtime = { path = "../runtime", version = "0.10.2" }
-codewhale-util = { path = "../util", version = "0.10.2" }
+codewhale-config = { path = "../config", version = "0.10.3" }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-runtime = { path = "../runtime", version = "0.10.3" }
+codewhale-util = { path = "../util", version = "0.10.3" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
@@ -28,4 +28,4 @@ uuid.workspace = true
 wait-timeout = "0.2"
 
 [dev-dependencies]
-codewhale-runtime = { path = "../runtime", version = "0.10.2", features = ["test-support"] }
+codewhale-runtime = { path = "../runtime", version = "0.10.3", features = ["test-support"] }

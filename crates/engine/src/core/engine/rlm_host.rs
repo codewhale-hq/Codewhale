@@ -46,10 +46,7 @@ pub struct CapturedRlmCaller {
     review_policy: Arc<AutoReviewPolicy>,
     deadline: Option<tokio::time::Instant>,
     origin_scope: crate::cost_status::CostScopeToken,
-    origin_session: String,
-    origin_turn: String,
     child_accounting: Option<crate::tools::subagent::engine::ChildAccountingProjection>,
-    scheduler: tokio::runtime::Handle,
     runtime_owner: Option<String>,
     _runtime_lease: Option<crate::cost_status::RuntimeUsageLease>,
 }
@@ -102,12 +99,22 @@ impl CapturedRlmCaller {
         }
         let mut captured_context = context.clone();
         captured_context.rlm_caller = None;
+        #[cfg(any(test, feature = "test-support"))]
+        if captured_context.accounting_origin.is_none() {
+            captured_context.accounting_origin = crate::session_manager::default_sessions_dir()
+                .ok()
+                .map(|dir| {
+                    crate::cost_status::NativeUsageOrigin::session(
+                        crate::cost_status::scope_token(),
+                        dir,
+                        captured_context.state_namespace.clone(),
+                    )
+                });
+        }
         let child_accounting = engine
             .child_host
             .as_ref()
             .map(|child| child.authority.accounting_projection());
-        let scheduler = tokio::runtime::Handle::try_current()
-            .map_err(|_| ToolError::not_available("RLM caller has no held Engine scheduler"))?;
         let runtime_owner = engine.config.compaction.runtime_cost_owner.clone();
         let runtime_lease = runtime_owner
             .as_deref()
@@ -146,10 +153,7 @@ impl CapturedRlmCaller {
                 review_policy: Arc::clone(&engine.shared_auto_review_policy),
                 deadline,
                 origin_scope: crate::cost_status::scope_token(),
-                origin_session: context.state_namespace.clone(),
-                origin_turn: origin_turn.to_string(),
                 child_accounting,
-                scheduler,
                 runtime_owner,
                 _runtime_lease: runtime_lease,
             };
@@ -685,40 +689,114 @@ impl Engine {
     }
 }
 
-/// One actual producer dispatch, reserved before entering the client. Its Drop
-/// records unknown execution synchronously; no future is needed to retain it.
+/// One actual producer dispatch with a durable source reservation before the client.
 pub(super) struct RlmDispatchedRequest {
     caller: Arc<CapturedRlmCaller>,
     usage: RlmUsageAccumulator,
     reservation: RlmUsageReservation,
-    source: String,
+    accounting_source: crate::cost_status::NativeUsageSource,
     route: crate::cost_status::EffectiveRouteEnvelope,
-    settled: Option<(
-        Usage,
-        Option<u64>,
-        crate::cost_status::RuntimeUsageMissingReason,
-    )>,
+    settled: Option<crate::cost_status::RuntimeUsageRecord>,
     projected: bool,
     refused: bool,
 }
 impl RlmDispatchedRequest {
-    pub(super) async fn settle_open_error(&mut self, error: &anyhow::Error) {
-        if crate::tools::subagent::engine::provider_request_refusal_proven(error) {
-            self.cancel_unexecuted();
-        } else {
-            self.settle(&Usage::default(), false).await;
-        }
+    pub(crate) fn settlement_acknowledged(&self) -> bool {
+        self.refused || self.projected
     }
-    pub(super) fn cancel_unexecuted(&mut self) {
-        self.usage.cancel_sync(
-            self.reservation,
-            false,
+    pub(crate) async fn bind_dispatch(
+        &mut self,
+        observation: &crate::llm_client::RequestRetryObservation,
+    ) -> std::io::Result<()> {
+        self.accounting_source
+            .bind_dispatch(&self.route, observation)?;
+        if let Some(record) = self.accounting_source.admit_dispatch(&self.route).await? {
+            self.usage.complete_record(self.reservation, &record).await;
+            if let Some(child) = &self.caller.child_accounting {
+                child.project_settled(&record).await?;
+            }
+        }
+        Ok(())
+    }
+    pub(super) async fn settle_open_error(&mut self, error: &anyhow::Error) {
+        let wire = self.accounting_source.observed_wire();
+        let coverage = if wire.last_transmission.is_some() {
+            wire.usage_coverage(false, false)
+        } else {
+            match error
+                .downcast_ref::<crate::llm_client::LlmError>()
+                .map(crate::llm_client::LlmError::transmission)
+            {
+                Some(crate::llm_client::RequestTransmission::NotDispatched) => {
+                    crate::llm_client::ProviderUsageCoverage::NotDispatched
+                }
+                Some(crate::llm_client::RequestTransmission::Rejected) => {
+                    crate::llm_client::ProviderUsageCoverage::Rejected
+                }
+                _ => crate::llm_client::ProviderUsageCoverage::Missing,
+            }
+        };
+        let record = match self.accounting_source.prepare_observed(
+            &self.route,
+            &Usage::default(),
+            coverage,
             crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
-        );
-        self.refused = true;
+            &wire,
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::warn!(%error, "RLM refusal receipt was not admitted");
+                return;
+            }
+        };
+        let published = self.caller.publish_response_async(&record).await;
+        self.usage.complete_record(self.reservation, &record).await;
+        let projected = if let Some(child) = &self.caller.child_accounting {
+            child.project_settled(&record).await
+        } else {
+            Ok(())
+        };
+        self.projected = published.is_ok() && projected.is_ok();
+        self.settled = Some(record);
+        self.refused = self.projected
+            && matches!(
+                coverage,
+                crate::llm_client::ProviderUsageCoverage::Rejected
+                    | crate::llm_client::ProviderUsageCoverage::NotDispatched
+            );
+    }
+    pub(super) async fn cancel_unexecuted(&mut self) {
+        let wire = self.accounting_source.observed_wire();
+        if wire.last_transmission.is_some() {
+            self.settle(&Usage::default(), false).await;
+            return;
+        }
+        let record = match self.accounting_source.prepare_observed(
+            &self.route,
+            &Usage::default(),
+            crate::llm_client::ProviderUsageCoverage::NotDispatched,
+            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            &wire,
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::warn!(%error, "uninvoked RLM reservation remains unsettled");
+                return;
+            }
+        };
+        let published = self.caller.publish_response_async(&record).await;
+        self.usage.complete_record(self.reservation, &record).await;
+        let projected = if let Some(child) = &self.caller.child_accounting {
+            child.project_settled(&record).await
+        } else {
+            Ok(())
+        };
+        self.projected = published.is_ok() && projected.is_ok();
+        self.refused = self.projected;
+        self.settled = Some(record);
     }
     pub(super) async fn settle(&mut self, usage: &Usage, complete: bool) {
-        if self.settled.is_some() || self.refused {
+        if self.refused {
             return;
         }
         let reason = if complete {
@@ -726,102 +804,82 @@ impl RlmDispatchedRequest {
         } else {
             crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
         };
-        // Publication precedes any cancellable worker projection. Drop retains
-        // this exact settlement and never synthesizes a second charge.
-        let priced = self
-            .caller
-            .publish_response(&self.source, &self.route, usage, reason);
-        self.settled = Some((usage.clone(), priced, reason));
-        if usage_has_reported_data(usage) {
-            self.usage.complete(self.reservation, usage).await;
+        let coverage = if complete && usage_has_reported_data(usage) {
+            crate::llm_client::ProviderUsageCoverage::Reported
+        } else if usage_has_reported_data(usage) {
+            crate::llm_client::ProviderUsageCoverage::Incomplete
         } else {
-            self.usage.cancel_sync(self.reservation, true, reason);
+            crate::llm_client::ProviderUsageCoverage::Missing
+        };
+        let record = match self.accounting_source.prepare_observed(
+            &self.route,
+            usage,
+            coverage,
+            reason,
+            &self.accounting_source.observed_wire(),
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::error!(%error, "RLM usage predecessor remains unsettled");
+                return;
+            }
+        };
+        if let Err(error) = self.caller.publish_response_async(&record).await {
+            tracing::warn!(%error, "RLM usage has no durable acknowledgement");
         }
-        if let Some(child) = &self.caller.child_accounting {
-            child
-                .project_settled(&self.source, &self.route, usage, priced, reason)
-                .await;
-        }
-        self.projected = true;
+        self.settled = Some(record.clone());
+        self.usage.complete_record(self.reservation, &record).await;
+        let projected = if let Some(child) = &self.caller.child_accounting {
+            child.project_settled(&record).await
+        } else {
+            Ok(())
+        };
+        self.projected = record.is_acknowledged() && projected.is_ok();
     }
 }
-impl Drop for RlmDispatchedRequest {
-    fn drop(&mut self) {
-        if self.refused || self.projected {
-            return;
-        }
-        let (usage, priced, reason) = self.settled.clone().unwrap_or_else(|| {
-            let reason = crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown;
-            let usage = Usage::default();
-            let priced = self
-                .caller
-                .publish_response(&self.source, &self.route, &usage, reason);
-            self.usage.cancel_sync(self.reservation, true, reason);
-            (usage, priced, reason)
-        });
-        if let Some(child) = &self.caller.child_accounting {
-            child.recover_settled(
-                &self.caller.scheduler,
-                self.source.clone(),
-                self.route.clone(),
-                usage,
-                priced,
-                reason,
-            );
-        }
-    }
-}
+
 impl CapturedRlmCaller {
+    async fn publish_response_async(
+        self: &Arc<Self>,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> std::io::Result<Option<u64>> {
+        let caller = Arc::clone(self);
+        let record = record.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let origin = crate::cost_status::test_cost_scope_id();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            #[cfg(any(test, feature = "test-support"))]
+            let _origin = crate::cost_status::bind_test_cost_scope(origin);
+            caller
+                .publish_response(&record)
+                .map_err(anyhow::Error::from)
+        })
+        .await
+        .map_err(std::io::Error::other)
+    }
+
     fn publish_response(
         &self,
-        source: &str,
-        route: &crate::cost_status::EffectiveRouteEnvelope,
-        usage: &Usage,
-        reason: crate::cost_status::RuntimeUsageMissingReason,
-    ) -> Option<u64> {
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> std::io::Result<Option<u64>> {
         if let Some(child) = &self.child_accounting {
-            return child.publish(source, route, usage, reason);
+            return child.publish(record);
         }
-        if usage_has_reported_data(usage) {
-            if let Some(owner) = self.runtime_owner.as_deref() {
-                crate::cost_status::report_effective_route_for_runtime(
-                    self.origin_scope,
-                    Some(owner),
-                    source,
-                    route,
-                    usage,
-                );
-            } else {
-                crate::usage_persistence::report_effective_route_for_interactive_origin(
-                    self.origin_scope,
-                    &self.origin_session,
-                    &self.origin_turn,
-                    source,
-                    route,
-                    usage,
-                );
-            }
-        } else if let Some(owner) = self.runtime_owner.as_deref() {
-            crate::cost_status::report_missing_runtime_usage(
-                self.origin_scope,
-                Some(owner),
-                source,
-                route,
-                reason,
-            );
-        } else {
-            crate::usage_persistence::report_missing_usage_for_interactive_origin(
-                self.origin_scope,
-                &self.origin_session,
-                &self.origin_turn,
-                source,
-                route,
-                reason,
-            );
-        }
-        None
+        crate::cost_status::report_runtime_usage_record(
+            self.origin_scope,
+            self.runtime_owner.as_deref(),
+            record,
+        )?;
+        Ok(usage_has_reported_data(&record.usage.usage)
+            .then(|| {
+                crate::tools::subagent::priced_usd_microusd(
+                    &record.usage.route.audit_frozen(&record.usage.usage),
+                )
+            })
+            .flatten())
     }
 }
+
 impl Engine {
     pub(super) async fn rlm_provider_request(
         &mut self,
@@ -847,7 +905,11 @@ impl Engine {
             caller: Arc::clone(&state.caller),
             usage: state.usage.clone(),
             reservation,
-            source,
+            accounting_source: crate::cost_status::NativeUsageSource::capture_with_origin(
+                source,
+                crate::cost_status::UsageSpendOwner::Auxiliary,
+                state.caller.context.accounting_origin.clone(),
+            ),
             route,
             settled: None,
             projected: false,

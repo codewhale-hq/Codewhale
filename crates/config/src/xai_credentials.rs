@@ -104,18 +104,6 @@ pub fn is_valid_claude_oauth_generation(value: &str) -> bool {
     )
 }
 
-pub fn validate_claude_oauth_generation(value: &str) -> Result<&str> {
-    anyhow::ensure!(
-        is_valid_claude_oauth_generation(value),
-        "invalid Codewhale-owned Claude OAuth generation"
-    );
-    Ok(value)
-}
-
-pub fn claude_oauth_generation_path(value: &str) -> Result<PathBuf> {
-    Ok(xai_oauth_credentials_dir()?.join(validate_claude_oauth_generation(value)?))
-}
-
 fn is_valid_owned_oauth_generation(value: &str, prefix: &str, suffix: &str) -> bool {
     let path = Path::new(value);
     if path.components().count() != 1

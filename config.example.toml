@@ -525,6 +525,11 @@ show_whats_new = true
 # 0 disables the timeout entirely; values above 86400 (24h) are clamped.
 # user_input_timeout_seconds = 300
 #
+# Fail-safe ceiling, in seconds, for how long a durable task (runtime API
+# server) may sit on an unanswered approval or question before it fails with
+# human_wait_timeout. 0 or omitted uses 1800; values are clamped to 1..=86400.
+# task_human_wait_cap_seconds = 1800
+#
 # Bound an interactive approval card's wait (#6101). When the window elapses
 # the card resolves to deny (fail-closed) and the transcript says the bound
 # denied the call; omitted or 0 waits indefinitely.
@@ -892,12 +897,13 @@ base_url = "https://api.deepseek.com/beta"
 # api_key = "YOUR_XAI_API_KEY"
 # auth_mode = "oauth"                      # or "device_code" / "grok_cli"
 # base_url = "https://api.x.ai/v1"
-# model = "grok-4.6"                       # or grok-4.5, grok-4.3, grok-build
+# model = "grok-4.7"                       # or grok-4.6, grok-4.5, grok-4.3, grok-build
 
 # Mistral AI — la Plateforme (https://console.mistral.ai/)
 # OpenAI-compatible Chat Completions route.
 # Provider aliases: mistral, mistral-ai, mistralai, la-plateforme
 # Env var aliases: MISTRAL_API_KEY, MISTRAL_BASE_URL, MISTRAL_MODEL
+# Vibe Code subscription setup: docs/MISTRAL_VIBE.md
 [providers.mistral]
 # api_key = "YOUR_MISTRAL_API_KEY"
 # base_url = "https://api.mistral.ai/v1"
@@ -1757,7 +1763,7 @@ base_url = "https://integrate.api.nvidia.com/v1"
 # # Optional owner-selected total child limit. Zero leaves work uncapped.
 # max_children = 0
 # # Maximum concurrently live agents inside one run (others wait for a slot).
-# max_concurrent = 16
+# max_concurrent = 64
 # # Optional structural Workflow depth limit; zero leaves it uncapped.
 # # This is separate from Runtime child delegation below.
 # max_depth = 0

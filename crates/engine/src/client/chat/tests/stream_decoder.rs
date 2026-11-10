@@ -1341,6 +1341,7 @@ fn restored_tool_results_obey_the_active_route_budget() {
 async fn request_builder_preserves_execution_matched_native_read_windows() {
     use crate::tools::spec::{ToolContext, ToolSpec as _};
 
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let workspace = tempfile::tempdir().unwrap();
     let context = ToolContext::new(workspace.path());
     for character in ["x", "é"] {
@@ -1348,10 +1349,14 @@ async fn request_builder_preserves_execution_matched_native_read_windows() {
         tokio::fs::write(workspace.path().join("budget.rs"), source)
             .await
             .unwrap();
-        for input in [
-            json!({"path": "budget.rs"}),
-            json!({"path": "budget.rs", "max_bytes": 500_000}),
-        ] {
+        for configured in [None, Some(500_000)] {
+            codewhale_runtime::active_workshop::install_active_workshop(Some(
+                &codewhale_config::WorkshopConfig {
+                    read_result_max_bytes: configured,
+                    ..Default::default()
+                },
+            ));
+            let input = json!({"path": "budget.rs"});
             let output = crate::tools::file_tool::ReadTool
                 .execute(input.clone(), &context)
                 .await
@@ -1457,6 +1462,7 @@ async fn request_builder_preserves_execution_matched_native_read_windows() {
             }
         }
     }
+    codewhale_runtime::active_workshop::install_active_workshop(None);
 }
 
 #[test]

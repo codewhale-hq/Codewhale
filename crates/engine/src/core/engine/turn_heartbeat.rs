@@ -94,6 +94,7 @@ struct HeartbeatState {
     /// most once per value.
     progress_seq: u64,
     reported_seq: Option<u64>,
+    warned_seq: Option<u64>,
     /// Latest report, cleared by the next progress.
     stall: Option<StallReport>,
 }
@@ -135,6 +136,7 @@ impl Default for TurnHeartbeat {
                 provider_request: None,
                 progress_seq: 0,
                 reported_seq: None,
+                warned_seq: None,
                 stall: None,
             }),
         }
@@ -157,24 +159,42 @@ impl TurnHeartbeat {
 
     /// A new turn starts in [`TurnPhase::Preparing`].
     pub fn begin_turn(&self, turn_id: &str) {
-        self.with_state(|state| {
+        let started = self.with_state(|state| {
+            let started = state.turn_id.as_deref() != Some(turn_id);
             state.turn_id = Some(turn_id.to_string());
             state.provider_request = None;
+            started
         });
+        if started {
+            tracing::info!(target: "turn", turn_id, "turn started");
+        }
         self.enter(TurnPhase::Preparing, None, Some(PREPARING_PHASE_BOUND));
     }
 
     /// Enter `phase`. `bound = None` declares a parked wait that this watchdog
     /// never reports.
     pub fn enter(&self, phase: TurnPhase, detail: Option<String>, bound: Option<Duration>) {
-        self.with_state(|state| {
+        let changed = self.with_state(|state| {
+            let changed =
+                (state.phase != phase || state.detail != detail).then(|| state.turn_id.clone());
             state.phase = phase;
-            state.detail = detail;
+            state.detail = detail.clone();
             state.bound = bound;
             state.last_progress = Instant::now();
             state.progress_seq = state.progress_seq.wrapping_add(1);
             state.stall = None;
+            changed
         });
+        if let Some(turn_id) = changed {
+            tracing::info!(
+                target: "turn",
+                turn_id = turn_id.as_deref().unwrap_or(""),
+                phase = phase.label(),
+                detail = detail.as_deref().unwrap_or(""),
+                bound_secs = bound.map_or(0, |bound| bound.as_secs()),
+                "turn phase"
+            );
+        }
     }
 
     /// Record progress inside the current phase.
@@ -228,6 +248,24 @@ impl TurnHeartbeat {
         self.snapshot_at(Instant::now())
     }
 
+    pub fn detect_slow_at(
+        &self,
+        now: Instant,
+    ) -> Option<(TurnPhase, Option<String>, Duration, Duration)> {
+        self.with_state(|state| {
+            let bound = state.bound?;
+            let since_progress = now.saturating_duration_since(state.last_progress);
+            if state.phase == TurnPhase::Idle
+                || since_progress <= bound / 2
+                || state.warned_seq == Some(state.progress_seq)
+            {
+                return None;
+            }
+            state.warned_seq = Some(state.progress_seq);
+            Some((state.phase, state.detail.clone(), since_progress, bound))
+        })
+    }
+
     /// Return a report the first time the current bounded phase is overdue.
     pub fn detect_stall_at(&self, now: Instant) -> Option<StallReport> {
         self.with_state(|state| {
@@ -262,6 +300,14 @@ pub struct AbortOnDrop(pub tokio::task::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+pub struct IdleOnDrop(pub Arc<TurnHeartbeat>);
+
+impl Drop for IdleOnDrop {
+    fn drop(&mut self) {
+        self.0.idle();
     }
 }
 
@@ -300,6 +346,18 @@ fn spawn_turn_stall_watchdog_every(
             ticker.tick().await;
             if tx_event.is_closed() {
                 break;
+            }
+            if let Some((phase, detail, since_progress, bound)) =
+                heartbeat.detect_slow_at(Instant::now())
+            {
+                tracing::warn!(
+                    target: "turn",
+                    phase = phase.label(),
+                    detail = detail.as_deref().unwrap_or(""),
+                    since_progress_secs = since_progress.as_secs(),
+                    bound_secs = bound.as_secs(),
+                    "turn phase has gone half its bound without progress"
+                );
             }
             if let Some(report) = heartbeat.detect_stall_at(Instant::now()) {
                 let record = report_stall(&report);

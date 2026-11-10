@@ -31,6 +31,12 @@ the turn's own workspace snapshots:
 4. changed outside file tools (a command or another process): edited `b.txt` (+0 −1), created `c.txt` (+1 −0)
 ```
 
+The Runtime receipt endpoints accept `?format=md` to return the same Engine
+Markdown formatter used by the terminal, with `Content-Type: text/markdown`.
+Omitting `format`, or using `format=json`, preserves the JSON contract. Both
+formats require the same authenticated thread/workspace access. Clients display
+these recorded facts rather than deriving audit totals from activity labels.
+
 ## Surfaces
 
 All three share one builder (`crates/engine/src/receipts.rs`), but read different

@@ -17,6 +17,7 @@ pub enum PermissionsText {
     NoRules,
     OperationFailed,
     PostureAsk,
+    PostureAcceptEdits,
     PostureAuto,
     PostureBypass,
     PostureHeader,
@@ -45,6 +46,7 @@ pub struct PermissionsMessages {
     permissions_no_rules: String,
     permissions_operation_failed: String,
     permissions_posture_ask: String,
+    permissions_posture_accept_edits: String,
     permissions_posture_auto: String,
     permissions_posture_bypass: String,
     permissions_posture_header: String,
@@ -91,6 +93,8 @@ impl PermissionsMessages {
             permissions_operation_failed: presentation
                 .translate("permissions_operation_failed", &[("error", "{error}")])?,
             permissions_posture_ask: presentation.translate("permissions_posture_ask", &[])?,
+            permissions_posture_accept_edits: presentation
+                .translate("permissions_posture_accept_edits", &[])?,
             permissions_posture_auto: presentation.translate("permissions_posture_auto", &[])?,
             permissions_posture_bypass: presentation
                 .translate("permissions_posture_bypass", &[])?,
@@ -152,6 +156,7 @@ impl PermissionsMessages {
                 PermissionsText::NoRules => &self.permissions_no_rules,
                 PermissionsText::OperationFailed => &self.permissions_operation_failed,
                 PermissionsText::PostureAsk => &self.permissions_posture_ask,
+                PermissionsText::PostureAcceptEdits => &self.permissions_posture_accept_edits,
                 PermissionsText::PostureAuto => &self.permissions_posture_auto,
                 PermissionsText::PostureBypass => &self.permissions_posture_bypass,
                 PermissionsText::PostureHeader => &self.permissions_posture_header,
@@ -173,7 +178,6 @@ impl PermissionsMessages {
 #[derive(Debug, Clone, Copy)]
 pub enum StatusText {
     AppModeAgent,
-    AppModeOperate,
     AppModePlan,
     SessionMetricsCache,
     SessionMetricsInput,
@@ -192,6 +196,7 @@ pub enum StatusText {
     SnapshotsFailing,
     SnapshotsHistoryRepaired,
     StatusApprovalAsk,
+    StatusApprovalAcceptEdits,
     StatusApprovalAuto,
     StatusApprovalFullAccess,
     StatusApprovalNever,
@@ -255,7 +260,6 @@ pub enum StatusText {
 
 pub struct StatusMessages {
     app_mode_agent: String,
-    app_mode_operate: String,
     app_mode_plan: String,
     session_metrics_cache: String,
     session_metrics_input: String,
@@ -274,6 +278,7 @@ pub struct StatusMessages {
     snapshots_failing: String,
     snapshots_history_repaired: String,
     status_approval_ask: String,
+    status_approval_accept_edits: String,
     status_approval_auto: String,
     status_approval_full_access: String,
     status_approval_never: String,
@@ -339,7 +344,6 @@ impl StatusMessages {
     pub fn load(presentation: &dyn CommandPresentationContext) -> Result<Self, String> {
         Ok(Self {
             app_mode_agent: presentation.translate("app_mode_agent", &[])?,
-            app_mode_operate: presentation.translate("app_mode_operate", &[])?,
             app_mode_plan: presentation.translate("app_mode_plan", &[])?,
             session_metrics_cache: presentation.translate("session_metrics_cache", &[])?,
             session_metrics_input: presentation.translate("session_metrics_input", &[])?,
@@ -379,6 +383,8 @@ impl StatusMessages {
                 &[("workspace", "{workspace}")],
             )?,
             status_approval_ask: presentation.translate("status_approval_ask", &[])?,
+            status_approval_accept_edits: presentation
+                .translate("status_approval_accept_edits", &[])?,
             status_approval_auto: presentation.translate("status_approval_auto", &[])?,
             status_approval_full_access: presentation
                 .translate("status_approval_full_access", &[])?,
@@ -519,7 +525,6 @@ impl StatusMessages {
         Cow::Owned(
             match id {
                 StatusText::AppModeAgent => &self.app_mode_agent,
-                StatusText::AppModeOperate => &self.app_mode_operate,
                 StatusText::AppModePlan => &self.app_mode_plan,
                 StatusText::SessionMetricsCache => &self.session_metrics_cache,
                 StatusText::SessionMetricsInput => &self.session_metrics_input,
@@ -544,6 +549,7 @@ impl StatusMessages {
                 StatusText::SnapshotsFailing => &self.snapshots_failing,
                 StatusText::SnapshotsHistoryRepaired => &self.snapshots_history_repaired,
                 StatusText::StatusApprovalAsk => &self.status_approval_ask,
+                StatusText::StatusApprovalAcceptEdits => &self.status_approval_accept_edits,
                 StatusText::StatusApprovalAuto => &self.status_approval_auto,
                 StatusText::StatusApprovalFullAccess => &self.status_approval_full_access,
                 StatusText::StatusApprovalNever => &self.status_approval_never,

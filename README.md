@@ -72,8 +72,9 @@ two copies end up on `PATH` and whichever comes first wins.
 ## Quickstart
 
 1. Commit or stash your work, then run `codewhale` from the root of a git
-   repository. By default it applies file edits there without asking and
-   shows you the diff.
+   repository. By default (**Accept Edits**) it edits files in the repository
+   without asking and asks before each command; `Shift+Tab` steps the
+   permission dial when you want it to ask more or less.
 2. Run `/provider` (or press `F3`), pick a provider, paste its API key, and
    choose a model. DeepSeek is the default provider. With no key, pick a local
    runtime instead. If no provider is configured and Ollama is already serving
@@ -102,12 +103,14 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 ## Modes and permissions
 
-A fresh install starts in Work mode with the Ask permission.
+A fresh install starts in Work mode with the Accept Edits permission. One dial
+switches both: `Shift+Tab` steps Ask → Accept Edits → Plan → Auto-Review →
+Full Access.
 
 | | Switch with | Options |
 | --- | --- | --- |
-| Mode | `Tab` (when the input is empty) or `/mode` | **Plan** reads and searches but changes nothing. **Work** edits files and runs commands. **Operate** has the same access as Work, treats your request as a goal, and keeps going until the goal is verified or it needs input from you. |
-| Permission | `Shift+Tab` | **Ask** applies file edits in your repository without asking and asks before shell commands that are not read-only. **Auto-Review** lets rules and a reviewer model approve routine calls and refuses high-risk ones; switch to Ask to approve those yourself. **Full Access** never asks and turns off Codewhale's sandbox; repository rules and managed policy still apply. |
+| Mode | the Plan stop on `Shift+Tab`, or `/mode` | **Plan** reads and searches but changes nothing. **Work** (every other stop) edits files and runs commands; start a goal with `/goal` when a request needs more than one turn. |
+| Permission | `Shift+Tab` | **Ask** asks before every file edit and every shell command that is not read-only. **Accept Edits** applies file edits in your git repository without asking and still asks before commands. **Auto-Review** lets rules and a reviewer model approve routine calls and refuses high-risk ones; switch to Ask to approve those yourself. **Full Access** never asks, and commands can reach anything on this computer; repository rules and managed policy still apply. |
 
 See the [modes and permissions guide](docs/MODES.md) for the details.
 

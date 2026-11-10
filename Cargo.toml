@@ -55,7 +55,7 @@ default-members = ["crates/cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 # The floor is what CI's MSRV job builds (1.89): Rust 1.88 stabilized the
 # `let_chains` the codebase relies on, but a locked dependency
@@ -91,7 +91,7 @@ reqwest = { version = "0.13.1", default-features = false, features = ["json", "r
 # multi-thread engine over channels (see crates/workflow-js).
 rquickjs = { version = "0.14", features = ["futures"] }
 rustls = { version = "0.23.36", default-features = false, features = ["ring", "std", "tls12"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 # DSH bundle import: event-level parsing so aliases and explicit tags can be refused.
@@ -105,7 +105,7 @@ toml_edit = "0.25.12"
 sha2 = "0.11"
 tower-http = { version = "0.7", features = ["cors"] }
 tracing = "0.1"
-tracing-appender = "0.2"
+gix = { version = "=0.90.0", default-features = false, features = ["sha1", "sha256"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.11", features = ["v4"] }
 mimalloc = { version = "0.1", default-features = false }

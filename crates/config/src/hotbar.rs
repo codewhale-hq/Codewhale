@@ -10,7 +10,7 @@ pub const DEFAULT_HOTBAR_ACTIONS: [&str; HOTBAR_SLOT_COUNT as usize] = [
     "slash.auto",
     "mode.plan",
     "mode.agent",
-    "mode.operate",
+    "reasoning.cycle",
     "palette.open",
     "sidebar.toggle",
 ];

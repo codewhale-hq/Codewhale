@@ -67,11 +67,20 @@ impl Fixture {
 
     fn receipt(&self) -> (Vec<u8>, Value) {
         #[cfg(unix)]
-        let name = "daemon.sock.owner.json";
+        let path = codewhale_paths::daemon_socket::resolve_socket_path(
+            &codewhale_paths::daemon_socket::SocketPathInputs {
+                explicit: None,
+                codewhale_home_override: Some(self.path("state")),
+                xdg_runtime_dir: None,
+                user_home: Some(self.path("home")),
+                macos: cfg!(target_os = "macos"),
+            },
+        )
+        .expect("fixture socket path")
+        .with_file_name("daemon.sock.owner.json");
         #[cfg(windows)]
-        let name = "daemon.owner.json";
-        let bytes = std::fs::read(self.path("state").join("run").join(name))
-            .expect("published owner receipt");
+        let path = self.path("state").join("run").join("daemon.owner.json");
+        let bytes = std::fs::read(path).expect("published owner receipt");
         let value = serde_json::from_slice(&bytes).expect("owner receipt JSON");
         (bytes, value)
     }

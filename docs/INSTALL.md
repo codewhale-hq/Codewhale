@@ -4,10 +4,12 @@
 
 Codewhale is an open-source coding agent that runs in your terminal. You give
 it a task ("fix the failing test", "add a CLI flag"). It reads your repository,
-edits files and runs commands. In the default **Ask** posture it applies file
-edits inside the workspace immediately (and shows you the diff), but asks before
-running shell commands, so commit or stash anything you care about first. It
-works with many model providers. **DeepSeek** is the default.
+edits files and runs commands. In the default **Accept Edits** posture it
+applies file edits inside the repository immediately and shows you the diff,
+and asks before each shell command, so commit or stash anything you care about
+first. **Ask** (`Shift+Tab` round the dial, or `/config`) asks before every
+edit as well. It works with many model
+providers. **DeepSeek** is the default.
 
 The command is `codewhale`. `codew` is a shorter alias for the same program.
 
@@ -23,7 +25,7 @@ there.
 
 Install commands that use `latest` resolve to the latest **published** GitHub
 Release or package. Between releases, `main` may already describe the next
-version (for example a v0.10.2 source candidate before its tag). A
+version (for example a v0.10.3 source candidate before its tag). A
 prebuilt candidate is available through the official installer only after its
 tag, checksums and release assets exist. Contributors can build `main` now.
 
@@ -919,13 +921,15 @@ cd your-git-repo
 codewhale
 ```
 
-* The composer is at the bottom. The footer shows the permission posture
-  (`ask`), the mode (`work`) and the model (`DeepSeek · deepseek-flash`).
-* **Shift+Tab** cycles the permission posture: Ask → Auto-Review → Full Access.
-  **Tab** (with an empty composer) cycles the mode: Plan → Work → Operate.
-* In **Ask**, file edits in the workspace are applied and shown as a diff.
-  Shell commands stop at an **APPROVAL** prompt: `y` allow once, `a` allow for
-  this session, `n` deny, `Esc` abort the turn.
+* The composer is at the bottom. The footer shows the permission dial stop
+  (`accept edits`) and the model (`DeepSeek · deepseek-flash`).
+* **Shift+Tab** steps the permission dial: Ask → Accept Edits → Plan →
+  Auto-Review → Full Access. Plan is read-only planning; every other stop is
+  Work. **Tab** only completes commands and file mentions.
+* In **Ask**, file edits and shell commands stop at an **APPROVAL** prompt:
+  `y` allow once, `a` allow for this session, `n` deny, `Esc` abort the turn.
+  In **Accept Edits**, file edits in the repository are applied and shown as a
+  diff, and shell commands still prompt.
 * Useful keys: **F1** help (or `/help`), **Ctrl-K** command palette, **F3**
   provider/model picker, **Ctrl-R** resume a past session, **Ctrl-U** clear the
   input (**Ctrl-Z** restores it), **Ctrl-C** cancel, clear the draft, or quit, **Ctrl-D** quit
@@ -1112,6 +1116,50 @@ Despite the wording, on Linux this usually just means **no connection to
 response is fine; it means the host is reachable). If you're behind a proxy,
 make sure `HTTPS_PROXY` is exported. `codewhale doctor --probe-api` only says
 `✗ API connection failed` for both bad keys and network problems.
+
+### A local proxy that closed after the session started
+
+reqwest reads `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` when a client is
+built, and a session builds its clients once. Without a fallback, a local proxy
+(Clash, v2rayN, sing-box) that stops after Codewhale starts leaves every
+request dialing a port that no longer answers — including requests to providers
+that need no proxy at all.
+
+Codewhale now watches that port on the paths listed below. While it refuses
+connections, requests on those paths go direct; when it answers again, proxy
+routing resumes. Detection runs in the background and takes effect within a few
+seconds of a port starting to refuse, so a request issued in that gap can still
+fail once. A port that drops packets instead of refusing them is not treated as
+down at all.
+
+Paths that install the watch: the model client and the API-key verification
+probe, the model-list and catalog clients, HTTP/1.1 fallback, web search, web
+run, vision, finance, the MCP registry, `models.dev`, the profile constitution
+check, the TUI balance poll and the remote-control relay. `doctor --probe-api`
+and `doctor --probe-local` go through the model client, so they are covered.
+
+Other probes keep the previous behaviour and can still fail while a local proxy
+is down: `doctor`'s search probe and the Runtime API runtime-info probe read
+the proxy environment themselves, `cloud-facts` refreshes the same way, and the
+sandbox client is not covered. The dev-server readiness probe is not affected at
+all because it always goes direct.
+
+Only loopback proxies are watched, each on its own port: a live `HTTP_PROXY`
+does not keep a dead `HTTPS_PROXY` in the path, and a remote proxy in the same
+configuration is routed through exactly as before, never diverted. While a port
+answers, `NO_PROXY`, proxy credentials and the `ALL_PROXY` / `HTTP_PROXY` /
+`HTTPS_PROXY` precedence are unchanged. Detection is a TCP probe rather than a
+proxy handshake, so a process that holds the port without forwarding traffic
+still counts as up.
+
+The proxy environment is read once, when the first client is built. Exporting a
+different `HTTPS_PROXY` mid-session needs a restart.
+
+Going direct means the connection leaves from your own address. If you rely on
+the proxy to hide it, set the variable below instead of letting the fallback
+run; `NO_PROXY` matches still go direct either way.
+
+Set `CODEWHALE_LOCAL_PROXY_FALLBACK=0` to keep the previous behaviour.
 
 **`codewhale install: refusing to replace existing ~/.local/bin/codewhale`.**
 A different version is already installed there. Run `codewhale update`, or

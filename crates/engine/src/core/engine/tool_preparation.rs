@@ -30,6 +30,19 @@ pub(super) struct PreparedToolPolicy {
     pub(super) auto_approve: bool,
 }
 
+impl PreparedToolPolicy {
+    pub(super) fn apply_mcp_always_allow(&mut self, pool: &McpPool) -> Option<u64> {
+        if self.call.approval != ApprovalRequirement::Suggest
+            || !McpPool::is_mcp_tool(&self.call.name)
+        {
+            return None;
+        }
+        let binding = pool.always_allow_binding(&self.call.name)?;
+        self.call.approval = ApprovalRequirement::Auto;
+        Some(binding)
+    }
+}
+
 /// Prepare a concrete call without mutating external state.
 pub(super) fn prepare_tool_call(
     name: &str,
@@ -76,7 +89,7 @@ pub(super) fn prepare_tool_call(
                 (context.auto_approve, context.approval_mode)
             });
             let can_ask = posture.is_none_or(|(auto_approve, approval_mode)| {
-                approval_mode == ApprovalMode::Suggest
+                approval_mode.is_ask_family()
                     || auto_approve
                     || approval_mode == ApprovalMode::Bypass
             });

@@ -237,12 +237,12 @@ async fn owned_http(State(fake): State<FakeOwner>, request: Request) -> Response
             .turn_seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
-        return Json(json!({"turn":{"id":format!("fixture-turn-{seq}")}})).into_response();
+        return Json(json!({"thread":{"id":"canonical-1","model":"fixture-model"},"turn":{"id":format!("fixture-turn-{seq}"),"thread_id":"canonical-1"}})).into_response();
     }
     if path == "/v1/threads/canonical-1/events" {
         let seq = fake.turn_seq.load(std::sync::atomic::Ordering::SeqCst);
-        let frame = json!({"seq":seq,"turn_id":format!("fixture-turn-{seq}"),
-            "payload":{"turn":{"status":"completed"}}});
+        let frame = json!({"seq":seq,"thread_id":"canonical-1","turn_id":format!("fixture-turn-{seq}"),
+            "payload":{"turn":{"id":format!("fixture-turn-{seq}"),"thread_id":"canonical-1","status":"completed"}}});
         return (
             [(header::CONTENT_TYPE, "text/event-stream")],
             format!("event: turn.completed\ndata: {frame}\n\n"),
@@ -357,7 +357,7 @@ async fn fixture(
     FakeOwner,
     tokio::task::JoinHandle<()>,
 ) {
-    let (state, temp, fake) = fixture_state(block_import);
+    let (mut state, temp, fake) = fixture_state(block_import);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let app = Router::new().fallback(owned_http).with_state(fake.clone());
@@ -367,6 +367,7 @@ async fn fixture(
     let mut bridge = RuntimeBridge::from_base_url_for_test(format!("http://{address}"));
     bridge.auth_token = Some("private-compatibility-reload-fixture".into());
     *state.runtime_bridge.lock().await = Some(Arc::new(Mutex::new(bridge)));
+    crate::tests::install_mock_native_services(&mut state).await;
     (state, temp, fake, server)
 }
 
@@ -841,6 +842,7 @@ async fn creation_without_acknowledged_scope_or_stable_key_refuses_before_io() {
         handle(&state, request)
             .await
             .unwrap_err()
+            .wire
             .message
             .contains("acknowledged workspace")
     );
@@ -907,16 +909,17 @@ async fn confirmed_mutation_metadata_404_keeps_completed_effect_and_retry_identi
         serde_json::from_value(json!({"kind":"start","operation_key":"completed-intent"})).unwrap();
     let error = handle(&state, request).await.unwrap_err();
     assert_eq!(fake.operations.lock().await.len(), 1);
-    assert!(error.message.contains("completed-intent"));
+    assert!(error.wire.message.contains("completed-intent"));
     assert!(
         error
+            .wire
             .message
             .contains("completed as thread canonical-1 / session session-1")
     );
-    assert!(error.message.contains("without replay"));
+    assert!(error.wire.message.contains("without replay"));
     assert_ne!(
-        error.code,
-        JsonRpcError::thread_not_found("canonical-1").code
+        error.wire.code,
+        DispatchError::thread_not_found("canonical-1").wire.code
     );
     server.abort();
 }
@@ -931,6 +934,7 @@ async fn encoded_oversize_creation_refuses_before_owner_effect() {
     let error = handle(&state, request).await.unwrap_err();
     assert!(
         error
+            .wire
             .message
             .contains("encoded canonical control exceeds bound")
     );
@@ -971,6 +975,30 @@ async fn declared_oversize_response_refuses_complete_document_without_truncation
 #[tokio::test]
 async fn http_and_stdio_dispatch_share_the_same_full_history_owner() {
     let (state, _temp, fake, server) = fixture(false).await;
+    for (method, params) in [
+        ("thread/list", json!({"cwd":"/another-workspace"})),
+        ("thread/list", json!({"cursor":"unsupported"})),
+        ("thread/list", json!({"archived":true})),
+        (
+            "thread/read",
+            json!({"thread_id":"canonical-1","includeTurns":false}),
+        ),
+        (
+            "thread/request",
+            json!({"kind":"list","cwd":"/another-workspace"}),
+        ),
+        (
+            "thread/request",
+            json!({"kind":"read","thread_id":"canonical-1","includeTurns":false}),
+        ),
+    ] {
+        let error = dispatch_stdio_request(&state, method, params)
+            .await
+            .unwrap_err();
+        assert_eq!(error.wire.code, -32602);
+        assert!(error.wire.message.contains("unknown field"));
+        assert!(fake.calls.lock().await.is_empty());
+    }
     let request = ThreadRequest::Read(codewhale_protocol::ThreadReadParams {
         thread_id: "canonical-1".into(),
     });
@@ -1043,9 +1071,12 @@ async fn pending_retained_operation_never_reconstructs_or_replays_source() {
     let count = fake.calls.lock().await.len();
     let error = handle(&state, request).await.unwrap_err();
     assert!(
-        error.message.contains("pending-recovery")
-            && error.message.contains("pending")
-            && error.message.contains("no resume, replay or replacement")
+        error.wire.message.contains("pending-recovery")
+            && error.wire.message.contains("pending")
+            && error
+                .wire
+                .message
+                .contains("no resume, replay or replacement")
     );
     let calls = fake.calls.lock().await;
     assert_eq!(calls.len(), count + 2);
@@ -1121,8 +1152,8 @@ async fn pending_wrong_action_refuses_before_any_prepared_recovery() {
     .unwrap();
     let error = handle(&state, request).await.unwrap_err();
     assert!(
-        error.message.contains("another action or source")
-            && error.message.contains("wrong-pending-action")
+        error.wire.message.contains("another action or source")
+            && error.wire.message.contains("wrong-pending-action")
     );
     let calls = fake.calls.lock().await;
     assert_eq!(calls.len(), count + 1);
@@ -1149,9 +1180,12 @@ async fn changed_prepared_target_refusal_keeps_reserved_operation_and_no_replay(
     let count = fake.calls.lock().await.len();
     let error = handle(&state, request).await.unwrap_err();
     assert!(
-        error.message.contains("changed-prepared-target")
-            && error.message.contains("canonical-1 / session session-1")
-            && error.message.contains("prepared target graph changed")
+        error.wire.message.contains("changed-prepared-target")
+            && error
+                .wire
+                .message
+                .contains("canonical-1 / session session-1")
+            && error.wire.message.contains("prepared target graph changed")
     );
     let calls = fake.calls.lock().await;
     assert_eq!(calls.len(), count + 2);
@@ -1176,10 +1210,11 @@ async fn retained_operation_rejects_another_action_or_source_with_completed_fact
     let error = handle(&state, request).await.unwrap_err();
     assert!(
         error
+            .wire
             .message
             .contains("completed as thread canonical-1 / session session-1")
     );
-    assert!(error.message.contains("another action or source"));
+    assert!(error.wire.message.contains("another action or source"));
     assert_eq!(fake.operations.lock().await.len(), 1);
     server.abort();
 }
@@ -1381,7 +1416,7 @@ async fn conflicting_existing_owner_goal_is_visible_refusal_without_empty_alias(
         thread_id: "legacy".into(),
     });
     let error = handle(&state, request).await.unwrap_err();
-    assert!(error.message.contains("canonical goal conflict"));
+    assert!(error.wire.message.contains("canonical goal conflict"));
     assert!(
         store
             .get_canonical_runtime_link("legacy", state.captured_owner.as_ref().unwrap())

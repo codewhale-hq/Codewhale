@@ -5,7 +5,29 @@ In the terminal, `/mcp` (also `/mcps`) opens **Extensions → MCP**. Enter opens
 
 > 阅读简体中文版：[zh_hans/MCP.md](zh_hans/MCP.md)
 
-codewhale can load additional tools via MCP (Model Context Protocol). MCP servers can be local stdio processes that the TUI starts, or remote URL-based servers that speak Streamable HTTP with legacy SSE fallback.
+Codewhale can load additional tools via MCP (Model Context Protocol). MCP servers can be local stdio processes that Codewhale starts, or remote URL-based servers that speak Streamable HTTP with legacy SSE fallback.
+
+## Version scope
+
+This page describes the main candidate. As of November 7, 2026, the latest
+published CLI release is [v0.10.2](https://github.com/codewhale-hq/Codewhale/releases/tag/v0.10.2).
+For that installed release, use its [versioned MCP guide](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MCP.md).
+Local stdio, remote HTTP/SSE, environment-backed authentication, direct remote
+OAuth, and reviewed plugin-contributed MCP are already supported in v0.10.2.
+Selected differences described below are candidate behavior:
+
+| Surface | Published v0.10.2 | Main candidate |
+| --- | --- | --- |
+| Default MCP client backend | Rust; SDK host is opt-in | Official MCP SDK 2.4.0 host; explicit Rust selection remains available |
+| Native stdio server protocols | Legacy revisions through 2025-06-18 | Adds 2025-11-25 and modern 2026-07-28 discovery |
+| Direct remote OAuth | Discovery, dynamic registration or a pre-registered public client | Adds issuer/resource-bound credentials and hosted client metadata support |
+| Catalogue freshness and MCP Skills | No TTL/list-change refresh or MCP Skills extension | Bounded refresh and verified skill resource reads; no native skill activation |
+| Package-runner connect budget | Default 30 seconds | At least 120 seconds unless the server has an explicit override |
+
+The candidate's default host needs a supported Node runtime (`^22.19 || >=24`);
+Bun 1.4.0 or newer is opt-in. See [extension runtime requirements](EXTENSIONS.md).
+An MCP server's own executable, dependencies, authentication and OS requirements
+remain separate from Codewhale's transport support.
 
 Browsing note:
 - `Web` is the canonical, deferred built-in browsing tool; it provides
@@ -84,7 +106,14 @@ stay consistent.
 A reviewed local plugin bundle may contribute MCP servers without creating a
 second transport or approval system. The servers use the same MCP manager,
 tool approval, resource, prompt, timeout, and network-policy paths documented
-here, and appear under namespaced `<plugin>-<server>` identities.
+here, and appear under collision-resistant
+`plugin-<plugin-name-byte-length>-<plugin>-<server>` identities.
+
+Authentication differs from direct user-authored MCP configuration. Plugin
+remotes may use `env_headers` or `bearer_token_env_var`, but plugin-contributed
+MCP OAuth is disabled in both v0.10.2 and the main candidate. Declaring OAuth,
+scopes or an OAuth resource in a plugin MCP manifest fails validation. To use
+OAuth, configure the remote server directly in your own `mcp.json` instead.
 
 The bundle boundary is intentionally stricter than user-authored `mcp.json`:
 unknown fields and ambiguous transports fail closed; stdio environment values
@@ -94,7 +123,7 @@ the normalized endpoint host set; and redirects remain on the reviewed origin.
 Reviewed plugin remotes also bypass ambient HTTP proxy configuration entirely;
 proxy credentials and proxy-observed traffic are not part of the v1 review.
 The plugin review discloses local host-user authority, structural argv,
-environment provenance, endpoint, auth source names, scopes, and tool filters
+environment provenance, endpoint, auth source names, and tool filters
 without reading or printing secret values.
 
 Trust stages reviewed content but does not enable it. Enablement attaches that
@@ -132,6 +161,14 @@ codewhale mcp disable <name>
 codewhale mcp remove <name>
 codewhale mcp validate
 ```
+
+Shell commands inspect their own process's MCP pool. In particular,
+`codewhale mcp validate` starts and connects enabled, allowed servers and reports
+connection/discovery failures; it is not a static configuration check and does
+not attach those connections to a running TUI. In the TUI, `/mcp validate`
+reports the last recorded snapshot without reconnecting; `/mcp reload` rebuilds
+that session's live pool. `codewhale doctor` is the static diagnostic path
+unless an explicit probe is requested.
 
 `codewhale mcp logout <name>` (and `/mcp logout`) clears locally stored
 OAuth credentials only — the provider may keep its standing grant. The next
@@ -259,8 +296,11 @@ ambient proxy authority.
 
 ## Remote HTTP Auth
 
-URL-based MCP servers can use static headers, env-derived headers, bearer-token
-env vars, or OAuth. Authorization precedence is conservative:
+Direct URL-based MCP servers can use static headers, env-derived headers,
+bearer-token env vars, or OAuth. Plugin-contributed remotes are limited to
+environment-backed headers/bearer tokens and cannot use MCP OAuth; see
+[Plugin-contributed MCP](#plugin-contributed-mcp). Authorization precedence for
+direct servers is conservative:
 
 1. `headers` and `env_headers` are applied first.
 2. `bearer_token_env_var` adds `Authorization: Bearer <env value>` when no
@@ -371,16 +411,15 @@ shape looks like this:
   "servers": {
     "huggingface": {
       "url": "https://huggingface.co/mcp",
-      "headers": {
-        "Authorization": "Bearer ${HF_TOKEN}"
-      }
+      "bearer_token_env_var": "HF_TOKEN"
     }
   }
 }
 ```
 
-The placeholder above is not a runnable secret. Use the settings-generated
-value in your private MCP config and never commit real Hugging Face tokens.
+Set `HF_TOKEN` in the environment that launches Codewhale; the example contains
+only its variable name. Literal `headers` values do not expand `${HF_TOKEN}`.
+Adapt the settings-generated server entry and never commit real tokens.
 
 Interactive helpers:
 
@@ -461,7 +500,20 @@ Default path:
 Overrides:
 
 - Config: `mcp_config_path = "/path/to/mcp.json"`
-- Env: `DEEPSEEK_MCP_CONFIG=/path/to/mcp.json`
+- Env: `CODEWHALE_MCP_CONFIG=/absolute/path/to/mcp.json` (takes precedence over
+  the legacy `DEEPSEEK_MCP_CONFIG` spelling)
+
+Custom paths must be absolute; a relative `mcp_config_path` falls back to the
+user-global path rather than changing with the launch directory.
+
+Codewhale also reads `<workspace>/.codewhale/mcp.json` after the workspace is
+trusted in user-owned configuration. Project entries override same-named global
+servers; project-local files cannot grant that trust themselves or redirect the
+global `mcp_config_path`. Global and trusted-project entries take precedence
+over a colliding plugin-contributed identity. Project stdio commands default
+their working directory to the workspace. In the main candidate,
+`always_allow_tools` is accepted only from the global server configuration,
+not from project or plugin declarations.
 
 `codewhale mcp init` (and `codewhale setup --mcp`) writes to this resolved path.
 
@@ -513,11 +565,26 @@ The CLI also exposes helper tools when MCP is enabled:
 }
 ```
 
-You can also use `mcpServers` instead of `servers` for compatibility with other clients.
+You can also use `mcpServers` instead of `servers` for compatibility with other
+clients. Use exactly one map key in a file: a file containing both fails to
+parse.
 
 ## Running Codewhale as an MCP Server
 
-You can register your local Codewhale binary as an MCP server so other Codewhale sessions (or any MCP client) can call its tools.
+You can register your local Codewhale binary as a stdio MCP server for another
+Codewhale session or a client supporting one of its advertised protocol
+revisions. This exposes native tools; it is separate from connecting Codewhale
+to external servers.
+
+### Client configuration vs server configuration
+
+`mcp.json` tells a client which servers to launch or contact. The native
+`codewhale serve --mcp` process separately reads `[server]` from the retained
+legacy path `~/.deepseek/mcp_server.toml`. By default it exposes only
+`file_read` and `search`. Writing files or running commands requires naming
+those tools in `expose_tools` and explicitly setting `require_approval = false`
+in that server file. This stdio server has no interactive approval channel;
+with approval required, writing/executing tools are withheld and refused.
 
 ### Quick Setup
 
@@ -731,7 +798,8 @@ activation.
 
 Per-server settings:
 
-- `command` (string, required)
+- `command` (string, required for a local stdio server): executable to start.
+  Remote servers use `url` instead; a URL-only entry is valid.
 - `args` (array of strings, optional)
 - `env` (object, optional)
 - `connect_timeout`, `execute_timeout`, `read_timeout` (seconds, optional). A per-server value overrides the global `timeouts` block, and each budget is independent of the others:
@@ -746,6 +814,7 @@ Per-server settings:
 - `lazy` (bool, optional, default `false`): keep this server unstarted until a turn, tool call or `/mcp retry` asks for it. Without it, the server connects at session start. Plugin manifests have no `lazy` field: an enabled plugin's servers connect at session start, and disabling the plugin stops them.
 - `enabled_tools` (array, optional): allowlist of tool names for this server.
 - `disabled_tools` (array, optional): denylist applied after `enabled_tools`.
+- `always_allow_tools` (optional array): Exact tool names the person allows across workspaces on this computer. Set these in the global server configuration. Off takes precedence. Computer Use consent and scripts still require the person’s approval.
 - `url` (string, optional): Streamable HTTP endpoint for a remote MCP server.
 - `allow_private_network` (boolean, default false): operator opt-in for private DNS addresses on this configured origin; ignored for model-added servers.
 - `transport` (string, optional): set to `"sse"` for legacy SSE endpoints.

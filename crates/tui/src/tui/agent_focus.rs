@@ -473,8 +473,8 @@ pub(crate) fn echo_user_follow_up(app: &mut App, text: &str) {
     }
 }
 
-/// Apply a delivery receipt from the engine. When the child was continued on
-/// a new fork, focus follows the fork so the conversation stays in one place.
+/// Apply a delivery receipt from the engine. Focus follows the actual successor
+/// on a new continuation or successful delivery to an existing continuation.
 pub(crate) fn apply_follow_up_receipt(
     app: &mut App,
     agent_id: &str,
@@ -482,7 +482,9 @@ pub(crate) fn apply_follow_up_receipt(
 ) {
     let label = agent_display_label(app, agent_id);
     let note = match outcome {
-        Ok(receipt) if receipt.resumed && receipt.target_agent_id != agent_id => {
+        Ok(receipt)
+            if (receipt.resumed || receipt.delivered) && receipt.target_agent_id != agent_id =>
+        {
             let target_label = agent_display_label(app, &receipt.target_agent_id);
             if app
                 .agent_focus
@@ -504,9 +506,14 @@ pub(crate) fn apply_follow_up_receipt(
                     focus.wrapped = None;
                 }
             }
-            app.tr(MessageId::AgentFocusFollowUpContinued)
-                .replace("{agent}", &label)
-                .replace("{target}", &target_label)
+            if receipt.resumed {
+                app.tr(MessageId::AgentFocusFollowUpContinued)
+                    .replace("{agent}", &label)
+                    .replace("{target}", &target_label)
+            } else {
+                app.tr(MessageId::AgentFocusFollowUpDelivered)
+                    .replace("{agent}", &target_label)
+            }
         }
         Ok(receipt) if receipt.delivered => app
             .tr(MessageId::AgentFocusFollowUpDelivered)
@@ -1350,6 +1357,53 @@ mod tests {
             focus.local_cells
         );
         assert!(app.status_message.is_some(), "the toast still reports it");
+    }
+
+    #[test]
+    fn delivered_existing_successor_moves_focus_and_names_the_actual_recipient() {
+        let tmp = tempdir().expect("tempdir");
+        let mut app = test_app(tmp.path().to_path_buf());
+        focus_agent(&mut app, "agent_original");
+        echo_user_follow_up(&mut app, "message for the existing successor");
+        let outcome = Ok(codewhale_engine::tools::subagent::UserFollowUpOutcome {
+            agent_id: "agent_original".into(),
+            target_agent_id: "agent_existing".into(),
+            delivered: true,
+            resumed: false,
+            note: "delivered to existing successor".into(),
+        });
+        apply_follow_up_receipt(&mut app, "agent_original", &outcome);
+        let focus = app.agent_focus.as_ref().unwrap();
+        assert_eq!(focus.agent_id, "agent_existing");
+        assert!(focus.local_cells.iter().any(
+            |cell| matches!(cell, HistoryCell::User { content } if content == "message for the existing successor")
+        ));
+        let expected = app
+            .tr(MessageId::AgentFocusFollowUpDelivered)
+            .replace("{agent}", &agent_display_label(&app, "agent_existing"));
+        assert_eq!(app.status_message.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn undelivered_existing_successor_keeps_focus_and_shows_the_failure_note() {
+        let tmp = tempdir().expect("tempdir");
+        let mut app = test_app(tmp.path().to_path_buf());
+        focus_agent(&mut app, "agent_original");
+        let outcome = Ok(codewhale_engine::tools::subagent::UserFollowUpOutcome {
+            agent_id: "agent_original".into(),
+            target_agent_id: "agent_existing".into(),
+            delivered: false,
+            resumed: false,
+            note: "queued; live input channel closed".into(),
+        });
+        apply_follow_up_receipt(&mut app, "agent_original", &outcome);
+        assert_eq!(app.agent_focus.as_ref().unwrap().agent_id, "agent_original");
+        assert!(
+            app.status_message
+                .as_deref()
+                .unwrap()
+                .contains("queued; live input channel closed")
+        );
     }
 
     #[test]

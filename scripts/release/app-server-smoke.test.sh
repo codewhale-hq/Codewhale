@@ -24,12 +24,13 @@ if [[ "${1:-}" == "app-server" ]]; then
     fi
     cat >/dev/null   # drain the JSON-RPC requests
     printf '%s\n' \
-        '{"jsonrpc":"2.0","id":1,"result":{"status":"ok","service":"deepseek-app-server","transport":"stdio"}}' \
-        '{"jsonrpc":"2.0","id":2,"result":{"methods":["thread/request","prompt/run","prompt/request","thread/goal/set"]}}' \
-        '{"jsonrpc":"2.0","id":3,"result":{"ok":true,"data":{"transport":"stdio+http"}}}' \
-        '{"jsonrpc":"2.0","id":4,"result":{}}' \
-        '{"jsonrpc":"2.0","id":5,"result":{}}' \
-        '{"jsonrpc":"2.0","id":6,"result":{"ok":true}}'
+        '{"id":0,"result":{"userAgent":"fixture","codexHome":"/tmp","platformFamily":"unix","platformOs":"macos"}}' \
+        '{"id":1,"result":{"status":"ok","service":"deepseek-app-server","transport":"stdio"}}' \
+        '{"id":2,"result":{"methods":["thread/request","prompt/run","prompt/request","thread/goal/set"]}}' \
+        '{"id":3,"result":{"ok":true,"data":{"transport":"stdio+http"}}}' \
+        '{"id":4,"result":{}}' \
+        '{"id":5,"result":{}}' \
+        '{"id":6,"result":{"ok":true}}'
     exit 0
 fi
 if [[ "${1:-}" == "auth" && "${2:-}" == "list" ]]; then

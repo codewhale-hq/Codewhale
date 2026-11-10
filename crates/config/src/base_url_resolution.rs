@@ -242,16 +242,11 @@ pub(crate) fn xiaomi_mimo_base_url_is_pay_as_you_go(base_url: &str) -> bool {
 pub fn provider_base_url_is_official(provider: ProviderKind, base_url: &str) -> bool {
     let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
     match provider {
-        ProviderKind::Deepseek => matches!(
-            normalized.as_str(),
-            "https://api.deepseek.com"
-                | "https://api.deepseek.com/v1"
-                | "https://api.deepseek.com/beta"
-        ),
-        ProviderKind::DeepseekAnthropic => matches!(
-            normalized.as_str(),
-            "https://api.deepseek.com/anthropic" | "https://api.deepseek.com/anthropic/v1"
-        ),
+        ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic => {
+            provider_published_pricing_base_urls(provider)
+                .iter()
+                .any(|candidate| normalized == *candidate)
+        }
         ProviderKind::Siliconflow | ProviderKind::SiliconflowCN => matches!(
             normalized.as_str(),
             "https://api.siliconflow.com/v1" | "https://api.siliconflow.cn/v1"
@@ -328,6 +323,22 @@ pub fn provider_base_url_is_official(provider: ProviderKind, base_url: &str) -> 
                     .trim_end_matches('/')
                     .to_ascii_lowercase()
         }
+    }
+}
+
+pub fn provider_published_pricing_base_urls(provider: ProviderKind) -> Vec<&'static str> {
+    match provider {
+        ProviderKind::Deepseek => vec![
+            "https://api.deepseek.com",
+            "https://api.deepseek.com/v1",
+            "https://api.deepseek.com/beta",
+        ],
+        ProviderKind::DeepseekAnthropic => vec![
+            "https://api.deepseek.com/anthropic",
+            "https://api.deepseek.com/anthropic/v1",
+        ],
+        ProviderKind::Custom => vec![],
+        _ => vec![default_base_url_for_provider(provider)],
     }
 }
 

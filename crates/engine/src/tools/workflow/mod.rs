@@ -8,6 +8,7 @@ mod plan_schema;
 mod shortlist_tests;
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -81,6 +82,7 @@ const WORKFLOW_RESULT_VALUE_MAX_CHARS: usize = 4_000;
 /// the journal.
 const WORKFLOW_RESULT_LEAF_OUTPUT_MAX_CHARS: usize = 500;
 const WORKFLOW_COMPLETION_MAX_BYTES: usize = 8 * 1024;
+const WORKFLOW_SOURCE_MAX_BYTES: usize = 1024 * 1024;
 /// Stated upper bound for a bounded model-facing run-record payload; the
 /// payload tests assert every `start`/`run`/`status` result stays below it.
 const WORKFLOW_RESULT_MAX_CHARS: usize = 24_000;
@@ -1411,8 +1413,9 @@ async fn start_workflow(
     let fleet = if let Some(name) = workflow_fleet_name(&input)? {
         let workspace = context.workspace.clone();
         let api_config = runtime.api_config.clone();
+        let accounting_origin = context.accounting_origin.clone();
         tokio::task::spawn_blocking(move || {
-            workflow_fleet_binding(&name, &workspace, api_config.as_deref())
+            workflow_fleet_binding(&name, &workspace, api_config.as_deref(), accounting_origin)
         })
         .await
         .map_err(|error| ToolError::execution_failed(format!("Fleet loading failed: {error}")))??
@@ -1800,6 +1803,7 @@ fn workflow_fleet_binding(
     name: &str,
     workspace: &std::path::Path,
     api_config: Option<&codewhale_runtime::config::Config>,
+    accounting_origin: Option<crate::cost_status::NativeUsageOrigin>,
 ) -> Result<WorkflowFleetBinding, ToolError> {
     let roots = crate::fleet::exact::fleet_search_roots(workspace);
     let (document, id) = crate::fleet::exact::load_fleet_document(name, workspace, api_config)
@@ -1839,6 +1843,7 @@ fn workflow_fleet_binding(
         chrono::Utc::now().to_rfc3339(),
         api_config,
         &roots,
+        accounting_origin,
     )
     .map_err(ToolError::invalid_input)?;
     Ok(WorkflowFleetBinding::Exact(Arc::new(operation)))
@@ -2727,8 +2732,7 @@ fn workflow_source(input: &Value, context: &ToolContext) -> Result<WorkflowSourc
     let script = match optional_str(input, "script")? {
         Some(script) => Some(script),
         None => optional_str(input, "source")?,
-    }
-    .map(str::to_string);
+    };
     let source_path = match optional_str(input, "source_path")? {
         Some(path) => Some(path),
         None => optional_str(input, "path")?,
@@ -2748,6 +2752,12 @@ fn workflow_source(input: &Value, context: &ToolContext) -> Result<WorkflowSourc
             "Use exactly one of script, source_path, or plan",
         ));
     }
+    if script.is_some_and(|source| source.len() > WORKFLOW_SOURCE_MAX_BYTES) {
+        return Err(ToolError::invalid_input(format!(
+            "workflow source exceeds {WORKFLOW_SOURCE_MAX_BYTES} bytes"
+        )));
+    }
+    let script = script.map(str::to_string);
 
     match (script, source_path, plan) {
         (Some(source), None, None) if !source.trim().is_empty() => {
@@ -3277,12 +3287,35 @@ fn read_workflow_source_path(
             )));
         }
     }
-    let source = std::fs::read_to_string(&canonical).map_err(|err| {
+    let file = std::fs::File::open(&canonical).map_err(|err| {
         ToolError::execution_failed(format!(
             "Failed to read workflow source_path '{}': {err}",
             canonical.display()
         ))
     })?;
+    if file
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() > WORKFLOW_SOURCE_MAX_BYTES as u64)
+    {
+        return Err(ToolError::invalid_input(format!(
+            "workflow source_path '{}' exceeds {WORKFLOW_SOURCE_MAX_BYTES} bytes",
+            canonical.display()
+        )));
+    }
+    let mut source = String::new();
+    let mut reader = file.take(WORKFLOW_SOURCE_MAX_BYTES as u64 + 1);
+    reader.read_to_string(&mut source).map_err(|err| {
+        ToolError::execution_failed(format!(
+            "Failed to read workflow source_path '{}': {err}",
+            canonical.display()
+        ))
+    })?;
+    if source.len() > WORKFLOW_SOURCE_MAX_BYTES {
+        return Err(ToolError::invalid_input(format!(
+            "workflow source_path '{}' exceeds {WORKFLOW_SOURCE_MAX_BYTES} bytes",
+            canonical.display()
+        )));
+    }
     workflow_source_from_raw(source, Some(canonical), Some(&context.workspace))
 }
 
@@ -3354,10 +3387,47 @@ fn looks_like_declarative_workflow(source: &str) -> bool {
     // any line, ignoring leading indentation, so an indented (non-column-0)
     // declarative call is still recognized rather than misrun as an imperative
     // script (#dogfood 0.8.67).
-    source.lines().any(|line| {
-        let trimmed = line.trim_start();
-        trimmed.starts_with("workflow(") || trimmed.starts_with("export default workflow(")
-    })
+    let mut in_block_comment = false;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for line in source.split_inclusive('\n') {
+        if !in_block_comment && quote.is_none() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("workflow(") || trimmed.starts_with("export default workflow(") {
+                return true;
+            }
+        }
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if let Some(open) = quote {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == open {
+                    quote = None;
+                }
+                continue;
+            }
+            if in_block_comment {
+                if ch == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    in_block_comment = false;
+                }
+                continue;
+            }
+            match ch {
+                '/' if chars.peek() == Some(&'/') => break,
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    in_block_comment = true;
+                }
+                '"' | '\'' | '`' => quote = Some(ch),
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -3966,7 +4036,7 @@ struct SubAgentWorkflowDriver {
     gate_specs: Arc<Vec<GateSpec>>,
     /// Lane-scoped gate and handoff state keyed by run id.
     gate_board: Arc<Mutex<LaneGateBoard>>,
-    /// Caps concurrently live `task()` children for this run (product: 16).
+    /// Caps concurrently live `task()` children for this run (product: 64).
     concurrent_gate: Arc<Semaphore>,
     /// Held permits for in-flight children; released on completion/cancel.
     spawn_permits: Mutex<HashMap<String, OwnedSemaphorePermit>>,
@@ -4786,7 +4856,7 @@ impl SubAgentWorkflowDriver {
             )?;
             None
         };
-        // Take a concurrent slot (max 16 live children per run). A task that
+        // Take a concurrent slot (`max_concurrent` live children per run). A task that
         // has to wait is announced first, so a surface can show it queued
         // instead of leaving it invisible until a slot frees.
         let permit = match self.concurrent_gate.clone().try_acquire_owned() {
@@ -6885,6 +6955,15 @@ mod tests {
             "return await parallel([() => task({ description: \"x\" })]);"
         ));
         assert!(!looks_like_declarative_workflow("const x = myworkflow(1);"));
+        assert!(!looks_like_declarative_workflow(
+            "const doc = `\nworkflow({ tasks: [] })\n`;"
+        ));
+        assert!(!looks_like_declarative_workflow(
+            "/*\nworkflow({ tasks: [] })\n*/"
+        ));
+        assert!(looks_like_declarative_workflow(
+            "/*\nprose\n*/\nworkflow({ tasks: [] })"
+        ));
     }
 
     #[test]

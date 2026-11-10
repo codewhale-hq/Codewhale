@@ -273,10 +273,10 @@ fi
 if [[ ! -f web/lib/facts.generated.ts ]]; then
   node web/scripts/derive-facts.mjs
 fi
-facts_version="$(grep -oE '"version": "[0-9]+\.[0-9]+\.[0-9]+"' web/lib/facts.generated.ts | head -n1 | sed -E 's/.*"([0-9.]+)".*/\1/')"
+facts_version="$(grep -oE '"version": "[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?"' web/lib/facts.generated.ts | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')"
 if [[ "${facts_version}" != "${workspace_version}" ]]; then
   node web/scripts/derive-facts.mjs
-  facts_version="$(grep -oE '"version": "[0-9]+\.[0-9]+\.[0-9]+"' web/lib/facts.generated.ts | head -n1 | sed -E 's/.*"([0-9.]+)".*/\1/')"
+  facts_version="$(grep -oE '"version": "[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?"' web/lib/facts.generated.ts | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')"
   if [[ "${facts_version}" != "${workspace_version}" ]]; then
     echo "::error::web/lib/facts.generated.ts version (${facts_version}) does not match workspace (${workspace_version}). Run: node web/scripts/derive-facts.mjs" >&2
     fail=1
@@ -322,7 +322,7 @@ if [[ -n "${wrapper_pointer_version}" && "${wrapper_pointer_version}" != "v${wor
   fail=1
 fi
 
-remote_smoke_tag="$(grep -oE 'RELEASE_TAG:-v[0-9]+\.[0-9]+\.[0-9]+' scripts/remote-smoke/setup-vm.sh | head -n1 | sed 's/.*:-//' || true)"
+remote_smoke_tag="$(grep -oE 'RELEASE_TAG:-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?' scripts/remote-smoke/setup-vm.sh | head -n1 | sed 's/.*:-//' || true)"
 if [[ "${remote_smoke_tag}" != "v${workspace_version}" ]]; then
   echo "::error::scripts/remote-smoke/setup-vm.sh defaults to ${remote_smoke_tag:-<missing>}, want v${workspace_version}." >&2
   fail=1

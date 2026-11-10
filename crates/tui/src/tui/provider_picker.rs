@@ -75,9 +75,6 @@ use codewhale_config::descriptors::defaults::{
     DS4_BASE_URL, DS4_DEFAULT_MODEL, LM_STUDIO_BASE_URL,
 };
 
-pub(crate) const ORCAROUTER_OFFER_URL: &str =
-    "https://www.orcarouter.ai/redeem/1a6250545fdc4e0aaccb0a4470159e67";
-
 #[derive(Default)]
 pub(crate) struct ProviderOffer {
     hitbox: RefCell<Option<Rect>>,
@@ -93,18 +90,20 @@ impl ProviderOffer {
         ViewAction::Emit(ViewEvent::OpenTextPager {
             title: tr(locale, MessageId::OrcaRouterOfferRecommended).into_owned(),
             content: format!(
-                "{}\n\n{}\n\n{ORCAROUTER_OFFER_URL}",
+                "{}\n\n{}\n\n{}",
                 tr(locale, MessageId::OrcaRouterOfferBody),
                 tr(locale, MessageId::OrcaRouterOfferDisclosure),
+                crate::tui::orca_offer::OFFER_URL,
             ),
         })
     }
 
     pub(crate) fn key_action(locale: Locale, key: &KeyEvent) -> Option<ViewAction> {
-        crate::tui::shell_key_routing::binding(
-            crate::tui::shell_key_routing::ShellBindingId::ProviderOffer,
-        )
-        .matches(key)
+        (crate::tui::orca_offer::available(locale)
+            && crate::tui::shell_key_routing::binding(
+                crate::tui::shell_key_routing::ShellBindingId::ProviderOffer,
+            )
+            .matches(key))
         .then(|| Self::open(locale))
     }
 
@@ -121,7 +120,7 @@ impl ProviderOffer {
 
     pub(crate) fn render(&self, locale: Locale, area: Rect, buf: &mut Buffer) -> Rect {
         self.clear();
-        if area.height < 4 || area.width < 20 {
+        if area.height < 4 || area.width < 20 || !crate::tui::orca_offer::available(locale) {
             return area;
         }
         let chord = crate::tui::shell_key_routing::display_chord(
@@ -825,27 +824,20 @@ impl ProviderDashboardRow {
                 codewhale_runtime::oauth::OAuthProvider::Xai,
                 config,
             );
-        let auth_status =
-            if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
-                if official_endpoint && has_key {
-                    ProviderAuthStatus::OAuthReady
-                } else {
-                    ProviderAuthStatus::OAuthMissing
-                }
-            } else if credential_state == CredentialState::ExternalConsent {
-                ProviderAuthStatus::OAuthConsented
-            } else {
-                auth_status_for(
-                    provider,
-                    &auth_base_url,
-                    has_key,
-                    configured,
-                    no_auth,
-                    api_key_required,
-                    official_endpoint,
-                    xai_oauth_ready,
-                )
-            };
+        let auth_status = if credential_state == CredentialState::ExternalConsent {
+            ProviderAuthStatus::OAuthConsented
+        } else {
+            auth_status_for(
+                provider,
+                &auth_base_url,
+                has_key,
+                configured,
+                no_auth,
+                api_key_required,
+                official_endpoint,
+                xai_oauth_ready,
+            )
+        };
         // Slice D: cost lives at the model level (per-model $/mtok in the
         // models pane and the model-pick stage), never on the provider row.
         // Auth guidance that used to ride the provider meter (e.g. the Kimi
@@ -1198,7 +1190,7 @@ impl ProviderDashboardRow {
 
     fn catalog_label(&self) -> String {
         match self.catalog_status {
-            ProviderCatalogStatus::Bundled => format!("{} bundled", self.available_model_count),
+            ProviderCatalogStatus::Bundled => format!("{} models", self.available_model_count),
             ProviderCatalogStatus::DefaultOnly => "default-only".to_string(),
             ProviderCatalogStatus::Legacy => "legacy".to_string(),
         }
@@ -1800,10 +1792,11 @@ fn model_cost_label(provider: ProviderKind, model: &str) -> String {
 }
 
 /// Slice D two-pane picker: `(model, per-model cost, is_default_route)` rows
-/// for the models pane beside/under the provider strip. The default route's
-/// model sorts first so the eye lands on what Enter would use; the rest are
-/// alphabetical. ChatGPT keeps account ordering and requires an account roster;
-/// other providers can fall back to their default route.
+/// for the models pane beside/under the provider strip. The route default
+/// leads. The rest are the current id of each model line, round-robin by
+/// author, so a gateway catalog cannot fill the pane with one family's
+/// snapshots (`anthropic/claude-opus-4.6` beside `4.7` and `4.8`). ChatGPT
+/// keeps account ordering. Older snapshots stay behind `M`.
 fn provider_pane_models(
     config: &Config,
     row: &ProviderDashboardRow,
@@ -1823,16 +1816,13 @@ fn provider_pane_models(
     }
     let default = row.default_route.logical_model.clone();
     let wire = row.default_route.wire_model.clone();
-    if row.provider != ProviderKind::OpenaiCodex {
-        models.sort_by_key(|model| model.to_ascii_lowercase());
-        models.dedup_by_key(|model| model.to_ascii_lowercase());
-        models.sort_by_key(|model| {
-            (!model.eq_ignore_ascii_case(&default) && !model.eq_ignore_ascii_case(&wire)) as u8
-        });
-    }
-    models
+    let shown = if row.provider == ProviderKind::OpenaiCodex {
+        models.into_iter().take(limit.max(1)).collect()
+    } else {
+        preview_provider_models(&models, &default, &wire, limit)
+    };
+    shown
         .into_iter()
-        .take(limit.max(1))
         .map(|model| {
             let is_default =
                 model.eq_ignore_ascii_case(&default) || model.eq_ignore_ascii_case(&wire);
@@ -1840,6 +1830,60 @@ fn provider_pane_models(
             (model, price, is_default)
         })
         .collect()
+}
+
+fn preview_provider_models(
+    models: &[String],
+    default: &str,
+    wire: &str,
+    limit: usize,
+) -> Vec<String> {
+    let limit = limit.max(1);
+    let current = codewhale_config::catalog::current_listed_models(models);
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for model in current {
+        if model.eq_ignore_ascii_case(default) || model.eq_ignore_ascii_case(wire) {
+            continue;
+        }
+        let namespace = model
+            .split_once('/')
+            .map(|(author, _)| author.to_ascii_lowercase())
+            .unwrap_or_else(|| model.to_ascii_lowercase());
+        groups.entry(namespace).or_default().push(model);
+    }
+    for rows in groups.values_mut() {
+        rows.sort();
+    }
+    let mut ordered = Vec::new();
+    if models
+        .iter()
+        .any(|model| model.eq_ignore_ascii_case(default))
+    {
+        ordered.push(default.to_string());
+    } else if !wire.trim().is_empty() && models.iter().any(|model| model.eq_ignore_ascii_case(wire))
+    {
+        ordered.push(wire.to_string());
+    }
+    let keys: Vec<String> = groups.keys().cloned().collect();
+    let mut turn = 0usize;
+    while ordered.len() < limit && groups.values().any(|rows| !rows.is_empty()) {
+        if keys.is_empty() {
+            break;
+        }
+        let key = &keys[turn % keys.len()];
+        if let Some(rows) = groups.get_mut(key)
+            && !rows.is_empty()
+        {
+            ordered.push(rows.remove(0));
+        }
+        turn += 1;
+        if turn > keys.len().saturating_mul(limit).saturating_add(2) {
+            break;
+        }
+    }
+    ordered.truncate(limit);
+    ordered
 }
 
 fn model_cost_label_for_pricing(provider: ProviderKind, pricing: Option<&PricingSku>) -> String {
@@ -2458,21 +2502,8 @@ impl ProviderPickerView {
     }
 
     fn selected_has_key(&self) -> bool {
-        let Some(identity) = self.selected_identity() else {
+        if self.selected_identity().is_none() {
             return false;
-        };
-        if self.selected_provider() == ProviderKind::Anthropic
-            && self
-                .route_config
-                .auth_mode_for_provider(&identity)
-                .as_deref()
-                == Some("oauth")
-        {
-            return !self.route_config.provider_uses_custom_endpoint(&identity)
-                && codewhale_runtime::oauth::credentials_valid(
-                    codewhale_runtime::oauth::OAuthProvider::Claude,
-                    &self.route_config,
-                );
         }
         if self.selected_provider() == ProviderKind::OpenaiCodex {
             return codewhale_runtime::oauth::credentials_valid(
@@ -2523,10 +2554,7 @@ impl ProviderPickerView {
     /// than one endpoint choose the route first so the key is validated
     /// against the endpoint it will actually be saved for (#4526).
     fn begin_setup(&mut self) {
-        if matches!(
-            self.selected_provider(),
-            ProviderKind::Xai | ProviderKind::Anthropic
-        ) {
+        if self.selected_provider() == ProviderKind::Xai {
             self.enter_subscription_auth_choice();
         } else if self.selected_provider() == ProviderKind::OpenaiCodex {
             self.enter_chatgpt_auth_choice();
@@ -2766,7 +2794,17 @@ impl ProviderPickerView {
         let preferred_wire = wire(&preferred);
         let selected = models
             .iter()
-            .position(|model| model.eq_ignore_ascii_case(preferred.trim()))
+            .position(|model| model == preferred.trim())
+            .or_else(|| {
+                models
+                    .iter()
+                    .position(|model| model == preferred_wire.trim())
+            })
+            .or_else(|| {
+                models
+                    .iter()
+                    .position(|model| model.eq_ignore_ascii_case(preferred.trim()))
+            })
             .or_else(|| {
                 models
                     .iter()
@@ -3635,11 +3673,7 @@ impl ProviderPickerView {
     fn render_subscription_auth_choice(&self, area: Rect, buf: &mut Buffer) {
         let outer = Block::default()
             .title(Line::from(Span::styled(
-                if self.selected_provider() == ProviderKind::Anthropic {
-                    Cow::Borrowed("Anthropic")
-                } else {
-                    self.tr(MessageId::XaiAuthChoiceTitle)
-                },
+                self.tr(MessageId::XaiAuthChoiceTitle),
                 Style::default()
                     .fg(palette::WHALE_ACTION)
                     .add_modifier(Modifier::BOLD),
@@ -3666,17 +3700,9 @@ impl ProviderPickerView {
             buf,
             vec![Line::from(self.tr(MessageId::XaiAuthChoiceIntro))],
             [
-                if self.selected_provider() == ProviderKind::Anthropic {
-                    "Anthropic API key (separate billing)".to_string()
-                } else {
-                    self.tr(MessageId::XaiAuthChoiceApiKeyOption).into_owned()
-                },
-                if self.selected_provider() == ProviderKind::Anthropic {
-                    "Claude Pro / Max (OAuth)".to_string()
-                } else {
-                    self.tr(MessageId::XaiAuthChoiceDeviceOAuthOption)
-                        .into_owned()
-                },
+                self.tr(MessageId::XaiAuthChoiceApiKeyOption).into_owned(),
+                self.tr(MessageId::XaiAuthChoiceDeviceOAuthOption)
+                    .into_owned(),
             ],
             usize::from(self.subscription_auth_choice == SubscriptionAuthChoice::DeviceOAuth),
         );
@@ -5034,13 +5060,9 @@ impl ModalView for ProviderPickerView {
                         self.enter_key_entry();
                         ViewAction::None
                     }
-                    SubscriptionAuthChoice::DeviceOAuth => ViewAction::EmitAndClose(
-                        if self.selected_provider() == ProviderKind::Anthropic {
-                            ViewEvent::ProviderPickerClaudeOAuthRequested
-                        } else {
-                            ViewEvent::ProviderPickerXaiOAuthRequested
-                        },
-                    ),
+                    SubscriptionAuthChoice::DeviceOAuth => {
+                        ViewAction::EmitAndClose(ViewEvent::ProviderPickerXaiOAuthRequested)
+                    }
                 },
                 _ => ViewAction::None,
             },
@@ -5089,10 +5111,7 @@ impl ModalView for ProviderPickerView {
                 KeyCode::Esc => {
                     // Back to the route choice when one was made, so Esc undoes
                     // one wizard step instead of discarding the whole flow.
-                    self.stage = if matches!(
-                        self.selected_provider(),
-                        ProviderKind::Xai | ProviderKind::Anthropic
-                    ) {
+                    self.stage = if self.selected_provider() == ProviderKind::Xai {
                         Stage::SubscriptionAuthChoice
                     } else if self.selected_provider() == ProviderKind::OpenaiCodex {
                         Stage::ChatgptAuthChoice
@@ -5183,10 +5202,7 @@ impl ModalView for ProviderPickerView {
             },
             Stage::ExternalConsentChoice => match key.code {
                 KeyCode::Esc => {
-                    self.stage = if matches!(
-                        self.selected_provider(),
-                        ProviderKind::Xai | ProviderKind::Anthropic
-                    ) {
+                    self.stage = if self.selected_provider() == ProviderKind::Xai {
                         Stage::SubscriptionAuthChoice
                     } else if self.selected_provider() == ProviderKind::OpenaiCodex {
                         Stage::ChatgptAuthChoice
@@ -8575,7 +8591,7 @@ mod tests {
             None,
         )
         .expect("Anthropic has a picker row");
-        assert_eq!(picker.stage, Stage::SubscriptionAuthChoice);
+        assert_eq!(picker.stage, Stage::KeyEntry);
         assert_eq!(picker.selected_provider(), ProviderKind::Anthropic);
     }
 
@@ -8627,7 +8643,7 @@ mod tests {
         );
 
         assert_eq!(picker.view, ProviderListView::Catalog);
-        assert_eq!(picker.stage, Stage::SubscriptionAuthChoice);
+        assert_eq!(picker.stage, Stage::KeyEntry);
         assert_eq!(picker.selected_provider(), ProviderKind::Anthropic);
         assert!(picker.api_key_input.is_empty());
     }
@@ -8952,14 +8968,13 @@ mod tests {
                 CredentialAcquisition::ApiKeyOrOAuth => {
                     assert!(matches!(
                         provider,
-                        ProviderKind::Xai | ProviderKind::Anthropic | ProviderKind::Orcarouter
+                        ProviderKind::Xai | ProviderKind::Orcarouter
                     ));
                     assert!(matches!(action, ViewAction::None), "{provider:?}");
                     let choices = render_text(&picker, 80, 24);
                     assert!(choices.contains("API key"), "{choices}");
                     let oauth_label = match provider {
                         ProviderKind::Xai => "device OAuth",
-                        ProviderKind::Anthropic => "Claude Pro / Max",
                         ProviderKind::Orcarouter => "PKCE",
                         _ => unreachable!(),
                     };
@@ -9033,10 +9048,6 @@ mod tests {
                     ));
                     let action = oauth.handle_key(key(KeyCode::Enter));
                     match provider {
-                        ProviderKind::Anthropic => assert!(matches!(
-                            action,
-                            ViewAction::EmitAndClose(ViewEvent::ProviderPickerClaudeOAuthRequested)
-                        )),
                         ProviderKind::Xai => assert!(matches!(
                             action,
                             ViewAction::EmitAndClose(ViewEvent::ProviderPickerXaiOAuthRequested)
@@ -9171,15 +9182,9 @@ mod tests {
         ));
         assert_eq!(
             picker.stage,
-            Stage::SubscriptionAuthChoice,
-            "Escape from key entry returns to the credential choice"
+            Stage::List,
+            "Escape from key entry returns to the provider list"
         );
-
-        assert!(matches!(
-            picker.handle_key(key(KeyCode::Esc)),
-            ViewAction::None
-        ));
-        assert_eq!(picker.stage, Stage::List);
 
         assert!(
             matches!(
@@ -9203,14 +9208,12 @@ mod tests {
     #[test]
     fn setup_catalog_key_entry_uses_setup_reopen_hint() {
         let config = Config::default();
-        let mut picker = ProviderPickerView::new_for_setup(
+        let picker = ProviderPickerView::new_for_setup(
             ProviderKind::Deepseek,
             Some(ProviderKind::Anthropic.as_str().into()),
             &config,
             None,
         );
-
-        picker.handle_key(key(KeyCode::Enter));
 
         let rendered = render_text(&picker, 96, 20);
 
@@ -9224,7 +9227,6 @@ mod tests {
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ProviderKind::Deepseek, &config);
         move_to_provider(&mut picker, ProviderKind::Anthropic);
-        picker.handle_key(key(KeyCode::Enter));
         picker.handle_key(key(KeyCode::Enter));
 
         let rendered = render_text(&picker, 96, 20);

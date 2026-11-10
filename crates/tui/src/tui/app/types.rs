@@ -32,6 +32,19 @@ pub enum SettingSelection {
     Refused,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialStep {
+    pub mode_changed: bool,
+    pub posture_changed: bool,
+}
+
+impl DialStep {
+    #[must_use]
+    pub fn changed(self) -> bool {
+        self.mode_changed || self.posture_changed
+    }
+}
+
 impl SettingSelection {
     /// Whether live state moved — i.e. whether the engine needs resyncing.
     #[must_use]
@@ -64,7 +77,6 @@ impl AppModeUi for AppMode {
             match self {
                 AppMode::Agent => MessageId::AppModeAgent,
                 AppMode::Plan => MessageId::AppModePlan,
-                AppMode::Operate => MessageId::AppModeOperate,
             },
         )
     }
@@ -76,7 +88,6 @@ impl AppModeUi for AppMode {
             match self {
                 AppMode::Agent => MessageId::AppModeAgentHint,
                 AppMode::Plan => MessageId::AppModePlanHint,
-                AppMode::Operate => MessageId::AppModeOperateHint,
             },
         )
     }
@@ -537,7 +548,11 @@ pub enum AppAction {
     Quit,
     #[allow(dead_code)] // For explicit /load command
     LoadSession(PathBuf),
-    RemoteControl(crate::remote_control::RemoteControlAction),
+    RemoteControl(codewhale_app_server::remote_control::RemoteControlAction),
+    NewSession {
+        sync: codewhale_command_contract::facets::SessionSyncPayload,
+        force: bool,
+    },
     SyncSession {
         session_id: Option<String>,
         messages: Vec<Message>,
@@ -566,11 +581,13 @@ pub enum AppAction {
     OpenDs4Setup,
     /// Run the xAI/Grok device-code flow with the TUI temporarily suspended.
     StartXaiDeviceLogin,
+    OpenModelConnectionSetup,
+    StartAccountConnect,
+    StartAccountLogin,
+    StartAccountLogout,
     /// Run native ChatGPT PKCE sign-in with the TUI temporarily suspended.
     StartChatgptPkceLogin,
     StartChatgptRevoke,
-    StartClaudeLogin,
-    StartClaudeRevoke,
     /// Run OrcaRouter OAuth 2.0 + PKCE sign-in (loopback redirect) with the TUI
     /// temporarily suspended. Produces a durable `sk-orca-...` key in the
     /// ordinary `orcarouter` credential slot — the same slot the API-key path

@@ -134,7 +134,7 @@ fn rename_persists_all_live_metadata_through_public_dispatch() {
     harness
         .app
         .set_provider_identity(ProviderKind::Custom, "lm-studio");
-    harness.app.mode = AppMode::Operate;
+    harness.app.mode = AppMode::Plan;
     harness.app.system_prompt = None;
     harness.app.todos.try_lock().expect("todos lock").add(
         "live rename state".to_string(),
@@ -160,7 +160,7 @@ fn rename_persists_all_live_metadata_through_public_dispatch() {
         Some("lm-studio")
     );
     assert_eq!(reloaded.metadata.workspace, harness.app.workspace);
-    assert_eq!(reloaded.metadata.mode.as_deref(), Some("operate"));
+    assert_eq!(reloaded.metadata.mode.as_deref(), Some("plan"));
     assert_eq!(
         harness.app.session_title.as_deref(),
         Some("Brand New Title")

@@ -755,7 +755,7 @@
             };
             let diagnostic = error.to_string();
             assert!(
-                diagnostic.contains("cannot force tool 'mcp_pattern_tool'"),
+                diagnostic.contains("cannot force an omitted tool"),
                 "streaming={streaming}: {diagnostic}"
             );
             assert!(

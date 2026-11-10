@@ -233,6 +233,13 @@ enum Commands {
     Init(TuiPassthroughArgs),
     #[command(about = "Install a plugin bundle without trusting or enabling it")]
     Install(TuiPassthroughArgs),
+    #[command(
+        about = "Inspect or restage reviewed plugin bundles",
+        alias = "plugin",
+        override_usage = "codewhale plugins <COMMAND>",
+        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot"
+    )]
+    Plugins(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge).
@@ -374,17 +381,16 @@ New integrations should prefer `codewhale app-server --http` for the full Engine
         after_help = "The browser receives a one-time loopback bootstrap capability, never the Runtime token.\nThe capability is exchanged for a bounded, process-local HttpOnly, SameSite=Strict web session and then invalidated."
     )]
     Web(WebArgs),
-    /// Sign in to an existing Codewhale account; new accounts are not open.
+    /// Sign in to your Codewhale account through the browser.
     #[command(
-        after_help = "New Codewhale accounts are not open, and local use does not require one.\nKeep provider keys on this machine with /provider or `codewhale auth set --provider <provider>`.\nSigning in does not upload existing local keys."
+        after_help = "Local use does not require a Codewhale account.\nConnect a model in the TUI with /connect, or run `codewhale auth set --provider <provider>`.\nSigning in preserves your selected model and does not upload existing local keys."
     )]
     Login(LoginArgs),
-    /// Remove saved authentication state (every provider key, OAuth login,
-    /// the Codewhale account session). Asks before deleting.
+    /// Sign out of Codewhale, keeping local model connections and work.
     Logout(LogoutArgs),
     /// Manage authentication credentials and provider mode.
     Auth(AuthArgs),
-    /// Manage an existing Codewhale account; new accounts are not open.
+    /// Manage your Codewhale account and its available features.
     #[command(visible_alias = "cloud")]
     Account(codewhale_account_cli::CloudArgs),
     /// Run a task on a Codewhale cloud computer using your configured model.
@@ -405,7 +411,7 @@ Transports:
   codewhale app-server --http              Full HTTP/SSE runtime API (/v1/*) on 127.0.0.1:7878
   codewhale app-server --mobile            Runtime API + phone control page (127.0.0.1 only)
   codewhale app-server --stdio             Compatibility JSON-RPC controls and tool-free turns
-  codewhale app-server                     Compatibility HTTP routes on the canonical owner at 127.0.0.1:8787
+  codewhale app-server                     Initialized JSONL control over stdio on the canonical owner
 
 `--http` and `--mobile` serve the same mature runtime API as `codewhale serve
 --http`/`--mobile`, which remain as compatibility aliases. The runtime API token
@@ -457,7 +463,8 @@ The command prints the completion script to stdout; redirect it to a path your s
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Print a usage rollup from the audit log and session store.
+    /// Print persisted usage, cache, tool and Fleet diagnostics.
+    #[command(visible_alias = "stats")]
     Metrics(MetricsArgs),
     /// Update this release binary from GitHub (package-managed installs get migration instructions).
     #[command(
@@ -545,6 +552,7 @@ const ADVANCED_COMMANDS: &[&str] = &[
     "scorecard",
     "session-diagnostics",
     "metrics",
+    "stats",
     "providers",
     "completion",
 ];
@@ -553,8 +561,9 @@ fn user_facing_command() -> clap::Command {
     let mut cmd = Cli::command();
     let mut listed = Vec::new();
     for name in ADVANCED_COMMANDS {
-        if cmd.find_subcommand(name).is_some() {
-            cmd = cmd.mut_subcommand(name, |sub| sub.hide(true));
+        if let Some(subcommand) = cmd.find_subcommand(name) {
+            let canonical_name = subcommand.get_name().to_owned();
+            cmd = cmd.mut_subcommand(canonical_name, |sub| sub.hide(true));
             listed.push(*name);
         }
     }
@@ -718,8 +727,39 @@ struct MetricsArgs {
     #[arg(long)]
     json: bool,
     /// Restrict to events newer than this duration (e.g. 7d, 24h, 30m, now-2h).
-    #[arg(long, value_name = "DURATION")]
+    #[arg(long, value_name = "DURATION", conflicts_with = "days")]
     since: Option<String>,
+    #[arg(
+        long,
+        value_name = "N",
+        conflicts_with = "since",
+        help = "Inspect the last N days (positive)"
+    )]
+    days: Option<u32>,
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Show the top N identified model rows by known tokens"
+    )]
+    models: Option<usize>,
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Show the top N tools by identified executions"
+    )]
+    tools: Option<usize>,
+    #[arg(
+        long,
+        value_name = "WORKSPACE",
+        help = "Filter current workspace views; original-source money attribution may be unavailable"
+    )]
+    project: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Show the top N recorded Fleet roles by task count"
+    )]
+    roles: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -1734,7 +1774,12 @@ fn remote_setup_tui_args(args: RemoteSetupArgs) -> Vec<String> {
 
 #[derive(Debug, Args)]
 struct LogoutArgs {
-    /// Delete without the confirmation prompt (required when stdin is not a terminal).
+    #[arg(
+        long,
+        help = "Remove every saved provider key, OAuth login and account session; asks before deleting"
+    )]
+    all: bool,
+    /// Skip the confirmation for --all (required with --all when stdin is not a terminal).
     #[arg(long, short = 'y', default_value_t = false)]
     yes: bool,
 }
@@ -1800,10 +1845,8 @@ enum AuthCommand {
     /// Revoke Codewhale-owned ChatGPT tokens. Codex CLI consent is unchanged.
     #[command(name = "chatgpt-revoke")]
     ChatgptRevoke,
-    #[command(name = "claude", alias = "anthropic")]
+    #[command(name = "claude", aliases = ["anthropic", "claude-revoke"], hide = true)]
     Claude,
-    #[command(name = "claude-revoke")]
-    ClaudeRevoke,
     /// Sign in to OrcaRouter with OAuth 2.0 + PKCE and store the issued key.
     ///
     /// Opens the OrcaRouter consent screen on a loopback callback and
@@ -2083,7 +2126,7 @@ struct AppServerArgs {
     /// Equivalent to the legacy `codewhale serve --mobile`.
     #[arg(long, conflicts_with = "stdio")]
     mobile: bool,
-    /// Run the smaller compatibility JSON-RPC control transport over stdio.
+    /// Run initialized compatibility control over stdio (also the bare default).
     /// Tool-free turns require allowed_tools: []; use --http for interactive work.
     #[arg(long, default_value_t = false)]
     stdio: bool,
@@ -2106,8 +2149,7 @@ struct AppServerArgs {
     /// not widen the bind, and a non-loopback mobile bind is rejected.
     #[arg(long)]
     host: Option<String>,
-    /// Bind port. Defaults to 7878 for --http/--mobile (the runtime API) and
-    /// 8787 for the legacy in-process app-server HTTP transport.
+    /// Bind port for --http/--mobile. Defaults to 7878.
     #[arg(long)]
     port: Option<u16>,
     /// Background task worker count (1-8). Only used with --http/--mobile.
@@ -2133,7 +2175,7 @@ pub fn run_cli() -> std::process::ExitCode {
     install_rustls_crypto_provider();
 
     let outcome = run();
-    codewhale_tui::discard_runtime_listener_handoff();
+    codewhale_app_server::runtime_api::listener::discard_runtime_listener_handoff();
     // A config write may have moved legacy top-level `base_url` / `api_key`
     // into their provider tables (#6394); say so once, off stdout.
     for notice in codewhale_config::legacy_root::take_notices() {
@@ -2351,7 +2393,8 @@ fn argv_secret_warning(cli: &Cli, command: Option<&Commands>) -> Option<&'static
 }
 
 fn run() -> Result<()> {
-    let inherited_listener = codewhale_tui::prepare_runtime_listener_handoff()?;
+    let inherited_listener =
+        codewhale_app_server::runtime_api::listener::prepare_runtime_listener_handoff()?;
     let argv: Vec<_> = std::env::args_os().collect();
     let matches = user_facing_command().get_matches_from(&argv);
     let project_bundle_scope = config_command_targets_project(&matches);
@@ -2366,7 +2409,12 @@ fn run() -> Result<()> {
     if !inherited_listener
         && !matches!(
             cli.command.as_ref(),
-            Some(Commands::Update(_) | Commands::Uninstall { .. } | Commands::Doctor(_))
+            Some(
+                Commands::Update(_)
+                    | Commands::Uninstall { .. }
+                    | Commands::Doctor(_)
+                    | Commands::Plugins(_)
+            )
         )
         && !argv_requests_machine_output(&argv)
     {
@@ -2555,6 +2603,11 @@ fn run() -> Result<()> {
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
             run_tui_in_process(&cli, &resolved_runtime, tui_args("install", args))
         }
+        Some(Commands::Plugins(args)) => {
+            let resolved_runtime =
+                resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides);
+            run_tui_in_process(&cli, &resolved_runtime, tui_args("plugins", args))
+        }
         Some(Commands::Setup(args)) => {
             let resolved_runtime = if setup_is_status_report(&args) {
                 resolve_runtime_for_diagnostic_dispatch(&store, &runtime_overrides)
@@ -2679,8 +2732,12 @@ fn run() -> Result<()> {
             )
         }
         Some(Commands::Logout(args)) => {
-            confirm_logout(args.yes)?;
-            run_logout_command(&mut store, cli.profile.as_deref())
+            if args.all {
+                confirm_logout(args.yes)?;
+                run_logout_command(&mut store, cli.profile.as_deref())
+            } else {
+                codewhale_account_cli::run_account_logout(cli.profile.as_deref(), &mut store)
+            }
         }
         Some(Commands::Auth(args)) => match args.command {
             AuthCommand::PluginLogin { provider } => {
@@ -2717,19 +2774,7 @@ fn run() -> Result<()> {
                     vec!["auth".to_string(), "xai-device".to_string()],
                 )
             }
-            command @ (AuthCommand::Claude | AuthCommand::ClaudeRevoke) => {
-                let route = if matches!(command, AuthCommand::Claude) {
-                    "claude"
-                } else {
-                    "claude-revoke"
-                };
-                let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-                run_tui_in_process(
-                    &cli,
-                    &resolved_runtime,
-                    vec!["auth".to_string(), route.to_string()],
-                )
-            }
+            AuthCommand::Claude => bail!(codewhale_config::credentials::CLAUDE_SIGN_IN_REMOVED),
             AuthCommand::Chatgpt => {
                 let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
                 run_tui_in_process(
@@ -3197,8 +3242,8 @@ fn reject_legacy_login_provider_args(args: &LoginArgs) -> Result<()> {
 const LOGOUT_CONFIRM_PROMPT: &str = "This deletes every saved provider API key and OAuth login, \
 the Codewhale account session. Type 'yes' to log out: ";
 
-/// `codewhale logout` wipes every provider credential at once, so it must not
-/// run on a stray keystroke. Non-interactive callers opt in with `--yes`.
+/// `codewhale logout --all` wipes every provider credential at once, so it must
+/// not run on a stray keystroke. Non-interactive callers opt in with `--all --yes`.
 fn confirm_logout(yes: bool) -> Result<()> {
     if yes {
         return Ok(());
@@ -3206,7 +3251,7 @@ fn confirm_logout(yes: bool) -> Result<()> {
     if !io::stdin().is_terminal() {
         bail!(
             "logout would delete every saved provider key; nothing was deleted. \
-             Re-run with --yes to confirm non-interactively."
+             Re-run with --all --yes to confirm non-interactively."
         );
     }
     confirm_logout_answer(&mut io::stdin().lock(), &mut io::stderr().lock())
@@ -4968,22 +5013,7 @@ fn run_auth_command_with_secrets_and_runtime(
                 1
             })
         }
-        command @ (AuthCommand::Claude | AuthCommand::ClaudeRevoke) => {
-            let route = if matches!(command, AuthCommand::Claude) {
-                "claude"
-            } else {
-                "claude-revoke"
-            };
-            let code = codewhale_tui::run(
-                codewhale_engine::runtime_options::RuntimeOptions::default(),
-                vec!["auth".to_string(), route.to_string()],
-            );
-            std::process::exit(if code == std::process::ExitCode::SUCCESS {
-                0
-            } else {
-                1
-            })
-        }
+        AuthCommand::Claude => bail!(codewhale_config::credentials::CLAUDE_SIGN_IN_REMOVED),
         AuthCommand::Chatgpt => {
             let argv = vec!["auth".to_string(), "chatgpt".to_string()];
             let code = codewhale_tui::run(
@@ -6521,21 +6551,16 @@ fn run_app_server_command(
             path: args.socket_path.clone(),
         })
     } else if !args.http && !args.mobile {
-        eprintln!(
-            "note: bare app-server selects the compatibility API on port 8787 by default; use codewhale app-server --http for the full /v1/* API, approvals and SSE events"
-        );
-        Some(RuntimeControlFrontend::LegacyHttp)
+        Some(RuntimeControlFrontend::Stdio)
     } else {
         None
     };
     let mut launch = args;
     if launch.port.is_none() {
-        launch.port = Some(if launch.stdio || launch.socket {
-            0
-        } else if launch.http || launch.mobile {
+        launch.port = Some(if launch.http || launch.mobile {
             7878
         } else {
-            8787
+            0
         });
     }
     if !launch.http && !launch.mobile {
@@ -6821,11 +6846,25 @@ fn run_metrics_command(args: MetricsArgs) -> Result<()> {
         Some(s) => {
             Some(metrics::parse_since(s).with_context(|| format!("invalid --since value: {s:?}"))?)
         }
-        None => None,
+        None => args
+            .days
+            .map(|days| {
+                if days == 0 {
+                    bail!("--days must be positive");
+                }
+                chrono::Utc::now()
+                    .checked_sub_signed(chrono::Duration::days(i64::from(days)))
+                    .ok_or_else(|| anyhow!("--days reaches before the supported time range"))
+            })
+            .transpose()?,
     };
     metrics::run(metrics::MetricsArgs {
         json: args.json,
         since,
+        models: args.models,
+        tools: args.tools,
+        project: args.project,
+        roles: args.roles,
     })
 }
 
@@ -10081,12 +10120,14 @@ verbosity = "concise"
             "login help must describe account sign-in: {help}"
         );
         assert!(
-            help.contains("New Codewhale accounts are not open"),
-            "login help must not offer accounts that cannot be created: {help}"
+            help.contains("Local use does not require a Codewhale account"),
+            "login help must explain that local use does not require an account: {help}"
         );
         assert!(
-            help.contains("Signing in does not upload existing local keys"),
-            "login help must explain the local-key upload boundary: {help}"
+            help.contains(
+                "Signing in preserves your selected model and does not upload existing local keys"
+            ),
+            "login help must explain model preservation and the local-key upload boundary: {help}"
         );
     }
 
@@ -12448,12 +12489,26 @@ verbosity = "concise"
         let cli = parse_ok(&["codewhale", "logout", "--yes"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Logout(LogoutArgs { yes: true }))
+            Some(Commands::Logout(LogoutArgs {
+                yes: true,
+                all: false
+            }))
         ));
         let cli = parse_ok(&["codewhale", "logout"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Logout(LogoutArgs { yes: false }))
+            Some(Commands::Logout(LogoutArgs {
+                yes: false,
+                all: false
+            }))
+        ));
+        let cli = parse_ok(&["codewhale", "logout", "--all", "--yes"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Logout(LogoutArgs {
+                yes: true,
+                all: true
+            }))
         ));
     }
 
@@ -13667,7 +13722,18 @@ verbosity = "concise"
                     "codewhale completion elvish >> ~/.config/elvish/rc.elv",
                 ],
             ),
-            ("metrics", vec!["--json", "--since"]),
+            (
+                "metrics",
+                vec![
+                    "--json",
+                    "--since",
+                    "--days",
+                    "--models",
+                    "--tools",
+                    "--project",
+                    "--roles",
+                ],
+            ),
         ];
 
         for (subcommand, expected_tokens) in cases {

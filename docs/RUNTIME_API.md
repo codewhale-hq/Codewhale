@@ -15,8 +15,9 @@ such as Zed.
 for `codewhale app-server --http` / `--mobile`; both launch the identical
 server. Desktop, web, SDK and custom integrations should target
 `app-server --http`. `--stdio` and `--socket` expose compatibility controls.
-The current bare `app-server` HTTP listener serves compatibility routes and
-the full `/v1/*` router through the same Runtime owner.
+Bare `app-server` selects initialized JSONL control over stdio. Local stdio,
+socket and ACP owners do not bind a hidden TCP listener. Explicit `--http`
+retains HTTP/SSE and compatibility routes on the same Runtime owner.
 
 `codewhale exec` is the separate one-shot headless worker path (stream-json,
 fleet worker subprocess, CI primitive). It is not part of this API, but it
@@ -56,9 +57,9 @@ For the read-only record of what a thread or turn did, see
 | `codewhale web [--port 7878]` | HTTP/SSE on `127.0.0.1:7878` + embedded client | First-class loopback-only browser client; opens the default browser |
 | `codewhale app-server --http` | HTTP/SSE on `127.0.0.1:7878` | Full `/v1/*` runtime API (canonical) |
 | `codewhale app-server --mobile` | HTTP/SSE on loopback + `/mobile` | Runtime API + local mobile control page |
-| `codewhale app-server --stdio` | JSON-RPC 2.0 over stdio | Compatibility controls and explicit tool-free turns; no full Engine event or approval/input channel. |
-| `codewhale app-server --socket [--socket-path P]` | JSON-RPC 2.0 over a `0600` Unix domain socket (macOS/Linux) or an owner-only named pipe (Windows) | Desktop daemon: multi-client, kernel peer identity checked, `daemon/attach` claim handshake. Windows native-app qualification remains open. |
-| `codewhale app-server` | HTTP on `127.0.0.1:8787` | Compatibility `/healthz`, `/thread`, `/app`, `/prompt`, plus the full `/v1/*` router. Compatibility turn requests require explicit `allowed_tools: []`; those routes refuse interactive execution before a turn starts. New integrations should use `app-server --http`. |
+| `codewhale app-server --stdio` | Initialized JSONL over stdio | Compatibility controls and explicit tool-free turns through the held manager; no hidden TCP listener or full Codex interaction channel. |
+| `codewhale app-server --socket [--socket-path P]` | RPC text messages over WebSocket on a `0600` Unix domain socket (macOS/Linux) or an owner-only named pipe (Windows) | Desktop daemon: multi-client, kernel peer identity checked, `daemon/attach` claim handshake. Windows native-app qualification remains open. |
+| `codewhale app-server` | Initialized JSONL over stdio | Same selection as `--stdio`; HTTP requires explicit `--http`. |
 | `codewhale serve --http` / `--mobile` | same server as `app-server --http`/`--mobile` | Compatibility aliases |
 
 `app-server --http` and `--mobile` launch the same mature runtime API server
@@ -67,9 +68,30 @@ every endpoint documented below is identical across both entrypoints. The
 runtime API token is read from `--auth-token`, then `CODEWHALE_RUNTIME_TOKEN`,
 then `DEEPSEEK_RUNTIME_TOKEN`; use `--insecure-no-auth` only with a loopback
 bind. The `serve` compatibility aliases keep their `--insecure` flag.
-The legacy in-process `codewhale app-server` also requires an explicit
-`--auth-token` or `CODEWHALE_APP_SERVER_TOKEN` before binding a non-loopback
-host; its generated one-time `cwapp_*` token is loopback-only.
+Bare `app-server` does not open an HTTP port. Selected attached HTTP listeners
+retain their explicit bearer and non-loopback security checks.
+
+Initialized stdio/private-socket controls support `thread/loaded/list` with
+`{cursor?: string | null, limit?: number | null}`. The result is
+`{data: string[], nextCursor: string | null}` from the held manager's loaded
+engine snapshot, including idle and archived engines still in memory. It does
+not enumerate saved history or only running turns. Omit the limit for the full
+snapshot. A zero limit is clamped to one entry when entries remain, so an
+empty page cannot retain an unchanged continuation. Pass the opaque
+`nextCursor` back unchanged; loading or
+unloading between pages can change the snapshot. The
+`app/thread_loaded_list`, `app/thread-loaded-list` and `app/request`
+`ThreadLoadedList` compatibility forms retain their thread-object wrapper and
+now use that same loaded-engine authority. Full-tool `turn/start`, interaction
+responses and subscription/reconnect parity remain unavailable.
+
+The pinned `thread/name/set` control takes `{threadId: string, name: string}`
+and returns `{}` after the existing held owner persists the canonical title.
+The legacy `thread/set_name`, `thread/set-name` and typed compatibility request
+retain their current parameter and response shapes. An empty or whitespace-only
+name clears the title through the same manager. The durable Runtime journal
+continues to publish `thread.updated`; the pinned `thread/name/updated` fan-out
+and per-connection subscriptions remain part of the unfinished event contract.
 
 Device tokens minted by the master through `POST /v1/auth/client-tokens`
 have an immutable `intent`: `watch` (the default when omitted) or explicit
@@ -421,11 +443,43 @@ the Runtime token (or an explicitly insecure loopback server); the public
 bootstrap response remains usable but reports `signed_out`. Signed-out local
 Work remains supported and never allocates cloud compute implicitly.
 
-The `--stdio` control transport is newline-delimited JSON-RPC 2.0. Probe it
+The native host account routes below require the configured master token in
+the Authorization header. Browser/mobile device sessions and insecure mode do
+not authorize them. Responses use `Cache-Control: private, no-store`. These
+routes are excluded from the desktop renderer's Engine request allowlist.
+
+| Route | Native host operation |
+| --- | --- |
+| `GET /v1/account/status` | Token-free account state, exact API origin/profile, opaque revision and whether legacy import is permitted. |
+| `POST /v1/account/claim` | Renew a login claim only for the supplied `expectedRevision`, preserving existing account identity. |
+| `DELETE /v1/account/claim` | Cancel exactly the supplied `expectedRevision`; a newer claim is preserved. |
+| `POST /v1/account/import` | Adopt the host's completed browser authorization with `expectedRevision` and `auth`; legacy import requires pristine storage, while explicit sign-in supplies `replaceExisting`. |
+| `POST /v1/account/lease` | Return a short-lived access credential to native main memory; Rust owns refresh and durable custody. Optional `rejectedAccessToken` requests renewal only if that credential is still current. No refresh token is returned. |
+| `DELETE /v1/account/session` | Sign out exactly the supplied `expectedRevision`, preserving provider credentials and local work. A changed revision returns conflict rather than signing out another account. |
+
+The lease is sensitive native-host transport, separate from the token-free
+runtime receipt above. Native clients retain it only in main memory and fence
+responses by Engine connection and account/session identity. Shared account
+records use revision nonces and signed-out tombstones so cancelled or stale
+login completion cannot restore an account after logout. Older authenticated
+records remain readable; older binaries fail closed on signed-out tombstones.
+
+The `--stdio` control transport uses newline-delimited RPC. Request IDs are
+strings or signed 64-bit integers. Output omits `jsonrpc`; input also accepts
+unknown input fields, as the pinned Codex decoder does. Complete `initialize`
+once and receive its result. Clients then send the ID-absent `initialized`
+notification before ordinary requests. It has no reply or authority effect;
+as in the pinned implementation, server initialization is committed by the
+successful initialize request. Repeated initialization and business requests
+before initialize refuse. Malformed envelopes are discarded
+without a fabricated null-ID response; invalid-ID method objects follow the
+pinned notification fallback and cannot become business calls. Probe it
 without spending model tokens:
 
 ```bash
 printf '%s\n' \
+  '{"id":"init","method":"initialize","params":{"clientInfo":{"name":"probe","version":"1"}}}' \
+  '{"method":"initialized"}' \
   '{"jsonrpc":"2.0","id":1,"method":"healthz"}' \
   '{"jsonrpc":"2.0","id":2,"method":"capabilities"}' \
   '{"jsonrpc":"2.0","id":3,"method":"shutdown"}' \
@@ -439,41 +493,57 @@ deadline; owner attachment, request forwarding and frontend readiness keep
 their tighter 5-second envelopes. A partial write, flush failure or deadline
 ends the affected stream; it cannot be followed by another response or an
 automatic replay. This write deadline also applies to compatibility stdio
-replies/events and relay stdout. The current stdio host can bind a private
-loopback listener for its internal Runtime bridge.
+replies/events and relay stdout. Compatibility execution, history, provider
+catalogs, output-limit preflight and saved-config reload call the same held
+native frontend directly; they do not make loopback HTTP requests.
 
 `capabilities` returns the advertised method families (`thread/*`, `app/*`,
 `prompt/*`) and the full method list; `thread/capabilities`,
 `app/capabilities`, and `prompt/capabilities` scope it per family. The method
 set is pinned by a drift test in `crates/app-server/src/tests.rs`, so SDK and
-local integration clients can rely on it not changing silently.
+local integration clients can rely on it not changing silently. The permanently
+refused compatibility goal setter is omitted from discovery while
+`goal_execution` is false; goal reads and clears remain advertised.
 
 ### Daemon socket: `codewhale app-server --socket`
 
 The socket transport exposes compatibility controls on a long-lived daemon.
-The wire is the `--stdio` transport verbatim — the same
-newline-delimited JSON-RPC 2.0 methods, dispatched by the same code — with one
-handshake in front of it.
+The same dispatcher consumes RPC objects over private-channel WebSocket text
+messages. Process stdio uses JSONL; the private channel upgrades before its
+attachment handshake.
 
 **Endpoint.** `--socket-path` if given; else `$CODEWHALE_HOME/run/daemon.sock`
 when `CODEWHALE_HOME` is set (an explicit home is an isolation boundary); else
 `$XDG_RUNTIME_DIR/codewhale/daemon.sock`; else
 `~/Library/Application Support/codewhale/daemon.sock` on macOS or
-`~/.codewhale/run/daemon.sock` elsewhere. The directory is created `0700`, the
+`~/.codewhale/run/daemon.sock` elsewhere. On Unix, an implicit endpoint that
+leaves insufficient room for the store-specific socket automatically uses a
+private deterministic short temporary directory; the data home stays in place.
+Explicit socket selections remain exact, and an overlong explicit path is
+refused. The directory is created `0700`, the
 socket is `0600`, and every accepted peer must present the daemon's own uid.
 On start, a socket file nobody answers on is removed; a live one makes the new
 daemon exit with `a live listener already answers on <path>; refusing to
-replace it`; a non-socket file at the path is never touched. On Windows `--socket` fails with a typed
-`UnsupportedPlatform` error naming the reserved pipe `\\.\pipe\codewhale-daemon`
-— there is no silent TCP fallback. The daemon prints
+replace it`; a non-socket file at the path is never touched. On Windows the owner-private named-pipe transport uses the same dispatcher;
+its native application qualification remains open. There is no TCP fallback. The daemon prints
 `codewhale daemon: listening on <path>` to stderr once it is accepting.
 
-**Handshake.** The first request on a connection must be `daemon/attach`
-(`healthz` is also allowed beforehand, so a shell can probe liveness). Every
-other method is refused with `-32010 attach_required` until then.
+**Handshake.** After kernel peer admission, upgrade the private connection to
+WebSocket. Upgrade headers are limited to 16 KiB and five seconds; any Origin
+header refuses. Each subsequent text message contains one complete JSON object,
+with an 8 MiB frame and reassembled-message limit. Binary messages are unsupported
+and discarded without negotiation of compression. Control, scoped Control, ACP
+and listener attachments all use this framing. Process stdio remains JSONL.
+
+The first RPC request must be `daemon/attach` (`healthz` is also allowed beforehand). Every
+other method is refused with `-32010 attach_required` until then. After the
+private attachment handshake, complete `initialize` followed by `initialized`
+on the Control connection before business requests. ACP retains its JSON-RPC 2.0
+envelope, permission response IDs and EOF cancellation policy inside WebSocket
+text messages. Named-pipe ACLs and peer-process checks remain mandatory.
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"daemon/attach","params":{
+{"id":1,"method":"daemon/attach","params":{
   "client":{"name":"codewhale-desktop","version":"1.2.3","pid":4242},
   "mode":"claim",
   "expect_daemon_version":"0.9.11"}}
@@ -492,7 +562,8 @@ is `-32014 already_attached`.
 
 **Capabilities.** On this transport `capabilities.methods` is the pinned stdio
 set plus `daemon/attach` (second entry, after `healthz`); `transport` reads
-`unix-socket`. `shutdown` is advertised to every connection because the method
+`unix-socket` (or `named-pipe` on Windows), and `framing` is `websocket-text`.
+Stdio advertises `framing: "jsonl"`. `shutdown` is advertised to every connection because the method
 exists, but only the owner may call it (below).
 
 **Ownership.** Only the owner may `shutdown`; a guest's `shutdown` is refused
@@ -518,8 +589,9 @@ HTTP reports 400 with `error.code: "invalid_request"`, `error.jsonrpc_code: -326
 and the same detail in `error.data`. Compatibility `thread/goal/set` and
 `ThreadRequest::GoalSet` also refuse before changing the goal: setting an active
 goal starts background Engine work. Reading and clearing existing goals remain
-available; starting goals uses the full Runtime HTTP API. The known method
-remains dispatchable so older clients get this actionable refusal. For example:
+available; starting goals uses the full Runtime HTTP API. The known setter
+remains recognized for older clients to get this actionable refusal, but it is
+not advertised as an available method. For example:
 
 ```json
 {"jsonrpc":"2.0","id":3,"method":"thread/message","params":{"thread_id":"thr_...","input":"Summarize this conversation","allowed_tools":[]}}
@@ -584,6 +656,16 @@ in the app-server can produce model output, so a prompt either runs or fails.
 `POST /thread` with a `Message` body behaves the same way — it runs the turn
 and replies `status: "completed"` with the streamed frames in `events` — where
 it previously replied `accepted` without doing anything.
+
+### Compatibility list and read parameters
+
+`thread/list` accepts only `include_archived` and `limit`; `thread/read`
+accepts only `thread_id` and returns the complete legacy history projection.
+Both also apply inside `thread/request`. Unknown fields fail with `-32602`
+before contacting the canonical owner. Workspace, cursor, `archived`, search
+and `includeTurns` parameters from the pinned v2 contract are not implemented
+by these compatibility methods; they are rejected instead of silently ignored.
+These method names do not establish Codex wire parity.
 
 ### Thread ids and restarts
 
@@ -1262,6 +1344,114 @@ explicit empty array (`"allowed_tools": []`) exposes no tools to the model.
 Both fields are additive: older thread records and clients that omit them
 retain their previous behavior.
 
+### Sessions on other agents (external agent threads)
+
+`POST /v1/threads` with `executor` runs the thread's turns on an agent CLI
+already installed and signed in on this computer, over Agent Client Protocol,
+instead of Codewhale's own agent:
+
+```json
+{
+  "workspace": "/Users/you/projects/app",
+  "permission_posture": "ask",
+  "executor": { "kind": "acp", "agent_id": "opencode", "config": { "model": "<the agent's own option value>" } }
+}
+```
+
+`agent_id` is an `id` from `GET /v1/agents/external` whose row says
+`runnable: true`; `kind` is always `acp`; `config.model` is optional and is the
+agent's own config value, never a Codewhale provider route. When the agent cannot be driven the
+request is refused with a sentence and a stable `error.code`:
+`unknown_agent`, `not_installed`, `adapter_missing`, `below_min_version` or
+`no_acp` (`424`), and `needs_sign_in` (`409`) when the agent refuses to start a
+session because the person is not signed in to it. Turn starts and `resume`
+use the same codes. Codewhale never
+downloads an agent or adapter.
+
+The thread record carries the executor; native threads have none:
+
+```json
+"executor": { "version": 1, "kind": "acp", "agent_id": "opencode",
+  "agent_name": "OpenCode", "agent_version": "1.15.10", "protocol_version": 1,
+  "foreign_session_id": "ses_…", "model": null }
+```
+
+`agent_name`, `agent_version`, `protocol_version` and `foreign_session_id` are
+filled when the agent first starts (the first turn, or `POST
+/v1/threads/{id}/resume`). The record never holds an environment value, token
+or credential: the agent uses its own login. `model_provider` is absent and
+`model` is the agent's model value or name.
+
+Everything else is the ordinary thread API, and the Engine's records stay the
+one authority. `POST .../turns` sends the prompt as one `session/prompt`; the
+agent's updates become the usual `turn.started`, `item.started`,
+`item.delta` (`kind` `agent_message` or `agent_reasoning`), `item.completed`
+/ `item.failed` and `turn.completed` events. Item kinds: `agent_message_chunk`
+→ `agent_message`, `agent_thought_chunk` → `agent_reasoning`, tool calls of
+kind `execute` → `command_execution`, `edit`/`delete`/`move` →
+`file_change`, `switch_mode` → `status`, any other → `tool_call`, and a plan
+→ one `status` item. Tool items carry `metadata.external_agent` with the
+agent's `tool_call_id`, `kind` and `locations`. Everything the agent sends is
+bounded (8 MiB per message, 256 KiB per item, 512 tool items per turn,
+control characters removed) and ignored when it names another session.
+
+The agent's `session/request_permission` becomes an ordinary
+`approval.required` (with `external_agent`, `options` and `locations`) and is
+answered through `POST /v1/approvals/{id}`. The answer is recorded in
+`approval.decided` before the agent hears it. The thread's dial decides
+what is asked:
+
+| Dial (`permission_posture` / `mode`) | Answer to `session/request_permission` |
+| --- | --- |
+| `ask` | always an approval card |
+| `accept_edits` | `allow_once` without asking for an `edit`, `delete` or `move` whose every location resolves inside the workspace or an added folder; an approval card otherwise |
+| `auto_review` | an approval card (no model review exists for another agent) |
+| `full_access` | `allow_once` (or `allow_always` if that is all it offers) without asking |
+| `plan` (mode) | `reject_once` without asking, whatever the posture |
+
+A card's Allow selects `allow_once` (`allow_always` when `remember` is set and
+offered); Deny selects `reject_once` (`reject_always` when `remember`); an
+answer the agent offered no option for, a withdrawn card and a stopped turn
+answer `cancelled`. Automatic answers are recorded with `auto: true` and
+`decided_by: "policy"`. Codewhale sees only what the agent routes through
+ACP: its own tools are not sandboxed by Codewhale.
+
+`POST .../interrupt` sends `session/cancel`, withdraws pending approvals as
+cancelled and, if the agent has not stopped after 10 s, ends its process; the
+turn is `interrupted`. A stop reason other than `end_turn` or `cancelled`
+fails the turn with it. After a restart, the next turn or resume reopens the
+same agent session with `session/resume` or `session/load` (whose replay is
+not re-recorded); an agent that supports neither says so instead of starting
+a new session. `steer`, `compact`, `fork`, images, dynamic tools and a
+per-turn provider, model, reasoning setting, output allowance or tool allowlist
+are refused on an external thread. Thread creation uses only
+`executor.config.model` for the agent's model; Codewhale provider settings,
+tool allowlists and system prompts are refused. `PATCH` cannot change its
+model, provider, system prompt or workspace. Usage is what the agent itself reports, labelled
+`agent reported`; cost is `unknown` because the agent bills through its own
+account.
+
+Three thread events describe the agent process itself: `executor.started`
+(`agent_id`, `agent_name`, `agent_version`, `protocol_version`,
+`foreign_session_id`, `reopened`) when the agent starts or is reopened,
+`executor.stopped` (`reason`) when it exits or is stopped between turns, and
+`turn.agent_usage` (`used`, `size`: the agent's own context-window token
+figures, `source: "agent reported"`, `cost: "unknown"`) whenever the agent
+sends ACP `usage_update`. `turn.completed` carries `turn.error` with the
+reason a turn failed or was ended. Stopping an idle agent process is the
+Engine call `stop_external_agent`; no HTTP route exposes it yet.
+
+Two shapes are reserved and refused today with `error.code`
+`executor_not_supported` or `environment_not_supported` (`424`), so a record
+written by a later build never runs here by mistake: `executor.kind:
+"engine"` (a child session run by another environment's own Engine), and
+`environment: {"id", "provider_kind"}` on `POST /v1/threads` and on the
+session record (absent means this computer; the names follow
+`codewhale_protocol::placement`). Summary rows carry `environment` when set.
+
+`CODEWHALE_ACP_FIXTURE_AGENT=<absolute path to a Node ACP script>` in the
+Engine's environment adds a `fixture` agent for end-to-end proofs.
+
 `GET /v1/threads/summary` is the read-only summary surface used by the VS Code
 Agent View. `search` matches thread `id`, `title`, and `model` (and, when the
 title is unset, the latest turn's input summary — the displayed title). It
@@ -1289,6 +1479,10 @@ plus workspace metadata:
   "latest_turn_status": "completed"
 }
 ```
+
+A conversation run by an external agent also carries
+`executor: {"kind": "acp", "agent_id": "opencode", "agent_name": "OpenCode"}`,
+so a sidebar can label and group rows by agent; native rows omit it.
 
 Rows also carry `last_read_item_id` and `unread` from the thread's read marker
 (see "Read markers" below). Both are `null` for a thread no client has marked
@@ -1408,7 +1602,8 @@ latest turn and publishes a `thread.permissions_changed` event (`from`, `to`,
 - `POST /v1/threads/{id}/compact` (manual compaction)
 - `POST /v1/threads/{id}/undo` - fork the thread with the last N turns removed (`{"depth": N}`, default 0 = last turn only); returns the forked thread plus `original_user_text` so a GUI can pre-populate the input box. `{"turn_id": "turn_…"}` instead names the user turn to remove, together with every turn after it, and wins over `depth`; the Runtime resolves it under the thread's restore guard, so a turn another client appends meanwhile cannot move the cut. `400` when the turn is not a user turn of that thread
 - `POST /v1/threads/{id}/fork-at-turn` - fork at one named user turn (`{"turn_id": "turn_…"}`, as `GET /v1/threads/{id}` reports it). The fork *keeps* that turn and every turn before it, and drops the turns after it; naming the last turn therefore keeps the whole conversation. The receipt is `/undo`'s (`thread`, `original_user_text`, `original_user_images`), carrying the *first dropped* user turn's prompt — what was asked next, even when a prompt-less turn such as a manual `/compact` sits between — so a client can put it back in the composer for editing. The source thread, its session document and the workspace are untouched, and there is no file rollback: a fork is a sibling conversation, and rewinding the workspace would rewind the branch left behind with it. Clients should name the turn instead of computing a `depth` — the transcript they render and the turn list this cuts are not the same list (steers, image-only prompts and injected handoffs each sit on one side only), and a client-side count that is off by one forks the wrong prefix while answering `201`. `400` when the turn is not a user turn of that thread.
-- `POST /v1/threads/{id}/patch-undo` - rolls back the files the dropped turns changed, then the same fork (`{"depth": N}`); returns `patch_result` (`files_restored`, `summary`, `snapshot_label`) alongside the forked thread. See [Workspace restore endpoints](#workspace-restore-endpoints) for ownership, the trust, admission and abort rules, and the `error.code` values of a refusal.
+- `GET /v1/threads/{id}/patch-undo?turn_id=turn_…` - validates the selected restore without changing files or publishing a fork; returns `turn_ids`, the exact dropped range, `paths` needing restoration and an optional no-change `summary`. Requires the `thread_patch_undo_turn_id` capability.
+- `POST /v1/threads/{id}/patch-undo` - rolls back the files the dropped turns changed, then the same fork (`{"depth": N}` or `{"turn_id": "turn_…"}`, with `turn_id` taking precedence); returns `patch_result` (`files_restored`, `summary`, `snapshot_label`) alongside the forked thread. See [Workspace restore endpoints](#workspace-restore-endpoints) for ownership, the trust, admission and abort rules, and the `error.code` values of a refusal.
 - `POST /v1/threads/{id}/file-revert` - restore exactly one file from one restore point the thread owns (`{"path", "snapshot_id", "expected_hash"}`); never forks the conversation. See [Workspace restore endpoints](#workspace-restore-endpoints).
 - `POST /v1/threads/{id}/retry` - fork with the last N turns removed and immediately start a new turn (`{"depth": N, "prompt": "..."}`; `prompt` overrides the original user text, which is re-used when omitted)
 
@@ -1535,7 +1730,11 @@ an incomplete admission before a later lookup, but GET itself never does so.
 
 **Approvals**
 - `POST /v1/approvals/{approval_id}` with body
-  `{ "decision": "allow" | "deny", "remember": false }`
+  `{ "decision": "allow" | "deny", "remember": false, "client": "desktop" }`.
+  `client` is optional and names the surface that answered: `desktop`, `phone`,
+  `web`, `tui` or `acp`. The answer's `approval.decided` event carries it as
+  `responder`. It is a label the client declares, not an authenticated device
+  identity; an answer without it records no `responder`.
 - `GET /v1/approvals?limit=` (1-500, default 100) is the read-only history:
   decided and still-pending approvals across all sessions, newest ask first.
 
@@ -1705,8 +1904,8 @@ Once the response is `200`, every end the server chooses is a final
 stream](#ending-and-resuming-a-thread-stream).
 
 **Snapshots** (side-git restore point listing + restore)
-- `GET /v1/snapshots?limit=20`
-- `POST /v1/snapshots/{id}/restore`
+- `GET /v1/snapshots?limit=20&thread_id=`
+- `POST /v1/snapshots/{id}/restore?thread_id=`
 
 `/v1/snapshots` lists recent side-git restore points for the runtime workspace.
 `limit` defaults to `20` and must be between `1` and `100`. `POST
@@ -1715,7 +1914,11 @@ returns `{"restored": "<snapshot-id>"}`. It is the direct operator surface for
 the server's own workspace (the same action as the TUI's `/restore <N>`): it is
 gated by the Runtime API bearer token, not by any thread's trust flag, and it
 is refused with `409` while a turn is active in an overlapping workspace (see
-below). A `pre-restore:` safety snapshot is taken first.
+below). A `pre-restore:` safety snapshot is taken first. With `thread_id`
+(capability `thread_scoped_snapshots`) both routes act on that thread's
+recorded workspace instead, under the same admission rule; an unknown thread
+answers `404` and a missing or changed workspace `409`
+`thread_workspace_unavailable`.
 
 ```json
 [
@@ -1734,9 +1937,9 @@ admission rule and one safety net, and they differ in scope and trust.
 
 | Route | Scope | Trust | Forks the thread |
 | --- | --- | --- | --- |
-| `POST /v1/snapshots/{id}/restore` | whole server workspace | bearer token only (operator action) | no |
+| `POST /v1/snapshots/{id}/restore` | whole server workspace, or the `thread_id` workspace | bearer token only (operator action) | no |
 | `POST /v1/threads/{id}/patch-undo` | the files the dropped turns changed | thread `trust_mode` or `auto_approve` when files would change | yes |
-| `POST /v1/threads/{id}/file-revert` | exactly one regular file | thread `trust_mode` or `auto_approve`, always | no |
+| `POST /v1/threads/{id}/file-revert` | exactly one regular file | none; the restore point must be one the thread owns and `expected_hash` must match | no |
 
 **Admission.** A restore reserves the same admission the Runtime uses for
 config reloads and session checkpoints, so no new turn starts and no saved
@@ -1802,7 +2005,9 @@ For `file-revert` the backup is mandatory: if it cannot be written, or the
 requested file is excluded from it (for example by `.gitignore`), the request
 fails and nothing is changed.
 
-**`patch-undo`.** Undoes whole turns. For each dropped turn's `pre_turn` →
+**`patch-undo`.** Undoes whole turns. A named `turn_id` removes that user turn and every turn after it, under the same restore admission as `/undo`. Clients must require `thread_patch_undo_turn_id` before sending selected-turn requests: older Engines may ignore that field. Preview with `GET`, then send its exact `turn_ids` as `expected_turn_ids` and `paths` as `expected_paths` on `POST`; `409 undo_selection_changed` refuses an altered range or file plan before file changes. A preview does not reserve future execution or promise idempotency. The mutation is not automatically retryable after a lost response.
+
+ For each dropped turn's `pre_turn` →
 `post_turn` window, the paths that differ between the two snapshots must all be
 the turn's own: changed only in the span of one of the turn's tool calls (a
 `tool` → `post_tool` span, or a shell turn's whole window), and, inside a file
@@ -1881,7 +2086,7 @@ Responses:
 - `400`: malformed `snapshot_id`/`expected_hash`, path outside the workspace,
   or a path that is not a regular file on either side.
 - `404`: unknown thread.
-- `409`: thread not in trusted mode or Full Access; active turn in an
+- `409`: active turn in an
   overlapping workspace; workspace directory not available; snapshot unknown,
   pruned, not recorded on this thread's turns (another thread's or a TUI
   session's), or not a restore point (refresh the change record); file already
@@ -1927,7 +2132,8 @@ When set, each run is delivered into that existing thread as a new turn
 instead of starting a new task thread; the turn item carries
 `{"input_provenance":"scheduled","task_id":...}` metadata, and the turn uses
 the thread's own model and permission posture. If the thread is busy the run
-waits for its current turn to finish (bounded by the task wall-time budget).
+waits for its current turn to finish (bounded by the task wall-time budget,
+which pauses while a prompt on the run itself awaits a decision).
 A destination that no longer exists or is archived fails the run with a
 receipt naming the thread; it is never rerouted to a new thread. An empty
 string on `PATCH` clears the destination. Create and update return `404` for
@@ -2050,7 +2256,12 @@ This persisted project decision is separate from a thread’s `trust_mode` / Ful
   `capabilities.skill_detail` on `GET /v1/runtime/info`, which is the source a
   client should use rather than probing this path: a `404` here means "no such
   skill" and is indistinguishable from "no such route".
-- `GET /v1/apps/mcp/servers`
+- `GET /v1/apps/mcp/servers` — each row reports `connected` and
+  `has_connection_backoff`; while a server is cooling down after a failed
+  connect it also carries `last_error`, that attempt's diagnosis (at most 2048
+  characters). `last_error` is omitted when the server is ready or connecting,
+  when its configuration changed since the failure, and when its reviewed
+  plugin authority no longer holds.
 - `GET /v1/apps/mcp/tools?server=<optional>`
 
 Skill activation toggles are persisted under a cross-process transaction lock.
@@ -2061,6 +2272,23 @@ process's successful toggle is visible without restarting the Runtime API.
 Skill rows on `GET /v1/skills` carry `invocation`, `aliases`, and
 `bundled_tier` alongside the fields they always carried, so a client can build
 a picker, autocomplete, or activation gate without a second request per row.
+
+**Desktop side browser.** A desktop host registers its side-browser MCP server
+with `POST /v1/apps/mcp/desktop-browser` (`{url, bearer, signature}`, signed by
+the host key the Engine was launched with). Agent calls to that server are
+fenced by the Codewhale account that admitted the turn. When a person's turn
+starts, the Engine records who is signed in (the account and its login
+session, or signed out). A later `codewhale-browser` tool call from that turn,
+its sub-agents or its programs is refused with a permission error saying
+nothing was sent once the signed-in account differs: after a sign-out, a
+sign-in, a replaced account or a new login session. A turn whose account could
+not be read is refused the same way; token refresh does not trip the fence.
+Known limits of this interim fence: the Engine sends the browser server no
+caller identity, registrations carry no generation (a delayed older
+registration can still replace a newer one), account states the desktop keeps
+to itself (development sessions, replay, an unreachable account service) are
+not observed, and a Platform-side revocation counts only once a refresh writes
+it to the local account store.
 
 **Usage** (token/cost aggregation across threads)
 - `GET /v1/usage?since=<rfc3339>&until=<rfc3339>&group_by=<day|model|provider|thread>`
@@ -2110,35 +2338,92 @@ scheduler, or credential store.
 
 The jobs family above runs one command per job. A terminal pane needs the
 *other* authority: the stateful PTY-backed shell the agent's own terminal
-tools drive, which keeps cwd and environment across inputs. These routes
-attach to that session and never create one — a name with no live session is
-`404`, because conjuring a shell from an HTTP request would give the client a
-terminal the Engine does not know about. Input is attributable by route:
-`input` is the client's writer, `terminal_send` is the agent's.
+tools drive, which keeps cwd and environment across inputs. Each shell belongs
+to the thread whose turn started it, in that thread's workspace: two
+conversations that both use `term-1` in one folder get two shells. These
+routes attach to those shells and never create one, because conjuring a shell
+from an HTTP request would give the client a terminal the Engine does not
+know about. Input is attributable by route: `input` is the client's writer,
+`terminal/send` is the agent's.
 
-- `GET /v1/terminal/{name}/output?cursor=<bytes>&max_bytes=<1-64KiB>&format=
-  <base64|text>` — the resumable byte stream. `{name, offset, next_cursor,
-  total, dropped, encoding, data, running, exit_code}`: pass `next_cursor`
-  back to continue; reads never consume, so several clients may hold
-  independent cursors; `dropped` reports bytes the 512 KiB ring discarded,
-  and a cursor past `total` is answered from `total` rather than echoed back
-- `POST /v1/terminal/{name}/input` — `{ "data", "encoding"? }`, `base64` by
-  default (exact bytes) or `text` for UTF-8 → `{ "name", "written" }`
-- `POST /v1/terminal/{name}/resize` — `{ "rows", "cols" }` → the kernel
-  window the child draws for
-- `POST /v1/terminal/{name}/kill` — end the shell; observe the exit through
-  `output` (`running` / `exit_code`) rather than the acknowledgement
+- `GET /v1/threads/{id}/terminals` → `{thread_id, workspace, instance,
+  terminals: [{terminal_id, name, state, running, exit_code, updated_at}]}` —
+  the thread's live shells, newest activity first. `terminal_id` is issued
+  when the shell starts and is never reused; the agent's terminal tool results
+  carry the same value as `terminal_session_id`, and `terminal/reset` also
+  reports `previous_session_id`. `instance` names this Engine process's
+  terminal registry. While a shell lives, `state` is its latest command's
+  state (`running`, `idle`, `canceled`, `failed`, `stale_lost` or `reset`);
+  once the shell itself has ended it is `exited`, `running` is false and
+  `exit_code` holds the shell's status
+- `GET /v1/threads/{id}/terminals/{terminal_id}/output?cursor=<bytes>&
+  max_bytes=<1-64KiB>&format=<base64|text>` — the resumable byte stream.
+  `{terminal_id, offset, next_cursor, total, dropped, gap, encoding, data,
+  running, exit_code}`: pass `next_cursor` back to continue; reads never
+  consume, so several clients may hold independent cursors; `gap` is true and
+  `offset` exceeds `cursor` when the 512 KiB ring already discarded the bytes
+  asked for (`dropped` counts them), and a cursor past `total` is answered from
+  `total` rather than echoed back
+- `POST /v1/threads/{id}/terminals/{terminal_id}/input` — `{ "data",
+  "encoding"? }`, `base64` by default (exact bytes) or `text` for UTF-8 →
+  `{ "terminal_id", "written" }`. It needs the thread's shell consent (`403`
+  `thread_shell_disabled`) and the loaded shell policy (`403`). When the
+  thread's current posture requires a sandbox, a shell that was not started
+  under exactly that policy refuses input (`403` `terminal_posture_changed`);
+  an exited shell refuses it too (`409` `terminal_exited`). A lone ETX
+  (Ctrl-C) while the agent's command runs takes the confirmed-interrupt path,
+  so the agent's wait sees exit status 130; if the shell does not confirm it
+  within 2 seconds the call answers `500` saying the interrupt was sent, and
+  the client must not send it again on its own
+- `POST /v1/threads/{id}/terminals/{terminal_id}/resize` — `{ "rows", "cols" }`
+  → the kernel window the child draws for
+- `POST /v1/threads/{id}/terminals/{terminal_id}/kill` — end the shell →
+  `{ "terminal_id", "killed" }`, with `killed: false` when it had already
+  exited; observe the exit through `output` (`running` / `exit_code`) rather
+  than the acknowledgement
 
-`GET /v1/runtime/info` advertises `terminal_stream`, `terminal_input`,
-`terminal_resize` and `terminal_kill`. All four are `false` on Windows and OpenHarmony builds
-today: the owner is Unix-only, those routes answer `501`, and a client
-should gate its terminal controls on these flags rather than discovering it
-from a failed request. Known limitations, stated because a reader would
-otherwise assume them: there is no `wait_ms` long poll (poll the cursor),
-scrollback dropped by the ring is gone with the process, a restarted Engine
-reports no session rather than pretending to reattach, and the
-`@codewhale/runtime-sdk` package has no terminal client wrapper yet — the raw
-routes are the contract for now.
+Every call resolves the thread's recorded workspace again. An unknown thread
+is `404`; a workspace that is missing, replaced by a link or changed during
+resolution is `409` `thread_workspace_unavailable`; and an identity that is not
+one of this thread's live shells in that workspace (another thread's, another
+workspace's, a reset shell's, or one from before an Engine restart) is `404`
+`terminal_not_found`. The Engine never substitutes a shell with the same name.
+
+Reconnect and restart semantics:
+
+- **Reconnect** (a dropped connection, a reopened pane or window, or a client
+  app restart while the Engine kept running): list the thread's terminals,
+  confirm `instance` is the one recorded, and resume each `terminal_id` from
+  its stored cursor. Only retained output is replayed; `gap` reports what the
+  ring lost.
+- **Reset** (`terminal/reset`): the shell is killed and a new one starts under
+  the same name with a new `terminal_id`. The old identity is `404`; the list
+  shows the replacement, and a client switches to it only on the person's
+  choice.
+- **Exit**: the identity stays listed with `running: false` and its
+  `exit_code` until the agent resets it or the Engine restarts.
+- **Engine restart**: live shells end with the process. The list reports a
+  different `instance` and none of the old identities, which answer `404`. No
+  shell is recreated and no command is rerun; a later `terminal/run` with the
+  same name starts a new identity.
+- **Input across a failure**: input already sent cannot be retracted. A client
+  that loses the connection before the response cannot know whether the bytes
+  reached the shell and must not resend them automatically.
+
+`GET /v1/runtime/info` advertises `thread_scoped_terminals`. It is `false` on
+Windows and OpenHarmony builds today: the owner is Unix-only, those routes
+answer `501`, and a client should gate its terminal controls on the flag
+rather than discovering it from a failed request. The name-addressed routes
+`/v1/terminal/{name}/*` and their `terminal_stream`, `terminal_input`,
+`terminal_resize` and `terminal_kill` flags were retired in 0.10.3: a name at
+the server's workspace could reach another thread's shell, so those paths now
+answer `410` `terminal_route_retired`. Known limitations, stated because a
+reader would otherwise assume them: there is no `wait_ms` long poll (poll the
+cursor), scrollback dropped by the ring is gone with the process, shells
+started outside a runtime thread (the TUI dock, headless runs) have no route
+here, deleting a thread does not end its shells (they run until the Engine
+exits), and the `@codewhale/runtime-sdk` package has no terminal client
+wrapper yet — the raw routes are the contract for now.
 
 **Jobs** (operator-scoped shell jobs; the terminal surface)
 - `GET /v1/jobs` — every live and known-stale job across all threads
@@ -2178,6 +2463,107 @@ route serves as the final retained window. Jobs are scoped to the thread
 that created them and are killed when that thread is removed; the engine's
 background commands use the same per-thread manager, so `GET /v1/jobs` is
 also how a client sees model-spawned work.
+
+**Durable client job operations** (capability `job_operations`)
+
+Authorized `GET /v1/runtime/info` supplies `job_operation_store_id`, the
+persisted runtime store identity. It survives Engine updates and restarts;
+it is a namespace, not a credential. Unauthorized discovery returns null.
+Keyed job creation adds all four fields to the existing POST body:
+`operation_key` (a fresh UUID v4 retained before submission), `purpose`
+(`setup`, `run`, `archive` or `command`), `expected_store_id`, and
+`expected_workspace`. The store must match the current store, and the workspace
+assertion must match the admitted thread workspace; otherwise dispatch refuses
+`409 job_operation_store_changed` or `409 job_operation_workspace_changed`.
+These assertions never move a thread. Omitting all four retains the legacy
+`201 {job}` contract.
+
+A new keyed request returns `201 {job, operation, request_fingerprint}`. The same key and exact
+normalized request return `200` with the existing operation and never spawn
+again, including after restart or a lost response. Changing the bound request
+returns `409 job_operation_mismatch`. `job` may be null when the durable
+receipt survives without its live handle or retained output. The operation is:
+
+```json
+{
+  "id": "opaque-receipt-id",
+  "store_id": "runtime-store-id",
+  "thread_id": "thread-id",
+  "workspace": "/canonical/workspace",
+  "cwd": "/canonical/launch-directory",
+  "purpose": "run",
+  "status": "running",
+  "job_id": "shell-job-id",
+  "job_status": null,
+  "exit_code": null,
+  "created_at_ms": 1794000000000,
+  "updated_at_ms": 1794000000000
+}
+```
+
+`status` is `running`, `completed`, `rejected` or `unknown`. A completed receipt has a
+terminal `job_status` (`Completed`, `Failed`, `Killed` or `TimedOut`) and a
+nullable exit code; success requires `Completed` and exit code zero. Timestamps
+are Unix milliseconds; `updated_at_ms` is the last persisted transition, not
+proof of when an unknown outcome occurred. The opaque receipt ID does not
+expose the original operation key.
+
+`request_fingerprint` binds the original request, including its requested
+workspace spelling; the operation's workspace and cwd remain canonical. It is
+lowercase HMAC-SHA256, keyed by the operation UUID, over UTF-8 JSON for
+`[2, thread_id, expected_workspace, trimmed_command, cwd_or_null, timeout_ms,
+tty, sorted_environment_pairs, purpose]`. Command trimming uses Unicode
+White_Space; environment pairs sort by UTF-8 key bytes. Omitted timeout is
+120000, omitted cwd is null and omitted tty is false. Persist the expected
+fingerprint before POST, and compare it on response and exact-key GET recovery
+before accepting a receipt or clearing a pending intent. An alias is not a
+reason to compare the canonical receipt path literally with the requested
+spelling. A missing or mismatched binding stays unconfirmed; do not re-POST
+automatically. The UUID and fingerprint do not provide encryption or protect
+low-entropy request values from someone who obtains both.
+
+A `rejected` receipt proves the command never started: its job fields are all
+null. The shell executor supplies this typed witness only for audited failures
+before launch, such as PTY allocation or a working-directory check. It is a
+terminal tombstone, so the same key returns it without retrying; a new key can
+try again after the problem is fixed. The POST refusal uses `409
+job_operation_rejected`. Spawn-wrapper and post-launch failures remain unknown
+unless a trustworthy witness proves otherwise.
+
+- `GET /v1/job-operations` and `GET /v1/threads/{id}/job-operations` return
+  `{operations: [...]}`, including records whose workspace folder is gone.
+- `GET /v1/threads/{id}/job-operations/{operation_key}` returns the same
+  `{job, operation, request_fingerprint}` envelope. A storage or admission error is not an empty
+  list or proof of absence.
+- Contended admission returns `409 job_operation_pending`. A new keyed
+  setup/run/archive overlapping an active keyed workspace script returns
+  `409 job_operation_busy`. An overlapping unconfirmed operation refuses
+  every new job, including legacy requests, with `409
+  job_operation_unconfirmed`; worktree removal is fenced as well.
+
+The existing runtime thread store atomically records intent before spawning;
+the existing shell manager remains the execution authority. A completion
+observer and reads persist verified terminal parent status without consuming
+output. Durable records contain a keyed request fingerprint rather than raw
+commands, environment values or operation keys. A missing live handle,
+different owner generation or crash around dispatch remains `unknown`, never
+permission to repeat the command. New job IDs use full UUIDs; clients must
+treat them as opaque. This is not an exactly-once OS transaction, durable
+output capture, automatic unknown-outcome recovery or a phased archive
+transaction. Detached descendants, agent/tool launches and other stores remain
+outside this API operation fence.
+
+Admission resolves one canonical workspace before project shell policy checks
+and uses it for policy and cwd resolution. It rechecks the requested root and
+launch directory before recording intent. These pathname checks do not provide
+a directory-handle guarantee against replacement after the final check.
+
+Thread deletion and empty-thread discard share job admission and refuse a
+thread whose durable client job operation is running or unconfirmed. Stop the
+known job and wait for its terminal receipt before deleting the conversation;
+an unknown outcome requires recovery rather than silently dropping the fence.
+Completed and rejected receipts remain in the global operation list after
+thread deletion.
 
 **Commands** (typed command catalog, APPS-28)
 - `GET /v1/commands` — `{commands: [...]}`: every registered slash command,
@@ -2240,6 +2626,29 @@ also how a client sees model-spawned work.
   invented number — and `live: false` marks responses where the engine
   could not be loaded and only the store-recorded route's static window
   resolved.
+
+**Thread-scoped reads.** `GET /v1/git`, `/v1/changes`, `/v1/diff`,
+`/v1/workspace/diff`, `/v1/git/graph`, `/v1/workspace/files` and
+`/v1/workspace/files/read` accept an optional `thread_id`. With it, the route
+reads the workspace recorded on that thread (the runtime store's thread record
+is the only source) instead of the server's workspace, through the same
+confined paths. Without it the route behaves exactly as before. An unknown
+thread is 404; a recorded workspace that is not an absolute path, or that is
+missing, replaced by a link or changed during resolution is 409 with
+`error.code` `thread_workspace_unavailable`. Mutating git routes, file
+writes, `/v1/workspace/status` and file search stay on the server workspace.
+Clients must require the `thread_scoped_reads` capability on
+`GET /v1/runtime/info` before sending `thread_id`: older Engines reject the
+unknown query parameter.
+
+**Status unavailable.** `GET /v1/workspace/status` and `GET /v1/git` report
+`status_unavailable: true` when `git status` could not be read (git failed to
+start or exited non-zero, or the repository's filter configuration could not be
+inspected). `dirty` and the change counts are then unknown, not zero, and clients
+must not present them as clean. Status reads neutralize clean/process filter
+drivers defined in the repository's own configuration (local or worktree scope);
+drivers defined only in the user's global or system configuration, such as Git
+LFS, keep working.
 
 **Git** (workspace repository operations, APPS-106)
 - `GET /v1/git` — status detail: `git_repo`, `branch`, `head`
@@ -2311,6 +2720,41 @@ also how a client sees model-spawned work.
   `set_upstream` is given, must name a configured remote);
   `POST /v1/git/branch`
   `{ "name", "create"? }`
+- Every write above also takes `?thread_id=` (capability
+  `thread_scoped_git_writes`) and then runs in that thread's recorded
+  workspace instead of the server's, the same scope the read routes use. A
+  thread whose workspace is missing or changed answers `409`
+  `thread_workspace_unavailable`.
+- `GET /v1/worktrees?thread_id=` — `{repository, worktrees[]}` with
+  `{path, branch, head, main, managed, locked, prunable}` from
+  `git worktree list --porcelain`; `managed` marks the ones under
+  `<repository>/.codewhale/worktrees/`. Capability `worktrees`.
+- `POST /v1/worktrees?thread_id=` `{ "branch", "base"? }` — validates the
+  branch with `check-ref-format`, refuses a branch already checked out
+  elsewhere (`409 branch_checked_out`) or an existing folder
+  (`409 worktree_exists`), adds `/.codewhale/worktrees/` to the repository's
+  `info/exclude` so the main checkout stays clean, and runs
+  `git worktree add -b <branch> -- <repository>/.codewhale/worktrees/<slug> <base>`
+  (`base` defaults to the main checkout's `HEAD`). Answers `201`
+  `{path, branch, base, head, repository}`. A client then creates a thread
+  with `workspace: path`.
+- `POST /v1/worktrees/remove?thread_id=` `{ "path" }` — archives a managed
+  worktree: refuses unmanaged or main worktrees (`403`), a locked one
+  (`409 worktree_locked`), active turns in it (`409 worktree_busy`) and
+  uncommitted or untracked changes (`409 worktree_dirty` with `files[]`),
+  then runs `git worktree remove` without `--force`. The branch and its
+  commits stay. A worktree whose folder is already gone is removed with `--force` for that exact path; other prunable worktrees are untouched.
+
+Worktree removal also refuses `409 worktree_busy` while this runtime tracks a
+running shell job whose launch directory overlaps the worktree. Removal and
+API job starts share admission with new turns, and retain their guards until
+the mutation finishes even if the HTTP request disconnects. This covers the
+same runtime manager's tracked jobs. Durable client job operations additionally
+fence unconfirmed overlapping dispatches in their shared store, including
+after Engine restart. Launch directories do not prove where a
+command later changes directory; escaped descendants, late independent
+subagent launches and other runtime managers or processes remain outside this
+guard. It is not an OS-wide process reservation.
 
 Diffs and precondition token reads run through the hardened review command
 (filters, fsmonitor, hooks, lazy fetches and replace-objects neutralized).
@@ -2693,6 +3137,69 @@ the shared key normalizer before validation; `openai-codex` refuses API-key writ
 a keyless local route: the key is
 accepted, but the route classifies as not needing one.
 
+### `POST /v1/providers/{id}/key/check` — verify a key without storing it
+
+```json
+// request
+{ "key": "sk-…" }
+
+// response
+{ "provider": "openai", "valid": true, "checked": true }
+```
+
+Asks the provider's own `/models` endpoint once whether it accepts the key. It
+never stores a key and never switches the provider. `checked` is `false` when
+the provider has no `/models` endpoint to ask, so the key is accepted
+unverified. A key the provider rejects (HTTP 401 or 403) answers `422`; any
+other failure to ask (a network error, a timeout, another status) answers
+`502`, which a client can treat as "could not verify" and still `PUT` the key.
+The route applies `PUT`'s credential-writability rules and key-shape limits and
+refuses OpenAI Codex. An Engine without this route answers `404`.
+
+### `GET /v1/agents/external` — agent CLIs installed on this computer
+
+```json
+// response
+{ "agents": [
+  { "id": "opencode", "name": "OpenCode", "state": "installed",
+    "version": "1.19.5", "acp": "native",
+    "auth_methods": [{ "id": "login", "name": "Log in", "type": "agent" }],
+    "website": "https://opencode.ai", "adapter_installed": false, "runnable": true },
+  { "id": "qoder", "name": "Qoder", "state": "not_installed", "version": null,
+    "acp": null, "auth_methods": [], "website": "https://qoder.com",
+    "adapter_installed": false, "runnable": false }
+] }
+```
+
+Reports which external agent CLIs this computer already has, without starting a
+session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
+OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy and Grok. `state` is `installed` or `not_installed`; a binary is
+looked up on `PATH` and in the usual per-user bin directories. For an installed
+agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
+itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
+that handshake answered, `adapter` for CLIs that need a separate adapter
+process, and `unreachable` when the handshake did not answer. `auth_methods`
+comes from the handshake; `type: "terminal"` means the agent can only be signed
+in by running it in a terminal. The probes time out after 8 s (5 s for
+`--version`), receive no Codewhale or provider credentials, and leave nothing
+stored. `runnable` is `true` when a thread can run on the agent now: the CLI is
+not below `min_version` and either answered the handshake or has its ACP adapter
+(`adapter`) installed, which `adapter_installed` reports. See "Sessions on other
+agents" for starting one.
+
+Each row also carries `depth`, `auth_status` and `reason` for the agents
+screen. `depth` is `driven` when a thread can run on the agent now,
+`observed` when the agent is installed but cannot be driven, and `null` when
+it is not installed; a per-agent stored choice of depth is not built.
+`auth_status` is `unknown`: the handshake lists sign-in methods but does not
+say whether the person is signed in, and Codewhale never reads an agent's
+credential files to find out. A signed-out agent is reported when a thread
+first starts it ("… needs you to sign in to it first. Run `<login>` in a
+terminal"). `reason` is a sentence to show when the agent is not `driven`
+(not installed, below `min_version`, no handshake answer, adapter missing),
+and `null` otherwise; `reason_code` is the matching code (`not_installed`,
+`below_min_version`, `no_acp`, `adapter_missing`).
+
 ### `DELETE /v1/providers/{id}/key` — clear a Codewhale-owned credential
 
 ```json
@@ -2829,6 +3336,32 @@ writes plus a reload.** Provider and model move together here, the change is
 validated against the provider's catalog before it is applied, and `persisted`
 reports whether it was written to config or applied to the live session only.
 Rejects an unknown provider id and the `deepseek-cn` alias with `400`.
+
+### `GET` and `POST /v1/config` — reply style and sub-agent limit
+
+```json
+// request
+{ "key": "subagents_max_concurrent", "value": "4", "persist": true }
+
+// response
+{ "key": "subagents_max_concurrent", "value": "4", "persisted": true,
+  "requires_reload": true, "message": "…" }
+```
+
+`GET /v1/config` reports and `POST /v1/config` writes two config.toml keys a
+person chooses:
+
+- `verbosity`, the root reply-style key: `normal` or `concise`, compared
+  without regard to case. Unset reads as `normal`.
+- `subagents_max_concurrent`, the `[subagents] max_concurrent` limit on
+  sub-agents running at once: an integer from `0` to `128`. Larger values are
+  stored as `128`, and `0` turns sub-agents off, as `max_concurrent = 0` does
+  in config.toml. Unset reads as the limit the Engine applies (top-level
+  `max_subagents`, else 64); the Engine never writes that default for you.
+
+Any other value is `400`, also when `persist` is false. The response `value`
+is what was stored. As with the other config.toml keys, a persisted write
+takes effect after `POST /v1/config/reload`.
 
 ## Runtime data model
 
@@ -3147,6 +3680,23 @@ allowed. Added in v0.8.10 (#561), tightened in v0.9.1 (#4454).
 
 ## Managed Fleet Runtime and SDK helpers
 
+`GET /v1/fleet/profiles` reads the captured workspace's effective roster,
+including its selected Fleet and admitted plugins, without opening a run ledger.
+`GET /v1/fleet/profiles/{id}/document` addresses an exact effective member ID.
+Its shared `FleetProfileDocument` contract returns `id`, `kind` (`profile` or
+`fleet`), `origin`, nullable `path`, `text`, opaque source-bound `revision`,
+`writable` and nullable `refusal_reason`. Personal/project profile documents and
+selected Fleet files return exact UTF-8 bytes through a bounded, pinned reader
+(one MiB maximum). Changed identity, missing source or linked paths are refused.
+Built-in, config-backed and foreign-managed members instead return an explicitly
+read-only effective profile projection with no file path; sentinel paths and
+native preset entry identifiers are never opened as documents.
+
+All documents currently advertise `writable: false`. No document PUT is exposed;
+use the terminal or the defining source to edit. A revision is not write
+permission or a live-roster adoption receipt. Watch clients may read these
+resources under the existing workspace and authentication boundaries.
+
 The Runtime SDK lives in `npm/runtime-sdk` and is exposed as
 the `@codewhale/runtime-sdk` workspace package. It is deliberately thin: every
 helper calls the local Rust Runtime API and therefore cannot bypass Codewhale's
@@ -3385,3 +3935,41 @@ preview return identical text for the same document. It excludes the session
 record's attribution line or envelope; `source` and `revision` carry provenance.
 Both routes use normal Runtime authorization. Older runtimes
 must be upgraded before account transports submit profile-bearing turns.
+
+
+### Attested watch-event turns (preview)
+
+`watch_event_turns` is true only when the dedicated route and configured Runtime bearer exist. `POST /v1/threads/{id}/watch-turns` accepts only `operation_key`, `prompt`, and `watch_event`. It requires the actual master `Authorization: Bearer ...` header. Device Watch/Drive tokens, cookies, token-header aliases and insecure no-auth do not authorize this route. The existing thread's provider, workspace, tools and permissions remain authoritative; the body cannot grant or replace them.
+
+The closed version-1 receipt is at most 4 KiB when normalized. Required fields are `version`, `platformAccountId`, `projectId`, `watchId`, `watchRevision`, `definitionSha256`, `sourceKind`, `occurrenceSha256`, `eventSha256`, `runId`, `roomThreadRootId`, and `source`. References are bounded ASCII (200 bytes), except `repo` has two `[A-Za-z0-9_.-]` components of 1..100 bytes each (201 including `/`). Revisions are positive safe integers and hashes are lowercase SHA-256. `roomThreadRootId` is empty or a `pm_` id. `sourceKind: "schedule"` carries only `source.slot`, the exact canonical 24-byte UTC ISO schedule occurrence `YYYY-MM-DDTHH:mm:ss.sssZ` with a valid calendar/time (no offsets, date-only or leap seconds); `"github.pull_request"` carries only installationId, bindingId, repo, number, deliveryId and eventName. Unknown fields, mismatched kind/source or grant fields refuse. Runtime-owner attestation does not independently verify Platform's webhook signature or current watch policy.
+
+This manager-owned source uses Runtime provenance through the same turn admission and execution path. It cannot count as a person's answer or resume a goal requiring that answer. The operation fingerprint includes normalized intent, prompt and Runtime-derived owner/thread/workspace context. Fresh admission returns 201, exact replay 200, conflicting intent 409. UserMessage metadata durably retains `input_provenance: "watch_event"`, `watch_event`, SHA-256 of the exact UTF-8 admitted prompt (preserved without trimming for typed watch input) as `input_prompt_sha256`, and the derived `runtime_binding`. Metadata alone never selects this authority. Ordinary `/turns` and the local `/rc` consumer refuse watch authority.
+
+The existing authenticated operation lookup returns the same flat TurnRecord for ordinary turns and additive watch fields from that durable input for watch turns. It holds the existing shared operation claim while reading, creates no record or lock, and never starts a turn. Missing, incomplete or mismatched lookup is not proof of nonadmission. A Platform accepted command ACK precedes native admission; recovery may acknowledge an exact already-admitted receipt but must not send a replacement POST on absence, revocation or uncertainty. Disable/re-enable fencing belongs to Platform's existing queue and revalidation owner. This route does not make revocation atomic with later dispatch or confirm cancellation of earlier accepted work, and it does not implement whole continuous operation.
+
+
+### App Server wire migration status
+
+The selected reference is Codex `rust-v0.166.0`, commit
+`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. The shared RPC envelope and
+initialization lifecycle serve JSONL stdio and private-channel WebSocket text
+messages. The decoder includes request, notification, response and error
+variants with signed-i64 or string IDs. Legacy thread/message and response
+events remain compatibility methods; they do not establish Codex thread/turn/item
+parity. TCP WebSocket listener, full-tool turn/start, independent Codex subscriptions, bidirectional interactions, durable idempotent
+settlement and the complete SDK remain required. The native Engine journal
+and turn loop remain authoritative. No default approval deadline is introduced.
+Owner restart interrupts active work rather than re-offering pending interactions.
+
+`/v1/chat/completions` admits one nonempty user text message through the existing
+manager and journal. Unsupported histories, system/tool messages, tools, images,
+streaming and other options refuse before admission. Standard usage and
+finish_reason remain null until their native completeness mapping is implemented;
+no zero or final-reason guess is made. This bounded compatibility input does not
+establish complete chat or Codex parity.
+
+## Local whale voice
+
+A local whale's `SOUL.md` describes its personality and voice. Read the exact local file with `GET /v1/whale/soul` and save it with `PUT /v1/whale/soul`. Both operations require the host Runtime token. The response carries the path, text, revision and writable state. Send the returned revision quoted in `If-Match` with a JSON object containing `text`. A stale edit returns HTTP 412 so the editor can keep the draft. Files are private to the current OS user (mode 0600 on Unix), UTF-8, regular single-link files with a 16 KiB limit. An existing `SOUL.md` requires a matching `whale.toml` identity (`id = "default"`); an absent local whale is created only by an explicit save. A concurrent edit returns HTTP 409 instead of waiting for the other writer. An explicitly imported account whale has a read-only local copy.
+
+The root Engine captures the local whale's voice at turn admission and charges it to the global instruction budget. The instruction receipt includes `whale_soul_source_path` and `whale_soul_revision`; internal follow-ups reuse the captured voice. Its personality applies within the existing permissions.

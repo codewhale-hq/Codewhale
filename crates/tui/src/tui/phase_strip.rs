@@ -203,12 +203,12 @@ fn join_while_fitting(clauses: &[&str], budget: usize) -> Option<String> {
 
 /// Fit a notice into `budget` by dropping whole trailing clauses.
 ///
-/// Returns `None` only when not even the first inner phrase fits, and the
-/// rail then says nothing rather than dangling a stump. Notices get first
-/// call on the row: identity and the ledger chips have already stood down by
-/// the time this is asked, and the key hints stand down after it if that is
-/// what the notice needs.
-fn fit_notice(text: &str, budget: usize) -> Option<String> {
+/// Returns `None` only when not even the first inner phrase fits and the
+/// notice is not urgent; an urgent notice is truncated rather than dropped.
+/// Notices get first call on the row: identity and the ledger chips have
+/// already stood down by the time this is asked, and the key hints stand down
+/// after it if that is what the notice needs.
+fn fit_notice(text: &str, budget: usize, urgent: bool) -> Option<String> {
     let text = text.trim();
     if text.is_empty() || budget == 0 {
         return None;
@@ -222,7 +222,13 @@ fn fit_notice(text: &str, budget: usize) -> Option<String> {
     }
     let first = sentences.first().copied().unwrap_or(text);
     let clauses = notice_clauses(first, &CLAUSE_MARKS);
-    let fitted = join_while_fitting(&clauses, budget)?;
+    let Some(fitted) = join_while_fitting(&clauses, budget) else {
+        return if urgent {
+            truncate_notice(text, budget)
+        } else {
+            None
+        };
+    };
     // A one-word label whose value was shed is not a notice, it is a false
     // one: `Thinking: high → max · model qwen` cut to `Thinking` sat in an
     // idle footer reading as if a turn were thinking (experience mark 8).
@@ -231,7 +237,37 @@ fn fit_notice(text: &str, budget: usize) -> Option<String> {
         .first()
         .is_some_and(|label| label.ends_with([':', '：']))
         && !fitted.contains(char::is_whitespace);
-    (!bare_label).then_some(fitted)
+    if bare_label {
+        return if urgent {
+            truncate_notice(text, budget)
+        } else {
+            None
+        };
+    }
+    Some(fitted)
+}
+
+fn truncate_notice(text: &str, budget: usize) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() || budget == 0 {
+        return None;
+    }
+    let mut fitted = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let width = ch.width().unwrap_or(0);
+        if used + width + 1 > budget {
+            break;
+        }
+        fitted.push(ch);
+        used += width;
+    }
+    let mut fitted = fitted.trim_end().to_string();
+    if let Some(space) = fitted.rfind(char::is_whitespace) {
+        fitted.truncate(space);
+    }
+    let fitted = fitted.trim_end();
+    (!fitted.is_empty()).then(|| format!("{fitted}…"))
 }
 
 /// Map the boot surface's typed severity through the same semantic palette as
@@ -381,16 +417,16 @@ mod tests {
     #[test]
     fn a_notice_sheds_whole_clauses_and_never_dangles() {
         const NOTICE: &str = "Anonymous usage counts are on. Conversations and code are never collected. Change this in /settings; schema: docs/TELEMETRY.md";
-        assert_eq!(fit_notice(NOTICE, 200).as_deref(), Some(NOTICE));
+        assert_eq!(fit_notice(NOTICE, 200, false).as_deref(), Some(NOTICE));
         assert_eq!(
-            fit_notice(NOTICE, 80).as_deref(),
+            fit_notice(NOTICE, 80, false).as_deref(),
             Some("Anonymous usage counts are on. Conversations and code are never collected.")
         );
         assert_eq!(
-            fit_notice(NOTICE, 40).as_deref(),
+            fit_notice(NOTICE, 40, false).as_deref(),
             Some("Anonymous usage counts are on.")
         );
-        assert_eq!(fit_notice("   ", 40), None);
+        assert_eq!(fit_notice("   ", 40, false), None);
     }
 
     /// Experience mark 8: a `/model` thinking change on a narrow rail used to
@@ -399,16 +435,21 @@ mod tests {
     #[test]
     fn a_label_never_sheds_to_a_bare_word_that_reads_as_activity() {
         let notice = "Thinking: high → max · model deepseek-v4-flash";
-        assert_eq!(fit_notice(notice, 40), None);
+        assert_eq!(fit_notice(notice, 40, false), None);
         assert_eq!(
-            fit_notice("思考：高 → 最高 · 模型 deepseek-v4-flash", 12),
+            fit_notice("思考：高 → 最高 · 模型 deepseek-v4-flash", 12, false),
             None
         );
         // Room for the whole reading keeps it whole.
-        assert_eq!(fit_notice(notice, 60).as_deref(), Some(notice));
+        assert_eq!(fit_notice(notice, 60, false).as_deref(), Some(notice));
         // A phrase before the colon is still a notice on its own.
         assert_eq!(
-            fit_notice("Auto-denied exec_shell: denied earlier this turn", 30).as_deref(),
+            fit_notice(
+                "Auto-denied exec_shell: denied earlier this turn",
+                30,
+                false
+            )
+            .as_deref(),
             Some("Auto-denied exec_shell")
         );
     }
@@ -422,13 +463,13 @@ mod tests {
     fn a_clause_less_warning_sheds_at_inner_joints_rather_than_vanishing() {
         const WARNING: &str =
             "Auto-denied exec_shell: denied earlier; restart Codewhale to re-enable it.";
-        assert_eq!(fit_notice(WARNING, 120).as_deref(), Some(WARNING));
+        assert_eq!(fit_notice(WARNING, 120, false).as_deref(), Some(WARNING));
         assert_eq!(
-            fit_notice(WARNING, 60).as_deref(),
+            fit_notice(WARNING, 60, false).as_deref(),
             Some("Auto-denied exec_shell: denied earlier")
         );
         assert_eq!(
-            fit_notice(WARNING, 30).as_deref(),
+            fit_notice(WARNING, 30, false).as_deref(),
             Some("Auto-denied exec_shell")
         );
     }
@@ -573,17 +614,17 @@ mod tests {
 // band — phase·cost on the left, the notice/keys slot on the right.
 // Wired into `ui/frame.rs` as the shell's single footer row: the classic
 // activity band (slot 6) and identity band (slot 8) collapsed into it, with
-// the old header's mode/permission chips carried in the left half per §3.
+// the permission dial chip carried in the left half.
 // ---------------------------------------------------------------------------
 // The posture bar (SHELL-DESIGN-20260901 §2.0 item 3, §2.3b; founder
 // direction 2026-09-02): the first row under the composer, in Claude Code's
 // grammar —
 //
-//    ● full access  Shift+Tab to change   work (Tab)   2 agents, 1 task   Esc to interrupt      rc connected
+//    ● full access  Shift+Tab to change   2 agents, 1 task   Esc to interrupt      rc connected
 //
-// permission chip first (never sheds, #5796), marked `●` so the current
-// permission reads without color (experience mark 8) and followed by what
-// its key does, then the mode, the turn clock, the
+// the permission dial chip first (never sheds, #5796), marked `●` so the
+// current stop reads without color (experience mark 8) and followed by what
+// its key does, then the turn clock, the
 // live counts, the session clock, then the one hint that applies right now;
 // the remote-control state or a live notice pinned right. No cost: the
 // roster owns per-agent elapsed and the metrics line owns the price. The
@@ -594,7 +635,7 @@ mod tests {
 // classic footer until `146ab7f756` deleted that path, and the phase band's
 // `working_detail` until `329960fcbf` (the 0.9.12 mega shell) merged the
 // bands and left the elapsed reading to the transcript's active row. A
-// multi-hour operate session scrolls that row out of sight, so the founder
+// multi-hour session scrolls that row out of sight, so the founder
 // looking straight at the screen had no way to tell how long the session had
 // been working or whether the current turn was stuck. The fixed row is where
 // a glancing user looks; the clock lives here.
@@ -607,17 +648,14 @@ const DEPTH_WARN: &str = "surface soon — /compact";
 /// What the caller owes the posture bar. All injected, deterministic.
 pub struct TidelineFooter<'a> {
     pub theme: &'a codewhale_palette::UiTheme,
-    /// Permission chip (`ask` / `auto` / `full access`, plus the filesystem
-    /// scope notice when it deviates) in its Permission ink. Never sheds.
+    /// Permission dial chip (`ask` / `accept edits` / `plan` / `auto` /
+    /// `Full Access`, plus the filesystem scope notice when it deviates) in
+    /// its ink. Never sheds.
     pub permission_chip: (&'a str, codewhale_palette::ChromeInk),
     /// What the permission key does, when the binding is live for the
     /// current focus and not yet learned (`Shift+Tab to change`). Painted
     /// after the chip in hint ink.
     pub permission_key: Option<&'a str>,
-    /// Mode chip (`work` / `plan` / `operate`) in its Policy ink.
-    pub mode_chip: Option<(&'a str, codewhale_palette::ChromeInk)>,
-    /// The chord that cycles the mode, when the binding is live (`Tab`).
-    pub mode_key: Option<&'a str>,
     /// The turn half of the working clock (`working 1m 15s`): what the
     /// session is doing right now and for how long. `None` between turns.
     pub turn_clock: Option<(&'a str, codewhale_palette::ChromeInk)>,
@@ -642,9 +680,14 @@ pub struct TidelineFooter<'a> {
     pub ascii_safe: bool,
     /// `tui.posture_bar = "compact"` (#5950): start the shed ladder at
     /// the kit's compact rung instead of rung 0, so the row states its posture —
-    /// the permission and mode chips, and the cap warning when it is owed —
+    /// the permission dial chip, and the cap warning when it is owed —
     /// and nothing live. Width sheds the rest exactly as it always did.
     pub compact: bool,
+    working_glow: Option<(
+        codewhale_ratatui::Caps,
+        std::time::Duration,
+        codewhale_ratatui::MotionMode,
+    )>,
 }
 
 impl<'a> TidelineFooter<'a> {
@@ -657,8 +700,6 @@ impl<'a> TidelineFooter<'a> {
             theme,
             permission_chip,
             permission_key: None,
-            mode_chip: None,
-            mode_key: None,
             turn_clock: None,
             counts: &[],
             session_clock: None,
@@ -667,24 +708,13 @@ impl<'a> TidelineFooter<'a> {
             right: None,
             ascii_safe: false,
             compact: false,
+            working_glow: None,
         }
     }
 
     #[must_use]
     pub fn permission_key(mut self, key: Option<&'a str>) -> Self {
         self.permission_key = key;
-        self
-    }
-
-    #[must_use]
-    pub fn mode_chip(mut self, chip: Option<(&'a str, codewhale_palette::ChromeInk)>) -> Self {
-        self.mode_chip = chip;
-        self
-    }
-
-    #[must_use]
-    pub fn mode_key(mut self, key: Option<&'a str>) -> Self {
-        self.mode_key = key;
         self
     }
 
@@ -736,6 +766,24 @@ impl<'a> TidelineFooter<'a> {
         self
     }
 
+    pub(crate) fn working_glow(
+        mut self,
+        glow: Option<(
+            codewhale_ratatui::Caps,
+            std::time::Duration,
+            codewhale_ratatui::MotionMode,
+        )>,
+    ) -> Self {
+        self.working_glow = glow;
+        self
+    }
+
+    pub(crate) fn working_clock_visible(&self, area: Rect) -> bool {
+        self.kit()
+            .turn_clock_hitbox(area, &crate::tui::infoline::source_theme(self.ascii_safe))
+            .is_some()
+    }
+
     fn kit(&self) -> PostureBar<'_> {
         use crate::tui::infoline::ink_role;
         // Preserve every host ink in a distinct role, including the right
@@ -747,8 +795,6 @@ impl<'a> TidelineFooter<'a> {
             .cap_warning(DEPTH_WARN)
             .compact(self.compact);
         bar.permission_key = self.permission_key.map(Into::into);
-        bar.mode = self.mode_chip.map(posture_fact);
-        bar.mode_key = self.mode_key.map(Into::into);
         bar.turn_clock = self.turn_clock.map(posture_fact);
         bar.counts = self
             .counts
@@ -788,6 +834,24 @@ pub fn render_tideline_footer(
     let bar = footer.kit();
     let count_rects = bar.count_hitboxes(area, &source_theme(footer.ascii_safe));
     paint_native_row(&bar, area, buf, footer.theme, footer.ascii_safe);
+    if let Some((mut caps, elapsed, motion)) = footer.working_glow
+        && let Some((label, _)) = footer.turn_clock
+        && let Some(clock_area) = bar.turn_clock_hitbox(area, &source_theme(footer.ascii_safe))
+        && let Some(appearance) =
+            codewhale_ratatui::detect::appearance_for_background(footer.theme.footer_bg)
+    {
+        caps.appearance = appearance;
+        let theme = codewhale_ratatui::Theme::new(caps);
+        codewhale_ratatui::paint_working_glow(
+            buf,
+            clock_area,
+            label,
+            elapsed,
+            codewhale_ratatui::MotionPolicy::new(motion, &theme),
+            footer.theme.text_body,
+            footer.theme.footer_bg,
+        );
+    }
     count_rects
 }
 
@@ -798,8 +862,6 @@ pub(crate) struct TidelineFooterFacts {
     /// `Shift+Tab to change`, localized, while the binding is live and not
     /// yet learned.
     pub permission_key: Option<String>,
-    pub mode_chip: Option<(String, codewhale_palette::ChromeInk)>,
-    pub mode_key: Option<&'static str>,
     pub turn_clock: ClockReading,
     pub counts: Vec<(String, ChromeInk)>,
     pub session_clock: ClockReading,
@@ -826,8 +888,6 @@ impl TidelineFooterFacts {
             (self.permission_chip.0.as_str(), self.permission_chip.1),
         )
         .permission_key(self.permission_key.as_deref())
-        .mode_chip(borrow(&self.mode_chip))
-        .mode_key(self.mode_key)
         .turn_clock(borrow(&self.turn_clock))
         .counts(&self.counts)
         .session_clock(borrow(&self.session_clock))
@@ -983,40 +1043,6 @@ fn live_counts(
         counts.push((automation, app.automation_panel.activity_ink()));
         panels.push(InteractionAction::OpenAutomations);
     }
-    // With nothing live there is still one bottom affordance that opens the
-    // dock (founder, 2026-09-03: the bar opens when used, or when you click
-    // something at the bottom to ask for it). The word is the dock's own
-    // TODO view title; it disappears while the dock is up.
-    //
-    // It reads at `MetadataValue`, not `MetadataDim`: `TEXT_DIM` is aliased to
-    // `TEXT_HINT` in every theme but Solarized, so a dim affordance paints the
-    // exact grey as the separators around it and the one clickable word in an
-    // idle footer disappears into punctuation. Live counts already carry
-    // `Active`; this is the idle case earning the same "you can click this".
-    if counts.is_empty()
-        && app.work_surface.last_area.is_none()
-        && !crate::tui::pet_watch::main_view(app)
-    {
-        // The word alone did not say it was an affordance, let alone which
-        // key opened it — founder live-test: "what do we press at the bottom
-        // to get the workbar to show up?". It carries its chord until the
-        // binding has been used, exactly like the permission and mode chips.
-        let label = "Work bar".to_string();
-        let chord = crate::tui::shell_key_routing::binding(
-            crate::tui::shell_key_routing::ShellBindingId::ViewCycle,
-        )
-        .footer_chord;
-        let label = if crate::tui::footer_hints::retired(
-            &app.footer_hint_uses,
-            crate::tui::footer_hints::DOCK_OPEN,
-        ) {
-            label
-        } else {
-            format!("{label} ({chord})")
-        };
-        counts.push((label, ChromeInk::Info));
-        panels.push(InteractionAction::ShowDockPanel(RailPanel::Tasks));
-    }
     (counts, panels)
 }
 
@@ -1030,20 +1056,8 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
     let tier = ShellTier::for_chrome_width(width);
     let focus = app.focus();
 
-    let (mode_chip, permission_chip) = crate::tui::underwater::posture_chips(app);
-    let permission_chip = permission_chip
-        .map(|(text, ink)| (text.into_owned(), ink))
-        .unwrap_or_else(|| (String::new(), ChromeInk::PermissionAsk));
-    // The mode chip is the one posture fact `/statusline` composes (#5950):
-    // its `StatusItem::Mode` toggle used to be inert. The permission chip,
-    // the working clocks (#5914) and the live counts are the bar's own
-    // posture statement and stay unconditional.
-    let mode_chip = mode_chip
-        .filter(|_| {
-            app.status_items
-                .contains(&codewhale_runtime::config::StatusItem::Mode)
-        })
-        .map(|(text, ink)| (text.into_owned(), ink));
+    let (dial_text, dial_ink) = crate::tui::underwater::dial_chip(app);
+    let permission_chip = (dial_text.into_owned(), dial_ink);
     // Cycle keys come from the binding table and only when that binding is
     // live for the current focus.
     let live_chord = |id: ShellBindingId| -> Option<&'static str> {
@@ -1113,7 +1127,7 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
         .max(8)
         .min(usize::from(width).saturating_sub(permission_chip.0.width() + 5));
     let right = selected_notice(app.active_status_toast(phase), &phase_label)
-        .map(|(text, ink, _urgent)| {
+        .map(|(text, ink, urgent)| {
             (
                 text,
                 if ink == ChromeInk::Info {
@@ -1121,6 +1135,7 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
                 } else {
                     ink
                 },
+                urgent,
             )
         })
         .or_else(|| {
@@ -1136,14 +1151,16 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
             }
             let boot = crate::tui::session_boot::SessionBootSurface::from_app(app);
             boot.activity_notice(app.ui_locale, notice_budget)
-                .map(|chip| (chip.text, boot_activity_ink(chip.level)))
+                .map(|chip| (chip.text, boot_activity_ink(chip.level), false))
         })
-        .and_then(|(text, ink)| fit_notice(&text, notice_budget).map(|fitted| (fitted, ink)))
+        .and_then(|(text, ink, urgent)| {
+            fit_notice(&text, notice_budget, urgent).map(|fitted| (fitted, ink))
+        })
         .or_else(|| {
-            if app.remote_control.status() == crate::remote_control::Status::Failed {
+            if app.remote_control.status() == codewhale_app_server::remote_control::Status::Failed {
                 let notice = format!("/rc status · {}", tr(app.ui_locale, MessageId::PhaseFailed));
-                fit_notice(&notice, notice_budget)
-                    .or_else(|| fit_notice("/rc status", notice_budget))
+                fit_notice(&notice, notice_budget, false)
+                    .or_else(|| fit_notice("/rc status", notice_budget, false))
                     .map(|text| (text, ChromeInk::Failure))
             } else {
                 app.remote_control
@@ -1170,13 +1187,6 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
             .map(|chord| {
                 tr(app.ui_locale, MessageId::FooterPermissionKeyHint).replace("{key}", chord)
             }),
-        mode_chip,
-        mode_key: live_chord(ShellBindingId::ModeCycle).filter(|_| {
-            !crate::tui::footer_hints::retired(
-                &app.footer_hint_uses,
-                crate::tui::footer_hints::MODE_CYCLE,
-            )
-        }),
         turn_clock,
         counts,
         session_clock,

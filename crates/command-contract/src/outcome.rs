@@ -93,13 +93,22 @@ pub type StructcopyCommandResult = CommandResult<std::convert::Infallible>;
 /// Complete session-group vocabulary. Hosts execute these requests after dispatch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionAction {
-    CompactContext { focus: Option<String> },
+    CompactContext {
+        focus: Option<String>,
+    },
     PurgeContext,
     LoadSession(std::path::PathBuf),
     SyncSession(SessionSyncPayload),
+    NewSession {
+        sync: SessionSyncPayload,
+        force: bool,
+    },
     SendMessage(String),
     RemoteControl(SessionRemoteControlAction),
-    OpenExternalUrl { url: String, label: String },
+    OpenExternalUrl {
+        url: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,9 +129,11 @@ pub enum ConfigAction {
     /// A permission rule was safely removed; the host reloads active rules.
     PermissionRulesChanged,
     // Auth flows (no host observation needed).
+    OpenModelConnectionSetup,
+    StartAccountConnect,
+    StartAccountLogin,
+    StartAccountLogout,
     StartXaiDeviceLogin,
-    StartClaudeLogin,
-    StartClaudeRevoke,
     StartChatgptPkceLogin,
     StartChatgptRevoke,
     StartOrcarouterPkceLogin,

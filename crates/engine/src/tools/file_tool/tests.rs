@@ -236,11 +236,11 @@ async fn native_navigation_footer_follows_displayed_lines() {
         );
         assert_eq!(result.metadata.as_ref().unwrap()["navigation"], navigation);
         if limit == 0 {
-            assert!(!result.content.contains("Use offset="));
+            assert!(!result.content.contains("Continue with "));
         }
         if offset == 7 {
             assert!(result.content.contains(&format!(
-                "Use offset=8 expected_revision={}",
+                "offset=8 expected_revision={}",
                 navigation["source_revision"].as_str().unwrap()
             )));
         }
@@ -324,8 +324,8 @@ async fn native_navigation_paging_preserves_snapshot_guard() {
     let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
     let tmp = tempdir().expect("tempdir");
     let source = format!(
-        "fn paged() {{\n    let _ = \"{}\";\n}}\nfn sibling() {{}}\n",
-        "x".repeat(120_000)
+        "fn paged() {{\n{}}}\nfn sibling() {{}}\n",
+        format!("    let _ = \"{}\";\n", "x".repeat(199)).repeat(400)
     );
     std::fs::write(tmp.path().join("paged.rs"), &source).unwrap();
     let context = ToolContext::new(tmp.path());
@@ -337,27 +337,27 @@ async fn native_navigation_paging_preserves_snapshot_guard() {
     let mut continuations = Vec::new();
 
     // Follow the reader's own instructions from unguarded or guarded reads
-    // after byte truncation, a line limit, and an oversized first line.
+    // after byte truncation or a line limit. Each line fits the character cap.
     for (offset, limit, guarded) in [
-        (1, 3, false),
+        (1, 402, false),
         (1, 1, false),
-        (2, 2, false),
-        (1, 3, true),
+        (2, 400, false),
+        (1, 402, true),
         (1, 1, true),
-        (2, 2, true),
+        (2, 400, true),
     ] {
         let mut request = json!({"path": "paged.rs", "offset": offset, "limit": limit});
         if guarded {
             request["expected_revision"] = reference["expected_revision"].clone();
         }
         let page = ReadTool.execute(request, &context).await.unwrap();
-        assert_eq!(page.content.matches("Use offset=").count(), 1);
+        assert_eq!(page.content.matches("Continue with offset=").count(), 1);
         let hint = page
             .content
-            .split_once("Use ")
+            .split_once("Continue with ")
             .expect("actionable continuation")
             .1
-            .split_once(" to ")
+            .split_once(".]")
             .expect("native read parameters")
             .0;
         let mut next = json!({"path": "paged.rs"});
@@ -373,13 +373,20 @@ async fn native_navigation_paging_preserves_snapshot_guard() {
             next["expected_revision"], reference["expected_revision"],
             "a continuation must not silently drop snapshot protection"
         );
-        assert_eq!(next["offset"], 2);
-        if limit != 1 {
-            assert_eq!(next["limit"], 2, "stay inside the captured function");
+        let next_offset = next["offset"].as_u64().unwrap();
+        assert!(next_offset > offset && next_offset <= 402);
+        if limit == 1 {
+            assert_eq!(next_offset, 2);
+        } else {
+            assert_eq!(
+                next_offset + next["limit"].as_u64().unwrap(),
+                offset + limit,
+                "stay inside the captured function"
+            );
         }
         let followed = ReadTool.execute(next.clone(), &context).await.unwrap();
+        assert!(followed.content.starts_with("    let _ = \"xxx"));
         if offset == 2 {
-            assert!(followed.content.starts_with("    let _ = \"xxx"));
             assert!(
                 !followed
                     .content
@@ -401,8 +408,8 @@ async fn native_navigation_paging_preserves_snapshot_guard() {
         assert!(error.to_string().contains("stale"), "{error}");
     }
 
-    // A guard also applies to ordinary non-navigable files; if even the
-    // existing maximum cannot fit a line, do not suggest an unguarded shell.
+    // Character truncation is explicit and never suggests skipping a partial
+    // line or escaping the revision guard through a shell or a byte-budget knob.
     std::fs::write(
         tmp.path().join("wide.rs"),
         format!("{}\nfn following() {{}}\n", "x".repeat(500_001)),
@@ -414,18 +421,20 @@ async fn native_navigation_paging_preserves_snapshot_guard() {
         .unwrap();
     let revision = &wide.metadata.as_ref().unwrap()["navigation"]["source_revision"];
     assert!(!wide.content.contains("Use bash:"));
-    assert!(!wide.content.contains("Use offset="));
-    assert!(wide.content.contains("revision guard"));
+    assert!(!wide.content.contains("Continue with offset="));
+    assert!(wide.content.contains("[line truncated at 2000 chars]"));
+    assert_eq!(wide.metadata.as_ref().unwrap()["truncated"], true);
     let blocked = ReadTool
         .execute(
-            json!({"path": "wide.rs", "limit": 1, "expected_revision": revision, "max_bytes": 500_000}),
+            json!({"path": "wide.rs", "limit": 1, "expected_revision": revision}),
             &context,
         )
         .await
         .unwrap();
     assert!(!blocked.content.contains("Use bash:"));
-    assert!(!blocked.content.contains("Use offset="));
-    assert!(blocked.content.contains("revision guard"));
+    assert!(!blocked.content.contains("Continue with offset="));
+    assert!(blocked.content.contains("[line truncated at 2000 chars]"));
+    assert_eq!(blocked.metadata.as_ref().unwrap()["truncated"], true);
 }
 
 #[tokio::test]
@@ -976,8 +985,7 @@ fn primitive_schemas_are_separate_and_small_contract_shaped() {
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
-        // `max_bytes` is the model-requested per-call output budget (C05).
-        ["expected_revision", "limit", "max_bytes", "offset", "path"]
+        ["expected_revision", "limit", "offset", "path"]
             .into_iter()
             .map(str::to_string)
             .collect()

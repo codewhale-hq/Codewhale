@@ -100,18 +100,19 @@ dependencies = [
 
 [[package]]
 name = "codewhale-app-server-protocol"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "codewhale-protocol"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
- "codewhale-app-server-protocol",
  "chrono",
+ "codewhale-app-server-protocol",
  "serde",
  "serde_json",
  "uuid",

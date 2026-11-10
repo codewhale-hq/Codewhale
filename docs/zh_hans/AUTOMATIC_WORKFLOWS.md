@@ -44,7 +44,7 @@
 | `automatic` | `true` | 保留的兼容字段，目前不是启动开关；模型在当前工具和审批策略内选择编排。 |
 | `auto_start_read_only` | `true` | 只读计划可以不带写入审批卡片直接启动 |
 | `require_approval_for_writes` | `true` | 写入／提权启动前必须经过的计划审批卡片 |
-| `max_children` / `max_concurrent` / `max_depth` | `0` / `16` / `0` | 总任务数及计划结构深度为 0 时不设上限；正值为操作者上限。超出并发额度的工作排队。Runtime 委派默认无产品深度限制，仍是独立的权限设置。 |
+| `max_children` / `max_concurrent` / `max_depth` | `0` / `64` / `0` | 总任务数及计划结构深度为 0 时不设上限；正值为操作者上限。超出并发额度的工作排队。Runtime 委派默认无产品深度限制，仍是独立的权限设置。 |
 | `default_token_budget` | `0` | 回执保留的 token 提示；`0` 表示无提示。它不限制开销、子项运行时间或准入。 |
 
 提权（elevated）工作（写入、只读之外的 shell、网络、机密、worktree、高预算）

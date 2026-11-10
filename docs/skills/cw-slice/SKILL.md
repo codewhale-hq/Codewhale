@@ -83,8 +83,9 @@ Stage 2 of the loop: [cw-orient](../cw-orient/SKILL.md) → **slice** →
    - whether it is cross-cutting enough to need the full sweep in
      [cw-gates](../cw-gates/SKILL.md).
 
-7. **Write the implementation, then prove it runs.** No new tests or code
-   comments unless explicitly asked (`AGENTS.md`); update or delete existing
+7. **Write the implementation, then prove it runs.** A bug fix may add the
+   one regression test that would have caught it; no other new tests and no
+   new code comments (`AGENTS.md`); update or delete existing
    tests the change makes wrong.
 
 ## Red flags / don't
@@ -95,7 +96,8 @@ Stage 2 of the loop: [cw-orient](../cw-orient/SKILL.md) → **slice** →
   lifecycle system) without moving its guard test and consumers with it.
   The repo has one of each on purpose; a silent second one is the failure
   mode, not the refactor.
-- Don't write new tests unless explicitly asked, and never first. Don't add
+- Don't write tests first, and don't add tests beyond the one regression
+  test a fix earns. Don't add
   new code comments.
 - Don't contort production code to keep a brittle assertion green. A test that
   only encodes old behavior is evidence, not a veto: change it with the code.

@@ -402,12 +402,21 @@ async fn turn_usage_event_is_skipped_when_provider_reports_no_usage() {
 async fn plain_exec_runs_one_engine_turn_under_one_prompt_authority() {
     let server = start_mock_llm(answer_sse_with_usage("pong")).await;
 
-    let text = run_exec(&server, &["--model", TEST_MODEL, "answer briefly"]);
+    let text = run_exec(
+        &server,
+        &["--no-tools", "--model", TEST_MODEL, "answer briefly"],
+    );
     assert_eq!(text.trim(), "pong", "text mode prints the answer: {text}");
 
     let json_stdout = run_exec(
         &server,
-        &["--json", "--model", TEST_MODEL, "answer briefly"],
+        &[
+            "--no-tools",
+            "--json",
+            "--model",
+            TEST_MODEL,
+            "answer briefly",
+        ],
     );
     let receipt: Value = serde_json::from_str(&json_stdout)
         .unwrap_or_else(|err| panic!("--json receipt should parse: {err}\n{json_stdout}"));
@@ -427,7 +436,7 @@ async fn plain_exec_runs_one_engine_turn_under_one_prompt_authority() {
     for body in &bodies {
         let messages = body["messages"].to_string();
         assert!(
-            messages.contains("You are Codewhale, an agent working alongside the user"),
+            messages.contains("You are Codewhale, an agent with real tools and a real workspace"),
             "both formats must carry the one base prompt: {messages}"
         );
         assert!(
@@ -467,7 +476,7 @@ async fn plain_exec_limits_do_not_grant_tools() {
         &["--append-system-prompt", "Be brief."],
     ] {
         let mut args = flags.to_vec();
-        args.extend(["--model", TEST_MODEL, "answer briefly"]);
+        args.extend(["--no-tools", "--model", TEST_MODEL, "answer briefly"]);
         let text = run_exec(&server, &args);
         assert_eq!(text.trim(), "pong", "{flags:?}: {text}");
     }
@@ -530,7 +539,13 @@ async fn plain_exec_continues_past_an_output_limit_stop() {
 
     let json_stdout = run_exec(
         &server,
-        &["--json", "--model", TEST_MODEL, "answer briefly"],
+        &[
+            "--no-tools",
+            "--json",
+            "--model",
+            TEST_MODEL,
+            "answer briefly",
+        ],
     );
     let receipt: Value = serde_json::from_str(&json_stdout)
         .unwrap_or_else(|err| panic!("--json receipt should parse: {err}\n{json_stdout}"));
@@ -580,7 +595,13 @@ async fn plain_exec_bounds_output_limit_continuations() {
     for (flags, expected_requests) in [(&[][..], 8usize), (&["--max-turns", "2"][..], 2)] {
         let server = start_mock_llm(always_truncated.clone()).await;
         let mut args = flags.to_vec();
-        args.extend(["--json", "--model", TEST_MODEL, "answer briefly"]);
+        args.extend([
+            "--no-tools",
+            "--json",
+            "--model",
+            TEST_MODEL,
+            "answer briefly",
+        ]);
         let (success, stdout, stderr) = run_exec_unchecked(&server, &args);
         assert!(
             !success,
@@ -680,7 +701,13 @@ async fn plain_exec_continues_past_a_stop_that_used_the_whole_output_allowance()
 
     let json_stdout = run_exec(
         &server,
-        &["--json", "--model", TEST_MODEL, "answer briefly"],
+        &[
+            "--no-tools",
+            "--json",
+            "--model",
+            TEST_MODEL,
+            "answer briefly",
+        ],
     );
     let receipt: Value = serde_json::from_str(&json_stdout)
         .unwrap_or_else(|err| panic!("--json receipt should parse: {err}\n{json_stdout}"));
@@ -724,7 +751,13 @@ async fn plain_exec_does_not_re_request_an_empty_stop_at_the_output_ceiling() {
 
     let (success, stdout, stderr) = run_exec_unchecked(
         &server,
-        &["--json", "--model", TEST_MODEL, "answer briefly"],
+        &[
+            "--no-tools",
+            "--json",
+            "--model",
+            TEST_MODEL,
+            "answer briefly",
+        ],
     );
     assert!(
         !success,
@@ -786,6 +819,7 @@ async fn one_shot_exec_strips_deepseek_dsml_and_points_at_auto() {
     let (success, stdout, stderr) = run_exec_unchecked(
         &server,
         &[
+            "--no-tools",
             "--model",
             TEST_MODEL,
             "Read note.txt and tell me its contents.",
@@ -813,17 +847,18 @@ async fn one_shot_exec_strips_deepseek_dsml_and_points_at_auto() {
 /// Last user message text of a chat-completions body, without the
 /// `<turn_meta>` block the engine appends.
 fn last_user_text(body: &Value) -> String {
-    let message = body["messages"]
+    let text = body["messages"]
         .as_array()
         .expect("messages array")
         .iter()
         .rev()
-        .find(|message| message["role"] == "user")
+        .filter(|message| message["role"] == "user")
+        .map(|message| match &message["content"] {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        })
+        .find(|text| !text.starts_with("<codewhale:runtime_event"))
         .expect("a user message");
-    let text = match &message["content"] {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    };
     match text.split_once("\n<turn_meta>") {
         Some((prompt, _)) => prompt.to_string(),
         None => text,
@@ -831,9 +866,9 @@ fn last_user_text(body: &Value) -> String {
 }
 
 /// #6688: the prompt the model receives comes from `--prompt-file <PATH>` or
-/// `--prompt-file -` (stdin), past argv's 128 KiB per-argument ceiling, while
-/// a positional `-` stays literal text (cloud dispatch passes job prompts
-/// verbatim as argv) and never reads stdin.
+/// `--prompt-file -` (stdin), past argv's 128 KiB per-argument ceiling. A
+/// positional `-` stays literal text, and piped stdin is appended to an argv
+/// prompt.
 #[tokio::test(flavor = "multi_thread")]
 async fn exec_prompt_reaches_the_model_from_prompt_file_and_stdin() {
     let server = start_mock_llm(answer_sse_with_usage("pong")).await;
@@ -864,7 +899,7 @@ async fn exec_prompt_reaches_the_model_from_prompt_file_and_stdin() {
         &server,
         &["--model", TEST_MODEL, "-"],
         |_| {},
-        Some(b"STDIN-MUST-NOT-BE-READ".to_vec()),
+        Some(b"STDIN-APPENDED".to_vec()),
     );
     assert!(ok, "positional -\nstdout:\n{stdout}\nstderr:\n{stderr}");
 
@@ -872,5 +907,5 @@ async fn exec_prompt_reaches_the_model_from_prompt_file_and_stdin() {
     assert_eq!(bodies.len(), 3, "one model call per run");
     assert_eq!(last_user_text(&bodies[0]), file_body);
     assert_eq!(last_user_text(&bodies[1]), "STDIN-PROMPT answer briefly");
-    assert_eq!(last_user_text(&bodies[2]), "-");
+    assert_eq!(last_user_text(&bodies[2]), "-\n\nSTDIN-APPENDED");
 }

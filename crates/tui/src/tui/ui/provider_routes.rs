@@ -68,6 +68,9 @@ pub(crate) fn onboarding_key_route(
     if onboarding == OnboardingState::None {
         return OnboardingKeyRoute::Legacy;
     }
+    if top_kind == Some(ModalKind::AccountLogin) {
+        return OnboardingKeyRoute::AccountLogin;
+    }
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return OnboardingKeyRoute::Quit;
     }
@@ -100,6 +103,17 @@ pub(crate) fn back_from_provider_onboarding(app: &mut App) {
         OnboardingState::Welcome
     };
     app.status_message = None;
+}
+
+pub(crate) fn begin_first_connection_setup(app: &mut App) {
+    if app.onboarding == OnboardingState::None
+        && app.onboarding_needs_api_key
+        && !app.startup_route_configured
+    {
+        app.onboarding = OnboardingState::Provider;
+        app.onboarding_missing_key_recovery = true;
+        app.onboarding_provider = app.api_provider;
+    }
 }
 
 pub(crate) fn complete_provider_picker_onboarding(app: &mut App, provider: ProviderKind) {
@@ -433,20 +447,25 @@ pub(crate) fn paste_provider_picker_from_clipboard(app: &mut App) -> bool {
     if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
         return false;
     }
+    // The same guard the composer uses: a backend that forwards both edges of
+    // Ctrl+V would otherwise paste the text twice into the credential field.
+    if app.clipboard_paste_within_dedupe_window() {
+        return true;
+    }
     if app.clipboard.requires_terminal_paste() {
         app.status_message = Some(app.tr(MessageId::ClipboardSshPasteHint).into_owned());
+        app.note_clipboard_paste();
         return true;
     }
     if let Some(ClipboardContent::Text(text)) = app.clipboard.read(app.workspace.as_path()) {
         let _ = paste_text_into_provider_picker(app, &text);
     }
+    app.note_clipboard_paste();
     true
 }
 
 pub(crate) async fn fetch_available_models(config: &Config) -> Result<Vec<String>> {
-    use codewhale_engine::client::CodewhaleClient;
-
-    let client = CodewhaleClient::new(config)?;
+    let client = crate::active_route_client(config).await?;
     let models = tokio::time::timeout(Duration::from_secs(20), client.list_models()).await??;
     let mut ids = models.into_iter().map(|model| model.id).collect::<Vec<_>>();
     ids.sort();
@@ -814,7 +833,7 @@ async fn switch_provider_inner(
             return false;
         }
     };
-    let validated_route = match resolved_route.validate() {
+    let validated_route = match resolved_route.validate_async().await {
         Ok(route) => route,
         Err(err) => {
             app.pending_provider_switch = None;
@@ -908,6 +927,7 @@ async fn switch_provider_inner(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                expected: None,
                 control: app.session_sync_control(),
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.as_ref().clone(),

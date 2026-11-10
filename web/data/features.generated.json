@@ -2,13 +2,13 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "58653c698c68e06dcf56455f5207b443d91b71819040dfb7d160dd7b5c292204"
+    "sha256": "7fb8f9742ee1b1fd89a10635bf9c003f6c1370e2c364fcd71af4a377bfd706ea"
   },
   "features": [
     {
       "id": "undo-range",
       "name": "Request range undo",
-      "summary": "Select a request with /undo select to restore its file changes and later requests with visible progress.",
+      "summary": "/undo select rewinds a chosen request and its file changes; Runtime clients can preview and confirm an exact turn range.",
       "status": "experimental",
       "surfaces": {
         "tui": "preview"
@@ -86,7 +86,7 @@
     {
       "id": "workspace-search",
       "name": "Workspace search",
-      "summary": "Eager file and content search, with explicit search schemas and unchanged read guards.",
+      "summary": "Eager file and content search with bounded, snapshot-guarded Rust source navigation; existing read guards still apply.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -165,6 +165,20 @@
       "registryLine": 153
     },
     {
+      "id": "mcp-tool-approval",
+      "name": "MCP tool approval rules",
+      "summary": "Global per-tool Always, Ask and Off rules stay bound to the current server and preserve required consent.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "partial",
+        "api": "preview"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/MCP.md",
+      "registryLine": 164
+    },
+    {
       "id": "exec-policy",
       "name": "Execution policy",
       "summary": "Decides allow, ask or deny for each tool call from layered permission rules.",
@@ -175,7 +189,7 @@
       "since": "0.1.0",
       "flag": "exec_policy",
       "docs": "docs/AUTHORIZATION_ORDER.md",
-      "registryLine": 164
+      "registryLine": 174
     },
     {
       "id": "vision-model",
@@ -188,7 +202,7 @@
       "since": "0.8.32",
       "flag": "vision_model",
       "docs": "docs/CONFIGURATION.md",
-      "registryLine": 175
+      "registryLine": 185
     },
     {
       "id": "verify-tool",
@@ -201,7 +215,7 @@
       "since": "0.9.2",
       "flag": "verify_tool",
       "docs": "docs/CONFIGURATION.md#feature-flags",
-      "registryLine": 186
+      "registryLine": 196
     },
     {
       "id": "code-mode",
@@ -214,7 +228,7 @@
       "since": "0.10.0",
       "flag": "code_mode",
       "docs": "docs/TOOL_SURFACE.md#code-mode-execute_tools",
-      "registryLine": 197
+      "registryLine": 207
     },
     {
       "id": "extension-host",
@@ -229,7 +243,7 @@
       "since": "0.10.1",
       "flag": "extension_host",
       "docs": "docs/EXTENSIONS.md",
-      "registryLine": 208
+      "registryLine": 218
     },
     {
       "id": "finance-host",
@@ -243,7 +257,7 @@
       "since": "0.10.1",
       "flag": "finance_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 219
+      "registryLine": 229
     },
     {
       "id": "data-host",
@@ -257,7 +271,7 @@
       "since": "0.10.1",
       "flag": "data_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 230
+      "registryLine": 240
     },
     {
       "id": "speech-host",
@@ -271,7 +285,7 @@
       "since": "0.10.1",
       "flag": "speech_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 241
+      "registryLine": 251
     },
     {
       "id": "pdf-host",
@@ -285,7 +299,7 @@
       "since": "0.10.1",
       "flag": "pdf_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 252
+      "registryLine": 262
     },
     {
       "id": "ocr-host",
@@ -299,7 +313,7 @@
       "since": "0.10.1",
       "flag": "ocr_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 263
+      "registryLine": 273
     },
     {
       "id": "github-host",
@@ -313,7 +327,7 @@
       "since": "0.10.1",
       "flag": "github_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 274
+      "registryLine": 284
     },
     {
       "id": "web-search-host",
@@ -327,7 +341,7 @@
       "since": "0.10.1",
       "flag": "web_search_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 285
+      "registryLine": 295
     },
     {
       "id": "web-extract-host",
@@ -341,7 +355,7 @@
       "since": "0.10.1",
       "flag": "web_extract_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 296
+      "registryLine": 306
     },
     {
       "id": "review-host",
@@ -355,12 +369,12 @@
       "since": "0.10.1",
       "flag": "review_host",
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 307
+      "registryLine": 317
     },
     {
       "id": "modes",
       "name": "Modes",
-      "summary": "Plan, Work and Operate modes set what the agent may do in a session; a finished plan offers to start the work.",
+      "summary": "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -369,12 +383,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/MODES.md",
-      "registryLine": 320
+      "registryLine": 330
     },
     {
       "id": "permission-postures",
       "name": "Permission postures",
-      "summary": "Ask, Auto-Review and Full Access govern approvals; cards default to Deny and preview saved grants.",
+      "summary": "One Shift+Tab dial: Ask, Accept Edits (default), Plan, Auto-Review, Full Access; cards default to Deny.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -383,7 +397,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/MODES.md#permission-posture",
-      "registryLine": 329
+      "registryLine": 339
     },
     {
       "id": "sandbox",
@@ -396,12 +410,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/SANDBOX.md",
-      "registryLine": 338
+      "registryLine": 348
     },
     {
       "id": "providers",
       "name": "Providers",
-      "summary": "Provider routes including Runcrate, with scoped facts, limits, price estimates and a disclosed OrcaRouter offer.",
+      "summary": "Provider routes including Tinker, Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -410,7 +424,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 347
+      "registryLine": 357
     },
     {
       "id": "model-routing",
@@ -423,7 +437,21 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter",
-      "registryLine": 356
+      "registryLine": 366
+    },
+    {
+      "id": "model-catalog-refresh",
+      "name": "Model catalog refresh",
+      "summary": "Refresh public model facts and exact provider rosters during use; failures retain the last good snapshot.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable",
+        "api": "stable"
+      },
+      "since": "0.10.3",
+      "flag": null,
+      "docs": "docs/CATALOG_REFRESH.md",
+      "registryLine": 375
     },
     {
       "id": "output-limit-answer-recovery",
@@ -437,7 +465,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#reasoning-only-recovery-reasoning_only",
-      "registryLine": 365
+      "registryLine": 385
     },
     {
       "id": "fleet",
@@ -451,7 +479,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/FLEET.md",
-      "registryLine": 375
+      "registryLine": 395
     },
     {
       "id": "environment-placement",
@@ -465,7 +493,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/ENVIRONMENTS.md#environment-aware-fleet-placement-preview",
-      "registryLine": 384
+      "registryLine": 404
     },
     {
       "id": "workflows",
@@ -478,7 +506,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/WORKFLOW_AUTHORING.md",
-      "registryLine": 393
+      "registryLine": 413
     },
     {
       "id": "automatic-workflows",
@@ -491,12 +519,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/AUTOMATIC_WORKFLOWS.md",
-      "registryLine": 402
+      "registryLine": 422
     },
     {
       "id": "goals",
       "name": "Goals",
-      "summary": "/goal keeps the agent working toward one objective across turns.",
+      "summary": "/goal keeps the agent on one objective across turns; optional [goal] judges can independently check complete or blocked.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -505,12 +533,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#goal-loop-goal",
-      "registryLine": 411
+      "registryLine": 431
     },
     {
       "id": "thread-scheduled-turns",
       "name": "Reminders into the same thread",
-      "summary": "send_later, automations and /v1/triggers can deliver a scheduled message as a new turn in an existing thread.",
+      "summary": "send_later, automations and /v1/triggers deliver scheduled turns; a run parked on a human answer pauses its wall clock.",
       "status": "experimental",
       "surfaces": {
         "api": "preview"
@@ -518,7 +546,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 420
+      "registryLine": 440
     },
     {
       "id": "task-suggestions",
@@ -531,7 +559,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": null,
-      "registryLine": 430
+      "registryLine": 450
     },
     {
       "id": "todos",
@@ -545,7 +573,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TOOL_SURFACE.md",
-      "registryLine": 439
+      "registryLine": 459
     },
     {
       "id": "composer-queue-steer",
@@ -559,12 +587,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/KEYBINDINGS.md",
-      "registryLine": 448
+      "registryLine": 468
     },
     {
       "id": "receipts",
       "name": "Receipts",
-      "summary": "/receipts lists what a session did: files, commands, calls, approvals and failures.",
+      "summary": "/receipts lists files, commands, calls, approvals and failures; the API serves the same receipt as JSON or Markdown.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -573,12 +601,12 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RECEIPTS.md",
-      "registryLine": 457
+      "registryLine": 477
     },
     {
       "id": "preview-request",
       "name": "Request preview",
-      "summary": "/preview-request shows the redacted outbound request without sending it.",
+      "summary": "/preview-request shows the redacted outbound request and bounded route-omission facts without sending it.",
       "status": "stable",
       "surfaces": {
         "tui": "stable"
@@ -586,7 +614,21 @@
       "since": null,
       "flag": null,
       "docs": "docs/PREVIEW_REQUEST.md",
-      "registryLine": 467
+      "registryLine": 487
+    },
+    {
+      "id": "present-handoff",
+      "name": "Present final files",
+      "summary": "Declare existing workspace files as final deliverables with a read-only handoff receipt.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview",
+        "api": "partial"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": null,
+      "registryLine": 496
     },
     {
       "id": "read-media",
@@ -599,7 +641,33 @@
       "since": null,
       "flag": null,
       "docs": "docs/READ_MEDIA.md",
-      "registryLine": 476
+      "registryLine": 505
+    },
+    {
+      "id": "clipboard-image-preview",
+      "name": "Clipboard image paste preview",
+      "summary": "Attaches an image from the clipboard and previews it as a truecolor cell thumbnail above the composer.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable"
+      },
+      "since": null,
+      "flag": null,
+      "docs": "docs/READ_MEDIA.md",
+      "registryLine": 514
+    },
+    {
+      "id": "clipboard-image-prune",
+      "name": "Pasted image cleanup",
+      "summary": "codewhale sessions prune-images reports pasted clipboard images no saved session still names; --apply deletes them.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/READ_MEDIA.md#pasted-image-storage",
+      "registryLine": 523
     },
     {
       "id": "memory",
@@ -613,7 +681,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/MEMORY.md",
-      "registryLine": 485
+      "registryLine": 533
     },
     {
       "id": "skills",
@@ -627,12 +695,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/SKILLS.md",
-      "registryLine": 496
+      "registryLine": 544
     },
     {
       "id": "plugins",
       "name": "Plugins",
-      "summary": "Installs, reviews and trusts plugin bundles, including the first-party marketplace.",
+      "summary": "Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -641,7 +709,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 505
+      "registryLine": 553
     },
     {
       "id": "computer-use",
@@ -655,7 +723,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PLUGIN_BUNDLES.md",
-      "registryLine": 514
+      "registryLine": 562
     },
     {
       "id": "script-tools",
@@ -668,7 +736,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md#script-tools-and-overrides",
-      "registryLine": 523
+      "registryLine": 571
     },
     {
       "id": "claude-plugin-compat",
@@ -681,7 +749,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CLAUDE_PLUGIN_COMPAT.md",
-      "registryLine": 532
+      "registryLine": 580
     },
     {
       "id": "claude-settings-import",
@@ -694,7 +762,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 541
+      "registryLine": 589
     },
     {
       "id": "hooks",
@@ -708,7 +776,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/HOOKS.md",
-      "registryLine": 549
+      "registryLine": 597
     },
     {
       "id": "lsp",
@@ -722,7 +790,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/LSP_PHP_CUSTOM.md",
-      "registryLine": 558
+      "registryLine": 606
     },
     {
       "id": "runtime-api",
@@ -735,12 +803,25 @@
       "since": null,
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 567
+      "registryLine": 615
+    },
+    {
+      "id": "runtime-watch-events",
+      "name": "Attested watch events",
+      "summary": "Master-bearer watch turns retain typed non-person provenance, exact replay and read-only operation recovery.",
+      "status": "experimental",
+      "surfaces": {
+        "api": "preview"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/RUNTIME_API.md",
+      "registryLine": 624
     },
     {
       "id": "compatibility-tool-free-turns",
       "name": "Compatibility turn admission",
-      "summary": "Compatibility transports require explicit tool-free turns; interactive clients use the full HTTP/SSE API.",
+      "summary": "Initialized local controls use the held Runtime for tool-free turns, loaded-thread paging, names; clients use HTTP/SSE.",
       "status": "stable",
       "surfaces": {
         "api": "stable"
@@ -748,7 +829,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#compatibility-execution-limits",
-      "registryLine": 576
+      "registryLine": 634
     },
     {
       "id": "runtime-provider-keys",
@@ -761,7 +842,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#put-v1providersidkey--write-only-credential",
-      "registryLine": 586
+      "registryLine": 644
     },
     {
       "id": "headless-exec",
@@ -774,7 +855,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/RUNTIME_API.md",
-      "registryLine": 596
+      "registryLine": 654
     },
     {
       "id": "github-review",
@@ -787,7 +868,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/GITHUB_APP.md",
-      "registryLine": 605
+      "registryLine": 663
     },
     {
       "id": "web-client",
@@ -800,7 +881,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/WEB.md",
-      "registryLine": 616
+      "registryLine": 674
     },
     {
       "id": "keybindings",
@@ -813,7 +894,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/KEYBINDINGS.md",
-      "registryLine": 625
+      "registryLine": 683
     },
     {
       "id": "settings",
@@ -827,7 +908,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/CONFIGURATION.md",
-      "registryLine": 634
+      "registryLine": 692
     },
     {
       "id": "whats-new-notice",
@@ -840,7 +921,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#whats-new-after-an-update",
-      "registryLine": 643
+      "registryLine": 701
     },
     {
       "id": "themes",
@@ -853,7 +934,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/schemas/user-theme.schema.json",
-      "registryLine": 653
+      "registryLine": 711
     },
     {
       "id": "chat-color",
@@ -866,7 +947,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/GUIDE.md",
-      "registryLine": 662
+      "registryLine": 720
     },
     {
       "id": "localization",
@@ -879,7 +960,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/LOCALIZATION.md",
-      "registryLine": 672
+      "registryLine": 730
     },
     {
       "id": "voice",
@@ -893,7 +974,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 681
+      "registryLine": 739
     },
     {
       "id": "pet",
@@ -907,7 +988,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/PET_MODE.md",
-      "registryLine": 689
+      "registryLine": 747
     },
     {
       "id": "overview",
@@ -920,12 +1001,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 698
+      "registryLine": 756
     },
     {
       "id": "account-login",
       "name": "Account login",
-      "summary": "/login signs in to an optional Codewhale account; plugin providers connect with /connect.",
+      "summary": "Cancellable account sign-in inside the TUI; account sign-out preserves local model connections and work.",
       "status": "stable",
       "surfaces": {
         "tui": "stable"
@@ -933,7 +1014,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 707
+      "registryLine": 765
     },
     {
       "id": "account-computer-files",
@@ -946,7 +1027,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 715
+      "registryLine": 773
     },
     {
       "id": "context-anchors",
@@ -959,7 +1040,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 724
+      "registryLine": 782
     },
     {
       "id": "window-pin",
@@ -972,7 +1053,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 732
+      "registryLine": 790
     },
     {
       "id": "structured-copy",
@@ -985,7 +1066,20 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 740
+      "registryLine": 798
+    },
+    {
+      "id": "conversation-export",
+      "name": "Conversation export",
+      "summary": "/export saves a redacted conversation as Markdown, HTML or JSON, to the clipboard or an auto-named file.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/GUIDE.md#exporting-a-conversation",
+      "registryLine": 806
     },
     {
       "id": "live-thinking",
@@ -998,7 +1092,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 748
+      "registryLine": 816
     },
     {
       "id": "local-model-reasoning",
@@ -1013,7 +1107,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/LOCAL_MODEL_REASONING.md",
-      "registryLine": 756
+      "registryLine": 824
     },
     {
       "id": "workbar",
@@ -1026,7 +1120,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 766
+      "registryLine": 834
     },
     {
       "id": "terminal-dock",
@@ -1039,7 +1133,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 774
+      "registryLine": 842
     },
     {
       "id": "telemetry",
@@ -1052,7 +1146,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TELEMETRY.md",
-      "registryLine": 785
+      "registryLine": 853
     },
     {
       "id": "docker",
@@ -1065,7 +1159,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/DOCKER.md",
-      "registryLine": 794
+      "registryLine": 862
     },
     {
       "id": "termux",
@@ -1078,7 +1172,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TERMUX.md",
-      "registryLine": 803
+      "registryLine": 871
     },
     {
       "id": "harmonyos-native",
@@ -1091,12 +1185,12 @@
       "since": null,
       "flag": null,
       "docs": "docs/HarmonyOS.md",
-      "registryLine": 812
+      "registryLine": 880
     },
     {
       "id": "chatgpt-plan-sign-in",
       "name": "Sign in with ChatGPT",
-      "summary": "Uses official OAuth and the selected account catalog for eligible ChatGPT plan requests in the local OSS app.",
+      "summary": "Official OAuth and the selected account catalog serve ChatGPT plan requests, with distinct token-verification errors.",
       "status": "experimental",
       "surfaces": {
         "tui": "preview",
@@ -1106,22 +1200,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-chatgpt",
-      "registryLine": 821
-    },
-    {
-      "id": "claude-plan-sign-in",
-      "name": "Sign in with Claude",
-      "summary": "Adds Claude subscription sign-in and native Messages routing. Live provider acceptance remains unverified.",
-      "status": "experimental",
-      "surfaces": {
-        "tui": "preview",
-        "api": "partial",
-        "web": "none"
-      },
-      "since": "0.10.2",
-      "flag": null,
-      "docs": "docs/PROVIDERS.md#sign-in-with-claude",
-      "registryLine": 831
+      "registryLine": 889
     },
     {
       "id": "plugin-oauth-providers",
@@ -1136,7 +1215,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PLUGIN_PROVIDERS.md",
-      "registryLine": 841
+      "registryLine": 899
     },
     {
       "id": "orcarouter-sign-in",
@@ -1151,7 +1230,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 851
+      "registryLine": 909
     },
     {
       "id": "merch-interest",
@@ -1166,7 +1245,21 @@
       "since": "unreleased",
       "flag": null,
       "docs": "web/lib/merch/README.md",
-      "registryLine": 862
+      "registryLine": 920
+    },
+    {
+      "id": "local-whale-voice",
+      "name": "Local whale voice",
+      "summary": "Edit SOUL.md for a local whale and inspect the personality captured for each turn.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview",
+        "api": "preview"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/RUNTIME_API.md#local-whale-voice",
+      "registryLine": 930
     },
     {
       "id": "profile-constitution",
@@ -1180,7 +1273,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#profile-constitution",
-      "registryLine": 872
+      "registryLine": 940
     },
     {
       "id": "plugin-shell-install",
@@ -1193,7 +1286,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 882
+      "registryLine": 950
     },
     {
       "id": "fork-prefix-inheritance",
@@ -1207,7 +1300,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/CACHE.md#fork-prefix-inheritance",
-      "registryLine": 892
+      "registryLine": 960
     },
     {
       "id": "fork-trial-diagnostics",
@@ -1221,12 +1314,12 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/CACHE.md#fork-trial-diagnostics",
-      "registryLine": 902
+      "registryLine": 970
     },
     {
       "id": "source-navigation-echoes",
       "name": "Source navigation echoes",
-      "summary": "Symbol and neighbor navigation, focused Rust source, bounded mutation diffs, and revision-guarded reads and paging.",
+      "summary": "Symbol and neighbor navigation, identifier-ranked Rust declarations, caller-ranked helper-first syntax candidates, bounded diffs, and guarded paging.",
       "status": "experimental",
       "surfaces": {
         "tui": "preview",
@@ -1235,7 +1328,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/ECHOLOCATION.md",
-      "registryLine": 912
+      "registryLine": 980
     },
     {
       "id": "herdr-agent-state",
@@ -1248,7 +1341,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 922
+      "registryLine": 990
     },
     {
       "id": "instruction-budgets",
@@ -1261,7 +1354,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526",
-      "registryLine": 931
+      "registryLine": 999
     },
     {
       "id": "github-action-review",
@@ -1274,7 +1367,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/GITHUB_ACTION.md",
-      "registryLine": 941
+      "registryLine": 1009
     },
     {
       "id": "telegram-agent",
@@ -1287,7 +1380,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/telegram-bridge/README.md",
-      "registryLine": 951
+      "registryLine": 1019
     },
     {
       "id": "dingtalk-agent",
@@ -1300,7 +1393,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
-      "registryLine": 961
+      "registryLine": 1029
     },
     {
       "id": "compaction-archive-recall",
@@ -1313,7 +1406,62 @@
       "since": "unreleased",
       "flag": null,
       "docs": null,
-      "registryLine": 971
+      "registryLine": 1039
+    },
+    {
+      "id": "usage-statistics",
+      "name": "Usage statistics",
+      "summary": "Read-only native usage subtotals and execution diagnostics; missing coverage stays explicit.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "partial"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
+      "registryLine": 1048
+    },
+    {
+      "id": "cache-call-receipts",
+      "name": "Per-call cache receipts",
+      "summary": "/cache calls shows bounded native receipts with frozen prices, selected currency and missing cache telemetry.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "partial"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/CONFIGURATION.md#usage-and-execution-statistics",
+      "registryLine": 1058
+    },
+    {
+      "id": "local-proxy-fallback",
+      "name": "Local proxy fallback",
+      "summary": "Long-lived clients go direct while a loopback proxy port refuses connections, then resume proxying.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "partial",
+        "api": "partial"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started",
+      "registryLine": 1068
+    },
+    {
+      "id": "rate-limit-recovery",
+      "name": "Bounded HTTP rate-limit retries",
+      "summary": "Bound HTTP transport retries for 429 independently of network retries and honor provider reset minima.",
+      "status": "experimental",
+      "surfaces": {
+        "tui": "preview",
+        "web": "partial",
+        "api": "partial"
+      },
+      "since": null,
+      "flag": null,
+      "docs": "docs/rate-limit-retries.md",
+      "registryLine": 1078
     }
   ]
 }

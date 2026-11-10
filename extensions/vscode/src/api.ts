@@ -394,7 +394,7 @@ interface RequestResult {
 
 /**
  * Success is the whole 2xx range, mirroring `response.ok` in the embedded web
- * client (`crates/tui/src/runtime_web/app.mjs:873`). The runtime answers 201
+ * client (`crates/app-server/src/runtime_web/app.mjs:873`). The runtime answers 201
  * CREATED for `POST /v1/threads/{id}/turns`, so an equality check against a
  * hand-picked list of codes rejects every real send.
  */

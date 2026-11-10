@@ -2323,6 +2323,9 @@ fn completion_evidence_preserves_arbitrary_stream_bytes() {
             task_id: "shell_binary".to_string(),
             command: "binary-output".to_string(),
             status: ShellStatus::Completed,
+            started_at: None,
+            cause: Some(ShellTerminationCause::Producer),
+            producer_reported: true,
             exit_code: Some(0),
             duration_ms: 17,
             stdout_tail: String::new(),
@@ -2492,6 +2495,29 @@ fn test_kill() {
     // Kill it
     let killed = manager.kill(&task_id).expect("kill");
     assert_eq!(killed.status, ShellStatus::Killed);
+}
+
+#[test]
+fn kill_all_owned_running_ends_every_running_job_once() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let first = execute_shell(&mut manager, &sleep_command(60), None, 5000, true)
+        .expect("first")
+        .task_id
+        .expect("first task id");
+    let second = execute_shell(&mut manager, &sleep_command(60), None, 5000, true)
+        .expect("second")
+        .task_id
+        .expect("second task id");
+
+    assert_eq!(manager.kill_all_owned_running(), 2);
+    for id in [&first, &second] {
+        let job = manager.inspect_job(id).expect("inspect job");
+        assert_eq!(job.snapshot.status, ShellStatus::Killed);
+    }
+    // Finished jobs are not recounted, so a repeat call is a no-op.
+    assert_eq!(manager.kill_all_owned_running(), 0);
 }
 
 #[test]
@@ -4273,8 +4299,10 @@ fn killed_shell_does_not_wait_for_blocked_reader_threads() {
         status: ShellStatus::Killed,
         exit_code: None,
         started_at: now,
+        started_at_utc: chrono::Utc::now(),
         finished_at: Some(now),
         finished_at_utc: Some(chrono::Utc::now()),
+        cause: Some(ShellTerminationCause::Killed),
         background: true,
         last_output_at: now,
         last_observed_output_len: 0,
@@ -4303,6 +4331,7 @@ fn killed_shell_does_not_wait_for_blocked_reader_threads() {
         last_lifecycle_status: None,
         last_lifecycle_bytes: 0,
         wait_failed: false,
+        terminal_exit_confirmed: false,
     };
 
     let started = std::time::Instant::now();
@@ -5125,7 +5154,7 @@ async fn persistent_service_requires_explicit_headless_exec_authority() {
         .await
         .expect_err("ordinary tool contexts must reject ownership transfer");
 
-    assert!(error.to_string().contains("real headless `codewhale exec`"));
+    assert!(error.to_string().contains("Full Access shell authority"));
 }
 
 #[cfg(unix)]

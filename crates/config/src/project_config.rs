@@ -11,9 +11,16 @@ use std::path::{Path, PathBuf};
 
 /// Values config.toml's root `approval_policy` accepts, compared trimmed and
 /// case-insensitively. settings.toml's `approval_policy` is a different
-/// vocabulary (`use-tui-default`, `ask`, `auto-review`, `full-access`).
-pub const CONFIG_TOML_APPROVAL_POLICIES: &[&str] =
-    &["on-request", "untrusted", "never", "auto", "suggest"];
+/// vocabulary (`use-tui-default`, `ask`, `accept-edits`, `auto-review`,
+/// `full-access`).
+pub const CONFIG_TOML_APPROVAL_POLICIES: &[&str] = &[
+    "on-request",
+    "untrusted",
+    "never",
+    "auto",
+    "suggest",
+    "accept-edits",
+];
 
 /// Values config.toml's root `sandbox_mode` accepts.
 pub const CONFIG_TOML_SANDBOX_MODES: &[&str] = &[
@@ -68,7 +75,7 @@ pub fn project_approval_policy_is_allowed(current: Option<&str>, project: &str) 
     };
     match current.and_then(approval_policy_rank) {
         Some(current_rank) => project_rank >= current_rank,
-        None => project_rank >= 2,
+        None => project_rank >= 3,
     }
 }
 
@@ -93,8 +100,9 @@ pub fn project_sandbox_mode_is_allowed(current: Option<&str>, project: &str) -> 
 pub(crate) fn approval_policy_rank(value: &str) -> Option<u8> {
     match value.trim().to_ascii_lowercase().as_str() {
         "auto" => Some(0),
-        "suggest" | "suggested" | "on-request" | "untrusted" => Some(1),
-        "never" | "deny" | "denied" => Some(2),
+        "accept-edits" | "accept_edits" | "acceptedits" | "edits" => Some(1),
+        "suggest" | "suggested" | "on-request" | "untrusted" => Some(2),
+        "never" | "deny" | "denied" => Some(3),
         _ => None,
     }
 }

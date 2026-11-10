@@ -196,22 +196,6 @@ so any English prose in your response will block their decision-making."
     )
 }
 
-fn concise_output_discipline_instruction() -> &'static str {
-    "\
-## Concise Output Discipline
-
-To minimize token usage and optimize speed:
-- Output only direct, actionable code, technical steps, or final answers.
-- Eliminate all conversational filler, fluff, introductions, transitions, or summarizing conclusions.
-- Do NOT explain what you are about to do or what you have just completed.
-- Do NOT provide conversational status updates before or after running tools.
-- Keep explanations and comments extremely brief and technical, explaining only non-obvious reasoning."
-}
-
-fn is_concise_verbosity(value: Option<&str>) -> bool {
-    value.is_some_and(|v| v.trim().eq_ignore_ascii_case("concise"))
-}
-
 fn translation_target_language_for_tag(locale_tag: &str) -> &'static str {
     let normalized = locale_tag.trim().to_ascii_lowercase();
     if normalized.starts_with("ja") {
@@ -1145,11 +1129,9 @@ pub fn system_prompt_for_mode_with_context(
 /// longest possible byte prefix turn-over-turn:
 ///
 ///   1. shared constitution (compile-time constant)
-///   2. project context / fallback (workspace-static)
-///   3. skills block (skills-dir-static)
-///   4. `## Core Execution` (compile-time constant)
-///   5. compaction relay template (compile-time constant)
-///   6. relay block — file-backed; rewritten by `/compact` and on exit
+///   2. `## Core Execution` (compile-time constant)
+///   3. compaction relay template (compile-time constant)
+///   4. relay block — file-backed; rewritten by `/compact` and on exit
 ///
 /// Anything appended after a volatile block forfeits the cache for the rest
 /// of the request. New blocks belong above the relay boundary unless they
@@ -1246,7 +1228,7 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval_for_host(
 pub fn system_prompt_with_instruction_assembly_for_host(
     workspace: &Path,
     _working_set_summary: Option<&str>,
-    skills_dir: Option<&Path>,
+    _skills_dir: Option<&Path>,
     instructions: Option<&[InstructionSource]>,
     session_context: PromptSessionContext<'_>,
     prompt_host: PromptHost,
@@ -1296,7 +1278,7 @@ pub fn system_prompt_with_instruction_assembly_for_host(
         },
         |input| input.2,
     );
-    let mut assembly =
+    let assembly =
         crate::project_context::assemble_instruction_block(&mut project_context, &[], &budgets);
 
     // 0. Locale-native reinforcement preamble (#1118 follow-up). When the
@@ -1314,22 +1296,12 @@ pub fn system_prompt_with_instruction_assembly_for_host(
     // `load_project_context_with_parents` generates an in-memory bounded
     // overview when no context file exists, so the fallback should usually be
     // available without writing project-local files.
-    let mut full_prompt = if let Some(project_block) = assembly.block.as_deref() {
-        let start = composed.trim().len();
-        assembly.prompt_range = Some(start..start + 2 + project_block.len());
-        format!("{}\n\n{project_block}", composed.trim())
-    } else {
-        // Extremely unlikely: context generation failed (e.g. filesystem error).
-        // Use the shared constitution alone rather than panic.
+    if assembly.block.is_none() {
         tracing::warn!("No project context available and auto-generation failed");
-        composed.trim().to_string()
-    };
+    }
+    let mut full_prompt = composed.trim().to_string();
 
     if let Some(preamble) = preamble {
-        if let Some(range) = assembly.prompt_range.as_mut() {
-            range.start += preamble.len() + 2;
-            range.end += preamble.len() + 2;
-        }
         full_prompt = format!("{preamble}\n\n{full_prompt}");
     }
 
@@ -1352,32 +1324,6 @@ pub fn system_prompt_with_instruction_assembly_for_host(
             "{full_prompt}\n\n{}",
             translation_output_instruction(session_context.locale_tag)
         );
-    }
-
-    if is_concise_verbosity(session_context.verbosity) {
-        full_prompt = format!(
-            "{full_prompt}\n\n{}",
-            concise_output_discipline_instruction()
-        );
-    }
-
-    // 3. Skills block. #432: default discovery walks every compatible
-    // workspace/global skill directory so skills installed for other AI-tool
-    // conventions show up in the catalogue. Users can opt into a Codewhale-only
-    // scan with `[skills] scan_codewhale_only = true`. When an explicit
-    // `skills_dir` is configured, union it with the workspace view instead of
-    // treating it as a fallback; the workspace view often returns Some and
-    // would otherwise shadow the configured directory entirely.
-    let skills_block = codewhale_skills::render_index(
-        workspace,
-        skills_dir,
-        &session_context.skills_config,
-        session_context.locale_tag,
-        session_context.plugin_registry,
-        session_context.context_window_override,
-    );
-    if let Some(block) = skills_block {
-        full_prompt = format!("{full_prompt}\n\n{block}");
     }
 
     // 4. Lean, runtime-only coding discipline. Context pressure, prompt-cache
@@ -1920,7 +1866,7 @@ mod tests {
         )
         .expect("write project instruction");
         for host in [PromptHost::Interactive, PromptHost::Headless] {
-            let prompts = [AppMode::Plan, AppMode::Agent, AppMode::Operate].map(|mode| {
+            let prompts = [AppMode::Plan, AppMode::Agent].map(|mode| {
                 system_prompt_flat_text(
                     &system_prompt_for_mode_with_context_skills_session_and_approval_for_host(
                         tmp.path(),
@@ -1936,8 +1882,7 @@ mod tests {
                 )
             });
             assert_eq!(prompts[0], prompts[1]);
-            assert_eq!(prompts[1], prompts[2]);
-            assert!(prompts[0].contains("Preserve the blue-ocean marker"));
+            assert!(!prompts[0].contains("Preserve the blue-ocean marker"));
             assert!(!prompts[0].contains("##### Mode:"));
             if host == PromptHost::Headless {
                 // One base prompt for every host; headless still omits the
@@ -1975,7 +1920,7 @@ mod tests {
         for phrase in [
             "Do what the user's current request asks, no more.",
             "require express user authorization in",
-            "otherwise name the decision and ask.",
+            "otherwise name the decision and ask with options.",
             "external publication, spending",
             "credentials, and material scope expansion",
             "prohibitions stay binding; convenience creates no exception",
@@ -2366,7 +2311,7 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_merges_workspace_and_configured_skills_dir() {
+    fn system_prompt_carries_no_skills_index() {
         let _env_guard = crate::test_support::lock_test_env();
         let tmp = tempdir().expect("tempdir");
         let _home = ScopedHome::set(tmp.path().join("home"));
@@ -2388,8 +2333,9 @@ mod tests {
             None,
         ));
 
-        assert!(text.contains("workspace-skill"));
-        assert!(text.contains("configured-skill"));
+        assert!(!text.contains("workspace-skill"));
+        assert!(!text.contains("configured-skill"));
+        assert!(text.contains("load_skill"));
     }
 
     struct ScopedHome {
@@ -3773,10 +3719,9 @@ mod tests {
     #[test]
     fn universal_prompt_does_not_expose_control_plane_ceremony() {
         for internal in [
-            "sub-agent",
             "completion sentinels",
             "<codewhale:subagent.done>",
-            "dispatch, join",
+            "<codewhale:runtime_event",
             "busy-waiting",
         ] {
             assert!(!BASE_PROMPT.contains(internal));
@@ -4110,7 +4055,7 @@ mod tests {
     }
 
     #[test]
-    fn instructions_block_appears_in_system_prompt_when_configured() {
+    fn instructions_block_stays_out_of_system_prompt_when_configured() {
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
         let extra = workspace.join("extra-instructions.md");
@@ -4127,18 +4072,14 @@ mod tests {
             ));
 
         assert!(
-            prompt.contains("EXTRA_INSTRUCTIONS_MARKER_BODY"),
-            "configured instructions file body must appear in the prompt"
+            !prompt.contains("EXTRA_INSTRUCTIONS_MARKER_BODY"),
+            "configured instructions are delivered as history, not in the system prompt"
         );
-        assert!(
-            prompt.contains("source=\"extra-instructions.md\"")
-                && !prompt.contains(&extra.display().to_string()),
-            "instructions block must name its source without the host root"
-        );
+        assert!(!prompt.contains(&extra.display().to_string()));
     }
 
     #[test]
-    fn verbosity_concise_appends_discipline_block() {
+    fn verbosity_concise_adds_no_separate_discipline_block() {
         let tmp = tempdir().expect("tempdir");
         let workspace = tmp.path();
         let prompt = system_prompt_flat_text(
@@ -4165,9 +4106,10 @@ mod tests {
         );
 
         assert!(
-            prompt.contains("## Concise Output Discipline"),
-            "Concise Output Discipline should be appended"
+            !prompt.contains("## Concise Output Discipline"),
+            "conciseness is one line of Output Formatting, not a separate block"
         );
+        assert!(prompt.contains("Be concise."));
     }
 
     #[test]

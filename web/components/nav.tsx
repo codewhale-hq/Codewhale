@@ -12,7 +12,7 @@ import { ArrowLabel } from "./arrow-label";
 
 /**
  * Masthead + primary nav. Like the GPUI titlebar it carries few visible
- * controls: the whale and the wordmark, four links, quiet icon controls
+ * controls: the whale and the wordmark, five links, quiet icon controls
  * with accessible names and the one primary action, Install.
  */
 export function Nav({ locale = "en" }: { locale?: Locale }) {
@@ -37,11 +37,10 @@ export function Nav({ locale = "en" }: { locale?: Locale }) {
 
         <div className="site-nav-actions">
           <ThemeToggle
-            autoLabel={chrome.themeAuto}
+            key={locale}
             lightLabel={chrome.themeLight}
             darkLabel={chrome.themeDark}
             ariaTemplate={chrome.themeAria}
-            titleLabel={chrome.themeTitle}
           />
           <LocaleSwitcher current={locale} />
           <Link href={REPO_URL} className="nav-icon-button site-github-link" aria-label="GitHub" title="GitHub">

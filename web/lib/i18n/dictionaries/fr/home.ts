@@ -3,10 +3,10 @@ import type { HomeDict } from "../types";
 /** French home copy: useful work with chosen models and connected tools. */
 
 export const home: HomeDict = {
-  metaTitle: "Codewhale : agent de programmation open source",
+  metaTitle: "Codewhale · Un agent open source pour votre ordinateur",
   metaDescription: "Codewhale est un agent de programmation open source pour votre terminal. Lisez, modifiez et testez des projets avec vos modèles hébergés ou locaux.",
-  heroTitle: "L’agent de programmation open source pour tous les modèles",
-  heroIntro: "{brand} lit votre projet, modifie les fichiers et exécute vos tests depuis votre terminal. Connectez un modèle hébergé ou local et choisissez les actions qui nécessitent votre approbation.",
+  heroTitle: "Un agent open source pour votre ordinateur",
+  heroIntro: "Créez des logiciels et exécutez des flux de travail reproductibles avec {brand} dans votre terminal. Ajoutez Computer Use pour travailler dans les apps Mac.",
   getCodewhale: "Installer Codewhale",
   heroInstallAria: "Commande d'installation",
   exploreProduct: "Découvrir Codewhale",

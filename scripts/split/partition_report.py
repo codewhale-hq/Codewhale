@@ -34,9 +34,10 @@ _cl_spec.loader.exec_module(cl)
 ROOT = mg.ROOT_ITEMS
 
 
-def strict_lines(src_dirs: list[Path]) -> collections.Counter:
+def strict_lines(crates: list[mg.Crate]) -> collections.Counter:
     strict: collections.Counter = collections.Counter()
-    for src in src_dirs:
+    for crate in crates:
+        src = crate.root
         crate_dir = src.parent
         if not crate_dir.is_dir():
             continue
@@ -44,7 +45,7 @@ def strict_lines(src_dirs: list[Path]) -> collections.Counter:
         for path, (prod, _test, _other) in res.items():
             rel = Path(path).relative_to(src) if Path(path).is_relative_to(src) else None
             if rel is not None:
-                strict[mg.top_module(rel.as_posix())] += prod
+                strict[mg.top_module(rel.as_posix(), crate.root_module)] += prod
     return strict
 
 
@@ -57,10 +58,10 @@ def analyse(tui_src: Path = mg.TUI_SRC, runtime_src: Path = mg.RUNTIME_SRC, non_
     for crate in crates:
         exact, prefixes = mg.test_file_set(crate)
         for rel, (src, _, _) in crate.files.items():
-            module = mg.top_module(rel)
+            module = mg.top_module(rel, crate.root_module)
             bucket = test_lines if mg.file_is_test(rel, exact, prefixes, crate.production_files) else prod_lines
             bucket[module] += src.count("\n") + 1
-    strict = strict_lines([crate.root for crate in crates]) if non_test else None
+    strict = strict_lines(crates) if non_test else None
     out: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     inbound: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     for ref in refs:
@@ -118,11 +119,12 @@ def scc_edges(result: dict, top: int, items: int) -> str:
             continue
         key = (ref.src, ref.dst)
         heavy[key] += 1
-        for group in re.findall(r"crate::%s::\{([^}]*)\}" % re.escape(ref.dst), ref.text):
+        target = ref.dst.rsplit("::", 1)[-1]
+        for group in re.findall(r"(?:crate|codewhale_runtime|codewhale_engine|codewhale_app_server)::%s::\{([^}]*)\}" % re.escape(target), ref.text):
             for name in group.split(","):
                 if name.strip():
                     names[key][name.strip().split("::")[0].split(" as ")[0]] += 1
-        for name in re.findall(r"crate::%s::(\w+)" % re.escape(ref.dst), ref.text):
+        for name in re.findall(r"(?:crate|codewhale_runtime|codewhale_engine|codewhale_app_server)::%s::(\w+)" % re.escape(target), ref.text):
             names[key][name] += 1
     lines = [f"heaviest production edges inside the {len(members)}-module cycle (src -> dst, refs; most-named items):"]
     for (src, dst), count in heavy.most_common(top):
@@ -181,7 +183,7 @@ def strongly_connected(graph: dict[str, set[str]]) -> dict[str, int]:
 
 
 def render(result: dict, only: str | None) -> str:
-    rows = [r for r in result["rows"] if not only or r["module"] == only]
+    rows = [r for r in result["rows"] if not only or r["module"] == only or r["module"].rsplit("::", 1)[-1] == only]
     rows.sort(key=lambda r: (r["ui"], r["wave"], -r["prod_lines"]))
     has_strict = any("strict_lines" in r for r in rows)
     strict_head = f"{'strict':>9}" if has_strict else ""

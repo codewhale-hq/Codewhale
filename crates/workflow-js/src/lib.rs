@@ -79,7 +79,7 @@ pub use vm::{VmLimits, WorkflowRunCancel, WorkflowVm, normalize_task_cwd, normal
 /// Fan-out may *declare* more work via `parallel()` / `pipeline()`, but the
 /// host admits at most this many live `task()` children at once; additional
 /// spawns wait for a slot.
-pub const WORKFLOW_MAX_CONCURRENT: usize = 16;
+pub const WORKFLOW_MAX_CONCURRENT: usize = 128;
 
 /// Maximum items per `parallel()` or `pipeline()` call (design §4.2).
 /// Bounds one materialized fan-out array; it does not limit total work.

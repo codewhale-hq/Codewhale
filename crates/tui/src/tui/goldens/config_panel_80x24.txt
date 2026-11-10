@@ -18,7 +18,7 @@
   system | terminal | shoreline | shoreline-light | underwater |…               
   Enter or click again: Enter opens choices · Theme: current terminal · saved   
   terminal · applies on save                                                    
-  Preview:  ● ask   work                                                        
+  Preview:  ● accept edits                                                      
   type=filter, Up/Down=select, Enter=edit, PgUp/PgDn=scroll, Esc=close          
  ────────────────────────────────────────────────────────────────────────────── 
                                                                                 

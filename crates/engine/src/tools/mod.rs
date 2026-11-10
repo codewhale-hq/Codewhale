@@ -52,6 +52,7 @@ pub mod pandoc;
 pub mod pdf;
 pub mod plan;
 pub mod plugin;
+pub mod present;
 pub mod project;
 pub mod read_media;
 pub mod registry;

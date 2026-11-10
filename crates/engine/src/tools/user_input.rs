@@ -389,11 +389,12 @@ impl RequestUserInputTool {
     pub fn new(limits: UserInputLimits) -> Self {
         Self {
             description: format!(
-                "Ask the user 1-{} short questions with selectable options and return their \
-selections. It is for decisions that are the user's to make, where a guess would be costly \
-or wrong: ambiguous scope, an irreversible or expensive choice, a missing preference, or a \
-fork the user should own. It returns the user's choices, not facts about the workspace. The \
-call blocks until the user answers.",
+                "Ask the user 1-{} short multiple-choice questions and return their selections. \
+Use when a decision is the user's and the request, the code and a sensible default cannot settle \
+it. Not for conventional defaults, reversible work, facts you can read, or \"may I continue?\". \
+Put the recommended option first with \"(Recommended)\" in its label; give each option a \
+one-line trade-off. Make each question stand alone; the dialog may be all the user sees. The user \
+can always type another answer. Blocks until answered.",
                 limits.max_questions
             ),
             limits,
@@ -420,11 +421,12 @@ impl ToolSpec for RequestUserInputTool {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "header": { "type": "string" },
+                            "header": { "type": "string", "description": "Chip label, 12 characters or fewer." },
                             "id": { "type": "string" },
-                            "question": { "type": "string" },
+                            "question": { "type": "string", "description": "Standalone question ending in a question mark." },
                             "options": {
                                 "type": "array",
+                                "description": format!("{MIN_CONFIGURABLE_OPTIONS}-{} mutually exclusive choices, recommended first.", self.limits.max_options),
                                 "items": {
                                     "type": "object",
                                     "properties": {
@@ -443,7 +445,7 @@ impl ToolSpec for RequestUserInputTool {
                             },
                             "multi_select": {
                                 "type": "boolean",
-                                "description": "When true, allow selecting more than one option. Defaults to false.",
+                                "description": "True when several may apply.",
                                 "default": false
                             }
                         },
@@ -717,8 +719,8 @@ mod tests {
         assert_eq!(UserInputLimits::from_config_values(None, None), limits);
         let tool = RequestUserInputTool::default();
         let description = tool.description();
-        assert!(description.contains("Ask the user 1-6 short questions"));
-        assert!(description.contains("blocks until the user answers"));
+        assert!(description.contains("Ask the user 1-6 short multiple-choice questions"));
+        assert!(description.contains("Blocks until answered."));
     }
 
     #[test]
@@ -790,8 +792,8 @@ mod tests {
     fn schema_and_description_reflect_configured_limits() {
         let tool = RequestUserInputTool::new(UserInputLimits::from_config_values(Some(8), Some(5)));
         let description = tool.description();
-        assert!(description.contains("Ask the user 1-8 short questions"));
-        assert!(description.contains("blocks until the user answers"));
+        assert!(description.contains("Ask the user 1-8 short multiple-choice questions"));
+        assert!(description.contains("Blocks until answered."));
         let schema = tool.input_schema();
         let questions = &schema["properties"]["questions"];
         assert_eq!(questions["minItems"], json!(1));

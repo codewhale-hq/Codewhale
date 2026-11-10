@@ -39,7 +39,7 @@
 [[feature]]
 id = "undo-range"
 name = "Request range undo"
-summary = "Select a request with /undo select to restore its file changes and later requests with visible progress."
+summary = "/undo select rewinds a chosen request and its file changes; Runtime clients can preview and confirm an exact turn range."
 status = "experimental"
 surfaces = { tui = "preview" }
 since = "unreleased"
@@ -100,7 +100,7 @@ owner = "crates/engine/src/tools/shell.rs"
 [[feature]]
 id = "workspace-search"
 name = "Workspace search"
-summary = "Eager file and content search, with explicit search schemas and unchanged read guards."
+summary = "Eager file and content search with bounded, snapshot-guarded Rust source navigation; existing read guards still apply."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "unreleased"
@@ -159,6 +159,16 @@ since = "0.1.0"
 flag = "mcp"
 docs = "docs/MCP.md"
 owner = "crates/mcp"
+
+[[feature]]
+id = "mcp-tool-approval"
+name = "MCP tool approval rules"
+summary = "Global per-tool Always, Ask and Off rules stay bound to the current server and preserve required consent."
+status = "experimental"
+surfaces = { tui = "partial", api = "preview" }
+since = "unreleased"
+docs = "docs/MCP.md"
+owner = "crates/engine/src/core/engine/tool_preparation.rs"
 
 [[feature]]
 id = "exec-policy"
@@ -319,7 +329,7 @@ owner = "crates/engine/src/tools/review_host.rs"
 [[feature]]
 id = "modes"
 name = "Modes"
-summary = "Plan, Work and Operate modes set what the agent may do in a session; a finished plan offers to start the work."
+summary = "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md"
@@ -328,7 +338,7 @@ owner = "crates/config/src/app_mode.rs"
 [[feature]]
 id = "permission-postures"
 name = "Permission postures"
-summary = "Ask, Auto-Review and Full Access govern approvals; cards default to Deny and preview saved grants."
+summary = "One Shift+Tab dial: Ask, Accept Edits (default), Plan, Auto-Review, Full Access; cards default to Deny."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md#permission-posture"
@@ -346,7 +356,7 @@ owner = "crates/sandbox/src"
 [[feature]]
 id = "providers"
 name = "Providers"
-summary = "Provider routes including Runcrate, with scoped facts, limits, price estimates and a disclosed OrcaRouter offer."
+summary = "Provider routes including Tinker, Runcrate and Tencent TokenHub, with scoped facts, limits and price estimates."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PROVIDERS.md"
@@ -360,6 +370,16 @@ status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/CONFIGURATION.md#auto-model-routing-auto-autorouter"
 owner = "crates/engine/src/model_routing.rs"
+
+[[feature]]
+id = "model-catalog-refresh"
+name = "Model catalog refresh"
+summary = "Refresh public model facts and exact provider rosters during use; failures retain the last good snapshot."
+status = "stable"
+surfaces = { tui = "stable", api = "stable" }
+since = "0.10.3"
+docs = "docs/CATALOG_REFRESH.md"
+owner = "crates/engine/src/models_dev_live.rs"
 
 [[feature]]
 id = "output-limit-answer-recovery"
@@ -410,7 +430,7 @@ owner = "crates/engine/src/tools/workflow"
 [[feature]]
 id = "goals"
 name = "Goals"
-summary = "/goal keeps the agent working toward one objective across turns."
+summary = "/goal keeps the agent on one objective across turns; optional [goal] judges can independently check complete or blocked."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/CONFIGURATION.md#goal-loop-goal"
@@ -419,7 +439,7 @@ owner = "crates/engine/src/tools/goal.rs"
 [[feature]]
 id = "thread-scheduled-turns"
 name = "Reminders into the same thread"
-summary = "send_later, automations and /v1/triggers can deliver a scheduled message as a new turn in an existing thread."
+summary = "send_later, automations and /v1/triggers deliver scheduled turns; a run parked on a human answer pauses its wall clock."
 status = "experimental"
 surfaces = { api = "preview" }
 since = "unreleased"
@@ -456,7 +476,7 @@ owner = "crates/tui/src/commands/groups/core/queue.rs"
 [[feature]]
 id = "receipts"
 name = "Receipts"
-summary = "/receipts lists what a session did: files, commands, calls, approvals and failures."
+summary = "/receipts lists files, commands, calls, approvals and failures; the API serves the same receipt as JSON or Markdown."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.10.1"
@@ -466,11 +486,20 @@ owner = "crates/engine/src/receipts.rs"
 [[feature]]
 id = "preview-request"
 name = "Request preview"
-summary = "/preview-request shows the redacted outbound request without sending it."
+summary = "/preview-request shows the redacted outbound request and bounded route-omission facts without sending it."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/PREVIEW_REQUEST.md"
 owner = "crates/engine/src/request_manifest.rs"
+
+[[feature]]
+id = "present-handoff"
+name = "Present final files"
+summary = "Declare existing workspace files as final deliverables with a read-only handoff receipt."
+status = "experimental"
+surfaces = { tui = "preview", api = "partial" }
+since = "unreleased"
+owner = "crates/engine/src/tools/present.rs"
 
 [[feature]]
 id = "read-media"
@@ -480,6 +509,25 @@ status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/READ_MEDIA.md"
 owner = "crates/engine/src/tools/read_media.rs"
+
+[[feature]]
+id = "clipboard-image-preview"
+name = "Clipboard image paste preview"
+summary = "Attaches an image from the clipboard and previews it as a truecolor cell thumbnail above the composer."
+status = "stable"
+surfaces = { tui = "stable" }
+docs = "docs/READ_MEDIA.md"
+owner = "crates/tui/src/tui/image_preview.rs"
+
+[[feature]]
+id = "clipboard-image-prune"
+name = "Pasted image cleanup"
+summary = "codewhale sessions prune-images reports pasted clipboard images no saved session still names; --apply deletes them."
+status = "experimental"
+surfaces = { tui = "preview" }
+since = "unreleased"
+docs = "docs/READ_MEDIA.md#pasted-image-storage"
+owner = "crates/engine/src/session_image_prune.rs"
 
 [[feature]]
 id = "memory"
@@ -504,7 +552,7 @@ owner = "crates/skills/src"
 [[feature]]
 id = "plugins"
 name = "Plugins"
-summary = "Installs, reviews and trusts plugin bundles, including the first-party marketplace."
+summary = "Installs, reviews and trusts plugin bundles, reports their status, and restores missing reviewed runtime snapshots."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PLUGINS.md"
@@ -570,12 +618,22 @@ summary = "Local API: replay-safe thread creation, events, approvals, project tr
 status = "stable"
 surfaces = { api = "stable" }
 docs = "docs/RUNTIME_API.md"
-owner = "crates/tui/src/runtime_api.rs"
+owner = "crates/app-server/src/runtime_api.rs"
+
+[[feature]]
+id = "runtime-watch-events"
+name = "Attested watch events"
+summary = "Master-bearer watch turns retain typed non-person provenance, exact replay and read-only operation recovery."
+status = "experimental"
+surfaces = { api = "preview" }
+since = "unreleased"
+docs = "docs/RUNTIME_API.md"
+owner = "crates/app-server/src/runtime_api.rs"
 
 [[feature]]
 id = "compatibility-tool-free-turns"
 name = "Compatibility turn admission"
-summary = "Compatibility transports require explicit tool-free turns; interactive clients use the full HTTP/SSE API."
+summary = "Initialized local controls use the held Runtime for tool-free turns, loaded-thread paging, names; clients use HTTP/SSE."
 status = "stable"
 surfaces = { api = "stable" }
 since = "0.10.2"
@@ -590,7 +648,7 @@ status = "stable"
 surfaces = { api = "stable" }
 since = "0.10.2"
 docs = "docs/RUNTIME_API.md#put-v1providersidkey--write-only-credential"
-owner = "crates/tui/src/runtime_api/secrets.rs"
+owner = "crates/app-server/src/runtime_api/secrets.rs"
 
 [[feature]]
 id = "headless-exec"
@@ -599,7 +657,7 @@ summary = "codewhale exec streams JSON, warns before finite step limits and repo
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/RUNTIME_API.md"
-owner = "crates/tui/src/exec_agent.rs"
+owner = "crates/app-server/src/exec_agent.rs"
 
 [[feature]]
 id = "github-review"
@@ -619,7 +677,7 @@ summary = "codewhale web opens the embedded browser client on 127.0.0.1 over the
 status = "stable"
 surfaces = { web = "stable" }
 docs = "docs/WEB.md"
-owner = "crates/tui/src/runtime_web"
+owner = "crates/app-server/src/runtime_web"
 
 [[feature]]
 id = "keybindings"
@@ -706,7 +764,7 @@ owner = "crates/tui/src/commands/groups/core/home.rs"
 [[feature]]
 id = "account-login"
 name = "Account login"
-summary = "/login signs in to an optional Codewhale account; plugin providers connect with /connect."
+summary = "Cancellable account sign-in inside the TUI; account sign-out preserves local model connections and work."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/config.rs"
@@ -743,6 +801,16 @@ summary = "/structcopy copies one session object as redacted JSON."
 status = "stable"
 surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/session/structcopy.rs"
+
+[[feature]]
+id = "conversation-export"
+name = "Conversation export"
+summary = "/export saves a redacted conversation as Markdown, HTML or JSON, to the clipboard or an auto-named file."
+status = "stable"
+surfaces = { tui = "stable" }
+since = "unreleased"
+docs = "docs/GUIDE.md#exporting-a-conversation"
+owner = "crates/tui/src/commands/groups/session/export.rs"
 
 [[feature]]
 id = "live-thinking"
@@ -820,21 +888,11 @@ owner = ".github/workflows/release-artifacts.yml"
 [[feature]]
 id = "chatgpt-plan-sign-in"
 name = "Sign in with ChatGPT"
-summary = "Uses official OAuth and the selected account catalog for eligible ChatGPT plan requests in the local OSS app."
+summary = "Official OAuth and the selected account catalog serve ChatGPT plan requests, with distinct token-verification errors."
 status = "experimental"
 surfaces = { tui = "preview", api = "partial", web = "none" }
 since = "0.10.1"
 docs = "docs/PROVIDERS.md#sign-in-with-chatgpt"
-owner = "crates/runtime/src/oauth.rs"
-
-[[feature]]
-id = "claude-plan-sign-in"
-name = "Sign in with Claude"
-summary = "Adds Claude subscription sign-in and native Messages routing. Live provider acceptance remains unverified."
-status = "experimental"
-surfaces = { tui = "preview", api = "partial", web = "none" }
-since = "0.10.2"
-docs = "docs/PROVIDERS.md#sign-in-with-claude"
 owner = "crates/runtime/src/oauth.rs"
 
 [[feature]]
@@ -867,6 +925,16 @@ surfaces = { tui = "none", web = "none", api = "none" }
 since = "unreleased"
 docs = "web/lib/merch/README.md"
 owner = "web/components/merch-interest.tsx"
+
+[[feature]]
+id = "local-whale-voice"
+name = "Local whale voice"
+summary = "Edit SOUL.md for a local whale and inspect the personality captured for each turn."
+status = "experimental"
+surfaces = { tui = "preview", api = "preview" }
+since = "unreleased"
+docs = "docs/RUNTIME_API.md#local-whale-voice"
+owner = "crates/engine/src/whale_soul.rs"
 
 [[feature]]
 id = "profile-constitution"
@@ -975,3 +1043,42 @@ status = "experimental"
 since = "unreleased"
 surfaces = { tui = "preview" }
 owner = "crates/engine/src/tools/context_archive.rs"
+
+[[feature]]
+id = "usage-statistics"
+name = "Usage statistics"
+summary = "Read-only native usage subtotals and execution diagnostics; missing coverage stays explicit."
+status = "experimental"
+surfaces = { tui = "partial" }
+since = "unreleased"
+docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
+owner = "crates/cli/src/metrics.rs"
+
+[[feature]]
+id = "cache-call-receipts"
+name = "Per-call cache receipts"
+summary = "/cache calls shows bounded native receipts with frozen prices, selected currency and missing cache telemetry."
+status = "experimental"
+surfaces = { tui = "partial" }
+since = "unreleased"
+docs = "docs/CONFIGURATION.md#usage-and-execution-statistics"
+owner = "crates/tui/src/commands/contract/debug_diagnostics.rs"
+
+[[feature]]
+id = "local-proxy-fallback"
+name = "Local proxy fallback"
+summary = "Long-lived clients go direct while a loopback proxy port refuses connections, then resume proxying."
+status = "experimental"
+surfaces = { tui = "partial", api = "partial" }
+since = "unreleased"
+docs = "docs/INSTALL.md#a-local-proxy-that-closed-after-the-session-started"
+owner = "crates/net/src/proxy.rs"
+
+[[feature]]
+id = "rate-limit-recovery"
+name = "Bounded HTTP rate-limit retries"
+summary = "Bound HTTP transport retries for 429 independently of network retries and honor provider reset minima."
+status = "experimental"
+surfaces = { tui = "preview", web = "partial", api = "partial" }
+owner = "crates/engine/src/llm_client/rate_limit.rs"
+docs = "docs/rate-limit-retries.md"

@@ -928,22 +928,10 @@ pub fn usage_chip(
 pub fn format_usage_chip(chip: &UsageChip, locale: Locale) -> Option<String> {
     match chip {
         UsageChip::Money(amount) => Some(amount.clone()),
-        UsageChip::PricedSubtotal {
-            amount,
-            legacy,
-            reasons,
-        } => Some(
-            tr(
-                locale,
-                if *legacy {
-                    MessageId::CostChipSavedSubtotal
-                } else {
-                    MessageId::CostChipSubtotal
-                },
-            )
-            .replace("{amount}", amount)
-            .replace("{reasons}", &format_unpriced_reasons(reasons, locale)),
-        ),
+        // The glance shows confirmed money only. When part of the session has
+        // no authoritative price, the confirmed dollars still stand on their
+        // own; the cost report, not this line, explains what is missing.
+        UsageChip::PricedSubtotal { amount, .. } => Some(amount.clone()),
         UsageChip::Allowance { label, used_pct } => Some(match used_pct {
             Some(pct) => tr(locale, MessageId::CostChipAllowancePercent)
                 .replace("{plan}", label)
@@ -951,28 +939,11 @@ pub fn format_usage_chip(chip: &UsageChip, locale: Locale) -> Option<String> {
             None => tr(locale, MessageId::CostChipAllowance).replace("{plan}", label),
         }),
         UsageChip::Local => Some(tr(locale, MessageId::CostChipLocal).into_owned()),
-        UsageChip::Unknown(reasons) => Some(
-            tr(locale, MessageId::CostChipUnknown)
-                .replace("{reasons}", &format_unpriced_reasons(reasons, locale)),
-        ),
+        // Nothing confirmed to show: an unpriced session has no dollars, and
+        // inventing a label for their absence is the noise this replaced.
+        UsageChip::Unknown(_) => None,
         UsageChip::Hidden => None,
     }
-}
-
-/// The same saved receipt explains missing coverage in every cost surface.
-#[must_use]
-pub fn format_unpriced_reasons(reasons: &[UnpricedReason], locale: Locale) -> String {
-    if reasons.is_empty() {
-        return tr(locale, UnpricedReason::UnrecordedCoverage.message_id()).into_owned();
-    }
-    let mut descriptions = Vec::new();
-    for reason in reasons {
-        let text = tr(locale, reason.message_id());
-        if !descriptions.contains(&text) {
-            descriptions.push(text);
-        }
-    }
-    descriptions.join(", ")
 }
 
 fn custom_billing_unknown(config: &ProviderConfig) -> bool {
@@ -2251,13 +2222,9 @@ mod tests {
         );
         assert_eq!(chip, UsageChip::Unknown(vec![UnpricedReason::NoPricingRow]));
         assert_eq!(
-            format_usage_chip(&chip, codewhale_localization::Locale::En).as_deref(),
-            Some("cost: unknown (rate unavailable)")
-        );
-        assert!(
-            !format_usage_chip(&chip, codewhale_localization::Locale::En)
-                .unwrap_or_default()
-                .contains('$')
+            format_usage_chip(&chip, codewhale_localization::Locale::En),
+            None,
+            "an unpriced turn shows no money"
         );
 
         let unknown_billing = usage_chip(
@@ -2272,10 +2239,9 @@ mod tests {
             unknown_billing,
             UsageChip::Unknown(vec![UnpricedReason::UnknownBillingBasis])
         );
-        assert!(
-            !format_usage_chip(&unknown_billing, codewhale_localization::Locale::En)
-                .unwrap_or_default()
-                .contains('$')
+        assert_eq!(
+            format_usage_chip(&unknown_billing, codewhale_localization::Locale::En),
+            None
         );
     }
 

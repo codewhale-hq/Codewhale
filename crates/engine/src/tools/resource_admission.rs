@@ -19,6 +19,8 @@ pub const DEFAULT_HEAVY_COMMAND_LIMIT: usize = 2;
 const MAX_HEAVY_COMMAND_LIMIT: usize = 16;
 const ADMISSION_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+const ADMISSION_MAX_WAIT: Duration = Duration::from_secs(30);
+
 /// When the host free-RAM fraction drops to/below these thresholds the
 /// effective heavy-command admission limit tightens so a saturated host stops
 /// admitting new link graphs (#4864 req 7). Values are deliberately generous
@@ -91,7 +93,7 @@ struct HeavyPermitSlot {
 /// A held cross-process heavy-command permit.
 #[derive(Debug)]
 pub struct HeavyCommandPermit {
-    _slot: HeavyPermitSlot,
+    _slot: Option<HeavyPermitSlot>,
     queued_for: Duration,
     limit: usize,
     memory_pressure: MemoryPressure,
@@ -254,7 +256,7 @@ async fn acquire_heavy_command_permit_at(
             match try_lock_slot(&path) {
                 Ok(Some(slot)) => {
                     return Ok(HeavyCommandPermit {
-                        _slot: slot,
+                        _slot: Some(slot),
                         queued_for: started.elapsed(),
                         limit,
                         memory_pressure: pressure,
@@ -269,6 +271,20 @@ async fn acquire_heavy_command_permit_at(
             }
         }
         tokio::time::sleep(ADMISSION_POLL_INTERVAL).await;
+        if started.elapsed() >= ADMISSION_MAX_WAIT {
+            tracing::warn!(
+                waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                effective_slots = effective,
+                ?pressure,
+                "heavy command admission wait expired; running without a permit"
+            );
+            return Ok(HeavyCommandPermit {
+                _slot: None,
+                queued_for: started.elapsed(),
+                limit,
+                memory_pressure: pressure,
+            });
+        }
     }
 }
 
@@ -361,7 +377,15 @@ fn host_memory_free_fraction() -> Option<f64> {
         .parse::<u64>()
         .ok()?;
     let stats = run_capture("/usr/bin/vm_stat", &[])?;
-    let free_pages = memory_pages_from_vm_stat(&stats, &["Pages free:", "Pages inactive:"])?;
+    let free_pages = memory_pages_from_vm_stat(
+        &stats,
+        &[
+            "Pages free:",
+            "Pages inactive:",
+            "Pages speculative:",
+            "Pages purgeable:",
+        ],
+    )?;
     let free_bytes = free_pages.checked_mul(page_size)?;
     (total > 0).then(|| (free_bytes as f64 / total as f64).clamp(0.0, 1.0))
 }

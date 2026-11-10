@@ -638,7 +638,11 @@ impl SourceNavigation {
         }) {
             return;
         }
-        if name.len() > MAX_NAME_LEN || start == 0 || end < start {
+        if name.len() > MAX_NAME_LEN
+            || start == 0
+            || end < start
+            || end - start >= super::file::READ_LIMIT_LINES
+        {
             self.symbols_omitted += 1;
             return;
         }

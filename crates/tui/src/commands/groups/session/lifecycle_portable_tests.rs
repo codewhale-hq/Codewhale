@@ -298,7 +298,7 @@ fn new_composes_exact_baseline_outcomes() {
     assert_eq!(canned.transition_checks.get(), 1);
     assert!(canned.fresh_forces.is_empty());
 
-    // Success -> message + empty SyncSession action.
+    // Preparation -> pending request; the Engine still owns confirmation.
     let mut canned = CannedLifecycle {
         fresh: Ok(SessionNewReceipt {
             truncated_id: "new-123".to_string(),
@@ -307,15 +307,10 @@ fn new_composes_exact_baseline_outcomes() {
         ..CannedLifecycle::default()
     };
     let result = super::new::new_portable(&mut canned, Some("--force"));
-    assert_eq!(
-        result.message.as_deref(),
-        Some(
-            "Started new session new-123 (New Session). Previous sessions remain available via /resume."
-        )
-    );
+    assert!(result.message.is_none());
     assert!(matches!(
         result.action,
-        Some(SessionAction::SyncSession(codewhale_command_contract::facets::SessionSyncPayload { session_id: Some(ref id), .. })) if id == "new-123"
+        Some(SessionAction::NewSession { sync: codewhale_command_contract::facets::SessionSyncPayload { session_id: Some(ref id), .. }, force: true }) if id == "new-123"
     ));
     assert_eq!(canned.fresh_forces, [true]);
     assert_eq!(canned.transition_checks.get(), 1);

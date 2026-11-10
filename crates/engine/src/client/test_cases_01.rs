@@ -1,9 +1,8 @@
-
 use super::*;
 use crate::client::chat::{
     build_chat_messages, build_chat_messages_for_request,
     build_chat_messages_for_request_and_provider, count_reasoning_replay_chars, parse_chat_message,
-    parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat, tool_to_chat_for_base_url,
+    parse_sse_chunk, sanitize_thinking_mode_messages,
 };
 use crate::client::responses::build_responses_body;
 use crate::tools::apply_patch::ApplyPatchTool;
@@ -605,12 +604,8 @@ async fn non_streaming_envelope_bounds_a_stalled_provider() {
     );
 }
 
-/// Every attempt answers 429 with an hour-long Retry-After. Honoring the
-/// header must not hand the total budget to the server: the retry loop is
-/// capped by the envelope, so a gateway answering 429 + Retry-After: 3600
-/// forever fails the turn in bounded time instead of wedging it for hours.
 #[tokio::test]
-async fn retry_after_honoring_cannot_extend_the_non_streaming_envelope() {
+async fn retry_after_beyond_recovery_budget_returns_typed_refusal() {
     let _env_lock = crate::test_support::lock_test_env();
     let _envelope = NonStreamingEnvelopeGuard::millis(2000);
     let server = MockServer::start().await;
@@ -628,11 +623,14 @@ async fn retry_after_honoring_cannot_extend_the_non_streaming_envelope() {
     let err = client
         .create_message(k3_request_fixture("deepseek-v4-pro", Some("off"), false))
         .await
-        .expect_err("unbounded Retry-After honoring must still hit the envelope");
-    assert!(
-        err.to_string().to_lowercase().contains("timed out"),
-        "the envelope must cut off the Retry-After wait; got {err:#}"
+        .expect_err("a minimum beyond recovery budget must stop without sleeping");
+    let error = err.downcast_ref::<LlmError>().expect("typed refusal");
+    assert!(matches!(error, LlmError::QuotaWindow { .. }));
+    assert_eq!(
+        error.suggested_retry_delay(),
+        Some(Duration::from_secs(3600))
     );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
     assert!(
         started.elapsed() < Duration::from_secs(30),
         "a 3600s Retry-After must not run past the envelope; took {:?}",
@@ -1301,7 +1299,10 @@ async fn cache_free_message_call_neither_reads_nor_writes_global_cache() {
     );
 
     let response = client
-        .create_message_without_response_cache(request)
+        .create_message_without_response_cache(
+            request,
+            crate::llm_client::RequestRetryObservation::isolated(),
+        )
         .await
         .expect("cache-free provider call succeeds");
     assert_eq!(response.id, "chatcmpl-cache-free-provider");
@@ -1375,7 +1376,10 @@ async fn cache_free_classifier_429_does_not_publish_global_retry_or_rate_limit_s
         top_p: None,
     };
     let error = client
-        .create_message_without_response_cache(request)
+        .create_message_without_response_cache(
+            request,
+            crate::llm_client::RequestRetryObservation::isolated(),
+        )
         .await
         .expect_err("429 must fail when isolated retries are disabled");
     assert!(
@@ -1433,6 +1437,14 @@ async fn assert_deepseek_strict_request_route_boundary(streaming: bool) {
             expected_wire_strict,
             "{route_base_url} {body}"
         );
+        let parameters = &body["tools"][0]["function"]["parameters"];
+        if expected_wire_strict == Some(true) {
+            assert_eq!(parameters["additionalProperties"], false);
+            assert_eq!(parameters["required"], json!([]));
+        } else {
+            assert!(parameters.get("additionalProperties").is_none());
+            assert!(parameters.get("required").is_none());
+        }
     }
 }
 

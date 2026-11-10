@@ -2580,11 +2580,54 @@ pub fn workspace_relative_path(workspace: &Path, raw: &str) -> Option<PathBuf> {
     }
     let candidate = Path::new(raw);
     let rel = if candidate.is_absolute() {
-        candidate.strip_prefix(workspace).ok()?.to_path_buf()
+        strip_workspace_prefix(candidate, workspace, cfg!(windows))?
     } else {
         candidate.to_path_buf()
     };
     is_safe_relative_path(&rel).then_some(rel)
+}
+
+fn strip_workspace_prefix(
+    candidate: &Path,
+    workspace: &Path,
+    case_insensitive: bool,
+) -> Option<PathBuf> {
+    if let Ok(rel) = candidate.strip_prefix(workspace) {
+        return Some(rel.to_path_buf());
+    }
+    if !case_insensitive {
+        return None;
+    }
+    let mut remaining = candidate.components();
+    for expected in workspace.components() {
+        if !workspace_components_match(&remaining.next()?, &expected) {
+            return None;
+        }
+    }
+    Some(remaining.as_path().to_path_buf())
+}
+
+fn workspace_components_match(
+    left: &std::path::Component<'_>,
+    right: &std::path::Component<'_>,
+) -> bool {
+    use std::path::{Component, Prefix};
+    match (left, right) {
+        (Component::Prefix(left), Component::Prefix(right)) => match (left.kind(), right.kind()) {
+            (
+                Prefix::Disk(left) | Prefix::VerbatimDisk(left),
+                Prefix::Disk(right) | Prefix::VerbatimDisk(right),
+            ) => left.eq_ignore_ascii_case(&right),
+            _ => left
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy()),
+        },
+        _ => left
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy()),
+    }
 }
 
 /// Whether some existing ancestor of `rel` (within `root`) is not a

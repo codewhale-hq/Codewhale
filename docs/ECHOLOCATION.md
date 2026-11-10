@@ -311,17 +311,19 @@ offsets, including a same-size external edit. Without it, ordinary reads behave
 normally. A reference is evidence of a range, never authority to access that path.
 
 When a source snapshot revision is available, native paging carries it from the
-first page, even when the initial read omitted `expected_revision`. This applies
-to byte-budget continuations, line-range continuations and oversized-line
-retries, using the revision already computed from the admitted source bytes.
-An oversized line retries with a larger native `max_bytes` only when that can
-succeed within the existing 500,000-byte maximum; otherwise it reports that no
-complete guarded line fits rather than suggesting an unguarded shell slice.
-Continuation offsets advance only after the selected range fits or source lines
-were displayed. A complete blank line still permits advancing; it is not a
-zero-line request. An empty selection or oversized first line does not also
-advertise skipping the unread range; a feasible oversized-line retry stays on
-that line.
+first page, even when the initial read omitted `expected_revision`. Byte-budget
+and line-range continuations use the revision already computed from admitted
+source bytes. The read defaults to at most 2,000 lines and 50 KiB; only the
+operator's `[workshop] read_result_max_bytes` can raise the byte cap, up to 2 MiB.
+The model has no `max_bytes` parameter. Lines over 2,000 characters are marked
+truncated rather than retried with a model-selected byte budget.
+
+Continuation offsets advance only over complete source lines. A complete blank
+line permits advancing; an empty selection or character-truncated line does not
+advertise skipping the unread range. Character-truncated windows do not supply
+inline navigation bodies or call candidates. Declarations longer than the
+reader's 2,000-line maximum are counted as omitted rather than advertising a
+reference the reader would refuse.
 
 The read's model-facing budget includes these bounded presentation bytes in
 addition to the enforced source-byte budget, so paging and navigation footers do

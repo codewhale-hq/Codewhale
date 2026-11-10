@@ -198,7 +198,7 @@ pub struct PrefixStabilityManager {
     /// delivered as history, with the pinned header untouched).
     context_update_count: u64,
     /// Process-local cache for the tool-catalog JSON serialization. Avoids
-    /// re-running `tool_to_api_json` + join on every `check_and_update`
+    /// re-running `logical_tool_fingerprint_json` + join on every `check_and_update`
     /// when the tool set is unchanged (the common case once tools are
     /// registered at session start).
     tool_catalog_cache: ToolCatalogCache,
@@ -296,7 +296,10 @@ impl ToolCatalogCache {
         // "stable" while the real prefix misses every turn (ops C1). Keep
         // only the digest in the cache — the joined string is not needed on
         // the hot path (#3854).
-        let serialized: Vec<String> = tools.iter().filter_map(tool_to_api_json).collect();
+        let serialized: Vec<String> = tools
+            .iter()
+            .filter_map(logical_tool_fingerprint_json)
+            .collect();
         let joined = serialized.join("\n");
         let entry = CachedCatalog {
             sha256_hex: sha256_hex(joined.as_bytes()),
@@ -351,8 +354,8 @@ fn tool_set_identity(tools: &[Tool]) -> u64 {
     for tool in tools {
         tool.name.hash(&mut hasher);
         tool.description.hash(&mut hasher);
-        // `strict` participates in `tool_to_api_json` output (it is part of
-        // the wire-format the chat API receives), so it MUST be part of the
+        // `strict` participates in `logical_tool_fingerprint_json` output (it is
+        // logical catalog intent), so it MUST be part of the
         // identity. Omitting it lets two semantically different catalogs
         // collide and serve a stale fingerprint.
         tool.strict.hash(&mut hasher);
@@ -704,14 +707,9 @@ impl PrefixStabilityManager {
     }
 }
 
-/// Serialize a tool to the same JSON shape the chat API receives,
-/// excluding internal-only fields like `allowed_callers`, `defer_loading`,
-/// `input_examples`, and `cache_control` that are never sent to DeepSeek.
-///
-/// Shared by the fingerprint manager and fork-prefix inheritance: both
-/// need byte-equality against provider-cached prefixes, and raw `Tool`
-/// serialization would false-negative on internal-only flag skew.
-pub fn tool_to_api_json(tool: &Tool) -> Option<String> {
+/// Serialize the logical tool fields used by the stability fingerprint and
+/// supported-dialect fork comparison. Prepared requests own wire identity.
+pub fn logical_tool_fingerprint_json(tool: &Tool) -> Option<String> {
     let mut value = serde_json::json!({
         "type": "function",
         "function": {
@@ -749,6 +747,32 @@ fn sha256_hex(bytes: &[u8]) -> String {
 pub const CONTEXT_UPDATE_MAX_LINES: usize = 80;
 pub const CONTEXT_UPDATE_MAX_BYTES: usize = 6_000;
 
+/// The fixed opening every [`context_update_message`] body starts with.
+///
+/// Readers that must tell the engine's drift notices from a person's own
+/// words recognize the envelope by it — see `is_context_update_envelope`.
+pub const CONTEXT_UPDATE_HEADER: &str = concat!(
+    "<context_update>\n",
+    "Session context changed since it was pinned; the pinned system ",
+    "prompt is unchanged. Delta (+ added, - removed):\n",
+);
+
+/// The fixed closing every [`context_update_message`] body ends with.
+pub const CONTEXT_UPDATE_CLOSE: &str = "</context_update>";
+
+/// True when `text` is one whole `<context_update>` envelope exactly as
+/// [`context_update_message`] renders it: the engine's fixed header, then the
+/// delta, then the fixed close, and nothing of a person's own around it.
+///
+/// The drift notice is appended to the model-visible history by the engine,
+/// between turn records, so no reconstruction from records can reproduce it —
+/// history alignments must skip it rather than read it as a user prompt. A
+/// person quoting or asking about a notice carries their own words outside the
+/// envelope, which fails either end of this check and keeps their turn whole.
+pub fn is_context_update_envelope(text: &str) -> bool {
+    text.starts_with(CONTEXT_UPDATE_HEADER) && text.ends_with(CONTEXT_UPDATE_CLOSE)
+}
+
 pub fn context_update_message(known: &str, current: &str) -> Option<String> {
     use std::collections::HashMap;
     let mut counts: HashMap<&str, i64> = HashMap::new();
@@ -784,10 +808,7 @@ pub fn context_update_message(known: &str, current: &str) -> Option<String> {
         return None;
     }
 
-    let mut out = String::from(
-        "<context_update>\nSession context changed since it was pinned; the pinned system \
-         prompt is unchanged. Delta (+ added, - removed):\n",
-    );
+    let mut out = String::from(CONTEXT_UPDATE_HEADER);
     let mut lines_written = 0usize;
     let mut truncated = 0usize;
     for (sign, group) in [("+ ", &added), ("- ", &removed)] {
@@ -809,7 +830,7 @@ pub fn context_update_message(known: &str, current: &str) -> Option<String> {
             "(+{truncated} more changed lines; re-read the files you need)\n"
         ));
     }
-    out.push_str("</context_update>");
+    out.push_str(CONTEXT_UPDATE_CLOSE);
     Some(out)
 }
 
@@ -975,6 +996,15 @@ mod tests {
         assert!(update.contains("- be kind"));
         assert!(!update.contains("- src/a.rs"));
         assert!(context_update_message(known, known).is_none());
+
+        // The recognizer answers for every body the builder can render, so a
+        // history alignment can skip the engine's notices without guessing at
+        // their shape, while a person's words around one stay their own.
+        assert!(is_context_update_envelope(&update));
+        let quoted = format!("what does this mean?\n{update}");
+        assert!(!is_context_update_envelope(&quoted));
+        let truncated = &update[..update.len() - CONTEXT_UPDATE_CLOSE.len()];
+        assert!(!is_context_update_envelope(truncated));
 
         let mut big = String::new();
         for i in 0..500 {

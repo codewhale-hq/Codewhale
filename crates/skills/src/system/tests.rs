@@ -449,6 +449,18 @@ fn outdated_marker_triggers_reinstall_of_existing_skills() {
     assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
 
     let old = DELEGATE_BODY
+        .replace(
+            "integration, and the final review.",
+            "integration, and final verification.",
+        )
+        .replace(
+            "ambiguous product decisions, or destructive operations without a clear acceptance criterion.",
+            "ambiguous product decisions, destructive operations without a clear acceptance criterion, or final verification.",
+        )
+        .replace(
+            "Routes are optional: a child inherits a working route by default. To choose one, `agent(action:\"roster\")` (no provider request) lists each role's resolved route and the models you may pick.",
+            "Choose the route per child from `agent(action:\"roster\")` (no provider request), not from memory. It lists each role's resolved route and the models you may pick.",
+        )
         .replace("Give each child a concrete outcome and acceptance criteria. Let it continue until the work is complete or it needs input. Do not invent time, turn or token budgets, or tell it to stop early because a percentage of a budget has elapsed. The runtime carries any limits explicitly configured by the owner.\n\n", "")
         .replace(
             "Verify with the existing checks that provider-specific API key changes do not restart provider onboarding.",

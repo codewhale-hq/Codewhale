@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:fb068568394f -->
 <div align="center">
 
 <picture>
@@ -76,8 +76,8 @@ salinan akan ada di `PATH` dan yang muncul lebih dulu yang dipakai.
 ## Mulai cepat
 
 1. Commit atau stash pekerjaan Anda, lalu jalankan `codewhale` dari root
-   repositori git. Secara default, Codewhale menerapkan edit berkas di sana
-   tanpa bertanya dan menampilkan diff-nya kepada Anda.
+   repositori git. Secara default (**Terima suntingan**, Accept Edits), Codewhale mengedit berkas di repositori tanpa bertanya
+   dan bertanya sebelum setiap perintah; `Shift+Tab` berpindah antartingkat izin saat Anda ingin ia lebih sering atau lebih jarang bertanya.
 2. Jalankan `/provider` (atau tekan `F3`), pilih penyedia, tempel kunci API-nya,
    lalu pilih model. DeepSeek adalah penyedia default. Jika tidak punya kunci,
    pilih runtime lokal. Jika belum ada penyedia yang dikonfigurasi dan Ollama
@@ -107,12 +107,12 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 ## Mode dan izin
 
-Instalasi baru dimulai dalam mode Work dengan izin Tanya.
+Instalasi baru dimulai dalam mode Work dengan izin Terima suntingan. Satu kenop mengganti keduanya: `Shift+Tab` berpindah bertahap Tanya → Terima suntingan → Plan → Tinjauan otomatis → Akses penuh.
 
 | | Ganti dengan | Opsi |
 | --- | --- | --- |
-| Mode | `Tab` (saat input kosong) atau `/mode` | **Plan** membaca dan mencari tetapi tidak mengubah apa pun. **Work** mengedit berkas dan menjalankan perintah. **Operate** memiliki akses yang sama dengan Work, memperlakukan permintaan Anda sebagai tujuan, dan terus berjalan sampai tujuan itu terverifikasi atau ia memerlukan masukan dari Anda. |
-| Izin | `Shift+Tab` | **Tanya** (Ask) menerapkan edit berkas di repositori Anda tanpa bertanya dan bertanya sebelum perintah shell yang bukan baca-saja. **Tinjauan otomatis** (Auto-Review) membiarkan aturan dan model peninjau menyetujui panggilan rutin dan menolak panggilan berisiko tinggi; beralihlah ke Tanya untuk menyetujuinya sendiri. **Akses penuh** (Full Access) tidak pernah bertanya dan menonaktifkan sandbox Codewhale; aturan repositori dan kebijakan terkelola tetap berlaku. |
+| Mode | posisi Plan pada `Shift+Tab`, atau `/mode` | **Plan** membaca dan mencari tetapi tidak mengubah apa pun. **Work** (semua posisi lainnya) mengedit berkas dan menjalankan perintah; mulai tujuan dengan `/goal` saat permintaan membutuhkan lebih dari satu giliran. |
+| Izin | `Shift+Tab` | **Tanya** (Ask) bertanya sebelum setiap edit berkas dan setiap perintah shell yang bukan baca-saja. **Terima suntingan** (Accept Edits) menerapkan edit berkas di repositori git Anda tanpa bertanya dan tetap bertanya sebelum perintah. **Tinjauan otomatis** (Auto-Review) membiarkan aturan dan model peninjau menyetujui panggilan rutin dan menolak panggilan berisiko tinggi; beralihlah ke Tanya untuk menyetujuinya sendiri. **Akses penuh** (Full Access) tidak pernah bertanya, dan perintah bisa menjangkau apa pun di komputer ini; aturan repositori dan kebijakan terkelola tetap berlaku. |
 
 Lihat [panduan mode dan izin](../MODES.md) untuk detailnya.
 

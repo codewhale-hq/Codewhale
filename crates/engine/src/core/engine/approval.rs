@@ -65,6 +65,86 @@ pub(super) enum ApprovalDecision {
     },
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct SubmittedApproval {
+    pub(super) decision: ApprovalDecision,
+    pub(super) publication: Option<super::NativeApprovalPublication>,
+}
+
+impl ApprovalDecision {
+    pub(super) fn id(&self) -> &str {
+        match self {
+            Self::Approved { id, .. }
+            | Self::Denied { id, .. }
+            | Self::TimedOut { id }
+            | Self::Unavailable { id }
+            | Self::RetryWithPolicy { id, .. } => id,
+        }
+    }
+
+    pub(super) fn receipt(&self) -> ApprovalReceipt {
+        let (outcome, by, grant) = match self {
+            Self::Approved { by, grant, .. } => {
+                (ApprovalOutcome::ApprovedOnce, Some(*by), grant.as_ref())
+            }
+            Self::Denied { by, grant, .. } => (ApprovalOutcome::Denied, Some(*by), grant.as_ref()),
+            Self::TimedOut { .. } => (ApprovalOutcome::Timeout, None, None),
+            Self::Unavailable { .. } => (
+                ApprovalOutcome::Unavailable,
+                Some(ApprovalDecider::Host),
+                None,
+            ),
+            Self::RetryWithPolicy { policy, by, .. } => (
+                ApprovalOutcome::RetryWithPolicy {
+                    policy: policy.clone(),
+                },
+                Some(*by),
+                None,
+            ),
+        };
+        let receipt = ApprovalReceipt::decided_with(self.id(), outcome, by);
+        grant.map_or(receipt.clone(), |grant| receipt.with_grant(grant))
+    }
+
+    pub(super) fn require_actual(&self, receipt: &ApprovalReceipt) -> anyhow::Result<()> {
+        let expected = self.receipt();
+        match (expected, receipt) {
+            (
+                ApprovalReceipt::Decided {
+                    approval_id,
+                    tool_call_id,
+                    outcome,
+                    decided_by,
+                    grant_id,
+                    matched_label,
+                    ..
+                },
+                ApprovalReceipt::Decided {
+                    approval_id: actual_id,
+                    tool_call_id: actual_call,
+                    outcome: actual_outcome,
+                    decided_by: actual_by,
+                    grant_id: actual_grant,
+                    matched_label: actual_label,
+                    ..
+                },
+            ) => {
+                anyhow::ensure!(
+                    &approval_id == actual_id
+                        && &tool_call_id == actual_call
+                        && &outcome == actual_outcome
+                        && &decided_by == actual_by
+                        && &grant_id == actual_grant
+                        && &matched_label == actual_label,
+                    "Core approval resolved with a different durable outcome: {receipt:?}"
+                );
+                Ok(())
+            }
+            _ => anyhow::bail!("Core approval did not produce a decision receipt"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum UserInputDecision {
     Submitted {
@@ -208,11 +288,35 @@ impl Engine {
         decided_by: Option<ApprovalDecider>,
         grant: Option<&GrantRef>,
     ) -> Result<(), ToolError> {
+        self.commit_published_approval_decision(tool_id, outcome, decided_by, grant, None)
+            .await
+    }
+
+    async fn commit_published_approval_decision(
+        &self,
+        tool_id: &str,
+        outcome: ApprovalOutcome,
+        decided_by: Option<ApprovalDecider>,
+        grant: Option<&GrantRef>,
+        publication: Option<&super::NativeApprovalPublication>,
+    ) -> Result<(), ToolError> {
         let mut receipt = ApprovalReceipt::decided_with(tool_id, outcome, decided_by);
         if let Some(grant) = grant {
             receipt = receipt.with_grant(grant);
         }
-        self.commit_approval_receipt(receipt).await
+        if let Err(error) = self.commit_approval_receipt(receipt.clone()).await {
+            if let Some(publication) = publication {
+                publication
+                    .fail_native(format!("Core decision receipt was not committed: {error}"));
+            }
+            return Err(error);
+        }
+        if let Some(publication) = publication {
+            publication.commit(receipt).await.map_err(|error| {
+                ToolError::execution_failed(format!("Core approval is durable but its Runtime publication is unconfirmed; tool execution blocked: {error}"))
+            })?;
+        }
+        Ok(())
     }
 
     pub(super) async fn request_tool_approval(
@@ -235,7 +339,7 @@ impl Engine {
         &mut self,
         tool_id: &str,
         tool_name: &str,
-        event: Event,
+        mut event: Event,
         withdraw: Option<&CancellationToken>,
     ) -> Result<ApprovalResult, ToolError> {
         let _timing = codewhale_runtime::logging::PhaseTimer::start("approval_wait");
@@ -252,6 +356,21 @@ impl Engine {
             _ => ApprovalReceipt::asked(tool_id, tool_name),
         };
         self.commit_approval_receipt(ask).await?;
+        let (publication, mut _producer) = super::NativeApprovalPublication::new(tool_id);
+        publication.set_timeout(self.api_config.approval_timeout());
+        _producer
+            .install(self.current_approval.clone())
+            .map_err(|error| {
+                ToolError::execution_failed(format!(
+                    "Core approval waiter could not be installed: {error}"
+                ))
+            })?;
+        if let Event::ApprovalRequired {
+            publication: slot, ..
+        } = &mut event
+        {
+            *slot = Some(publication.clone());
+        }
         if self
             .child_host
             .as_ref()
@@ -291,7 +410,9 @@ impl Engine {
             .as_ref()
             .map(|child| child.authority.pause_person_wait());
         self.turn_wall_clock.begin_human_wait();
-        let decision = self.await_tool_approval(tool_id, withdraw).await;
+        let decision = self
+            .await_tool_approval(tool_id, withdraw, Some(&publication))
+            .await;
         self.turn_wall_clock.end_human_wait();
         decision
     }
@@ -315,14 +436,16 @@ impl Engine {
         &mut self,
         tool_id: &str,
         withdraw: Option<&CancellationToken>,
+        publication: Option<&super::NativeApprovalPublication>,
     ) -> Result<ApprovalResult, ToolError> {
         let started = std::time::Instant::now();
         // The held Engine request owns this absolute deadline. Hiding or
         // rebuilding a host card cannot restart the configured human wait.
-        let deadline = self
-            .api_config
-            .approval_timeout()
-            .map(|timeout| tokio::time::Instant::now() + timeout);
+        let timeout = self.api_config.approval_timeout();
+        if let Some(publication) = publication {
+            publication.set_timeout(timeout);
+        }
+        let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         let mut heartbeat = tokio::time::interval(WAIT_HEARTBEAT);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick completes immediately; consume it so the first
@@ -335,7 +458,7 @@ impl Engine {
                 biased;
                 _ = self.cancel_token.cancelled() => {
                     let suffix = self.cancel_reason_suffix();
-                    self.commit_approval_outcome(tool_id, ApprovalOutcome::Cancelled, Some(ApprovalDecider::Host)).await?;
+                    self.commit_published_approval_decision(tool_id, ApprovalOutcome::Cancelled, Some(ApprovalDecider::Host), None, publication).await?;
                     let _ = self.send_event(Event::ApprovalWithdrawn { id: tool_id.to_string() }).await;
                     return Err(ToolError::cancelled(
                         format!("Request cancelled while awaiting approval{suffix}"),
@@ -347,7 +470,7 @@ impl Engine {
                         None => std::future::pending().await,
                     }
                 } => {
-                    self.commit_approval_outcome(tool_id, ApprovalOutcome::Cancelled, Some(ApprovalDecider::Host)).await?;
+                    self.commit_published_approval_decision(tool_id, ApprovalOutcome::Cancelled, Some(ApprovalDecider::Host), None, publication).await?;
                     let _ = self.send_event(Event::ApprovalWithdrawn { id: tool_id.to_string() }).await;
                     let _ = self.send_event(Event::Status {
                         message: format!(
@@ -364,13 +487,13 @@ impl Engine {
                         None => std::future::pending().await,
                     }
                 } => {
-                    self.commit_approval_outcome(tool_id, ApprovalOutcome::Timeout, None).await?;
+                    self.commit_published_approval_decision(tool_id, ApprovalOutcome::Timeout, None, None, publication).await?;
                     let _ = self.send_event(Event::ApprovalWithdrawn { id: tool_id.to_string() }).await;
                     return Ok(ApprovalResult::TimedOut);
                 }
                 decision = self.rx_approval.recv() => {
                     let Some(decision) = decision else {
-                        self.commit_approval_outcome(tool_id, ApprovalOutcome::Unavailable, Some(ApprovalDecider::Host)).await?;
+                        self.commit_published_approval_decision(tool_id, ApprovalOutcome::Unavailable, Some(ApprovalDecider::Host), None, publication).await?;
                         return Err(ToolError::execution_failed(
                             "Approval channel closed — engine is shutting down. \
                              The approval modal can no longer reach the engine; \
@@ -387,21 +510,32 @@ impl Engine {
                     {
                         continue;
                     }
+                    let SubmittedApproval { decision, publication: proposed_source } = decision;
+                    if !match (publication, proposed_source.as_ref()) {
+                        (Some(current), Some(proposed)) => current.same_request(proposed),
+                        (None, None) => true,
+                        _ => false,
+                    } {
+                        continue;
+                    }
                     match decision {
                         ApprovalDecision::Approved { id, by, grant } if id == tool_id => {
-                            self.commit_approval_decision(tool_id, ApprovalOutcome::ApprovedOnce, Some(by), grant.as_ref()).await?;
+                            self.commit_published_approval_decision(tool_id, ApprovalOutcome::ApprovedOnce, Some(by), grant.as_ref(), publication).await?;
+                            if self.cancel_token.is_cancelled() || withdraw.is_some_and(CancellationToken::is_cancelled) {
+                                return Err(ToolError::cancelled("Request cancelled after its approval was committed; tool execution blocked"));
+                            }
                             return Ok(ApprovalResult::Approved(by));
                         }
                         ApprovalDecision::Denied { id, by, grant } if id == tool_id => {
-                            self.commit_approval_decision(tool_id, ApprovalOutcome::Denied, Some(by), grant.as_ref()).await?;
+                            self.commit_published_approval_decision(tool_id, ApprovalOutcome::Denied, Some(by), grant.as_ref(), publication).await?;
                             return Ok(ApprovalResult::Denied);
                         }
-                        ApprovalDecision::TimedOut { id } if id == tool_id => {
-                            self.commit_approval_outcome(tool_id, ApprovalOutcome::Timeout, None).await?;
+                        ApprovalDecision::TimedOut { id } if id == tool_id && deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) => {
+                            self.commit_published_approval_decision(tool_id, ApprovalOutcome::Timeout, None, None, publication).await?;
                             return Ok(ApprovalResult::TimedOut);
                         }
                         ApprovalDecision::Unavailable { id } if id == tool_id => {
-                            self.commit_approval_outcome(tool_id, ApprovalOutcome::Unavailable, Some(ApprovalDecider::Host)).await?;
+                            self.commit_published_approval_decision(tool_id, ApprovalOutcome::Unavailable, Some(ApprovalDecider::Host), None, publication).await?;
                             return Err(ToolError::execution_failed(
                                 "The approval request for this call was no longer current \
                                  (its turn had ended), so it was not shown to the user and \
@@ -410,11 +544,14 @@ impl Engine {
                             ));
                         }
                         ApprovalDecision::RetryWithPolicy { id, policy, by } if id == tool_id => {
-                            self.commit_approval_outcome(
+                            self.commit_published_approval_decision(
                                 tool_id,
                                 ApprovalOutcome::RetryWithPolicy { policy: policy.clone() },
-                                Some(by),
+                                Some(by), None, publication,
                             ).await?;
+                            if self.cancel_token.is_cancelled() || withdraw.is_some_and(CancellationToken::is_cancelled) {
+                                return Err(ToolError::cancelled("Request cancelled after its approval was committed; sandbox retry blocked"));
+                            }
                             return Ok(ApprovalResult::RetryWithPolicy(policy));
                         }
                         // A stale answer for another call: no waiter here. (An
@@ -1047,11 +1184,11 @@ mod tests {
                     host.approve_tool_call(&execution_id)
                         .await
                         .expect("matching typed allow");
-                    host.approve_tool_call(&execution_id)
-                        .await
-                        .expect("duplicate old decision");
                     let (next_execution_id, _) =
                         wait_for_fixture_approval(&events, NEXT_CALL).await;
+                    host.approve_tool_call(&execution_id)
+                        .await
+                        .expect_err("duplicate old decision cannot reach the next Core waiter");
                     assert_ne!(next_execution_id, execution_id);
                     assert!(
                         tokio::time::timeout(Duration::from_millis(25), &mut task)
@@ -1074,10 +1211,10 @@ mod tests {
                     let host = handle.as_ref().unwrap();
                     host.approve_tool_call("counter-stale")
                         .await
-                        .expect("stale typed allow");
+                        .expect_err("stale typed allow must be rejected");
                     host.approve_tool_call(CURRENT_CALL)
                         .await
-                        .expect("provider ID is not host approval authority");
+                        .expect_err("provider ID is not host approval authority");
                     assert!(
                         tokio::time::timeout(Duration::from_millis(25), &mut task)
                             .await
@@ -1263,9 +1400,13 @@ mod tests {
         use crate::tools::codemode::EXECUTE_TOOLS_TOOL_NAME;
 
         let tmp = tempfile::tempdir().expect("fixture directory");
-        let tool_context = options
-            .tool_context
-            .unwrap_or_else(|| ToolContext::new(tmp.path()));
+        let tool_context = options.tool_context.unwrap_or_else(|| {
+            ToolContext::new(
+                tmp.path()
+                    .canonicalize()
+                    .expect("canonical fixture directory"),
+            )
+        });
         let args = json!({ "code": code }).to_string();
         let mock = Arc::new(MockLlmClient::new(vec![
             canned::tool_call_turn("exec-1", EXECUTE_TOOLS_TOOL_NAME, &args),
@@ -1288,6 +1429,8 @@ mod tests {
         engine.session.approval_mode = ApprovalMode::Suggest;
         // Never touch the developer's real MCP config from a test.
         engine.session.mcp_config_path = tmp.path().join("mcp.json");
+        engine.session.workspace = tool_context.workspace.clone();
+        engine.mcp_pool = None;
         engine.session.add_message(Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -1904,6 +2047,7 @@ mod tests {
 
     fn approval_event(tool_id: &str) -> Event {
         Event::ApprovalRequired {
+            publication: None,
             id: tool_id.to_string(),
             tool_name: "exec_shell".to_string(),
             description: "run a keyless approval test".to_string(),
@@ -2047,16 +2191,24 @@ mod tests {
                 .await
                 .expect("durable ask");
             let withdraw = CancellationToken::new();
-            let wait = engine.await_tool_approval("deadline-race", Some(&withdraw));
+            let wait = engine.await_tool_approval("deadline-race", Some(&withdraw), None);
             tokio::pin!(wait);
             assert!(futures_util::poll!(wait.as_mut()).is_pending());
             // Keep the wait unpolled until both its absolute deadline and the
             // inbox are ready; this exercises select-ready ordering directly.
             tokio::time::sleep(Duration::from_millis(1010)).await;
             handle
-                .approve_tool_call("deadline-race")
+                .tx_approval
+                .send(SubmittedApproval {
+                    decision: ApprovalDecision::Approved {
+                        id: "deadline-race".into(),
+                        by: ApprovalDecider::User,
+                        grant: None,
+                    },
+                    publication: None,
+                })
                 .await
-                .expect("queue late allow");
+                .expect("queue late allow for the private waiter ordering fixture");
             match exit {
                 1 => handle.cancel(),
                 2 => withdraw.cancel(),
@@ -2096,7 +2248,7 @@ mod tests {
         std::fs::create_dir(&log).expect("replace log with unwritable directory");
         let outcome = tokio::time::timeout(
             Duration::from_secs(5),
-            engine.await_tool_approval("timeout-write-fails", None),
+            engine.await_tool_approval("timeout-write-fails", None, None),
         )
         .await
         .expect("bounded wait");
@@ -2167,7 +2319,14 @@ mod tests {
 
         for (index, (decision, expected, expected_by)) in cases.into_iter().enumerate() {
             let tmp = tempfile::tempdir().expect("tempdir");
-            let (mut engine, handle) = Engine::new(EngineConfig::default(), &Config::default());
+            let mut config = Config::default();
+            if matches!(decision, Decision::Timeout) {
+                config.approval = Some(codewhale_runtime::config::ApprovalConfig {
+                    timeout_seconds: Some(1),
+                    ..Default::default()
+                });
+            }
+            let (mut engine, handle) = Engine::new(EngineConfig::default(), &config);
             let store = crate::approval_log::ApprovalReceiptStore::new(tmp.path().join("sessions"));
             engine.approval_receipt_store = Ok(store.clone());
             let session_id = engine.session.id.clone();
@@ -2293,7 +2452,7 @@ mod tests {
         handle
             .approve_tool_call("tool-stale")
             .await
-            .expect("deliver stale decision");
+            .expect_err("reject stale decision");
         assert!(
             tokio::time::timeout(Duration::from_millis(50), &mut task)
                 .await
@@ -2349,7 +2508,7 @@ mod tests {
         handle
             .approve_tool_call("tool-write-fails")
             .await
-            .expect("deliver approval decision");
+            .expect_err("a receipt write failure must reject approval acceptance");
 
         assert!(
             task.await.expect("approval task").is_err(),
@@ -2894,7 +3053,15 @@ mod tests {
         let withdraw = tokio_util::sync::CancellationToken::new();
         withdraw.cancel();
         handle
-            .approve_tool_call("withdrawn-ready")
+            .tx_approval
+            .send(SubmittedApproval {
+                decision: ApprovalDecision::Approved {
+                    id: "withdrawn-ready".to_string(),
+                    by: ApprovalDecider::User,
+                    grant: None,
+                },
+                publication: None,
+            })
             .await
             .expect("queue allow");
         let outcome = engine

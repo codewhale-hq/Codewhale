@@ -19,31 +19,23 @@ fn ordinary_engine_default_does_not_install_a_step_budget() {
 }
 
 #[test]
-fn registry_instruction_is_in_the_initial_prompt_only_when_mcp_is_enabled() {
-    let enabled = EngineConfig::default();
-    let (engine, _handle) = Engine::new(enabled, &Config::default());
-    let prompt = crate::prompts::system_prompt_flat_text(
-        engine
-            .session
-            .system_prompt
-            .as_ref()
-            .expect("system prompt"),
-    );
-    assert!(prompt.contains(MCP_REGISTRY_FIRST_INSTRUCTION_SOURCE));
-    assert!(prompt.contains("registry_sync"));
-    assert!(prompt.contains("start_registry_mcp_server"));
-
-    let mut disabled = EngineConfig::default();
-    disabled.features.disable(Feature::Mcp);
-    let (engine, _handle) = Engine::new(disabled, &Config::default());
-    let prompt = crate::prompts::system_prompt_flat_text(
-        engine
-            .session
-            .system_prompt
-            .as_ref()
-            .expect("system prompt"),
-    );
-    assert!(!prompt.contains(MCP_REGISTRY_FIRST_INSTRUCTION_SOURCE));
+fn registry_guidance_stays_out_of_the_initial_prompt() {
+    for mcp_enabled in [true, false] {
+        let mut config = EngineConfig::default();
+        if !mcp_enabled {
+            config.features.disable(Feature::Mcp);
+        }
+        let (engine, _handle) = Engine::new(config, &Config::default());
+        let prompt = crate::prompts::system_prompt_flat_text(
+            engine
+                .session
+                .system_prompt
+                .as_ref()
+                .expect("system prompt"),
+        );
+        assert!(!prompt.contains("## MCP Registry"));
+        assert!(!prompt.contains("runtime:mcp-registry-first"));
+    }
 }
 
 /// The engine hands every agent the live posture cell, not a copy: a
@@ -112,7 +104,7 @@ async fn an_agent_approval_answer_reaches_the_agent_while_the_engine_is_busy() {
         .subagent_manager
         .write()
         .await
-        .register_child_approval("agent_busy", &id, "bash", "held")
+        .register_child_approval("agent_busy", &id, "bash", "held", None)
         .expect("register");
     mock.handle.approve_tool_call(id).await.expect("send");
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
@@ -120,7 +112,7 @@ async fn an_agent_approval_answer_reaches_the_agent_while_the_engine_is_busy() {
         .expect("the waiting agent is answered without the engine")
         .expect("answer");
     assert_eq!(
-        outcome,
+        outcome.outcome,
         crate::tools::subagent::ChildApprovalOutcome::Approved {
             by: crate::approval_log::ApprovalDecider::User
         }
@@ -149,7 +141,8 @@ fn registry_instruction_does_not_gate_ordinary_local_work() {
             .as_ref()
             .expect("system prompt"),
     );
-    assert!(prompt.contains("## MCP Registry"));
+    assert!(!prompt.contains("## MCP Registry"));
+    assert!(!prompt.contains("registry_sync"));
 
     for ordered in [
         "must call `registry_sync`",
@@ -162,18 +155,6 @@ fn registry_instruction_does_not_gate_ordinary_local_work() {
             "Registry guidance must not order discovery ahead of ordinary work: {ordered:?}"
         );
     }
-
-    // Available capability comes first, and the deferred cost is disclosed
-    // where the model reads about the two tools it would have to hunt for.
-    assert!(prompt.contains("Prefer what is already available"));
-    assert!(prompt.contains("not a step before ordinary work"));
-    assert!(prompt.contains("Both Registry tools are deferred"));
-    assert!(prompt.contains("load one with `tool_search`"));
-
-    // The trust boundary the instruction is actually load-bearing for: a
-    // Registry package is started through the approved host path, never
-    // installed or run through the shell.
-    assert!(prompt.contains("rather than installing or running its package command"));
 }
 
 /// A provider's input bill describes one route's tokenization of one prompt.

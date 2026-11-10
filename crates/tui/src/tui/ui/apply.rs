@@ -91,58 +91,46 @@ pub(crate) fn apply_agent_complete_status_and_observer(
     }
 }
 
+const COORDINATION_LOCK_NOTICE: &str = "coordination-lock";
+
 pub(crate) fn apply_coordination_detail_projection(
     app: &mut App,
     projection: codewhale_engine::tools::subagent::CoordinationDetailProjection,
 ) {
-    // §2.6: when this process does not own the workspace coordination flock,
-    // say so on the sticky status strip. A silent "running (543s)" row on a
-    // settled turn is a lie; surface the lock loss the same way we surface
-    // other session hazards.
-    //
-    // Exception: a same-process handover. A model/provider switch spawns the
-    // new engine before the old engine's manager has dropped the flock, and
-    // flock treats the second fd in this same process as a conflict. That
-    // state self-heals on the next projection retry (#5036), and a 30-second
-    // warning blaming "another Codewhale process" would be false (owner
-    // report, 2026-08-04) — so it stays off the sticky strip.
-    if !projection.process_lock_held {
-        let note = projection
-            .process_lock_note
-            .as_deref()
-            .unwrap_or("another Codewhale process owns delegated coordination for this workspace");
-        let same_process_handover =
-            note.contains(codewhale_engine::tools::subagent::COORDINATION_SAME_PROCESS_HANDOVER);
-        // The strip is one row. The old copy opened with the diagnosis
-        // ("Delegated coordination unavailable — ") and buried the cause
-        // behind a `{note}` carrying a pid, an absolute workspace path, and an
-        // errno, so a truncated strip showed `Delegated coordination
-        // unavailable — an…` and taught the user nothing. Lead with the fact
-        // that explains it — a second session is open here — and leave the pid
-        // and path to the coordination detail view, which already renders
-        // `process_lock_note` in full.
-        let message = if note
-            .contains(codewhale_engine::tools::subagent::COORDINATION_LOCK_TIMEOUT_MARKER)
-        {
-            "Timed out claiming delegated coordination for this workspace — job rows still settle locally.".to_string()
-        } else {
-            "Another Codewhale session in this workspace owns delegated coordination — job rows still settle locally.".to_string()
-        };
-        // Demoted from sticky 30s to transient 5s — two sessions in same workspace
-        // should not feel broken; job rows still settle locally. The detail view
-        // still shows the full pid/path via `process_lock_note`.
-        let already = app
-            .status_toasts
-            .iter()
-            .any(|toast| toast.text.contains("delegated coordination"));
-        if !already && !same_process_handover {
-            app.push_status_toast(
-                message,
-                crate::tui::app::StatusToastLevel::Info,
-                Some(5_000),
-            );
+    let changed = app.coordination_detail.as_ref().is_none_or(|previous| {
+        previous.process_lock_held != projection.process_lock_held
+            || previous.process_lock_note != projection.process_lock_note
+    });
+    if changed {
+        app.retire_event_notices(COORDINATION_LOCK_NOTICE);
+        if !projection.process_lock_held {
+            let note = projection.process_lock_note.as_deref().unwrap_or_default();
+            let same_process_handover = note
+                .starts_with(codewhale_engine::tools::subagent::COORDINATION_SAME_PROCESS_HANDOVER);
+            if !same_process_handover {
+                let message = if note.starts_with(
+                    codewhale_engine::tools::subagent::COORDINATION_LOCK_TIMEOUT_MARKER,
+                ) {
+                    "Timed out claiming delegated coordination — see Work for the reason."
+                } else if note
+                    .starts_with("Runtime coordination was opened without its writer lock")
+                {
+                    "Delegated coordination is read-only — resolve the lock issue and restart this Runtime. Details in Work."
+                } else if note
+                    .starts_with(codewhale_engine::tools::subagent::SESSION_PRIVATE_COORDINATION)
+                {
+                    "Sub-agents here keep private state while another Codewhale session uses this folder — see Work."
+                } else {
+                    "Delegated coordination unavailable — see Work for the reason."
+                };
+                app.push_status_toast_record(
+                    StatusToast::new(message, StatusToastLevel::Info, Some(5_000))
+                        .for_event(COORDINATION_LOCK_NOTICE),
+                );
+            }
         }
     }
+    app.needs_redraw |= changed;
     app.coordination_detail = Some(projection);
 }
 
@@ -689,16 +677,9 @@ pub(crate) fn apply_goal_snapshot_to_app(app: &mut App, snapshot: &GoalSnapshot)
     // to stop it. `/goal <objective>` sets the objective before this snapshot lands,
     // so a user-declared goal does not repeat its own receipt.
     if objective_changed && verdict == GoalStatus::Active {
-        // Operate set it from the prompt (or the model did while operating);
-        // the objective is the prompt the user just typed, so the receipt
-        // says what Operate will do with it instead of echoing it.
-        let content = if app.mode == AppMode::Operate {
-            app.tr(codewhale_localization::MessageId::GoalReceiptSetOperate)
-                .into_owned()
-        } else {
-            app.tr(codewhale_localization::MessageId::GoalReceiptSet)
-                .replace("{objective}", objective)
-        };
+        let content = app
+            .tr(codewhale_localization::MessageId::GoalReceiptSet)
+            .replace("{objective}", objective);
         app.add_message(crate::tui::history::HistoryCell::System { content });
     }
     // A fresh reported-progress receipt reads like the model's own status
@@ -772,20 +753,14 @@ pub(crate) fn apply_goal_snapshot_to_app(app: &mut App, snapshot: &GoalSnapshot)
 /// Apply an explicit mode selection from a user shortcut (Alt+A/P/Y).
 ///
 /// Uses `select_mode`, not `set_mode`, so an explicitly chosen mode is also the
-/// startup default next launch – matching the Tab cycle and hotbar paths.
+/// startup default next launch – matching the permission dial and hotbar paths.
 pub(crate) async fn apply_mode_update(
     app: &mut App,
     engine_handle: &EngineHandle,
-    config: &Config,
     mode: AppMode,
 ) -> bool {
     let outcome = app.select_mode(mode);
     app.report_mode_selection(mode, outcome);
-    if mode == AppMode::Operate {
-        present_operate_board(app, config).await;
-        // First contact with the fleet, not first launch, owns its intro.
-        app.maybe_show_feature_intro();
-    }
     if outcome.changed_live_state() {
         sync_mode_update(app, engine_handle).await;
         true
@@ -810,115 +785,6 @@ pub(crate) async fn apply_yolo_compat_update(
     } else {
         false
     }
-}
-
-/// Entering Operate attaches to the recorded operation (a fresh one only
-/// when none exists or the last was cancelled), shows the localized lead
-/// plan, and keeps always-on mode durable by reinstalling the hourly lead
-/// keepalive bound to this workspace. Burn rate is optional; default is
-/// unbounded.
-async fn present_operate_board(app: &mut App, config: &Config) {
-    let store = match codewhale_engine::operate::OperationStore::open(
-        codewhale_engine::operate::default_operate_dir(),
-    ) {
-        Ok(store) => store,
-        Err(error) => {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: format!("Operate store unavailable: {error}"),
-            });
-            return;
-        }
-    };
-    let Some(automations) = app
-        .runtime_services
-        .automations
-        .as_ref()
-        .map(std::sync::Arc::clone)
-    else {
-        app.add_message(crate::tui::history::HistoryCell::System {
-            content: "Operate keep-alive not installed: automation service unavailable".to_string(),
-        });
-        return;
-    };
-    let model = app.model_selection_for_persistence();
-    let identity = match config.resolve_persisted_provider_identity(
-        Some(app.api_provider.as_str()),
-        app.provider_id_for_persistence(),
-    ) {
-        Ok(identity) => identity,
-        Err(error) => {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: format!("Operate keep-alive not installed: {error}"),
-            });
-            return;
-        }
-    };
-    let (lead_model, credentials) = {
-        let manager = automations.lock().await;
-        match codewhale_engine::operate::keepalive_readiness(
-            &manager,
-            config,
-            Some((&identity, &model)),
-        ) {
-            Ok(credentials) => credentials,
-            Err(error) => {
-                app.add_message(crate::tui::history::HistoryCell::System {
-                    content: format!("Operate keep-alive not installed: {error}"),
-                });
-                return;
-            }
-        }
-    };
-    let operation = match codewhale_engine::operate::attach_or_start_operation(
-        &store,
-        &app.workspace,
-        None,
-        None,
-        credentials,
-        &lead_model,
-    ) {
-        Ok(mut operation) => {
-            if credentials && !operation.direction.is_empty() && operation.lead_plan.is_none() {
-                operation.plan_from_direction();
-                if let Err(error) = store.save(&operation) {
-                    app.add_message(crate::tui::history::HistoryCell::System {
-                        content: format!("Operate plan not saved: {error}"),
-                    });
-                }
-            }
-            operation
-        }
-        Err(error) => {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: format!("Operate did not start: {error}"),
-            });
-            return;
-        }
-    };
-    // Always-on is durable only if the keepalive automation exists: entering
-    // Operate (re)installs it for this workspace, kicking an immediate
-    // lead-plan step when the attached operation still needs one.
-    let needs_lead_plan = !operation
-        .lead_plan
-        .as_ref()
-        .is_some_and(|plan| !plan.slices.is_empty());
-    {
-        let manager = automations.lock().await;
-        if let Err(error) = codewhale_engine::operate::upsert_keepalive(
-            &manager,
-            &app.workspace,
-            needs_lead_plan,
-            config,
-            Some((&identity, &model)),
-        ) {
-            app.add_message(crate::tui::history::HistoryCell::System {
-                content: format!("Operate keep-alive not installed: {error}"),
-            });
-        }
-    }
-    app.add_message(crate::tui::history::HistoryCell::System {
-        content: codewhale_engine::operate::render_plan_board_locale(&operation, app.ui_locale),
-    });
 }
 
 pub(crate) async fn apply_model_and_compaction_update(
@@ -1315,6 +1181,7 @@ pub(crate) async fn apply_provider_fallback_switch(
     if !app.api_messages.is_empty() {
         let _ = engine_handle
             .send(Op::SyncSession {
+                expected: None,
                 control: app.session_sync_control(),
                 session_id: app.current_session_id.clone(),
                 messages: app.api_messages.as_ref().clone(),
@@ -1714,6 +1581,32 @@ async fn apply_command_result_inner(
     config: &mut Config,
     result: commands::CommandResult,
 ) -> Result<bool> {
+    if app.pending_fresh_session.is_some()
+        && !matches!(
+            result.action.as_ref(),
+            None | Some(
+                AppAction::Quit
+                    | AppAction::CancelSubAgent { .. }
+                    | AppAction::TaskCancel { .. }
+                    | AppAction::ShellJob(
+                        crate::tui::app::ShellJobAction::Cancel { .. }
+                            | crate::tui::app::ShellJobAction::CancelAll
+                    )
+                    | AppAction::RemoteControl(
+                        codewhale_app_server::remote_control::RemoteControlAction::Stop
+                    )
+                    | AppAction::Automation(crate::tui::app::AutomationAction::Pause(_))
+                    | AppAction::SetGoalStatus {
+                        status: GoalStatus::Paused,
+                        clear: false,
+                    }
+                    | AppAction::SetAdvisorEnabled { enabled: false }
+            )
+        )
+    {
+        app.status_message = Some("A new session is awaiting Engine confirmation; the current draft and transcript are preserved.".to_string());
+        return Ok(false);
+    }
     // These two actions await participant inference inline on the UI event
     // loop. Waiting behind Runtime Chat's exclusive writer here would
     // deadlock: this same loop must drain the terminal projection/server
@@ -1824,6 +1717,7 @@ async fn apply_command_result_inner(
                 }
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        expected: None,
                         control: app.session_sync_control(),
                         session_id: app.current_session_id.clone(),
                         messages: app.api_messages.as_ref().clone(),
@@ -1858,6 +1752,11 @@ async fn apply_command_result_inner(
                 // transcript is what made those rows read as dead (#4).
                 app.launch.dismiss();
                 app.launch.status = None;
+            }
+            AppAction::NewSession { sync, force } => {
+                if let Err(error) = begin_fresh_session(app, engine_handle, sync, force) {
+                    surface_session_load_failure(app, error);
+                }
             }
             AppAction::SyncSession {
                 session_id,
@@ -1937,6 +1836,7 @@ async fn apply_command_result_inner(
                     .await;
                 let _ = engine_handle
                     .send(Op::SyncSession {
+                        expected: None,
                         control: app.session_sync_control(),
                         session_id,
                         messages,
@@ -2055,6 +1955,7 @@ async fn apply_command_result_inner(
                 if !app.api_messages.is_empty() {
                     let _ = engine_handle
                         .send(Op::SyncSession {
+                            expected: None,
                             control: app.session_sync_control(),
                             session_id: app.current_session_id.clone(),
                             messages: app.api_messages.as_ref().clone(),
@@ -2815,43 +2716,40 @@ async fn apply_command_result_inner(
             AppAction::EditProjectHooks => {
                 edit_project_hooks_from_tui(terminal, app, config);
             }
+            AppAction::OpenModelConnectionSetup => {
+                begin_first_connection_setup(app);
+                app.view_stack
+                    .push(crate::tui::account_login::ConnectionSetupView::new(
+                        app.ui_locale,
+                    ));
+            }
+            AppAction::StartAccountConnect => {
+                begin_first_connection_setup(app);
+                if app.view_stack.contains_kind(ModalKind::AccountLogin) {
+                    app.view_stack.pop_through_kind(ModalKind::AccountLogin);
+                }
+                app.view_stack
+                    .push(crate::tui::account_login::AccountLoginView::connect(
+                        app.config_profile.clone(),
+                        app.ui_locale,
+                    ));
+            }
+            AppAction::StartAccountLogin | AppAction::StartAccountLogout => {
+                if app.view_stack.top_kind() != Some(ModalKind::AccountLogin) {
+                    if app.view_stack.contains_kind(ModalKind::AccountLogin) {
+                        app.view_stack.pop_through_kind(ModalKind::AccountLogin);
+                    }
+                    app.view_stack
+                        .push(crate::tui::account_login::AccountLoginView::new(
+                            app.config_profile.clone(),
+                            matches!(action, AppAction::StartAccountLogout),
+                            app.ui_locale,
+                        ));
+                }
+            }
             AppAction::StartXaiDeviceLogin => {
                 let _switched =
                     run_xai_device_login_from_tui(terminal, app, engine_handle, config).await?;
-            }
-            AppAction::StartClaudeLogin => {
-                app.pending_claude_login = Some(false);
-            }
-            AppAction::StartClaudeRevoke => {
-                let path = app.config_path.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    codewhale_runtime::oauth::revoke_owned_login(
-                        codewhale_runtime::oauth::OAuthProvider::Claude,
-                        path.as_deref(),
-                        None,
-                    )
-                })
-                .await
-                .map_err(|error| anyhow::anyhow!("Claude sign-out worker failed: {error}"))
-                .and_then(|result| result);
-                if result.is_ok() {
-                    let identity = config
-                        .builtin_provider_identity(ProviderKind::Anthropic)
-                        .map_err(anyhow::Error::msg)?;
-                    let entry = config.provider_config_for_mut(&identity)?;
-                    entry.oauth_credential_generation = None;
-                }
-                let (message, level) = match result {
-                    Ok(()) => (
-                        "Removed Codewhale's saved Claude sign-in.".to_string(),
-                        StatusToastLevel::Info,
-                    ),
-                    Err(error) => (
-                        format!("Claude sign-out failed: {error}"),
-                        StatusToastLevel::Error,
-                    ),
-                };
-                app.push_status_toast(message, level, Some(8_000));
             }
             AppAction::StartChatgptPkceLogin => {
                 let _switched =
@@ -3187,11 +3085,11 @@ async fn apply_command_result_inner(
                 });
             }
             AppAction::RemoteControl(action) => match action {
-                crate::remote_control::RemoteControlAction::Start => {
-                    start_remote_control_session(app, config);
+                codewhale_app_server::remote_control::RemoteControlAction::Start => {
+                    start_remote_control_session(app, config).await;
                 }
-                crate::remote_control::RemoteControlAction::Stop => {
-                    app.remote_control.stop();
+                codewhale_app_server::remote_control::RemoteControlAction::Stop => {
+                    app.remote_control.stop_async().await;
                     let status = app.remote_control.status_line();
                     app.sticky_status = None;
                     app.status_message = Some(status);
@@ -3283,6 +3181,7 @@ async fn apply_command_result_inner(
                         if !app.api_messages.is_empty() {
                             let _ = engine_handle
                                 .send(Op::SyncSession {
+                                    expected: None,
                                     control: app.session_sync_control(),
                                     session_id: app.current_session_id.clone(),
                                     messages: app.api_messages.as_ref().clone(),
@@ -3369,10 +3268,22 @@ fn apply_validated_profile_config(
 /// time, and reloads the hook set on return so the screen reflects the edit
 /// immediately.
 fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config: &Config) {
-    let path = app.workspace.join(".codewhale").join("hooks.toml");
+    // A home workspace may keep `.codewhale` on another volume behind a junction
+    // the user made; the walk starts at the real directory there, so the user's
+    // own relocation is not refused, while a link below it still is. Every other
+    // workspace keeps itself as the root with `.codewhale` in the walked path.
+    let (state_root, path) = codewhale_util::files::workspace_state_path(
+        &app.workspace,
+        std::path::Path::new("hooks.toml"),
+    );
+    // The editor takes the spelling the user would type. A resolved root is a
+    // verbatim path on Windows, which several terminal editors will not open,
+    // and the file is the same one either way.
+    let editor_path = app.workspace.join(".codewhale").join("hooks.toml");
     // A link in `.codewhale` or at hooks.toml is never created through, and the
-    // editor is not pointed at one: the file must really live in the workspace.
-    if let Err(error) = codewhale_util::files::reject_linked_path(&app.workspace, &path) {
+    // editor is not pointed at one: the file must really live in the state
+    // directory.
+    if let Err(error) = codewhale_util::files::reject_linked_path(&state_root, &path) {
         app.push_status_toast(
             format!("Could not use {}: {error}", path.display()),
             StatusToastLevel::Warning,
@@ -3382,7 +3293,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
     }
     if !path.exists()
         && let Err(error) = codewhale_util::fs_confined::write(
-            &app.workspace,
+            &state_root,
             &path,
             codewhale_engine::hooks::PROJECT_HOOKS_TEMPLATE.as_bytes(),
         )
@@ -3400,7 +3311,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
         app.use_alt_screen(),
         app.use_mouse_capture,
         app.use_bracketed_paste,
-        &path,
+        &editor_path,
         // Open the file, not a position in it: this edits hooks.toml whole.
         None,
     );
@@ -3420,7 +3331,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
             let reloaded = app.hooks.config();
             let mut content = format!(
                 "Reloaded hooks from {} — {} configured.",
-                path.display(),
+                editor_path.display(),
                 reloaded.hooks.len()
             );
             // Project hooks are executable repository configuration; an
@@ -3464,6 +3375,7 @@ fn edit_project_hooks_from_tui(terminal: &mut AppTerminal, app: &mut App, config
 
 pub(crate) fn apply_workspace_runtime_state(app: &mut App, config: &Config, workspace: PathBuf) {
     app.workspace = workspace.clone();
+    app.retire_event_notices(COORDINATION_LOCK_NOTICE);
     app.coordination_detail = None;
     app.plugin_registry = app.plugin_registry.rediscover_for_workspace(&workspace);
     for error in crate::commands::user_registry::install_plugin_registry(
@@ -3640,7 +3552,39 @@ pub(crate) async fn apply_approval_decision(
     engine_handle: &mut EngineHandle,
     config: &mut Config,
     event: ApprovalDecisionEvent,
-) {
+) -> bool {
+    let approved = matches!(
+        event.decision,
+        ReviewDecision::Approved | ReviewDecision::ApprovedForSession
+    );
+    let result = match event.decision {
+        ReviewDecision::Abort
+            if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(
+                &event.tool_id,
+            ) =>
+        {
+            return false;
+        }
+        ReviewDecision::Abort => {
+            engine_handle.cancel();
+            mark_active_turn_cancelled_locally(app);
+            app.status_message = Some(parent_stop_status(app, "Request cancelled"));
+            return false;
+        }
+        ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
+            engine_handle.approve_tool_call(event.tool_id.clone()).await
+        }
+        ReviewDecision::Denied if event.timed_out => {
+            engine_handle
+                .deny_tool_call_timed_out(event.tool_id.clone())
+                .await
+        }
+        ReviewDecision::Denied => engine_handle.deny_tool_call(event.tool_id.clone()).await,
+    };
+    if let Err(error) = result {
+        app.status_message = Some(format!("Approval was not accepted: {error}"));
+        return false;
+    }
     if event.decision == ReviewDecision::ApprovedForSession {
         // Only the lossy grouping key is stored: a session grant is scoped to
         // the command family (e.g. `shell:git status`), never to the whole
@@ -3667,63 +3611,15 @@ pub(crate) async fn apply_approval_decision(
         persist_rules_from_approval(app, config, &event.persistent_rules);
     }
 
-    // A child's card was answered here: its pending entry is done. An Abort
-    // on a child's card only hides it (the entry stays for the footer).
-    if event.decision != ReviewDecision::Abort {
-        crate::tui::pending_requests::resolve(app, &event.tool_id);
+    if event.decision == ReviewDecision::Denied && !event.timed_out {
+        app.approval_session_denied.insert(event.approval_key);
     }
-
-    match event.decision {
-        // A child's card never stops the parent's turn (approvals C1).
-        ReviewDecision::Abort
-            if codewhale_engine::tools::subagent::SubAgentManager::is_child_approval_id(
-                &event.tool_id,
-            ) => {}
-        ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
-            // Mirror mode: clear the shared-approval gate so a late web
-            // decision acks "no longer pending" instead of double-answering.
-            app.remote_control
-                .resolve_pending_approval(&event.tool_id, true);
-            if engine_handle
-                .approve_tool_call(event.tool_id.clone())
-                .await
-                .is_ok()
-            {
-                note_human_decision_delivered(app, &event.tool_id);
-                app.retire_action_notices(Some(&event.tool_id));
-            }
-        }
-        ReviewDecision::Denied => {
-            // Cache the denial so the model retry-loop doesn't re-prompt for
-            // the exact same approval_key (#360). Only the key (per-call
-            // unique) is stored — NOT the tool_name, which would block all
-            // future invocations of the same tool type (#1377).
-            if !event.timed_out {
-                app.approval_session_denied.insert(event.approval_key);
-            }
-            app.remote_control
-                .resolve_pending_approval(&event.tool_id, false);
-            // A bound expiry carries its own outcome (#6101) so the receipt
-            // distinguishes "no answer within the window" from an operator
-            // denial.
-            let denied = if event.timed_out {
-                engine_handle
-                    .deny_tool_call_timed_out(event.tool_id.clone())
-                    .await
-            } else {
-                engine_handle.deny_tool_call(event.tool_id.clone()).await
-            };
-            if denied.is_ok() {
-                note_human_decision_delivered(app, &event.tool_id);
-                app.retire_action_notices(Some(&event.tool_id));
-            }
-        }
-        ReviewDecision::Abort => {
-            engine_handle.cancel();
-            mark_active_turn_cancelled_locally(app);
-            app.status_message = Some(parent_stop_status(app, "Request cancelled"));
-        }
-    }
+    crate::tui::pending_requests::resolve(app, &event.tool_id);
+    app.remote_control
+        .resolve_pending_approval(&event.tool_id, approved);
+    note_human_decision_delivered(app, &event.tool_id);
+    app.retire_action_notices(Some(&event.tool_id));
+    true
 }
 
 pub(crate) fn apply_setup_runtime_preset(
@@ -3969,14 +3865,20 @@ pub(crate) async fn apply_provider_picker_custom_provider(
                 StatusToastLevel::Error,
                 Some(8_000),
             );
+            sync_config_provider_from_app(config, app);
             return false;
         }
         Err(reason) => {
             app.push_status_toast(reason, StatusToastLevel::Error, Some(8_000));
+            sync_config_provider_from_app(config, app);
             return false;
         }
     };
-    switch_provider(app, engine_handle, config, identity, model).await
+    let switched = switch_provider(app, engine_handle, config, identity, model).await;
+    if !switched {
+        sync_config_provider_from_app(config, app);
+    }
+    switched
 }
 
 async fn reopen_provider_picker_list(
@@ -4905,30 +4807,10 @@ pub(crate) fn apply_loaded_session_with_goal(
     }
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
-    let restored_parent = codewhale_engine::pricing::CostEstimate {
-        usd: session.metadata.cost.session_cost_usd,
-        cny: session.metadata.cost.session_cost_cny,
-    }
-    .sanitized();
-    let restored_background = codewhale_engine::pricing::CostEstimate {
-        usd: session.metadata.cost.subagent_cost_usd,
-        cny: session.metadata.cost.subagent_cost_cny,
-    }
-    .sanitized();
-    // A restored session has no live billed receipt; the estimate rules the
-    // meter until the next model call reports one.
+    app.session.displayed_cost_high_water = 0.0;
+    app.session.displayed_cost_high_water_cny = 0.0;
     app.last_billed_input_tokens = None;
-    app.session.session_cost = restored_parent.usd;
-    app.session.session_cost_cny = restored_parent.cny;
-    app.session.subagent_cost = restored_background.usd;
-    app.session.subagent_cost_cny = restored_background.cny;
-    app.session.subagent_usage_sources = session
-        .metadata
-        .cost
-        .usage_source_fingerprints
-        .iter()
-        .cloned()
-        .collect();
+    app.restore_cost_snapshot(&session.metadata.cost);
     codewhale_engine::cost_status::restore_usage_source_ledger(
         session
             .metadata
@@ -4939,44 +4821,9 @@ pub(crate) fn apply_loaded_session_with_goal(
         &session.metadata.cost.missing_usage_sources,
         session.metadata.cost.missing_usage_overflowed,
     );
-    // Coverage is restored *with* the money, and the live counters are cleared
-    // first: whatever the previous session in this process priced is not inside
-    // the total being loaded, so carrying those counters over would describe the
-    // wrong total (#4318).
-    app.reset_cost_coverage();
-    app.session.missing_usage_sources = session.metadata.cost.missing_usage_sources.clone();
-    app.session.missing_usage_overflowed = session.metadata.cost.missing_usage_overflowed;
-    app.session.cost_priced_turns = session.metadata.cost.priced_turns;
-    app.session.cost_unpriced_turns = session.metadata.cost.unpriced_turns;
-    app.session.cost_cny_priced_turns = session.metadata.cost.cny_priced_turns;
-    app.session.cost_cny_unpriced_turns = session.metadata.cost.cny_unpriced_turns;
-    app.session.cost_unpriced_reasons = session.metadata.cost.unpriced_reasons.clone();
-    app.session.cost_cny_unpriced_reasons = session.metadata.cost.cny_unpriced_reasons.clone();
-    app.session.cost_unpriced_classes = session.metadata.cost.unpriced_classes.clone();
-    app.session.cost_pricing_provenances = session.metadata.cost.pricing_provenances.clone();
-    app.session.cost_live_pricing_defects = session.metadata.cost.live_pricing_defects.clone();
-    app.session.cost_live_pricing_unusable_defects =
-        session.metadata.cost.live_pricing_unusable_defects.clone();
-    app.session.cost_route_receipts = session.metadata.cost.route_receipts.clone();
-    // A pre-coverage session deserializes its new fields from serde defaults,
-    // which are indistinguishable from "complete total, zero turns". Flag it so
-    // `/cost` says the coverage is unknown rather than claiming completeness,
-    // including for an all-zero record.
-    app.session.cost_coverage_unknown_legacy = session.metadata.cost.coverage_is_legacy_unknown();
-    // Restore the high-water marks from persisted metadata so the
-    // monotonic cost guarantee (#244) survives session restarts.
-    // Take the max with the current totals — old sessions without
-    // persisted high-water fields deserialise to 0.0 and fall back to
-    // the restored total with no regression.
-    let total_restored_usd = session.metadata.cost.total_usd();
-    let total_restored_cny = session.metadata.cost.total_cny();
-    let restored_high_water = codewhale_engine::pricing::CostEstimate {
-        usd: session.metadata.cost.displayed_cost_high_water_usd,
-        cny: session.metadata.cost.displayed_cost_high_water_cny,
-    }
-    .sanitized();
-    app.session.displayed_cost_high_water = restored_high_water.usd.max(total_restored_usd);
-    app.session.displayed_cost_high_water_cny = restored_high_water.cny.max(total_restored_cny);
+    codewhale_engine::cost_status::restore_accounted_usage_sources(
+        &session.metadata.cost.accounted_usage_sources,
+    );
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
     app.session.last_prompt_cache_hit_tokens = None;
@@ -5019,6 +4866,7 @@ pub(crate) fn apply_loaded_session_with_goal(
     app.workspace_is_linked_worktree = false;
     app.workspace_context_refreshed_at = None;
     app.system_prompt = session.system_prompt.map(SystemPrompt::Text);
+    app.retire_event_notices(super::event_loop::STARTUP_NOTICE_TOAST);
     app.scroll_to_bottom();
     Ok(())
 }

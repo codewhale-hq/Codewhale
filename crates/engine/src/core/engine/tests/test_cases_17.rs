@@ -78,7 +78,7 @@ impl StreamOpenFailure {
                 let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
                 let addr = listener.local_addr().expect("local addr");
                 drop(listener);
-                let client = codewhale_release::tls::reqwest_client_builder()
+                let client = crate::platform_client_builder()
                     .no_proxy()
                     .build()
                     .expect("client");
@@ -1271,7 +1271,10 @@ async fn interactive_turn_preserves_partial_reply_and_recovers_after_network_dro
     assert_eq!(
         transcript
             .iter()
-            .filter(|message| message.role == "user")
+            .filter(|message| {
+                message.role == "user"
+                    && !crate::runtime_handoff::is_internal_runtime_handoff(message)
+            })
             .count(),
         1,
         "the operator's own turn must be the only user message: {transcript:?}"
@@ -1401,6 +1404,12 @@ impl crate::core::model_client::ModelClient for TransportRetryModelClient {
                 max_retries: 2,
                 initial_delay: 0.0,
                 jitter: false,
+                rate_limit: codewhale_runtime::config::RateLimitRetryPolicy {
+                    max_attempts: 3,
+                    initial_delay_secs: 1,
+                    max_delay_secs: 1,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             || async {
@@ -1484,7 +1493,7 @@ async fn engine_transport_retry_receipts_and_counts_match_actual_scripted_attemp
         } else {
             for attempt in 1..=expected_retries {
                 assert!(events.iter().any(|event| matches!(event,
-                    Event::Status { message } if message.starts_with(&format!("Retry attempt: transport {attempt}/2;"))
+                    Event::Status { message } if message.starts_with(&format!("Retry attempt: HTTP {attempt};"))
                 )));
             }
         }
@@ -1497,7 +1506,7 @@ async fn engine_transport_retry_receipts_and_counts_match_actual_scripted_attemp
         if failures == 1 {
             assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
             assert!(events.iter().any(|event| matches!(event,
-                Event::Status { message } if message == "Retry recovery: transport request recovered after 1 retries"
+                Event::Status { message } if message == "Retry recovery: HTTP operation recovered after 2 attempts"
             )));
         } else {
             assert_eq!(status, TurnOutcomeStatus::Failed);

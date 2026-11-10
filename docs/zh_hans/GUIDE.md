@@ -159,7 +159,7 @@ JSON 把凭据的 `source`（来源）与字面的 `availability`（可用性）
 
 面对不熟悉的代码，让调查和实现分步进行时 Codewhale 表现最好。对于很小且充分理解的改动，一个单独的实现请求就够了。
 
-下一步：[MODES.md](MODES.md) 讲解何时使用 Plan、Work 和 Operate。
+下一步：[MODES.md](MODES.md) 讲解何时使用 Plan 和 Work。
 
 ## 4. 了解界面
 
@@ -198,13 +198,14 @@ JSON 把凭据的 `source`（来源）与字面的 `availability`（可用性）
 
 ## 5. 模式
 
-Codewhale 有三种可见的 TUI 模式：
+Codewhale 有两种可见的 TUI 模式：
 
 | 模式 | 用于 | 默认权限级别 |
 | --- | --- | --- |
 | Plan | 改动前的探索、设计与审查 | 只读调查 |
-| Work | 常规的多步编码工作 | 带审批门禁的工具使用 |
-| Operate | 直接工作，外加并行或后台协调 | 工具遵循当前权限级别；需要时委派 |
+| Work | 常规的多步编码工作 | Accept Edits：仓库内编辑直接应用，命令需审批 |
+
+`Shift+Tab` 拨盘按 Ask → Accept Edits → Plan → Auto-Review → Full Access 逐档切换；Plan 档就是 Plan 模式，其余每一档都是 Work。
 
 从 TUI 里用模式选择器切换模式：
 
@@ -217,7 +218,6 @@ Codewhale 有三种可见的 TUI 模式：
 ```text
 /mode plan
 /mode work
-/mode operate
 ```
 
 Plan 模式是在陌生仓库里开始的最安全位置。它用于检查和决策，不做文件编辑。当 Plan 回合成功完成非空回复时，Codewhale 会询问如何继续，即使计划只是普通文本。
@@ -226,11 +226,15 @@ Plan 模式是在陌生仓库里开始的最安全位置。它用于检查和决
 
 Work 模式是大多数贡献工作的默认模式。它允许 Codewhale 读文件、跑检查、编辑文件，同时把有风险的动作留在审批门禁之后。
 
-Operate 保持直接的工具面及其审批、沙箱、shell、ask 规则和仓库保护。小型或紧密耦合的工作直接处理。多步骤委派使用简洁的 Workflow 计划，明确依赖关系、工作范围，并在步骤间传递完成证据。Fleet 配置和管理的就是这些子智能体及其角色。一个范围明确、可独立完成的任务可以直接交给一个智能体；后续工作通过 `followup` 继续使用同一个智能体。`codewhale dispatch "<task>"`（在 Codewhale 云端计算机上运行工作）目前不可用：云端计算机和账户暂停向新用户开放。
+Operate 已退役；`/mode operate` 会切到 Work 并说明这一点。多智能体工作在任何模式下都通过 `/fleet`（舰队）进行，并保持相同的审批、沙箱、shell、ask 规则和仓库保护。小型或紧密耦合的工作直接处理。多步骤委派使用简洁的 Workflow 计划，明确依赖关系、工作范围，并在步骤间传递完成证据。Fleet 配置和管理的就是这些子智能体及其角色。一个范围明确、可独立完成的任务可以直接交给一个智能体；后续工作通过 `followup` 继续使用同一个智能体。`codewhale dispatch "<task>"` 在账户拥有相应访问权限时使用 Codewhale 云端计算机运行工作；可用性和准入由账户服务决定。
+
+本地工作无需 Codewhale 账户。`/login` 在 TUI 内开始账户登录，显示浏览器链接和验证码，并提供复制和取消操作。`/login status` 查看账户状态；`/connect` 连接模型提供商或本地模型。登录会保留已选择的模型和未发送的消息；账户已登录与模型可用是不同的状态。
+
+`/logout`、`codewhale logout` 和 `codewhale account logout` 仅退出 Codewhale 账户，保留本地模型连接和对话。如需同时移除所有已保存的提供商凭据，请使用 `codewhale logout --all` 并确认；非交互使用可通过 `--all --yes` 确认。
 
 对于你信任的工作区，如果你确实希望动作不经审批提示就继续，可以用 `Shift+Tab` 选择 Full Access（完全访问）权限级别。不要在你不信任的仓库里使用 Full Access。
 
-模式与模型路由是分开的。输入区空闲时 `Tab` 循环切换可见模式，而 `/model auto` 控制回合的模型与思考选择。
+模式与模型路由是分开的。`Shift+Tab` 权限拨盘按 Ask → Accept Edits → Plan → Auto-Review → Full Access 切换，而 `/model auto` 控制回合的模型与思考选择。
 
 你也可以在 `/config` 里通过编辑审批模式来改变审批行为。只有当你理解它会如何改变工具执行时才使用它。
 
@@ -496,7 +500,7 @@ codewhale sessions export <id-or-unique-prefix> --output session.tar.xz
 
 归档包含 `session.json`、可移植的 `container.json`、一份清单（manifest），以及 `artifacts/` 下的普通文件。`--skip-artifacts` 只导出记录本身，`--compression 0` 到 `9` 选择 xz 预设（默认 `6`），`--force` 替换已存在的输出。请把归档存放在会话存储之外。符号链接会被跳过；带链接的工件根目录、硬链接、不可移植的文件名，以及超过 64 层目录或 100,000 个条目的目录树，都会导致导出失败，且不会替换目标文件。
 
-与经过脱敏的 Markdown `/export` 不同，这些归档保留未脱敏的会话内容，包括系统提示词、思考内容、工具调用及其结果、日志分支和审批回执。请解压出 `session.json`，并在 TUI 里用 `/load` 打开；`/resume` 只导入对话。解压出的工件仍是独立文件，`/load` 不会把它们装入工件存储。如果必须让所有工件反映同一时刻的状态，请在归档前暂停写入；增长中的文件会被限制在其记录的大小内，缩小的文件会使导出中止。
+与经过脱敏的 `/export` 不同，这些归档保留未脱敏的会话内容，包括系统提示词、思考内容、工具调用及其结果、日志分支和审批回执。请解压出 `session.json`，并在 TUI 里用 `/load` 打开；`/resume` 只导入对话。解压出的工件仍是独立文件，`/load` 不会把它们装入工件存储。如果必须让所有工件反映同一时刻的状态，请在归档前暂停写入；增长中的文件会被限制在其记录的大小内，缩小的文件会使导出中止。
 
 要从网页应用继续当前正在运行的会话，输入 `/rc` 或用 `codewhale rc` 启动。在系统浏览器里批准一次性验证码。租约有效期间，浏览器拥有新的提示和审批，终端只作为可查看的只读界面。连接后，横幅和一条转录备注会显示实时会话链接（`https://app.codewhale.net/session?run=…`）；`/rc open` 在浏览器里打开它，`/rc link` 打印它。`/rc status` 显示归属，`/rc stop` 把它交回终端，interrupt 仍然可用。断开的连接会保持本地输入锁定，直到最后一个网页端租约过期，这样两个控制端永远不会互相抢占。从一个终端登记的每个文件夹共享同一个稳定的设备 id，因此网页应用每台机器列出一台电脑，而不是每个会话一台。
 

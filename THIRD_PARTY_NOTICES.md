@@ -46,6 +46,24 @@ poll-based render loop; the file header records the change.
 
 Upstream: <https://github.com/openai/codex>
 
+The App Server request-ID, RPC envelope and initialization contracts in
+`crates/app-server-protocol/src/{rpc,lifecycle}.rs` are adapted from official
+Codex `rust-v0.166.0`, commit `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`.
+The changes and exact source paths are recorded in that crate's `UPSTREAM.md`.
+The crate retains `LICENSE-APACHE`, `LICENSE-MIT` and the upstream `NOTICE`;
+its combined license expression is `MIT AND Apache-2.0`.
+
+Upstream NOTICE, retained unchanged:
+
+```text
+OpenAI Codex
+Copyright 2025 OpenAI
+
+This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+Copyright (c) 2016-2022 Florian Dehau
+Copyright (c) 2023-2025 The Ratatui Developers
+```
+
 ```
 Copyright 2025 OpenAI
 
@@ -71,9 +89,9 @@ The embedded extension host bundle
 (`crates/engine/extension-host/dist/codewhale-extension-host.mjs`) contains these
 packages, as published by DeepSeek Harness:
 
-- `@deepseek-ai/cordis` 4.0.5
-- `@deepseek-ai/schemastery` 3.18.5
-- `@deepseek-ai/cosmokit` 1.8.6
+- `@deepseek-ai/cordis` 4.1.0
+- `@deepseek-ai/schemastery` 3.19.0
+- `@deepseek-ai/cosmokit` 1.9.0
 
 Upstream: <https://github.com/deepseek-ai/deepseek-harness> (`vendor/cordis`,
 `vendor/schemastery`, `vendor/cosmokit`)
@@ -104,15 +122,16 @@ SOFTWARE.
 
 ## DeepSeek Harness utility packages (`dsh-util-values`, `dsh-tools`, message compatibility) — MIT
 
-The same bundle contains `@deepseek-ai/dsh-util-values` 0.2.1-rc.5, and
+The same bundle contains `@deepseek-ai/dsh-util-values` 0.2.2-rc.1, and
 `crates/engine/extension-host/src/dsh/dsh-tools-compat.js` contains verbatim
-excerpts of `@deepseek-ai/dsh-tools` 0.2.1-rc.5 (`lib/index.js`), under the
-same licence text. `crates/engine/extension-host/src/dsh/dsh-message-compat.js`
-contains verbatim excerpts of `@deepseek-ai/dsh-brand` 0.2.1-rc.5,
-`@deepseek-ai/dsh-llm` 0.2.1-rc.5, `@deepseek-ai/dsh-session` 0.2.1-rc.5,
-`@deepseek-ai/dsh-system-prompt` 0.2.1-rc.5,
-`@deepseek-ai/dsh-user-questions` 0.2.1-rc.5 and
-`@deepseek-ai/dsh-util-crypto` 0.2.1-rc.5, under the same licence text.
+excerpts of `@deepseek-ai/dsh-tools` 0.2.2-rc.1 (`lib/index.js` and its shared
+`lib/shared-DTdn5dXO.js` chunk), under the same licence text.
+`crates/engine/extension-host/src/dsh/dsh-message-compat.js` contains verbatim
+excerpts of `@deepseek-ai/dsh-brand` 0.2.2-rc.1,
+`@deepseek-ai/dsh-llm` 0.2.2-rc.1, `@deepseek-ai/dsh-session` 0.2.2-rc.1,
+`@deepseek-ai/dsh-system-prompt` 0.2.2-rc.1,
+`@deepseek-ai/dsh-user-questions` 0.2.2-rc.1 and
+`@deepseek-ai/dsh-util-crypto` 0.2.2-rc.1, under the same licence text.
 
 Upstream: <https://github.com/deepseek-ai/deepseek-harness>
 (`dsh-util-values` is published from `packages/util/values`)
@@ -732,7 +751,7 @@ The host and its offline composition reviewer also contain these packages.
 Vendored composition adaptations are recorded in
 `crates/engine/extension-host/src/dsh/upstream/UPSTREAM.json`.
 
-### `@deepseek-ai/cordis-plugin-group` 1.0.5
+### `@deepseek-ai/cordis-plugin-group` 1.1.0
 
 ```text
 MIT License
@@ -758,7 +777,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### `@deepseek-ai/cordis-plugin-include` 1.0.10
+### `@deepseek-ai/cordis-plugin-include` 1.1.0
 
 ```text
 MIT License
@@ -784,7 +803,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### `@deepseek-ai/cordis-plugin-loader` 1.0.6
+### `@deepseek-ai/cordis-plugin-loader` 1.1.0
 
 ```text
 MIT License
@@ -870,19 +889,19 @@ THE SOFTWARE.
 The embedded extension host includes these pinned DeepSeek Harness packages:
 
 - `@deepseek-ai/dsh-agent-presets` 0.1.6-alpha.1
-- `@deepseek-ai/dsh-hook-protocol` 0.2.1-rc.5
-- `@deepseek-ai/dsh-hooks-claude-code` 0.2.1-rc.5
-- `@deepseek-ai/dsh-hooks-codex` 0.2.1-rc.5
-- `@deepseek-ai/dsh-persona` 0.2.1-rc.5
-- `@deepseek-ai/dsh-system-prompt` 0.2.1-rc.5
+- `@deepseek-ai/dsh-hook-protocol` 0.2.2-rc.1
+- `@deepseek-ai/dsh-hooks-claude-code` 0.2.2-rc.1
+- `@deepseek-ai/dsh-hooks-codex` 0.2.2-rc.1
+- `@deepseek-ai/dsh-persona` 0.2.2-rc.1
+- `@deepseek-ai/dsh-system-prompt` 0.2.2-rc.1
 
 Upstream: <https://github.com/deepseek-ai/deepseek-harness>, tag
-`dsh-v0.2.1-rc.5`, commit `b830ec950faba0a46dda564be3e2d854afed94f1`.
+`dsh-v0.2.2-rc.1`, commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`.
 The legacy `dsh-agent-presets` adapter alone retains commit
 `0d1f50007f9bca3f52b06e1c3074fa14d5fb0720`; the newer preset runtime packages
-are not bundled. The reviewed composition loader is refreshed to the rc.5
-source: `cordis-plugin-loader` 1.0.6, `cordis-plugin-include` 1.0.10 and
-`cordis-plugin-group` 1.0.5 (MIT, Shigma).
+are not bundled. The reviewed composition loader is refreshed to the rc.1
+source: `cordis-plugin-loader` 1.1.0, `cordis-plugin-include` 1.1.0 and
+`cordis-plugin-group` 1.1.0 (MIT, Shigma).
 
 Preset discovery and metadata, hook matching and dialect codecs, and additive
 persona templates run through receipt-backed inputs. Core retains selection,
@@ -913,6 +932,27 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+### `semver` 7.8.5
+
+```text
+The ISC License
+
+Copyright (c) Isaac Z. Schlueter and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 ```
 
 ## Optional compiled extension host

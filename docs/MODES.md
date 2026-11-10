@@ -4,14 +4,14 @@
 
 Codewhale has three related concepts:
 
-- **TUI mode**: what kind of visible interaction you're in (Plan/Work/Operate).
+- **TUI mode**: what kind of visible interaction you're in (Plan/Work).
 - **Permission posture**: how aggressively the UI asks before executing tools.
 - **Workflow**: named steps that coordinate sub-agents, with dependencies and
   results, available in any TUI mode.
 
 Model selection is separate. `--model auto` and `/model auto` route each turn to
-a concrete model and thinking level; they are not TUI modes and are not part of
-the `Tab` cycle.
+a concrete model and thinking level; they are not TUI modes and are not on the
+permission dial.
 
 Workflow runs named steps through the same sub-agent runtime; Fleet manages
 their saved roles and model assignments. A workflow adds ordering, result
@@ -24,42 +24,48 @@ the saved `role`/`profile` assignment. An Exact Fleet fixes each member's route.
 
 ## TUI Modes
 
-Press `Tab` to complete composer menus or cycle through the visible modes
-when the composer is empty: **Plan → Work → Operate → Plan**. `Tab` never sends
-or queues composer text; use `Enter` to send or queue it.
-Press `Shift+Tab` to cycle permission posture (Ask → Auto-Review → Full Access).
+One dial says how much Codewhale may do without asking. Press `Shift+Tab` to
+step it: **Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask**. Plan
+is the Plan mode; every other stop is Work with that permission posture. The
+footer shows the current stop and `Shift+Tab to change`. New installs start on
+Accept Edits when no permission posture is saved. An explicit saved choice,
+including Ask from an earlier version, stays in control.
+`Tab` only completes composer menus, commands, file mentions and suggestions;
+it never changes the mode, and never sends or queues composer text (use
+`Enter`).
 Every change of effective permission writes a `Permissions changed to …` line
 in the transcript.
 Press `Ctrl+T` to cycle reasoning effort.
-Run `/mode` to open the mode picker, or switch directly with `/mode work`,
-`/mode plan`, or `/mode operate`.
+Run `/mode` to open the mode picker, or switch directly with `/mode work` or
+`/mode plan`. `operate` and its spellings still parse, as Work, and say that
+Operate was retired, so an older setting or script never errors.
 
-- **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
-- **Work** (internally `agent`): ordinary multi-step execution. The first-turn toolbox includes `read`, `write`, `edit`, `file_search`, `bash`, `todo_write`, `load_skill`, and `task_shell_wait`, plus `create_goal` and the synthetic `tool_search`; `agent`, `workflow`, `get_goal`, and `update_goal` load through discovery (`get_goal`/`update_goal` ride eager while a goal is active). The agent calls `create_goal` when a request is a durable objective; the host never infers a goal from wording, and the contract must not tell the model otherwise. Approval, sandbox, repository law, and managed policy decide what may execute.
-- **Operate**: Work at full strength, the "ultra" mode. Same tools and authority as Work; the difference is how they are used. Each substantive request becomes a goal (`create_goal`), the plan stays visible (`todo_write`), multi-part work runs through `workflow` and parallel `agent` workers, non-trivial changes get an independent reviewer before they are called done, long commands keep running in the background, and recurring or watch-type work is offered as an `automation` (created after approval). It keeps going until the goal is verified, blocked on you, or paused.
+- **Plan**: design-first prompting. The stable primitive names remain familiar, but the runtime centrally refuses file mutation and shell execution. Read-only inspection and policy-allowed research, including deferred Web search/fetch, remain available. When a Plan turn successfully finishes a nonempty response, including a prose-only plan, the TUI asks how to continue: Work (Ask), Work (Accept Edits), Work (Auto-Review), or keep planning. Work sends the exact approved response as a normal follow-up and preserves that turn's existing To-dos, or adds one pending plan item without replacing unrelated work.
+- **Work** (internally `agent`): ordinary multi-step execution. The first-turn toolbox includes `read`, `write`, `edit`, `file_search`, `bash`, `agent`, `workflow`, `todo_write`, and `load_skill`, plus `create_goal`, `get_goal`, `update_goal`, and `task_shell_wait` so goal and background-shell controls are available without discovery. The agent calls `create_goal` when a request is a durable objective; the host never infers a goal from wording, and the contract must not tell the model otherwise. Approval, sandbox, repository law, and managed policy decide what may execute.
+- **Operate is retired.** It was Work with an orchestration contract, and that contract now lives in every session's constitution: make a goal of a durable request, keep the plan visible, fan independent work out to parallel sub-agents, and have an independent reviewer try to refute a non-trivial change. A saved `default_mode = "operate"` loads as Work and says so once; a Runtime API request with `mode: "operate"` runs as `agent` with the default posture (Accept Edits) and logs one notice per process, never an error. Agents forked from an older Operate conversation do not inherit its contract. Multi-agent work stays on `agent`, `workflow` and `/fleet` in every mode.
 
 `Act` and `/mode act` remain compatibility aliases for Work. Saved settings
 still normalize to the internal value `agent`.
 
 ### Tool availability by mode
 
-| Tool family | Plan | Work | Operate |
-|:---|:---:|:---:|:---:|
-| `read` and policy-allowed deferred research tools | yes | yes | yes |
-| `write` and `edit` | visible names; execution denied | approval- and policy-gated | same as Work |
-| `bash` | visible name; execution denied | approval- and policy-gated | same as Work; delegation is preferred when parallelism or isolation helps |
-| `agent` | yes, subject to child-depth authority | yes, subject to child-depth authority | yes, subject to child-depth authority |
-| Deferred native, MCP, and plugin tools | discoverable through `tool_search` when policy permits | same | same |
-| Paid or external-service tools | follows permission posture | follows permission posture | follows permission posture |
-| Access outside the workspace root | explicit trusted paths only | only through trusted paths or trust mode | same trusted-path/trust policy as Work; fleet profiles never widen it |
+| Tool family | Plan | Work |
+|:---|:---:|:---:|
+| `read` and policy-allowed deferred research tools | yes | yes |
+| `write` and `edit` | visible names; execution denied | approval- and policy-gated |
+| `bash` | visible name; execution denied | approval- and policy-gated; delegation is preferred when parallelism or isolation helps |
+| `agent` | yes, subject to child-depth authority | yes, subject to child-depth authority |
+| Deferred native, MCP, and plugin tools | discoverable through `tool_search` when policy permits | same |
+| Paid or external-service tools | follows permission posture | follows permission posture |
+| Access outside the workspace root | explicit trusted paths only | only through trusted paths or trust mode; fleet profiles never widen it |
 
-Operate changes scheduling emphasis, not authority. It neither adds a
-mode-specific tool denial nor bypasses the active approval, sandbox, shell,
-ask-rule, repository-law, or managed-policy boundary. Plan remains the
-mode-specific execution boundary for shell and write-capable tools; that
-authority difference does not require a different primitive vocabulary.
+Mode changes scheduling emphasis, not authority. No mode adds a specific tool
+denial or bypasses the active approval, sandbox, shell, ask-rule,
+repository-law, or managed-policy boundary. Plan remains the mode-specific
+execution boundary for shell and write-capable tools; that authority difference
+does not require a different primitive vocabulary.
 
-### Operate loop (one screen)
+### Orchestration loop (one screen)
 
 ```text
 User message
@@ -117,7 +123,7 @@ only controls model and thinking selection.
 Workflow builds on the same separation: a goal can ask the agent to keep
 working, while Workflow supplies the repeatable workflow/progress surface for
 large fanout. In the UI, a Workflow run should be shown as an overlay on the
-main screen, not as another mode beside Plan, Work, and Operate.
+main screen, not as another mode beside Plan and Work.
 
 App-server clients can persist a thread-scoped goal with `thread/goal/set`, read
 it with `thread/goal/get`, and clear it with `thread/goal/clear`. That persisted
@@ -128,14 +134,14 @@ thread resume semantics.
 ## Mode Persistence
 
 Choosing a mode interactively also sets the mode a fresh session starts in.
-Tab/Shift+Tab cycling, the `Alt+A` / `Alt+P` / `Alt+Y` shortcuts, the hotbar's
-Plan/Work/Operate actions, and `/mode` all write `default_mode` to
-`~/.codewhale/settings.toml`, so switching to Operate survives a restart. The
+The `Shift+Tab` dial, the `Alt+A` / `Alt+P` / `Alt+Y` shortcuts, the hotbar's
+Plan/Work actions, and `/mode` all write `default_mode` to
+`~/.codewhale/settings.toml`, so switching to Plan survives a restart. The
 write happens off the event loop; if it fails, the TUI says so in a warning
 toast rather than reverting silently on the next launch.
 
 Mode, thinking level, and the model picker share one serialized writer, so the
-selection you made last is the one on disk — a burst of Tab presses cannot end
+selection you made last is the one on disk — a burst of Shift+Tab presses cannot end
 up persisting whichever write happened to finish last — and a mode write never
 rolls back an unrelated key such as `default_model`.
 
@@ -150,7 +156,8 @@ live mode again is how you make it durable; Codewhale confirms with a
 "saved as startup default" receipt rather than reporting "already in that mode".
 
 Mode and permissions can change while a turn is running, from any surface
-(Tab, Shift+Tab, `/mode`, the hotbar, `/config mode …`). The change does not
+(Shift+Tab, `/mode`, the hotbar, `/config mode …`), including stepping the dial
+into or out of Plan. The change does not
 restart a response that is already streaming. The engine applies it at its next
 step in the same turn: before the next tool batch, at every approval gate, and
 before the next model request, which carries a new mode notice. A call that was
@@ -190,19 +197,29 @@ the way out instead of disappearing with the alternate screen.
 Permission posture controls tool approval and whether a turn may pause for a
 missing user decision. It is one layer of the full
 [authorization order](AUTHORIZATION_ORDER.md), not a bypass for tool admission,
-repository law, or sandbox enforcement. Cycle it with `Shift+Tab`, or edit it
+repository law, or sandbox enforcement. Step it with the `Shift+Tab` dial, or edit it
 at runtime:
 
 ```text
 /config
-# edit the approval_mode row to: suggest | auto | never
+# edit the permission_posture row to: ask | accept-edits | auto-review | full-access
 ```
 
 Legacy note: `/set approval_mode ...` was retired in favor of `/config`.
 
-- `suggest` (**Ask**, default): tool approvals may interrupt, and Codewhale asks
-  when an unresolved user choice materially changes authority, cost, scope, or
-  outcome.
+- `ask` (**Ask**; internally `suggest`): tool approvals may interrupt,
+  and Codewhale asks when an unresolved user choice materially changes
+  authority, cost, scope, or outcome. Every file edit and every command asks,
+  including edits inside the workspace.
+- `accept-edits` (**Accept Edits**, default; wire `accept_edits`): Ask, except that a
+  file edit whose every target stays inside the workspace's git work tree runs
+  without a card. Edits to `.git` internals, `.codewhale`, `.env*`, credential
+  and key files always ask, and so does every edit in a folder without git
+  (the card says the folder has no repository). Commands, network, MCP actions
+  and anything outside the folder ask exactly as in Ask; ask rules, hooks,
+  repository law and the safety floor still force a card. This is Claude
+  Code's `acceptEdits`. ACP sessions run it as Ask, because ACP turns never
+  apply the in-folder edit rule.
 - `auto` (**Auto-Review**): reviews tool calls automatically. Deliberate user
   questions remain available in interactive sessions through `request_user_input`;
   a question parks the turn until answered, canceled, or its configured timeout
@@ -292,7 +309,7 @@ auto-approve bit:
   is hard-blocked) and, for holds it cannot prove safe, the same one-shot
   model guardian using the child's own session client. No prompt is ever
   opened for a child; an unavailable guardian denies, fail closed.
-- **Ask**: a call the role may delegate runs. A held call is raised as an
+- **Ask** and **Accept Edits**: a call the role may delegate runs. A held call is raised as an
   approval prompt in the parent's UI (`agent:<id>:approval:<n>`) when the
   host is an interactive TUI; the worker waits visibly (`waiting for user`)
   and the person's answer is routed back to it, whether the parent turn is

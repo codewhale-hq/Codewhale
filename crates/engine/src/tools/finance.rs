@@ -192,7 +192,7 @@ impl FinanceTool {
     pub fn new() -> Self {
         Self {
             endpoints: FinanceEndpoints::default(),
-            client: codewhale_release::tls::reqwest_client_builder()
+            client: crate::platform_client_builder()
                 .user_agent(USER_AGENT)
                 .build()
                 .expect("failed to build HTTP client"),
@@ -206,7 +206,7 @@ impl FinanceTool {
                 quote_base: quote_base.into(),
                 chart_base: chart_base.into(),
             },
-            client: codewhale_release::tls::reqwest_client_builder()
+            client: crate::platform_client_builder()
                 .user_agent(USER_AGENT)
                 .build()
                 .expect("failed to build HTTP client"),

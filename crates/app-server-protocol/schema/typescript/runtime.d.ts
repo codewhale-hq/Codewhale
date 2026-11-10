@@ -39,6 +39,19 @@ export type DynamicToolSpecOutput = {
   [key: string]: Json | undefined
 }
 
+export type FleetProfileDocument = {
+  id: string
+  kind: FleetProfileDocumentKind
+  origin: string
+  path: (string | null)
+  text: string
+  revision: string
+  writable: boolean
+  refusal_reason: (string | null)
+}
+
+export type FleetProfileDocumentKind = 'profile' | 'fleet'
+
 export type RuntimeCapabilities = {
   client_token_intents: boolean
   account_session: boolean
@@ -47,10 +60,18 @@ export type RuntimeCapabilities = {
   threads: boolean
   thread_create_idempotency: boolean
   thread_idle_precondition: boolean
+  thread_patch_undo_turn_id: boolean
+  thread_scoped_reads: boolean
+  thread_scoped_git_writes: boolean
+  thread_scoped_snapshots: boolean
+  thread_scoped_terminals: boolean
+  worktrees: boolean
+  job_operations: boolean
   thread_shell_consent: boolean
   turns: boolean
   turn_operation_idempotency: boolean
   turn_operation_lookup: boolean
+  watch_event_turns: boolean
   structured_review_turns: boolean
   structured_review_version: number
   automation_mutation_preconditions: boolean
@@ -76,10 +97,6 @@ export type RuntimeCapabilities = {
   skill_detail: boolean
   plugin_management: boolean
   agent_mail: boolean
-  terminal_stream: boolean
-  terminal_input: boolean
-  terminal_resize: boolean
-  terminal_kill: boolean
   event_stream_resume: boolean
   [key: string]: Json | undefined
 }
@@ -107,6 +124,26 @@ export type RuntimeImageInput = {
   mime: string
   dataBase64: string
 }
+
+export type ThreadLoadedListParams = {
+  cursor?: (string | null)
+  limit?: (number | null)
+  [key: string]: Json | undefined
+}
+
+export type ThreadLoadedListResponse = {
+  data: string[]
+  nextCursor: (string | null)
+  [key: string]: Json | undefined
+}
+
+export type ThreadSetNameParams = {
+  threadId: string
+  name: string
+  [key: string]: Json | undefined
+}
+
+export type ThreadSetNameResponse = Record<string, never>
 
 export type TurnEnvironmentParams = {
   environment_id: string

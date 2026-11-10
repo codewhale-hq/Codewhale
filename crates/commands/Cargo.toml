@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-codewhale-command-contract = { path = "../command-contract", version = "0.10.2" }
+codewhale-command-contract = { path = "../command-contract", version = "0.10.3" }
 serde_json.workspace = true
 
 [lints]

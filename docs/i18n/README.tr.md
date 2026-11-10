@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:0430d94f3d47 -->
+<!-- source: README.md sha256:fb068568394f -->
 <div align="center">
 
 <picture>
@@ -75,8 +75,8 @@ sayfasında anlatılır. Her makinede tek bir kurulum yöntemi kullanın; aksi h
 ## Hızlı başlangıç
 
 1. Çalışmanızı commit edin veya stash'leyin, ardından bir git deposunun kök
-   dizininde `codewhale` çalıştırın. Varsayılan olarak orada dosya düzenlemelerini
-   sormadan uygular ve size diff'i gösterir.
+   dizininde `codewhale` çalıştırın. Varsayılan olarak (**Accept Edits**) depodaki dosyaları sormadan düzenler
+   ve her komuttan önce sorar; daha fazla veya daha az sormasını istediğinizde `Shift+Tab` ile izni adım adım değiştirin.
 2. `/provider` çalıştırın (veya `F3` tuşuna basın), bir sağlayıcı seçin, onun API
    anahtarını yapıştırın ve bir model seçin. Varsayılan sağlayıcı DeepSeek'tir.
    Anahtarınız yoksa bunun yerine yerel bir çalışma ortamı seçin. Hiçbir sağlayıcı
@@ -108,12 +108,12 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 ## Modlar ve izinler
 
-Yeni bir kurulum Work modunda ve Ask izniyle başlar.
+Yeni bir kurulum Work modunda ve Accept Edits izniyle başlar. Tek bir kadran ikisini de değiştirir: `Shift+Tab` sırayla Ask → Accept Edits → Plan → Auto-Review → Full Access arasında geçiş yapar.
 
 | | Nasıl değiştirilir | Seçenekler |
 | --- | --- | --- |
-| Mod | `Tab` (giriş alanı boşken) veya `/mode` | **Plan** okur ve arar ama hiçbir şeyi değiştirmez. **Work** dosyaları düzenler ve komutları çalıştırır. **Operate** Work ile aynı erişime sahiptir, isteğinizi bir hedef olarak ele alır ve hedef doğrulanana ya da sizden girdi gerekene kadar devam eder. |
-| İzin | `Shift+Tab` | **Ask** deponuzdaki dosya düzenlemelerini sormadan uygular, salt okunur olmayan kabuk komutlarından önce sorar. **Auto-Review** rutin çağrıların kurallar ve bir inceleyici model tarafından onaylanmasına izin verir, yüksek riskli olanları reddeder; bunları kendiniz onaylamak için Ask iznine geçin. **Full Access** hiç sormaz ve Codewhale'in korumalı alanını kapatır; depo kuralları ve yönetilen politika yine de geçerlidir. |
+| Mod | `Shift+Tab` üzerindeki Plan durağı veya `/mode` | **Plan** okur ve arar ama hiçbir şeyi değiştirmez. **Work** (diğer tüm duraklar) dosyaları düzenler ve komutları çalıştırır; bir istek birden fazla tur gerektirdiğinde `/goal` ile bir hedef başlatın. |
+| İzin | `Shift+Tab` | **Ask** her dosya düzenlemesinden ve salt okunur olmayan her kabuk komutundan önce sorar. **Accept Edits** git deponuzdaki dosya düzenlemelerini sormadan uygular, komutlardan önce yine sorar. **Auto-Review** rutin çağrıların kurallar ve bir inceleyici model tarafından onaylanmasına izin verir, yüksek riskli olanları reddeder; bunları kendiniz onaylamak için Ask iznine geçin. **Full Access** hiç sormaz ve komutlar bu bilgisayardaki her şeye erişebilir; depo kuralları ve yönetilen politika yine de geçerlidir. |
 
 Ayrıntılar için [modlar ve izinler kılavuzuna](../MODES.md) bakın.
 

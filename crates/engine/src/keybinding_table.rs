@@ -324,7 +324,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     // --- Modes ---
     KeybindingEntry {
         chord: "Tab",
-        description_id: codewhale_localization::MessageId::KbCompleteCycleModes,
+        description_id: codewhale_localization::MessageId::KbTabComplete,
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
@@ -516,7 +516,7 @@ mod tests {
 
         let tab_copy = codewhale_localization::tr(
             codewhale_localization::Locale::En,
-            codewhale_localization::MessageId::KbCompleteCycleModes,
+            codewhale_localization::MessageId::KbTabComplete,
         );
         assert!(!tab_copy.to_ascii_lowercase().contains("queue"));
         let stash_copy = codewhale_localization::tr(

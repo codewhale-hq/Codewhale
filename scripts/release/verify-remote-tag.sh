@@ -12,8 +12,8 @@ remote="$1"
 tag="$2"
 expected_sha="$3"
 
-if ! [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "error: release tag '${tag}' must use vX.Y.Z" >&2
+if ! [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "error: release tag '${tag}' must use vX.Y.Z or vX.Y.Z-prerelease" >&2
   exit 2
 fi
 if ! [[ "${expected_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then

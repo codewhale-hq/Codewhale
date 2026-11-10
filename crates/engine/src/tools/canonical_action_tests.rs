@@ -30,6 +30,8 @@ fn shared_prompt_text_names_only_callable_tools() {
 /// The catalog is re-sent on every request, so a retired name in it is a
 /// per-turn lie to every model. `verifier.rs` already guarded one such
 /// description by hand; this covers the whole advertised surface at once.
+/// `verify` joins the chain because its model-visible description
+/// cross-references other tools, so everything it names must be callable.
 #[test]
 fn no_advertised_tool_teaches_a_retired_name() {
     use crate::tools::registry::ToolRegistryBuilder;
@@ -44,6 +46,7 @@ fn no_advertised_tool_teaches_a_retired_name() {
         .with_test_runner_tool()
         .with_web_tools()
         .with_patch_tools()
+        .with_verify_tool(None, "test-model".to_string())
         .build(ToolContext::new(tmp.path().to_path_buf()));
 
     for tool in registry.to_api_tools() {

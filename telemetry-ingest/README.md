@@ -13,12 +13,12 @@ and coupling the two would mean a telemetry change rebuilding the marketing site
 is the shipped default for `telemetry_endpoint`. workers.dev is disabled; that
 hostname is the only way in.
 
-The current source defaults usage analytics on under notice version5, with a
+The current Engine source defaults usage analytics on under notice version 6, with a
 clear opt-out. Prior explicit declines remain off; a missing acceptance record
-is not treated as consent. Schema3 carries `notice_version: 5` policy metadata;
-legacy schema2 retains its original explicit `consent_version: 4` contract.
-Schema1 clients are accepted only into first-party Analytics Engine. Local
-schema3 validation is not proof this updated Worker has been deployed. A user who wants
+is not treated as consent. Schema 4 carries `notice_version: 6`; schema 3
+uses notice 5, and legacy schema 2 retains its original explicit
+`consent_version: 4` contract. Schema 1 and schema 4 batches are first-party
+only in this source. Local validation is not proof this updated Worker has been deployed. A user who wants
 to contact nobody sets `telemetry_endpoint = ""`, which writes batches to
 `$CODEWHALE_HOME/telemetry/dryrun.jsonl` instead.
 
@@ -36,8 +36,9 @@ an untrusted host leaves the sink off.
 Deployment, token configuration, retention/privacy settings, and activation
 require separate operator approval; none is established by the local tests.
 
-Validated schema3 batches carrying `notice_version: 5` and legacy schema2
-batches carrying explicit `consent_version: 4` can reach the processor. Legacy v1 always remains first-party only. Capture uses
+Validated schema 3 batches carrying `notice_version: 5` and legacy schema 2
+batches carrying explicit `consent_version: 4` can reach the processor. Schema 1
+and schema 4 batches remain first-party only. Capture uses
 `/batch/`, fixed anonymous/no-geo controls, no incoming headers, no cookies,
 no redirects, no response parsing, no retries, and a 1.5-second timeout.
 PostHog failure is isolated from the successful Analytics Engine write.

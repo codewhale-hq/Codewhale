@@ -1,4 +1,4 @@
-//! `/cache` command — portable per-turn cache telemetry and inspection.
+//! `/cache` command — portable turn/call cache telemetry and inspection.
 //!
 //! The host resolves the request route and pricing partitions once. This
 //! handler checks flags, observes, formats and commits that same inspection;
@@ -7,9 +7,9 @@
 use super::CommandResult;
 use super::DebugAction as AppAction;
 use super::cache_format::{
-    format_cache_history, format_cache_stats, format_cache_zones, format_first_divergence,
-    format_static_prefix_status, format_verbose_diff, format_warmup_status,
-    session_cache_rates_line,
+    format_cache_calls, format_cache_history, format_cache_stats, format_cache_zones,
+    format_first_divergence, format_static_prefix_status, format_verbose_diff,
+    format_warmup_status, session_cache_rates_line,
 };
 use codewhale_command_contract::facets::{
     CommandDebugDiagnosticsContext, CommandPresentationContext, DebugCacheInspectionObservation,
@@ -25,7 +25,7 @@ pub struct CacheCmd;
 const CONTRACT_INFO: ContractInfo = ContractInfo {
     name: "cache",
     aliases: &[],
-    usage: "/cache [count|inspect|stats|zones|warmup]",
+    usage: "/cache [count|calls [count]|inspect|stats|zones|warmup]",
     description_key: "cmd_cache_description",
 };
 
@@ -43,7 +43,7 @@ impl ContractRegisterCommand<CommandResult> for CacheCmd {
     }
 }
 
-/// Show per-turn prefix-cache telemetry, a static status or an inspection.
+/// Show turn/call prefix-cache telemetry, a static status or an inspection.
 pub fn cache(contexts: CommandContexts<'_>, arg: Option<&str>) -> CommandResult {
     let mut parts = contexts.into_parts();
     let Some(diagnostics) = parts.debug_diagnostics.as_deref_mut() else {
@@ -61,6 +61,21 @@ fn cache_portable(
     arg: Option<&str>,
 ) -> CommandResult {
     let arg = arg.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(count) = arg.and_then(|value| {
+        value
+            .strip_prefix("calls")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+    }) {
+        let want = if count.trim().is_empty() {
+            10
+        } else {
+            match count.trim().parse::<usize>() {
+                Ok(count) => count,
+                Err(_) => return CommandResult::error("Usage: /cache calls [count]"),
+            }
+        };
+        return CommandResult::message(format_cache_calls(&diagnostics.cache_telemetry(), want));
+    }
     let inspect_flags = arg.and_then(|a| {
         if a == "inspect" {
             Some("")
@@ -91,7 +106,7 @@ fn cache_portable(
             Ok(n) => n,
             Err(_) => {
                 return CommandResult::error(format!(
-                    "Unknown /cache argument `{raw}`. Usage: /cache [count|inspect [--verbose|--json]|stats|zones|warmup]"
+                    "Unknown /cache argument `{raw}`. Usage: /cache [count|calls [count]|inspect [--verbose|--json]|stats|zones|warmup]"
                 ));
             }
         },

@@ -19,7 +19,7 @@ Implementation sources:
 
 ## Default-active contract
 
-New turns start with twelve eager native names plus synthetic `tool_search`:
+New turns start with fourteen eager native names plus synthetic `tool_search`:
 
 1. `read`
 2. `write`
@@ -27,20 +27,21 @@ New turns start with twelve eager native names plus synthetic `tool_search`:
 4. `file_search`
 5. `grep_files`
 6. `bash`
-7. `todo_write`
-8. `task_shell_wait`
-9. `load_skill`
-10. `create_goal`
-11. `context_archive_get`
-12. `context_archive_search`
-13. `tool_search` (synthetic, always active)
+7. `agent`
+8. `todo_write`
+9. `create_goal`
+10. `get_goal`
+11. `update_goal`
+12. `task_shell_wait`
+13. `present`
+14. `load_skill`
+15. `tool_search` (synthetic, always active)
 
-The twelve native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
+The fourteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
 `crates/engine/src/core/engine/tool_catalog.rs`, pinned by
-`default_active_contract_keeps_discovery_and_core_tools_eager`. `agent`,
-`workflow`, `get_goal`, and `update_goal` are deferred by default and load
-via `tool_search` (`get_goal`/`update_goal` ride eager only while a goal is
-active). An authority boundary may remove `agent` at the maximum child depth,
+`default_active_contract_keeps_discovery_and_core_tools_eager`. `workflow` and
+the context-archive tools are deferred by default and load via `tool_search`.
+An authority boundary may remove `agent` at the maximum child depth,
 and Plan registers only the foreground shell surface (so no `task_shell_wait`),
 but route size alone must not change this core vocabulary.
 
@@ -73,26 +74,27 @@ The core schemas deliberately stay small (deferred rows load via
 
 | Tool | Input | Purpose |
 |---|---|---|
-| `read` | `path`, optional `offset`, optional `limit` | Read a bounded file window with explicit continuation or truncation notices. |
+| `read` | `path`, optional `offset`, `limit`, `expected_revision` | Read a bounded file window with explicit continuation or truncation notices; a revision guard refuses stale navigation offsets. |
 | `write` | `path`, `content` | Create or replace a file. |
 | `edit` | `path`, `edits` | Apply one or more unambiguous text replacements against one original snapshot. |
 | `file_search` | `query`, optional `path`, `limit`, `extensions`, `exclude` | Find files by name, path fragment or glob and return bounded, ranked matches. Respects ignore files; `exclude` replaces default exclusions. |
 | `grep_files` | `pattern`, optional `path`, `include`, `exclude`, `context_lines`, `case_insensitive`, `max_results` | Search file contents for a regex and return bounded matching lines with context. |
 | `bash` | `command`, optional `timeout`, optional `description` | Run one cancellable foreground shell command and return a bounded tail. The optional description is display-only. |
-| `agent` (deferred) | delegated task and optional scope/context controls | Start or inspect focused child work. |
+| `agent` | delegated task and optional scope/context controls | Start or inspect focused child work. |
 | `workflow` (deferred) | plan/script/source_path plus run controls | Coordinate multi-agent phases with dependencies and completion checks. |
 | `todo_write` | complete replacement list of `{content, status}` items | Keep optional, agent-owned progress notes for genuinely multi-step work. |
 | `create_goal` | objective plus optional budget | Start the session goal the turn works toward. |
-| `get_goal` (deferred unless a goal is active) | none | Read the active goal and its progress. |
-| `update_goal` (deferred unless a goal is active) | terminal status | Mark the goal complete or blocked. |
+| `get_goal` | none | Read the active goal and its progress. |
+| `update_goal` | terminal status | Mark the goal complete or blocked. |
 | `task_shell_wait` | `task_id`, optional `wait`, `timeout_ms`, `cancel`, `gate` | Poll or stop a background shell task. Completion still arrives as a runtime event, so use it for early output, true barriers, or gate evidence. |
+| `present` | `files`, optional `note` | Declare 1–32 existing workspace files as final deliverables with a read-only SHA-256 handoff receipt; nothing is copied or moved. |
 | `load_skill` | optional `name`, `query` | Load a named skill's `SKILL.md` body and companion-file list; omit `name` or use `name="list"` to list eligible skills, or use `query` to search names and descriptions. |
 | `tool_search` | `query`, optional matching controls | Discover policy-allowed deferred tools and add selected schemas to this conversation's toolbox. |
 
-Mode is an authority decision, not a synonym system. Plan, Work, and Operate
-use the same primitive identities. Plan centrally refuses `write`, `edit`, and
-`bash`; Work and Operate still pass those calls through approval, sandbox,
-trusted-path, repository-law, and managed-policy gates. Full Access changes
+Mode is an authority decision, not a synonym system. Plan and Work use the
+same primitive identities. Plan centrally refuses `write`, `edit`, and `bash`;
+Work still passes those calls through approval, sandbox, trusted-path,
+repository-law, and managed-policy gates. Full Access changes
 ordinary approval behavior but does not bypass hard safety or repository law.
 
 `update_plan` remains registered only for saved-artifact compatibility and is
@@ -289,11 +291,6 @@ Modes and permission postures are separate controls:
 - **Plan** keeps the stable primitive vocabulary but centrally refuses shell
   execution and file mutation.
 - **Work** is ordinary interactive execution.
-- **Operate** uses the same direct-tool authority as Work. Small work stays
-  direct; multi-step delegation uses a compact Workflow plan with dependencies,
-  bounded scopes, and completion evidence. Fleet manages the same sub-agents
-  and roles. One bounded, independent task can use a direct agent; `followup`
-  reuses that agent for continued work.
 - **Ask**, **Auto-Review**, and **Full Access** control approval behavior within
   an action-capable mode. They never widen Plan into write or shell access.
 

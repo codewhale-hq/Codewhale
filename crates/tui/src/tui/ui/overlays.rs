@@ -208,15 +208,12 @@ pub(crate) async fn cycle_permission_posture(
         app.config_profile.as_deref(),
         &app.workspace,
     );
-    let changed = if control == codewhale_runtime::config::ApprovalPolicyControl::RootConfig {
-        app.cycle_root_approval_posture()
-    } else {
-        app.cycle_approval_posture()
-    };
-    if changed {
-        if control == codewhale_runtime::config::ApprovalPolicyControl::RootConfig {
-            config.approval_policy = None;
-        }
+    let root_control = control == codewhale_runtime::config::ApprovalPolicyControl::RootConfig;
+    let step = app.step_permission_dial(root_control);
+    if step.posture_changed && root_control {
+        config.approval_policy = None;
+    }
+    if step.changed() {
         sync_mode_update(app, engine_handle).await;
         refresh_config_view_if_open(app, "permission_posture");
     }
@@ -232,6 +229,23 @@ pub(crate) async fn cycle_permission_posture(
 /// Either way the picker opens on the navigable list (#4763): onboarding never
 /// drops a user straight into a key/OAuth prompt for a route they were not
 /// shown.
+pub(crate) async fn open_model_connection_setup(
+    app: &mut App,
+    config: &Config,
+    engine_handle: &EngineHandle,
+    recover_configured_route: bool,
+) {
+    if recover_configured_route {
+        open_onboarding_provider_picker(app, config, engine_handle, true).await;
+    } else if app.view_stack.is_empty() {
+        app.view_stack
+            .push(crate::tui::account_login::ConnectionSetupView::new(
+                app.ui_locale,
+            ));
+        app.needs_redraw = true;
+    }
+}
+
 pub(crate) async fn open_onboarding_provider_picker(
     app: &mut App,
     config: &Config,

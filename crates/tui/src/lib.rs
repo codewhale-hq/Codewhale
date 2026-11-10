@@ -1,14 +1,18 @@
 //! Codewhale TUI library — single-binary entry point.
 
-#![allow(clippy::uninlined_format_args)]
+#![allow(
+    clippy::large_enum_variant,
+    clippy::too_many_arguments,
+    clippy::uninlined_format_args
+)]
 
 use codewhale_engine::runtime_options::RuntimeOptions;
 use codewhale_engine::{
-    fleet, model_routing, pricing, project_context, receipts, runtime_threads, session_export,
-    session_manager, session_secret_scrub, task_manager,
+    fleet, pricing, project_context, receipts, runtime_threads, session_export,
+    session_image_prune, session_manager, session_secret_scrub, task_manager,
 };
 use codewhale_runtime::config;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,7 +26,6 @@ use wait_timeout::ChildExt;
 
 use codewhale_dependencies::ExternalTool;
 
-mod acp_server;
 mod commands;
 mod composer_history;
 mod composer_stash;
@@ -32,20 +35,14 @@ mod context_report;
 /// Guarded installation I/O reusing Engine's confined file primitives.
 mod doctor;
 mod doctor_fix;
-mod eval;
 use codewhale_engine::fleet::executor::exec_stream_final_answer_excerpt;
 mod integrations;
-mod mcp_server;
 #[cfg(test)]
 mod plugins_dsh_tests;
 #[cfg(test)]
 mod plugins_provider_tests;
 #[cfg(test)]
 mod plugins_skill_tests;
-mod remote_control;
-mod remote_setup;
-mod runtime_api;
-mod runtime_chat_relay;
 #[cfg(test)]
 mod sandbox_stay_tests;
 // Acceptance matrix for #2934 / #4397. Test-only: the table documents the
@@ -64,11 +61,18 @@ mod tui;
 pub use tui::ambient_life::pet_sim as pet;
 pub mod whats_new;
 
-use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::tui::app::ScreenMode;
-use crate::tui::history::{summarize_tool_args, summarize_tool_output};
+use codewhale_app_server::eval::EvalHarness;
+use codewhale_app_server::eval::EvalHarnessConfig;
+use codewhale_app_server::eval::ScenarioStepKind;
+use codewhale_app_server::exec_agent::{
+    CliAutoRoute, ExecOutputFormat, ExecStreamEvent, ExecStreamInputAnalysis, ExecStreamMeta,
+    ONE_SHOT_DEFAULT_MAX_STEPS, admit_cli_saved_operation, cli_reasoning_effort_value,
+    config_for_cli_route, emit_exec_stream_event, exec_max_steps, exec_stream_provider_route,
+    exec_stream_session_ref, paths_equal_for_config, resolve_cli_exec_route, run_exec_agent,
+    start_binary_sha256, tool_artifact_receipt, validate_exec_tool_authority_resume,
+};
 use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
-use codewhale_engine::exec_events::exec_error_event_is_fatal;
 use codewhale_engine::llm_client::LlmClient;
 use codewhale_engine::mcp::{McpCommandAvailability, McpPool};
 #[cfg(test)]
@@ -76,6 +80,7 @@ use codewhale_engine::session_manager::create_saved_session;
 use codewhale_engine::session_manager::{SessionManager, truncate_id};
 use codewhale_mcp::config::{McpServerConfig, McpServerOAuthConfig, is_relative_stdio_path_arg};
 use codewhale_models::Role;
+#[cfg(test)]
 use codewhale_models::{ContentBlock, Message, SystemPrompt};
 use codewhale_runtime::child_env;
 use codewhale_runtime::config::{
@@ -142,10 +147,15 @@ enum Commands {
     SessionDiagnostics(SessionDiagnosticsArgs),
     #[command(about = "Install a local, GitHub or version-pinned npm plugin bundle")]
     Install { source: String },
+    #[command(about = "Inspect or restage reviewed plugin bundles")]
+    Plugins {
+        #[command(subcommand)]
+        command: PluginsCommand,
+    },
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
     /// Generate a remote Codewhale agent deploy bundle (cloud + chat bridge)
-    RemoteSetup(remote_setup::RemoteSetupArgs),
+    RemoteSetup(codewhale_app_server::remote_setup::RemoteSetupArgs),
     /// List saved sessions, or export one as a full-fidelity archive
     Sessions {
         /// Maximum number of sessions to display
@@ -259,6 +269,24 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand, Debug, Clone)]
+enum PluginsCommand {
+    #[command(about = "Inspect plugin status and diagnostics", alias = "list")]
+    Status {
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = "Restore an eligible reviewed plugin snapshot")]
+    Restage {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 /// Subcommands of `codewhale sessions`. Without one, the command falls back
 /// to listing sessions.
 #[derive(Subcommand, Debug, Clone)]
@@ -279,6 +307,17 @@ enum SessionsCommand {
         /// Rewrite the affected session files (default: report only)
         #[arg(long, default_value_t = false)]
         apply: bool,
+    },
+    /// Delete pasted clipboard images that no saved session, draft or history
+    /// still names. Reports what it would delete unless `--apply` is given.
+    /// Run it while no Codewhale session is open.
+    PruneImages {
+        /// Delete the listed images (default: report only)
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Keep unreferenced images newer than this many days
+        #[arg(long, value_name = "DAYS", default_value_t = 7)]
+        older_than_days: u64,
     },
     /// Export a session as a full-fidelity tar.xz archive (complete context:
     /// system prompt, messages, tool calls and results, plus artifacts)
@@ -380,13 +419,19 @@ struct ExecArgs {
     /// operator hooks.
     #[arg(long, default_value_t = false)]
     hooks: bool,
+    /// Run one answer with no tools. The default offers the normal tool
+    /// surface under the configured sandbox and approval posture.
+    #[arg(long, default_value_t = false)]
+    no_tools: bool,
+    /// Additional directory the file tools may read and write (repeatable).
+    #[arg(long = "add-dir", value_name = "PATH")]
+    add_dir: Vec<PathBuf>,
     /// Read the prompt from a file (`-` reads stdin) instead of argv, for
     /// prompts past the OS per-argument limit (~128 KiB on Linux).
     #[arg(long, value_name = "PATH", conflicts_with = "prompt")]
     prompt_file: Option<PathBuf>,
     #[arg(
         value_name = "PROMPT",
-        required_unless_present = "prompt_file",
         trailing_var_arg = true,
         help = codewhale_localization::tr(
             codewhale_localization::resolve_locale("auto"),
@@ -432,6 +477,31 @@ fn parse_cli_args(args: &[impl AsRef<str>]) -> Result<Cli, clap::Error> {
     Ok(cli)
 }
 
+fn headless_exec_args(
+    resume: Option<String>,
+    continue_session: bool,
+    prompt: &[String],
+) -> Result<ExecArgs> {
+    use clap::{Args as _, FromArgMatches as _};
+    let mut argv: Vec<String> = vec!["exec".to_string()];
+    if let Some(id) = &resume {
+        argv.push("--resume".to_string());
+        argv.push(id.clone());
+    }
+    if continue_session {
+        argv.push("--continue".to_string());
+    }
+    if !prompt.is_empty() {
+        argv.push("--".to_string());
+        argv.extend(prompt.iter().cloned());
+    }
+    let command = ExecArgs::augment_args(clap::Command::new("exec"));
+    let matches = command
+        .try_get_matches_from(argv)
+        .map_err(|error| anyhow!(error.to_string()))?;
+    ExecArgs::from_arg_matches(&matches).map_err(|error| anyhow!(error.to_string()))
+}
+
 #[derive(Args, Debug, Clone)]
 struct WorkflowToolArgs {
     /// Authority provenance stamped by the public `workflow run` command.
@@ -440,13 +510,6 @@ struct WorkflowToolArgs {
     /// Exact Workflow tool input serialized as one JSON object.
     #[arg(long, value_name = "JSON")]
     input_json: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ExecOutputFormat {
-    Text,
-    #[value(name = "stream-json")]
-    StreamJson,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -466,10 +529,6 @@ enum TuiAuthCommand {
     /// Revoke Codewhale-owned ChatGPT tokens. Codex CLI consent is unchanged.
     #[command(name = "chatgpt-revoke")]
     ChatgptRevoke,
-    #[command(name = "claude", alias = "anthropic")]
-    Claude,
-    #[command(name = "claude-revoke")]
-    ClaudeRevoke,
     /// Sign in to OrcaRouter with OAuth 2.0 + PKCE; run again to switch accounts.
     #[command(name = "orcarouter")]
     Orcarouter,
@@ -540,30 +599,17 @@ fn shell_only_exec_allowed_tools() -> Vec<String> {
         .collect()
 }
 
-/// #6510: whether an `exec` run is offered tools. Plain exec is one Engine
-/// turn with no tools; only a flag that grants tool authority opens a
-/// surface: `--auto`/`--yolo`, an explicit `--allowed-tools` list, a Fleet
-/// authority envelope, or the launcher's tool-surface env. A resumed session
-/// keeps its surface, because its history can carry tool calls and results
-/// that a zero-tool request cannot replay.
-///
-/// Limits (`--max-turns`, `--max-tool-calls`, `--disallowed-tools`,
-/// `--sandbox`, `--allow-sandbox-elevation`), prompt and hook opt-ins
-/// (`--append-system-prompt`, `--hooks`) and the output format never grant
-/// tools. They used to, so `exec --max-turns 1 "hi"` silently became a
-/// tool-using agent.
+/// Whether an `exec` run is offered tools. The default is the normal tool
+/// surface, still approval-gated by the configured sandbox. `--no-tools` is
+/// the explicit one-shot. A resumed session and a Fleet authority envelope
+/// keep their own surface.
 fn exec_grants_tool_surface(
     args: &ExecArgs,
-    yolo: bool,
-    resuming: bool,
-    env_tool_surface: bool,
+    _yolo: bool,
+    _resuming: bool,
+    _env_tool_surface: bool,
 ) -> bool {
-    args.auto
-        || yolo
-        || resuming
-        || args.allowed_tools.is_some()
-        || args.tool_authority_json.is_some()
-        || env_tool_surface
+    !args.no_tools
 }
 
 /// Flags that only shape a tool surface, passed on a run that has none.
@@ -759,7 +805,7 @@ fn spawn_signal_cleanup_task() {
         tokio::select! {
             _ = async {
                 tokio::join!(
-                    runtime_api::drain_for_signal_exit(),
+                    codewhale_app_server::runtime_api::drain_for_signal_exit(),
                     crate::tui::persistence_actor::flush_for_signal_exit(),
                 )
             } => {}
@@ -910,13 +956,13 @@ fn join_prompt_parts(parts: &[String]) -> String {
 /// stays the real limit (#6688).
 const MAX_EXEC_PROMPT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The effective exec prompt: argv words, or the body of `--prompt-file`
-/// (`-` = stdin). A positional `-` stays literal text: raw-prompt callers
-/// such as cloud dispatch pass a job prompt verbatim as argv. Runs before
-/// any model call so a missing or empty source fails loudly (#6688).
+/// The effective exec prompt: argv words, a `--prompt-file`, or piped stdin.
+/// A positional `-` stays literal text. When stdin is not a terminal and no
+/// `--prompt-file` is set, a pipe is the prompt, or is appended to argv.
+/// `--parent-death-watch` owns stdin and does not read it as a prompt.
 fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
     let Some(path) = &args.prompt_file else {
-        return Ok(join_prompt_parts(&args.prompt));
+        return resolve_argv_or_piped_prompt(args);
     };
     let prompt = if path.as_os_str() == "-" {
         if args.parent_death_watch {
@@ -942,6 +988,31 @@ fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
         bail!("exec prompt from {source} is empty");
     }
     Ok(prompt)
+}
+
+fn resolve_argv_or_piped_prompt(args: &ExecArgs) -> Result<String> {
+    let argv = join_prompt_parts(&args.prompt);
+    if args.parent_death_watch || io::stdin().is_terminal() {
+        if argv.trim().is_empty() {
+            bail!("missing exec prompt; pass it as arguments, --prompt-file, or a pipe");
+        }
+        return Ok(argv);
+    }
+    let piped = read_capped_text(
+        io::stdin().lock(),
+        MAX_EXEC_PROMPT_BYTES,
+        "exec prompt on stdin",
+    )?;
+    if argv.trim().is_empty() {
+        if piped.trim().is_empty() {
+            bail!("exec prompt from stdin is empty");
+        }
+        return Ok(piped);
+    }
+    if piped.trim().is_empty() {
+        return Ok(argv);
+    }
+    Ok(format!("{argv}\n\n{piped}"))
 }
 
 fn resolve_exec_model(config: &Config, explicit_model: Option<&str>) -> String {
@@ -1839,19 +1910,11 @@ fn resolve_startup_sandbox_mode_for_hardening() -> Option<String> {
         .map(str::to_string)
 }
 
-pub fn prepare_runtime_listener_handoff() -> Result<bool> {
-    runtime_api::listener::requested()
-}
-
-pub fn discard_runtime_listener_handoff() {
-    runtime_api::listener::discard();
-}
-
 /// Run a delegated Engine command in the canonical CLI process. Startup facts
 /// are typed; `args` contains only command arguments, without a binary name.
 pub fn run(options: RuntimeOptions, args: Vec<String>) -> std::process::ExitCode {
     let outcome = run_with_args(options, args);
-    discard_runtime_listener_handoff();
+    codewhale_app_server::runtime_api::listener::discard_runtime_listener_handoff();
     match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
@@ -1869,7 +1932,8 @@ pub fn run(options: RuntimeOptions, args: Vec<String>) -> std::process::ExitCode
 /// the canonical CLI and applied before config/discovery or worker startup.
 fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
     codewhale_engine::extension_host::install_ports();
-    let inherited_listener = prepare_runtime_listener_handoff()?;
+    let inherited_listener =
+        codewhale_app_server::runtime_api::listener::prepare_runtime_listener_handoff()?;
     let args: Vec<String> = std::iter::once("codewhale".to_string())
         .chain(args)
         .collect();
@@ -2012,13 +2076,18 @@ fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
     // every roster read in this process.
     codewhale_engine::fleet::roster::set_project_agent_profiles_enabled(!cli.no_project_config);
     let workspace = resolve_workspace(&cli);
+    let inspect_plugin_cli = matches!(cli.command.as_ref(), Some(Commands::Plugins { .. }));
     let mut plugin_discovery = None;
     let mut plugin_registry = None;
     let (cli, command) = prepare_cli_startup(
         cli,
         || {
             let discovery = codewhale_plugins::PluginDiscoveryContext::capture_pre_dotenv();
-            plugin_registry = Some(discovery.registry_for_workspace(&workspace));
+            plugin_registry = Some(if inspect_plugin_cli {
+                discovery.inspect_registry_for_workspace(&workspace)
+            } else {
+                discovery.registry_for_workspace(&workspace)
+            });
             plugin_discovery = Some(discovery);
         },
         || warn_on_workspace_dotenv_result(&workspace),
@@ -2151,6 +2220,7 @@ fn diagnostic_worker_count(command: Option<&Commands>) -> Option<usize> {
         ) => true,
         // Only the read-only status report; mutating setup keeps defaults.
         Some(Commands::Setup(args)) => args.status,
+        Some(Commands::Plugins { .. }) => true,
         _ => false,
     };
     capped.then_some(DIAGNOSTIC_WORKER_CAP)
@@ -2280,6 +2350,12 @@ fn telemetry_command_is_read_only(command: Option<&Commands>) -> bool {
                 | Commands::Receipts { .. }
         )
     ) || matches!(command, Some(Commands::Setup(args)) if args.status)
+        || matches!(
+            command,
+            Some(Commands::Plugins {
+                command: PluginsCommand::Status { .. }
+            })
+        )
 }
 
 /// Resolve the emit predicate and arm, once, before anything can record.
@@ -2441,6 +2517,20 @@ async fn run_async_main_inner(
     // ahead of it collects nothing.
     spawn_signal_cleanup_task();
 
+    let mut command = command;
+    if cli.operation_key.is_none()
+        && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
+        && matches!(command, Some(Commands::Resume { .. }))
+        && let Some(Commands::Resume { session_id, last }) = command.take()
+    {
+        let exec = if last || session_id.is_none() {
+            headless_exec_args(None, true, &cli.prompt)?
+        } else {
+            headless_exec_args(session_id, false, &cli.prompt)?
+        };
+        command = Some(Commands::Exec(exec));
+    }
+
     // A due interactive disclosure belongs to the native TUI. Presentation
     // does not gate the default-on policy; unreadable privacy state does.
     // Settings can disable this session and erase its pending aggregates.
@@ -2459,13 +2549,13 @@ async fn run_async_main_inner(
     if should_arm_before_dispatch {
         arm_telemetry(&cli, command.as_ref());
     }
-    let outcome = run_async_main_dispatch(
+    let outcome = Box::pin(run_async_main_dispatch(
         cli,
         command,
         plugin_discovery,
         plugin_registry,
         pending_telemetry_notice,
-    )
+    ))
     .await;
     finish_telemetry(&outcome, surface).await;
     outcome
@@ -2501,6 +2591,31 @@ async fn run_async_main_dispatch(
     // and every other runtime surface use the same plugin trust decision
     // (#3916, #4399). Discovery never enables, trusts, executes, or persists a
     // bundle.
+
+    let mut command = command;
+    if cli.operation_key.is_none()
+        && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
+        && matches!(command, Some(Commands::Fork { .. }))
+        && let Some(Commands::Fork { session_id, last }) = command.take()
+    {
+        let config = load_config_from_cli(&cli)?;
+        let registry = policy_current_registry(std::sync::Arc::clone(&plugin_registry));
+        let prepared = prepare_interactive_config(&cli, &config, true)?;
+        let source_id = resolve_session_id(session_id, last, &prepared.workspace)?;
+        let (_, new_session_id) = prepare_mounted_session(
+            &cli,
+            prepared,
+            source_id,
+            MountedHistoryIntent::Fork,
+            registry,
+        )
+        .await?;
+        command = Some(Commands::Exec(headless_exec_args(
+            Some(new_session_id),
+            false,
+            &cli.prompt,
+        )?));
+    }
 
     // Handle subcommands first
     if let Some(command) = command {
@@ -2573,12 +2688,22 @@ async fn run_async_main_dispatch(
                 )
                 .await
             }
+            Commands::Plugins { command } => tokio::task::spawn_blocking(move || {
+                let _config = load_structural_config_from_cli(&cli)?;
+                let workspace = resolve_workspace(&cli);
+                let registry = plugin_discovery.inspect_registry_for_workspace(&workspace);
+                run_plugins_cli(command, registry)
+            })
+            .await
+            .context("Plugin command failed to finish")?,
             Commands::Setup(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
                 run_setup(&config, &workspace, args, plugin_registry.as_ref())
             }
-            Commands::RemoteSetup(args) => remote_setup::run_remote_setup(args),
+            Commands::RemoteSetup(args) => {
+                codewhale_app_server::remote_setup::run_remote_setup(args)
+            }
             Commands::Sessions {
                 command,
                 limit,
@@ -2594,6 +2719,10 @@ async fn run_async_main_dispatch(
                     )
                     .await
                 }
+                Some(SessionsCommand::PruneImages {
+                    apply,
+                    older_than_days,
+                }) => run_sessions_prune_images(apply, older_than_days).await,
                 Some(SessionsCommand::Export {
                     id,
                     output,
@@ -2619,18 +2748,6 @@ async fn run_async_main_dispatch(
             Commands::Logout => run_logout(),
             Commands::Auth(args) => match args.command {
                 TuiAuthCommand::XaiDevice => run_xai_device_auth(cli.config.as_deref()).await,
-                TuiAuthCommand::Claude => run_claude_auth(cli.config.as_deref()).await,
-                TuiAuthCommand::ClaudeRevoke => {
-                    codewhale_runtime::oauth::revoke_owned_login(
-                        codewhale_runtime::oauth::OAuthProvider::Claude,
-                        cli.config.as_deref(),
-                        None,
-                    )?;
-                    println!(
-                        "Removed Codewhale's saved Claude sign-in. Manage remote access in Claude account settings."
-                    );
-                    Ok(())
-                }
                 TuiAuthCommand::Chatgpt => run_chatgpt_pkce_auth(cli.config.as_deref()).await,
                 TuiAuthCommand::ChatgptRevoke => run_chatgpt_pkce_revoke(cli.config.as_deref()),
                 TuiAuthCommand::Orcarouter => run_orcarouter_pkce_auth(cli.config.as_deref()).await,
@@ -2754,6 +2871,19 @@ async fn run_async_main_dispatch(
                         "persisted Models.dev cache load did not complete; keeping bundled"
                     );
                 }
+                if !args.add_dir.is_empty() {
+                    let mut extra = Vec::with_capacity(args.add_dir.len());
+                    for path in &args.add_dir {
+                        let canonical = path.canonicalize().with_context(|| {
+                            format!("--add-dir {} does not exist", path.display())
+                        })?;
+                        if !canonical.is_dir() {
+                            bail!("--add-dir {} is not a directory", path.display());
+                        }
+                        extra.push(canonical);
+                    }
+                    config.extra_trusted_paths = extra;
+                }
                 let prompt = resolve_exec_prompt(&args)?;
                 let resume_session_id = resolve_exec_resume_session_id(&args, &workspace)?;
                 validate_exec_tool_authority_resume(
@@ -2859,7 +2989,7 @@ async fn run_async_main_dispatch(
                         let ignored = exec_tool_flags_without_grant(&args);
                         if !ignored.is_empty() {
                             eprintln!(
-                                "codewhale exec: {} only apply to tools, and this run offers none; add --auto or --allowed-tools to run with tools.",
+                                "codewhale exec: {} only apply when tools are offered; drop --no-tools to use them.",
                                 ignored.join(", ")
                             );
                         }
@@ -2966,7 +3096,12 @@ async fn run_async_main_dispatch(
                     let config = load_structural_config_from_cli(&cli)?;
                     let skills_dir = config.skills_dir();
                     let skills_config = std::sync::Arc::new(config.skills_config());
-                    mcp_server::run_mcp_server(workspace, skills_dir, skills_config).await
+                    codewhale_app_server::mcp_server::run_mcp_server(
+                        workspace,
+                        skills_dir,
+                        skills_config,
+                    )
+                    .await
                 } else if http_selected {
                     let (mut config, config_profile) =
                         load_config_from_cli_with_effective_profile(&cli)?;
@@ -2986,11 +3121,11 @@ async fn run_async_main_dispatch(
                     if args.web && bind_host.host != "127.0.0.1" {
                         bail!("Codewhale web is loopback-only and must bind to 127.0.0.1");
                     }
-                    runtime_api::run_http_server(
+                    codewhale_app_server::runtime_api::run_http_server(
                         config,
                         workspace,
                         std::sync::Arc::clone(&plugin_discovery),
-                        runtime_api::RuntimeApiOptions {
+                        codewhale_app_server::runtime_api::RuntimeApiOptions {
                             host: bind_host.host,
                             port: args.port,
                             workers: args.workers.clamp(1, 8),
@@ -3012,7 +3147,7 @@ async fn run_async_main_dispatch(
                         load_config_from_cli_with_effective_profile(&cli)?;
                     initialize_cloud_facts(&config);
                     let model = config.default_model();
-                    acp_server::run_acp_server(
+                    codewhale_app_server::acp_server::run_acp_server(
                         config,
                         model,
                         workspace,
@@ -3033,14 +3168,14 @@ async fn run_async_main_dispatch(
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
                 let resume_id = resolve_session_id(session_id, last, &workspace)?;
-                run_interactive(
+                Box::pin(run_interactive(
                     &cli,
                     &config,
                     Some(resume_id),
                     None,
                     pending_telemetry_notice.take(),
                     std::sync::Arc::clone(&plugin_registry),
-                )
+                ))
                 .await
             }
             Commands::Fork { session_id, last } => {
@@ -3060,7 +3195,7 @@ async fn run_async_main_dispatch(
                     std::sync::Arc::clone(&plugin_registry),
                 )
                 .await?;
-                run_interactive_prepared(
+                Box::pin(run_interactive_prepared(
                     &cli,
                     prepared,
                     Some(new_session_id),
@@ -3068,7 +3203,7 @@ async fn run_async_main_dispatch(
                     None,
                     pending_telemetry_notice.take(),
                     std::sync::Arc::clone(&plugin_registry),
-                )
+                ))
                 .await
             }
         };
@@ -3081,14 +3216,14 @@ async fn run_async_main_dispatch(
     // one-shot behavior (#2370).
     let config = load_config_from_cli(&cli)?;
     if let Some(initial_input) = top_level_prompt_initial_input(&cli.prompt) {
-        return run_interactive(
+        return Box::pin(run_interactive(
             &cli,
             &config,
             None,
             Some(initial_input),
             pending_telemetry_notice.take(),
             std::sync::Arc::clone(&plugin_registry),
-        )
+        ))
         .await;
     }
 
@@ -3120,7 +3255,7 @@ async fn run_async_main_dispatch(
 
     // Default: Interactive TUI
     // --yolo starts in YOLO mode (auto-approve; shell enabled)
-    run_interactive_with_notice(
+    Box::pin(run_interactive_with_notice(
         &cli,
         &config,
         resume_session_id,
@@ -3128,7 +3263,7 @@ async fn run_async_main_dispatch(
         startup_notice,
         pending_telemetry_notice.take(),
         plugin_registry,
-    )
+    ))
     .await
 }
 
@@ -3166,6 +3301,7 @@ fn prepare_cli_startup(
     let command = cli.command.clone();
     let should_load_dotenv = match command.as_ref() {
         Some(Commands::Doctor(args)) => args.probe_api || args.probe_local,
+        Some(Commands::Plugins { .. }) => false,
         _ => true,
     };
     if should_load_dotenv {
@@ -5179,6 +5315,17 @@ async fn run_doctor(
     println!("{}", "Sessions:".bold());
     println!(
         "  · {}",
+        match crate::doctor::session_store_counts(&doctor_paths.sessions) {
+            Ok(Some(counts)) => format!(
+                "{} saved sessions, {} crash checkpoints",
+                counts.saved, counts.checkpoints
+            ),
+            Ok(None) => "no sessions directory yet".to_string(),
+            Err(error) => format!("could not count sessions: {error}"),
+        }
+    );
+    println!(
+        "  · {}",
         codewhale_engine::session_reconcile::last_run(&doctor_paths.sessions).map_or_else(
             || "no session repair has run yet (it runs at launch; `codewhale doctor --repair-sessions` runs it now)".to_string(),
             |summary| summary.doctor_detail()
@@ -6747,12 +6894,14 @@ fn doctor_legacy_state_report(
 /// This is deliberately separate from `SessionManager::default_location()`:
 /// constructing the manager can trigger the additive legacy migration, while
 /// doctor must remain a read-only diagnostic. Session history is stored as
-/// top-level JSON files. Directories (including `checkpoints`) and symlinks
-/// observed during the scan are ignored, so the diagnostic does not
-/// intentionally traverse checkpoint internals or link targets. These checks
-/// are best-effort observations, not a race-free no-follow guarantee.
-/// A matching filename is only a regular-file counterpart check: doctor does
-/// not parse or compare session descriptors.
+/// top-level JSON files. The state and sessions roots may be links the user
+/// made to relocate state (a junction onto another volume is the supported way
+/// to keep `~/.codewhale` off the system drive on Windows), so a linked root is
+/// resolved and read through; symlink *entries* observed during the scan are
+/// still ignored, so the diagnostic does not traverse checkpoint internals or
+/// per-file link targets. These checks are best-effort observations, not a
+/// race-free no-follow guarantee. A matching filename is only a regular-file
+/// counterpart check: doctor does not parse or compare session descriptors.
 fn doctor_session_recovery_report(
     primary_root: &Path,
     legacy_root: &Path,
@@ -6916,11 +7065,15 @@ fn doctor_session_recovery_report(
 
 /// Validate a session-state directory from observed metadata.
 ///
-/// `doctor` only compares top-level filenames. It rejects a state-root or
-/// sessions-root symlink observed during inspection rather than using it for a
-/// recovery suggestion. This is a best-effort observation, not a race-free
-/// no-follow guarantee. Missing paths are normal on a fresh install and are
-/// reported as `false`.
+/// `doctor` only compares top-level filenames. A directory the user relocated
+/// behind a link is resolved and inspected as its target: a junction is the
+/// supported way to keep `~/.codewhale` off the system drive on Windows, and
+/// refusing it left the migration diagnostic unable to run on exactly the
+/// layout it reports about. Only this directory check follows the link; the
+/// enumeration below still walks the path it was handed.
+///
+/// This is a best-effort observation, not a race-free no-follow guarantee.
+/// Missing paths are normal on a fresh install and are reported as `false`.
 fn doctor_session_directory_is_safe(path: &Path, label: &str) -> std::result::Result<bool, String> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -6932,13 +7085,20 @@ fn doctor_session_directory_is_safe(path: &Path, label: &str) -> std::result::Re
             ));
         }
     };
-    if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "could not inspect {label} at {}: path is a symlink",
-            codewhale_util::utils::display_path(path)
-        ));
-    }
-    if !metadata.file_type().is_dir() {
+    let metadata = if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
+        match std::fs::metadata(path) {
+            Ok(target) => target,
+            Err(error) => {
+                return Err(format!(
+                    "could not resolve {label} at {}: {error}",
+                    codewhale_util::utils::display_path(path)
+                ));
+            }
+        }
+    } else {
+        metadata
+    };
+    if !metadata.is_dir() {
         return Err(format!(
             "could not inspect {label} at {}: path is not a directory",
             codewhale_util::utils::display_path(path)
@@ -8375,6 +8535,10 @@ fn run_doctor_json(
         "config_present": config_path.exists(),
         "sessions": {
             "last_repair": codewhale_engine::session_reconcile::last_run(&doctor_paths.sessions),
+            "counts": match crate::doctor::session_store_counts(&doctor_paths.sessions) {
+                Ok(counts) => json!(counts),
+                Err(error) => json!({ "error": error }),
+            },
         },
         "paths": doctor_paths,
         "secret_backend": secret_backend,
@@ -9087,6 +9251,182 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
     lines
 }
 
+fn plugin_cli_text(value: &str) -> String {
+    use crate::commands::groups::plugins::render::{ReviewTextContext, escape_review_text};
+    escape_review_text(value, ReviewTextContext::Plain)
+}
+
+fn plugin_cli_diagnostic(
+    diagnostic: &codewhale_plugins::types::PluginDiagnostic,
+) -> serde_json::Value {
+    use codewhale_plugins::types::PluginDiagnosticLevel;
+    let level = match diagnostic.level {
+        PluginDiagnosticLevel::Warning => "warning",
+        PluginDiagnosticLevel::Error => "error",
+    };
+    serde_json::json!({
+        "level": level,
+        "code": diagnostic.code,
+        "message": plugin_cli_text(&diagnostic.message),
+        "path": diagnostic.path.as_ref().map(|path| plugin_cli_text(&path.to_string_lossy())),
+    })
+}
+
+fn plugin_cli_record(plugin: &codewhale_plugins::types::LoadedPlugin) -> serde_json::Value {
+    serde_json::json!({
+        "name": plugin_cli_text(plugin.name()),
+        "id": plugin_cli_text(plugin.id.as_str()),
+        "version": plugin_cli_text(&plugin.manifest.plugin.version),
+        "source": plugin_cli_text(&plugin.canonical_root.to_string_lossy()),
+        "scope": plugin.scope.as_str(),
+        "origin": plugin.origin.as_str(),
+        "state": plugin.state_label(),
+        "trust": plugin.trust_status.as_str(),
+        "enabled": plugin.enabled,
+        "active": plugin.active(),
+        "staged": plugin.staged_root.is_some(),
+        "applicable": plugin.applicable,
+        "compatibility": plugin.compatibility().as_str(),
+        "content_hash": plugin.content_hash,
+        "capability_hash": plugin.capability_hash,
+        "diagnostics": plugin.diagnostics.iter().map(plugin_cli_diagnostic).collect::<Vec<_>>(),
+    })
+}
+
+fn print_plugin_cli_diagnostic(diagnostic: &codewhale_plugins::types::PluginDiagnostic) {
+    use codewhale_plugins::types::PluginDiagnosticLevel;
+    let level = match diagnostic.level {
+        PluginDiagnosticLevel::Warning => "warning",
+        PluginDiagnosticLevel::Error => "error",
+    };
+    let path = diagnostic
+        .path
+        .as_ref()
+        .map(|path| plugin_cli_text(&path.to_string_lossy()))
+        .unwrap_or_else(|| "-".to_string());
+    println!(
+        "    level={} code={} message={} path={}",
+        level,
+        diagnostic.code,
+        plugin_cli_text(&diagnostic.message),
+        path
+    );
+}
+
+fn run_plugins_cli(
+    command: PluginsCommand,
+    mut registry: Arc<codewhale_plugins::PluginRegistry>,
+) -> Result<()> {
+    use codewhale_localization::{MessageId, resolve_locale, tr};
+    let settings = codewhale_runtime::settings::Settings::load_read_only().unwrap_or_default();
+    let locale = resolve_locale(&settings.locale);
+    match command {
+        PluginsCommand::Status { name, json } => {
+            let plugins = match name.as_deref() {
+                Some(name) => vec![registry.get(name).ok_or_else(|| {
+                    anyhow!(
+                        tr(locale, MessageId::CmdPluginBundleNotFound)
+                            .replace("{name}", &plugin_cli_text(name))
+                    )
+                })?],
+                None => registry.list(),
+            };
+            if json {
+                let records = plugins
+                    .iter()
+                    .map(|plugin| plugin_cli_record(plugin))
+                    .collect::<Vec<_>>();
+                let diagnostics = registry
+                    .diagnostics()
+                    .iter()
+                    .map(plugin_cli_diagnostic)
+                    .collect::<Vec<_>>();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "plugins": records,
+                        "diagnostics": diagnostics,
+                    }))?
+                );
+            } else {
+                if plugins.is_empty() {
+                    println!("{}", tr(locale, MessageId::CmdPluginBundleNoneFound));
+                } else {
+                    println!(
+                        "{}",
+                        tr(locale, MessageId::CmdPluginBundleListHeader)
+                            .replace("{count}", &plugins.len().to_string())
+                    );
+                }
+                for plugin in plugins {
+                    println!(
+                        "  name={} id={} version={} scope={} origin={} state={} trust={} enabled={} active={} staged={} applicable={} compatibility={}",
+                        plugin_cli_text(plugin.name()),
+                        plugin_cli_text(plugin.id.as_str()),
+                        plugin_cli_text(&plugin.manifest.plugin.version),
+                        plugin.scope.as_str(),
+                        plugin.origin.as_str(),
+                        plugin.state_label(),
+                        plugin.trust_status.as_str(),
+                        plugin.enabled,
+                        plugin.active(),
+                        plugin.staged_root.is_some(),
+                        plugin.applicable,
+                        plugin.compatibility().as_str()
+                    );
+                    println!(
+                        "    source={} content_hash={} capability_hash={}",
+                        plugin_cli_text(&plugin.canonical_root.to_string_lossy()),
+                        plugin.content_hash,
+                        plugin.capability_hash
+                    );
+                    for diagnostic in &plugin.diagnostics {
+                        print_plugin_cli_diagnostic(diagnostic);
+                    }
+                }
+                if !registry.diagnostics().is_empty() {
+                    println!(
+                        "{}",
+                        tr(locale, MessageId::CmdPluginBundleDiagnosticsHeader)
+                            .replace("{count}", &registry.diagnostics().len().to_string())
+                    );
+                    for diagnostic in registry.diagnostics() {
+                        print_plugin_cli_diagnostic(diagnostic);
+                    }
+                }
+            }
+        }
+        PluginsCommand::Restage { name, json } => {
+            Arc::make_mut(&mut registry)
+                .restage(&name)
+                .map_err(|error| {
+                    anyhow!(
+                        tr(locale, MessageId::CmdPluginActionFailed)
+                            .replace("{error}", &plugin_cli_text(&error))
+                    )
+                })?;
+            let name = plugin_cli_text(&name);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "name": name,
+                        "action": "restaged",
+                    }))?
+                );
+            } else {
+                println!(
+                    "{}",
+                    tr(locale, MessageId::CmdPluginBundleMutationSuccess)
+                        .replace("{name}", &name)
+                        .replace("{action}", "restaged")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     match command.command {
         FeaturesSubcommand::List => {
@@ -9104,6 +9444,32 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
         args.json,
     )
     .await
+}
+
+pub(crate) async fn active_route_client(
+    config: &Config,
+) -> Result<codewhale_engine::client::CodewhaleClient> {
+    use codewhale_config::ProviderKind;
+    use codewhale_config::provider::WirePolicy;
+
+    let identity = config
+        .active_provider_identity()
+        .map_err(anyhow::Error::msg)?;
+    let default_model = config.default_model();
+    let model_aware = identity.provider.provider().wire_policy() == WirePolicy::ModelAware;
+    let unresolved_local_model = identity.provider == ProviderKind::Ollama
+        && matches!(default_model.trim(), "" | "auto" | "unknown");
+    let selector = if model_aware || unresolved_local_model {
+        None
+    } else {
+        Some(default_model.as_str())
+    };
+    codewhale_engine::route_runtime::resolve_runtime_route_for_identity(config, &identity, selector)
+        .map_err(anyhow::Error::msg)?
+        .validate_async()
+        .await
+        .map(|route| route.client)
+        .map_err(anyhow::Error::msg)
 }
 
 async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
@@ -9527,6 +9893,89 @@ fn run_sessions_scrub_secrets_blocking(
             println!("  {}", path.display());
         }
     }
+    Ok(())
+}
+
+async fn run_sessions_prune_images(apply: bool, older_than_days: u64) -> Result<()> {
+    #[cfg(test)]
+    let ticket = crate::test_support::env_scope_ticket();
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let _membership = crate::test_support::join_env_scope(ticket);
+        run_sessions_prune_images_blocking(apply, older_than_days)
+    })
+    .await?
+}
+
+fn run_sessions_prune_images_blocking(apply: bool, older_than_days: u64) -> Result<()> {
+    let workspace = std::env::current_dir().context("Failed to read the current directory")?;
+    let image_dir = config::clipboard_images_dir(&workspace);
+    let manager = session_manager::SessionManager::default_location()?;
+    let runtime = runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
+        task_manager::default_tasks_dir(),
+    );
+    let mut roots = vec![
+        manager.sessions_dir().to_path_buf(),
+        runtime.data_dir.clone(),
+    ];
+    roots.extend(image_dir.parent().map(Path::to_path_buf));
+    let grace = Duration::from_secs(older_than_days.saturating_mul(24 * 60 * 60));
+    let report = session_image_prune::prune_clipboard_images(&image_dir, &roots, grace, apply);
+    if report.images == 0 {
+        println!("No pasted images in {}.", image_dir.display());
+        return Ok(());
+    }
+    println!(
+        "{} pasted images ({}) in {}: {} still referenced, {} newer than {older_than_days} days.",
+        report.images,
+        format_bytes(report.image_bytes),
+        image_dir.display(),
+        report.referenced,
+        report.recent,
+    );
+    if !report.removed.is_empty() {
+        println!(
+            "Deleted {} unreferenced images ({}).",
+            report.removed.len(),
+            format_bytes(report.removed_bytes())
+        );
+    }
+    if !report.unreferenced.is_empty() {
+        println!(
+            "{} unreferenced images ({}) {}:",
+            report.unreferenced.len(),
+            format_bytes(report.unreferenced_bytes()),
+            if apply { "were kept" } else { "can be deleted" }
+        );
+        for (path, _) in &report.unreferenced {
+            println!("  {}", path.display());
+        }
+        if !apply && report.unreadable.is_empty() {
+            println!(
+                "Re-run with `{} --apply` to delete them (close open Codewhale sessions first).",
+                session_image_prune::PRUNE_IMAGES_COMMAND
+            );
+        }
+    }
+    if !report.failed.is_empty() {
+        println!(
+            "{} images could not be deleted and were left in place:",
+            report.failed.len()
+        );
+        for (path, error) in &report.failed {
+            println!("  {}: {error}", path.display());
+        }
+    }
+    if !report.unreadable.is_empty() {
+        println!(
+            "{} files or directories could not be read, so `--apply` deletes nothing until they can:",
+            report.unreadable.len()
+        );
+        for path in &report.unreadable {
+            println!("  {}", path.display());
+        }
+    }
+    println!("Scanned {} files for references.", report.files_scanned);
     Ok(())
 }
 
@@ -10003,22 +10452,6 @@ async fn run_xai_device_auth(config_path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-async fn run_claude_auth(config_path: Option<&Path>) -> Result<()> {
-    let pending =
-        codewhale_runtime::oauth::login(codewhale_runtime::oauth::OAuthProvider::Claude).await?;
-    let path = config_path.map(Path::to_path_buf);
-    let activation = tokio::task::spawn_blocking(move || {
-        codewhale_runtime::oauth::activate_login(pending, path.as_deref(), None)
-    })
-    .await
-    .context("Claude activation worker failed")??;
-    println!("{}", activation.summary(codewhale_localization::Locale::En));
-    println!(
-        "Use `codewhale --provider anthropic` or `/provider anthropic`. Sign out with `codewhale auth claude-revoke`."
-    );
-    Ok(())
-}
-
 async fn run_chatgpt_pkce_auth(config_path: Option<&Path>) -> Result<()> {
     let config =
         codewhale_plugins::providers::load_config(config_path.map(Path::to_path_buf), None)?;
@@ -10166,10 +10599,10 @@ async fn prepare_mounted_session(
     intent: MountedHistoryIntent,
     plugins: Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<(PreparedInteractiveConfig, String)> {
-    use crate::runtime_api::thread_history::{
-        lookup_thread_history_operation_in_runtime, mutate_thread_history_in_runtime,
-        recover_thread_history_operation_in_runtime, session_goal_digest,
-    };
+    use codewhale_app_server::runtime_api::thread_history::lookup_thread_history_operation_in_runtime;
+    use codewhale_app_server::runtime_api::thread_history::mutate_thread_history_in_runtime;
+    use codewhale_app_server::runtime_api::thread_history::recover_thread_history_operation_in_runtime;
+    use codewhale_app_server::runtime_api::thread_history::session_goal_digest;
     use codewhale_engine::runtime_threads::manager::history::{
         history_owner_work, saved_document_digest,
     };
@@ -10276,14 +10709,12 @@ async fn prepare_mounted_session(
             &identity,
             model.as_deref(),
         )
-        .and_then(|route| {
-            if move_to_launch_provider {
-                route.preflight()
-            } else {
-                Ok(route)
-            }
-        })
         .map_err(anyhow::Error::msg)?;
+        let route = if move_to_launch_provider {
+            route.preflight_async().await.map_err(anyhow::Error::msg)?
+        } else {
+            route
+        };
         if move_to_launch_provider {
             route_overrides = serde_json::json!({
                 "model_provider": identity.persisted_kind(),
@@ -10622,9 +11053,35 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         })
         .transpose()?;
     let review_workspace = std::env::current_dir()?;
-    // A stateless CLI review has no Engine session or Native caller to invent.
-    let review_context = codewhale_engine::tools::spec::ToolContext::new(&review_workspace)
+    let model = resolve_review_model(config, args.model.as_deref());
+    anyhow::ensure!(
+        args.money_cap_usd.is_none() || !model.trim().eq_ignore_ascii_case("auto"),
+        "--money-cap-usd requires a fixed review model; Auto may dispatch a separately priced classifier"
+    );
+    let review_rates = match (args.input_usd_per_mtok, args.output_usd_per_mtok) {
+        (Some(input), Some(output)) => Some(codewhale_engine::tools::review_triage::SpendRates {
+            input_usd_per_million: input,
+            output_usd_per_million: output,
+        }),
+        _ => None,
+    };
+    let (_, review_source, _review_lease) = admit_cli_saved_operation(
+        None,
+        uuid::Uuid::new_v4().to_string(),
+        review_workspace.clone(),
+        model.clone(),
+        config
+            .active_provider_identity()
+            .map_err(anyhow::Error::msg)?,
+        format!("Review the following diff:\n\n{diff}"),
+    )
+    .await
+    .context("could not admit the review's saved accounting operation")?;
+    let review_accounting_origin =
+        review_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
+    let mut review_context = codewhale_engine::tools::spec::ToolContext::new(&review_workspace)
         .with_features(config.features());
+    review_context.accounting_origin = Some(review_accounting_origin.clone());
     // #6510: one review prompt authority. Plain diffs and PRs both ask for
     // the structured review contract; a plain diff renders it locally.
     //
@@ -10657,13 +11114,19 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
             format!("Review the following diff and provide feedback:\n\n{diff}\n\nEnd of diff.")
         }]
     };
-    let model = resolve_review_model(config, args.model.as_deref());
     let route_input = prompts
         .iter()
         .max_by_key(|prompt| prompt.chars().count())
         .expect("review has at least one prompt");
-    let route = resolve_cli_exec_route(config, &model, route_input, force_configured_route).await?;
-    let execution_config = config_for_cli_route(config, &route)?;
+    let route = resolve_cli_exec_route(
+        config,
+        &model,
+        route_input,
+        force_configured_route,
+        Some(review_accounting_origin.clone()),
+    )
+    .await?;
+    let execution_config = review_config_with_spend_rates(config, &route, review_rates)?;
     codewhale_engine::provider_lake::refresh_account_catalog_before_first_request(
         &execution_config,
     )
@@ -10700,13 +11163,6 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         .as_ref()
         .map(codewhale_engine::tools::review::PrReviewAccumulator::new);
     let review_triage = codewhale_engine::tools::review_triage::triage_review(&diff);
-    let review_rates = match (args.input_usd_per_mtok, args.output_usd_per_mtok) {
-        (Some(input), Some(output)) => Some(codewhale_engine::tools::review_triage::SpendRates {
-            input_usd_per_million: input,
-            output_usd_per_million: output,
-        }),
-        _ => None,
-    };
     // Visible-text reserve for this exact route/model (#6285). A reasoning route
     // shares one `max_tokens` allowance between hidden reasoning and visible
     // text, so the review request has to keep room for the review itself.
@@ -10739,7 +11195,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     let mut review_anchors = codewhale_engine::tools::review_core::ReviewAnchorReport::default();
     let mut review_tools_used: Vec<String> = Vec::new();
     let mut review_stop: Option<codewhale_engine::tools::review_triage::ReviewStop> = None;
-    let mut review_spend_usd = None;
+    let mut review_spend_usd = review_budget.money_limit_supported.then_some(0.0);
     for (index, user_prompt) in prompts.into_iter().enumerate() {
         let reasoning_effort = route.reasoning_effort.and_then(|effort| {
             review_reasoning_effort_value_for_prompt(
@@ -10756,10 +11212,22 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         request.budget = review_budget.tool_budget();
         request.max_output_tokens = Some(review_allowance);
         request.reasoning_effort = reasoning_effort;
-        request.spend_rates = review_rates;
-        request.money_cap_usd = review_budget
+        request.accounting_origin = Some(review_accounting_origin.clone());
+        if let Some(cap) = review_budget
             .money_cap_usd
-            .filter(|_| review_budget.money_limit_supported);
+            .filter(|_| review_budget.money_limit_supported)
+        {
+            let remaining = cap - review_spend_usd.unwrap_or(0.0);
+            if remaining <= 0.0 {
+                return report_failure(
+                    &usage,
+                    index,
+                    publication,
+                    "the per-review money cap was reached; no additional pass was dispatched and no partial review was accepted or posted".to_string(),
+                );
+            }
+            request.money_cap_usd = Some(remaining);
+        }
         request.intent = Some(intent.clone());
         request.refute = matches!(
             review_triage.risk,
@@ -10797,7 +11265,26 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         review_anchors.anchored += result.anchors.anchored;
         review_anchors.unanchored += result.anchors.unanchored;
         review_stop = result.stop.clone().or(review_stop);
-        review_spend_usd = result.spend_usd.or(review_spend_usd);
+        if review_budget.money_limit_supported {
+            let Some(spend) = result.spend_usd else {
+                return report_failure(
+                    &usage,
+                    index,
+                    publication,
+                    "the review's frozen USD source receipts could not verify its money cap; no partial review was accepted or posted".to_string(),
+                );
+            };
+            let total = review_spend_usd.unwrap_or(0.0) + spend;
+            if !total.is_finite() {
+                return report_failure(
+                    &usage,
+                    index,
+                    publication,
+                    "the review's accumulated source spend is not finite; no partial review was accepted or posted".to_string(),
+                );
+            }
+            review_spend_usd = Some(total);
+        }
         if codewhale_models::is_incomplete_stop_reason(review_stop_reason.as_deref()) {
             // #6285: budget exhaustion is an infrastructure outcome, not a
             // review verdict. The PR was never judged, so the message must not
@@ -11142,6 +11629,8 @@ fn review_failure_payload(
         "publication": publication.as_str(),
         "error": message,
         "usage": usage,
+        "usage_scope": "completed_review_passes",
+        "usage_coverage": "incomplete",
         "completed_review_passes": completed_passes,
         "planned_review_passes": planned_passes,
     })
@@ -11175,7 +11664,7 @@ fn report_review_failure(
     let usage = serde_json::to_string(usage)?;
     let publication = publication.as_str();
     bail!(
-        "{message}; publication: {publication}; completed review passes: {completed_passes}/{planned_passes}; accumulated usage: {usage}"
+        "{message}; publication: {publication}; completed review passes: {completed_passes}/{planned_passes}; known usage from completed passes (incomplete total coverage): {usage}"
     )
 }
 
@@ -11198,6 +11687,62 @@ fn review_execution_route(config: &Config, args: &ReviewArgs) -> Result<(Config,
     Ok((resolved, force_configured_route))
 }
 
+fn review_config_with_spend_rates(
+    config: &Config,
+    route: &CliAutoRoute,
+    rates: Option<codewhale_engine::tools::review_triage::SpendRates>,
+) -> Result<Config> {
+    let mut scoped = config_for_cli_route(config, route)?;
+    let Some(rates) = rates else {
+        return Ok(scoped);
+    };
+    let client = codewhale_engine::client::CodewhaleClient::new(&scoped)?;
+    let envelope = client.effective_route_envelope(&route.model, chrono::Utc::now());
+    let provider = client.admitted_provider_identity().key.to_string();
+    let endpoint = client.base_url().to_string();
+    let models = scoped.custom_models.get_or_insert_with(Vec::new);
+    let index = models
+        .iter()
+        .position(|row| row.id == envelope.model && row.matches_route(&provider, &endpoint));
+    let row = if let Some(index) = index {
+        &mut models[index]
+    } else {
+        models.push(codewhale_config::catalog::configured::ConfiguredModel {
+            provider,
+            base_url: endpoint,
+            id: envelope.model,
+            display_name: None,
+            limit: None,
+            cost: None,
+            modalities: None,
+            attachment: None,
+            reasoning: None,
+            tool_call: None,
+            structured_output: None,
+            extras: Default::default(),
+        });
+        models
+            .last_mut()
+            .expect("inserted review route declaration")
+    };
+    row.cost = Some(codewhale_config::models_dev::ModelsDevCost {
+        input: Some(rates.input_usd_per_million),
+        output: Some(rates.output_usd_per_million),
+        ..Default::default()
+    });
+    codewhale_config::catalog::configured::validate_configured_models(models)?;
+    let priced = codewhale_engine::client::CodewhaleClient::new(&scoped)?
+        .effective_route_envelope(&route.model, chrono::Utc::now());
+    anyhow::ensure!(
+        priced.provider_live_pricing.as_ref().is_some_and(|quote| {
+            quote.provenance == codewhale_config::pricing::PricingProvenance::UserOverride
+                && quote.currency == codewhale_config::pricing::Currency::Usd
+        }),
+        "the explicit review rates could not be frozen for this exact route"
+    );
+    Ok(scoped)
+}
+
 fn non_empty_flag(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -11211,6 +11756,26 @@ fn resolve_review_model(config: &Config, explicit_model: Option<&str>) -> String
 }
 
 fn validate_review_receipt_args(args: &ReviewArgs) -> Result<()> {
+    anyhow::ensure!(
+        args.money_cap_usd
+            .is_none_or(|cap| cap.is_finite() && cap > 0.0),
+        "--money-cap-usd must be finite and greater than zero"
+    );
+    anyhow::ensure!(
+        args.input_usd_per_mtok.is_some() == args.output_usd_per_mtok.is_some(),
+        "--input-usd-per-mtok and --output-usd-per-mtok must be supplied together"
+    );
+    anyhow::ensure!(
+        [args.input_usd_per_mtok, args.output_usd_per_mtok]
+            .into_iter()
+            .flatten()
+            .all(|rate| rate.is_finite() && rate >= 0.0),
+        "review token rates must be finite and nonnegative"
+    );
+    anyhow::ensure!(
+        args.input_usd_per_mtok.is_none() || args.money_cap_usd.is_some(),
+        "review token rates require --money-cap-usd"
+    );
     if args.receipt_path.is_some() && !args.write_receipt && !args.check_receipt {
         bail!("--receipt-path requires --write-receipt or --check-receipt");
     }
@@ -12495,6 +13060,7 @@ async fn run_mcp_command(
                 lazy: false,
                 enabled_tools: Vec::new(),
                 disabled_tools: Vec::new(),
+                always_allow_tools: Vec::new(),
                 headers: std::collections::HashMap::new(),
                 env_headers: std::collections::HashMap::new(),
                 bearer_token_env_var,
@@ -12655,6 +13221,7 @@ async fn run_mcp_command(
                         lazy: false,
                         enabled_tools: Vec::new(),
                         disabled_tools: Vec::new(),
+                        always_allow_tools: Vec::new(),
                         headers: std::collections::HashMap::new(),
                         env_headers: std::collections::HashMap::new(),
                         bearer_token_env_var: None,
@@ -13308,8 +13875,26 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
 /// they may belong to a live session in another terminal, and `--continue`
 /// reads them directly.
 fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) -> Option<String> {
-    let manager = session_manager::SessionManager::default_location().ok()?;
-    let newest = load_recent_checkpoints(&manager).into_iter().next()?;
+    let manager = match session_manager::SessionManager::default_location() {
+        Ok(manager) => manager,
+        Err(error) => {
+            tracing::warn!(target: "sessions", %error, "could not open the sessions store at launch");
+            return None;
+        }
+    };
+    let recent = load_recent_checkpoints(&manager);
+    tracing::info!(
+        target: "sessions",
+        sessions_dir = %manager.sessions_dir().display(),
+        saved_sessions = ?manager.saved_session_count().map_err(|error| error.to_string()),
+        checkpoint_files = ?manager.list_checkpoints().map(|refs| refs.len()).map_err(|error| error.to_string()),
+        interrupted = recent.len(),
+        newest_interrupted_in_this_workspace = ?recent.first().map(|checkpoint| {
+            session_manager::workspace_scope_matches(&checkpoint.metadata.workspace, launch_workspace)
+        }),
+        "session store at launch"
+    );
+    let newest = recent.into_iter().next()?;
 
     let session_workspace = newest.metadata.workspace.clone();
     let age_str = checkpoint_age_label(newest.age);
@@ -13684,36 +14269,6 @@ fn workspace_config_path_matches(raw_path: &str, workspace: &Path) -> bool {
     paths_equal_for_config(&configured, &workspace)
 }
 
-#[cfg(windows)]
-fn paths_equal_for_config(left: &Path, right: &Path) -> bool {
-    normalize_windows_config_path_for_compare(left)
-        == normalize_windows_config_path_for_compare(right)
-}
-
-#[cfg(not(windows))]
-fn paths_equal_for_config(left: &Path, right: &Path) -> bool {
-    left == right
-}
-
-#[cfg(windows)]
-fn normalize_windows_config_path_for_compare(path: &Path) -> String {
-    normalize_windows_config_path_str(&path.to_string_lossy())
-}
-
-#[cfg(any(windows, test))]
-fn normalize_windows_config_path_str(path: &str) -> String {
-    let mut normalized = path.replace('/', "\\");
-    if let Some(rest) = normalized.strip_prefix(r"\\?\UNC\") {
-        normalized = format!("\\\\{rest}");
-    } else if let Some(rest) = normalized.strip_prefix(r"\\?\") {
-        normalized = rest.to_string();
-    }
-    while normalized.len() > 3 && normalized.ends_with('\\') {
-        normalized.pop();
-    }
-    normalized.to_ascii_lowercase()
-}
-
 /// Startup discovery runs before config can select the extension-host policy,
 /// so it judged every reviewed Native plugin `CapabilitiesChanged`. Call this
 /// after the config load to re-judge under the installed policy, as
@@ -13746,7 +14301,7 @@ async fn run_interactive(
     pending_telemetry_notice: Option<codewhale_engine::telemetry_notice::PendingTelemetryNotice>,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<()> {
-    run_interactive_with_notice(
+    Box::pin(run_interactive_with_notice(
         cli,
         config,
         resume_session_id,
@@ -13754,7 +14309,7 @@ async fn run_interactive(
         None,
         pending_telemetry_notice,
         plugin_registry,
-    )
+    ))
     .await
 }
 
@@ -13786,7 +14341,7 @@ async fn run_interactive_with_notice(
     } else {
         (prepared, None)
     };
-    run_interactive_prepared(
+    Box::pin(run_interactive_prepared(
         cli,
         prepared,
         resume_session_id,
@@ -13794,7 +14349,7 @@ async fn run_interactive_with_notice(
         startup_notice,
         pending_telemetry_notice,
         plugin_registry,
-    )
+    ))
     .await
 }
 
@@ -13976,7 +14531,7 @@ async fn run_interactive_prepared(
     // env var (config.yolo), not as a CLI flag. Honour either.
     let yolo = cli.yolo || config.yolo.unwrap_or(false);
 
-    tui::run_tui(
+    Box::pin(tui::run_tui(
         config,
         tui::TuiOptions {
             model,
@@ -14003,51 +14558,8 @@ async fn run_interactive_prepared(
         },
         plugin_registry,
         pending_telemetry_notice,
-    )
+    ))
     .await
-}
-
-#[derive(Debug)]
-struct CliAutoRoute {
-    provider: codewhale_runtime::config::ProviderIdentity,
-    model: String,
-    reasoning_effort: Option<codewhale_engine::reasoning_preference::ReasoningEffort>,
-    /// Whether the runtime should continue resolving reasoning per prompt.
-    ///
-    /// This is independent from `auto_model`: an Auto model can carry a fixed
-    /// saved effort, while a fixed Fleet model can still request Auto effort.
-    auto_controls_reasoning: bool,
-    auto_model: bool,
-}
-
-fn cli_reasoning_effort_value(
-    config: &Config,
-    model: &str,
-    effort: codewhale_engine::reasoning_preference::ReasoningEffort,
-) -> Option<String> {
-    let identity = config.active_provider_identity().ok()?;
-    effort
-        .normalize_for_route_identity(
-            identity.provider,
-            identity.key.as_str(),
-            &config.base_url_for_route(&identity),
-            model,
-        )
-        .api_value_for_provider(identity.provider)
-        .map(str::to_string)
-}
-
-fn cli_reasoning_effort_value_for_prompt(
-    config: &Config,
-    model: &str,
-    effort: codewhale_engine::reasoning_preference::ReasoningEffort,
-) -> Option<String> {
-    let resolved = if effort == codewhale_engine::reasoning_preference::ReasoningEffort::Auto {
-        codewhale_engine::auto_reasoning::select()
-    } else {
-        effort
-    };
-    cli_reasoning_effort_value(config, model, resolved)
 }
 
 /// Review-pass reasoning effort: resolve `Auto` from the prompt exactly as the
@@ -14089,139 +14601,6 @@ fn normalize_cli_reasoning_effort(value: &str) -> Result<Option<String>> {
         .map_err(anyhow::Error::msg)
 }
 
-fn config_for_cli_route(config: &Config, route: &CliAutoRoute) -> Result<Config> {
-    let mut execution_config = config.clone();
-    execution_config
-        .scope_to_provider_identity(&route.provider)
-        .map_err(anyhow::Error::msg)?;
-    execution_config.set_provider_model_override(&route.provider, Some(route.model.clone()))?;
-    if route.provider.provider == codewhale_config::ProviderKind::Deepseek {
-        execution_config.default_text_model = Some(route.model.clone());
-    }
-    Ok(execution_config)
-}
-
-async fn resolve_cli_auto_route(
-    config: &Config,
-    model: &str,
-    prompt: &str,
-) -> Result<CliAutoRoute> {
-    let active = config
-        .active_provider_identity()
-        .map_err(anyhow::Error::msg)?;
-    if model.trim().eq_ignore_ascii_case("auto") {
-        let selection =
-            model_routing::resolve_auto_route_with_inventory(config, prompt, "", "auto", "auto")
-                .await?;
-        let preference = config
-            .reasoning_effort()
-            .filter(|_| config.reasoning_effort_is_explicit())
-            .map(codewhale_engine::reasoning_preference::ReasoningEffort::from_setting);
-        let (reasoning_effort, auto_controls_reasoning) =
-            model_routing::resolve_auto_model_reasoning(preference, selection.reasoning_effort);
-        Ok(CliAutoRoute {
-            provider: selection.provider,
-            model: selection.model,
-            reasoning_effort,
-            auto_controls_reasoning,
-            auto_model: true,
-        })
-    } else {
-        if let Some(selection) = model_routing::resolve_explicit_route_with_inventory(config, model)
-        {
-            let auto_controls_reasoning = matches!(
-                selection.reasoning_effort,
-                Some(codewhale_engine::reasoning_preference::ReasoningEffort::Auto)
-            );
-            return Ok(CliAutoRoute {
-                provider: selection.provider,
-                model: selection.model,
-                reasoning_effort: selection.reasoning_effort,
-                auto_controls_reasoning,
-                auto_model: false,
-            });
-        }
-
-        let candidate_providers = model_routing::explicit_route_candidate_providers(config, model);
-        if !candidate_providers.is_empty() && !candidate_providers.contains(&active) {
-            let providers = candidate_providers
-                .iter()
-                .map(|provider| provider.key.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!(
-                "model `{model}` is available from configured provider route(s): {providers}. \
-                 Pass `--provider <provider>` with `--model {model}` to choose one explicitly. \
-                 In the TUI, use `/provider`, `/model`, or `/setup` to resolve the route before sending."
-            );
-        }
-
-        // When --model is not `auto`, fall back to the reasoning_effort
-        // declared in the user's config.toml. The previous hard-coded `None`
-        // silently dropped the user's setting on every non-auto-route exec
-        // call, which (for example) prevented vllm + Qwen3 users from
-        // disabling thinking via `reasoning_effort = "off"` and caused
-        // 30+ second SSE idle timeouts on trivial prompts.
-        let reasoning_effort = config
-            .reasoning_effort()
-            .map(codewhale_engine::reasoning_preference::ReasoningEffort::from_setting);
-        Ok(CliAutoRoute {
-            provider: active,
-            model: model.to_string(),
-            auto_controls_reasoning: matches!(
-                reasoning_effort,
-                Some(codewhale_engine::reasoning_preference::ReasoningEffort::Auto)
-            ),
-            reasoning_effort,
-            auto_model: false,
-        })
-    }
-}
-
-async fn resolve_cli_exec_route(
-    config: &Config,
-    model: &str,
-    prompt: &str,
-    force_configured_route: bool,
-) -> Result<CliAutoRoute> {
-    let mut local_default = None;
-    if let Ok(identity) = config.active_provider_identity()
-        && identity.provider == codewhale_config::ProviderKind::Ollama
-    {
-        codewhale_engine::provider_lake::refresh_local_ollama_catalog(config, &identity).await;
-        if codewhale_runtime::config::is_unresolved_local_ollama_model(model)
-            || (force_configured_route && model.trim().eq_ignore_ascii_case("auto"))
-        {
-            local_default = Some(
-                codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
-                    config, &identity, None,
-                )
-                .map_err(anyhow::Error::msg)?
-                .model,
-            );
-        }
-    }
-    let model = local_default.as_deref().unwrap_or(model);
-    if force_configured_route && !model.trim().eq_ignore_ascii_case("auto") {
-        let reasoning_effort = config
-            .reasoning_effort()
-            .map(codewhale_engine::reasoning_preference::ReasoningEffort::from_setting);
-        return Ok(CliAutoRoute {
-            provider: config
-                .active_provider_identity()
-                .map_err(anyhow::Error::msg)?,
-            model: model.to_string(),
-            auto_controls_reasoning: matches!(
-                reasoning_effort,
-                Some(codewhale_engine::reasoning_preference::ReasoningEffort::Auto)
-            ),
-            reasoning_effort,
-            auto_model: false,
-        });
-    }
-    resolve_cli_auto_route(config, model, prompt).await
-}
-
 fn should_force_configured_exec_route(
     resuming: bool,
     explicit_provider: Option<&str>,
@@ -14232,345 +14611,6 @@ fn should_force_configured_exec_route(
     // override without an explicit provider. Resume remains route-authoritative
     // even when its model is overridden because it restores the saved provider.
     resuming || explicit_provider.is_some() || explicit_model.is_none()
-}
-
-fn exec_stream_provider_route(
-    identity: &codewhale_runtime::config::ProviderIdentity,
-) -> (String, Option<String>) {
-    let provider = identity.persisted_kind().to_string();
-    let provider_id = if identity.provider == codewhale_config::ProviderKind::Custom {
-        identity.persisted_id().map(str::to_string)
-    } else {
-        None
-    };
-    (provider, provider_id)
-}
-
-#[derive(serde::Serialize)]
-struct ExecStreamMeta {
-    receipt_kind: &'static str,
-    provider: String,
-    /// Exact configured provider-table id, when one selected the route.
-    /// `None` deliberately distinguishes the legacy idless root custom route
-    /// from literal `[providers.custom]`, whose exact id is `"custom"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider_id: Option<String>,
-    model: String,
-    route_source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    input_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    output_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_cache_hit_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_cache_miss_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_cache_write_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_tokens: Option<u32>,
-    /// Resolved output ceiling the route actually requested (post-catalogue).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    codewhale_max_output_tokens: Option<u32>,
-    /// Provenance of that ceiling: `documented`, `uncatalogued`, or
-    /// `route-declared`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    codewhale_max_output_tokens_source: Option<&'static str>,
-    duration_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    retry_count: Option<u32>,
-    approval_posture: String,
-    sandbox_posture: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    binary_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    config_sha256: Option<String>,
-    prompt_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_catalog_sha256: Option<String>,
-    input_analysis: ExecStreamInputAnalysis,
-    /// Real character count of the visible final answer, before any bound.
-    visible_final_answer_chars: usize,
-    /// Bounded, secret-redacted excerpt of the visible final answer (see
-    /// [`exec_stream_final_answer_excerpt`]). Omitted when the run produced
-    /// no visible answer.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    visible_final_answer_excerpt: String,
-    session_id: String,
-    resume_command: String,
-    workspace: String,
-    message_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    termination_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error_category: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-#[derive(Debug, Default, Clone, serde::Serialize, PartialEq, Eq)]
-struct ExecStreamInputAnalysis {
-    estimated_request_tokens: usize,
-    estimated_message_content_tokens: usize,
-    estimated_system_tokens: usize,
-    estimated_framing_tokens: usize,
-    user_message_count: usize,
-    assistant_message_count: usize,
-    tool_message_count: usize,
-    tool_use_count: usize,
-    tool_result_count: usize,
-    text_chars: usize,
-    thinking_chars: usize,
-    tool_use_input_chars: usize,
-    tool_result_chars: usize,
-    text_estimated_tokens: usize,
-    thinking_estimated_tokens: usize,
-    tool_use_input_estimated_tokens: usize,
-    tool_result_estimated_tokens: usize,
-}
-
-#[derive(serde::Serialize)]
-#[serde(tag = "type")]
-// Keep receipts flat for stable JSONL consumers. Boxing the whole tool_result
-// payload would introduce a nested object and break the stream schema.
-#[allow(clippy::large_enum_variant)]
-enum ExecStreamEvent {
-    #[serde(rename = "status")]
-    Status { message: String },
-    #[serde(rename = "request_image_window")]
-    RequestImageWindow {
-        provider: String,
-        model: String,
-        total: usize,
-        elided: usize,
-        cap: usize,
-        cap_source: String,
-        message: String,
-    },
-    #[serde(rename = "content")]
-    Content { content: String },
-    #[serde(rename = "tool_use")]
-    ToolUse {
-        name: String,
-        id: String,
-        input: serde_json::Value,
-        started_at: String,
-    },
-    #[serde(rename = "tool_result")]
-    ToolResult {
-        id: String,
-        name: String,
-        output: String,
-        status: String,
-        started_at: String,
-        completed_at: String,
-        duration_ms: u64,
-        side_effect_status: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error_category: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        truncated: Option<bool>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        artifact: Option<serde_json::Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result_metadata: Option<serde_json::Value>,
-    },
-    /// A sub-agent was launched, and the model it was launched on.
-    ///
-    /// Without this, a delegated child is invisible to anything reading the
-    /// stream: a parent turn on one route could spawn children billed on
-    /// another and the only place it surfaced was the invoice. That is not
-    /// hypothetical — the `Fast` loadout re-priced scout children onto a
-    /// cheaper sibling until it was fixed, and nothing in the output said so.
-    #[serde(rename = "agent_spawned")]
-    AgentSpawned {
-        id: String,
-        model: String,
-        spawn_depth: u32,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        parent_run_id: Option<String>,
-        /// Why the child got this route, when the spawn path resolved one.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        route_source: Option<String>,
-    },
-    #[serde(rename = "sandbox_denied")]
-    SandboxDenied {
-        tool_id: String,
-        tool_name: String,
-        reason: String,
-        outcome: String,
-    },
-    #[serde(rename = "workflow_event")]
-    WorkflowEvent {
-        run_id: String,
-        event: serde_json::Value,
-    },
-    #[serde(rename = "session_capture")]
-    SessionCapture {
-        /// Redacted fingerprint for logs/forensics, the same value the
-        /// terminal `metadata.session_id` carries; never the recoverable id.
-        content: String,
-        /// The real saved-session id a caller can resolve via
-        /// `GET /v1/sessions/{id}` to read the worker's full transcript. This
-        /// is the only place the exec stream carries the raw id: `metadata`
-        /// stays fingerprint-only so a captured terminal receipt is safe to
-        /// log on its own.
-        saved_session_id: String,
-    },
-    #[serde(rename = "service_released")]
-    #[cfg(unix)]
-    ServiceReleased {
-        task_id: String,
-        pid: u32,
-        process_group_id: u32,
-        ownership: String,
-    },
-    #[serde(rename = "provider_request_receipt")]
-    ProviderRequestReceipt { receipt: serde_json::Value },
-    /// Per-model-call usage receipt. Field names mirror the terminal
-    /// `metadata` receipt (`prompt_cache_hit_tokens` is the provider's
-    /// cache-read count, `prompt_cache_write_tokens` the cache-creation
-    /// count). Optional fields are omitted — never emitted as null or zero —
-    /// when the provider does not report them; the whole event is skipped
-    /// for model calls whose provider reported no usage at all.
-    #[serde(rename = "turn_usage")]
-    TurnUsage {
-        /// 1-based index of the model call within this exec run.
-        turn: u32,
-        input_tokens: u32,
-        output_tokens: u32,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reasoning_tokens: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        prompt_cache_hit_tokens: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        prompt_cache_miss_tokens: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        prompt_cache_write_tokens: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reasoning_replay_tokens: Option<u32>,
-        duration_ms: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        finish_reason: Option<String>,
-    },
-    #[serde(rename = "metadata")]
-    Metadata { meta: Box<ExecStreamMeta> },
-    #[serde(rename = "done")]
-    Done,
-    #[serde(rename = "error")]
-    Error { error: String },
-}
-
-fn exec_sandbox_elevation_authorized(
-    allow_sandbox_elevation: bool,
-    explicit_sandbox: Option<&str>,
-) -> bool {
-    allow_sandbox_elevation
-        || explicit_sandbox.is_some_and(|policy| policy.eq_ignore_ascii_case("danger-full-access"))
-}
-
-fn emit_exec_stream_event(event: &ExecStreamEvent) -> Result<()> {
-    let mut line = serde_json::to_string(&exec_stream_value(event)?)?;
-    line.push('\n');
-    write_exec_stdout(&line)
-}
-
-/// Headless `exec` ignores SIGPIPE while it runs, because it writes to pipes
-/// it does not own: a stdio MCP server, LSP, hook or shell child that exits
-/// early must fail that one write with `EPIPE`, not kill the run with no
-/// output. Under the default disposition, an MCP server whose interpreter
-/// could not start (a broken `node` on PATH for the built-in Computer Use
-/// plugin) made `exec --auto` exit 141 before printing anything.
-fn ignore_sigpipe_for_headless_exec() {
-    // SAFETY: a plain disposition change with no handler. Children still start
-    // with SIGPIPE at SIG_DFL: the standard library resets it before exec.
-    #[cfg(unix)]
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-    }
-}
-
-/// Write exec output to stdout. SIGPIPE is ignored during exec (see
-/// [`ignore_sigpipe_for_headless_exec`]), so a reader that closed stdout
-/// (`codewhale exec ... | head -1`) surfaces here as `BrokenPipe`. End the
-/// process the way the default disposition would have (#4030) instead of
-/// panicking inside `print!`.
-fn write_exec_stdout(text: &str) -> Result<()> {
-    let mut stdout = io::stdout().lock();
-    match stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
-    {
-        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
-            // SAFETY: restores the default disposition and re-raises the
-            // signal the write would have delivered without SIG_IGN.
-            #[cfg(unix)]
-            unsafe {
-                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-                libc::raise(libc::SIGPIPE);
-            }
-            std::process::exit(141);
-        }
-        result => result.map_err(Into::into),
-    }
-}
-
-fn exec_stream_value(event: &ExecStreamEvent) -> Result<serde_json::Value> {
-    let mut value = serde_json::to_value(event)?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert("schema_version".to_string(), serde_json::json!(1));
-        object.insert(
-            "schema".to_string(),
-            serde_json::json!("codewhale.exec-stream"),
-        );
-    }
-    Ok(value)
-}
-
-fn tool_error_receipt_category(error: &codewhale_engine::tools::spec::ToolError) -> &'static str {
-    use codewhale_engine::tools::spec::ToolError;
-    match error {
-        ToolError::InvalidInput { .. } => "invalid_input",
-        ToolError::MissingField { .. } => "missing_field",
-        ToolError::PathEscape { .. } => "path_escape",
-        ToolError::ExecutionFailed { .. } => "execution_failed",
-        ToolError::Timeout { .. } => "timeout",
-        ToolError::Cancelled { .. } => "cancelled",
-        ToolError::NotAvailable { .. } => "not_available",
-        ToolError::PermissionDenied { .. } => "permission_denied",
-    }
-}
-
-fn tool_artifact_receipt(metadata: Option<&serde_json::Value>) -> Option<serde_json::Value> {
-    let object = metadata?.as_object()?;
-    let mut artifact = serde_json::Map::new();
-    for key in [
-        "artifact_id",
-        "artifact_path",
-        "artifact_relative_path",
-        "artifact_byte_size",
-        "spillover_path",
-        "content_digest",
-        "original_byte_count",
-        "retained_head_bytes",
-        "retained_tail_bytes",
-    ] {
-        if let Some(value) = object.get(key) {
-            artifact.insert(key.to_string(), value.clone());
-        }
-    }
-    (!artifact.is_empty()).then_some(serde_json::Value::Object(artifact))
-}
-
-fn start_binary_sha256() -> tokio::task::JoinHandle<Option<String>> {
-    let file = std::env::current_exe().and_then(std::fs::File::open);
-    tokio::task::spawn_blocking(move || {
-        let _timing = codewhale_runtime::logging::PhaseTimer::start("binary_identity");
-        let hash = codewhale_release::installs::reader_sha256(file.ok()?).ok()?;
-        Some(format!("sha256:{hash}"))
-    })
 }
 
 async fn run_workflow_tool_command(
@@ -14631,11 +14671,27 @@ async fn run_workflow_tool_command_inner(
 
     initialize_cloud_facts(&config);
     let model = resolve_exec_model(&config, None);
+    let workflow_session_id = uuid::Uuid::new_v4().to_string();
+    let (_, workflow_source, _workflow_lease) = admit_cli_saved_operation(
+        None,
+        workflow_session_id.clone(),
+        workspace.clone(),
+        model.clone(),
+        config
+            .active_provider_identity()
+            .map_err(anyhow::Error::msg)?,
+        format!("Run this Workflow:\n{}", serde_json::to_string(&input)?),
+    )
+    .await
+    .context("could not admit the Workflow's saved accounting operation")?;
+    let workflow_accounting_origin =
+        workflow_source.usage_origin(codewhale_engine::cost_status::scope_token())?;
     let route = resolve_cli_exec_route(
         &config,
         &model,
         "Run a checked-in Workflow through the host runtime",
         true,
+        Some(workflow_accounting_origin.clone()),
     )
     .await?;
     let execution_config = config_for_cli_route(&config, &route)?;
@@ -14672,6 +14728,7 @@ async fn run_workflow_tool_command_inner(
         &workspace,
         event_tx,
         plugin_registry,
+        workflow_accounting_origin,
     )
     .await
     {
@@ -14754,10 +14811,10 @@ async fn run_workflow_tool_command_inner(
             input_analysis: ExecStreamInputAnalysis::default(),
             visible_final_answer_chars: result.content.chars().count(),
             visible_final_answer_excerpt: exec_stream_final_answer_excerpt(&result.content),
-            session_id: String::new(),
-            resume_command: String::new(),
+            session_id: workflow_session_id.clone(),
+            resume_command: format!("codewhale --resume {workflow_session_id}"),
             workspace: workspace.display().to_string(),
-            message_count: 0,
+            message_count: 1,
             status: Some(workflow_status.clone()),
             termination_reason: Some(if completed { "resolved" } else { "tool_error" }.to_string()),
             error_category: (!completed).then(|| "tool".to_string()),
@@ -14841,6 +14898,7 @@ async fn build_direct_workflow_tool(
     workspace: &Path,
     event_tx: tokio::sync::mpsc::Sender<codewhale_engine::core::events::Event>,
     plugin_registry: std::sync::Arc<codewhale_plugins::PluginRegistry>,
+    accounting_origin: codewhale_engine::cost_status::NativeUsageOrigin,
 ) -> Result<(
     codewhale_engine::tools::workflow::WorkflowTool,
     codewhale_engine::tools::ToolContext,
@@ -14872,7 +14930,7 @@ async fn build_direct_workflow_tool(
     }
 
     let yolo = config.yolo.unwrap_or(false);
-    let mode = AppMode::Operate;
+    let mode = AppMode::Agent;
     let allow_shell = yolo || config.allow_shell();
     let shell_policy = shell_policy_for_mode(mode, allow_shell);
     let trusted = codewhale_runtime::workspace_trust::WorkspaceTrust::load_for(workspace);
@@ -14903,6 +14961,7 @@ async fn build_direct_workflow_tool(
             config.sandbox_network_access,
         ),
     ));
+    context.accounting_origin = Some(accounting_origin);
     let network_policy = config.network.clone().map(|network| {
         codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
             codewhale_net::network_policy::NetworkPolicy::from(network),
@@ -14965,6 +15024,8 @@ async fn build_direct_workflow_tool(
         .flatten();
     surface.speech_output_dir = config.speech_output_dir();
     surface.goal_state = Some(new_shared_goal_state());
+    surface.goal_complete_judge = config.goal_complete_judge();
+    surface.goal_blocked_judge = config.goal_blocked_judge();
 
     let client = CodewhaleClient::new(config)?;
     // A FIXED model with `reasoning_effort = auto` (the shape a Fleet worker
@@ -15067,466 +15128,6 @@ fn direct_workflow_status(content: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-fn exec_stream_input_analysis(
-    messages: &[Message],
-    system: Option<&SystemPrompt>,
-) -> ExecStreamInputAnalysis {
-    let mut analysis = ExecStreamInputAnalysis {
-        estimated_request_tokens: codewhale_engine::compaction::estimate_input_tokens_conservative(
-            messages, system,
-        ),
-        estimated_message_content_tokens: codewhale_engine::compaction::estimate_tokens(messages),
-        estimated_system_tokens: exec_stream_estimate_system_tokens(system),
-        estimated_framing_tokens: messages.len().saturating_mul(12).saturating_add(48),
-        ..ExecStreamInputAnalysis::default()
-    };
-
-    for message in messages {
-        match message.role.as_str() {
-            "user" => analysis.user_message_count += 1,
-            "assistant" => analysis.assistant_message_count += 1,
-            "tool" => analysis.tool_message_count += 1,
-            _ => {}
-        }
-
-        for block in &message.content {
-            match block {
-                ContentBlock::Text { text, .. } => {
-                    exec_stream_add_text_estimate(
-                        text,
-                        &mut analysis.text_chars,
-                        &mut analysis.text_estimated_tokens,
-                    );
-                }
-                ContentBlock::Thinking { thinking, .. } => {
-                    exec_stream_add_text_estimate(
-                        thinking,
-                        &mut analysis.thinking_chars,
-                        &mut analysis.thinking_estimated_tokens,
-                    );
-                }
-                ContentBlock::ToolUse { input, .. } | ContentBlock::ServerToolUse { input, .. } => {
-                    analysis.tool_use_count += 1;
-                    exec_stream_add_json_estimate(
-                        input,
-                        &mut analysis.tool_use_input_chars,
-                        &mut analysis.tool_use_input_estimated_tokens,
-                    );
-                }
-                ContentBlock::ToolResult {
-                    content,
-                    content_blocks,
-                    ..
-                } => {
-                    analysis.tool_result_count += 1;
-                    exec_stream_add_text_estimate(
-                        content,
-                        &mut analysis.tool_result_chars,
-                        &mut analysis.tool_result_estimated_tokens,
-                    );
-                    if let Some(blocks) = content_blocks {
-                        exec_stream_add_json_estimate(
-                            blocks,
-                            &mut analysis.tool_result_chars,
-                            &mut analysis.tool_result_estimated_tokens,
-                        );
-                    }
-                }
-                ContentBlock::ToolSearchToolResult { content, .. }
-                | ContentBlock::CodeExecutionToolResult { content, .. } => {
-                    analysis.tool_result_count += 1;
-                    exec_stream_add_json_estimate(
-                        content,
-                        &mut analysis.tool_result_chars,
-                        &mut analysis.tool_result_estimated_tokens,
-                    );
-                }
-                ContentBlock::ImageUrl { .. } => {}
-            }
-        }
-    }
-
-    analysis
-}
-
-fn exec_stream_add_text_estimate(text: &str, chars: &mut usize, tokens: &mut usize) {
-    *chars = chars.saturating_add(text.chars().count());
-    *tokens = tokens
-        .saturating_add(codewhale_engine::compaction::estimate_text_tokens_conservative(text));
-}
-
-fn exec_stream_add_json_estimate<T: serde::Serialize>(
-    value: &T,
-    chars: &mut usize,
-    tokens: &mut usize,
-) {
-    let text = serde_json::to_string(value).unwrap_or_default();
-    exec_stream_add_text_estimate(&text, chars, tokens);
-}
-
-fn exec_stream_estimate_system_tokens(system: Option<&SystemPrompt>) -> usize {
-    match system {
-        Some(SystemPrompt::Text(text)) => {
-            codewhale_engine::compaction::estimate_text_tokens_conservative(text)
-        }
-        Some(SystemPrompt::Blocks(blocks)) => blocks
-            .iter()
-            .map(|block| {
-                codewhale_engine::compaction::estimate_text_tokens_conservative(&block.text)
-            })
-            .sum(),
-        None => 0,
-    }
-}
-
-fn exec_saved_session_line(session_id: &str) -> String {
-    format!("session: {}", truncate_id(session_id))
-}
-
-fn exec_resumed_session_line(session_id: &str) -> String {
-    format!("resumed session: {}", truncate_id(session_id))
-}
-
-fn exec_stream_session_ref(session_id: &str) -> String {
-    codewhale_util::utils::redacted_identifier_for_log(session_id)
-}
-
-/// Resume hint for the terminal `metadata` receipt. `metadata` carries only
-/// the session fingerprint, so the hint names the `session_capture` field
-/// that holds the recoverable id instead of pretending to redact one.
-fn exec_stream_resume_hint(session_id: &str) -> String {
-    if session_id.trim().is_empty() {
-        String::new()
-    } else {
-        "codewhale exec --resume <session_capture.saved_session_id>".to_string()
-    }
-}
-
-/// The final visible assistant reply for the terminal receipt: the text
-/// blocks of the last assistant-like message after the current user prompt.
-/// Tool results also use the user role, so they must not start a new turn.
-/// A resumed session can be synchronized before its new prompt is accepted;
-/// without current output its old answer must never become a new deliverable.
-fn exec_stream_final_answer_text(
-    messages: &[Message],
-    current_turn_has_output: bool,
-) -> Option<String> {
-    if !current_turn_has_output {
-        return None;
-    }
-    let turn_start = messages.iter().rposition(|message| {
-        message.role == Role::User
-            && !codewhale_models::turn_classify::is_runtime_owned_user_message(message)
-            && !message
-                .content
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
-    })?;
-    let text = messages
-        .iter()
-        .skip(turn_start + 1)
-        .rev()
-        .find(|message| message.role.is_assistant_like())?
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string();
-    (!text.is_empty()).then_some(text)
-}
-
-#[derive(Clone, Copy)]
-struct PersistedProviderRoute<'a> {
-    kind: &'a str,
-    id: Option<&'a str>,
-}
-
-fn persist_exec_session(
-    messages: &[Message],
-    model: &str,
-    provider_route: PersistedProviderRoute<'_>,
-    workspace: &Path,
-    system_prompt: &Option<SystemPrompt>,
-    session_id: Option<&str>,
-    total_tokens: u64,
-    turn_failure: Option<&str>,
-    manager: &SessionManager,
-    provider_request_receipts: &[serde_json::Value],
-    checkpoint: Option<&codewhale_engine::core::events::SessionCheckpointRequest>,
-    source: &session_manager::SessionWriteReceipt,
-    owner: &codewhale_engine::core::ops::SessionSnapshotSource,
-) -> Result<session_manager::SessionPublication> {
-    let captured = source.capture(session_manager::SessionWriteOwner::Engine(owner.clone()))?;
-    if checkpoint.is_some() {
-        captured.require_checkpoint_acknowledgement();
-    }
-    let mut saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
-        match manager.load_session_snapshot(id) {
-            Ok(existing) => session_manager::update_session(
-                existing,
-                messages,
-                total_tokens,
-                system_prompt.as_ref(),
-            ),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                session_manager::create_saved_session_with_id_and_mode(
-                    id.to_string(),
-                    messages,
-                    model,
-                    workspace,
-                    total_tokens,
-                    system_prompt.as_ref(),
-                    Some("exec"),
-                )
-            }
-            Err(err) => return Err(err).context("could not load existing exec session"),
-        }
-    } else {
-        session_manager::create_saved_session_with_mode(
-            messages,
-            model,
-            workspace,
-            total_tokens,
-            system_prompt.as_ref(),
-            Some("exec"),
-        )
-    };
-    saved.write_receipt = Some(captured);
-    stamp_exec_session_metadata(
-        &mut saved,
-        model,
-        provider_route.kind,
-        provider_route.id,
-        workspace,
-    );
-    if let Some(error) = turn_failure {
-        session_manager::push_turn_outcome(
-            &mut saved.turn_outcomes,
-            session_manager::SavedTurnOutcome::failed(error, messages.len()),
-        );
-    }
-    if !provider_request_receipts.is_empty() {
-        saved.ensure_journal();
-        if let Some(journal) = saved.journal.as_mut() {
-            let leaf = journal.leaf_id.clone();
-            for receipt in provider_request_receipts {
-                let label = if receipt
-                    .get("wire_observations")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|values| {
-                        values
-                            .iter()
-                            .any(|value| value.get("image_projection").is_some())
-                    }) {
-                    "Provider request image projection"
-                } else {
-                    "Provider request receipt"
-                };
-                journal.append(codewhale_runtime::session_tree::SessionEntryKind::System {
-                    content: format!("{label}: {receipt}"),
-                });
-                journal.leaf_id.clone_from(&leaf);
-            }
-        }
-    }
-    for receipt in provider_request_receipts
-        .iter()
-        .filter(|receipt| receipt["primary"].as_bool() == Some(true))
-    {
-        let Some(source) = receipt["source_id"].as_str() else {
-            continue;
-        };
-        if receipt["usage_reported"].as_bool() == Some(true) {
-            saved.metadata.cost.usage_source_fingerprints.insert(
-                codewhale_engine::cost_status::usage_source_fingerprint(source),
-            );
-        }
-        let coverage = receipt.get("coverage").cloned().and_then(|value| {
-            serde_json::from_value::<codewhale_engine::llm_client::ProviderUsageCoverage>(value)
-                .ok()
-        });
-        if matches!(
-            coverage,
-            Some(
-                codewhale_engine::llm_client::ProviderUsageCoverage::Missing
-                    | codewhale_engine::llm_client::ProviderUsageCoverage::Incomplete
-            )
-        ) && let Some(route) = receipt.get("route").cloned().and_then(|value| {
-            serde_json::from_value::<codewhale_engine::cost_status::EffectiveRouteEnvelope>(value)
-                .ok()
-        }) {
-            let reason =
-                if receipt["outcome"] == "completed" || receipt["outcome"] == "review_response" {
-                    codewhale_engine::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage
-                } else {
-                    codewhale_engine::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
-                };
-            let pool = codewhale_engine::cost_status::background_cost_for_runtime_drop(
-                &codewhale_engine::cost_status::RuntimeUsageDropRecord {
-                    source_id: source.to_string(),
-                    route,
-                    reason,
-                },
-            );
-            let cost = &mut saved.metadata.cost;
-            let pool = codewhale_engine::cost_status::project_missing_usage_ledger(
-                &mut cost.missing_usage_sources,
-                &mut cost.missing_usage_overflowed,
-                &mut cost.unpriced_turns,
-                &mut cost.cny_unpriced_turns,
-                &pool,
-            );
-            cost.unpriced_turns = cost.unpriced_turns.saturating_add(pool.unpriced_turns);
-            cost.cny_unpriced_turns = cost
-                .cny_unpriced_turns
-                .saturating_add(pool.cny_unpriced_turns);
-            cost.unpriced_reasons
-                .extend(pool.unpriced_reasons.into_iter().map(str::to_string));
-            cost.cny_unpriced_reasons
-                .extend(pool.cny_unpriced_reasons.into_iter().map(str::to_string));
-        }
-    }
-    saved.make_storage_compatible();
-    if let Some(checkpoint) = checkpoint {
-        checkpoint
-            .validate_prefix(
-                &saved.metadata.id,
-                &saved.metadata.workspace,
-                &saved.messages,
-            )
-            .map_err(anyhow::Error::msg)?;
-    }
-    manager
-        .publish_session(&saved)
-        .context("could not save exec session")
-}
-
-fn stamp_exec_session_metadata(
-    saved: &mut session_manager::SavedSession,
-    model: &str,
-    model_provider_kind: &str,
-    model_provider_id: Option<&str>,
-    workspace: &Path,
-) {
-    saved.metadata.model = model.to_string();
-    saved
-        .metadata
-        .set_model_provider_route(model_provider_kind, model_provider_id);
-    saved.metadata.workspace = workspace.to_path_buf();
-    saved.metadata.mode = Some("exec".to_string());
-}
-
-#[derive(serde::Serialize)]
-struct ExecToolEntry {
-    name: String,
-    success: bool,
-    output: String,
-}
-
-#[derive(serde::Serialize)]
-struct ExecOutcome {
-    kind: String,
-    outcome: String,
-    tool_name: String,
-    reason: String,
-}
-
-#[derive(serde::Serialize, Default)]
-struct ExecSummary {
-    mode: String,
-    provider: String,
-    model: String,
-    prompt: String,
-    output: String,
-    tools: Vec<ExecToolEntry>,
-    outcomes: Vec<ExecOutcome>,
-    status: Option<String>,
-    termination_reason: Option<String>,
-    error_category: Option<String>,
-    error: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    released_services: Vec<codewhale_engine::tools::shell::PersistentServiceReceipt>,
-    /// One-shot (`mode: "one-shot"`) receipt fields kept from the pre-#6510
-    /// direct-call path: whether the turn completed without error, and its
-    /// provider-reported usage. Absent on agent receipts.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    success: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    usage: Option<codewhale_models::Usage>,
-}
-
-impl ExecSummary {
-    /// Fill the one-shot receipt fields from the settled turn: success means a
-    /// completed status with no error; usage is what the provider reported.
-    fn record_one_shot_outcome(&mut self, usage: Option<codewhale_models::Usage>) {
-        self.success = Some(self.error.is_none() && self.status.as_deref() == Some("completed"));
-        self.usage = usage;
-    }
-}
-
-fn validate_exec_tool_authority_resume(
-    tool_authority_json: Option<&str>,
-    resuming: bool,
-) -> Result<()> {
-    if tool_authority_json.is_some() && resuming {
-        bail!(
-            "Fleet tool authority cannot be combined with exec --resume, --session-id, or --continue"
-        );
-    }
-    Ok(())
-}
-
-fn exec_network_policy(
-    config: &Config,
-    outer_network_access: Option<bool>,
-) -> Option<codewhale_net::network_policy::NetworkPolicyDecider> {
-    // Fleet caps are an outer authority boundary: user configuration may
-    // narrow them further, but it may never widen an explicit network denial.
-    if outer_network_access == Some(false) {
-        // A Fleet denial is an outer authority the user's document may never
-        // widen, so mark the decider authoritative: a mid-session re-read of
-        // that document folds onto it instead of replacing it.
-        return Some(
-            codewhale_net::network_policy::NetworkPolicyDecider::new(
-                codewhale_net::network_policy::NetworkPolicy {
-                    default: codewhale_net::network_policy::DecisionToml::Deny,
-                    ..codewhale_net::network_policy::NetworkPolicy::default()
-                },
-                None,
-            )
-            .with_authoritative(),
-        );
-    }
-    config.network.clone().map(|toml_cfg| {
-        codewhale_net::network_policy::NetworkPolicyDecider::with_default_audit(
-            codewhale_net::network_policy::NetworkPolicy::from(toml_cfg),
-        )
-    })
-}
-
-fn apply_fleet_engine_feature_caps(
-    features: &mut codewhale_runtime::features::Features,
-    fleet_authority_active: bool,
-    outer_network_access: Option<bool>,
-    shell_authority: codewhale_engine::tools::spec::ToolShellAuthority,
-) {
-    if fleet_authority_active {
-        features.disable(codewhale_runtime::features::Feature::Subagents);
-        features.disable(codewhale_runtime::features::Feature::Mcp);
-        if shell_authority != codewhale_engine::tools::spec::ToolShellAuthority::ReadOnly {
-            features.disable(codewhale_runtime::features::Feature::ShellTool);
-        }
-    }
-    if outer_network_access == Some(false) {
-        features.disable(codewhale_runtime::features::Feature::WebSearch);
-    }
-}
-
 /// Resolve the optional headless safety budget without imposing a hidden
 /// default. Benchmarks and other long-running exec callers continue until the
 /// model finishes unless they opt into a finite `--max-turns` value.
@@ -15564,11 +15165,6 @@ fn spawn_parent_death_watch() {
         })
         .expect("spawn parent-death watch thread");
 }
-
-// The non-interactive exec agent assembly lives in `exec_agent`; the
-// glob re-export keeps the dispatch and test references unchanged (#5586).
-mod exec_agent;
-pub(crate) use exec_agent::*;
 
 #[cfg(test)]
 mod serve_bind_host_tests {
@@ -16040,7 +15636,7 @@ mod doctor_legacy_state_tests {
 
     #[cfg(unix)]
     #[test]
-    fn doctor_session_recovery_rejects_a_symlinked_legacy_sessions_root() {
+    fn doctor_session_recovery_follows_a_linked_legacy_sessions_root() {
         use std::os::unix::fs::symlink;
 
         let tmp = TempDir::new().expect("tempdir");
@@ -16048,8 +15644,8 @@ mod doctor_legacy_state_tests {
         let external_sessions = tmp.path().join("external-sessions");
         fs::create_dir_all(&external_sessions).expect("external sessions");
         fs::write(
-            external_sessions.join("must-not-be-enumerated.json"),
-            b"session contents must stay unread",
+            external_sessions.join("relocated.json"),
+            b"a relocated session",
         )
         .expect("external session fixture");
         fs::create_dir_all(&legacy_root).expect("legacy root");
@@ -16058,22 +15654,17 @@ mod doctor_legacy_state_tests {
 
         let report = doctor_session_recovery_report(&primary_root, &legacy_root, false);
 
-        assert_eq!(report.status, DoctorSessionRecoveryStatus::ScanFailed);
-        assert!(report.needs_attention());
-        assert_eq!(report.legacy_session_file_count, 0);
-        assert!(report.recoverable.is_empty());
-        assert!(
-            report
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("legacy sessions root")
-                    && error.contains("path is a symlink"))
-        );
+        // A relocated state directory is the user's own; the diagnostic reads it
+        // instead of giving up, which is what a junction layout needs to migrate.
+        assert!(report.error.is_none(), "{:?}", report.error);
+        assert_eq!(report.legacy_session_file_count, 1);
+        assert_eq!(report.recoverable_file_count, 1);
+        assert_eq!(report.status, DoctorSessionRecoveryStatus::MigrationPending);
     }
 
     #[cfg(unix)]
     #[test]
-    fn doctor_session_recovery_rejects_symlinked_primary_root_and_sessions_root() {
+    fn doctor_session_recovery_follows_linked_primary_root_and_sessions_root() {
         use std::os::unix::fs::symlink;
 
         let tmp = TempDir::new().expect("tempdir");
@@ -16084,10 +15675,11 @@ mod doctor_legacy_state_tests {
         symlink(&external_primary, &primary_root).expect("symlinked primary root");
 
         let root_report = doctor_session_recovery_report(&primary_root, &legacy_root, false);
-        assert_eq!(root_report.status, DoctorSessionRecoveryStatus::ScanFailed);
-        assert!(root_report.error.as_deref().is_some_and(|error| {
-            error.contains("primary state root") && error.contains("path is a symlink")
-        }));
+        assert!(root_report.error.is_none(), "{:?}", root_report.error);
+        assert_eq!(
+            root_report.status,
+            DoctorSessionRecoveryStatus::NoLegacySessions
+        );
 
         fs::remove_file(&primary_root).expect("remove primary root symlink");
         fs::create_dir_all(&primary_root).expect("primary root");
@@ -16095,13 +15687,15 @@ mod doctor_legacy_state_tests {
             .expect("symlinked primary sessions root");
 
         let sessions_report = doctor_session_recovery_report(&primary_root, &legacy_root, false);
+        assert!(
+            sessions_report.error.is_none(),
+            "{:?}",
+            sessions_report.error
+        );
         assert_eq!(
             sessions_report.status,
-            DoctorSessionRecoveryStatus::ScanFailed
+            DoctorSessionRecoveryStatus::NoLegacySessions
         );
-        assert!(sessions_report.error.as_deref().is_some_and(|error| {
-            error.contains("primary sessions root") && error.contains("path is a symlink")
-        }));
     }
 
     #[test]
@@ -17733,6 +17327,9 @@ mod doctor_endpoint_tests {
 mod terminal_mode_tests {
     use super::*;
     use clap::Parser;
+    use codewhale_app_server::exec_agent::{
+        custom_exec_config, exec_sandbox_elevation_authorized, stamp_exec_session_metadata,
+    };
 
     include!("lib/terminal_mode_test_cases_01.rs");
     include!("lib/terminal_mode_test_cases_02.rs");
@@ -18575,9 +18172,8 @@ mod mounted_history_tests {
     #[tokio::test]
     async fn mounted_pending_recovery_refuses_foreign_association_workspace_and_changed_prepared_history()
     -> Result<()> {
-        use crate::runtime_api::thread_history::{
-            lookup_thread_history_operation_in_runtime, recover_thread_history_operation_in_runtime,
-        };
+        use codewhale_app_server::runtime_api::thread_history::lookup_thread_history_operation_in_runtime;
+        use codewhale_app_server::runtime_api::thread_history::recover_thread_history_operation_in_runtime;
         use codewhale_protocol::{
             CanonicalThreadOperationKind, CanonicalThreadOperationLookup,
             CanonicalThreadOperationRecovery, CanonicalThreadOperationStatus,
@@ -19538,26 +19134,6 @@ allow_shell = true
     }
 
     #[test]
-    fn windows_config_path_compare_normalizes_mixed_separators() {
-        assert_eq!(
-            normalize_windows_config_path_str(r"C:\Users\me\repo"),
-            normalize_windows_config_path_str(r"C:/Users/me/repo/")
-        );
-    }
-
-    #[test]
-    fn windows_config_path_compare_normalizes_verbatim_and_unc_prefixes() {
-        assert_eq!(
-            normalize_windows_config_path_str(r"\\?\C:\Users\me\repo"),
-            normalize_windows_config_path_str(r"C:/Users/me/repo")
-        );
-        assert_eq!(
-            normalize_windows_config_path_str(r"\\?\UNC\server\share\repo"),
-            normalize_windows_config_path_str(r"\\server/share/repo/")
-        );
-    }
-
-    #[test]
     fn project_overlay_clamps_max_subagents_to_safe_range() {
         let tmp = workspace_with_project_config(
             r#"
@@ -19789,6 +19365,7 @@ mod doctor_mcp_tests {
             lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            always_allow_tools: Vec::new(),
             headers: std::collections::HashMap::new(),
             env_headers: std::collections::HashMap::new(),
             bearer_token_env_var: None,

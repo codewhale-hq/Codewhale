@@ -1,9 +1,9 @@
 //! /share command — publish a redacted copy of the session as a secret gist.
 //!
-//! The page is rendered through the same projection and renderer as
-//! `/export`, so hidden instructions, internal reasoning, and reasoning
-//! signatures are dropped and secret-like values are redacted before anything
-//! leaves the machine. The raw `api_messages` JSON never reaches the page.
+//! The page is the HTML rendering of the same projection `/export` uses, so
+//! hidden instructions, internal reasoning, and reasoning signatures are
+//! dropped and secret-like values are redacted before anything leaves the
+//! machine. The raw `api_messages` JSON never reaches the page.
 //!
 //! # Usage
 //!
@@ -22,7 +22,8 @@ use codewhale_command_contract::handler::{CommandCapabilities, CommandContexts, 
 use codewhale_command_contract::metadata::{CommandInfo, RegisterCommand};
 
 use crate::commands::CommandResult;
-use crate::commands::groups::session::export::render_conversation;
+use crate::commands::groups::session::export::count_redactions;
+use crate::commands::groups::session::export_html;
 use crate::tui::app::AppAction;
 use codewhale_dependencies::ExternalTool;
 
@@ -43,9 +44,10 @@ fn share(export: &dyn CommandSessionExportContext, arg: Option<&str>) -> Command
              /share          Preview what would be uploaded (nothing leaves the machine)\n\
              /share confirm  Upload it as {VISIBILITY_NOTE}\n\
              \n\
-             The page uses the same redacted rendering as /export: hidden\n\
-             instructions and reasoning are omitted and secret-like values are\n\
-             masked. Uploading needs the `gh` CLI, installed and signed in."
+             The page is the same redacted HTML that `/export file <name>.html`\n\
+             writes: hidden instructions and reasoning are omitted and\n\
+             secret-like values are masked. Uploading needs the `gh` CLI,\n\
+             installed and signed in."
         )),
         _ => CommandResult::error(format!(
             "Unknown /share argument `{raw}`. Use `/share`, `/share confirm`, or `/share help`."
@@ -56,9 +58,7 @@ fn share(export: &dyn CommandSessionExportContext, arg: Option<&str>) -> Command
 /// What `/share` would publish, measured on the exact page it would upload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SharePlan {
-    markdown: String,
-    model: String,
-    mode: String,
+    html: String,
     message_count: usize,
     /// `None` when the page is the visible-history fallback, which may carry
     /// tool output it cannot count.
@@ -86,29 +86,15 @@ fn plan(export: &dyn CommandSessionExportContext) -> Option<SharePlan> {
         ),
         TranscriptProjection::HistoryFallback(_) => None,
     };
-    let model = projection.metadata.model.clone();
-    let mode = projection.metadata.mode.clone();
     let message_count = projection.metadata.message_count;
-    let markdown = render_conversation(projection);
-    let redactions = count_redactions(&markdown);
+    let html = export_html::render(projection);
+    let redactions = count_redactions(&html);
     Some(SharePlan {
-        markdown,
-        model,
-        mode,
+        html,
         message_count,
         tool_results,
         redactions,
     })
-}
-
-/// Count the redaction markers the shared sanitizer leaves behind: `[redacted…]`
-/// for secrets and keys, `***:***@` for URL credentials, and an encoded `***`
-/// for sensitive URL query values.
-fn count_redactions(markdown: &str) -> usize {
-    ["[redacted", "***:***@", "=%2A%2A%2A"]
-        .iter()
-        .map(|marker| markdown.matches(marker).count())
-        .sum()
 }
 
 const NOTHING_TO_SHARE: &str = "Nothing to share. The current session is empty.";
@@ -142,7 +128,7 @@ fn preview(export: &dyn CommandSessionExportContext) -> CommandResult {
          {}\n\
          \n\
          Run `/share confirm` to upload this page as {VISIBILITY_NOTE}.\n\
-         Use `/export file <path>` to read the exact text first.",
+         Use `/export file <name>.html` to read the exact page first.",
         plan_summary(&plan)
     ))
 }
@@ -152,7 +138,6 @@ fn confirm(export: &dyn CommandSessionExportContext) -> CommandResult {
     let Some(plan) = plan(export) else {
         return CommandResult::error(NOTHING_TO_SHARE);
     };
-    let html = render_session_html(&plan.markdown, &plan.model, &plan.mode);
     CommandResult::with_message_and_action(
         format!(
             "Uploading this page as {VISIBILITY_NOTE}...\n\
@@ -160,7 +145,7 @@ fn confirm(export: &dyn CommandSessionExportContext) -> CommandResult {
              {}",
             plan_summary(&plan)
         ),
-        AppAction::ShareSession { html },
+        AppAction::ShareSession { html: plan.html },
     )
 }
 
@@ -187,56 +172,6 @@ fn upload_via_temp_file(
     removed
         .map_err(|e| format!("Shared at {url}, but the local temp copy was not removed: {e}"))?;
     Ok(url)
-}
-
-/// Render the (already redacted) conversation as a standalone HTML page.
-fn render_session_html(markdown: &str, model: &str, mode: &str) -> String {
-    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-    let escaped_model = html_escape(model);
-    let escaped_mode = html_escape(mode);
-    let escaped_body = html_escape(markdown);
-
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>codewhale Session Export</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    max-width: 800px; margin: 2rem auto; padding: 0 1rem;
-    background: #0d1117; color: #c9d1d9;
-  }}
-  h1 {{ color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 0.5rem; }}
-  .meta {{ color: #8b949e; font-size: 0.9rem; margin-bottom: 2rem; }}
-  pre {{ white-space: pre-wrap; word-wrap: break-word; margin: 0; }}
-  .footer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #30363d; color: #8b949e; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<h1>codewhale Session</h1>
-<div class="meta">
-  <strong>Model:</strong> {escaped_model} · <strong>Mode:</strong> {escaped_mode}<br>
-  <strong>Exported:</strong> {timestamp}
-</div>
-<pre>{escaped_body}</pre>
-<div class="footer">
-  Generated by codewhale · https://github.com/codewhale-hq/CodeWhale
-</div>
-</body>
-</html>"#,
-    )
-}
-
-/// HTML-escape special characters.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 /// Write HTML to a secure temp file and keep it alive for upload.
@@ -350,6 +285,7 @@ mod tests {
             ConversationExportProjection {
                 metadata: ExportMetadata {
                     session_label: "sess1234".to_string(),
+                    title: None,
                     provider: "deepseek".to_string(),
                     model: "deepseek-v4-pro".to_string(),
                     mode: "agent".to_string(),
@@ -381,6 +317,10 @@ mod tests {
         }
 
         fn resolve_export_path(&self, _raw: &str) -> Result<PathBuf, String> {
+            panic!("/share must not resolve export paths");
+        }
+
+        fn default_export_path(&self, _file_name: &str) -> Result<PathBuf, String> {
             panic!("/share must not resolve export paths");
         }
 
@@ -594,10 +534,16 @@ mod tests {
     }
 
     #[test]
-    fn html_escapes_the_rendered_markdown() {
-        let html = render_session_html("<script>x</script> & \"q\"", "m<1>", "agent");
+    fn html_escapes_the_rendered_conversation() {
+        let export = FakeExport::new(vec![message(
+            "user",
+            vec![ExportBlock::Text {
+                text: "<script>x</script> & \"q\"".to_string(),
+            }],
+        )]);
+        let result = share(&export, Some("confirm"));
+        let html = share_html(&result);
         assert!(html.contains("&lt;script&gt;x&lt;/script&gt; &amp; &quot;q&quot;"));
-        assert!(html.contains("m&lt;1&gt;"));
         assert!(!html.contains("<script>"));
     }
 }

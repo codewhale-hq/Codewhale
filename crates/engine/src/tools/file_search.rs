@@ -118,6 +118,7 @@ impl ToolSpec for FileSearchTool {
         let result = search_files_async(
             query.to_string(),
             base_path,
+            context.workspace.clone(),
             extensions,
             exclude_patterns,
             limit,
@@ -134,6 +135,7 @@ impl ToolSpec for FileSearchTool {
 async fn search_files_async(
     query: String,
     base_path: PathBuf,
+    workspace: PathBuf,
     extensions: Vec<String>,
     exclude_patterns: Vec<String>,
     limit: usize,
@@ -141,10 +143,13 @@ async fn search_files_async(
     timeout: Duration,
     follow_symlinks: bool,
 ) -> Result<Value, ToolError> {
+    let workspace_canonical = tokio::fs::canonicalize(&workspace).await.ok();
     run_blocking_file_search(timeout, cancel_token, move |worker_cancel_token| {
         let matches = search_files(
             &query,
             &base_path,
+            &workspace,
+            workspace_canonical,
             extensions.clone(),
             exclude_patterns.clone(),
             limit,
@@ -275,9 +280,12 @@ fn parse_exclude_patterns(input: &Value) -> Vec<String> {
     .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_files(
     query: &str,
     base_path: &Path,
+    workspace: &Path,
+    workspace_canonical: Option<PathBuf>,
     extensions: Vec<String>,
     exclude_patterns: Vec<String>,
     limit: usize,
@@ -414,8 +422,19 @@ fn search_files(
             None => continue,
         };
 
+        let shown_path = path
+            .strip_prefix(workspace)
+            .ok()
+            .or_else(|| {
+                workspace_canonical
+                    .as_deref()
+                    .and_then(|canonical| path.strip_prefix(canonical).ok())
+            })
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
         let found = FileSearchMatch {
-            path: rel_path,
+            path: shown_path,
             name,
             score,
         };

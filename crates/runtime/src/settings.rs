@@ -374,7 +374,7 @@ pub struct Settings {
     pub composer_vim_mode: String,
     /// Transcript spacing rhythm: compact, comfortable, spacious
     pub transcript_spacing: String,
-    /// Default mode: "agent" (Work), "plan", or "operate". Legacy permission
+    /// Default mode: "agent" (Work) or "plan". Legacy permission
     /// shorthands are accepted for migration but never advertised as modes.
     pub default_mode: String,
     /// Legacy sidebar width as percentage of terminal width. Load-only
@@ -489,6 +489,9 @@ pub struct Settings {
     /// One-time YOLO deprecation toast has been shown. Suppresses the repeat
     /// toast after the first sighting per install (persisted across sessions).
     pub yolo_deprecation_shown: bool,
+    /// One-time Operate-retirement toast has been shown. Same suppression
+    /// contract as `yolo_deprecation_shown`.
+    pub operate_deprecation_shown: bool,
     /// Round 3 (2026-09-01) moved the work bar under the composer. Every
     /// settings.toml saved before that carries `work_surface_placement =
     /// "top"` — the old default, persisted verbatim by ordinary saves, not a
@@ -517,6 +520,10 @@ pub struct Settings {
     /// approval policy. It is never written back to disk.
     #[serde(skip)]
     pub legacy_yolo_default: bool,
+    /// True only for the current load when a retired `default_mode =
+    /// "operate"` spelling was read. Never written back to disk.
+    #[serde(skip)]
+    pub legacy_operate_default: bool,
     /// Receipt for the one-time `tui.toml` fold performed by this load.
     /// Never serialized: it describes what happened to a file, not a setting.
     #[serde(skip)]
@@ -609,6 +616,8 @@ impl Default for Settings {
             workspace_follow_symlinks: false,
             feature_intro_shown: false,
             yolo_deprecation_shown: false,
+            operate_deprecation_shown: false,
+            legacy_operate_default: false,
             work_surface_bottom_migrated: false,
             behavioral_tip_impressions: std::collections::BTreeMap::new(),
             dismissed_plugin_suggestions: std::collections::BTreeSet::new(),
@@ -950,6 +959,10 @@ impl Settings {
             // the app starts in a fictional mode.
             let legacy_yolo_default = s.default_mode.trim().eq_ignore_ascii_case("yolo");
             s.legacy_yolo_default = legacy_yolo_default;
+            s.legacy_operate_default = matches!(
+                s.default_mode.trim().to_ascii_lowercase().as_str(),
+                "operate" | "operation" | "ops"
+            );
             s.default_mode = if legacy_yolo_default {
                 "agent".to_string()
             } else {
@@ -1047,6 +1060,15 @@ impl Settings {
     /// only Agent or Plan and serialize the independent permission posture.
     pub fn legacy_yolo_default_detected(&self) -> bool {
         self.legacy_yolo_default
+    }
+
+    /// Whether this load read a retired `default_mode = "operate"` spelling.
+    ///
+    /// Migration provenance only: the normalized value on disk is Work, and
+    /// startup uses this to explain the change once instead of silently
+    /// dropping the mode the user had saved.
+    pub fn legacy_operate_default_detected(&self) -> bool {
+        self.legacy_operate_default
     }
 
     /// Receipt for the one-time `tui.toml` fold, when this load performed one.
@@ -1703,14 +1725,14 @@ impl Settings {
                 self.workspace_follow_symlinks = parse_bool(value)?;
             }
             "default_mode" | "mode" => {
-                // Work (wire: agent), Plan, and Operate are valid startup modes.
-                // yolo remains a permission-migration alias, not a mode write.
+                // Work (wire: agent) and Plan are the startup modes. yolo and
+                // the retired operate spellings stay accepted aliases of Work.
                 self.default_mode = match value.trim().to_ascii_lowercase().as_str() {
                     "agent" | "normal" | "act" | "work" | "edit" => "agent".to_string(),
                     "plan" => "plan".to_string(),
-                    "operate" | "operation" | "ops" => "operate".to_string(),
+                    "operate" | "operation" | "ops" => "agent".to_string(),
                     _ => anyhow::bail!(
-                        "Failed to update setting: invalid mode '{value}'. Expected: work (agent), plan, or operate."
+                        "Failed to update setting: invalid mode '{value}'. Expected: work (agent) or plan."
                     ),
                 };
             }
@@ -2822,6 +2844,9 @@ fn normalize_default_model(value: &str) -> Option<String> {
 fn normalize_permission_posture(value: &str) -> Option<String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "ask" | "suggest" | "on-request" | "untrusted" => Some("ask".to_string()),
+        "accept-edits" | "accept_edits" | "acceptedits" | "edits" => {
+            Some("accept-edits".to_string())
+        }
         "auto" | "auto-review" | "auto_review" => Some("auto-review".to_string()),
         "full" | "full-access" | "full_access" | "bypass" => Some("full-access".to_string()),
         _ => None,
@@ -2931,8 +2956,8 @@ fn normalize_mode(value: &str) -> &str {
         "normal" => "agent",
         "agent" | "act" | "work" => "agent",
         "plan" => "plan",
-        // Operate is a first-class startup mode (Hunter 2026-07-24).
-        "operate" | "operation" | "ops" => "operate",
+        // Operate was retired as a mode; its spellings still parse, as Work.
+        "operate" | "operation" | "ops" => "agent",
         // yolo was mode+permission; keep mode as Act and migrate posture on load.
         "yolo" => "agent",
         _ => value,
@@ -3220,7 +3245,7 @@ mod tests {
             "slow-writer" => {
                 with_settings_transaction(|transaction| {
                     let mut settings = transaction.load()?;
-                    settings.default_mode = "operate".to_string();
+                    settings.default_mode = "plan".to_string();
                     // Announce *after* the read: from here on, any parent write
                     // that is not excluded by the lock will be lost by the save
                     // below.
@@ -3367,7 +3392,7 @@ mod tests {
 
         let settled = Settings::load_persisted().expect("reload the shared settings");
         assert_eq!(
-            settled.default_mode, "operate",
+            settled.default_mode, "plan",
             "the child's field must survive the parent's whole-file save"
         );
         assert_eq!(
@@ -3571,6 +3596,35 @@ mod tests {
         assert!(settings.set("work_surface_top_height", "17").is_err());
         assert!(settings.set("work_surface_top_height", "4").is_err());
         assert!(settings.set("work_surface_side_width", "25").is_err());
+    }
+
+    #[test]
+    fn explicit_permission_postures_survive_reload_without_migration_markers() {
+        let _g = config_path_test_guard();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let settings_path = tmp.path().join("settings.toml");
+        let _config_override =
+            EnvVarRestore::set("DEEPSEEK_CONFIG_PATH", tmp.path().join("config.toml"));
+
+        Settings::transact(|settings| settings.set("permission_posture", "ask"))
+            .expect("pick Ask on a new install");
+        let fresh = Settings::load().expect("reload new settings");
+        assert_eq!(fresh.permission_posture.as_deref(), Some("ask"));
+
+        for posture in ["ask", "accept-edits", "auto-review", "full-access"] {
+            std::fs::write(
+                &settings_path,
+                format!("permission_posture = \"{posture}\"\n"),
+            )
+            .expect("preexisting settings");
+            let loaded = Settings::load().expect("load preexisting settings");
+            assert_eq!(loaded.permission_posture.as_deref(), Some(posture));
+        }
+
+        Settings::transact(|settings| settings.set("permission_posture", "ask"))
+            .expect("pick Ask after another posture");
+        let reloaded = Settings::load().expect("reload settings");
+        assert_eq!(reloaded.permission_posture.as_deref(), Some("ask"));
     }
 
     #[test]
@@ -5330,8 +5384,8 @@ zai = ["GLM-5.2", "GLM-5.3"]
         assert_eq!(settings.default_mode, "agent");
         settings
             .set("default_mode", "operate")
-            .expect("operate is a valid startup mode");
-        assert_eq!(settings.default_mode, "operate");
+            .expect("operate stays an accepted alias");
+        assert_eq!(settings.default_mode, "agent");
         settings
             .set("default_mode", "act")
             .expect("act alias maps to agent wire value");
@@ -5340,10 +5394,7 @@ zai = ["GLM-5.2", "GLM-5.3"]
         let err = settings
             .set("default_mode", "yolo")
             .expect_err("yolo remains a permission migration alias, not a mode write");
-        assert!(
-            err.to_string().contains("work (agent), plan, or operate"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("work (agent) or plan"), "{err}");
     }
 
     #[test]
@@ -5372,7 +5423,8 @@ zai = ["GLM-5.2", "GLM-5.3"]
         )
         .expect("operate startup settings");
         let loaded = Settings::load_persisted().expect("load operate settings");
-        assert_eq!(loaded.default_mode, "operate");
+        assert_eq!(loaded.default_mode, "agent");
+        assert!(loaded.legacy_operate_default_detected());
         assert_eq!(loaded.permission_posture, None);
     }
 

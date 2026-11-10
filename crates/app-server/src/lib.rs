@@ -1,10 +1,23 @@
-use crate::bridge::install_rustls_crypto_provider;
+#![allow(clippy::too_many_arguments)]
+
+pub mod acp_server;
+pub mod eval;
+pub mod exec_agent;
+pub mod mcp_server;
+pub mod remote_control;
+pub mod remote_setup;
+pub mod runtime_api;
+pub mod runtime_chat_relay;
+
 use crate::http::{app_router, resolve_auth_token};
 use crate::stdio::{BoundedLines, run_stdio_loop};
 use anyhow::Context as _;
 use anyhow::{Result, anyhow};
 use axum::http::{Method, StatusCode};
 use codewhale_agent::ModelRegistry;
+use codewhale_app_server_protocol::rpc::{
+    RequestId, RpcCall, RpcErrorDetails, RpcErrorResponse, RpcResponse,
+};
 #[cfg(test)]
 use codewhale_app_server_protocol::runtime::MAX_RUNTIME_IMAGE_BODY_BYTES;
 use codewhale_app_server_protocol::runtime::RuntimeImageInput;
@@ -29,14 +42,18 @@ use tokio::io::{AsyncBufRead, AsyncWrite, BufReader};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 mod chat_completions;
+mod connection;
 mod thread_control;
+mod websocket;
 pub use codewhale_protocol::{
     ThreadListParams, ThreadReadParams, ThreadRequest, ThreadResponse, ThreadSetNameParams,
 };
 pub use thread_control::{ThreadControlSelection, request_thread_control};
+#[cfg(test)]
 mod bridge;
 mod config_rpc;
 pub mod http;
+mod owner_calls;
 pub mod stdio;
 mod turns;
 
@@ -66,6 +83,7 @@ mod legacy_deepseek_compat {
 /// Upper bound on JSON request bodies accepted by the HTTP app-server.
 const MAX_HTTP_BODY_BYTES: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
 const MAX_SSE_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 const DEFAULT_CORS_ORIGINS: &[&str] = &[
@@ -201,20 +219,117 @@ pub enum RuntimeOwnerFrontendSelection {
     Listener(RuntimeListenerSelection),
 }
 
+pub type RuntimeOwnerEventStream =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = RuntimeOwnerEventFrame> + Send>>;
+
+pub struct RuntimeOwnerEventFrame {
+    pub event: String,
+    pub data: Value,
+    pub sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeOwnerRequest {
+    Capabilities,
+    Providers,
+    ProviderModels {
+        provider: String,
+        provider_id: Option<String>,
+        cursor: Option<String>,
+    },
+    ReloadConfig,
+    CreateThread(Value),
+    ListThreads {
+        include_archived: bool,
+        limit: usize,
+    },
+    RunningThreads,
+    LoadedThreads,
+    GetThread {
+        thread_id: String,
+    },
+    UpdateThread {
+        thread_id: String,
+        body: Value,
+    },
+    GetGoal {
+        thread_id: String,
+    },
+    ClearGoal {
+        thread_id: String,
+    },
+    HistorySnapshot {
+        thread_id: String,
+    },
+    HistoryImport(codewhale_protocol::CanonicalHistoryImportRequest),
+    HistoryMutate(codewhale_protocol::CanonicalThreadMutationRequest),
+    HistoryLookup(codewhale_protocol::CanonicalThreadOperationLookup),
+    HistoryRecover(codewhale_protocol::CanonicalThreadOperationRecovery),
+    StartTurn {
+        thread_id: String,
+        body: Value,
+    },
+    InterruptTurn {
+        thread_id: String,
+        turn_id: String,
+    },
+    DecideApproval {
+        approval_id: String,
+        binding: Option<codewhale_engine::runtime_threads::manager::ExternalApprovalBinding>,
+        decision: codewhale_engine::runtime_threads::manager::ExternalApprovalDecision,
+    },
+    SubmitUserInput {
+        thread_id: String,
+        input_id: String,
+        turn_id: Option<String>,
+        response: codewhale_engine::tools::user_input::UserInputResponse,
+    },
+    CancelUserInput {
+        thread_id: String,
+        input_id: String,
+        turn_id: Option<String>,
+    },
+    DeliverDynamicToolResult {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        result: codewhale_app_server_protocol::runtime::DynamicToolCallResult,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Runtime owner returned {status}: {message}")]
+pub struct RuntimeOwnerFailure {
+    pub status: u16,
+    pub message: String,
+    pub code: Option<String>,
+}
+
 /// Captured Runtime-owned IO projection. Implementations use the held manager
 /// and existing routers; this port owns neither a store nor a turn controller.
 pub trait RuntimeOwnerFrontend: Send + Sync {
+    fn execute(
+        &self,
+        request: RuntimeOwnerRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + '_>>;
+    fn events(
+        &self,
+        thread_id: String,
+        since_seq: u64,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RuntimeOwnerEventStream>> + Send + '_>,
+    >;
     fn validate_selection<'a>(
         &'a self,
         selection: &'a RuntimeOwnerFrontendSelection,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>;
-    fn serve(
-        &self,
+    fn serve<'a>(
+        &'a self,
         selection: RuntimeOwnerFrontendSelection,
         compatibility: AppState,
         input: Box<dyn tokio::io::AsyncBufRead + Send + Unpin>,
-        output: Box<dyn AsyncWrite + Send + Unpin>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>>;
+        output: Box<dyn AsyncWrite + Send + Unpin + 'a>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>;
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -235,11 +350,7 @@ pub struct RuntimeOwnerRouting {
     pub acp_only: bool,
 }
 
-/// Cached app-server→runtime bridge handle.
-///
-/// The outer [`AppState::runtime_bridge`] mutex guards only the cache slot;
-/// this inner mutex serializes traffic and event cursors for the captured
-/// canonical owner. It never creates or replaces an execution process.
+#[cfg(test)]
 type SharedRuntimeBridge = Arc<Mutex<RuntimeBridge>>;
 
 #[derive(Clone)]
@@ -255,50 +366,34 @@ pub struct AppState {
     runtime: Arc<RwLock<Runtime>>,
     registry: ModelRegistry,
     auth_token: Option<String>,
-    /// Cached bridge to the real runtime API. Shared by every surface that
-    /// executes a turn — stdio `thread/message`, HTTP `/thread` messages, and
-    /// both `/prompt` transports — because there is exactly one turn engine.
+    #[cfg(test)]
     runtime_bridge: Arc<Mutex<Option<SharedRuntimeBridge>>>,
-    runtime_catalog_transport: Option<RuntimeCatalogTransport>,
-    /// Client-facing thread key → durable runtime thread id.
-    ///
-    /// Runtime threads are persisted by the captured owner's store. Durable
-    /// aliases keep their exact target across frontend detach/reconnect;
-    /// withdrawing a bridge never remints a replacement thread.
-    /// Callers serialize traffic on the bridge mutex.
+    #[cfg(test)]
     runtime_thread_map: Arc<Mutex<HashMap<String, String>>>,
     stdio_thread_hints: Arc<Mutex<HashMap<String, RuntimeThreadHint>>>,
-    /// Turns currently streaming over stdio, keyed by stdio thread id.
-    ///
-    /// Deliberately kept *outside* the bridge mutex: a streaming turn holds
-    /// that mutex for its entire duration, so anything reachable only through
-    /// it cannot be used to stop the turn. This holds its own copy of what an
-    /// interrupt needs, so a cancel never waits on the turn it is cancelling.
     in_flight_turns: Arc<Mutex<HashMap<String, InFlightTurn>>>,
 }
 
-/// Everything needed to interrupt a running turn without the bridge lock.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+enum TurnExecutionOwner {
+    Native(Arc<dyn RuntimeOwnerFrontend>),
+    #[cfg(test)]
+    HistoricalHttp {
+        base_url: String,
+        auth_token: Option<String>,
+    },
+}
+
+#[derive(Clone)]
 struct InFlightTurn {
-    base_url: String,
-    auth_token: Option<String>,
+    owner: TurnExecutionOwner,
     /// Thread id as the *runtime* knows it, not the stdio-facing id.
     runtime_thread_id: String,
     turn_id: String,
+    connection: Option<connection::ConnectionId>,
 }
 
 type TurnRegistry = Arc<Mutex<HashMap<String, InFlightTurn>>>;
-
-#[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
-    #[serde(default)]
-    jsonrpc: Option<String>,
-    #[serde(default)]
-    id: Option<Value>,
-    method: String,
-    #[serde(default)]
-    params: Value,
-}
 
 /// Server error: the app-server could not reach the runtime that executes
 /// turns. Kept in the JSON-RPC implementation-defined server range
@@ -330,10 +425,8 @@ const DAEMON_VERSION_SKEW_CODE: i64 = -32013;
 const ALREADY_ATTACHED_CODE: i64 = -32014;
 
 #[derive(Debug)]
-struct JsonRpcError {
-    code: i64,
-    message: String,
-    data: Option<Value>,
+struct DispatchError {
+    wire: RpcErrorDetails,
     transport_error: Option<anyhow::Error>,
 }
 
@@ -343,31 +436,24 @@ struct StdioDispatchResult {
     should_exit: bool,
 }
 
-#[derive(Clone)]
-struct RuntimeCatalogTransport {
-    bridge: std::sync::Weak<Mutex<RuntimeBridge>>,
-    base_url: String,
-    client: reqwest::Client,
-    auth_token: Option<String>,
-}
-
+#[cfg(test)]
 struct RuntimeBridge {
     base_url: String,
     client: reqwest::Client,
     auth_token: Option<String>,
     #[cfg(test)]
     child: Option<Child>,
-    /// Captured owner SSE cursors, keyed by Runtime thread identity.
+    #[cfg(test)]
     last_seq_by_thread: HashMap<String, u64>,
 }
 
+#[cfg(test)]
 impl std::fmt::Debug for RuntimeBridge {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RuntimeBridge")
             .field("base_url", &self.base_url)
             .field("authenticated", &self.auth_token.is_some())
-            .field("last_seq_by_thread", &self.last_seq_by_thread)
             .finish_non_exhaustive()
     }
 }
@@ -406,7 +492,7 @@ enum AppTransport {
     Http,
     Stdio,
     /// Unix-domain-socket daemon transport (`daemon_socket`). Speaks the
-    /// stdio JSON-RPC protocol verbatim after a `daemon/attach` handshake.
+    /// same RPC objects as stdio inside WebSocket text messages after attach.
     Socket,
 }
 
@@ -592,27 +678,6 @@ pub async fn bind_runtime_frontends(
     );
     let mut state =
         build_state_off_runtime(config_path, auth_token.clone(), AppTransport::Socket).await?;
-    install_rustls_crypto_provider();
-    let endpoint = routing.endpoint;
-    let address = match endpoint.ip() {
-        std::net::IpAddr::V4(ip) if ip.is_unspecified() => {
-            SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, endpoint.port()))
-        }
-        std::net::IpAddr::V6(ip) if ip.is_unspecified() => {
-            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, endpoint.port()))
-        }
-        _ => endpoint,
-    };
-    let bridge = RuntimeBridge {
-        base_url: format!("http://{address}"),
-        client: codewhale_release::platform_http_client_builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?,
-        auth_token,
-        #[cfg(test)]
-        child: None,
-        last_seq_by_thread: HashMap::new(),
-    };
     state.captured_owner = Some(owner.clone());
     anyhow::ensure!(
         routing.acp == owner_frontend.is_some() && (!routing.acp_only || routing.acp),
@@ -621,19 +686,6 @@ pub async fn bind_runtime_frontends(
     state.frontend_workspace = routing.workspace.clone();
     state.captured_routing = Some(routing);
     state.owner_frontend = owner_frontend;
-    let (base_url, client, auth_token) = (
-        bridge.base_url.clone(),
-        bridge.client.clone(),
-        bridge.auth_token.clone(),
-    );
-    let bridge = Arc::new(Mutex::new(bridge));
-    state.runtime_catalog_transport = Some(RuntimeCatalogTransport {
-        bridge: Arc::downgrade(&bridge),
-        base_url,
-        client,
-        auth_token,
-    });
-    *state.runtime_bridge.lock().await = Some(bridge);
     let daemon = daemon_socket::bind_captured_owner(state.clone(), owner, recovery).await?;
     Ok((daemon, state))
 }
@@ -664,11 +716,11 @@ pub async fn run_owned_acp(state: AppState) -> Result<()> {
 
 /// The existing charged socket connection invokes the same priority-aware
 /// dispatcher after its captured Runtime has admitted the selected scope.
-pub async fn run_guest_control(
+pub async fn run_guest_control<'a>(
     mut state: AppState,
     workspace: PathBuf,
     input: Box<dyn AsyncBufRead + Send + Unpin>,
-    output: Box<dyn AsyncWrite + Send + Unpin>,
+    output: Box<dyn AsyncWrite + Send + Unpin + 'a>,
 ) -> Result<()> {
     anyhow::ensure!(
         state
@@ -689,7 +741,9 @@ pub async fn run_guest_control(
 /// Logical write EOF for duplex transports. This is only a per-connection
 /// lifecycle notification; it carries no tool, turn or host-shutdown authority.
 pub fn is_control_input_closed(message: &Value) -> bool {
-    message["jsonrpc"] == "2.0"
+    message
+        .get("jsonrpc")
+        .is_none_or(|version| version == "2.0")
         && message.get("id").is_none()
         && message["method"] == "daemon/input_closed"
         && message["params"]
@@ -737,7 +791,7 @@ async fn build_state_off_runtime(
     auth_token: Option<String>,
     transport: AppTransport,
 ) -> Result<AppState> {
-    daemon_socket::owner_work(move || {
+    codewhale_runtime::runtime_control::owner_work(move || {
         build_state_with_transport(config_path, auth_token, transport)
     })
     .await
@@ -798,8 +852,9 @@ fn build_state_with_transport(
         runtime: Arc::new(RwLock::new(runtime)),
         registry,
         auth_token,
+        #[cfg(test)]
         runtime_bridge: Arc::new(Mutex::new(None)),
-        runtime_catalog_transport: None,
+        #[cfg(test)]
         runtime_thread_map: Arc::new(Mutex::new(HashMap::new())),
         stdio_thread_hints: Arc::new(Mutex::new(HashMap::new())),
         in_flight_turns: Arc::new(Mutex::new(HashMap::new())),
@@ -810,70 +865,58 @@ fn params_or_object(params: Value) -> Value {
     if params.is_null() { json!({}) } else { params }
 }
 
-fn parse_params<T: DeserializeOwned>(params: Value) -> std::result::Result<T, JsonRpcError> {
-    serde_json::from_value(params).map_err(|err| JsonRpcError::invalid_params(err.to_string()))
+fn parse_params<T: DeserializeOwned>(params: Value) -> std::result::Result<T, DispatchError> {
+    serde_json::from_value(params).map_err(|err| DispatchError::invalid_params(err.to_string()))
 }
 
-fn jsonrpc_result(id: Option<Value>, result: Value) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id.unwrap_or(Value::Null),
-        "result": result
+fn jsonrpc_result(id: RequestId, result: Value) -> Value {
+    json!(RpcResponse { id, result })
+}
+
+fn jsonrpc_error(id: RequestId, err: DispatchError) -> Value {
+    json!(RpcErrorResponse {
+        id,
+        error: err.wire
     })
 }
 
-fn jsonrpc_error(id: Option<Value>, err: JsonRpcError) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id.unwrap_or(Value::Null),
-        "error": {
-            "code": err.code,
-            "message": err.message,
-            "data": err.data
-        }
-    })
-}
-
-impl JsonRpcError {
-    fn parse_error(message: impl Into<String>) -> Self {
-        Self {
-            transport_error: None,
-            code: -32700,
-            message: message.into(),
-            data: None,
-        }
-    }
-
+impl DispatchError {
     fn invalid_request(message: impl Into<String>) -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: -32600,
+                message: message.into(),
+                data: None,
+            },
             transport_error: None,
-            code: -32600,
-            message: message.into(),
-            data: None,
         }
     }
 
     fn method_not_found(method: &str) -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: -32601,
+                message: format!("unsupported method: {method}"),
+                data: None,
+            },
             transport_error: None,
-            code: -32601,
-            message: format!("unsupported method: {method}"),
-            data: None,
         }
     }
 
     fn invalid_params(message: impl Into<String>) -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: -32602,
+                message: message.into(),
+                data: None,
+            },
             transport_error: None,
-            code: -32602,
-            message: message.into(),
-            data: None,
         }
     }
 
     fn unsupported_interactive_execution() -> Self {
         Self {
-            transport_error: None,
+            wire: RpcErrorDetails {
             code: -32602,
             message: "Compatibility transports cannot answer approvals or clarification requests. Use codewhale app-server --http and /v1/* for interactive turns and goal execution; tool-free turn requests require explicit allowed_tools: [].".to_string(),
             data: Some(json!({
@@ -882,6 +925,8 @@ impl JsonRpcError {
                 "allowed_tools_required": [],
                 "goal_execution": false,
             })),
+            },
+            transport_error: None,
         }
     }
 
@@ -891,35 +936,41 @@ impl JsonRpcError {
     fn runtime_unavailable(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
+            wire: RpcErrorDetails {
+                code: RUNTIME_UNAVAILABLE_CODE,
+                message: message.clone(),
+                data: Some(json!({
+                    "error": "runtime_unavailable",
+                    "detail": message,
+                })),
+            },
             transport_error: None,
-            code: RUNTIME_UNAVAILABLE_CODE,
-            message: message.clone(),
-            data: Some(json!({
-                "error": "runtime_unavailable",
-                "detail": message,
-            })),
         }
     }
 
     /// Server error (-32000..-32099): the named thread does not exist.
     fn thread_not_found(thread_id: &str) -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: THREAD_NOT_FOUND_CODE,
+                message: format!("thread not found: {thread_id}"),
+                data: Some(json!({
+                    "error": "thread_not_found",
+                    "thread_id": thread_id,
+                })),
+            },
             transport_error: None,
-            code: THREAD_NOT_FOUND_CODE,
-            message: format!("thread not found: {thread_id}"),
-            data: Some(json!({
-                "error": "thread_not_found",
-                "thread_id": thread_id,
-            })),
         }
     }
 
     fn internal(message: impl Into<String>) -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: -32603,
+                message: message.into(),
+                data: None,
+            },
             transport_error: None,
-            code: -32603,
-            message: message.into(),
-            data: None,
         }
     }
 
@@ -928,14 +979,16 @@ impl JsonRpcError {
     #[cfg(any(unix, windows))]
     fn attach_required(method: &str) -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: ATTACH_REQUIRED_CODE,
+                message: format!("send daemon/attach before `{method}`"),
+                data: Some(json!({
+                    "error": "attach_required",
+                    "method": method,
+                    "attach_method": daemon_socket::ATTACH_METHOD,
+                })),
+            },
             transport_error: None,
-            code: ATTACH_REQUIRED_CODE,
-            message: format!("send daemon/attach before `{method}`"),
-            data: Some(json!({
-                "error": "attach_required",
-                "method": method,
-                "attach_method": daemon_socket::ATTACH_METHOD,
-            })),
         }
     }
 
@@ -943,24 +996,41 @@ impl JsonRpcError {
     #[cfg(any(unix, windows))]
     fn daemon_already_claimed(owner: &Value) -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: DAEMON_ALREADY_CLAIMED_CODE,
+                message: "daemon already claimed by another client; attach with mode=attach"
+                    .to_string(),
+                data: Some(json!({
+                    "error": "daemon_already_claimed",
+                    "owner": owner,
+                })),
+            },
             transport_error: None,
-            code: DAEMON_ALREADY_CLAIMED_CODE,
-            message: "daemon already claimed by another client; attach with mode=attach"
-                .to_string(),
-            data: Some(json!({
-                "error": "daemon_already_claimed",
-                "owner": owner,
-            })),
         }
     }
 
     /// Server error (-32000..-32099): only the owner may stop the daemon.
     fn not_daemon_owner() -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: NOT_DAEMON_OWNER_CODE,
+                message: "only the client that claimed this daemon may shut it down".to_string(),
+                data: Some(json!({ "error": "not_daemon_owner" })),
+            },
             transport_error: None,
-            code: NOT_DAEMON_OWNER_CODE,
-            message: "only the client that claimed this daemon may shut it down".to_string(),
-            data: Some(json!({ "error": "not_daemon_owner" })),
+        }
+    }
+
+    /// Server error (-32000..-32099): only the connection that started a
+    /// turn may interrupt it.
+    fn not_turn_owner() -> Self {
+        Self {
+            wire: RpcErrorDetails {
+                code: NOT_DAEMON_OWNER_CODE,
+                message: "only the connection that started this turn may interrupt it".to_string(),
+                data: Some(json!({ "error": "not_turn_owner" })),
+            },
+            transport_error: None,
         }
     }
 
@@ -969,26 +1039,30 @@ impl JsonRpcError {
     #[cfg(any(unix, windows))]
     fn daemon_version_skew(expected: &str, actual: &str) -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: DAEMON_VERSION_SKEW_CODE,
+                message: format!(
+                    "daemon version {actual} does not match the client's expected {expected}"
+                ),
+                data: Some(json!({
+                    "error": "daemon_version_skew",
+                    "expected": expected,
+                    "actual": actual,
+                })),
+            },
             transport_error: None,
-            code: DAEMON_VERSION_SKEW_CODE,
-            message: format!(
-                "daemon version {actual} does not match the client's expected {expected}"
-            ),
-            data: Some(json!({
-                "error": "daemon_version_skew",
-                "expected": expected,
-                "actual": actual,
-            })),
         }
     }
 
     /// Server error (-32000..-32099): `daemon/attach` after attaching.
     fn already_attached() -> Self {
         Self {
+            wire: RpcErrorDetails {
+                code: ALREADY_ATTACHED_CODE,
+                message: "this connection is already attached".to_string(),
+                data: Some(json!({ "error": "already_attached" })),
+            },
             transport_error: None,
-            code: ALREADY_ATTACHED_CODE,
-            message: "this connection is already attached".to_string(),
-            data: Some(json!({ "error": "already_attached" })),
         }
     }
 }

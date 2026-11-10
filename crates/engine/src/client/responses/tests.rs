@@ -85,6 +85,7 @@ fn test_codex_config(server: &MockServer) -> Config {
             jitter: None,
             jitter_factor: None,
             respect_retry_after: None,
+            rate_limit: Default::default(),
         });
         let __cw_config_init_0_2 = Some(ProvidersConfig {
             openai_codex: ProviderConfig {
@@ -155,73 +156,73 @@ async fn responses_stream_retries_rate_limited_request() {
 }
 
 #[tokio::test]
-async fn responses_stream_retries_transient_server_error() {
+async fn responses_stream_does_not_replay_unknown_server_outcome() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(RetryThenSuccess {
+        .respond_with(AlwaysError {
             attempts: Arc::clone(&attempts),
-            retry_status: 503,
-            retry_body: "temporarily unavailable",
+            status: 503,
+            body: "temporarily unavailable",
         })
         .mount(&server)
         .await;
 
     let client = CodewhaleClient::new(&test_codex_config(&server)).unwrap();
-    let mut stream = client
+    let error = match client
         .handle_responses_stream(
             &client
                 .prepare_outbound_request(minimal_responses_request(), true)
                 .expect("responses request prepares"),
         )
         .await
-        .unwrap();
+    {
+        Ok(_) => panic!("an unknown-outcome inference failure must not be replayed"),
+        Err(error) => error,
+    };
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while let Some(event) = stream.next().await {
-            event.unwrap();
-        }
-    })
-    .await
-    .expect("Responses retry stream should finish after response.completed");
-
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let typed = error.downcast_ref::<crate::llm_client::LlmError>().unwrap();
+    assert!(matches!(
+        typed,
+        crate::llm_client::LlmError::ServerError { status: 503, .. }
+    ));
 }
 
 #[tokio::test]
-async fn responses_stream_retries_upstream_499_before_streaming() {
+async fn responses_stream_does_not_replay_unknown_upstream_499_outcome() {
     let server = MockServer::start().await;
     let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(RetryThenSuccess {
+        .respond_with(AlwaysError {
             attempts: Arc::clone(&attempts),
-            retry_status: 499,
-            retry_body: "upstream request cancelled",
+            status: 499,
+            body: "upstream request cancelled",
         })
         .mount(&server)
         .await;
 
     let client = CodewhaleClient::new(&test_codex_config(&server)).unwrap();
-    let mut stream = client
+    let error = match client
         .handle_responses_stream(
             &client
                 .prepare_outbound_request(minimal_responses_request(), true)
                 .expect("responses request prepares"),
         )
         .await
-        .unwrap();
+    {
+        Ok(_) => panic!("an unknown-outcome inference failure must not be replayed"),
+        Err(error) => error,
+    };
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while let Some(event) = stream.next().await {
-            event.unwrap();
-        }
-    })
-    .await
-    .expect("Responses retry stream should finish after response.completed");
-
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let typed = error.downcast_ref::<crate::llm_client::LlmError>().unwrap();
+    assert!(matches!(
+        typed,
+        crate::llm_client::LlmError::ServerError { status: 499, .. }
+    ));
 }
 
 async fn collect_responses_stream(sse_body: &str) -> Vec<Result<StreamEvent>> {
@@ -434,6 +435,7 @@ async fn chatgpt_http_usage_limit_is_not_retried() {
         crate::llm_client::LlmError::QuotaExhausted(_)
     ));
     assert!(!typed.is_retryable());
+    assert!(typed.to_string().contains("ChatGPT Settings > Usage"));
 }
 
 #[tokio::test]

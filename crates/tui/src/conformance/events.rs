@@ -56,6 +56,8 @@ const VOLATILE_KEYS: &[&str] = &[
     "request_ms",
     "elapsed_ms",
     "pinned_combined_hash",
+    "request_id",
+    "source_id",
 ];
 
 fn event_deadline() -> Duration {
@@ -183,7 +185,7 @@ fn app_mode(case: &Value) -> AppMode {
     match case["mode"].as_str().unwrap_or("agent") {
         "agent" => AppMode::Agent,
         "plan" => AppMode::Plan,
-        "operate" => AppMode::Operate,
+        "operate" => AppMode::Agent,
         other => panic!("unknown mode `{other}`"),
     }
 }
@@ -191,6 +193,7 @@ fn app_mode(case: &Value) -> AppMode {
 fn approval_mode(case: &Value) -> ApprovalMode {
     match case["approval_mode"].as_str().unwrap_or("suggest") {
         "suggest" => ApprovalMode::Suggest,
+        "accept_edits" => ApprovalMode::AcceptEdits,
         "auto" => ApprovalMode::Auto,
         "bypass" => ApprovalMode::Bypass,
         "never" => ApprovalMode::Never,
@@ -254,6 +257,9 @@ fn workspace_listing(workspace: &Path) -> BTreeMap<String, String> {
                     .expect("inside workspace")
                     .to_string_lossy()
                     .replace('\\', "/");
+                if relative.contains("subagents.v3.writer.boot_") {
+                    continue;
+                }
                 let digest = codewhale_runtime::hashing::sha256_hex(&bytes);
                 out.insert(relative, digest[..16].to_string());
             }

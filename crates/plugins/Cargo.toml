@@ -17,14 +17,14 @@ test-support = ["codewhale-runtime/test-support"]
 anyhow.workspace = true
 base64 = "0.23.1"
 chrono.workspace = true
-codewhale-config = { path = "../config", version = "0.10.2" }
-codewhale-mcp = { path = "../mcp", version = "0.10.2" }
-codewhale-net = { path = "../net", version = "0.10.2" }
-codewhale-runtime = { path = "../runtime", version = "0.10.2" }
-codewhale-sanitize = { path = "../sanitize", version = "0.10.2" }
-codewhale-secrets = { path = "../secrets", version = "0.10.2" }
-codewhale-skill-install = { path = "../skill-install", version = "0.10.2" }
-codewhale-util = { path = "../util", version = "0.10.2" }
+codewhale-config = { path = "../config", version = "0.10.3" }
+codewhale-mcp = { path = "../mcp", version = "0.10.3" }
+codewhale-net = { path = "../net", version = "0.10.3" }
+codewhale-runtime = { path = "../runtime", version = "0.10.3" }
+codewhale-sanitize = { path = "../sanitize", version = "0.10.3" }
+codewhale-secrets = { path = "../secrets", version = "0.10.3" }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.3" }
+codewhale-util = { path = "../util", version = "0.10.3" }
 fd-lock = "4.0.4"
 flate2 = "1.1"
 regex = "1.11"
@@ -38,7 +38,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
-toml_edit.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 webbrowser = "1.0"
@@ -52,7 +51,7 @@ windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
-codewhale-config = { path = "../config", version = "0.10.2", features = ["schema", "test-support"] }
-codewhale-runtime = { path = "../runtime", version = "0.10.2", features = ["test-support", "test-thread-scoped-state"] }
-codewhale-skill-install = { path = "../skill-install", version = "0.10.2", features = ["test-support"] }
-codewhale-util = { path = "../util", version = "0.10.2", features = ["test-support"] }
+codewhale-config = { path = "../config", version = "0.10.3", features = ["schema", "test-support"] }
+codewhale-runtime = { path = "../runtime", version = "0.10.3", features = ["test-support", "test-thread-scoped-state"] }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.3", features = ["test-support"] }
+codewhale-util = { path = "../util", version = "0.10.3", features = ["test-support"] }

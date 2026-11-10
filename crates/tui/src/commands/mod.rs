@@ -13,6 +13,7 @@ mod config_main_import_host;
 #[cfg(test)]
 mod config_policy_host;
 mod contract;
+pub(crate) use contract::from_command_mode;
 mod core_navigation_host;
 #[cfg(test)]
 mod core_navigation_host_tests;
@@ -64,6 +65,8 @@ mod session_export_surface_tests;
 mod session_export_test_support;
 #[cfg(test)]
 mod session_lifecycle_regression_tests;
+#[cfg(test)]
+pub(crate) use session_lifecycle_regression_tests::acknowledge_new_session;
 
 use std::sync::OnceLock;
 
@@ -309,11 +312,44 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     execute_in_context(cmd, app, None)
 }
 
+pub(crate) fn pending_session_control_command(cmd: &str) -> bool {
+    let mut parts = cmd.trim().splitn(2, char::is_whitespace);
+    let command = parts
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('/')
+        .to_ascii_lowercase();
+    let Some(command) = registry().get(&command) else {
+        return false;
+    };
+    let arg = parts.next().unwrap_or_default().trim();
+    let verb = arg.split_whitespace().next().unwrap_or_default();
+    match command.info().name {
+        "exit" => true,
+        "agent" | "workflow" => matches!(verb, "cancel" | "stop" | "abort"),
+        "task" => verb.eq_ignore_ascii_case("cancel") || verb.eq_ignore_ascii_case("stop"),
+        "jobs" => matches!(
+            verb.to_ascii_lowercase().as_str(),
+            "cancel" | "kill" | "stop" | "cancel-all" | "kill-all" | "stop-all"
+        ),
+        "automation" => verb.eq_ignore_ascii_case("pause"),
+        "rc" => arg == "stop",
+        "goal" => matches!(arg, "pause" | "paused"),
+        "advisor" => matches!(arg, "off" | "disable" | "no" | "0" | "false"),
+        _ => false,
+    }
+}
+
 fn execute_in_context(
     cmd: &str,
     app: &mut App,
     config: Option<&codewhale_runtime::config::Config>,
 ) -> CommandResult {
+    if app.pending_fresh_session.is_some() && !pending_session_control_command(cmd) {
+        return CommandResult::error(
+            "A new session is awaiting Engine confirmation; the current draft and transcript are preserved.",
+        );
+    }
     // Keep the command's raw remainder available for commands whose payload is
     // byte-sensitive. Most slash commands intentionally receive a normalized
     // argument below; `/preview-request --prompt`, however, must describe the
@@ -365,7 +401,9 @@ fn execute_in_context(
     // Workspace (repository) commands load only in a trusted workspace and
     // never under a protected built-in such as /trust or /undo — the
     // registry drops those at load.
-    if let Some(result) = user_registry::try_dispatch(app, trimmed) {
+    if app.pending_fresh_session.is_none()
+        && let Some(result) = user_registry::try_dispatch(app, trimmed)
+    {
         return result;
     }
 
@@ -741,11 +779,17 @@ mod tests {
         assert!(!message.contains("Daytona"), "{message}");
         assert!(!message.contains("set-slot"), "{message}");
 
-        assert!(
-            execute("/login", &mut app)
-                .message
-                .expect("login status")
-                .contains("Codewhale login")
+        assert_eq!(
+            execute("/login", &mut app).action,
+            Some(AppAction::StartAccountLogin)
+        );
+        assert_eq!(
+            execute("/login account", &mut app).action,
+            Some(AppAction::StartAccountLogin)
+        );
+        assert_eq!(
+            execute("/logout", &mut app).action,
+            Some(AppAction::StartAccountLogout)
         );
         let key = execute("/login key", &mut app);
         assert!(!key.is_error);
@@ -764,12 +808,15 @@ mod tests {
 
         assert_eq!(
             execute("/connect", &mut app).action,
-            Some(AppAction::OpenProviderPicker)
+            Some(AppAction::OpenModelConnectionSetup)
         );
         let connect = execute("/connect nothing-enabled", &mut app);
         assert!(connect.is_error);
         let err = connect.message.expect("usage");
-        assert!(err.contains("Usage: /connect [<provider>]"), "{err}");
+        assert!(
+            err.contains("Usage: /connect [account|<provider>]"),
+            "{err}"
+        );
         assert!(err.contains("`/login`"), "{err}");
         assert!(execute("/disconnect", &mut app).is_error);
         assert!(execute("/disconnect nothing-enabled", &mut app).is_error);

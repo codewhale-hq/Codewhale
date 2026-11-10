@@ -321,6 +321,11 @@ changes. It is a catalog identity, not a wire fact: two routes can agree here
 and still send different bytes, because each dialect transforms schemas its own
 way and strict mode sanitizes them further.
 
+`body.omitted_tool_count` counts tools omitted by route compatibility, with
+at most eight sanitized names of 64 characters in `body.omitted_tool_names`.
+These facts contain no schemas, references or endpoint details. Relaxed wire
+schemas do not change the logical argument contract used for execution.
+
 `body.tool_schema_wire_sha256` is the hash of the `tools` region **as the
 provider receives it**. `body.local_system_tools_component_sha256` combines
 that digest with the final wire system-region digest as a local comparison

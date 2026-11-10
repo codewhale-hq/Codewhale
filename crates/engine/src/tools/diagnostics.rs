@@ -129,7 +129,7 @@ impl ToolSpec for DiagnosticsTool {
 // === Helpers ===
 
 fn probe_git(workspace: &Path) -> GitProbe {
-    let rev_parse = run_command("git", &["rev-parse", "--is-inside-work-tree"], workspace);
+    let rev_parse = run_git(&["rev-parse", "--is-inside-work-tree"], workspace);
     match rev_parse {
         CommandProbe::Success(out) => {
             if out.trim() != "true" {
@@ -139,8 +139,7 @@ fn probe_git(workspace: &Path) -> GitProbe {
                     error: Some(format!("unexpected git rev-parse output: {out}")),
                 };
             }
-            let branch = run_command("git", &["rev-parse", "--abbrev-ref", "HEAD"], workspace)
-                .into_success();
+            let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], workspace).into_success();
             GitProbe {
                 detected: true,
                 branch,
@@ -209,8 +208,21 @@ impl CommandProbe {
     }
 }
 
+fn run_git(args: &[&str], cwd: &Path) -> CommandProbe {
+    match super::git::read_only_git_command(cwd) {
+        Ok(command) => probe_output(command, args, cwd),
+        Err(err) => CommandProbe::Failed {
+            stderr: Some(err.to_string()),
+        },
+    }
+}
+
 fn run_command(program: &str, args: &[&str], cwd: &Path) -> CommandProbe {
-    let output = Command::new(program).args(args).current_dir(cwd).output();
+    probe_output(Command::new(program), args, cwd)
+}
+
+fn probe_output(mut command: Command, args: &[&str], cwd: &Path) -> CommandProbe {
+    let output = command.args(args).current_dir(cwd).output();
     let output = match output {
         Ok(output) => output,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return CommandProbe::Missing,

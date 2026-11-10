@@ -470,12 +470,9 @@ impl ToolSpec for RunVerifiersTool {
         // Gates run as futures of this call, not detached blocking tasks: when
         // Stop drops the tool future, every running gate's process group is
         // killed with it instead of being orphaned.
-        let mut results = futures_util::future::join_all(
-            gates
-                .into_iter()
-                .map(|gate| run_gate(gate, &context.state_namespace)),
-        )
-        .await;
+        let mut results =
+            futures_util::future::join_all(gates.into_iter().map(|gate| run_gate(gate, context)))
+                .await;
         results.sort_by(|a, b| a.name.cmp(&b.name));
 
         let passed = results
@@ -537,12 +534,8 @@ pub async fn run_workflow_completion_gates(context: &ToolContext) -> Result<Valu
         }));
     }
 
-    let mut results = futures_util::future::join_all(
-        gates
-            .into_iter()
-            .map(|gate| run_gate(gate, &context.state_namespace)),
-    )
-    .await;
+    let mut results =
+        futures_util::future::join_all(gates.into_iter().map(|gate| run_gate(gate, context))).await;
     results.sort_by(|a, b| a.name.cmp(&b.name));
 
     let passed = results
@@ -1183,7 +1176,8 @@ fn should_skip_dir_name(name: &str) -> bool {
     )
 }
 
-async fn run_gate(gate: VerifierGate, session_id: &str) -> GateResult {
+async fn run_gate(gate: VerifierGate, context: &ToolContext) -> GateResult {
+    let session_id = context.state_namespace.as_str();
     let command = render_command(gate.program.as_deref(), &gate.args);
     if let Some(reason) = gate.skipped_reason {
         return GateResult {
@@ -1224,23 +1218,44 @@ async fn run_gate(gate: VerifierGate, session_id: &str) -> GateResult {
     };
 
     let started = Instant::now();
-    let mut cmd = tokio::process::Command::new(&program);
-    cmd.args(&gate.args)
-        .current_dir(&gate.cwd)
-        // A gate never reads input; an inherited stdin could block it on the
-        // Engine's own terminal or pipe.
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    let mut cmd = match crate::tools::shell::sandboxed_runner_command(
+        context,
+        &program,
+        gate.args.clone(),
+        &gate.cwd,
+        gate.timeout,
+    ) {
+        Ok(cmd) => cmd,
+        Err(error) => {
+            return GateResult {
+                name: gate.name,
+                ecosystem: gate.ecosystem,
+                status: GateStatus::Skipped,
+                command,
+                cwd: gate.cwd.display().to_string(),
+                exit_code: None,
+                duration_ms: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_log_ref: None,
+                stderr_log_ref: None,
+                skipped_reason: Some(error.to_string()),
+            };
+        }
+    };
+    // A gate never reads input; an inherited stdin could block it on the
+    // Engine's own terminal or pipe.
+    cmd.stdin(Stdio::null()).kill_on_drop(true);
     // Its own process group, so a timeout or Stop reaches every helper the
     // gate started (headless Chrome forks several), not just the leader.
     #[cfg(unix)]
     cmd.process_group(0);
-    // Gates run workspace code: start from the sanitized child environment
-    // and layer only the gate's own declared variables on top.
-    codewhale_runtime::child_env::apply_to_tokio_command(
-        &mut cmd,
+    // Gates run workspace code: the runner starts from the sanitized child
+    // environment, and only the gate's own declared variables are layered on
+    // top.
+    cmd.envs(
         gate.env
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
@@ -2230,7 +2245,8 @@ mod tests {
             skipped_reason: None,
             timeout: Duration::from_secs(30),
         };
-        let result = run_gate(gate, "env-probe-test").await;
+        let context = ToolContext::new(tmp.path().to_path_buf());
+        let result = run_gate(gate, &context).await;
         assert_eq!(result.stdout.trim(), "unset|declared", "{result:?}");
     }
 }

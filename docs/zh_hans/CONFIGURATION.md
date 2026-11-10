@@ -22,6 +22,44 @@ user_input_timeout_seconds = 0
 
 `codewhale config doctor` 会检查凭据是否存在和端点形态，并对 config.toml 中每个没有任何代码读取的根键给出警告：留在 config.toml 里的 settings.toml 键会被指出放错了位置，任何其他未被读取的键会得到一个“你是不是想输入……”的建议。任何运行时读取方读取的键都不会被报告。这些警告不会使检查失败，而干净的结果也不代表已校验每个运行时设置的取值（#6083、#6563）。
 
+## 用量和执行统计
+
+`codewhale stats` 是 `codewhale metrics` 的别名，两者使用同一个本地只读后端。
+`--json` 输出结构化的 `stats` 报告，例如：
+
+```sh
+codewhale stats --days 7 --models 10 --tools 20 --roles 10
+codewhale metrics --project /path/to/workspace --json
+```
+
+`--days N` 接受正数天数，不能与 `--since` 同时使用；原有的 `--since 24h` 等时长语法继续有效。
+`--models N`、`--tools N` 和 `--roles N` 分别按已知 token 数、可识别的工具执行数和已记录的 Fleet 任务数
+显示前 N 行，N 必须为正数。这些选项只缩短显示，不会删除持久化回执。
+
+报告区分保存文档与 Runtime 视图、按实际模型冻结的原生来源金额和 token 小计、保留的工具结果文本估算与执行结果、
+已完成的压缩观测，以及已记录的 Fleet 角色。USD 和 CNY 分开统计。累计修正替换其已证明的前序贡献，
+重复的 Session/Runtime 回执和 Runtime fork 继承行不会被算作新的 provider 工作。
+冲突的来源版本单独显示并排除在小计之外；旧会话的显示总额作为文档投影保留，不会再次计入全局费用。
+
+缺少报价、用量回执、工具结果、输出形态或恢复关联时，报告显示未知，而不是零。
+旧传输记录中全零的标量不能证明 provider 明确返回了零用量。
+工具历史 token 是保留文本的估算，不代表已证明进入每个 provider 请求的内容。
+未捕获的最近请求组成、压缩/角色的来源费用关联会显示不可用。报告不是 provider 账单，也不证明历史覆盖完整。
+
+`--project WORKSPACE` 按当前保存文档、线程及 Fleet 工作区视图过滤。
+来源原始工作区尚未捕获，因此此过滤下的原生金额和模型小计不可用；不会根据可变的当前元数据给费用归属。
+没有可靠工作区范围的旧回执投影也不可用。未过滤时，这些旧视图与原生小计分开，并可能彼此重叠。
+
+读取沿用现有的 16 MiB 会话检查边界：每个记录/帧和每个保留的查询索引均有界。
+不可读、链接、超大或不完整的记录会留下可见缺口；原生索引耗尽时拒绝查询，不驱逐证据。
+可尝试缩小时间范围。统计读取不会创建存储、修复历史、刷新价格、发起模型请求或退役记账回执，
+并继续遵守现有状态根目录覆盖设置的读取边界。
+
+TUI 中的 `/cache calls [count]` 显示最近保留的原生来源回执，默认 10 条，最多显示 50 条。
+同一来源的修正会更新原行。冻结的 USD/CNY 估算、已知小计与缺失的用量或价格保持区分；
+缺失或矛盾的缓存类别显示未知。标题计数代表保留来源，不是物理请求数或完整历史调用数。
+此命令不会发起模型请求，也不会删除记账回执。
+
 ## 宪章、项目指令与仓库权威
 
 Codewhale 有多个指令层级（instruction surfaces）。它们刻意保持分离，这样个人宪章、仓库策略、项目指令和运行时安全控制就不会被混淆。
@@ -1103,7 +1141,7 @@ codewhale 还把用户偏好存储在：
 
 常用设置键：
 
-- `theme`（`system`、`terminal`、`underwater`、`underwater-retro`、`shoreline`、`shoreline-light`、`dark`、`light`、`grayscale`、`catppuccin-mocha`、`tokyo-night`、`dracula`、`gruvbox-dark`、`claude`、`matrix`、`solarized-light`、`uwu`；默认 `underwater`）：`underwater` 是全新安装时默认的深海军蓝主题，`shoreline` 是它的暖炭色替代，`shoreline-light` 是其浅色变体，`system` 跟随终端背景检测，`dark`/`light` 使用 Codewhale Whale 配对，`terminal` 继承宿主终端，`grayscale` 是低意见的黑/白主题，命名的社区预设应用于整个 TUI。`whale`、`mono`、`black-white`、`tokyonight` 和 `gruvbox` 这样的别名被接受。在 Whale 中，钴蓝色拥有动作/焦点，海沫绿拥有实时工作，Signal Gold 拥有人类决策和鲸鱼，珊瑚色拥有警告，玫瑰色拥有危险，紫色拥有 Operate，绿色保持已完成/已验证。文本标签、标记和动效策略在颜色不可用时携带同样的状态；颜色从来不是唯一的线索。用户创作的覆盖只存在于 `~/.codewhale/themes/<name>.json`(或 `$CODEWHALE_HOME/themes/<name>.json`)，用 `/theme custom:<name>` 选择。文件名是有界的 slug，符号链接和超过 64 KiB 的文件被拒绝，颜色必须是 `#RRGGBB`，未知字段会验证失败。`/theme schema` 打印嵌入的 JSON Schema，`/theme path` 显示确切目录。覆盖命名一个编译好的 `base` 主题，只改变列出的语义颜色；它不能包含或读取另一个文件。打开 `/theme` 可浏览有效的覆盖、实时预览它们，并且在打开选择器后没有移动选择时，保持当前活动的 `custom:<name>` 选择器。
+- `theme`（`system`、`terminal`、`underwater`、`underwater-retro`、`shoreline`、`shoreline-light`、`dark`、`light`、`grayscale`、`catppuccin-mocha`、`tokyo-night`、`dracula`、`gruvbox-dark`、`claude`、`matrix`、`solarized-light`、`uwu`；默认 `underwater`）：`underwater` 是全新安装时默认的深海军蓝主题，`shoreline` 是它的暖炭色替代，`shoreline-light` 是其浅色变体，`system` 跟随终端背景检测，`dark`/`light` 使用 Codewhale Whale 配对，`terminal` 继承宿主终端，`grayscale` 是低意见的黑/白主题，命名的社区预设应用于整个 TUI。`whale`、`mono`、`black-white`、`tokyonight` 和 `gruvbox` 这样的别名被接受。在 Whale 中，钴蓝色拥有动作/焦点，海沫绿拥有实时工作，Signal Gold 拥有人类决策和鲸鱼，珊瑚色拥有警告，玫瑰色拥有危险，绿色保持已完成/已验证。文本标签、标记和动效策略在颜色不可用时携带同样的状态；颜色从来不是唯一的线索。用户创作的覆盖只存在于 `~/.codewhale/themes/<name>.json`(或 `$CODEWHALE_HOME/themes/<name>.json`)，用 `/theme custom:<name>` 选择。文件名是有界的 slug，符号链接和超过 64 KiB 的文件被拒绝，颜色必须是 `#RRGGBB`，未知字段会验证失败。`/theme schema` 打印嵌入的 JSON Schema，`/theme path` 显示确切目录。覆盖命名一个编译好的 `base` 主题，只改变列出的语义颜色；它不能包含或读取另一个文件。打开 `/theme` 可浏览有效的覆盖、实时预览它们，并且在打开选择器后没有移动选择时，保持当前活动的 `custom:<name>` 选择器。
 - `auto_compact`(on/off，模型感知默认对已知上下文窗口开启，除非显式配置)
 - `auto_compact_threshold_percent`(10-100，默认 `80`)：仅当 `auto_compact` 启用时使用的发送前自动压缩阈值。
 - `paste_burst_detection`(on/off，默认 on)：为不发出括号粘贴事件的终端提供的快速按键粘贴回退检测。这独立于终端的括号粘贴模式。
@@ -1210,7 +1248,7 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
 
 - `insecure_skip_tls_verify`(bool，可选的 provider 表键)：旧兼容键，默认禁用。活动 provider 表上为 true 时，provider 客户端拒绝该配置，而不是跳过 TLS 证书验证。企业或私有 CA 包用 `SSL_CERT_FILE`；`codewhale doctor` 报告此设置的过期使用。
 
-- `default_text_model`（字符串，可选）：DeepSeek 和 `deepseek-anthropic` 默认 `deepseek-flash`，OpenAI 是 `gpt-5.6`，xAI 是 `grok-4.6`，NVIDIA NIM 是 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 是 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 是 `deepseek-reasoner`，火山方舟是 `DeepSeek-V4-Pro`，OpenRouter 和 Novita 是 `deepseek/deepseek-v4-pro`，小米 MiMo 是 `mimo-v2.6-pro`，Fireworks 是 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 和 DeepInfra 是 `deepseek-ai/DeepSeek-V4-Pro`，Arcee AI 是 `trinity-large-thinking`，Moonshot 是 `kimi-k2.7-code`，MiniMax 是 `MiniMax-M3`，Z.ai 是 `GLM-5.3`，StepFun 是 `step-3.7-flash`，千帆是 `ernie-4.0-turbo-8k`，Sakana AI 是 `fugu`，SGLang/vLLM 是 `deepseek-ai/DeepSeek-V4-Pro`，本地 Ollama 没有固定 id（Codewhale 会从实时本地目录中选用一个支持聊天的标签——优先选 coder 或支持工具的标签，然后是上下文最大的——绝不会选嵌入模型或重排序模型），Ollama Cloud 是 `gpt-oss:120b`。Hugging Face 和 Together AI 都默认 `deepseek-ai/DeepSeek-V4-Pro`；`openai-codex` 默认 `gpt-6.1-sol`；`anthropic` 默认 `claude-sonnet-4-6`；`openmodel` 默认 `deepseek-v4-flash`。当前公开的 DeepSeek ID 包括 `deepseek-v4-pro` 和 `deepseek-flash`（V4.1 Flash，以不带版本号的 id 发布），两者都是 1M 上下文窗口、384K 最大输出、默认启用思考模式。DeepSeek 的实时定价/模型页现在把 Pro 后端标为 `DeepSeek-V4-Pro-0813`；可调用的 API ID 仍是 `deepseek-v4-pro`，所以 Codewhale 不发送后端标签，也不发送 Claude Code 特有的 `deepseek-v4-pro[1m]` 选择器。DeepSeek 已于 2026 年 7 月 24 日退役 `deepseek-chat` 和 `deepseek-reasoner`；直连官方路由把两者都迁移到 `deepseek-flash`，省略推理设置时保留它们此前的不思考（`off`）和思考（`high`）意图。DeepSeek 也已退役 `deepseek-v4-flash` 和 `deepseek-v4-flash-vision-exp` 模型：两个名称仍被接受，由 V4.1 Flash 提供服务，并按 `deepseek-flash` 的价格计费；Codewhale 对 2026-09-10 04:00 UTC 起的回合采用该价格。`flash`、`deepseek-v4flash`、`flash-vision` 和 `deepseek-v4flashvisionexp` 简写选择 `deepseek-flash`。显式的 `reasoning_effort` 优先，Wanjie Ark、聚合器、自托管运行时和自定义端点上由 provider 自己拥有的 id 不会被全局改写。SiliconFlow 保留自己的映射：`deepseek-reasoner` 和 `deepseek-r1` 选择其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 选择 Flash。各 provider 特有的映射在受支持之处把 `deepseek-v4-pro` / `deepseek-v4-flash` 翻译成该 provider 的模型 ID。OpenRouter 还识别最近的大模型 ID，如 `arcee-ai/trinity-large-thinking`、`minimax/minimax-m3`、`minimax/minimax-m2.7`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-flash`、`qwen/qwen3.6-35b-a3b`、`qwen/qwen3.6-max-preview`、`qwen/qwen3.6-27b`、`qwen/qwen3.6-plus`、`qwen/qwen3.7-max`、`google/gemma-4-31b-it`、`moonshotai/kimi-k2.7-code`、`moonshotai/kimi-k2.6`、`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` 和 `nvidia/nemotron-3-ultra-550b-a55b`；直连 Arcee 使用 `trinity-large-thinking` 和 `trinity-large-preview` 这样的裸 ID；直连 Moonshot 识别 `kimi-k3`、`kimi-k2.7-code` 和 `kimi-k2.6`。确切的 Kimi Code 端点识别 K3 的裸 `k3` 和 K2.7 的 `kimi-for-coding`；这些会员 ID 与直连 Moonshot 的 ID 不同，绝不会跨路由改写。直连 MiniMax 识别 `MiniMax-M3` 和有文档记录的 M2.x 聊天模型 ID；直连 Z.ai 识别 `GLM-5.3`（默认）、`GLM-5.2`、`GLM-5.1` 和 `GLM-5-Turbo`，OpenRouter 识别对应的 `z-ai/glm-5.1`、`z-ai/glm-5.2`、`z-ai/glm-5.3` 和 `z-ai/glm-5-turbo` ID——`GLM-5.3` 自 2026-08-13 起已在 Z.ai Coding Plan 上线；在 Z.ai 发布独立的 5.3 数据之前，它继承 `GLM-5.2` 的目录元数据且不带价格，而显式选择 `GLM-5.2` 会保留它自己的 id；直连 Sakana 识别 `fugu` 和 `fugu-ultra-20260615`；直连小米 MiMo 识别聊天 ID `mimo-v2.6-pro`、`mimo-v2.6-flash` 和 `mimo-v2.5-pro-ultraspeed`（已停用的 `mimo-v2.5-pro` 和 `mimo-v2.5` 会以 `mimo-v2.6-pro` 和 `mimo-v2.6-flash` 发送），而 TTS ID 通过 `codewhale speech` / `tts` 选择。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo`、`arcee`、`moonshot`、`minimax`、`openmodel`、`zai`、`stepfun`、`qianfan`、`sakana`、本地 Ollama 和 Ollama Cloud 的模型 ID，在已知别名规范化之后原样透传。带自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也保留显式的模型值，这样 OpenAI 兼容网关就能接受裸模型 ID。用 `/models` 或 `codewhale models` 从你配置的端点发现实时 ID。`CODEWHALE_MODEL` 为单个进程覆盖它；`DEEPSEEK_MODEL` 是旧别名。
+- `default_text_model`（字符串，可选）：DeepSeek 和 `deepseek-anthropic` 默认 `deepseek-flash`，OpenAI 是 `gpt-5.6`，xAI 是 `grok-4.7`，NVIDIA NIM 是 `deepseek-ai/deepseek-v4-pro`，AtlasCloud 是 `deepseek-ai/deepseek-v4-flash`，Wanjie Ark 是 `deepseek-reasoner`，火山方舟是 `DeepSeek-V4-Pro`，OpenRouter 和 Novita 是 `deepseek/deepseek-v4-pro`，小米 MiMo 是 `mimo-v2.6-pro`，Fireworks 是 `accounts/fireworks/models/deepseek-v4-pro`，SiliconFlow 和 DeepInfra 是 `deepseek-ai/DeepSeek-V4-Pro`，Arcee AI 是 `trinity-large-thinking`，Moonshot 是 `kimi-k2.7-code`，MiniMax 是 `MiniMax-M3`，Z.ai 是 `GLM-5.3`，StepFun 是 `step-3.7-flash`，千帆是 `ernie-4.0-turbo-8k`，Sakana AI 是 `fugu`，SGLang/vLLM 是 `deepseek-ai/DeepSeek-V4-Pro`，本地 Ollama 没有固定 id（Codewhale 会从实时本地目录中选用一个支持聊天的标签——优先选 coder 或支持工具的标签，然后是上下文最大的——绝不会选嵌入模型或重排序模型），Ollama Cloud 是 `gpt-oss:120b`。Hugging Face 和 Together AI 都默认 `deepseek-ai/DeepSeek-V4-Pro`；`openai-codex` 默认 `gpt-6.1-sol`；`anthropic` 默认 `claude-sonnet-4-6`；`openmodel` 默认 `deepseek-v4-flash`。当前公开的 DeepSeek ID 包括 `deepseek-v4-pro` 和 `deepseek-flash`（V4.1 Flash，以不带版本号的 id 发布），两者都是 1M 上下文窗口、384K 最大输出、默认启用思考模式。DeepSeek 的实时定价/模型页现在把 Pro 后端标为 `DeepSeek-V4-Pro-0813`；可调用的 API ID 仍是 `deepseek-v4-pro`，所以 Codewhale 不发送后端标签，也不发送 Claude Code 特有的 `deepseek-v4-pro[1m]` 选择器。DeepSeek 已于 2026 年 7 月 24 日退役 `deepseek-chat` 和 `deepseek-reasoner`；直连官方路由把两者都迁移到 `deepseek-flash`，省略推理设置时保留它们此前的不思考（`off`）和思考（`high`）意图。DeepSeek 也已退役 `deepseek-v4-flash` 和 `deepseek-v4-flash-vision-exp` 模型：两个名称仍被接受，由 V4.1 Flash 提供服务，并按 `deepseek-flash` 的价格计费；Codewhale 对 2026-09-10 04:00 UTC 起的回合采用该价格。`flash`、`deepseek-v4flash`、`flash-vision` 和 `deepseek-v4flashvisionexp` 简写选择 `deepseek-flash`。显式的 `reasoning_effort` 优先，Wanjie Ark、聚合器、自托管运行时和自定义端点上由 provider 自己拥有的 id 不会被全局改写。SiliconFlow 保留自己的映射：`deepseek-reasoner` 和 `deepseek-r1` 选择其 Pro 模型，而 `deepseek-chat` 和 `deepseek-v3` 选择 Flash。各 provider 特有的映射在受支持之处把 `deepseek-v4-pro` / `deepseek-v4-flash` 翻译成该 provider 的模型 ID。OpenRouter 还识别最近的大模型 ID，如 `arcee-ai/trinity-large-thinking`、`minimax/minimax-m3`、`minimax/minimax-m2.7`、`xiaomi/mimo-v2.5-pro`、`qwen/qwen3.6-flash`、`qwen/qwen3.6-35b-a3b`、`qwen/qwen3.6-max-preview`、`qwen/qwen3.6-27b`、`qwen/qwen3.6-plus`、`qwen/qwen3.7-max`、`google/gemma-4-31b-it`、`moonshotai/kimi-k2.7-code`、`moonshotai/kimi-k2.6`、`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` 和 `nvidia/nemotron-3-ultra-550b-a55b`；直连 Arcee 使用 `trinity-large-thinking` 和 `trinity-large-preview` 这样的裸 ID；直连 Moonshot 识别 `kimi-k3`、`kimi-k2.7-code` 和 `kimi-k2.6`。确切的 Kimi Code 端点识别 K3 的裸 `k3` 和 K2.7 的 `kimi-for-coding`；这些会员 ID 与直连 Moonshot 的 ID 不同，绝不会跨路由改写。直连 MiniMax 识别 `MiniMax-M3` 和有文档记录的 M2.x 聊天模型 ID；直连 Z.ai 识别 `GLM-5.3`（默认）、`GLM-5.2`、`GLM-5.1` 和 `GLM-5-Turbo`，OpenRouter 识别对应的 `z-ai/glm-5.1`、`z-ai/glm-5.2`、`z-ai/glm-5.3` 和 `z-ai/glm-5-turbo` ID——`GLM-5.3` 自 2026-08-13 起已在 Z.ai Coding Plan 上线；在 Z.ai 发布独立的 5.3 数据之前，它继承 `GLM-5.2` 的目录元数据且不带价格，而显式选择 `GLM-5.2` 会保留它自己的 id；直连 Sakana 识别 `fugu` 和 `fugu-ultra-20260615`；直连小米 MiMo 识别聊天 ID `mimo-v2.6-pro`、`mimo-v2.6-flash` 和 `mimo-v2.5-pro-ultraspeed`（已停用的 `mimo-v2.5-pro` 和 `mimo-v2.5` 会以 `mimo-v2.6-pro` 和 `mimo-v2.6-flash` 发送），而 TTS ID 通过 `codewhale speech` / `tts` 选择。通用 `openai`、`atlascloud`、`wanjie-ark`、`xiaomi-mimo`、`arcee`、`moonshot`、`minimax`、`openmodel`、`zai`、`stepfun`、`qianfan`、`sakana`、本地 Ollama 和 Ollama Cloud 的模型 ID，在已知别名规范化之后原样透传。带自定义 `base_url` 的 OpenRouter 和 SiliconFlow provider 配置也保留显式的模型值，这样 OpenAI 兼容网关就能接受裸模型 ID。用 `/models` 或 `codewhale models` 从你配置的端点发现实时 ID。`CODEWHALE_MODEL` 为单个进程覆盖它；`DEEPSEEK_MODEL` 是旧别名。
 - TelecomJS 只把 `deepseek-v4-pro` 用作刷新前的保守回退。其 key 作用域的 `/models` 目录可用后，选择器使用那些实时行；Codewhale 在该路由上省略不受支持的推理请求字段。
 
 - `reasoning_effort`（字符串，可选）：`auto`、`off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`ultra`（`ultracode` 是 `ultra` 的别名）或 `max`；默认取已配置的 UI 档位。DeepSeek Platform 收到顶层 `thinking` / `reasoning_effort` 字段。Ollama Cloud 的 OpenAI 兼容 Chat Completions 路由保留其有文档记录的 `none` / `low` / `medium` / `high` / `max` 阶梯（`off` 作为 `none` 发送；`xhigh` 和 `ultracode` 规范化为 `max`）。确切 `https://api.x.ai/v1` 上的直连 xAI `grok-4.7` 和 `grok-4.6` 收到顶层 `reasoning_effort = "low" | "medium" | "high" | "xhigh"`（阶梯来自内置目录行；`grok-4.5` 把 `xhigh` 映射为 `high`，没有文档记录 effort 的行，如 `grok-4.3`，则不发送该字段）；Grok 的推理无法关闭，因此 `off` 规范化为 `high`，`max`/`ultracode` 规范化为 `xhigh`，`auto` 让该字段省略，从而使用 xAI 文档记录的默认值 `high`。自定义的 xAI 兼容 `base_url` 不继承该方言。确切 `https://api.moonshot.ai/v1` 上的直连 Moonshot `kimi-k3` 始终思考，只收到顶层 `reasoning_effort = "low" | "high" | "max"`；`off` 规范化为 `low`，`medium` 规范化为 `high`。确切 `https://api.kimi.com/coding/v1` 上的 Kimi Code 会员 `k3` 则收到嵌套的 `thinking.effort`，其 `off` 设置同样规范化为启用的 `low`。正常调度的 `auto` 使用 Codewhale 的自动推理选择器，发送一个具体的、按路由规范化后的档位；只有省略推理设置时，才由 provider 的默认值控制。相邻的网关以及其他模型/端点组合保留通用的 Moonshot 契约。OpenAI Codex 把过期的 `off` 规范化为 `low`，并把 `max` / `ultracode` 作为 Responses 的 `xhigh` 发送。Z.ai 收到有文档记录的 `thinking` 控制，并把启用的思考视为 GLM coding 的 high/max 通道。NVIDIA NIM 通过 `chat_template_kwargs` 收到等效设置。
@@ -1372,6 +1410,8 @@ DeepSeek V4 前缀缓存让 token 标签变得重要。这些数量保持分离�
   - `[retry].jitter_factor`（float，默认 `0.1`，即 ±10%；钳制到 `0.0..=1.0`）
   - `[retry].respect_retry_after`（bool，默认 `true`）：按服务器的 `Retry-After` 响应头等待，而不是使用计算出的退避延迟
 
+  HTTP 429 使用独立的 `[retry.rate_limit]` 策略：`max_attempts = 20`（含首次尝试）、`recovery_budget_secs = 600`、`initial_delay_secs = 5`、`max_delay_secs = 60`。上述旧退避参数和 `jitter` / `respect_retry_after` 开关不覆盖限流策略；429 始终遵守服务器最小等待时间并使用 equal jitter。`max_retries = 0` 不关闭 429 恢复；只关闭 429 自动重试请设 `retry.rate_limit.max_attempts = 1`，关闭本 HTTP 重试循环请设 `retry.enabled = false`；流打开操作内部仍可能执行已有的安全发出前 HTTP/1.1 回退。实际提供方暂停和自动等待仍最多一小时。参数校验范围及边界见 [HTTP rate-limit retries](../rate-limit-retries.md)。
+
   `[retry]` 安排客户端内部的 HTTP 请求重试。每次实际发出的流式请求都有独立的 `stream.open_timeout_secs` 响应头等待时间；提供方退避和 `Retry-After` 等待发生在请求之间。推理自动重试只允许普通限流，或有类型证据证明请求尚未发出时的瞬时连接故障。只有后一种故障可以切换一次 HTTP/1.1；响应头停滞不能触发重发。两种推理客户端都禁止自动重定向和 reqwest 协议重试。明确的套餐周期用量耗尽会作为配额错误终止。服务器错误、结果不明的超时或流中断会保留未知用量并停止，不会自动重新发起推理。只读模型目录 GET 在实际方法入口保留有界重试。下面的 `[stream]` 键限制安全的发出前恢复和流读取；旧的 `tui.stream_max_*` 键仍作为配置回退。
 
 - `[notifications]`：通知的投递、注意力、类别和声音共用同一套策略。`quiet = true`、`method = "off"`、`condition = "never"` 以及被禁用的类别，会同时抑制横幅和 Codewhale 所选的声音。
@@ -1516,6 +1556,12 @@ continuation_delay_seconds = 300
 # Default: uncapped (0 or absent). Positive values are preserved.
 # This bounds each provider turn, never the number of continuation passes.
 max_steps = 0
+
+# Optional independent judges (#6013). Default: false. When true, one
+# adversarial critique of the claim runs before update_goal completes
+# (complete_judge) or blocks (blocked_judge) the goal.
+complete_judge = false
+blocked_judge = false
 ```
 
 有效延迟上限为 86,400 秒（24 小时）；比每天一次更不频繁的调度，请使用自动化。

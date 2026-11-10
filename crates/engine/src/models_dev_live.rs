@@ -20,7 +20,7 @@ use codewhale_runtime::catalog_cache::CACHE_FILE;
 use codewhale_runtime::catalog_cache::cache_path;
 use std::path::Path;
 use std::sync::RwLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use codewhale_config::catalog::{
     CatalogSnapshot, base_url_fingerprint, live_offerings_from_models_dev, now_unix,
@@ -44,6 +44,15 @@ pub const ENV_MODELS_DEV_URL: &str = "CODEWHALE_MODELS_DEV_URL";
 pub const ENV_MODELS_DEV_PATH: &str = "CODEWHALE_MODELS_DEV_PATH";
 /// Env: disable network fetch entirely (`1`/`true`/`yes`/`on`).
 pub const ENV_DISABLE_FETCH: &str = "CODEWHALE_DISABLE_MODELS_DEV_FETCH";
+
+struct RefreshAttempt {
+    source: String,
+    completed_at: Instant,
+    result: Result<usize, ModelsDevRefreshError>,
+}
+
+static REFRESH_ATTEMPT: tokio::sync::Mutex<Option<RefreshAttempt>> =
+    tokio::sync::Mutex::const_new(None);
 
 const CACHE_SCHEMA_VERSION: u32 = 1;
 /// Largest catalog body accepted from the network, an override file, or the
@@ -172,7 +181,14 @@ impl std::fmt::Display for ModelsDevRefreshError {
 /// Current quiet status (for UI / slash-command feedback).
 #[must_use]
 pub fn status() -> ModelsDevStatus {
-    let current = STATUS.read().map(|guard| guard.clone()).unwrap_or_default();
+    let mut current = STATUS.read().map(|guard| guard.clone()).unwrap_or_default();
+    if current.freshness == ModelsDevFreshness::Live
+        && current
+            .fetched_at
+            .is_none_or(|timestamp| !within_ttl(timestamp, now_unix()))
+    {
+        current.freshness = ModelsDevFreshness::Stale;
+    }
     honor_bundled_staleness(
         current,
         codewhale_config::catalog::reviewed::bundled_source_fetched_at()
@@ -271,6 +287,30 @@ pub fn maybe_load_persisted_cache() {
 /// status. A cache write that fails after a successful publish keeps the fresh
 /// rows and reports only the persistence error.
 pub async fn refresh(force_network: bool) -> Result<usize, ModelsDevRefreshError> {
+    let mut previous = REFRESH_ATTEMPT.lock().await;
+    let source = current_source_fingerprint();
+    if !force_network
+        && std::env::var(ENV_MODELS_DEV_PATH)
+            .ok()
+            .is_none_or(|path| path.trim().is_empty())
+        && let Some(attempt) = previous.as_ref()
+        && attempt.source == source
+        && attempt.completed_at.elapsed() < Duration::from_secs(60)
+        && attempt.result.is_err()
+        && !matches!(attempt.result, Err(ModelsDevRefreshError::Disabled))
+    {
+        return attempt.result.clone();
+    }
+    let result = refresh_inner(force_network).await;
+    *previous = Some(RefreshAttempt {
+        source,
+        completed_at: Instant::now(),
+        result: result.clone(),
+    });
+    result
+}
+
+async fn refresh_inner(force_network: bool) -> Result<usize, ModelsDevRefreshError> {
     if let Ok(path) = std::env::var(ENV_MODELS_DEV_PATH) {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
@@ -286,6 +326,7 @@ pub async fn refresh(force_network: bool) -> Result<usize, ModelsDevRefreshError
     if !force_network {
         let current = status();
         if current.freshness == ModelsDevFreshness::Live
+            && current.source_label == resolve_catalog_url()
             && current
                 .fetched_at
                 .is_some_and(|ts| within_ttl(ts, now_unix()))
@@ -359,21 +400,24 @@ pub fn spawn_background_refresh() {
         return;
     };
     handle.spawn(async {
-        match refresh(false).await {
-            Ok(count) => {
-                tracing::debug!(
-                    target: "models_dev_live",
-                    offering_count = count,
-                    "Models.dev live catalog refreshed"
-                );
+        loop {
+            match refresh(false).await {
+                Ok(count) => {
+                    tracing::debug!(
+                        target: "models_dev_live",
+                        offering_count = count,
+                        "Models.dev live catalog refreshed"
+                    );
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        target: "models_dev_live",
+                        error = %err,
+                        "Models.dev live catalog refresh skipped"
+                    );
+                }
             }
-            Err(err) => {
-                tracing::debug!(
-                    target: "models_dev_live",
-                    error = %err,
-                    "Models.dev live catalog refresh skipped"
-                );
-            }
+            tokio::time::sleep(Duration::from_secs(15 * 60)).await;
         }
     });
 }
@@ -413,7 +457,7 @@ async fn refresh_from_path(path: &Path) -> Result<usize, ModelsDevRefreshError> 
 }
 
 async fn fetch_catalog_body(url: &str) -> Result<String, ModelsDevRefreshError> {
-    let client = codewhale_release::tls::reqwest_client_builder()
+    let client = crate::platform_client_builder()
         .timeout(FETCH_TIMEOUT)
         .connect_timeout(Duration::from_secs(10))
         .user_agent(USER_AGENT)

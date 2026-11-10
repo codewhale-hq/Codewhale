@@ -38,6 +38,9 @@
         "title": "Install into an owned folder",
         "blocks": [
           {
+            "p": "Write and share a skill with the [two-file plugin tutorial](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md)."
+          },
+          {
             "code": "/skill install --project <spec>\n/skill install --global <spec>\n/skill trust --project <name>",
             "lang": "Codewhale"
           },
@@ -168,7 +171,7 @@
     "themeDark": "dark",
     "themeAria": "Theme: {mode} (click to cycle)",
     "themeTitle": "Theme · auto / light / dark",
-    "footerTagline": "The open-source coding agent for your terminal and the models you choose.",
+    "footerTagline": "Build apps. Automate work.",
     "footerProduct": "Product",
     "footerProject": "Project",
     "footerDocs": "Docs",
@@ -192,14 +195,14 @@
     "partialBadge": "(partial)"
   },
   "home": {
-    "metaTitle": "Codewhale: an open-source coding agent",
-    "metaDescription": "Codewhale is an open-source coding agent for your terminal. Read, edit and test projects with your own hosted or local models.",
-    "heroTitle": "The open-source coding agent for any model",
-    "heroIntro": "{brand} reads your project, edits files and runs your tests from your terminal. Connect a hosted or local model, and choose which actions need your approval.",
+    "metaTitle": "Codewhale · An open-source agent for your computer",
+    "metaDescription": "Build apps, fix code and automate work with an open-source agent in your terminal. Choose hosted or local models. Help build Codewhale with code, docs and feedback.",
+    "heroTitle": "An open-source agent for your computer",
+    "heroIntro": "Build software and run repeatable workflows with {brand} in your terminal. Add Computer Use to work in Mac apps.",
     "getCodewhale": "Install Codewhale",
     "heroInstallAria": "Install command",
     "exploreProduct": "Explore Codewhale",
-    "shotPreview": "Terminal preview",
+    "shotPreview": "Local terminal demo",
     "screenshotAlt": "Codewhale v{version}: a captured terminal view with the conversation, message composer and session controls.",
     "latestRelease": "Latest release {tag}",
     "releaseUnavailable": "Release status unavailable",
@@ -207,29 +210,29 @@
     "currentSource": "Source",
     "sourceCandidate": "Unreleased",
     "publishedRelease": "released",
-    "gainHeading": "Build and automate from your terminal",
-    "gainLede": "Describe what you want to build or automate. Codewhale can edit files, run commands and check the result, with access you control.",
+    "gainHeading": "Put your ideas to work",
+    "gainLede": "Start with a project and the result you need. Codewhale can read the files, make changes and run commands to check its work.",
     "gain": [
       [
-        "Build apps and tools",
-        "Create an app, add a feature or write a script. Codewhale can work through the project files, run the code and test what it builds."
+        "Build and repair software",
+        "Add a feature, trace a bug or write a useful tool. Work through the changes with an agent that can edit the project and run its checks."
       ],
       [
-        "Automate the work you repeat",
-        "Run workflows from your terminal, scripts or CI. For larger tasks, delegate parts of the work to a Fleet of agents with different models."
+        "Automate work you repeat",
+        "Turn a repeated task into a script or run it with codewhale exec. For larger jobs, give parts of the work to a Fleet of agents with different models."
       ],
       [
         "Connect the tools you use",
-        "Add tools through plugins and MCP servers, or use APIs from your own scripts. Each service needs its own setup and authentication."
+        "Bring in tools through plugins and MCP servers. Connect the services your work needs, with access and authentication you configure."
       ]
     ],
     "chapterModels": "Your models",
     "modelsHeading": "Use the models you choose",
-    "modelsBody": "Connect your provider accounts, an OpenAI-compatible endpoint, or local and self-hosted models. Pick a model for the session and for each agent in a Fleet.",
+    "modelsBody": "Use provider API keys, an OpenAI-compatible endpoint or local models.",
     "modelsFacts": [
       [
         "Your API accounts",
-        "Connect providers such as DeepSeek, OpenAI, Anthropic or Google with your own keys. The default, deepseek-flash, now runs DeepSeek-V4.1-Flash."
+        "Use your own API keys with providers such as DeepSeek, OpenAI, Anthropic and Google. Your provider bills the model usage."
       ],
       [
         "Your gateway",
@@ -237,21 +240,21 @@
       ],
       [
         "Your inference",
-        "Run local or self-hosted models with Ollama, vLLM or SGLang."
+        "Connect Ollama on your machine, or a self-hosted endpoint such as vLLM or SGLang."
       ],
       [
         "Your ChatGPT plan",
-        "Sign in with codewhale auth chatgpt to use a ChatGPT plan instead of an API key. Experimental."
+        "Experimental: connect an eligible ChatGPT plan with codewhale auth chatgpt."
       ]
     ],
     "modelsLink": "Browse models and providers",
-    "startHeading": "Get started",
+    "startHeading": "Start with one useful task",
     "startLede": "Install Codewhale, connect a model and open a project folder. You can add plugins and more agents as you need them.",
     "startGuideLink": "Follow the getting-started guide",
     "startVocabularyLink": "Look up a term",
     "chapterAvailability": "Where it runs",
     "availabilityHeading": "Available now and in development",
-    "availabilityLede": "The terminal and local browser client are available now. A native desktop app and a rebuilt hosted web app are in development.",
+    "availabilityLede": "Install on macOS, Linux or Windows. Work in your terminal, or run codewhale web for a local browser view. Desktop and hosted web apps are in development.",
     "availability": [
       [
         "Terminal and local browser",
@@ -288,7 +291,7 @@
       ],
       [
         "Browser and computer · preview",
-        "Use browser tools and the Computer Use plugin for work in apps and websites, with the access you grant."
+        "Add browser tools or the Computer Use plugin to work in apps and websites. Computer Use on macOS needs system permissions; other platforms remain experimental."
       ],
       [
         "Sessions you can return to",
@@ -307,9 +310,9 @@
     "chinaMirrors": "China mirrors",
     "installGuideLink": "Read the install guide",
     "communityHeading": "Contribute to Codewhale",
-    "communityBody": "{count} people have built Codewhale. Report a bug, improve the docs or contribute code on GitHub.",
+    "communityBody": "{count} contributors. Code, docs, translations and skills all help.",
     "communityLinksAria": "Community links",
-    "contribute": "Contribute on GitHub"
+    "contribute": "Contribute"
   },
   "docs-guide": {
     "metaTitle": "Start your first task · Codewhale Docs",
@@ -801,7 +804,7 @@
             "codeTerms": true
           },
           {
-            "p": "Keys, endpoints, provider choice, MCP servers, hooks, skills, and extra instruction files always come from your own config, so a cloned repository cannot point Codewhale at its own server or files. Start with `--no-project-config` to ignore a repository's file for one launch."
+            "p": "Provider keys, endpoints and provider choice come from your own config. MCP servers can also come from `.codewhale/mcp.json` after you trust the workspace in user-owned settings; project entries override same-named global entries. Review that executable authority before trusting a repository. See [MCP configuration](/docs/mcp#config)."
           },
           {
             "p": "Project instructions — how an agent should work in this repository — belong in `AGENTS.md` instead. Run `/init` to create one."
@@ -840,14 +843,14 @@
         "title": "Save roles in a Fleet",
         "blocks": [
           {
-            "p": "Your Fleet is the list of roles Codewhale can hand work to, and the model each role uses. Set it up once inside a session:"
+            "p": "Fleet keeps reusable roles and model choices. Connect a model first, then create a role profile inside a session:"
           },
           {
             "code": "/fleet setup\n/fleet\n/fleet saved",
             "lang": "Codewhale"
           },
           {
-            "p": "`/fleet setup` walks you through a role, its model (or “use the session's model”), and where to save it: this project, or your personal profile for every repository. You review the exact file before it is written. `/fleet` shows the members of the selected Fleet, and `/fleet saved` switches between named Fleets."
+            "p": "`/fleet setup` saves one role profile at a time. Choose its model or inherit the session route, then choose this project or your personal profiles. Review the exact file before saving. `/fleet` shows the selected team; `/fleet saved` switches among named teams that already exist. Ask for a task and use `/fleet workers` to watch its session agents."
           },
           {
             "p": "A Fleet only chooses who does the work. What a worker may read, write, or run still comes from your workspace trust, [approval setting](/docs/modes), and sandbox."
@@ -859,17 +862,17 @@
         "title": "Write a workflow",
         "blocks": [
           {
-            "p": "A Workflow is a JavaScript file in your repository's `workflows/` folder. It describes steps; it does not do the work itself. This one reviews two areas in parallel, then combines the findings. Save it as `workflows/docs_readiness.workflow.js`:"
+            "p": "A saved Workflow describes a process the agents can repeat. Create a `workflows/` folder and save this declarative example as `workflows/docs_readiness.workflow.js`. It reviews two areas in parallel, then combines the findings. Replace `src` and `docs` with directories that exist in your project:"
           },
           {
             "code": "export default workflow({\n  \"id\": \"docs-readiness\",\n  \"goal\": \"Review the docs and code for gaps, then summarize the next edit\",\n  \"nodes\": [\n    {\n      \"branch\": {\n        \"id\": \"parallel-review\",\n        \"parallel\": true,\n        \"children\": [\n          { \"agent\": { \"id\": \"code-review\", \"prompt\": \"Inspect src/ for undocumented behavior.\",\n                       \"agent_type\": \"review\", \"mode\": \"read_only\", \"file_scope\": [\"src\"] } },\n          { \"agent\": { \"id\": \"docs-review\", \"prompt\": \"Inspect docs/ for stale or missing steps.\",\n                       \"agent_type\": \"review\", \"mode\": \"read_only\", \"file_scope\": [\"docs\"] } }\n        ]\n      }\n    },\n    {\n      \"reduce\": {\n        \"id\": \"summary\",\n        \"inputs\": [\"code-review\", \"docs-review\"],\n        \"prompt\": \"Combine the findings into the safest next edit.\"\n      }\n    }\n  ]\n});",
             "lang": "workflows/docs_readiness.workflow.js"
           },
           {
-            "p": "Steps can be `agent`, `branch`, `sequence`, `reduce`, `loop_until`, `cond`, `expand`, and `teacher_review`. A workflow file has no file, shell, or network access of its own, and `import`, `fetch`, `eval`, and `async` are rejected. The agents it starts do the real work, under your normal permissions."
+            "p": "This declarative form supports `agent`, `branch`, `sequence`, `reduce`, `loop_until`, `cond`, `expand`, and `teacher_review`. It compiles to a validated plan and rejects constructs such as `import`, `fetch`, `eval`, and `async`. Advanced imperative JavaScript can use asynchronous `task()` and `parallel()` in a sandbox, still without direct filesystem, shell or network access. Workers perform those actions under the active policy."
           },
           {
-            "note": "One run can start up to 1,000 agents, with at most 16 working at once; the rest wait for a slot. Loops must declare `max_iterations`."
+            "note": "Workflow defaults to 16 concurrently live agents; admitted work waits for a slot. There is no default cumulative child limit or structural depth limit. Set positive `[workflow] max_children` or `max_depth` values to limit them. Runtime agent admission and delegation limits apply separately. Loops must declare `max_iterations`."
           }
         ]
       },
@@ -878,17 +881,17 @@
         "title": "Run it",
         "blocks": [
           {
-            "code": "codewhale workflow run docs-readiness --runtime inline\ncodewhale workflow run docs-readiness --goal \"prepare the 1.2 release\" --verify",
+            "code": "codewhale workflow run docs-readiness --runtime inline",
             "lang": "Terminal"
           },
           {
-            "p": "Codewhale finds `workflows/docs_readiness.workflow.js` from the name, checks it, and starts it. `--runtime inline` runs it in this terminal. The default, `tmux`, runs it in a detached tmux session that keeps going after you close the terminal. `--verify` runs the verification gates after a successful finish, and `--fleet <name>` uses a named Fleet instead of the built-in roles."
+            "p": "This command finds `workflows/docs_readiness.workflow.js`, validates it and starts a model-backed run, so connect your provider first. `--runtime inline` waits in this terminal. The default backend requires `tmux` installed on the host and runs in a detached session. Add `--verify` to the launch command for the configured verifier gates after a successful finish. `--fleet <name>` selects an existing named Fleet."
           },
           {
             "p": "To keep the work off your checkout, add `--worktree-repo . --branch <name>`: the run gets its own git worktree and branch."
           },
           {
-            "p": "Inside a session, `/workflow` starts a workflow and `/workflows` lists or cancels the runs in that session."
+            "p": "Inside a session, `/workflow <objective>` drafts a proposal without executing it. To review this saved file, use `/workflow run workflows/docs_readiness.workflow.js`. Wait for the review, then run `/workflow confirm` to start the reviewed draft. `/workflow status` reads run state, `/workflow cancel <run-id>` cancels, and `/workflows` opens the session run dashboard."
           }
         ]
       },
@@ -904,7 +907,7 @@
             "lang": "Terminal"
           },
           {
-            "p": "`lane list`, `lane status`, and `lane interrupt` accept `--json` and print a machine-readable receipt. In a session, `/lane` offers the same controls with the same results."
+            "p": "`lane list`, `lane status`, and `lane interrupt` accept `--json`. Inside a session, use `/lane list`, `/lane status <lane-id>`, or `/lane interrupt <lane-id>`. Logs and tmux attachment use the shell commands above. Slash reads show the last recorded state; CLI list/status reconcile backend exits. Slash interrupt first returns a queued receipt, then its final result."
           }
         ]
       },
@@ -916,11 +919,11 @@
             "p": "When you have a list of separate tasks rather than one plan, write them as a task file and run them as a Fleet run. Each task names its goal, its role, and the paths it may write. [The tutorial](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/FLEET_WORKFLOW_TUTORIAL.md) has a complete `tasks.json`."
           },
           {
-            "code": "codewhale fleet init\ncodewhale fleet run tasks.json --max-workers 4\ncodewhale fleet status\ncodewhale fleet logs <worker-id>\ncodewhale fleet resume <run-id>\ncodewhale fleet stop --all",
+            "code": "codewhale fleet init\ncodewhale fleet run tasks.json --check\ncodewhale fleet run tasks.json --max-workers 4\ncodewhale fleet status\ncodewhale fleet logs <worker-id>\ncodewhale fleet resume <run-id>\ncodewhale fleet stop --all",
             "lang": "Terminal"
           },
           {
-            "p": "`fleet status` counts queued, running, finished, and failed work from this workspace's run record. `fleet resume` picks a run back up after the laptop slept or the manager exited, without starting a new one. For the agents attached to your current session only, use `/fleet workers` (or `/subagents`)."
+            "p": "`fleet run --check` validates without creating a run; omit `--check` to start the foreground manager. Use another terminal for status and controls while it runs. After an interruption, `fleet resume <run-id>` reconciles stale leases and reports their state; it does not restart the manager or launch queued work. To explicitly retry a worker, inspect it and use `codewhale fleet restart <worker-id>`, which runs the manager for that run. `/fleet workers` and `/subagents` show current-session agents, not these durable runs."
           }
         ]
       }
@@ -946,27 +949,74 @@
   },
   "docs-mcp": {
     "metaTitle": "Connect tools with MCP · Codewhale Docs",
-    "metaDescription": "Add Model Context Protocol servers so Codewhale can use more tools, sign in to remote servers, run Codewhale itself as an MCP server, and try code mode.",
+    "metaDescription": "Connect local and remote MCP servers, understand authentication and plugin compatibility, and troubleshoot missing tools.",
     "bodyClassName": "text-ink-soft leading-relaxed",
     "title": "Connect tools with MCP",
-    "lede": "MCP servers give Codewhale more tools — a database, an issue tracker, a browser. Add a local server that Codewhale starts for you, or a remote server by URL. Its tools then go through the same approvals as built-in ones.",
+    "lede": "Connect a local tool server or a remote service through Model Context Protocol. Codewhale discovers its tools and applies your tool permissions and approvals when you use them.",
     "sections": [
       {
         "id": "add",
-        "title": "Add a server",
+        "title": "Try the Cloudflare Docs server",
         "blocks": [
           {
-            "code": "codewhale mcp add git --command \"uvx\" --arg \"mcp-server-git\"\ncodewhale mcp add docs --url \"https://example.com/mcp\"\ncodewhale mcp list\ncodewhale mcp validate",
+            "p": "The public [Cloudflare Documentation server](https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/) provides documentation search and a Pages-to-Workers migration guide. [View its official source](https://github.com/cloudflare/mcp-server-cloudflare/tree/main/apps/docs-vectorize). Add it without credentials:"
+          },
+          {
+            "code": "codewhale mcp add cloudflare-docs --url \"https://docs.mcp.cloudflare.com/mcp\"\ncodewhale mcp tools cloudflare-docs",
             "lang": "Terminal"
           },
           {
-            "p": "`--command` starts a local server over stdio; repeat `--arg` for each argument. `--url` connects to a remote server over Streamable HTTP, with legacy SSE as a fallback. `mcp validate` checks the config and the servers you require."
+            "p": "The tool list should include `search_cloudflare_documentation` and `migrate_pages_to_workers_guide`. In an existing TUI session, run `/mcp reload` to load the new configuration into that session."
+          },
+          {
+            "note": "Checked on November 7, 2026 with published CLI v0.10.2: both commands exited successfully and listed those two tools without credentials. This checked setup and discovery, not tool execution. The [released guide](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/MCP.md) describes that version; the [main source guide](https://github.com/codewhale-hq/Codewhale/blob/main/docs/MCP.md) may include unreleased changes."
           },
           {
             "p": "Inside a session, `/mcp` opens the MCP manager: each server's state, transport, timeouts, errors, and discovered tools. The same actions are available there, for example `/mcp add stdio <name> <command>` and `/mcp add http <name> <url>`."
           },
           {
-            "note": "An MCP server runs with your permissions. Add only servers you trust, as you would any program you install."
+            "note": "Local MCP servers run with the permissions of the Codewhale process; remote calls use the access you grant that service. Add only servers you trust."
+          }
+        ]
+      },
+      {
+        "id": "compatibility",
+        "title": "What can connect",
+        "blocks": [
+          {
+            "rows": [
+              [
+                "Local stdio",
+                "Codewhale starts the executable you configure with `--command`; repeat `--arg` for its arguments. Install the server and its required runtime first."
+              ],
+              [
+                "Remote HTTP / SSE",
+                "Use `--url` for Streamable HTTP, with legacy SSE fallback. A legacy SSE endpoint can use `--transport sse`. A remote entry does not need `command`."
+              ],
+              [
+                "Direct remote authentication",
+                "Your own MCP configuration can use environment-backed headers, bearer tokens or OAuth. OAuth needs compatible server metadata and client registration."
+              ],
+              [
+                "Plugin-contributed MCP",
+                "A reviewed, enabled plugin can supply stdio or remote MCP servers. Plugin MCP supports environment-backed authentication, but plugin-contributed MCP OAuth is unsupported."
+              ],
+              [
+                "Tools, resources and prompts",
+                "Codewhale discovers what the server actually advertises. Resources, templates and prompts are available when the server implements them."
+              ],
+              [
+                "Optional extensions and MCP Apps",
+                "General MCP Apps UI support is not available. Basic MCP transport support does not guarantee support for every optional extension or server."
+              ],
+              [
+                "Server requirements",
+                "Each server keeps its own OS, executable, browser, dependency and account requirements. A local server runs on the computer hosting Codewhale; Computer Use has its own platform limits."
+              ]
+            ]
+          },
+          {
+            "p": "A direct MCP entry does not require a plugin. [Plugins](/plugins) can package MCP tools with instructions and other components; each component still needs compatible dependencies, review and permissions."
           }
         ]
       },
@@ -975,11 +1025,14 @@
         "title": "Sign in to a remote server",
         "blocks": [
           {
-            "p": "For a server that uses OAuth, add it by URL and log in. For a bearer token, keep the token in an environment variable instead of the config file:"
+            "p": "For a directly configured OAuth server, add its real URL, then log in using the name you gave it:"
           },
           {
-            "code": "codewhale mcp login docs\ncodewhale mcp add tracker --url \"https://example.com/mcp\" --bearer-token-env-var TRACKER_TOKEN",
+            "code": "codewhale mcp login <server>\ncodewhale mcp logout <server>",
             "lang": "Terminal"
+          },
+          {
+            "p": "For a bearer token, use `--bearer-token-env-var TOKEN_NAME` when adding the server, and set that variable in the environment launching Codewhale. `env_headers` maps header names to environment variable names. Literal `headers` values do not expand `${TOKEN_NAME}`. Plugin MCP entries cannot use OAuth; configure that server directly instead."
           },
           {
             "p": "An explicit Authorization header always wins: headers from config apply first, then the bearer-token variable, then a stored OAuth login. `codewhale mcp logout <name>` removes the stored login on this machine; the provider may keep its own grant until you revoke it there."
@@ -991,14 +1044,20 @@
         "title": "Edit the config file",
         "blocks": [
           {
-            "p": "Servers live in `~/.codewhale/mcp.json`. `codewhale mcp init` writes a starter file. The `mcpServers` key used by other clients works too, so you can paste an existing entry."
+            "p": "Global servers live in `~/.codewhale/mcp.json`; the legacy `~/.deepseek/mcp.json` is read when the Codewhale file is absent. `codewhale mcp init` writes a starter file. Use an absolute `mcp_config_path` or `CODEWHALE_MCP_CONFIG` to override it. The environment also accepts `DEEPSEEK_MCP_CONFIG`; the Codewhale name wins when both are set."
           },
           {
-            "code": "{\n  \"servers\": {\n    \"example\": {\n      \"command\": \"node\",\n      \"args\": [\"./path/to/your-mcp-server.js\"],\n      \"env\": {},\n      \"disabled\": false\n    }\n  }\n}",
+            "code": "{\n  \"servers\": {\n    \"cloudflare-docs\": {\n      \"url\": \"https://docs.mcp.cloudflare.com/mcp\"\n    }\n  }\n}",
             "lang": "mcp.json"
           },
           {
-            "p": "After editing the file, run `/mcp reload` in the session; no restart is needed. A server starts only when a turn needs one of its tools, unless you mark it `\"required\": true` to connect at startup."
+            "p": "Use either `servers` or its `mcpServers` alias, never both in one file. `env_http_headers` is an alias for `env_headers`. Adapt the server's documented command, arguments and auth fields rather than assuming every client's configuration format is interchangeable."
+          },
+          {
+            "p": "A trusted workspace can add `.codewhale/mcp.json`. Its entries override same-named global servers; the repository cannot grant itself that trust or override your global config path. Explicit global or trusted-project entries win over a colliding plugin server identity."
+          },
+          {
+            "p": "After editing, run `/mcp reload` in the TUI; no restart is needed. Enabled, allowed servers connect at session start by default. Set `\"lazy\": true` on a user-configured server to connect on demand; `\"required\": true` still connects it at startup. Plugin MCP servers have no lazy manifest option. Headless runtimes need a restart after config changes."
           }
         ]
       },
@@ -1007,10 +1066,44 @@
         "title": "Find the tools",
         "blocks": [
           {
-            "p": "Each tool appears to the model as `mcp_<server>_<tool>`: a server named `git` with a `status` tool becomes `mcp_git_status`. `codewhale mcp tools <server>` lists what a server offers. A server that fails to connect or is disabled never shows up as an available tool."
+            "p": "Each tool appears to the model as `mcp_<server>_<tool>`. For this example, documentation search is `mcp_cloudflare-docs_search_cloudflare_documentation`. `codewhale mcp tools <server>` lists discovered tools in its own process; it does not attach those connections to a running session."
           },
           {
-            "p": "MCP tools follow your [approval setting](/docs/modes): listing and reading a server's resources and prompts can run without a prompt when policy allows, and tools with side effects ask first. Full Access does not override repository rules or managed policy."
+            "p": "MCP tools follow your [approval setting](/docs/modes), allow/deny rules and network policy. Whether a call asks first depends on that policy and posture. Full Access does not override repository rules or managed policy."
+          }
+        ]
+      },
+      {
+        "id": "troubleshooting",
+        "title": "When tools do not appear",
+        "blocks": [
+          {
+            "rows": [
+              [
+                "Check configuration",
+                "Run `codewhale doctor` for static path and configuration diagnostics. Shell `codewhale mcp validate` connects enabled, allowed servers in a separate process; it is a live check."
+              ],
+              [
+                "Refresh this session",
+                "TUI `/mcp validate` shows its last snapshot without reconnecting. Use `/mcp reload` after config changes, or `/mcp retry <name>` for one server."
+              ],
+              [
+                "Connected, but missing a tool",
+                "Check `codewhale mcp tools <server>`, the server's advertised tools, `enabled_tools` / `disabled_tools`, and the session's allow/deny rules. A connected transport alone does not mean a tool is available or permitted."
+              ],
+              [
+                "Authentication required",
+                "For a direct OAuth server, run `/mcp login <name>`. For token auth, check that the variable is present in Codewhale's launch environment. A successful login in one process does not attach its transport to another."
+              ],
+              [
+                "Local command fails",
+                "Check the server's executable, arguments, working directory and runtime. On Windows, package runners may need their `.cmd` name. Follow the server vendor's OS and dependency instructions."
+              ],
+              [
+                "Plugin server is absent",
+                "Check the owning plugin's review, trust and enabled state. MCP settings cannot activate an untrusted plugin or bypass a rejected manifest."
+              ]
+            ]
           }
         ]
       },
@@ -1019,14 +1112,14 @@
         "title": "Run Codewhale as an MCP server",
         "blocks": [
           {
-            "p": "Other MCP clients can use Codewhale as a tool server. By default, it exposes only read-only `file_read` and `search` tools."
+            "p": "A client supporting Codewhale's advertised MCP protocol revisions can launch it as a stdio tool server. By default, it exposes only read-only `file_read` and `search` tools."
           },
           {
             "code": "codewhale mcp add-self\ncodewhale mcp tools codewhale",
             "lang": "Terminal"
           },
           {
-            "p": "`add-self` registers `codewhale serve --mcp` over stdio; `codewhale mcp-server` is the equivalent entry point. Write tools stay withheld unless the operator explicitly permits them in server configuration. [Runtime API](/docs/runtime-api) HTTP is a separate transport."
+            "p": "`add-self` registers `codewhale serve --mcp`; `codewhale mcp-server` is the equivalent entry point. This server reads its separate `[server]` settings from the legacy `~/.deepseek/mcp_server.toml`, not the client `mcp.json`. Write or shell tools require explicit exposure and `require_approval = false`; there is no interactive approval channel. [Runtime API](/docs/runtime-api) HTTP is separate from MCP."
           }
         ]
       },
@@ -1034,6 +1127,9 @@
         "id": "code-mode",
         "title": "Compose tool calls with code mode (experimental)",
         "blocks": [
+          {
+            "note": "This section follows the main candidate's source and can include behavior newer than published v0.10.2."
+          },
           {
             "p": "Code mode lets the model write one short JavaScript program that calls several tools, loops, and filters results, instead of making each call as a separate step. Only the program's final value goes back to the model, which keeps long lookups compact. It is on by default — `execute_tools` is advertised from the first request — and MCP and plugin tools compose inside a program the same way built-in ones do. Turning it off does not remove code mode: `execute_tools` goes back to being deferred, and the model can still find it through `tool_search`. To turn it off for one session, or in config:"
           },
@@ -1125,7 +1221,7 @@
               ],
               [
                 "Auto-Review",
-                "Never stops to ask. Calls that are provably safe run. Publishing and destructive background actions are always blocked. Anything else gets one independent model review; high-risk calls and failed reviews are denied, not run."
+                "Reviews tool actions automatically, but may still ask you to resolve a choice. Calls that are provably safe run. Publishing and destructive background actions are always blocked. Anything else gets one independent model review; high-risk calls and failed reviews are denied, not run."
               ],
               [
                 "Full Access",
@@ -1553,7 +1649,7 @@
             "p": "When two sub-agents would edit the same repository, ask for each to work in its own worktree. Codewhale creates a fresh git worktree and branch for that agent beside your repository, under `.codewhale-worktrees/`, so your checkout stays clean until you merge."
           },
           {
-            "p": "A worktree is isolation, not permission: an agent that should write still needs a writing role and the paths it may change. Two agents that claim the same files are stopped before either one edits anything."
+            "p": "A worktree is isolation, not permission: a writer still needs a writing role and the paths it may change. When a new write claim overlaps an active claim in the same checkout, the host refuses the new claimant; it does not rewind or pause the existing writer."
           }
         ]
       },
@@ -1569,7 +1665,7 @@
             "p": "`/subagents` (the same view as `/fleet workers`) lists the agents attached to this session and what each one is doing. Select one to read its transcript."
           },
           {
-            "p": "Sub-agents follow your [approval setting](/docs/modes). In Ask, a call that needs approval appears in your session as a normal prompt while the agent waits. In Auto-Review, each held call gets the same independent review, and nothing prompts you. Every decision you did not make yourself is written to the agent's transcript."
+            "p": "Sub-agents follow your [approval setting](/docs/modes) and may be more restricted. In Ask, a call that needs approval appears in your session while the agent waits. Auto-Review handles tool approvals through policy and eligible independent review; blocked calls or failed reviews are refused. Check the child transcript for decisions and refusal reasons. OS and connected-service permissions may still need your action."
           }
         ]
       },
@@ -1585,16 +1681,16 @@
               ],
               [
                 "Queued plus running",
-                "Up to 1,024; extra launches wait for a slot."
+                "Up to 1,024 admitted by default, configurable with `[subagents] max_admitted`. Admitted agents wait for an execution slot; launches beyond the admission limit are refused."
               ],
               [
                 "Nesting",
-                "A sub-agent may start its own, three levels deep by default, never more than eight."
+                "No default product depth cap. Set `[subagents] max_depth` to an owner-selected limit; child requests cannot widen an inherited restriction."
               ]
             ]
           },
           {
-            "p": "These are ceilings, not targets. A few well-scoped agents with one clear summary beat many overlapping ones. For work that must survive a restart or a sleeping laptop, use a [Fleet run](/docs/fleet) instead."
+            "p": "These are capacity controls, not targets. Keep each agent's scope clear. Durable [Fleet runs](/docs/fleet) record work across manager exits, but recovery is explicit: reconcile stale leases, inspect the result, then choose whether to restart a worker. They do not keep executing while your machine is asleep."
           }
         ]
       }
@@ -1748,9 +1844,6 @@
           },
           {
             "p": "You can also connect from inside Codewhale: press F3 (or type `/provider`), choose a provider, paste the key, then pick a model."
-          },
-          {
-            "note": "In v0.10.0, `auth set --provider deepseek` also switches your default model to DeepSeek Pro. Run `/model` if you want the faster, cheaper model back. Connecting through F3 keeps your current model."
           }
         ]
       },
@@ -1789,7 +1882,7 @@
             "p": "`codewhale auth list` shows every provider Codewhale knows and whether each one has a key. The pattern is the same for all of them: `codewhale auth set --provider <name>`, or that provider's environment variable."
           },
           {
-            "p": "Local runners — Ollama, vLLM, and SGLang — need no key by default, and your prompts stay on your machine. Start the runner, then choose it:"
+            "p": "Local Ollama, vLLM and SGLang servers need no API key by default. Use a loopback endpoint for a model on your machine, then select the model tag it serves:"
           },
           {
             "code": "codewhale auth list\ncodewhale --provider ollama --model <model-tag>",
@@ -2021,10 +2114,10 @@
   },
   "changelog": {
     "metaTitle": "Changelog · Codewhale",
-    "metaDescription": "Codewhale release record: the latest published release, the unreleased source candidate, and the notes for each version, drawn from CHANGELOG.md in the repository.",
+    "metaDescription": "Release notes for Codewhale and its Computer Use plugin, with published versions and upcoming changes.",
     "kicker": "Release record",
     "title": "What changed, and in which version.",
-    "lead": "Two facts sit at the top of this page: the newest published release, and the version the source tree currently declares. Everything below is the repository's own CHANGELOG.md, section by section.",
+    "lead": "Published releases and upcoming changes.",
     "publishedLabel": "Latest published release",
     "publishedValue": "{tag} · published {date}",
     "candidateLabel": "Source candidate",
@@ -2048,15 +2141,15 @@
     "allReleasesLink": "All releases"
   },
   "computer-use": {
-    "metaTitle": "Computer Use · Preview · Codewhale",
-    "metaDescription": "Preview: download and set up Codewhale Computer Use for Mac. Background app control, permission setup, and human Pause and Stop controls.",
+    "metaTitle": "Computer Use · Mac beta · Codewhale",
+    "metaDescription": "Let an agent work in Mac apps while you keep using your computer. Download the notarized Computer Use helper and connect a compatible MCP host.",
     "title": "Computer Use",
-    "lead": "Let Codewhale work across your apps while you keep working. Trust it once on this Mac and stop computer use whenever you want.",
+    "lead": "Let your agent work in Mac apps while you keep using your computer.",
     "publisher": "By Codewhale",
     "download": "Download for Mac",
     "downloadZip": "ZIP archive (used by the in-app updater)",
     "requirements": "macOS 13.5 or later · Apple silicon and Intel",
-    "included": "One app download. No separate Node installation or compiler required.",
+    "included": "The Mac helper includes its runtime. Connect it to Computer Use in your MCP host; host setup is separate.",
     "pendingTitle": "Mac download in preparation",
     "pendingBody": "The public installer will appear here after Apple notarization and release checks are complete.",
     "unavailableTitle": "Download availability could not be checked",
@@ -2074,18 +2167,30 @@
         "body": "Use the setup buttons to open Accessibility and Screen Recording in System Settings. You choose which permissions to grant."
       },
       {
-        "title": "Enable Computer Use",
-        "body": "In Codewhale’s Connectors settings, install or update Computer Use, then review and enable it. Ask it to work in an app. On first use, choose Trust until revoked in the native helper; that trust carries across apps, models, and tasks."
+        "title": "Connect your agent",
+        "body": "Choose the Codewhale setup below for your CLI version. Other compatible MCP hosts use the repository setup guide."
       }
     ],
     "controlsTitle": "Stay in control",
-    "controlsBody": "The compact Codewhale control names the app in use. Pause suspends computer use; Stop computer use ends all current computer sessions. In Settings, choose Turn off under Remembered access to remove the connection’s saved access. Ask for a live preview when you want to watch.",
+    "controlsBody": "After you grant the macOS permissions, standard mode works without per-app prompts. Apps you deny stay off limits; Pause suspends computer use and Stop computer use ends current sessions. Strict approval is optional. Request a live preview when you want to watch.",
     "updateTitle": "Updates when you choose",
     "updateBody": "Choose Check for updates from the app. Before installing an update, it checks the download, Codewhale signature, and Apple notarization, and keeps the previous app for recovery.",
     "help": "Setup and troubleshooting",
     "notes": "Release notes",
     "demo": "See the background check",
-    "source": "Source and other platforms",
-    "platforms": "This download is for Mac. Windows and Linux currently use the source plugin and host-side setup."
+    "source": "View on GitHub",
+    "platforms": "The Mac helper is a beta, and the marketplace plugin supports Mac. Published releases also include an unsigned experimental Windows x64 preview; Linux requires experimental source or Docker setup. Windows and Linux input uses the shared desktop.",
+    "connectTitle": "Connect Codewhale",
+    "connectVersion": "Codewhale 0.10.2 includes an older Computer Use plugin. Installing the catalog entry does not upgrade it. Use the installed Mac helper directly over MCP.",
+    "connectLimit": "Direct MCP adds tools without plugin skills. Do not use it alongside the older built-in plugin. If that plugin is enabled, run /plugin disable computer-use first.",
+    "connectRuntime": "The app includes Node; no separate Node install is needed. If installed elsewhere, set APP to the actual app bundle path.",
+    "connectReload": "In a running terminal session, run /mcp reload, switch to Operate, and ask:",
+    "connectPrompt": "Check Computer Use permissions with request_access. Do not send input.",
+    "connectExpected": "Check for via: app, the helper version and any missing permissions. If the helper is missing, stop and follow the setup hint. This checks the connection and permissions only.",
+    "connectGuide": "MCP setup guide",
+    "contributeTitle": "Help improve Computer Use",
+    "contributeBody": "Improve the docs or test an app workflow and share reproducible results.",
+    "contributeGuide": "Contribution guide",
+    "contributeIssue": "Report an issue"
   }
 }

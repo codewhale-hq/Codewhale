@@ -304,6 +304,7 @@ pub(super) fn add_shell_job_message(app: &mut App, content: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codewhale_engine::tools::shell::ShellTerminationCause;
     use std::path::PathBuf;
 
     fn snapshot(status: ShellStatus, stale: bool) -> ShellJobSnapshot {
@@ -313,6 +314,9 @@ mod tests {
             command: "cargo test".to_string(),
             cwd: PathBuf::from("/tmp/repo"),
             status,
+            started_at: Some(chrono::Utc::now()),
+            cause: stale.then_some(ShellTerminationCause::Unknown),
+            producer_reported: false,
             exit_code: None,
             elapsed_ms: 0,
             stdout_tail: String::new(),

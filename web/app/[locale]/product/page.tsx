@@ -1,9 +1,7 @@
 import Link from "next/link";
-import { Icon, type IconName } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { Status, type StatusTone } from "@/components/status-badge";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
-import { getFacts } from "@/lib/facts";
 import { PRODUCT_COPY } from "@/lib/content/product";
 import { fill, getChrome, getHome, pickText } from "@/lib/i18n/dictionaries";
 import { buildPageMetadata } from "@/lib/page-meta";
@@ -22,26 +20,19 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
   });
 }
 
-// Row order is fixed by PRODUCT_COPY and the home dictionary, so marks and
-// states follow the row, not a translated word.
-const GAIN_ICONS: IconName[] = ["layers", "users", "shield"];
 // Terminal released · local browser ships with it · CodeWhale GUI
-// available · hosted web in development · desktop development build.
-const AVAILABILITY_TONES: StatusTone[] = ["ready", "ready", "ready", "idle", "idle"];
+// available · hosted web in development · desktop development build · Mac beta.
+const AVAILABILITY_TONES: StatusTone[] = ["ready", "ready", "ready", "idle", "idle", "attention"];
 
 /**
  * /product — what Codewhale is and what a person gains, with availability
- * stated per surface. Copy is the `PRODUCT_COPY` content module; counts come
- * from the facts layer; the surface list is the same dictionary the homepage
- * renders, so the two never drift.
+ * stated per surface. Shared copy is the `PRODUCT_COPY` content module.
  */
 export default async function ProductPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
   const t = (text: { en: string; zh: string }) => pickText(text, locale);
-  const facts = await getFacts();
   const home = getHome(locale);
   const terminal = getNativeTerminalCopy(locale);
-  const providerCount = facts.providers.length;
 
   return (
     <>
@@ -74,47 +65,12 @@ export default async function ProductPage({ params }: { params: Promise<{ locale
           </div>
         </Section>
 
-        <Section
-          id="product-gain"
-          title={t(PRODUCT_COPY.gainHeading)}
-          link={
-            <Link href={`/${locale}/models`} className="section-link">
-              {t(PRODUCT_COPY.actions.models)}
-              <Icon name="arrow-right" className="icon icon-flip" />
-            </Link>
-          }
-        >
-          <div className="ruled-cols">
-            {PRODUCT_COPY.gain.map((row, index) => (
-              <div key={row.title.en}>
-                <span className="ruled-icon" aria-hidden="true">
-                  <Icon name={GAIN_ICONS[index] ?? "layers"} />
-                </span>
-                <h3>{t(row.title)}</h3>
-                <p>{fill(t(row.body), { count: providerCount })}</p>
-                <Link className="section-link" href={`/${locale}/docs/${["tools", "mcp", "fleet"][index]}`}>{getChrome(locale).navDocs}</Link>
-              </div>
-            ))}
-          </div>
-        </Section>
-
-        <Section
-          id="product-surfaces"
-          layout="split"
-          title={t(PRODUCT_COPY.surfacesHeading)}
-          scope={t(PRODUCT_COPY.surfacesLede)}
-          link={
-            <Link href={`/${locale}/runtime`} className="section-link">
-              {t(PRODUCT_COPY.surfacesLink)}
-              <Icon name="arrow-right" className="icon icon-flip" />
-            </Link>
-          }
-        >
+        <Section id="product-workflows" layout="split" title={t(PRODUCT_COPY.workHeading)}>
           <dl className="ruled-list">
-            {home.surfaces.map(([name, description]) => (
-              <div key={name}>
-                <dt>{name}</dt>
-                <dd>{description}</dd>
+            {PRODUCT_COPY.workPatterns.map((pattern) => (
+              <div key={pattern.href}>
+                <dt>{t(pattern.title)}</dt>
+                <dd>{t(pattern.body)} <Link className="section-link" href={pattern.href.startsWith("/") ? `/${locale}${pattern.href}` : pattern.href}><code>{pattern.command}</code></Link></dd>
               </div>
             ))}
           </dl>
@@ -124,7 +80,6 @@ export default async function ProductPage({ params }: { params: Promise<{ locale
           id="product-control"
           layout="split"
           title={t(PRODUCT_COPY.controlHeading)}
-          scope={t(PRODUCT_COPY.controlLede)}
         >
           <div className="stack">
             <dl className="ruled-list">
@@ -150,7 +105,6 @@ export default async function ProductPage({ params }: { params: Promise<{ locale
           id="product-availability"
           layout="split"
           title={t(PRODUCT_COPY.availabilityHeading)}
-          scope={t(PRODUCT_COPY.availabilityLede)}
         >
           <dl className="ruled-list">
             {PRODUCT_COPY.availability.map((row, index) => (

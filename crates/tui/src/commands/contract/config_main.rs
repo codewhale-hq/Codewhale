@@ -10,9 +10,9 @@ use super::SharedCommandHost;
 use crate::tui::app::ScreenMode;
 use codewhale_command_contract::config::{
     CommandAccountState, CommandClaudeApplyOutcome, CommandClaudeArtifacts, CommandClaudePlan,
-    CommandConfigContext, CommandLoginContext, CommandLoginStatus, CommandLogoutOutcome,
-    CommandPetContext, CommandPetControl, CommandPetLabel, CommandTrustContext,
-    CommandWorkSurfaceContext, CommandWorkflowSummary, ConfigReply, LogoutFailure, TrustPathError,
+    CommandConfigContext, CommandLoginContext, CommandLoginStatus, CommandPetContext,
+    CommandPetControl, CommandPetLabel, CommandTrustContext, CommandWorkSurfaceContext,
+    CommandWorkflowSummary, ConfigReply, TrustPathError,
 };
 use codewhale_command_contract::types::CommandScreenMode;
 use codewhale_command_contract::types::{CommandRailPanel, CommandWorkSurfacePlacement};
@@ -335,18 +335,22 @@ fn is_enabled_plugin_provider(app: &crate::tui::app::App, provider: &str) -> boo
 impl CommandLoginContext for LoginAdapter<'_> {
     fn login_status(&self) -> CommandLoginStatus {
         use codewhale_secrets::account::{
-            ACCOUNT_API_BASE_ENV, AccountSessionState, AccountSessionStore,
-            DEFAULT_ACCOUNT_API_BASE, secure_account_session_secrets,
+            AccountSessionState, AccountSessionStore, secure_account_session_secrets,
         };
         let app = self.host.app.borrow();
-        let api_base = std::env::var(ACCOUNT_API_BASE_ENV)
-            .ok()
-            .map(|value| value.trim().trim_end_matches('/').to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_ACCOUNT_API_BASE.to_string());
+        let api_base = match codewhale_account_cli::account_api_base(None) {
+            Ok(base) => base,
+            Err(error) => {
+                return CommandLoginStatus {
+                    account: CommandAccountState::Unavailable(error.to_string()),
+                    api_base: String::new(),
+                    provider: app.provider_identity_for_persistence().to_string(),
+                };
+            }
+        };
         let account = match secure_account_session_secrets() {
             Ok(secrets) => {
-                match AccountSessionStore::new(secrets, None, &api_base)
+                match AccountSessionStore::new(secrets, app.config_profile.as_deref(), &api_base)
                     .runtime_info_at(chrono::Utc::now())
                 {
                     Ok(info) => match info.state {
@@ -368,30 +372,6 @@ impl CommandLoginContext for LoginAdapter<'_> {
         }
     }
 
-    fn logout(&mut self) -> Result<CommandLogoutOutcome, LogoutFailure> {
-        let mut app = self.host.app.borrow_mut();
-        let provider = app.provider_identity_for_persistence().to_string();
-        match codewhale_runtime::config::clear_active_provider_api_key(&provider) {
-            Ok(()) => {
-                app.onboarding = crate::tui::app::OnboardingState::Provider;
-                app.onboarding_needs_api_key = true;
-                app.onboarding_provider = app.api_provider;
-                app.onboarding_missing_key_recovery = true;
-                app.api_key_env_only = false;
-                let account = crate::commands::config_main_host::clear_local_account_session();
-                let legacy_sandbox = crate::commands::config_main_host::clear_legacy_sandbox_slot();
-                Ok(CommandLogoutOutcome {
-                    provider,
-                    account,
-                    legacy_sandbox,
-                })
-            }
-            Err(error) => Err(LogoutFailure {
-                provider,
-                error: error.to_string(),
-            }),
-        }
-    }
     fn connect(
         &mut self,
         provider: Option<&str>,
@@ -408,7 +388,7 @@ impl CommandLoginContext for LoginAdapter<'_> {
                 },
             ),
             Some(other) => ConfigReply::error(format!(
-                "Usage: /connect [<provider>]\nUnknown or inactive plugin provider: {other}\nCodewhale account sign-in is `/login`."
+                "Usage: /connect [account|<provider>]\nUnknown or inactive plugin provider: {other}\nCodewhale account sign-in is `/login`."
             )),
         }
     }

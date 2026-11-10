@@ -570,8 +570,8 @@ pub fn settings(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigComma
     }
 }
 
-/// `/mode [act|plan|operate|1|2|3]` and the `/jihua`/`/zidong` aliases.
-/// `/mode [act|plan|operate|1|2|3]` (aliases `/jihua`, `/zidong`).
+/// `/mode [work|plan|1|2]` (aliases `/jihua`, `/zidong`). A retired Operate
+/// spelling selects Work and says so.
 ///
 /// The command owns the alias handling, parse and message composition; the
 /// mode-policy facet applies the selection and reports the outcome.
@@ -599,18 +599,24 @@ pub fn mode(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandRe
             }
         };
     }
+    let retired = if CommandMode::is_retired_operate_alias(arg) {
+        " Operate mode was retired; /fleet runs parallel agents."
+    } else {
+        ""
+    };
     match CommandMode::parse(arg) {
         Some(mode) => {
             let selection = facet.select_mode(mode);
             let label = facet.mode_label(mode);
             match selection {
                 CommandModeSelection::Changed => ConfigCommandResult::with_message_and_action(
-                    format!("Switched to {label} mode."),
+                    format!("Switched to {label} mode.{retired}"),
                     ConfigAction::ModeChanged(mode),
                 ),
-                CommandModeSelection::PersistedSame => {
-                    ConfigCommandResult::message(facet.mode_startup_default_receipt(mode))
-                }
+                CommandModeSelection::PersistedSame => ConfigCommandResult::message(format!(
+                    "{}{retired}",
+                    facet.mode_startup_default_receipt(mode)
+                )),
                 CommandModeSelection::Refused => {
                     ConfigCommandResult::message(facet.setting_locked_mode_message())
                 }
@@ -621,21 +627,26 @@ pub fn mode(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandRe
 }
 
 /// `/mode` usage, shared with the registration metadata.
-pub(super) const MODE_USAGE: &str = "/mode [work|plan|operate|1|2|3]";
+pub(super) const MODE_USAGE: &str = "/mode [work|plan|1|2]";
 
 /// `/pet` usage, shared with the registration metadata.
 pub const PET_USAGE: &str = "/pet [on|off|inspect|status|appearance|style [smooth|pixel]|language [auto|en|zh-Hans|zh-Hant|ja]|window|source|export|sound [on|off]|avatar [whale|cove|braille|pixels|particles|whale-girl|key]|action [name|live]|view [name|live]]";
 
-/// `/connect [<provider>]` — sign in to an enabled plugin provider.
 pub fn connect(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
     if raw.split_whitespace().count() > 1 {
-        return ConfigCommandResult::error("Usage: /connect [<provider>]");
+        return ConfigCommandResult::error("Usage: /connect [account|<provider>]");
     }
     let mut parts = contexts.into_parts();
     let Some(facet) = parts.login.as_deref_mut() else {
         return missing("login");
     };
+    if raw.is_empty() {
+        return ConfigCommandResult::action(ConfigAction::OpenModelConnectionSetup);
+    }
+    if matches!(raw, "account" | "codewhale") {
+        return ConfigCommandResult::action(ConfigAction::StartAccountConnect);
+    }
     let provider = (!raw.is_empty()).then_some(raw);
     let reply = facet.connect(provider);
     to_result(reply, &mut parts, &PreparedTemplates::default())
@@ -889,8 +900,6 @@ fn rail_status(facet: &dyn CommandWorkSurfaceContext) -> String {
 }
 
 /// `/login [status|account|key]`.
-/// `/login [status|account|key]`. The command composes the report; the login
-/// facet returns the typed account state and provider identity.
 pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandResult {
     let raw = arg.map(str::trim).unwrap_or("");
     let token = raw.split_whitespace().next().unwrap_or("");
@@ -899,7 +908,8 @@ pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
         return missing("login");
     };
     match token {
-        "" | "status" => {
+        "" | "account" => ConfigCommandResult::action(ConfigAction::StartAccountLogin),
+        "status" => {
             let status = facet.login_status();
             let account = match status.account {
                 CommandAccountState::SignedOut => {
@@ -923,16 +933,7 @@ pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
                 status.provider
             ))
         }
-        "key" | "provider" => ConfigCommandResult::with_message_and_action(
-            "Open the provider picker to store an API key. Account sign-in is `codewhale login`.",
-            ConfigAction::OpenProviderPicker,
-        ),
-        "account" => ConfigCommandResult::message(
-            "TUI cannot start the browser device flow without freezing the session.\n\
-             Run `codewhale login` (same as `codewhale account login`) in a terminal.\n\
-             Then `/login` to confirm the session landed."
-                .to_string(),
-        ),
+        "key" | "provider" => ConfigCommandResult::action(ConfigAction::OpenProviderPicker),
         other => ConfigCommandResult::error(format!(
             "Usage: /login [status|account|key]\nUnknown argument: {other}\n\
              To sign in to a plugin provider, use `/connect <provider>`."
@@ -940,39 +941,11 @@ pub fn login(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
     }
 }
 
-/// `/logout`. The command composes the confirmation; the login facet clears the
-/// provider key, account session and internal token and reports each result.
 pub fn logout(contexts: CommandContexts<'_>, _arg: Option<&str>) -> ConfigCommandResult {
-    let mut parts = contexts.into_parts();
-    let Some(facet) = parts.login.as_deref_mut() else {
+    if contexts.into_parts().login.is_none() {
         return missing("login");
-    };
-    match facet.logout() {
-        Ok(outcome) => {
-            let mut cleared = vec![format!("provider key ({})", outcome.provider)];
-            match outcome.account {
-                Ok(true) => cleared.push("Codewhale account session".to_string()),
-                Ok(false) => {}
-                Err(error) => cleared.push(format!("account session not cleared ({error})")),
-            }
-            match outcome.legacy_sandbox {
-                Ok(true) => cleared.push("legacy sandbox token".to_string()),
-                Ok(false) => {}
-                Err(error) => cleared.push(format!("legacy sandbox token not cleared ({error})")),
-            }
-            ConfigCommandResult::with_message_and_action(
-                format!(
-                    "Cleared {}. Use `codewhale login` to sign in again, or `codewhale auth set --provider <id>` to store a provider key.",
-                    cleared.join(", ")
-                ),
-                ConfigAction::OpenProviderPicker,
-            )
-        }
-        Err(failure) => ConfigCommandResult::error(format!(
-            "Failed to clear API key for {}: {}",
-            failure.provider, failure.error
-        )),
     }
+    ConfigCommandResult::action(ConfigAction::StartAccountLogout)
 }
 
 /// `/import-claude [--apply]`.
@@ -1286,13 +1259,16 @@ pub fn trust(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandR
     }
 }
 
-/// `/auth xai-device|chatgpt|chatgpt-revoke|claude|claude-revoke|orcarouter|orcarouter-revoke`.
+/// `/auth xai-device|chatgpt|chatgpt-revoke|orcarouter|orcarouter-revoke`.
 /// Pure: selects a capability-launch action, no host observation.
 pub fn auth(arg: Option<&str>) -> ConfigCommandResult {
     let action = match arg.map(str::trim) {
         Some("xai-device") | Some("xai_device") => ConfigAction::StartXaiDeviceLogin,
-        Some("claude") | Some("anthropic") => ConfigAction::StartClaudeLogin,
-        Some("claude-revoke") => ConfigAction::StartClaudeRevoke,
+        Some("claude") | Some("anthropic") | Some("claude-revoke") => {
+            return ConfigCommandResult::error(
+                "Claude subscription sign-in was removed in 0.10.3. Use an Anthropic API key: /provider setup anthropic",
+            );
+        }
         Some("chatgpt") | Some("openai-codex") | Some("openai_codex") => {
             ConfigAction::StartChatgptPkceLogin
         }
@@ -1304,7 +1280,7 @@ pub fn auth(arg: Option<&str>) -> ConfigCommandResult {
         _ => {
             return ConfigCommandResult {
                 message: Some(
-                    "Usage: /auth xai-device|chatgpt|chatgpt-revoke|claude|claude-revoke|orcarouter|orcarouter-revoke"
+                    "Usage: /auth xai-device|chatgpt|chatgpt-revoke|orcarouter|orcarouter-revoke"
                         .to_string(),
                 ),
                 action: None,

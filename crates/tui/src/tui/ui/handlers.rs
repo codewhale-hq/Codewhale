@@ -241,6 +241,18 @@ pub(crate) fn handle_bracketed_paste(app: &mut App, text: &str) {
         // Main-input paste takes the same keyboard ownership as typed text.
         // Otherwise the visible composer command's Enter stays with the dock.
         crate::tui::work_surface::release_focus(app);
+        if text.is_empty() {
+            // A terminal that answers an image-only clipboard with an empty
+            // paste has already proven the person pressed paste; read the
+            // picture ourselves. Windows Terminal sends no event at all in
+            // that case, which is why `/attach` with no path also exists.
+            // A terminal-owned SSH paste has no readable clipboard, so it
+            // falls through instead of flashing a hint for an empty copy.
+            if !app.clipboard.requires_terminal_paste() {
+                app.paste_from_clipboard();
+            }
+            return;
+        }
         app.insert_paste_text(text);
     }
 }
@@ -338,7 +350,7 @@ pub(crate) async fn handle_setup_constitution_model_draft(
     // timeout. The loop polls constitution_draft_cell and delivers the result.
     const DRAFT_TIMEOUT: Duration = Duration::from_secs(20);
     let model_label = app.model_display_label();
-    let client = match CodewhaleClient::new(config) {
+    let client = match crate::active_route_client(config).await {
         Ok(client) => client,
         Err(err) => {
             deliver_constitution_draft_result(
@@ -414,7 +426,7 @@ pub(crate) async fn handle_fleet_profile_model_draft(
     // the wizard interactive with a drafting status.
     const DRAFT_TIMEOUT: Duration = Duration::from_secs(20);
     let model_label = app.model_display_label();
-    let client = match CodewhaleClient::new(config) {
+    let client = match crate::active_route_client(config).await {
         Ok(client) => client,
         Err(err) => {
             deliver_fleet_draft_result(
@@ -1755,7 +1767,7 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
         }
         PlanHandoffChoice::Revise(feedback) => QueuedMessage::new(feedback, None),
         PlanHandoffChoice::Work(posture) => {
-            if !enter_work_for_plan(app, config, engine_handle, posture).await {
+            if !enter_work_for_plan(app, engine_handle, posture).await {
                 return Ok(());
             }
             let staged = seed_plan_handoff_todos(app, &mut plan).await;
@@ -1773,7 +1785,7 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
                     Err(cleanup) => format!("{reason}; {cleanup}"),
                 };
                 app.pending_plan_handoff = Some(plan.clone());
-                apply_mode_update(app, engine_handle, config, AppMode::Plan).await;
+                apply_mode_update(app, engine_handle, AppMode::Plan).await;
                 reopen_plan_handoff(app, &plan, &reason);
                 return Ok(());
             }
@@ -1801,7 +1813,6 @@ pub(crate) async fn apply_plan_handoff_with_checkpoint(
 /// the session then stays where it was and nothing is sent.
 pub(crate) async fn enter_work_for_plan(
     app: &mut App,
-    config: &Config,
     engine_handle: &EngineHandle,
     posture: ApprovalMode,
 ) -> bool {
@@ -1814,7 +1825,7 @@ pub(crate) async fn enter_work_for_plan(
         app.push_status_toast(reason, StatusToastLevel::Warning, Some(8_000));
         return false;
     }
-    apply_mode_update(app, engine_handle, config, AppMode::Agent).await;
+    apply_mode_update(app, engine_handle, AppMode::Agent).await;
     if engine_handle.tx_op.is_closed() {
         app.set_mode(AppMode::Plan);
         return false;
@@ -1858,6 +1869,8 @@ pub(crate) async fn handle_view_events(
                     }
                 }
                 crate::tui::views::CommandPaletteAction::InsertText { text } => {
+                    app.clear_input_recoverable();
+                    app.line_began_with_slash = text.starts_with('/');
                     app.input = text;
                     app.cursor_position = app.input.chars().count();
                     app.status_message = Some(
@@ -1913,6 +1926,170 @@ pub(crate) async fn handle_view_events(
             ViewEvent::OpenTextPager { title, content } => {
                 open_text_pager(app, title, content);
             }
+            ViewEvent::AccountModelSelected {
+                access,
+                api_base,
+                account_id,
+                expected_revision,
+                model,
+            } => {
+                if app.reject_setting_change_while_busy(MessageId::SettingSubjectProvider) {
+                    continue;
+                }
+                begin_first_connection_setup(app);
+                let profile = app.config_profile.clone();
+                let config_for_install = config.clone();
+                let expected_session_id = config
+                    .account_model_access
+                    .read()
+                    .as_ref()
+                    .filter(|existing| existing.expires_at > chrono::Utc::now().timestamp())
+                    .map(|existing| existing.session_id.clone());
+                let result = tokio::task::spawn_blocking(move || -> Result<()> {
+                    anyhow::ensure!(
+                        api_base
+                            == codewhale_config::descriptors::defaults::DEFAULT_CODEWHALE_BASE_URL,
+                        "Account models require the first-party Codewhale endpoint"
+                    );
+                    let client =
+                        codewhale_account_cli::AccountClient::new(profile.as_deref(), None)?;
+                    let status = client.status()?;
+                    anyhow::ensure!(
+                        status.api_base == codewhale_secrets::account::DEFAULT_ACCOUNT_API_BASE
+                            && status.revision == expected_revision
+                            && status.account.account_id.as_deref() == Some(account_id.as_str())
+                            && status.account.session_id.as_deref()
+                                == Some(access.session_id.as_str()),
+                        "The signed-in account changed. Reconnect account models"
+                    );
+                    codewhale_app_server::runtime_api::install_account_model_access(
+                        &config_for_install,
+                        profile.as_deref(),
+                        codewhale_app_server::runtime_api::SetAccountModelAccessRequest {
+                            api_base,
+                            session_id: access.session_id,
+                            expected_session_id,
+                            key: access.credential.expose_secret().to_string(),
+                            expires_at: access.expires_at,
+                        },
+                    )
+                    .map_err(|error| anyhow::anyhow!(error.message))?;
+                    Ok(())
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))
+                .and_then(|result| result);
+                match result {
+                    Ok(()) => {
+                        let identity = config
+                            .builtin_provider_identity(ProviderKind::Codewhale)
+                            .map_err(anyhow::Error::msg)?;
+                        let switched = switch_provider(
+                            app,
+                            engine_handle,
+                            config,
+                            identity,
+                            Some(model.clone()),
+                        )
+                        .await;
+                        if switched {
+                            if app.onboarding == OnboardingState::Provider {
+                                complete_provider_picker_onboarding(app, ProviderKind::Codewhale);
+                                if app.onboarding_needs_api_key {
+                                    continue;
+                                }
+                            }
+                            app.push_status_toast(
+                                app.tr(MessageId::AccountModelsReady)
+                                    .replace("{model}", &model),
+                                StatusToastLevel::Success,
+                                Some(8_000),
+                            );
+                        }
+                    }
+                    Err(error) => app.push_status_toast(
+                        app.tr(MessageId::AccountModelsConnectFailed)
+                            .replace("{error}", &error.to_string()),
+                        StatusToastLevel::Error,
+                        Some(App::STICKY_ERROR_TTL_MS),
+                    ),
+                }
+                app.needs_redraw = true;
+            }
+            ViewEvent::AccountConnectionChoice { account } => {
+                if account.is_some() {
+                    begin_first_connection_setup(app);
+                }
+                match account {
+                    Some(true) => {
+                        app.view_stack
+                            .push(crate::tui::account_login::AccountLoginView::connect(
+                                app.config_profile.clone(),
+                                app.ui_locale,
+                            ))
+                    }
+                    Some(false) => open_provider_picker(app, config, engine_handle).await,
+                    None if app.onboarding == OnboardingState::Provider => {
+                        back_from_provider_onboarding(app)
+                    }
+                    None => {}
+                }
+                app.needs_redraw = true;
+            }
+            ViewEvent::AccountOperationCompleted {
+                signing_out,
+                outcome,
+            } => {
+                use crate::tui::account_login::AccountOperationOutcome;
+                let needs_model = !signing_out
+                    && outcome == AccountOperationOutcome::Complete
+                    && app.onboarding_needs_api_key;
+                let id = match (signing_out, outcome) {
+                    (true, AccountOperationOutcome::Complete) => MessageId::AccountLogoutSuccess,
+                    (true, AccountOperationOutcome::LocalSignOut) => MessageId::AccountLogoutLocal,
+                    (true, AccountOperationOutcome::Cancelled) => MessageId::AccountLogoutCancelled,
+                    (true, _) => MessageId::AccountLogoutFailed,
+                    (false, AccountOperationOutcome::Complete) if needs_model => {
+                        MessageId::AccountLoginNeedsModel
+                    }
+                    (false, AccountOperationOutcome::Complete) => MessageId::AccountLoginSuccess,
+                    (false, AccountOperationOutcome::Cancelled) => MessageId::AccountLoginCancelled,
+                    (false, AccountOperationOutcome::ModelCancelled) => {
+                        MessageId::AccountModelsCancelled
+                    }
+                    (false, AccountOperationOutcome::Expired) => MessageId::AccountLoginExpired,
+                    (false, _) => MessageId::AccountLoginFailed,
+                };
+                let level = match outcome {
+                    AccountOperationOutcome::Failed | AccountOperationOutcome::Expired => {
+                        StatusToastLevel::Error
+                    }
+                    AccountOperationOutcome::Complete => StatusToastLevel::Success,
+                    _ => StatusToastLevel::Info,
+                };
+                if !signing_out
+                    && matches!(
+                        outcome,
+                        AccountOperationOutcome::Cancelled
+                            | AccountOperationOutcome::ModelCancelled
+                            | AccountOperationOutcome::Expired
+                            | AccountOperationOutcome::Failed
+                    )
+                    && app.onboarding == OnboardingState::Provider
+                {
+                    app.onboarding_missing_key_recovery = true;
+                    back_from_provider_onboarding(app);
+                }
+                let message = app
+                    .tr(id)
+                    .replace("{command}", if signing_out { "/logout" } else { "/login" });
+                app.push_status_toast(message, level, Some(8_000));
+                if needs_model {
+                    begin_first_connection_setup(app);
+                    open_model_connection_setup(app, config, engine_handle, false).await;
+                }
+                app.needs_redraw = true;
+            }
             ViewEvent::CopyToClipboard { text, label } => {
                 if text.is_empty() {
                     app.status_message = Some(format!("{label} is empty"));
@@ -1932,7 +2109,7 @@ pub(crate) async fn handle_view_events(
                 approval_grouping_key,
                 persistent_rules,
             } => {
-                apply_approval_decision(
+                let accepted = apply_approval_decision(
                     app,
                     engine_handle,
                     config,
@@ -1948,7 +2125,7 @@ pub(crate) async fn handle_view_events(
                 )
                 .await;
 
-                if timed_out {
+                if timed_out && accepted {
                     app.add_message(HistoryCell::System {
                         content: app.tr(MessageId::ApprovalTimedOutDenied).into_owned(),
                     });
@@ -1960,35 +2137,33 @@ pub(crate) async fn handle_view_events(
                 option,
             } => {
                 use crate::tui::approval::ElevationOption;
-                let result = match option {
-                    ElevationOption::Abort => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Sandbox elevation aborted for {tool_name}"),
-                        });
-                        engine_handle.deny_tool_call(tool_id.clone()).await
-                    }
+                let receipt = match &option {
+                    ElevationOption::Abort => format!("Sandbox elevation aborted for {tool_name}"),
                     ElevationOption::WithNetwork => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Retrying {tool_name} with network access enabled"),
-                        });
+                        format!("Retrying {tool_name} with network access enabled")
+                    }
+                    ElevationOption::WithWriteAccess(_) => {
+                        format!("Retrying {tool_name} with write access enabled")
+                    }
+                    ElevationOption::FullAccess => {
+                        format!("Retrying {tool_name} with full access (no sandbox)")
+                    }
+                };
+                let result = match option {
+                    ElevationOption::Abort => engine_handle.deny_tool_call(tool_id.clone()).await,
+                    ElevationOption::WithNetwork => {
                         let policy = option.to_policy(&app.workspace);
                         engine_handle
                             .retry_tool_with_policy(tool_id.clone(), policy)
                             .await
                     }
                     ElevationOption::WithWriteAccess(_) => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Retrying {tool_name} with write access enabled"),
-                        });
                         let policy = option.to_policy(&app.workspace);
                         engine_handle
                             .retry_tool_with_policy(tool_id.clone(), policy)
                             .await
                     }
                     ElevationOption::FullAccess => {
-                        app.add_message(HistoryCell::System {
-                            content: format!("Retrying {tool_name} with full access (no sandbox)"),
-                        });
                         let policy = option.to_policy(&app.workspace);
                         engine_handle
                             .retry_tool_with_policy(tool_id.clone(), policy)
@@ -1996,8 +2171,11 @@ pub(crate) async fn handle_view_events(
                     }
                 };
                 if result.is_ok() {
+                    app.add_message(HistoryCell::System { content: receipt });
                     note_human_decision_delivered(app, &tool_id);
                     app.retire_action_notices(Some(&tool_id));
+                } else if let Err(error) = result {
+                    app.status_message = Some(format!("Approval was not accepted: {error}"));
                 }
             }
             ViewEvent::UserInputSubmitted { tool_id, response }
@@ -2100,6 +2278,7 @@ pub(crate) async fn handle_view_events(
                         }
                         let _ = engine_handle
                             .send(Op::SyncSession {
+                                expected: None,
                                 control: app.session_sync_control(),
                                 session_id: app.current_session_id.clone(),
                                 messages: app.api_messages.as_ref().clone(),
@@ -2566,16 +2745,19 @@ pub(crate) async fn handle_view_events(
                     .compatibility()
                     .map_or(identity.key.as_str(), |row| row.label);
                 let mut scoped = config.clone();
-                let validation = scoped
-                    .scope_to_provider_identity(&identity)
-                    .and_then(|()| {
-                        codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
+                let validation = match scoped.scope_to_provider_identity(&identity) {
+                    Ok(()) => {
+                        match codewhale_engine::route_runtime::resolve_runtime_route_for_identity(
                             &scoped,
                             &identity,
                             Some(&model),
-                        )
-                    })
-                    .and_then(|route| route.validate().map_err(|err| err.to_string()));
+                        ) {
+                            Ok(route) => route.validate_async().await,
+                            Err(err) => Err(err),
+                        }
+                    }
+                    Err(err) => Err(err),
+                };
                 match validation {
                     Ok(validated) => {
                         app.provider_health.record_success(
@@ -2639,89 +2821,63 @@ pub(crate) async fn handle_view_events(
                 }
                 app.needs_redraw = true;
             }
-            ViewEvent::FleetProfileDraftCommitRequested { draft, scope } => {
-                // A project-scope save is refused (never silently redirected)
-                // when project profiles are disabled for this launch: the file
-                // would be written where nothing loads it.
-                if scope == codewhale_engine::fleet::profile::FleetProfileScope::Project
-                    && !codewhale_engine::fleet::roster::project_agent_profiles_enabled()
-                {
-                    app.set_sticky_status(
-                        tr(app.ui_locale, MessageId::FleetDestProjectDisabledSave).into_owned(),
-                        StatusToastLevel::Error,
-                        None,
-                    );
-                    app.needs_redraw = true;
+            ViewEvent::FleetProfileDraftCommitRequested {
+                editor_id,
+                draft,
+                scope,
+                expected,
+            } => {
+                if app.view_stack.top_kind() != Some(ModalKind::FleetSetup) {
                     continue;
                 }
-                // The TOML is rendered deterministically from the validated
-                // draft and written atomically; the target path is derived
-                // from the sanitized id, never model-chosen.
-                let profile_dir =
-                    match codewhale_engine::fleet::profile::agent_profile_dir_for_scope(
-                        scope,
-                        &app.workspace,
-                    ) {
-                        Ok(dir) => dir,
-                        Err(err) => {
-                            app.set_sticky_status(
-                                format!("Team {} scope is unavailable: {err:#}", scope.label()),
-                                StatusToastLevel::Error,
-                                None,
-                            );
-                            app.needs_redraw = true;
-                            continue;
-                        }
-                    };
-                let target = profile_dir.join(draft.file_name());
-                // A ratified profile must not silently clobber a differently
-                // named existing profile that shares this id (which would also
-                // make the whole agents dir fail to load on the duplicate).
-                // Overwriting the SAME file is fine — that is an intentional
-                // re-draft of this profile.
-                // The collision gate only needs file identities. Accept
-                // otherwise legacy profile fields here so an old, unrelated
-                // profile cannot block saving a current one. Malformed TOML,
-                // unreadable files, and invalid ids still fail closed because
-                // then we cannot prove there is no collision.
-                let existing_profiles =
-                    if scope == codewhale_engine::fleet::profile::FleetProfileScope::Project {
-                        codewhale_engine::fleet::profile::load_workspace_agent_profile_identities(
+                let Some(mut boxed) = app.view_stack.pop() else {
+                    continue;
+                };
+                let matches = boxed
+                    .as_any_mut()
+                    .downcast_mut::<crate::tui::views::fleet_setup::FleetSetupView>()
+                    .is_some_and(|view| view.profile_commit_matches(editor_id));
+                if !matches {
+                    app.view_stack.push_boxed(boxed);
+                    continue;
+                }
+                let result = (|| -> Result<(), String> {
+                    // A project-scope save is refused (never silently redirected)
+                    // when project profiles are disabled for this launch: the file
+                    // would be written where nothing loads it.
+                    if scope == codewhale_engine::fleet::profile::FleetProfileScope::Project
+                        && !codewhale_engine::fleet::roster::project_agent_profiles_enabled()
+                    {
+                        return Err(
+                            tr(app.ui_locale, MessageId::FleetDestProjectDisabledSave).into_owned()
+                        );
+                    }
+                    // The TOML is rendered deterministically from the validated
+                    // draft and written atomically; the target path is derived
+                    // from the sanitized id, never model-chosen.
+                    let profile_dir =
+                        match codewhale_engine::fleet::profile::agent_profile_dir_for_scope(
+                            scope,
                             &app.workspace,
-                        )
-                    } else {
-                        codewhale_engine::fleet::profile::load_agent_profile_identities_from_dir(
-                            &profile_dir,
-                        )
-                    };
-                if let Err(err) = &existing_profiles {
-                    let message = tr(app.ui_locale, MessageId::FleetProfileIdentityVerifyFailed)
-                        .replace("{error}", &format!("{err:#}"));
-                    app.set_sticky_status(message, StatusToastLevel::Error, None);
-                    app.needs_redraw = true;
-                    continue;
-                }
-                let id_conflict = existing_profiles
-                    .into_iter()
-                    .flatten()
-                    .find(|p| p.id.eq_ignore_ascii_case(&draft.id) && p.source != target);
-                if let Some(existing) = id_conflict {
-                    let message = tr(app.ui_locale, MessageId::FleetProfileIdConflict)
-                        .replace("{id}", &draft.id)
-                        .replace("{path}", &existing.source.display().to_string());
-                    app.set_sticky_status(message, StatusToastLevel::Error, None);
-                    app.needs_redraw = true;
-                    continue;
-                }
-                // #4093 AC #5: a profile may only pin a provider the operator
-                // has actually configured/credentialed. The picker already
-                // offers models only from configured providers, but a
-                // model-drafted or hand-edited route (or credentials removed
-                // after the pick) could still name an unconfigured one — which
-                // would fail loudly at launch. Catch it at save time with a
-                // clear message, reusing the SAME predicate the picker uses.
-                if let Some(provider_id) = draft.provider.as_deref() {
-                    let checked =
+                        ) {
+                            Ok(dir) => dir,
+                            Err(err) => {
+                                return Err(format!(
+                                    "Team {} scope is unavailable: {err:#}",
+                                    scope.label()
+                                ));
+                            }
+                        };
+                    let target = profile_dir.join(draft.file_name());
+                    // #4093 AC #5: a profile may only pin a provider the operator
+                    // has actually configured/credentialed. The picker already
+                    // offers models only from configured providers, but a
+                    // model-drafted or hand-edited route (or credentials removed
+                    // after the pick) could still name an unconfigured one — which
+                    // would fail loudly at launch. Catch it at save time with a
+                    // clear message, reusing the SAME predicate the picker uses.
+                    if let Some(provider_id) = draft.provider.as_deref() {
+                        let checked =
                         config
                             .resolve_provider_pin_identity(provider_id)
                             .and_then(|identity| {
@@ -2742,62 +2898,71 @@ pub(crate) async fn handle_view_events(
                                     ))
                                 }
                             });
-                    if let Err(message) = checked {
-                        app.set_sticky_status(message, StatusToastLevel::Error, None);
-                        app.needs_redraw = true;
-                        continue;
+                        checked?;
                     }
-                }
-                let mut txn = codewhale_config::persistence::SetupTransaction::new();
-                txn.stage(target.clone(), draft.render_toml().into_bytes());
-                match txn.commit() {
-                    Ok(()) => {
-                        let roster = std::sync::Arc::new(
-                            codewhale_engine::fleet::identity::load_effective_roster(
-                                &config.fleet_config(),
-                                &app.workspace,
-                                Some(app.extension_plugin_view().as_ref()),
-                            ),
-                        );
-                        let roster_refresh_failed = engine_handle
-                            .try_send(Op::SetFleetRoster { roster })
-                            .is_err();
-                        let zh = app.ui_locale == codewhale_localization::Locale::ZhHans;
-                        app.add_message(HistoryCell::System {
-                            content: if zh {
-                                format!("已保存团队配置：{}", target.display())
-                            } else {
-                                format!(
-                                    "Team {} profile saved: {}",
-                                    scope.label(),
-                                    target.display()
-                                )
-                            },
-                        });
-                        app.status_message = Some(if zh {
-                            format!("已保存团队配置：{}", draft.file_name())
-                        } else if roster_refresh_failed {
-                            format!(
-                                "Team {} profile saved, but the live roster could not refresh; restart before dispatching {}",
-                                scope.label(),
-                                draft.id
-                            )
+                    codewhale_engine::fleet::profile::save_agent_profile_document(
+                        scope,
+                        &app.workspace,
+                        &target,
+                        expected.as_deref(),
+                        &draft.id,
+                        &draft.render_toml(),
+                    )
+                    .map_err(|err| {
+                        if let Some(conflict) = err.downcast_ref::<codewhale_engine::fleet::profile::AgentProfileIdentityConflict>() {
+                            tr(app.ui_locale, MessageId::FleetProfileIdConflict)
+                                .replace("{id}", &conflict.id)
+                                .replace("{path}", &conflict.path.display().to_string())
+                        } else if app.ui_locale == codewhale_localization::Locale::ZhHans {
+                            format!("无法保存团队配置：{err:#}")
                         } else {
-                            format!(
-                                "Team {} profile saved: {}",
-                                scope.label(),
-                                draft.file_name()
-                            )
-                        });
+                            format!("Team profile could not be saved: {err:#}")
+                        }
+                    })?;
+                    let roster = std::sync::Arc::new(
+                        codewhale_engine::fleet::identity::load_effective_roster(
+                            &config.fleet_config(),
+                            &app.workspace,
+                            Some(app.extension_plugin_view().as_ref()),
+                        ),
+                    );
+                    let roster_refresh_failed = engine_handle
+                        .try_send(Op::SetFleetRoster { roster })
+                        .is_err();
+                    let zh = app.ui_locale == codewhale_localization::Locale::ZhHans;
+                    app.add_message(HistoryCell::System {
+                        content: if zh {
+                            format!("已保存团队配置：{}", target.display())
+                        } else {
+                            format!("Team {} profile saved: {}", scope.label(), target.display())
+                        },
+                    });
+                    app.status_message = Some(if zh {
+                        format!("已保存团队配置：{}", draft.file_name())
+                    } else if roster_refresh_failed {
+                        format!(
+                            "Team {} profile saved, but the live roster could not refresh; restart before dispatching {}",
+                            scope.label(),
+                            draft.id
+                        )
+                    } else {
+                        format!(
+                            "Team {} profile saved: {}",
+                            scope.label(),
+                            draft.file_name()
+                        )
+                    });
+                    Ok(())
+                })();
+                if let Err(reason) = result {
+                    if let Some(view) = boxed
+                        .as_any_mut()
+                        .downcast_mut::<crate::tui::views::fleet_setup::FleetSetupView>(
+                    ) {
+                        view.profile_save_failed(reason.clone());
                     }
-                    Err(err) => {
-                        app.status_message =
-                            Some(if app.ui_locale == codewhale_localization::Locale::ZhHans {
-                                format!("无法保存团队配置：{err:#}")
-                            } else {
-                                format!("Team profile could not be saved: {err:#}")
-                            });
-                    }
+                    app.view_stack.push_boxed(boxed);
+                    app.set_sticky_status(reason, StatusToastLevel::Error, None);
                 }
                 app.needs_redraw = true;
             }
@@ -2873,7 +3038,7 @@ pub(crate) async fn handle_view_events(
                 }
             }
             ViewEvent::SetupOpenRemoteControlRequested => {
-                start_remote_control_session(app, config);
+                start_remote_control_session(app, config).await;
             }
             ViewEvent::HotbarDisableRequested => {
                 disable_hotbar(app, config);
@@ -3165,9 +3330,6 @@ pub(crate) async fn handle_view_events(
                     switched,
                 );
                 refresh_config_view_if_open(app, "provider");
-            }
-            ViewEvent::ProviderPickerClaudeOAuthRequested => {
-                app.pending_claude_login = Some(true);
             }
             ViewEvent::ProviderPickerXaiOAuthRequested => {
                 let switched =

@@ -1,20 +1,20 @@
 #[test]
 fn default_active_contract_keeps_discovery_and_core_tools_eager() {
-    // Token diet: agent+workflow (21KB of schema) and get/update_goal
-    // (meaningless without an active goal) stay searchable by default.
-    const EXPECTED_NATIVE: &[&str] = &[
+    const EXPECTED_NATIVE: [&str; 14] = [
         "read",
         "write",
         "edit",
         "file_search",
         "grep_files",
         "bash",
+        "agent",
         "todo_write",
-        "task_shell_wait",
-        "load_skill",
         "create_goal",
-        "context_archive_get",
-        "context_archive_search",
+        "get_goal",
+        "update_goal",
+        "task_shell_wait",
+        "present",
+        "load_skill",
     ];
     assert_eq!(default_active_native_tool_names(), EXPECTED_NATIVE);
 
@@ -52,8 +52,15 @@ fn default_active_contract_keeps_discovery_and_core_tools_eager() {
 #[test]
 fn non_yolo_mode_retains_default_defer_policy() {
     let always_load = HashSet::new();
-    // Token diet: agent stays searchable even on wide surfaces.
-    for core in ["read", "write", "edit", "bash", "todo_write", "load_skill"] {
+    for core in [
+        "read",
+        "write",
+        "edit",
+        "bash",
+        "agent",
+        "todo_write",
+        "load_skill",
+    ] {
         assert!(!should_default_defer_tool(core, &always_load));
     }
     for searchable in [
@@ -137,10 +144,9 @@ fn model_tool_catalog_applies_native_and_mcp_deferral() {
             .and_then(|tool| tool.defer_loading)
     };
 
-    for core in ["read", "write", "edit", "bash"] {
+    for core in ["read", "write", "edit", "bash", "agent"] {
         assert_eq!(defer_loading(core), Some(false));
     }
-    assert_eq!(defer_loading("agent"), Some(true));
     assert_eq!(defer_loading("Git"), Some(true));
     assert_eq!(defer_loading("Run"), Some(true));
     assert_eq!(defer_loading("remember"), Some(true));
@@ -206,10 +212,9 @@ fn capability_compact_surface_defers_nonessential_core_tools() {
             .and_then(|tool| tool.defer_loading)
     };
 
-    for core in ["read", "write", "edit", "bash"] {
+    for core in ["read", "write", "edit", "bash", "agent"] {
         assert_eq!(defer_loading(core), Some(false));
     }
-    assert_eq!(defer_loading("agent"), Some(true));
     assert_eq!(defer_loading("Git"), Some(true));
     assert_eq!(defer_loading("update_plan"), Some(true));
     assert_eq!(defer_loading(TOOL_SEARCH_NAME), Some(false));
@@ -237,7 +242,7 @@ fn capability_full_surface_preserves_small_default_head() {
         crate::model_profile::ToolSurfaceBudget::Full,
     );
 
-    for name in ["read", "write", "edit", "bash"] {
+    for name in ["read", "write", "edit", "bash", "agent"] {
         assert_eq!(
             catalog
                 .iter()
@@ -247,7 +252,7 @@ fn capability_full_surface_preserves_small_default_head() {
             "{name} should stay eager on full tool surfaces"
         );
     }
-    for name in ["agent", "Run"] {
+    for name in ["Run"] {
         assert_eq!(
             catalog
                 .iter()
@@ -473,7 +478,7 @@ async fn measure_production_mode_tool_catalogs() -> serde_json::Value {
     for (mode_name, mode) in [
         ("plan", AppMode::Plan),
         ("act", AppMode::Agent),
-        ("operate", AppMode::Operate),
+        ("operate", AppMode::Agent),
     ] {
         let workspace = tmp.path().join(mode_name);
         fs::create_dir_all(&workspace).expect("create isolated mode workspace");
@@ -516,7 +521,6 @@ async fn measure_production_mode_tool_catalogs() -> serde_json::Value {
                 McpAccess::PassiveSnapshot,
                 route,
                 "",
-                None,
             )
             .await;
         let active = build.surface.active.clone().unwrap_or_default();
@@ -554,8 +558,11 @@ fn metric_tool_names<'a>(
 async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
     let payload = measure_production_mode_tool_catalogs().await;
     let expected_active = HashSet::from([
+        "agent",
         "bash",
         "create_goal",
+        "get_goal",
+        "update_goal",
         "task_shell_wait",
         "edit",
         "file_search",
@@ -565,8 +572,7 @@ async fn runtime_contract_tool_metric_uses_canonical_mode_surfaces() {
         "tool_search",
         "write",
         "load_skill",
-        "context_archive_get",
-        "context_archive_search",
+        "present",
     ]);
 
     for mode in ["plan", "act", "operate"] {
@@ -694,7 +700,7 @@ fn print_mode_runtime_contract_metrics() {
     for (mode_name, mode) in [
         ("plan", AppMode::Plan),
         ("act", AppMode::Agent),
-        ("operate", AppMode::Operate),
+        ("operate", AppMode::Agent),
     ] {
         let prompt = system_prompt_for_mode_with_context_skills_and_session(
             &workspace,
@@ -1008,7 +1014,7 @@ fn representative_runtime_context_fixture_is_stable_and_contains_expected_marker
     ];
     for (stage_index, stage) in stages.iter().enumerate() {
         for (marker_index, marker) in markers.iter().enumerate() {
-            let expected = usize::from(marker_index < stage_index);
+            let expected = usize::from(marker_index > 2 && marker_index < stage_index);
             assert_eq!(
                 stage.flat.matches(marker).count(),
                 expected,
@@ -1098,12 +1104,7 @@ fn measure_unchanged_prompt_skill_discovery() -> (
 #[test]
 fn unchanged_prompt_skill_discovery_baseline_caches_the_second_turn() {
     let (first, second, prompts_byte_identical) = measure_unchanged_prompt_skill_discovery();
-    let first_expected = codewhale_skills::SkillDiscoveryMetrics {
-        root_discovery_calls: 1,
-        directories_visited: 1,
-        skill_md_read_attempts: 1,
-    };
-    assert_eq!(first, first_expected);
+    assert_eq!(first, codewhale_skills::SkillDiscoveryMetrics::default());
     assert_eq!(second, codewhale_skills::SkillDiscoveryMetrics::default());
     assert!(prompts_byte_identical);
 }

@@ -142,7 +142,7 @@ Contract details:
   request's usage lands, so without the carry every mid-turn spawn
   would read cold.
 - **Wire-canonical comparison.** Both sides canonicalize through
-  `tool_to_api_json` (the chat-API shape); internal-only flags
+  `logical_tool_fingerprint_json` (the chat-API shape); internal-only flags
   (`defer_loading`, `allowed_callers`) never reach the wire and cannot
   false-negative the match.
 - **Graceful tiers.** `inherited_full` (whole head) prices shared

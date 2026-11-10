@@ -1,5 +1,5 @@
-import type { RuntimeEventEnvelope } from "./generated/runtime.js";
-export type { RuntimeImageInput, RuntimeEventEnvelope, RuntimeCapabilities, RuntimeExperimentalCapabilities, DynamicToolSpec, DynamicToolSpecOutput, DynamicToolItemStatus, DynamicToolCallParams, DynamicToolCallResult, DynamicToolCallContent, TurnEnvironmentParams } from "./generated/runtime.js";
+import type { RuntimeEventEnvelope, DynamicToolCallParams, DynamicToolCallResult } from "./generated/runtime.js";
+export type { FleetProfileDocument, FleetProfileDocumentKind, ThreadLoadedListParams, ThreadLoadedListResponse, ThreadSetNameParams, ThreadSetNameResponse, RuntimeImageInput, RuntimeEventEnvelope, RuntimeCapabilities, RuntimeExperimentalCapabilities, DynamicToolSpec, DynamicToolSpecOutput, DynamicToolItemStatus, DynamicToolCallParams, DynamicToolCallResult, DynamicToolCallContent, TurnEnvironmentParams } from "./generated/runtime.js";
 
 export type FleetRunId = string;
 export type FleetRunStatus =
@@ -360,6 +360,11 @@ export class RuntimeCapabilityError extends RuntimeApiError {
 
 export class CodeWhaleRuntimeClient {
   constructor(options?: RuntimeClientOptions);
+  deliverDynamicToolResult(
+    call: DynamicToolCallParams,
+    result: DynamicToolCallResult,
+    options?: { signal?: AbortSignal },
+  ): Promise<void>;
   createFleetRun(spec: FleetRunCreateSpec): Promise<CreateFleetRunResponse>;
   startFleetRun(runId: FleetRunId): Promise<StartFleetRunResponse>;
   replayFleetEvents(runId: FleetRunId, options?: FleetEventOptions): Promise<FleetEventReplay>;

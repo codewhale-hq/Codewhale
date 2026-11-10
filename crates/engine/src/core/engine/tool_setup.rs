@@ -27,6 +27,8 @@ impl Engine {
         };
         options.speech_output_dir = self.config.speech_output_dir.clone();
         options.goal_state = Some(self.config.goal_state.clone());
+        options.goal_complete_judge = self.config.goal_complete_judge;
+        options.goal_blocked_judge = self.config.goal_blocked_judge;
         options.verify_tool_enabled = self.config.features.enabled(Feature::Verify);
         options.user_input_limits = self.config.user_input_limits;
         options.request_plugin_install_enabled = self.request_plugin_install_allowed();
@@ -107,6 +109,7 @@ impl Engine {
             // mode gate below the schema boundary blocks write/edit, and
             // the ToolContext carries ShellPolicy::None.
             .with_file_tools()
+            .with_present_tool()
             // Foreground-only shell registration: never add terminal/*
             // lifecycle tools to Plan merely to keep the `bash` identity
             // stable across modes.
@@ -126,7 +129,7 @@ impl Engine {
             .with_runtime_read_only_task_tools()
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
-            .with_goal_tools(self.config.goal_state.clone());
+            .with_goal_tools(self.config.goal_state.clone(), None);
 
         builder = builder
             .with_review_tool(client.clone(), model.to_string())

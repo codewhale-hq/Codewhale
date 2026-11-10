@@ -1,10 +1,62 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
 use super::PluginRegistry;
 use super::discovery::{DiscoveryConfig, discover_with_config};
+
+pub struct FinalizedStagedBundle {
+    retained: Vec<(fs::File, fs::Permissions)>,
+}
+
+impl Drop for FinalizedStagedBundle {
+    fn drop(&mut self) {
+        let failures = self
+            .retained
+            .iter()
+            .filter_map(|(file, permissions)| {
+                super::registry::restore_staged_fixture_target(file, permissions).err()
+            })
+            .collect::<Vec<_>>();
+        if !failures.is_empty() {
+            let message = failures.join("; ");
+            if std::thread::panicking() {
+                eprintln!("failed to restore staged fixture permissions: {message}");
+            } else {
+                panic!("failed to restore staged fixture permissions: {message}");
+            }
+        }
+    }
+}
+
+pub fn finalize_staged_bundle(path: &Path) -> Result<FinalizedStagedBundle, String> {
+    fn retain(path: &Path, retained: &mut Vec<(fs::File, fs::Permissions)>) -> Result<(), String> {
+        let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) {
+            return Err("staged fixture contains a link or reparse point".to_string());
+        }
+        let file = super::registry::open_staged_fixture_target(path)?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_dir() && !metadata.is_file() {
+            return Err("staged fixture contains an unexpected object".to_string());
+        }
+        retained.push((file, metadata.permissions()));
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).map_err(|error| error.to_string())? {
+                retain(&entry.map_err(|error| error.to_string())?.path(), retained)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut fixture = FinalizedStagedBundle {
+        retained: Vec::new(),
+    };
+    retain(path, &mut fixture.retained)?;
+    super::registry::harden_staged_tree(path)?;
+    Ok(fixture)
+}
 
 pub struct DeclarativePluginFixture {
     _temp: TempDir,

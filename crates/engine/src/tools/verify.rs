@@ -268,6 +268,7 @@ struct EvidenceBlock {
 struct CritiqueRun {
     report: CritiqueReport,
     usage: Usage,
+    source_record: crate::cost_status::RuntimeUsageRecord,
     /// Provider stop reason when the critic response was incomplete; billed
     /// usage above still counts, but the partial report must not.
     incomplete_stop_reason: Option<String>,
@@ -317,7 +318,8 @@ elevated reasoning and tries to REFUTE it, returning structured findings (issue,
 suggested fix). Call this when it is worth spending extra thinking: before claiming a non-trivial \
 change complete, after a risky or subtle edit, or when you are unsure the change fully satisfies \
 the requirement and handles edge cases. Skip it for trivial or mechanical changes. This is not a \
-test runner (use run_verifiers) or a code review of an arbitrary target (use review) — it is a \
+test runner (use the Run tool with action=\"verifiers\") or a code review of an arbitrary \
+target (use review) — it is a \
 self-check of whether what you just did is actually correct and complete."
     }
 
@@ -465,6 +467,7 @@ self-check of whether what you just did is actually correct and complete."
                     self.critic_effort,
                     max_tokens,
                     &critique_input,
+                    context.accounting_origin.clone(),
                 ),
             )
             .await?;
@@ -472,6 +475,13 @@ self-check of whether what you just did is actually correct and complete."
         if let Some(reason) = &run.incomplete_stop_reason {
             let mut metadata = json!({ "tool": "verify" });
             crate::cost_status::attach_child_usage_metadata(&mut metadata, &route, &run.usage);
+            crate::cost_status::attach_child_usage_batch_metadata(
+                &mut metadata,
+                &crate::cost_status::RuntimeUsageBatch {
+                    records: vec![run.source_record.clone()],
+                    ..Default::default()
+                },
+            );
             return Ok(ToolResult::error(format!(
                 "Verify critic response incomplete: provider stop reason `{reason}`; the partial critique was not accepted."
             ))
@@ -489,11 +499,55 @@ self-check of whether what you just did is actually correct and complete."
         // Previously this reported only input/output, so a verify child's cache
         // reads *and* cache writes were invisible to the cost audit (#4318).
         crate::cost_status::attach_child_usage_metadata(&mut metadata, &route, &run.usage);
+        crate::cost_status::attach_child_usage_batch_metadata(
+            &mut metadata,
+            &crate::cost_status::RuntimeUsageBatch {
+                records: vec![run.source_record.clone()],
+                ..Default::default()
+            },
+        );
 
         let result = ToolResult::json(&run.report)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         Ok(result.with_metadata(metadata))
     }
+}
+
+pub(crate) async fn judge_claim(
+    client: &CodewhaleClient,
+    model: &str,
+    claim: String,
+    requirement: String,
+    origin: Option<crate::cost_status::NativeUsageOrigin>,
+) -> Result<CritiqueReport, ToolError> {
+    let route = client.effective_route_envelope(model, chrono::Utc::now());
+    let max_tokens = client.effective_max_output_tokens(&route.model);
+    let input = CritiqueInput {
+        claim,
+        requirement: Some(requirement),
+        focus: None,
+        evidence: Vec::new(),
+        no_code_evidence: true,
+    };
+    let run = VERIFY_ACTIVE
+        .scope(
+            (),
+            run_critique(
+                client,
+                model,
+                ReasoningEffort::Max,
+                max_tokens,
+                &input,
+                origin,
+            ),
+        )
+        .await?;
+    if let Some(reason) = run.incomplete_stop_reason {
+        return Err(ToolError::execution_failed(format!(
+            "judge response incomplete: provider stop reason `{reason}`"
+        )));
+    }
+    Ok(run.report)
 }
 
 /// Run one adversarial critic pass. Generic over [`LlmClient`] so tests can
@@ -504,13 +558,21 @@ async fn run_critique<C: LlmClient>(
     effort: ReasoningEffort,
     max_tokens: u32,
     input: &CritiqueInput,
+    origin: Option<crate::cost_status::NativeUsageOrigin>,
 ) -> Result<CritiqueRun, ToolError> {
     let prompt = build_critic_prompt(input, DEFAULT_MAX_EVIDENCE_CHARS);
     let request = build_critic_request(model, effort, max_tokens, prompt);
-    let response = client
-        .create_message(request)
-        .await
-        .map_err(|e| ToolError::execution_failed(format!("verify critic request failed: {e}")))?;
+    let (response, source_record) = super::review_core::accounted_model_call(
+        client,
+        request,
+        origin,
+        crate::cost_status::UsageSpendOwner::Auxiliary,
+        false,
+    )
+    .await
+    .map_err(|error| {
+        ToolError::execution_failed(format!("verify critic request failed: {error}"))
+    })?;
     let incomplete_stop_reason =
         codewhale_models::is_incomplete_stop_reason(response.stop_reason.as_deref()).then(|| {
             codewhale_models::stop_reason_detail(response.stop_reason.as_deref()).to_string()
@@ -519,6 +581,7 @@ async fn run_critique<C: LlmClient>(
     Ok(CritiqueRun {
         report: CritiqueReport::from_model_text(&text),
         usage: response.usage,
+        source_record,
         incomplete_stop_reason,
     })
 }
@@ -961,6 +1024,7 @@ mod tests {
             ReasoningEffort::Max,
             65_536,
             &planted_bug_input(),
+            None,
         )
         .await
         .expect("critique runs");
@@ -1002,6 +1066,7 @@ mod tests {
             ReasoningEffort::High,
             65_536,
             &planted_bug_input(),
+            None,
         )
         .await
         .expect("runs");

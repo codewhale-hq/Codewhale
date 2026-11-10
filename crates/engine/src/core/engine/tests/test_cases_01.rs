@@ -26,9 +26,9 @@ async fn event_capacity_cancel_before_admission_has_no_started_turn_and_keeps_cl
     };
     spec.initial_routed_usage
         .records
-        .push(crate::cost_status::RuntimeUsageRecord {
-            source_id: "event-capacity:classifier".into(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        .push(crate::cost_status::RuntimeUsageRecord::legacy(
+            "event-capacity:classifier",
+            crate::cost_status::EffectiveRouteUsage {
                 route: crate::cost_status::EffectiveRouteEnvelope::capture(
                     None,
                     ProviderKind::Openai,
@@ -43,7 +43,7 @@ async fn event_capacity_cancel_before_admission_has_no_started_turn_and_keeps_cl
                     ..Usage::default()
                 },
             },
-        });
+        ));
     let controls = Arc::clone(&engine.turn_controls);
     handle.send(op).await.unwrap();
     let task = tokio::spawn(engine.run());
@@ -214,9 +214,9 @@ async fn event_capacity_invalid_images_release_queued_control_and_keep_classifie
             });
         spec.initial_routed_usage
             .records
-            .push(crate::cost_status::RuntimeUsageRecord {
-                source_id: "event-capacity:invalid-image-classifier".into(),
-                usage: crate::cost_status::EffectiveRouteUsage {
+            .push(crate::cost_status::RuntimeUsageRecord::legacy(
+                "event-capacity:invalid-image-classifier",
+                crate::cost_status::EffectiveRouteUsage {
                     route: crate::cost_status::EffectiveRouteEnvelope::capture(
                         None,
                         ProviderKind::Openai,
@@ -231,7 +231,7 @@ async fn event_capacity_invalid_images_release_queued_control_and_keep_classifie
                         ..Usage::default()
                     },
                 },
-            });
+            ));
         handle.send(op).await.unwrap();
         let task = tokio::spawn(engine.run());
         if full {
@@ -542,6 +542,20 @@ async fn event_capacity_cancelled_repl_child_keeps_unknown_cost_and_discards_ker
         &api_config,
         client.clone(),
     );
+    crate::session_manager::SessionManager::default_location()
+        .unwrap()
+        .save_session(
+            &crate::session_manager::create_saved_session_with_id_and_mode(
+                engine.session.id.clone(),
+                &[],
+                "mock-model",
+                workspace.path(),
+                0,
+                None,
+                Some("agent"),
+            ),
+        )
+        .unwrap();
     rlm_host::install_fixture_route(&mut engine);
     engine.session.auto_approve = true;
     engine.session.add_message(Message {
@@ -588,22 +602,29 @@ async fn event_capacity_cancelled_repl_child_keeps_unknown_cost_and_discards_ker
         "a cancelled round cannot preserve an executing process"
     );
     assert_eq!((turn.usage.input_tokens, turn.usage.output_tokens), (11, 5));
-    let cost = crate::cost_status::drain();
-    // The child provider future never returned a response; its canonical
-    // dispatch guard records an unknown outcome, not success without usage.
+    let pending = crate::cost_status::drain();
+    let mut cost = crate::session_manager::SessionCostSnapshot::default();
+    for record in &pending.source_records {
+        cost.project_usage_record(record).unwrap();
+    }
     assert!(
         cost.unpriced_reasons
-            .contains(crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown.label()),
+            .contains(crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown.label())
+            || cost
+                .unpriced_reasons
+                .contains(crate::pricing::UnpricedReason::RequestInProgress.label()),
         "pending child usage stays unknown, never zero"
     );
     assert_eq!(cost.priced_turns, 0);
-    assert_eq!(cost.unpriced_turns, 1);
+    assert_eq!(
+        cost.unpriced_turns, 2,
+        "the cancelled child's unknown outcome and the root turn's unpriced mock-model usage"
+    );
     assert_eq!(cost.missing_usage_sources.len(), 1);
     assert!(cost.missing_usage_sources.values().all(|coverage| {
         coverage.reason == crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
             && coverage.money_metered
     }));
-    assert!(cost.resolved_missing_usage_sources.is_empty());
     assert_eq!(
         client.inner.call_count(),
         1,

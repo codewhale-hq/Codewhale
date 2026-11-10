@@ -8,11 +8,11 @@ import type { ChangelogDict } from "../types";
 export const changelog: ChangelogDict = {
   metaTitle: "Changelog · Codewhale",
   metaDescription:
-    "Codewhale release record: the latest published release, the unreleased source candidate, and the notes for each version, drawn from CHANGELOG.md in the repository.",
+    "Release notes for Codewhale and its Computer Use plugin, with published versions and upcoming changes.",
   kicker: "Release record",
   title: "What changed, and in which version.",
   lead:
-    "Two facts sit at the top of this page: the newest published release, and the version the source tree currently declares. Everything below is the repository's own CHANGELOG.md, section by section.",
+    "Published releases and upcoming changes.",
   publishedLabel: "Latest published release",
   publishedValue: "{tag} · published {date}",
   candidateLabel: "Source candidate",

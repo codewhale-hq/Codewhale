@@ -127,14 +127,84 @@ fn reject_unsupported_constructs(source: &str) -> JavascriptWorkflowResult<()> {
     Ok(())
 }
 
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || !byte.is_ascii()
+}
+
+fn skip_source_trivia(source: &str, mut index: usize) -> usize {
+    let bytes = source.as_bytes();
+    loop {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b'/') && bytes.get(index + 1) == Some(&b'/') {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+        } else if bytes.get(index) == Some(&b'/') && bytes.get(index + 1) == Some(&b'*') {
+            index += 2;
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                index += 1;
+            }
+            index = index.saturating_add(2).min(bytes.len());
+        } else {
+            return index;
+        }
+    }
+}
+
+fn workflow_call_parenthesis(source: &str) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = skip_source_trivia(source, index);
+            }
+            b'"' | b'\'' | b'`' => {
+                let quote = bytes[index];
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index = index.saturating_add(2);
+                        continue;
+                    }
+                    let byte = bytes[index];
+                    index += 1;
+                    if byte == quote {
+                        break;
+                    }
+                }
+            }
+            byte if is_identifier_byte(byte) => {
+                let start = index;
+                index += 1;
+                while index < bytes.len() && is_identifier_byte(bytes[index]) {
+                    index += 1;
+                }
+                if &bytes[start..index] == b"workflow" {
+                    let paren = skip_source_trivia(source, index);
+                    if bytes.get(paren) == Some(&b'(') {
+                        return Some(paren);
+                    }
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
 fn extract_workflow_object(source: &str) -> JavascriptWorkflowResult<&str> {
-    let workflow_pos = source
-        .find("workflow")
-        .ok_or(JavascriptWorkflowError::MissingWorkflowCall)?;
-    let open_paren_rel = source[workflow_pos..]
-        .find('(')
-        .ok_or(JavascriptWorkflowError::MissingWorkflowCall)?;
-    let open_paren = workflow_pos + open_paren_rel;
+    let open_paren =
+        workflow_call_parenthesis(source).ok_or(JavascriptWorkflowError::MissingWorkflowCall)?;
     let object_start = source[open_paren + 1..]
         .char_indices()
         .find_map(|(idx, ch)| {
@@ -458,6 +528,7 @@ mod tests {
     #[test]
     fn javascript_workflow_compiles_branch_reduce_to_ir() {
         let source = r#"
+const decoy = 'workflow({ "goal": "decoy", "nodes": [] })';
 export default workflow({
   "id": "js-audit",
   "goal": "Audit a change with parallel agents",
@@ -663,9 +734,12 @@ workflow({
             );
             if expected_role == "explore" {
                 assert!(
-                    leaf.prompt.contains("use `tool_search` with")
-                        && leaf.prompt.contains("Use `grep_files` with"),
-                    "the scout must name content search and its discovery fallback"
+                    !leaf.prompt.contains("tool_search")
+                        && leaf.prompt.contains("Use `grep_files` with")
+                        && leaf.prompt.contains(
+                            "`grep_files` is available directly on your surface; call it without any activation step"
+                        ),
+                    "the scout must search with the content-search tool that is already on its surface"
                 );
                 assert!(
                     leaf.prompt

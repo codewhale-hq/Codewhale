@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 /// recommendation (report text only; nothing is applied).
 pub(crate) fn approval_posture_recommendation(mode: Option<&str>) -> &'static str {
     match mode {
-        Some("acceptEdits") => "auto-review posture (/permissions) matches acceptEdits",
+        Some("acceptEdits") => "Accept Edits posture (/permissions) matches acceptEdits",
         Some("plan") => "plan mode matches Claude's plan default",
         Some("bypassPermissions") => {
             "Full Access (yolo) matches bypassPermissions — confirm you want it"
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn posture_recommendations_cover_the_four_claude_modes() {
-        assert!(approval_posture_recommendation(Some("acceptEdits")).contains("auto-review"));
+        assert!(approval_posture_recommendation(Some("acceptEdits")).contains("Accept Edits"));
         assert!(approval_posture_recommendation(Some("plan")).contains("plan"));
         assert!(approval_posture_recommendation(Some("bypassPermissions")).contains("Full Access"));
         assert!(approval_posture_recommendation(None).contains("Ask"));

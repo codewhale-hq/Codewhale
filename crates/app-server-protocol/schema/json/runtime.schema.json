@@ -18,6 +18,40 @@
       ],
       "description": "Inline bytes only: neither host paths nor remote URLs confer attachment authority."
     },
+    "ThreadLoadedListParams": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      }
+    },
+    "ThreadSetNameParams": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "name"
+      ]
+    },
     "DynamicToolSpec": {
       "type": "object",
       "properties": {
@@ -191,6 +225,31 @@
       ],
       "additionalProperties": true
     },
+    "ThreadLoadedListResponse": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data",
+        "nextCursor"
+      ]
+    },
+    "ThreadSetNameResponse": {
+      "type": "object",
+      "additionalProperties": false
+    },
     "RuntimeCapabilities": {
       "type": "object",
       "properties": {
@@ -222,6 +281,38 @@
           "type": "boolean",
           "default": false
         },
+        "thread_patch_undo_turn_id": {
+          "type": "boolean",
+          "default": false
+        },
+        "thread_scoped_reads": {
+          "type": "boolean",
+          "default": false
+        },
+        "thread_scoped_git_writes": {
+          "type": "boolean",
+          "description": "Git stage, unstage, discard, commit, push and branch accept\n`?thread_id=` and act on that thread's workspace.",
+          "default": false
+        },
+        "thread_scoped_snapshots": {
+          "type": "boolean",
+          "description": "`GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept\n`?thread_id=` and act on that thread's workspace.",
+          "default": false
+        },
+        "thread_scoped_terminals": {
+          "type": "boolean",
+          "description": "`GET /v1/threads/{id}/terminals` lists the thread's live shells, and\n`/v1/threads/{id}/terminals/{terminal_id}/output|input|resize|kill`\ndrive one by the identity the Engine issued it.",
+          "default": false
+        },
+        "worktrees": {
+          "type": "boolean",
+          "description": "`GET`/`POST /v1/worktrees` and `POST /v1/worktrees/remove`.",
+          "default": false
+        },
+        "job_operations": {
+          "type": "boolean",
+          "default": false
+        },
         "thread_shell_consent": {
           "type": "boolean",
           "description": "Explicit per-thread shell opt-in is checked against loaded policy and\ncannot broaden a conversation while it has an active turn.",
@@ -238,6 +329,10 @@
         "turn_operation_lookup": {
           "type": "boolean",
           "description": "Read-only exact accepted-turn lookup by thread and operation key.",
+          "default": false
+        },
+        "watch_event_turns": {
+          "type": "boolean",
           "default": false
         },
         "structured_review_turns": {
@@ -347,26 +442,6 @@
           "description": "Durable, workspace-scoped cross-task Agent Mail endpoints and events.",
           "default": false
         },
-        "terminal_stream": {
-          "type": "boolean",
-          "description": "`GET /v1/terminal/{name}/output` — the resumable byte stream over a\npersistent Engine-owned terminal session, with absolute cursors.",
-          "default": false
-        },
-        "terminal_input": {
-          "type": "boolean",
-          "description": "`POST /v1/terminal/{name}/input` — bytes into the live session.",
-          "default": false
-        },
-        "terminal_resize": {
-          "type": "boolean",
-          "description": "`POST /v1/terminal/{name}/resize` — the window the child draws for.",
-          "default": false
-        },
-        "terminal_kill": {
-          "type": "boolean",
-          "description": "`POST /v1/terminal/{name}/kill` — end the live session.",
-          "default": false
-        },
         "event_stream_resume": {
           "type": "boolean",
           "description": "`GET /v1/threads/{id}/events` puts the durable `seq` on every journal\nframe as the SSE `id:` and resumes from a `Last-Event-ID` header, so a\nbrowser `EventSource` reconnects without a cursor in the query string.",
@@ -381,10 +456,18 @@
         "threads",
         "thread_create_idempotency",
         "thread_idle_precondition",
+        "thread_patch_undo_turn_id",
+        "thread_scoped_reads",
+        "thread_scoped_git_writes",
+        "thread_scoped_snapshots",
+        "thread_scoped_terminals",
+        "worktrees",
+        "job_operations",
         "thread_shell_consent",
         "turns",
         "turn_operation_idempotency",
         "turn_operation_lookup",
+        "watch_event_turns",
         "structured_review_turns",
         "structured_review_version",
         "automation_mutation_preconditions",
@@ -410,13 +493,62 @@
         "skill_detail",
         "plugin_management",
         "agent_mail",
-        "terminal_stream",
-        "terminal_input",
-        "terminal_resize",
-        "terminal_kill",
         "event_stream_resume"
       ],
       "description": "Fixed capability map advertised by `GET /v1/runtime/info`.\n\nAll fields are required on serialization so clients can rely on the shape."
+    },
+    "FleetProfileDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/FleetProfileDocumentKind"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "writable": {
+          "type": "boolean"
+        },
+        "refusal_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "origin",
+        "path",
+        "text",
+        "revision",
+        "writable",
+        "refusal_reason"
+      ]
+    },
+    "FleetProfileDocumentKind": {
+      "type": "string",
+      "enum": [
+        "profile",
+        "fleet"
+      ]
     },
     "RuntimeExperimentalCapabilities": {
       "type": "object",

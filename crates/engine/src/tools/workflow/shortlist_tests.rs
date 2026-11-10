@@ -304,6 +304,7 @@ async fn exact_fleet_frozen_route_survives_a_conflicting_selected_roster() {
         "2026-09-13T00:00:00Z",
         Some(&fixture.config),
         &[],
+        None,
     )
     .expect("preflight exact route against loopback provider");
     select_role(root.path(), "deepseek-v4-pro", "deepseek");
@@ -368,6 +369,7 @@ async fn exact_fleet_changed_provider_endpoint_is_rejected_before_dispatch() {
         "2026-09-13T00:00:00Z",
         Some(&fixture.config),
         &[],
+        None,
     )
     .expect("capture exact route");
     let mut changed = fixture.config.clone();
@@ -412,6 +414,7 @@ async fn native_exact_fleet_builder_keeps_the_plan_read_only_ceiling() {
         "2026-09-13T00:00:00Z",
         Some(&fixture.config),
         &[],
+        None,
     )
     .expect("capture exact builder");
     let source =

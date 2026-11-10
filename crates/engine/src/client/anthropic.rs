@@ -30,22 +30,41 @@ use serde_json::{Value, json};
 
 use crate::llm_client::StreamEventBox;
 use codewhale_config::ProviderKind;
-use codewhale_models::schema_sanitize;
-use codewhale_models::{ContentBlock, MessageRequest, MessageResponse, StreamEvent, Usage};
+use codewhale_models::tool_projection::{
+    RouteToolProjection, ToolSchemaProjection, description_with_constraint_note, forced_tool_name,
+    project_tool_schema,
+};
+use codewhale_models::{
+    ContentBlock, ContentBlockStart, MessageRequest, MessageResponse, StreamEvent, Usage,
+};
 use codewhale_runtime::config::wire_model_for_provider_route;
 use codewhale_runtime::logging;
 
 use super::CodewhaleClient;
 use super::prepared::WireDialect;
 use super::role_placement::{RolePlacement, role_placement};
-use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
+use super::wire::{
+    extract_sse_data_value, from_api_tool_name, next_sse_line, push_sse_event_data,
+    to_api_tool_name,
+};
 
 /// Maximum `cache_control` breakpoints Anthropic accepts per request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 
 impl CodewhaleClient {
-    /// Build the native Messages API request body from a [`MessageRequest`].
+    #[cfg(test)]
     pub(super) fn build_anthropic_body(&self, request: &MessageRequest, stream: bool) -> Value {
+        self.build_anthropic_wire_body(request, stream)
+            .expect("anthropic body builds")
+            .0
+    }
+
+    /// Build the native Messages API request body from a [`MessageRequest`].
+    pub(super) fn build_anthropic_wire_body(
+        &self,
+        request: &MessageRequest,
+        stream: bool,
+    ) -> Result<(Value, Vec<String>)> {
         let model =
             wire_model_for_provider_route(self.api_provider, &self.base_url, &request.model);
         let mut body = json!({
@@ -84,44 +103,62 @@ impl CodewhaleClient {
         repair_dangling_tool_uses(&mut messages);
         body["messages"] = Value::Array(messages);
 
+        let mut omitted_tool_names = Vec::new();
+        let mut omitted_logical_names = Vec::new();
         if let Some(tools) = request.tools.as_ref()
             && !tools.is_empty()
         {
-            body["tools"] = json!(
-                tools
-                    .iter()
-                    .map(|tool| {
-                        // Sanitize the tool's input_schema the same way the
-                        // OpenAI Responses adapter does: strip top-level
-                        // oneOf/anyOf/allOf (which Anthropic rejects), merge
-                        // alternative properties into the root, and surface
-                        // the dropped constraint as a description note so the
-                        // model still knows which parameters are expected.
-                        let mut schema = tool.input_schema.clone();
-                        let constraint_note = schema_sanitize::sanitize_for_responses(&mut schema);
-                        let description = match constraint_note {
-                            Some(note) if tool.description.trim().is_empty() => note,
-                            Some(note) => format!("{}\n\n{}", tool.description.trim(), note),
-                            None => tool.description.clone(),
-                        };
+            let route_projection = RouteToolProjection::Relaxed {
+                strict_honored: !self.is_local_ds4_model(&request.model),
+            };
+            let mut wire_tools = Vec::new();
+            for tool in tools {
+                match project_tool_schema(route_projection, &tool.input_schema, tool.strict) {
+                    ToolSchemaProjection::Exact {
+                        parameters,
+                        strict,
+                        constraint_note,
+                    }
+                    | ToolSchemaProjection::Relaxed {
+                        parameters,
+                        strict,
+                        constraint_note,
+                    } => {
                         let mut value = json!({
-                            "name": tool.name,
-                            "description": description,
-                            "input_schema": schema,
+                            "name": to_api_tool_name(&tool.name),
+                            "description": description_with_constraint_note(
+                                &tool.description,
+                                constraint_note,
+                            ),
+                            "input_schema": parameters,
                         });
-                        if let Some(strict) = tool.strict {
+                        if let Some(strict) = strict {
                             value["strict"] = json!(strict);
                         }
                         if let Some(cache) = tool.cache_control.as_ref() {
                             value["cache_control"] = json!({ "type": cache.cache_type });
                         }
-                        value
-                    })
-                    .collect::<Vec<_>>()
-            );
+                        wire_tools.push(value);
+                    }
+                    ToolSchemaProjection::Omitted { .. } => {
+                        omitted_logical_names.push(tool.name.clone());
+                        omitted_tool_names.push(to_api_tool_name(&tool.name));
+                    }
+                }
+            }
+            if !wire_tools.is_empty() {
+                body["tools"] = json!(wire_tools);
+            }
         }
 
         if let Some(tool_choice) = request.tool_choice.as_ref() {
+            if let Some(name) = forced_tool_name(tool_choice)
+                && omitted_logical_names.iter().any(|omitted| omitted == name)
+            {
+                anyhow::bail!(
+                    "cannot force an omitted tool because its input schema is incompatible with this route"
+                );
+            }
             body["tool_choice"] = anthropic_tool_choice(tool_choice, &model);
         }
 
@@ -277,7 +314,7 @@ impl CodewhaleClient {
         }
 
         apply_anthropic_cache_breakpoints(&mut body);
-        body
+        Ok((body, omitted_tool_names))
     }
 
     /// Non-streaming send through the shared typed retry path
@@ -342,7 +379,6 @@ impl CodewhaleClient {
         let stream_idle_timeout = self.stream_idle_timeout;
         let first_byte = super::stream_entry::first_byte_timeout(stream_idle_timeout);
         let provider_label = self.api_provider.provider().display_name();
-        let suppress_error_details = self.claude_oauth_config.is_some();
         let byte_stream = response.bytes_stream();
 
         let stream = async_stream::stream! {
@@ -425,10 +461,6 @@ impl CodewhaleClient {
 
                     match convert_anthropic_sse_data(&data) {
                         Some(Ok(StreamEvent::Error { error })) => {
-                            if suppress_error_details {
-                                yield Err(anyhow::anyhow!("Claude subscription stream failed"));
-                                return;
-                            }
                             let (error_type, message) = anthropic_error_fields(&error);
                             yield Err(anyhow::anyhow!(
                                 "Anthropic stream error ({error_type}): {message}"
@@ -443,11 +475,7 @@ impl CodewhaleClient {
                             }
                         }
                         Some(Err(e)) => {
-                            if suppress_error_details {
-                                logging::warn("Failed to parse Claude subscription stream event");
-                            } else {
-                                logging::warn(format!("Failed to parse Anthropic SSE event: {e}"));
-                            }
+                            logging::warn(format!("Failed to parse Anthropic SSE event: {e}"));
                         }
                         None => {}
                     }
@@ -497,12 +525,26 @@ fn discard_provider_execution_ids(value: &mut Value) {
     }
 }
 
+fn decode_tool_use_names(value: &mut Value) {
+    let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for block in content.iter_mut() {
+        if block.get("type").and_then(Value::as_str) == Some("tool_use")
+            && let Some(name) = block.get("name").and_then(Value::as_str)
+        {
+            block["name"] = json!(from_api_tool_name(name));
+        }
+    }
+}
+
 fn decode_anthropic_message(mut value: Value) -> Result<MessageResponse> {
     discard_provider_execution_ids(&mut value);
     if let Some(usage) = value.get_mut("usage") {
         *usage = json!(parse_anthropic_usage(usage));
     }
     normalize_redacted_thinking_blocks(&mut value);
+    decode_tool_use_names(&mut value);
     serde_json::from_value(value).context("Failed to decode Anthropic Messages response")
 }
 
@@ -754,7 +796,7 @@ fn anthropic_tool_choice(tool_choice: &Value, model: &str) -> Value {
         Some("auto") => json!({ "type": "auto" }),
         Some("none") => json!({ "type": "none" }),
         Some("any" | "required") => json!({ "type": "any" }),
-        Some(name) => json!({ "type": "tool", "name": name }),
+        Some(name) => json!({ "type": "tool", "name": to_api_tool_name(name) }),
         None => tool_choice.clone(),
     }
 }
@@ -902,7 +944,7 @@ fn content_block_to_anthropic(block: &ContentBlock) -> Option<Value> {
         } => Some(json!({
             "type": "tool_use",
             "id": id,
-            "name": name,
+            "name": to_api_tool_name(name),
             "input": input,
         })),
         ContentBlock::ToolResult {
@@ -1061,7 +1103,16 @@ fn convert_anthropic_sse_data(data: &str) -> Option<Result<StreamEvent>> {
         // Local-only receipt: the legacy path ignored it (not a provider
         // type), so it stays ignored rather than decoding.
         Ok(StreamEvent::ToolProjectionWarning { .. }) => None,
-        Ok(event) => Some(Ok(event)),
+        Ok(mut event) => {
+            if let StreamEvent::ContentBlockStart {
+                content_block: ContentBlockStart::ToolUse { name, .. },
+                ..
+            } = &mut event
+            {
+                *name = from_api_tool_name(name);
+            }
+            Some(Ok(event))
+        }
         Err(error) => {
             // Cold path, reached only when direct decode fails: invalid JSON
             // and unknown types keep their exact legacy outcomes.

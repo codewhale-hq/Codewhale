@@ -414,26 +414,9 @@ pub struct CommandLoginStatus {
     pub provider: String,
 }
 
-/// `/logout` result; each entry is `Ok(true)` cleared, `Ok(false)` absent,
-/// `Err` the host error text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandLogoutOutcome {
-    pub provider: String,
-    pub account: Result<bool, String>,
-    pub legacy_sandbox: Result<bool, String>,
-}
-
-/// Failure to clear the active provider key during `/logout`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogoutFailure {
-    pub provider: String,
-    pub error: String,
-}
-
 /// Account/provider session state for `/login` and `/logout`.
 pub trait CommandLoginContext {
     fn login_status(&self) -> CommandLoginStatus;
-    fn logout(&mut self) -> Result<CommandLogoutOutcome, LogoutFailure>;
     /// `/connect [<provider>]` — plugin provider sign-in.
     fn connect(&mut self, provider: Option<&str>) -> ConfigReply;
     /// `/disconnect <provider>` — plugin provider sign-out.

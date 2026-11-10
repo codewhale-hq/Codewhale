@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse } from "../src/lib.mjs";
+import { ThreadStore, validateBridgeConfig, isApprovalResponse, isDenyResponse, sanitizeFilename, formatPublicError, createStreamReply } from "../src/lib.mjs";
 
 // ─── ThreadStore ─────────────────────────────────────────────────
 
@@ -163,4 +163,68 @@ test("WeCom accepted turn origin survives reload and cannot transfer to a later 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ─── sanitizeFilename ────────────────────────────────────────────
+
+test("sanitizeFilename strips path components and keeps the name", () => {
+  const risky = sanitizeFilename("../../etc/passwd");
+  assert.ok(!risky.includes("/"), risky);
+  assert.ok(!risky.startsWith("."), risky);
+  assert.equal(sanitizeFilename("clip final.mp4"), "clip final.mp4");
+  assert.equal(sanitizeFilename("  .hidden. "), "hidden");
+  assert.equal(sanitizeFilename("", "fallback.bin"), "fallback.bin");
+  const long = "a".repeat(500) + ".mp4";
+  assert.ok(sanitizeFilename(long).length <= 120);
+});
+
+// ─── formatPublicError ───────────────────────────────────────────
+
+test("formatPublicError renders WeCom error objects", () => {
+  assert.equal(
+    formatPublicError({ errcode: 846608, errmsg: "stream message update expired (>10 minutes)" }),
+    "errcode=846608: stream message update expired (>10 minutes)"
+  );
+  assert.equal(formatPublicError({ errcode: 40011 }), "errcode=40011:");
+});
+
+test("formatPublicError keeps messages and plain strings", () => {
+  assert.equal(formatPublicError(new Error("boom")), "boom");
+  assert.equal(formatPublicError("boom"), "boom");
+  assert.equal(formatPublicError(undefined), "unknown error");
+  assert.match(formatPublicError({ no: "msg" }), /no.*msg|unknown/);
+});
+
+// ─── createStreamReply ───────────────────────────────────────────
+
+test("createStreamReply rotates the stream after rotateMs", async () => {
+  const calls = [];
+  const client = { replyStream: async (frame, id, text, finish) => calls.push({ id, text, finish }) };
+  let clock = 1_000_000;
+  const ids = ["s1", "s2", "s3"];
+  const streamer = createStreamReply(client, {}, { rotateMs: 60_000, now: () => clock, genId: () => ids.shift() });
+  await streamer.update("part-1", false);
+  clock += 61_000; // past the rotation window
+  await streamer.update("part-2", false);
+  const finished = calls.filter((c) => c.finish);
+  assert.equal(calls[0].id, "s1");
+  assert.equal(calls.length, 3); // finalize s1 + update s2
+  assert.ok(finished[0].text.includes("part-2")); // finalize carries the accumulated text
+  assert.equal(calls[2].id, "s2");
+});
+
+test("createStreamReply reopens once when an update is rejected", async () => {
+  let rejectFirst = true;
+  const calls = [];
+  const client = {
+    replyStream: async (frame, id, text, finish) => {
+      if (rejectFirst) { rejectFirst = false; throw { errcode: 846608, errmsg: "expired" }; }
+      calls.push({ id, text, finish });
+    }
+  };
+  const ids = ["s1", "s2"];
+  const streamer = createStreamReply(client, {}, { genId: () => ids.shift() });
+  await streamer.update("hello", false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].id, "s2");
 });

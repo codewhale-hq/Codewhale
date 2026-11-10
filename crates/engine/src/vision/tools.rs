@@ -17,7 +17,7 @@ use codewhale_runtime::config::VisionModelConfig;
 
 pub struct ImageAnalyzeTool {
     config: VisionModelConfig,
-    client: reqwest::Client,
+    client: anyhow::Result<reqwest::Client>,
     route_client: Option<CodewhaleClient>,
 }
 
@@ -53,15 +53,26 @@ impl ImageAnalyzeTool {
         config: VisionModelConfig,
         route_client: Option<CodewhaleClient>,
     ) -> Self {
-        let client = codewhale_release::tls::reqwest_client_builder()
-            // Bound only the connect handshake. A client- or request-level
-            // `read_timeout` would start counting at `send()` and never
-            // reset before the response headers, quietly re-introducing a
-            // total deadline on the upload + long non-streaming generation;
-            // the total bound lives in VISION_REQUEST_ENVELOPE instead.
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = (|| -> anyhow::Result<reqwest::Client> {
+            let builder = crate::platform_client_builder()
+                // Bound only the connect handshake. A client- or request-level
+                // `read_timeout` would start counting at `send()` and never
+                // reset before the response headers, quietly re-introducing a
+                // total deadline on the upload + long non-streaming generation;
+                // the total bound lives in VISION_REQUEST_ENVELOPE instead.
+                .connect_timeout(Duration::from_secs(10));
+            let builder = match config.model_http_policy.as_ref() {
+                Some(policy) => policy.configure(
+                    builder,
+                    config
+                        .base_url
+                        .as_deref()
+                        .unwrap_or("https://api.openai.com/v1"),
+                )?,
+                None => builder,
+            };
+            Ok(builder.build()?)
+        })();
         Self {
             config,
             client,
@@ -80,21 +91,46 @@ impl ImageAnalyzeTool {
 
     fn resolve_image_path(workspace: &Path, image_path: &str) -> Result<PathBuf, ToolError> {
         let image_path_buf = Path::new(image_path);
-        if image_path_buf.components().any(|c| {
-            matches!(
-                c,
-                Component::Prefix(_) | Component::RootDir | Component::ParentDir
-            )
-        }) {
-            return Err(ToolError::execution_failed(
-                "image_path must be a relative path within the workspace and cannot escape it.",
-            ));
-        }
-
         let workspace = workspace.canonicalize().map_err(|e| {
             ToolError::execution_failed(format!("Failed to resolve workspace path: {e}"))
         })?;
-        let candidate = workspace.join(image_path_buf);
+        // An absolute spelling is admitted on the same terms as a relative
+        // one: it must canonicalize to a location inside the workspace (the
+        // containment check below). Screenshot and attachment receipts hand
+        // the model absolute paths, and refusing those outright sent it
+        // through a failed call to learn the relative form.
+        let candidate = if image_path_buf.is_absolute() {
+            // The same lexical traversal guard the relative branch applies
+            // (minus `Prefix`/`RootDir`, which are inherent to a valid
+            // absolute spelling — a Windows drive or UNC path always
+            // carries a prefix): judged before canonicalize so a
+            // non-existent escaping target gets the containment refusal
+            // too, not a resolve error.
+            if image_path_buf
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+            {
+                return Err(ToolError::execution_failed(
+                    "image_path must resolve within the workspace and cannot escape it.",
+                ));
+            }
+            image_path_buf.to_path_buf()
+        } else {
+            // `RootDir` cannot appear in a Unix-relative path but can in a
+            // Windows rooted one (`\foo`): keep it refused here so the
+            // containment check below is not the only line of defense.
+            if image_path_buf.components().any(|c| {
+                matches!(
+                    c,
+                    Component::Prefix(_) | Component::RootDir | Component::ParentDir
+                )
+            }) {
+                return Err(ToolError::execution_failed(
+                    "image_path must resolve within the workspace and cannot escape it.",
+                ));
+            }
+            workspace.join(image_path_buf)
+        };
         let resolved = candidate.canonicalize().map_err(|e| {
             ToolError::execution_failed(format!("Failed to resolve image file: {e}"))
         })?;
@@ -279,6 +315,9 @@ impl ToolSpec for ImageAnalyzeTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+        let client = self.client.as_ref().map_err(|error| {
+            ToolError::execution_failed(format!("Vision HTTP transport unavailable: {error:#}"))
+        })?;
         let image_path = required_str(&input, "image_path")?;
         let prompt = input
             .get("prompt")
@@ -318,7 +357,7 @@ impl ToolSpec for ImageAnalyzeTool {
             let response = with_retry(
                 &retry_config,
                 || {
-                    let client = self.client.clone();
+                    let client = client.clone();
                     let url = url.clone();
                     let api_key = api_key.clone();
                     let payload = payload.clone();
@@ -418,6 +457,7 @@ mod tests {
 
     fn fake_config() -> VisionModelConfig {
         VisionModelConfig {
+            model_http_policy: None,
             model: "test-vision-model".to_string(),
             api_key: Some("test-key".to_string()),
             base_url: Some("https://example.invalid/v1".to_string()),
@@ -444,6 +484,109 @@ mod tests {
         let tool = ImageAnalyzeTool::new(fake_config());
         assert_eq!(tool.name(), "image_analyze");
         assert!(tool.capabilities().contains(&ToolCapability::ReadOnly));
+    }
+
+    /// Screenshot and attachment receipts hand the model absolute paths,
+    /// while the refusal demanded a relative spelling — so the first
+    /// `image_analyze` call with the absolute form of an in-workspace file
+    /// failed and the model paid one wasted call to learn the relative
+    /// form. An absolute spelling that resolves inside the workspace is
+    /// the same file as its relative form and is admitted on the same
+    /// containment terms.
+    #[test]
+    fn resolve_image_path_accepts_absolute_paths_inside_the_workspace() {
+        let tmp = tempdir().expect("tempdir");
+        let attachments = tmp.path().join("attachments").join("computer_use");
+        std::fs::create_dir_all(&attachments).expect("attachments dir");
+        let image = attachments.join("shot.png");
+        std::fs::write(&image, b"not a real png").expect("fixture");
+        let canonical_workspace = tmp.path().canonicalize().expect("canonical workspace");
+
+        let via_absolute =
+            ImageAnalyzeTool::resolve_image_path(tmp.path(), &image.to_string_lossy())
+                .expect("absolute in-workspace path resolves");
+        let via_relative =
+            ImageAnalyzeTool::resolve_image_path(tmp.path(), "attachments/computer_use/shot.png")
+                .expect("relative path resolves");
+        assert_eq!(via_absolute, via_relative);
+        assert!(via_absolute.starts_with(&canonical_workspace));
+
+        // A real file outside the workspace, reached by `..` traversal.
+        let outside = tempdir().expect("outside tempdir");
+        let outside_image = outside.path().join("outside.png");
+        std::fs::write(&outside_image, b"not a real png").expect("fixture");
+        let traversed = tmp
+            .path()
+            .join("..")
+            .join(outside.path().file_name().expect("named tempdir"))
+            .join("outside.png");
+        let err = ImageAnalyzeTool::resolve_image_path(tmp.path(), &traversed.to_string_lossy())
+            .expect_err("absolute traversal out of the workspace is refused");
+        assert!(err.to_string().contains("within the workspace"), "{err}");
+
+        // A traversal whose target does NOT exist must get the same
+        // containment refusal (judged lexically before canonicalize), not
+        // a resolve error — the boundary message is what tells the model
+        // how to fix the spelling.
+        let missing = tmp.path().join("..").join("no-such-dir").join("x.png");
+        let err = ImageAnalyzeTool::resolve_image_path(tmp.path(), &missing.to_string_lossy())
+            .expect_err("absolute traversal to a missing file is refused");
+        assert!(
+            err.to_string().contains("within the workspace"),
+            "the containment message fires even when canonicalize would fail: {err}"
+        );
+    }
+
+    /// Windows absolute spellings of the same in-workspace file: a
+    /// drive-absolute path and the canonical verbatim (`\\?\`) form both
+    /// necessarily carry a `Prefix` component, so the lexical guard must
+    /// not treat the prefix as an escape attempt — containment stays with
+    /// the canonicalized check, including the outside-workspace negative.
+    /// (Runs natively on Windows only; the non-gated test above exercises
+    /// the same admission with whatever absolute shape the platform
+    /// produces.)
+    #[cfg(windows)]
+    #[test]
+    fn resolve_image_path_accepts_windows_absolute_spellings_inside_the_workspace() {
+        let tmp = tempdir().expect("tempdir");
+        let attachments = tmp.path().join("attachments").join("computer_use");
+        std::fs::create_dir_all(&attachments).expect("attachments dir");
+        let image = attachments.join("shot.png");
+        std::fs::write(&image, b"not a real png").expect("fixture");
+        let canonical_workspace = tmp.path().canonicalize().expect("canonical workspace");
+
+        // Drive-absolute (`C:\…`), the shape screenshot receipts hand over.
+        let via_drive = ImageAnalyzeTool::resolve_image_path(tmp.path(), &image.to_string_lossy())
+            .expect("drive-absolute in-workspace path resolves");
+        assert!(via_drive.starts_with(&canonical_workspace));
+
+        // Canonical verbatim (`\\?\C:\…`), the shape `canonicalize` itself
+        // returns.
+        let verbatim = canonical_workspace
+            .join("attachments")
+            .join("computer_use")
+            .join("shot.png");
+        let via_verbatim =
+            ImageAnalyzeTool::resolve_image_path(tmp.path(), &verbatim.to_string_lossy())
+                .expect("verbatim in-workspace path resolves");
+        assert_eq!(via_verbatim, via_drive);
+
+        // The outside-workspace negative survives the prefix admission: a
+        // real file outside the workspace still gets the containment
+        // refusal, not a lexical one. The fixture is a second tempdir —
+        // outside the workspace by construction — so the negative hits the
+        // containment check deterministically instead of depending on a
+        // system file existing for `canonicalize` to reach.
+        let outside_dir = tempdir().expect("outside tempdir");
+        let outside_image = outside_dir.path().join("outside.png");
+        std::fs::write(&outside_image, b"not a real png").expect("outside fixture");
+        let outside =
+            ImageAnalyzeTool::resolve_image_path(tmp.path(), &outside_image.to_string_lossy())
+                .expect_err("absolute path outside the workspace must reject");
+        assert!(
+            outside.to_string().contains("within the workspace"),
+            "{outside}"
+        );
     }
 
     #[test]
@@ -552,6 +695,7 @@ mod tests {
         ] {
             let tool = ImageAnalyzeTool::new_with_route_client(
                 VisionModelConfig {
+                    model_http_policy: None,
                     model: "fixture/vision".to_string(),
                     api_key: Some("fixture-vision-key".to_string()),
                     base_url: Some(vision_base.to_string()),
@@ -599,6 +743,7 @@ mod tests {
         .expect("bound vLLM client");
         let tool = ImageAnalyzeTool::new_with_route_client(
             VisionModelConfig {
+                model_http_policy: None,
                 model,
                 api_key: None,
                 base_url: Some(base_url),
@@ -612,9 +757,11 @@ mod tests {
 
     #[tokio::test]
     async fn execute_rejects_absolute_path() {
-        // Trust-boundary pin: image_path must stay inside the workspace
-        // — an absolute path or a `..`-traversing path must reject
-        // before any base64 / API call.
+        // Trust-boundary pin: image_path must stay inside the workspace —
+        // an absolute path outside it must be rejected (as must a
+        // `..`-traversing path), while an absolute path resolving inside
+        // the workspace is admitted through the same canonical containment
+        // as the relative spelling of the same file.
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
         let tool = ImageAnalyzeTool::new(fake_config());
@@ -626,10 +773,9 @@ mod tests {
         let err = tool
             .execute(json!({"image_path": outside_workspace}), &ctx)
             .await
-            .expect_err("absolute path must reject");
+            .expect_err("absolute path outside the workspace must reject");
         assert!(
-            err.to_string()
-                .contains("relative path within the workspace"),
+            err.to_string().contains("within the workspace"),
             "error must call out the workspace boundary; got {err}"
         );
     }
@@ -644,8 +790,7 @@ mod tests {
             .await
             .expect_err("`..`-traversal must reject");
         assert!(
-            err.to_string()
-                .contains("relative path within the workspace"),
+            err.to_string().contains("within the workspace"),
             "error must call out the workspace boundary; got {err}"
         );
     }
@@ -685,6 +830,7 @@ mod tests {
 
     fn tool_with_base_url(base_url: String) -> ImageAnalyzeTool {
         ImageAnalyzeTool::new(VisionModelConfig {
+            model_http_policy: None,
             model: "test-vision-model".to_string(),
             api_key: Some("test-key".to_string()),
             base_url: Some(base_url),

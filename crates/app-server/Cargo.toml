@@ -8,26 +8,41 @@ repository.workspace = true
 description = "App-server transport for Codewhale runtime integrations"
 # `codewhale app-server` is owned by codewhale-cli; this crate is library-only.
 autobins = false
+exclude = [
+  "tests/**",
+  "src/**/tests.rs",
+  "src/**/tests/**",
+  "src/**/*_tests.rs",
+  "src/**/*test_support.rs",
+  "src/runtime_web/app.test.mjs",
+  "src/runtime_web/orca-evidence.html",
+]
 
 [lints]
 workspace = true
 
+[features]
+default = []
+test-support = ["codewhale-engine/test-support"]
+
 [dependencies]
-codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.2" }
+codewhale-account-cli = { path = "../account-cli", version = "0.10.3" }
+codewhale-app-server-protocol = { path = "../app-server-protocol", version = "0.10.3" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-codewhale-agent = { path = "../agent", version = "0.10.2" }
-codewhale-config = { path = "../config", version = "0.10.2" }
-codewhale-core = { path = "../core", version = "0.10.2" }
-codewhale-hooks = { path = "../hooks", version = "0.10.2" }
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-protocol = { path = "../protocol", version = "0.10.2" }
-codewhale-release = { path = "../release", version = "0.10.2" }
-codewhale-runtime = { path = "../runtime", version = "0.10.2" }
-codewhale-state = { path = "../state", version = "0.10.2" }
+codewhale-agent = { path = "../agent", version = "0.10.3" }
+codewhale-config = { path = "../config", version = "0.10.3" }
+codewhale-core = { path = "../core", version = "0.10.3" }
+codewhale-hooks = { path = "../hooks", version = "0.10.3" }
+codewhale-palette = { path = "../palette", version = "0.10.3", default-features = false }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-protocol = { path = "../protocol", version = "0.10.3" }
+codewhale-release = { path = "../release", version = "0.10.3" }
+codewhale-runtime = { path = "../runtime", version = "0.10.3" }
+codewhale-state = { path = "../state", version = "0.10.3" }
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 rustls.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -36,11 +51,74 @@ tracing.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 uuid.workspace = true
 sha2.workspace = true
+async-stream = "0.3.6"
+base64 = "0.23.1"
+clap.workspace = true
+codewhale-command-contract = { path = "../command-contract", version = "0.10.3" }
+codewhale-dependencies = { path = "../dependencies", version = "0.10.3" }
+codewhale-engine = { path = "../engine", version = "0.10.3" }
+codewhale-error-taxonomy = { path = "../error-taxonomy", version = "0.10.3" }
+codewhale-execpolicy = { path = "../execpolicy", version = "0.10.3" }
+codewhale-lane = { path = "../lane", version = "0.10.3" }
+codewhale-localization = { path = "../localization", version = "0.10.3" }
+codewhale-lsp = { path = "../lsp", version = "0.10.3" }
+codewhale-mcp = { path = "../mcp", version = "0.10.3" }
+codewhale-memory = { path = "../memory", version = "0.10.3" }
+codewhale-models = { path = "../models", version = "0.10.3" }
+codewhale-net = { path = "../net", version = "0.10.3" }
+codewhale-notify = { path = "../notify", version = "0.10.3" }
+codewhale-plugins = { path = "../plugins", version = "0.10.3" }
+codewhale-sandbox = { path = "../sandbox", version = "0.10.3" }
+codewhale-secrets = { path = "../secrets", version = "0.10.3" }
+codewhale-skill-install = { path = "../skill-install", version = "0.10.3" }
+codewhale-skills = { path = "../skills", version = "0.10.3" }
+codewhale-snapshot = { path = "../snapshot", version = "0.10.3" }
+codewhale-telemetry = { path = "../telemetry", version = "0.10.3" }
+codewhale-tools = { path = "../tools", version = "0.10.3" }
+codewhale-tui-kit = { path = "../tui-kit", version = "0.10.3" }
+codewhale-util = { path = "../util", version = "0.10.3" }
+colored = "3.0.0"
+futures-util = "0.3.31"
+tokio-tungstenite = "0.30"
+ignore = "0.4"
+parking_lot = "0.12"
+qrcode = { version = "0.14", default-features = false }
+regex = "1.11"
+rmcp = { version = "3.9.0", default-features = false, features = ["auth", "client", "server", "transport-io"] }
+semver.workspace = true
+tempfile.workspace = true
+tokio-util = { version = "0.7.16", features = ["io"] }
+toml.workspace = true
+url = "2.5"
+urlencoding = "2.1"
+webbrowser = "1.0"
 
 [dev-dependencies]
 rusqlite.workspace = true
 tempfile.workspace = true
 tower = "0.5"
+async-trait.workspace = true
+codewhale-agent-contract = { path = "../agent-contract", version = "0.10.3", features = [
+    "test-support",
+] }
+codewhale-config = { path = "../config", version = "0.10.3", features = ["schema", "test-support"] }
+codewhale-engine = { path = "../engine", version = "0.10.3", features = ["test-support"] }
+codewhale-notify = { path = "../notify", version = "0.10.3", features = ["test-thread-scoped-state"] }
+codewhale-runtime = { path = "../runtime", version = "0.10.3", features = [
+    "test-support",
+    "test-thread-scoped-state",
+] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+rquickjs.workspace = true
+rustls.workspace = true
+wiremock = "0.6"
+reqwest = { workspace = true, features = ["stream"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Pipes"] }
+
+[build-dependencies]
+codewhale-build-support = { path = "../build-support", version = "0.10.3" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

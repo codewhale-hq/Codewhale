@@ -112,55 +112,39 @@ pub struct EmissionGuard {
 
 /// Accounting ownership captured while the originating turn is still live.
 ///
-/// Runtime turns retain their synchronous durable sink through the lease;
-/// ordinary interactive turns fall back to the exact session cost generation
-/// captured here. Neither path can spill into a later session.
+/// Runtime turns retain their durable sink through the lease; otherwise the
+/// already captured native Session origin remains authoritative. Neither path
+/// can spill into a later session.
 #[derive(Debug)]
 pub struct AdvisorUsageContext {
     cost_scope: crate::cost_status::CostScopeToken,
     runtime_usage_lease: Option<crate::cost_status::RuntimeUsageLease>,
+    source: crate::cost_status::NativeUsageSource,
 }
 
 impl AdvisorUsageContext {
     #[must_use]
-    pub fn capture(runtime_owner: Option<&str>) -> Self {
+    pub fn capture(
+        runtime_owner: Option<&str>,
+        fallback_origin: Option<crate::cost_status::NativeUsageOrigin>,
+    ) -> Self {
         Self {
             cost_scope: crate::cost_status::scope_token(),
+            source: crate::cost_status::NativeUsageSource::capture_with_origin(
+                format!("advisor:{}", uuid::Uuid::new_v4()),
+                crate::cost_status::UsageSpendOwner::Auxiliary,
+                match runtime_owner {
+                    Some(owner) => crate::cost_status::NativeUsageOrigin::runtime(
+                        crate::cost_status::scope_token(),
+                        owner,
+                    )
+                    .ok(),
+                    None => fallback_origin,
+                },
+            ),
             runtime_usage_lease: runtime_owner
                 .and_then(crate::cost_status::acquire_runtime_usage_lease),
         }
-    }
-
-    fn report(
-        &self,
-        source_id: &str,
-        route: &crate::cost_status::EffectiveRouteEnvelope,
-        usage: &codewhale_models::Usage,
-    ) {
-        crate::cost_status::report_effective_route_for_runtime(
-            self.cost_scope,
-            self.runtime_usage_lease
-                .as_ref()
-                .map(crate::cost_status::RuntimeUsageLease::owner),
-            source_id,
-            route,
-            usage,
-        );
-    }
-
-    fn report_unreceipted(
-        &self,
-        source_id: &str,
-        route: &crate::cost_status::EffectiveRouteEnvelope,
-    ) {
-        crate::cost_status::report_unreceipted_provider_success(
-            self.cost_scope,
-            self.runtime_usage_lease
-                .as_ref()
-                .map(crate::cost_status::RuntimeUsageLease::owner),
-            source_id,
-            route,
-        );
     }
 }
 
@@ -398,26 +382,53 @@ pub async fn run_advisor_for_turn(
         top_p: None,
     };
 
-    let response = match client.create_message(request).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(target: "advisor", "advisor LLM call failed for turn {turn_id}: {e}");
+    let observation = match usage_context.source.observe_route(&route) {
+        Ok(observation) => observation,
+        Err(error) => {
+            tracing::warn!(%error, "advisor accounting admission failed");
             return;
         }
     };
-
-    // A decoded provider response is billable even when its partial/empty
-    // content is rejected below or the emission guard suppresses a duplicate.
-    let usage_source_id = format!("advisor:{turn_id}:provider-response:0");
-    if response.usage == codewhale_models::Usage::default() {
-        usage_context.report_unreceipted(&usage_source_id, &route);
-        tracing::warn!(
-            target: "advisor",
-            "advisor provider response omitted usage for turn {turn_id}; cost coverage is unknown"
-        );
-    } else {
-        usage_context.report(&usage_source_id, &route, &response.usage);
+    if let Err(error) = usage_context.source.admit_dispatch(&route).await {
+        tracing::warn!(%error, "advisor source admission failed");
+        return;
     }
+    let wire = observation.wire_observations.clone();
+    let response = crate::llm_client::observe_request_retries(
+        Some(observation),
+        client.create_message(request),
+    )
+    .await;
+    let record = match usage_context
+        .source
+        .response_record(&route, &response, &wire.drain())
+    {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::warn!(%error, "advisor usage source was refused");
+            return;
+        }
+    };
+    if let Err(error) = crate::cost_status::settle_runtime_usage_record(
+        usage_context.cost_scope,
+        usage_context
+            .runtime_usage_lease
+            .as_ref()
+            .map(crate::cost_status::RuntimeUsageLease::owner),
+        &record,
+    )
+    .await
+    {
+        tracing::warn!(%error, "advisor usage remains unacknowledged");
+        return;
+    }
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(%error, "advisor request failed");
+            return;
+        }
+    };
 
     if codewhale_models::is_incomplete_stop_reason(response.stop_reason.as_deref()) {
         tracing::warn!(
@@ -1057,6 +1068,16 @@ mod tests {
         }
         let guard = std::sync::Arc::new(tokio::sync::Mutex::new(emission_guard));
         let (tx, mut rx) = mpsc::channel(1);
+        let directory = tempfile::tempdir().unwrap();
+        let manager =
+            crate::session_manager::SessionManager::new(directory.path().to_path_buf()).unwrap();
+        crate::usage_persistence::register_persistent_interactive_runtime_usage_sink_for_test(
+            "advisor-loopback-fixture",
+            crate::cost_status::scope_token(),
+            "advisor-fixture",
+            "advisor-turn",
+            &manager,
+        );
         run_advisor_for_turn(
             "advisor-turn".to_string(),
             make_messages_with_n_tool_calls(1),
@@ -1070,12 +1091,31 @@ mod tests {
             client,
             route_config,
             "deepseek-chat".to_string(),
-            AdvisorUsageContext::capture(None),
+            AdvisorUsageContext::capture(Some("advisor-loopback-fixture"), None),
             guard,
             tx,
         )
         .await;
-        (crate::cost_status::drain(), rx.try_recv().ok())
+        crate::cost_status::finish_runtime_usage_owner("advisor-loopback-fixture");
+        let mut pending = crate::cost_status::drain();
+        let mut cost = crate::session_manager::SessionCostSnapshot::default();
+        for record in &pending.source_records {
+            cost.project_usage_record(record).unwrap();
+        }
+        pending.estimate = cost.total_estimate();
+        pending.priced_turns = cost.priced_turns;
+        pending.unpriced_turns = cost.unpriced_turns;
+        pending.cny_priced_turns = cost.cny_priced_turns;
+        pending.cny_unpriced_turns = cost.cny_unpriced_turns;
+        if cost
+            .unpriced_reasons
+            .contains("provider_success_missing_usage")
+        {
+            pending
+                .unpriced_reasons
+                .insert("provider_success_missing_usage");
+        }
+        (pending, rx.try_recv().ok())
     }
 
     #[tokio::test]

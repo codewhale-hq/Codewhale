@@ -1245,12 +1245,12 @@ mod tests {
 
         let default = registry.resolve_ok(None, Some(ProviderKind::Xai));
         assert_eq!(default.resolved.provider, ProviderKind::Xai);
-        assert_eq!(default.resolved.id, "grok-4.6");
+        assert_eq!(default.resolved.id, "grok-4.7");
         assert!(default.used_fallback);
 
         let alias = registry.resolve_ok(Some("grok"), Some(ProviderKind::Xai));
         assert_eq!(alias.resolved.provider, ProviderKind::Xai);
-        assert_eq!(alias.resolved.id, "grok-4.6");
+        assert_eq!(alias.resolved.id, "grok-4.7");
         assert!(!alias.used_fallback);
 
         let fast = registry.resolve_ok(
@@ -1268,12 +1268,12 @@ mod tests {
 
         let default = registry.resolve_ok(None, Some(ProviderKind::Meta));
         assert_eq!(default.resolved.provider, ProviderKind::Meta);
-        assert_eq!(default.resolved.id, "muse-spark-1.2");
+        assert_eq!(default.resolved.id, "muse-spark-1.3");
         assert!(default.used_fallback);
 
         let alias = registry.resolve_ok(Some("muse-spark"), Some(ProviderKind::Meta));
         assert_eq!(alias.resolved.provider, ProviderKind::Meta);
-        assert_eq!(alias.resolved.id, "muse-spark-1.2");
+        assert_eq!(alias.resolved.id, "muse-spark-1.3");
         assert!(!alias.used_fallback);
         assert_eq!(model_family("muse-spark-1.2"), ModelFamily::Meta);
     }

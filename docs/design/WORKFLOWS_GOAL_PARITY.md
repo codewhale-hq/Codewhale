@@ -122,7 +122,7 @@ Arena Mode) — official docs at x.ai/cli returned 404 for the deep pages.
 | Receipts / history | run manifests | session log | `.codewhale/workflow-runs.jsonl`, `/workflow status` lists journaled runs, trophy cards | parity |
 | Failure handling / retry | pause kinds; strategist restructure | model judgment; ralph rounds | verifier gates, no-progress pause, blocked, `[goal] max_continuations` | parity; auto-restructure (strategist) deliberately absent |
 | Cancellation | `/workflow stop <name>` native | cancel via signal | `/workflow cancel [id]` native (this lane); Esc cancels children | parity |
-| Fan-out inside a workflow | `parallel()`, agent budget 128 | `parallel()/pipeline()`, no budget vocabulary | `parallel()/pipeline()`, 16 live / 1000 total, token budget | parity |
+| Fan-out inside a workflow | `parallel()`, agent budget 128 | `parallel()/pipeline()`, no budget vocabulary | `parallel()/pipeline()`, 64 live by default (128 max) / 1000 total, token budget | parity |
 | Interrupt semantics | Ctrl+C pauses the goal | cancellation pauses the goal | Esc keeps goal active, cancels the timer, `/goal` now says how to continue | deliberately different (2026-07-24 dogfood decision) |
 | Docs accuracy | — | — | fixed: `/workflow run`, `[workflow]` honored, `/goal` verbs | fixed |
 

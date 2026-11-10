@@ -301,7 +301,6 @@ fn posture_summary(view: &ConfigStatusView, locale: &Messages) -> String {
         match view.mode {
             CommandMode::Agent => MessageId::AppModeAgent,
             CommandMode::Plan => MessageId::AppModePlan,
-            CommandMode::Operate => MessageId::AppModeOperate,
         },
     );
     let approval = approval_summary(view.approval_mode, locale);
@@ -322,6 +321,7 @@ fn approval_summary(mode: CommandApprovalMode, locale: &Messages) -> Cow<'static
         locale,
         match mode {
             CommandApprovalMode::Suggest => MessageId::StatusApprovalAsk,
+            CommandApprovalMode::AcceptEdits => MessageId::StatusApprovalAcceptEdits,
             CommandApprovalMode::Auto => MessageId::StatusApprovalAuto,
             CommandApprovalMode::Bypass => MessageId::StatusApprovalFullAccess,
             CommandApprovalMode::Never => MessageId::StatusApprovalNever,

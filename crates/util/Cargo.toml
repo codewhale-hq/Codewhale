@@ -16,23 +16,22 @@ test-support = []
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-codewhale-config = { path = "../config", version = "0.10.2" }
-codewhale-models = { path = "../models", version = "0.10.2" }
-codewhale-paths = { path = "../paths", version = "0.10.2" }
-codewhale-protocol = { path = "../protocol", version = "0.10.2" }
-codewhale-telemetry = { path = "../telemetry", version = "0.10.2" }
+codewhale-config = { path = "../config", version = "0.10.3" }
+codewhale-models = { path = "../models", version = "0.10.3" }
+codewhale-paths = { path = "../paths", version = "0.10.3" }
+codewhale-protocol = { path = "../protocol", version = "0.10.3" }
+codewhale-telemetry = { path = "../telemetry", version = "0.10.3" }
 futures-util = "0.3.31"
+gix.workspace = true
 ignore = "0.4"
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-codewhale-runtime = { path = "../runtime", version = "0.10.2", features = ["test-support"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

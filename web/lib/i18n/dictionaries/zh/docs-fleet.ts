@@ -15,11 +15,11 @@ export const docsFleet: DocsFleetDict = {
       title: "在 Fleet 中保存角色",
       blocks: [
         {
-          p: "Fleet 是 Codewhale 可以分派工作的角色列表，以及每个角色使用的模型。在会话中配置一次即可：",
+          p: "Fleet 保存可复用的角色和模型选择。先连接模型，再在会话中创建角色配置：",
         },
         { code: "/fleet setup\n/fleet\n/fleet saved", lang: "Codewhale" },
         {
-          p: "`/fleet setup` 会带你选定一个角色、它使用的模型（或“沿用会话的模型”），以及保存位置：当前项目，或者对所有仓库都生效的个人配置。写入之前你会看到完整的文件内容。`/fleet` 显示当前所选 Fleet 的成员，`/fleet saved` 用于在已命名的 Fleet 之间切换。",
+          p: "`/fleet setup` 每次保存一个角色配置。选择模型或沿用会话路由，再选择当前项目或个人配置。保存前先审阅完整文件。`/fleet` 显示当前团队；`/fleet saved` 用于切换已有的具名团队。接着用自然语言交代任务，并用 `/fleet workers` 查看该会话的智能体。",
         },
         {
           p: "Fleet 只决定由谁来做。一个智能体能读、能写、能运行什么，仍然取决于你的工作区信任、[审批设置](/docs/modes)和沙箱。",
@@ -31,7 +31,7 @@ export const docsFleet: DocsFleetDict = {
       title: "编写工作流",
       blocks: [
         {
-          p: "工作流是放在仓库 `workflows/` 文件夹中的一个 JavaScript 文件。它只描述步骤，本身不干活。下面这个例子先并行审查两个部分，再汇总结论。把它保存为 `workflows/docs_readiness.workflow.js`：",
+          p: "保存的 Workflow 描述智能体可以重复执行的流程。创建 `workflows/` 文件夹，将这个声明式示例保存为 `workflows/docs_readiness.workflow.js`。它先并行审查两个部分，再汇总结论。请把 `src` 和 `docs` 换成你的项目中确实存在的目录：",
         },
         {
           code: `export default workflow({
@@ -62,10 +62,10 @@ export const docsFleet: DocsFleetDict = {
           lang: "workflows/docs_readiness.workflow.js",
         },
         {
-          p: "可用的步骤类型有 `agent`、`branch`、`sequence`、`reduce`、`loop_until`、`cond`、`expand` 和 `teacher_review`。工作流文件本身不能访问文件、shell 或网络，`import`、`fetch`、`eval` 和 `async` 都会被拒绝。真正干活的是它启动的智能体，它们按你平常的权限运行。",
+          p: "这种声明式写法支持 `agent`、`branch`、`sequence`、`reduce`、`loop_until`、`cond`、`expand` 和 `teacher_review`。它会编译成经过验证的计划，拒绝 `import`、`fetch`、`eval`、`async` 等语法与调用。高级命令式 JavaScript 可在沙箱中通过异步 `task()` 和 `parallel()` 协调工作，但仍不能直接访问文件、shell 或网络；这些操作由智能体按当前策略执行。",
         },
         {
-          note: "一次运行最多可启动 1,000 个智能体，同时工作的最多 16 个，其余排队等待。循环必须声明 `max_iterations`。",
+          note: "Workflow 默认最多同时运行 16 个智能体；已接纳的工作等待空闲位置。默认不限制累计子智能体数量或计划结构深度，可用正数的 `[workflow] max_children` 或 `max_depth` 设置上限。运行时的智能体接纳和委派限制另行生效。循环必须声明 `max_iterations`。",
         },
       ],
     },
@@ -74,18 +74,17 @@ export const docsFleet: DocsFleetDict = {
       title: "运行",
       blocks: [
         {
-          code: `codewhale workflow run docs-readiness --runtime inline
-codewhale workflow run docs-readiness --goal "prepare the 1.2 release" --verify`,
+          code: `codewhale workflow run docs-readiness --runtime inline`,
           lang: "终端",
         },
         {
-          p: "Codewhale 会根据名字找到 `workflows/docs_readiness.workflow.js`，检查后启动。`--runtime inline` 在当前终端中运行；默认的 `tmux` 则在一个独立的 tmux 会话中运行，关闭终端后也会继续。`--verify` 会在成功完成后运行验证关卡，`--fleet <name>` 则使用指定的 Fleet 而不是内置角色。",
+          p: "该命令找到 `workflows/docs_readiness.workflow.js`，验证后启动需要模型的运行，因此请先连接提供商。`--runtime inline` 在当前终端等待完成。默认后端要求主机已安装 `tmux`，并在独立会话中运行。启动时加上 `--verify`，可在成功完成后执行已配置的验证关卡；`--fleet <name>` 选择已有的具名 Fleet。",
         },
         {
           p: "如果不想动到当前的工作副本，加上 `--worktree-repo . --branch <name>`：这次运行会拥有自己的 git 工作树和分支。",
         },
         {
-          p: "在会话中，`/workflow` 用于启动工作流，`/workflows` 用于列出或取消本会话中的运行。",
+          p: "在会话中，`/workflow <objective>` 只起草方案，不执行。要审阅这个已保存的文件，请用 `/workflow run workflows/docs_readiness.workflow.js`；等待审阅完成，再用 `/workflow confirm` 启动已审阅的方案。`/workflow status` 读取运行状态，`/workflow cancel <run-id>` 取消运行，`/workflows` 打开会话运行面板。",
         },
       ],
     },
@@ -103,7 +102,7 @@ codewhale lane interrupt <lane-id>`,
           lang: "终端",
         },
         {
-          p: "`lane list`、`lane status` 和 `lane interrupt` 都支持 `--json`，会输出一份机器可读的回执。在会话中，`/lane` 提供同样的操作，结果也完全一致。",
+          p: "`lane list`、`lane status` 和 `lane interrupt` 支持 `--json`。会话内可用 `/lane list`、`/lane status <lane-id>` 或 `/lane interrupt <lane-id>`；查看日志和连接 tmux 使用上面的 shell 命令。斜杠读取显示最近记录的状态，CLI list/status 则会核对后端退出情况。斜杠 interrupt 先返回排队回执，再返回最终结果。",
         },
       ],
     },
@@ -116,6 +115,7 @@ codewhale lane interrupt <lane-id>`,
         },
         {
           code: `codewhale fleet init
+codewhale fleet run tasks.json --check
 codewhale fleet run tasks.json --max-workers 4
 codewhale fleet status
 codewhale fleet logs <worker-id>
@@ -124,7 +124,7 @@ codewhale fleet stop --all`,
           lang: "终端",
         },
         {
-          p: "`fleet status` 会根据当前工作区的运行记录，统计排队中、运行中、已完成和失败的工作。笔记本休眠或管理进程退出后，`fleet resume` 能接着原来的运行继续，而不会新开一次。如果只想看挂在当前会话上的智能体，用 `/fleet workers`（或 `/subagents`）。",
+          p: "`fleet run --check` 只验证，不创建运行；去掉 `--check` 才启动前台管理进程。运行期间，在另一个终端查看状态和操作控制。中断后，`fleet resume <run-id>` 核对过期租约并报告状态，不会重启管理进程或启动排队工作。若要明确重试某个智能体，先 inspect，再用 `codewhale fleet restart <worker-id>`，它会为该次运行启动管理进程。`/fleet workers` 和 `/subagents` 显示当前会话智能体，不显示这些持久运行。",
         },
       ],
     },

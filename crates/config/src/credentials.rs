@@ -70,6 +70,8 @@ pub fn prepare_provider_api_key_metadata(store: &mut ConfigStore, provider: Prov
 /// API key would belong to a different billing route.
 pub const OPENAI_CODEX_API_KEY_REFUSAL: &str = "Sign in with ChatGPT via `codewhale auth chatgpt` to use your plan allowance with Codewhale-owned credentials. Use the openai provider for a separately billed API key. Codewhale does not store an API key for this provider.";
 
+pub const CLAUDE_SIGN_IN_REMOVED: &str = "Claude subscription sign-in was removed in Codewhale 0.10.3: it used Claude Code's sign-in, which Anthropic doesn't allow other apps to use. Use an Anthropic API key instead: run `codewhale auth set --provider anthropic`, or set ANTHROPIC_API_KEY and remove `auth_mode = \"oauth\"` from `[providers.anthropic]`.";
+
 /// Persist a provider credential to the durable secret store without silently
 /// downgrading a backend failure to plaintext config storage.
 ///
@@ -92,15 +94,6 @@ pub fn set_provider_api_key(
     if provider == ProviderKind::Xai {
         return crate::with_xai_oauth_revocation_transaction(|| {
             set_provider_api_key_unlocked(store, secrets, provider, api_key)
-        });
-    }
-    if provider == ProviderKind::Anthropic {
-        return crate::with_xai_oauth_lifecycle_lock(|_| {
-            let saved = set_provider_api_key_unlocked(store, secrets, provider, api_key)?;
-            crate::clear_all_claude_oauth_credentials_locked().context(
-                "API-key billing was selected and saved, but old Claude sign-in cleanup failed",
-            )?;
-            Ok(saved)
         });
     }
     set_provider_api_key_unlocked(store, secrets, provider, api_key)

@@ -898,5 +898,5 @@ fn panel_height(content: u16, width: u16, theme: &Theme) -> u16 {
 }
 
 fn raised_edged(theme: &Theme) -> bool {
-    !theme.grounds_differ(Role::Surface, Role::Background)
+    Panel::new(Depth::Raised).edged(theme)
 }

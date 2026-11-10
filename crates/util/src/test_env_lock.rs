@@ -1,5 +1,7 @@
 //! Process-wide test-environment barrier.
 
+use std::ffi::{OsStr, OsString};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
 use std::thread::ThreadId;
 
@@ -215,6 +217,110 @@ pub fn current_thread_holds_test_env_lock() -> bool {
             false
         }
         Err(TryLockError::WouldBlock) => current_thread_owns_contended_env_lock(),
+    }
+}
+
+/// Restore one environment variable when dropped.
+///
+/// Callers that mutate process-global environment variables must hold
+/// [`lock_test_env`] until after this guard is dropped.
+///
+/// Every live guard is also recorded in the guarded-key registry, so path
+/// resolution can distinguish a test that deliberately redirected `HOME`
+/// from one that merely holds the lock to serialize unrelated env access.
+pub struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+fn guarded_env_keys() -> &'static Mutex<std::collections::HashMap<&'static str, usize>> {
+    static KEYS: OnceLock<Mutex<std::collections::HashMap<&'static str, usize>>> = OnceLock::new();
+    KEYS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+pub fn register_guarded_env_key(key: &'static str) {
+    let mut keys = match guarded_env_keys().lock() {
+        Ok(keys) => keys,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *keys.entry(key).or_insert(0) += 1;
+}
+
+pub fn unregister_guarded_env_key(key: &'static str) {
+    let mut keys = match guarded_env_keys().lock() {
+        Ok(keys) => keys,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(count) = keys.get_mut(key) {
+        *count -= 1;
+        if *count == 0 {
+            keys.remove(key);
+        }
+    }
+}
+
+static STATE_FROM_ENVIRONMENT: AtomicBool = AtomicBool::new(false);
+
+pub fn resolve_state_from_environment() {
+    STATE_FROM_ENVIRONMENT.store(true, Ordering::SeqCst);
+}
+
+pub fn state_from_environment() -> bool {
+    STATE_FROM_ENVIRONMENT.load(Ordering::SeqCst)
+}
+
+/// Whether some live [`EnvVarGuard`] currently covers `key`.
+pub fn env_var_currently_guarded(key: &str) -> bool {
+    if state_from_environment() {
+        return true;
+    }
+    match guarded_env_keys().lock() {
+        Ok(keys) => keys.contains_key(key),
+        Err(poisoned) => poisoned.into_inner().contains_key(key),
+    }
+}
+
+impl EnvVarGuard {
+    pub fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        debug_assert!(
+            current_thread_holds_test_env_lock(),
+            "EnvVarGuard::set({key}) requires lock_test_env()"
+        );
+        let previous = std::env::var_os(key);
+        // SAFETY: callers hold the process-wide test env mutex.
+        unsafe { std::env::set_var(key, value) };
+        register_guarded_env_key(key);
+        Self { key, previous }
+    }
+
+    pub fn remove(key: &'static str) -> Self {
+        debug_assert!(
+            current_thread_holds_test_env_lock(),
+            "EnvVarGuard::remove({key}) requires lock_test_env()"
+        );
+        let previous = std::env::var_os(key);
+        // SAFETY: callers hold the process-wide test env mutex.
+        unsafe { std::env::remove_var(key) };
+        register_guarded_env_key(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // Withdraw the claim *before* restoring the value: a reader on another
+        // thread that still saw the key as guarded would otherwise follow the
+        // restored — ambient, possibly real — path for the instant in between.
+        unregister_guarded_env_key(self.key);
+        // SAFETY: callers hold the process-wide test env mutex until after this
+        // guard is dropped.
+        unsafe {
+            if let Some(value) = self.previous.take() {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
     }
 }
 

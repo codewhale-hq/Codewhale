@@ -238,7 +238,7 @@ reported the same way a rejected global one is.
 | `message_submit` | before a submitted message reaches history or the model | **can replace or block the text** |
 | `tool_call_before` | before each tool call executes | **can allow / deny / ask, rewrite input, add context** |
 | `tool_call_after` | after each tool result settles, including completions the transcript does not redraw | observer |
-| `mode_change` | on every applied Plan/Work/Operate transition (`Act` is a compatibility alias for Work) | observer |
+| `mode_change` | on every applied Plan/Work transition (`Act` is a compatibility alias for Work) | observer |
 | `on_error` | on transport, capacity, and auth errors, and on tool failures | observer |
 | `subagent_spawn` | when a sub-agent starts | observer |
 | `subagent_complete` | when a sub-agent completes, fails, or is cancelled | observer |

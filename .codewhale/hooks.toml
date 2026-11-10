@@ -1,0 +1,23 @@
+[[hooks]]
+name = "shell guard (staging, release freeze)"
+event = "tool_call_before"
+command = 'cd "$DEEPSEEK_WORKSPACE" && echo "4c8e10ebe99524e6a5b2f0fbb090a8f4881f95b2bf732f020c566a610f949aa4  scripts/agent-guard.py" | shasum -a 256 -c -s && exec python3 scripts/agent-guard.py'
+timeout_secs = 10
+continue_on_error = true
+condition = { type = "tool_name", name = "bash" }
+
+[[hooks]]
+name = "edit guard (CODEWHALE_RELEASE_FREEZE=1)"
+event = "tool_call_before"
+command = '[ -z "$CODEWHALE_RELEASE_FREEZE" ] || { cd "$DEEPSEEK_WORKSPACE" && echo "4c8e10ebe99524e6a5b2f0fbb090a8f4881f95b2bf732f020c566a610f949aa4  scripts/agent-guard.py" | shasum -a 256 -c -s && exec python3 scripts/agent-guard.py; }'
+timeout_secs = 10
+continue_on_error = true
+
+[hooks.condition]
+type = "any"
+conditions = [
+  { type = "tool_category", category = "file_write" },
+  { type = "tool_name", name = "write_file" },
+  { type = "tool_name", name = "edit_file" },
+  { type = "tool_name", name = "fim_edit" },
+]

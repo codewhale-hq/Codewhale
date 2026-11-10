@@ -342,7 +342,7 @@ pub struct FleetLedger {
     ledger_file: WorkspaceFile,
     lock_file: WorkspaceFile,
     original_lock: std::fs::File,
-    durable_barrier: parking_lot::Mutex<Option<(std::fs::File, u64)>>,
+    durable_barrier: parking_lot::Mutex<Option<u64>>,
     /// Stable advisory-lock inode shared by every manager for this workspace.
     ///
     /// The ledger itself is replaced during compaction, so locking
@@ -380,6 +380,69 @@ impl FleetLedger {
             #[cfg(any(test, feature = "test-support"))]
             fail_restart_append_after_callback: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    pub fn visit_diagnostic_records(
+        workspace: &Path,
+        mut visit: impl FnMut(Result<FleetLedgerRecord>) -> Result<()>,
+    ) -> Result<()> {
+        let ledger_file = match WorkspaceFile::open_resolved_root(
+            workspace,
+            &Path::new(FLEET_DIR).join(FLEET_LEDGER_FILE),
+            false,
+        ) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        match ledger_file.open_file() {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let lock_file = WorkspaceFile::open_resolved_root(
+            workspace,
+            &Path::new(FLEET_DIR).join(FLEET_LEDGER_LOCK_FILE),
+            false,
+        )?;
+        let lock = fd_lock::RwLock::new(lock_file.open_file()?);
+        let (ledger, committed) = {
+            let guard = lock.read()?;
+            if !same_file(&guard, &lock_file.open_file()?)? {
+                bail!("Fleet diagnostic lock was replaced");
+            }
+            let ledger = ledger_file.open_file()?;
+            let committed = ledger.metadata()?.len();
+            (ledger, committed)
+        };
+        let mut reader = std::io::BufReader::new(ledger.take(committed));
+        let limit = crate::session_manager::SESSION_METADATA_READ_LIMIT as u64;
+        loop {
+            let mut raw = Vec::new();
+            let count = reader
+                .by_ref()
+                .take(limit + 1)
+                .read_until(b'\n', &mut raw)?;
+            if count == 0 {
+                return Ok(());
+            }
+            if raw.len() as u64 > limit {
+                visit(Err(std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    "Fleet diagnostic record exceeds the session inspection limit",
+                )
+                .into()))?;
+                return Ok(());
+            }
+            if !raw.ends_with(b"\n") {
+                visit(Err(anyhow::anyhow!("Fleet diagnostic tail is incomplete")))?;
+                return Ok(());
+            }
+            if raw.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            visit(serde_json::from_slice(&raw).map_err(anyhow::Error::from))?;
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -486,7 +549,7 @@ impl FleetLedger {
         file.sync_data()
             .with_context(|| format!("syncing fleet ledger {}", self.ledger_path.display()))?;
         let length = file.metadata()?.len();
-        *self.durable_barrier.lock() = Some((file, length));
+        *self.durable_barrier.lock() = Some(length);
         // Wake SSE subscribers after the bytes are durable (#6211 R7b). Every
         // record kind funnels through here, so a wake only promises "something
         // changed" — subscribers re-poll with their cursor.
@@ -1123,17 +1186,12 @@ impl FleetLedger {
         let file = self.ledger_file.open_update(false, false)?;
         let length = file.metadata()?.len();
         let mut cached = self.durable_barrier.lock();
-        if let Some((previous, durable_length)) = cached.take()
-            && durable_length == length
-            && same_file(&previous, &file)?
-        {
-            *cached = Some((previous, durable_length));
+        if *cached == Some(length) {
             return Ok(());
         }
         file.sync_data()
             .context("acknowledging Fleet ledger durability")?;
-        let length = file.metadata()?.len();
-        *cached = Some((file, length));
+        *cached = Some(file.metadata()?.len());
         Ok(())
     }
 
@@ -1618,7 +1676,7 @@ impl FleetLedger {
         let mut events = Vec::new();
         let mut replay_epoch = "legacy".to_string();
         let mut history_compacted = false;
-        let file = match self.ledger_file.open_file() {
+        let file = match self.ledger_file.open_file_shared() {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok((false, events, history_compacted));
@@ -1674,7 +1732,7 @@ impl FleetLedger {
 
     fn rebuild_state_unlocked(&self) -> Result<FleetLedgerState> {
         let mut state = FleetLedgerState::default();
-        let file = match self.ledger_file.open_file() {
+        let file = match self.ledger_file.open_file_shared() {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(state),
             Err(error) => return Err(error).context("Opening Fleet ledger for state rebuild"),
@@ -2379,7 +2437,7 @@ fn artifact_event_key(event: &FleetWorkerEvent, artifact: &FleetArtifactRef) -> 
     )
 }
 
-fn apply_record(state: &mut FleetLedgerState, record: FleetLedgerRecord) {
+pub fn apply_record(state: &mut FleetLedgerState, record: FleetLedgerRecord) {
     match record {
         FleetLedgerRecord::ReplayEpoch { .. } => {}
         FleetLedgerRecord::RunCreated { run } => {

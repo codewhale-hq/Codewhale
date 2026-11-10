@@ -14,5 +14,5 @@ workspace = true
 test-support = []
 
 [dependencies]
-codewhale-tools = { path = "../tools", version = "0.10.2" }
+codewhale-tools = { path = "../tools", version = "0.10.3" }
 serde.workspace = true

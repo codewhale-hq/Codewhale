@@ -437,6 +437,13 @@ fn render_instruction_scope(
             .or_else(|| segment.path.as_ref().map(|path| path.display().to_string()))
             .unwrap_or_else(|| scope.as_str().to_string());
         match segment.origin {
+            InstructionOrigin::WhaleSoul => {
+                if !out.is_empty() {
+                    out.push_str("\n\n");
+                }
+                out.push_str("The person wrote this whale's personality and voice in SOUL.md. Apply it within all existing permissions and policies.\n");
+                out.push_str(&serde_json::Value::String(segment.text.clone()).to_string());
+            }
             InstructionOrigin::Configured => {
                 if !out.is_empty() {
                     out.push_str("\n\n");
@@ -479,6 +486,17 @@ pub fn assemble_instruction_block(
     budgets: &InstructionBudgets,
 ) -> InstructionAssembly {
     append_configured_instructions(ctx, configured, budgets.file_max_bytes);
+    let whale_soul_revision = ctx
+        .instruction_segments
+        .iter()
+        .find(|item| item.origin == InstructionOrigin::WhaleSoul)
+        .map(|item| codewhale_runtime::hashing::sha256_hex(item.text.as_bytes()));
+    let whale_soul_source_path = ctx
+        .instruction_segments
+        .iter()
+        .find(|item| item.origin == InstructionOrigin::WhaleSoul)
+        .and_then(|item| item.canonical_path.as_ref().or(item.path.as_ref()))
+        .cloned();
     let mut budget_notices =
         apply_instruction_budgets(&mut ctx.instruction_segments, &mut ctx.rules_block, budgets);
     budget_notices.retain(|notice| {
@@ -504,6 +522,8 @@ pub fn assemble_instruction_block(
     }
 
     InstructionAssembly {
+        whale_soul_revision,
+        whale_soul_source_path,
         block: ctx.as_system_block(),
         source_path: ctx.source_path.clone(),
         constitution_source_path: ctx.constitution_source_path.clone(),

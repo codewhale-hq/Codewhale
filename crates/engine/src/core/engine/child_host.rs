@@ -387,14 +387,14 @@ impl Engine {
         &mut self,
         mark: crate::core::turn::UnansweredUserMessage,
     ) -> Result<bool> {
-        if !self.can_retract_unanswered_user_message(mark) {
+        if !self.can_retract_unanswered_user_message(&mark) {
             return Ok(false);
         }
         if let Some(job) = self.child_job() {
             let old = self.session.messages.to_vec();
             // Preserve durable dispatch/history evidence before changing the
             // live projection. The one actor owns both sides of this await.
-            if let Err(error) = job.before_replace(&old, &old[..mark.len - 1]).await {
+            if let Err(error) = job.before_replace(&old, &old[..mark.index]).await {
                 self.child_host
                     .as_mut()
                     .expect("captured child")
@@ -437,7 +437,10 @@ impl Engine {
             Some(&next.model),
         )
         .map_err(anyhow::Error::msg)?;
-        let mut route = resolved.validate().map_err(anyhow::Error::msg)?;
+        let mut route = resolved
+            .validate_async()
+            .await
+            .map_err(anyhow::Error::msg)?;
         anyhow::ensure!(
             next.client.admitted_provider_identity() == &route.identity
                 && route.candidate.endpoint().base_url == next.client.base_url(),
@@ -585,71 +588,96 @@ impl Engine {
         )?;
         surface.policy.registry = registry;
         let mut events = handle.rx_event.write().await;
-        let execute = engine.probe_child_tool_batch(surface, call);
-        tokio::pin!(execute);
         let mut approvals = futures_util::stream::FuturesUnordered::new();
+        let mut approval_deliveries = futures_util::stream::FuturesUnordered::<
+            std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>,
+        >::new();
         use futures_util::StreamExt;
-        let answer = loop {
-            tokio::select! {
-                biased;
-                result = &mut execute => break result,
-                () = runtime.cancel_token.cancelled(), if !handle.is_cancelled() => handle.cancel(),
-                Some((id, decision)) = approvals.next(), if !approvals.is_empty() => {
-                    if runtime.cancel_token.is_cancelled() || handle.is_cancelled() {
-                        handle.cancel();
-                    } else {
-                        match decision {
-                            Ok(crate::tools::subagent::ChildApprovalOutcome::Approved { by }) => handle.approve_tool_call_by(id, by).await?,
-                            Ok(crate::tools::subagent::ChildApprovalOutcome::Denied { by }) => handle.deny_tool_call_by(id, by).await?,
-                            _ => handle.deny_tool_call_unavailable(id).await?,
+        let answer = {
+            let execute = engine.probe_child_tool_batch(surface, call);
+            tokio::pin!(execute);
+            loop {
+                tokio::select! {
+                    biased;
+                    result = &mut execute => break result,
+                    () = runtime.cancel_token.cancelled(), if !handle.is_cancelled() => handle.cancel(),
+                    Some((id, decision)) = approvals.next(), if !approvals.is_empty() => {
+                        if runtime.cancel_token.is_cancelled() || handle.is_cancelled() {
+                            handle.cancel();
+                        } else {
+                            let handle = handle.clone();
+                            approval_deliveries.push(Box::pin(async move {
+                                match decision {
+                                    Ok(reply) => handle.accept_child_approval(id, reply).await,
+                                    Err(_) => handle.deny_tool_call_unavailable(id).await,
+                                }
+                            }));
                         }
                     }
-                }
-                event = events.recv() => {
-                    let Some(event) = event else { break Err(anyhow!("Core probe event stream closed")) };
-                    match &event {
-                        Event::ApprovalRequired { id, tool_name, description, .. } => {
-                            let (_, receiver) = runtime.manager.write().await.register_child_approval(&owner, id, tool_name, description)?;
-                            let key = id.clone(); approvals.push(async move { (key, receiver.await) });
-                            if let Some(tx) = runtime.event_tx.as_ref().filter(|_| runtime.parent_can_prompt) {
-                                let sent = tokio::select! {
-                                    biased;
-                                    () = runtime.cancel_token.cancelled() => false,
-                                    result = tx.send(event.clone()) => result.is_ok(),
-                                };
-                                if !sent {
+                    Some(delivered) = approval_deliveries.next(), if !approval_deliveries.is_empty() => {
+                        if let Err(error) = delivered {
+                            tracing::warn!(%error, "child approval did not match a durable Core decision");
+                        }
+                    },
+                    event = events.recv() => {
+                        let Some(event) = event else { break Err(anyhow!("Core probe event stream closed")) };
+                        match &event {
+                            Event::ApprovalRequired { id, tool_name, description, publication, .. } => {
+                                let (_, receiver) = runtime.manager.write().await.register_child_approval(&owner, id, tool_name, description, publication.clone())?;
+                                let key = id.clone(); approvals.push(async move { (key, receiver.await) });
+                                if let Some(tx) = runtime.event_tx.as_ref().filter(|_| runtime.parent_can_prompt) {
+                                    let sent = tokio::select! {
+                                        biased;
+                                        () = runtime.cancel_token.cancelled() => false,
+                                        result = tx.send(event.clone()) => result.is_ok(),
+                                    };
+                                    if !sent {
+                                        runtime.manager.write().await.cancel_child_approval(id);
+                                        {
+                                            let handle = handle.clone();
+                                            let id = id.clone();
+                                            approval_deliveries.push(Box::pin(async move { handle.deny_tool_call_unavailable(id).await }));
+                                        }
+                                    }
+                                } else {
                                     runtime.manager.write().await.cancel_child_approval(id);
-                                    handle.deny_tool_call_unavailable(id).await?;
+                                    {
+                                            let handle = handle.clone();
+                                            let id = id.clone();
+                                            approval_deliveries.push(Box::pin(async move { handle.deny_tool_call_unavailable(id).await }));
+                                        }
                                 }
-                            } else {
+                            }
+                            Event::ApprovalWithdrawn { id } => {
                                 runtime.manager.write().await.cancel_child_approval(id);
-                                handle.deny_tool_call_unavailable(id).await?;
-                            }
-                        }
-                        Event::ApprovalWithdrawn { id } => {
-                            runtime.manager.write().await.cancel_child_approval(id);
-                            if let Some(tx) = &runtime.event_tx {
-                                tokio::select! {
-                                    biased;
-                                    () = runtime.cancel_token.cancelled() => { let _ = tx.try_send(event.clone()); },
-                                    _ = tx.send(event.clone()) => {},
+                                if let Some(tx) = &runtime.event_tx {
+                                    tokio::select! {
+                                        biased;
+                                        () = runtime.cancel_token.cancelled() => { let _ = tx.try_send(event.clone()); },
+                                        _ = tx.send(event.clone()) => {},
+                                    }
                                 }
                             }
+                            Event::ToolGateDecision { .. } => {
+                                crate::tools::subagent::engine::forward_child_gate_observation(
+                                    &runtime,
+                                    &owner,
+                                    event,
+                                    &handle.captured_turn_cancel(),
+                                    runtime.context.turn_deadline,
+                                ).await;
+                            }
+                            _ => {}
                         }
-                        Event::ToolGateDecision { .. } => {
-                            crate::tools::subagent::engine::forward_child_gate_observation(
-                                &runtime,
-                                &owner,
-                                event,
-                                &handle.captured_turn_cancel(),
-                                runtime.context.turn_deadline,
-                            ).await;
-                        }
-                        _ => {}
                     }
                 }
             }
         };
+        while let Some(delivered) = approval_deliveries.next().await {
+            if let Err(error) = delivered {
+                tracing::warn!(%error, "child approval did not match a durable Core decision");
+            }
+        }
         // The canonical batch may settle immediately after enqueueing its
         // last receipt. Observe those exact queued decisions before handback.
         while let Ok(event) = events.try_recv() {

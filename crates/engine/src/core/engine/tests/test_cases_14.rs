@@ -27,6 +27,7 @@ async fn sync_session_projects_persisted_subagent_handoff_for_headless_restore()
     let run = tokio::spawn(engine.run());
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("headless-resume".to_string()),
             messages,
@@ -166,6 +167,7 @@ async fn edit_last_turn_preserves_current_mode() {
     ];
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-mode-test".to_string()),
             messages: seeded_messages,
@@ -323,6 +325,7 @@ async fn edit_last_turn_cuts_at_user_prompt_before_tool_results() {
     ];
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-cut-test".to_string()),
             messages: seeded_messages,
@@ -358,9 +361,14 @@ async fn edit_last_turn_cuts_at_user_prompt_before_tool_results() {
 
     assert_eq!(
         snapshot.messages.len(),
-        2,
+        3,
         "the whole previous turn (prompt, tool_use, tool_result, answer) must be cut: {:?}",
         snapshot.messages
+    );
+    assert!(
+        crate::runtime_handoff::project_instructions_display(&snapshot.messages[1]).is_some(),
+        "the middle survivor is the turn's workspace-instructions record: {:?}",
+        snapshot.messages[1]
     );
     assert!(
         snapshot.messages.iter().all(|message| !message
@@ -428,6 +436,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
     // must surface an error instead of silently appending the message.
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-no-user-test".to_string()),
             messages: vec![Message {
@@ -551,6 +560,7 @@ async fn edit_last_turn_without_user_prompt_errors_and_sends_nothing() {
     ];
     handle
         .send(Op::SyncSession {
+            expected: None,
             control: crate::core::ops::SessionControlId::new(),
             session_id: Some("edit-unsupported-user-test".to_string()),
             messages: image_only_history.clone(),
@@ -928,8 +938,9 @@ async fn preflight_guard_measures_honest_input_against_the_input_ceiling() {
     let request = mock.last_request().expect("the turn reached the model");
     assert_eq!(
         request.messages.len(),
-        history.len(),
-        "history reached the model without an emergency compaction pass"
+        history.len() + 1,
+        "history reached the model without an emergency compaction pass \
+         (plus preparation's workspace-instructions record)"
     );
 }
 
@@ -1580,7 +1591,7 @@ fn evidence_bounded_preview_is_not_recompacted() {
 async fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_compactor() {
     use crate::tools::spec::ToolSpec as _;
 
-    // C05: `read` bounds itself to an explicit per-call byte budget. The 12K
+    // C05: `read` bounds itself to the operator's byte budget. The 12K
     // context hard limit used to re-truncate that bounded result into a 900-
     // char snippet, discarding both the content and the continuation footer.
     let content = format!(
@@ -1616,12 +1627,16 @@ async fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_comp
         .await
         .unwrap();
     let context = ToolContext::new(workspace.path());
-    for max_bytes in [1, 90_000, 500_000] {
+    let _workshop_guard = codewhale_runtime::active_workshop::active_workshop_test_guard();
+    for max_bytes in [50 * 1024, 90_000, 500_000] {
+        codewhale_runtime::active_workshop::install_active_workshop(Some(
+            &codewhale_config::WorkshopConfig {
+                read_result_max_bytes: Some(max_bytes),
+                ..Default::default()
+            },
+        ));
         let native = crate::tools::file_tool::ReadTool
-            .execute(
-                json!({"path": "budget.txt", "max_bytes": max_bytes}),
-                &context,
-            )
+            .execute(json!({"path": "budget.txt"}), &context)
             .await
             .expect("native read");
         let metadata = native.metadata.as_ref().unwrap();
@@ -1630,7 +1645,7 @@ async fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_comp
         assert_eq!(view.text, native.content, "max_bytes={max_bytes}");
         assert!(!view.needs_full_output_artifact);
         let body = native.content.split("\n\n[").next().unwrap();
-        assert!(body.len() <= (max_bytes as usize).max(100_000));
+        assert!(body.len() <= max_bytes);
         if max_bytes == 90_000 {
             let mut source_budget_only = native.clone();
             source_budget_only.metadata.as_mut().unwrap()["read_budget_bytes"] = json!(max_bytes);
@@ -1639,6 +1654,7 @@ async fn budgeted_read_result_is_not_truncated_a_second_time_by_the_context_comp
             assert!(cut.needs_full_output_artifact);
         }
     }
+    codewhale_runtime::active_workshop::install_active_workshop(None);
 }
 
 #[test]

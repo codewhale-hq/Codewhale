@@ -618,18 +618,18 @@ fn run_login(config: &mut ConfigStore, secrets: &Secrets) -> String {
 }
 
 #[test]
-fn login_selects_managed_route_when_provider_is_default() {
+fn login_keeps_the_default_route_when_no_model_is_connected() {
     let (temp, mut config) = test_config();
     assert_eq!(config.config.provider, ProviderKind::default());
     let (secrets, _) = test_secrets();
     let output = run_login(&mut config, &secrets);
     assert!(
-        output.contains("Using your Codewhale account route"),
+        output.contains("Keeping your configured deepseek route."),
         "{output}"
     );
     let saved = ConfigStore::load(Some(temp.path().join("config.toml"))).unwrap();
-    assert_eq!(saved.config.provider, ProviderKind::Codewhale);
-    assert_eq!(saved.config.model.as_deref(), Some("auto"));
+    assert_eq!(saved.config.provider, ProviderKind::default());
+    assert_eq!(saved.config.model, None);
 }
 
 #[test]
@@ -1348,7 +1348,10 @@ fn logout_recovers_from_a_corrupt_local_session_record() {
         &mut sleeper,
     )
     .unwrap();
-    assert!(store.get(&slot).unwrap().is_none());
+    let cleared: serde_json::Value =
+        serde_json::from_str(&store.get(&slot).unwrap().unwrap()).unwrap();
+    assert_eq!(cleared["signedOut"], true);
+    assert!(cleared.get("bundle").is_none());
     assert!(
         !String::from_utf8(output)
             .unwrap()
@@ -1388,10 +1391,10 @@ fn logout_clears_obsolete_or_wrong_origin_session_records() {
             "{case} must continue to load as signed out"
         );
         assert!(!client.logout().unwrap());
-        assert!(
-            store.get(&slot).unwrap().is_none(),
-            "logout must scrub the {case} record"
-        );
+        let cleared: serde_json::Value =
+            serde_json::from_str(&store.get(&slot).unwrap().unwrap()).unwrap();
+        assert_eq!(cleared["signedOut"], true, "logout must scrub {case}");
+        assert!(cleared.get("bundle").is_none());
         assert!(transport.requests().is_empty());
     }
 }

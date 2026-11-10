@@ -13,9 +13,10 @@ order), Lane (one running Workflow), Runtime (where/how/authority), and Operate
 
 ## Current foundation
 
-- The imperative Workflow VM admits at most 1,000 tasks per run and 16 live
-  tasks at once. The host's per-run concurrency gate is a semaphore sized
-  `WORKFLOW_MAX_CONCURRENT = 16` (`codewhale-workflow-js`); additional
+- The imperative Workflow VM admits at most 1,000 tasks per run and 64 live
+  tasks at once by default. The host's per-run concurrency gate is a semaphore
+  sized from `[workflow] max_concurrent` (default 64) and clamped to
+  `WORKFLOW_MAX_CONCURRENT = 128` (`codewhale-workflow-js`); additional
   `task()` spawns block on that gate until a live slot frees, then route
   through fleet. A larger declared population therefore queues at the gate,
   not through fleet itself.

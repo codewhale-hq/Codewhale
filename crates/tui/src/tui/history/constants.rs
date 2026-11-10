@@ -49,8 +49,6 @@ pub(super) const TOOL_OUTPUT_LINE_LIMIT: usize = 20;
 /// preview budget. Explicit source copying and details retain the stored result.
 pub(super) const TOOL_SUCCESS_OUTPUT_PREVIEW_LINES: usize = 3;
 
-pub(super) const TOOL_TEXT_LIMIT: usize = 300;
-
 /// Characters of the summary shown after `·` in a tool-card header. Real
 /// commands run far longer than any header (p50 = 251 chars), so this is a
 /// glance budget, not a fit budget — the header line is width-clipped

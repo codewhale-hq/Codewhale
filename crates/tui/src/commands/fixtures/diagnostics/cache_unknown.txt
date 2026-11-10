@@ -1,5 +1,5 @@
 command: /cache wat
 is_error: true
 message:
-Error: Unknown /cache argument `wat`. Usage: /cache [count|inspect [--verbose|--json]|stats|zones|warmup]
+Error: Unknown /cache argument `wat`. Usage: /cache [count|calls [count]|inspect [--verbose|--json]|stats|zones|warmup]
 action: <none>

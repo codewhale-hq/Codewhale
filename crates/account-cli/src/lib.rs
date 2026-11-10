@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 //! Codewhale account and BYOK credential commands.
 //!
 //! This module is deliberately separate from the provider-facing `login` and
@@ -29,6 +31,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 mod computer;
 pub mod dispatch;
 pub mod machine;
+mod session;
+
+pub use session::{
+    AccountAuthLease, AccountClient, AccountLogin, AccountLoginCancellation, AccountLoginPoll,
+    AccountLoginPrompt, AccountModel, AccountModels, AccountStatus, account_api_base,
+};
 mod work;
 
 const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
@@ -842,6 +850,7 @@ pub(crate) trait CloudTransport {
     fn execute(&self, request: CloudRequest) -> Result<CloudResponse>;
 }
 
+#[derive(Clone)]
 struct ReqwestTransport {
     base: Url,
     client: reqwest::blocking::Client,
@@ -875,7 +884,13 @@ impl CloudTransport for ReqwestTransport {
                 .strip_prefix("/v1/files/")
                 .and_then(|path| path.strip_suffix("/content"))
                 .is_some_and(|id| validate_account_file_id(id).is_ok());
-        let max_response_bytes = if file_download {
+        let max_response_bytes = if request.method == HttpMethod::Get
+            && matches!(
+                request.path.as_str(),
+                "/api/account/model-api" | "/v1/models"
+            ) {
+            4 * 1024 * 1024
+        } else if file_download {
             MAX_FILE_DOWNLOAD_BYTES
         } else if matches!(request.method, HttpMethod::Get | HttpMethod::Post)
             && request
@@ -1007,6 +1022,7 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
     fn poll_device(
         &self,
         device: &DeviceStart,
+        snapshot: &AccountSessionSnapshot,
         timeout: Duration,
         sleep: &mut dyn FnMut(Duration),
     ) -> Result<AuthBundle> {
@@ -1022,27 +1038,73 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
         )
         .interval_seconds(Some(device.interval))
         .max_interval_seconds(10)
-        .run(sleep, || {
-            let response = self.transport.execute(CloudRequest {
-                method: HttpMethod::Post,
-                path: "/api/cli/device/token".to_string(),
-                bearer: None,
-                body: Some(json_body(&DeviceTokenRequest {
-                    device_code: &device.device_code,
-                })?),
-            })?;
-            match response.status {
-                200 => {
-                    let bundle: AuthBundle = parse_json_body(&response.body)?;
-                    validate_auth_bundle(&bundle)?;
-                    Ok(DevicePollOutcome::Complete(bundle))
-                }
-                202 => Ok(DevicePollOutcome::Pending),
-                _ => Err(response_error(&response)),
-            }
-        })?;
-        self.save_auth(bundle.clone())?;
+        .run(sleep, || self.poll_device_once(device))?;
+        if self
+            .account_store
+            .save_if_unchanged(snapshot, bundle.clone())?
+            .is_none()
+        {
+            bail!("The signed-in account changed. Refresh and try again.");
+        }
+        let _ = self.revoke_previous_session(snapshot, &bundle);
         Ok(bundle)
+    }
+
+    fn revoke_previous_session(
+        &self,
+        previous: &AccountSessionSnapshot,
+        next: &AuthBundle,
+    ) -> bool {
+        let previous = match previous.load() {
+            Ok(Some(previous)) => previous.bundle,
+            Ok(None) => return true,
+            Err(_) => return false,
+        };
+        if previous
+            .session
+            .as_ref()
+            .zip(next.session.as_ref())
+            .is_some_and(|(old, new)| old.id == new.id)
+        {
+            return true;
+        }
+        self.revoke_session_bundle(&previous)
+    }
+
+    fn revoke_session_bundle(&self, bundle: &AuthBundle) -> bool {
+        let Ok(body) = json_body(&RefreshRequest {
+            refresh_token: &bundle.refresh_token,
+        }) else {
+            return false;
+        };
+        self.transport
+            .execute(CloudRequest {
+                method: HttpMethod::Post,
+                path: "/api/auth/logout".into(),
+                bearer: None,
+                body: Some(body),
+            })
+            .is_ok_and(|response| (200..300).contains(&response.status))
+    }
+
+    fn poll_device_once(&self, device: &DeviceStart) -> Result<DevicePollOutcome<AuthBundle>> {
+        let response = self.transport.execute(CloudRequest {
+            method: HttpMethod::Post,
+            path: "/api/cli/device/token".to_string(),
+            bearer: None,
+            body: Some(json_body(&DeviceTokenRequest {
+                device_code: &device.device_code,
+            })?),
+        })?;
+        match response.status {
+            200 => {
+                let bundle: AuthBundle = parse_json_body(&response.body)?;
+                validate_auth_bundle(&bundle)?;
+                Ok(DevicePollOutcome::Complete(bundle))
+            }
+            202 => Ok(DevicePollOutcome::Pending),
+            _ => Err(response_error(&response)),
+        }
     }
 
     fn load_auth(&self) -> Result<Option<StoredCloudAuth>> {
@@ -1051,6 +1113,7 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
         )
     }
 
+    #[cfg(test)]
     fn save_auth(&self, bundle: AuthBundle) -> Result<()> {
         self.account_store
             .save(bundle)
@@ -1567,9 +1630,13 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
 
     fn logout(&self) -> Result<bool> {
         let snapshot = self.account_store.snapshot()?;
+        self.logout_from_snapshot(&snapshot)
+    }
+
+    fn logout_from_snapshot(&self, snapshot: &AccountSessionSnapshot) -> Result<bool> {
         self.account_store
             .with_transaction(|transaction| -> Result<bool> {
-                if !transaction.matches(&snapshot) {
+                if !transaction.matches(snapshot) {
                     bail!("The signed-in account changed. Refresh and try again.");
                 }
                 let stored = match transaction.load() {
@@ -1624,7 +1691,7 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
         body: Option<Vec<u8>>,
         snapshot: AccountSessionSnapshot,
     ) -> Result<(CloudResponse, AccountSessionSnapshot)> {
-        let Some(mut stored) = snapshot.load()? else {
+        let Some(stored) = snapshot.load()? else {
             bail!("Not signed in. Run `codewhale login` first");
         };
         let first = self.transport.execute(CloudRequest {
@@ -1636,12 +1703,34 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
         if first.status != 401 {
             return Ok((first, snapshot));
         }
-        // Serialize the refresh HTTP request itself with native/CLI writers:
-        // two processes must not spend the same rotating refresh token.
-        let renewed = self
-            .account_store
+        let renewed = self.refresh_snapshot(&snapshot)?;
+        let Some((next, next_snapshot)) = renewed else {
+            bail!("The Codewhale account session expired. Run `codewhale login` again");
+        };
+        // The rotated token is durable before a potentially failing retry.
+        let retried = self.transport.execute(CloudRequest {
+            method,
+            path: path.into(),
+            bearer: Some(next.access_token),
+            body,
+        })?;
+        if retried.status == 401 {
+            self.account_store.clear_if_unchanged(&next_snapshot)?;
+            bail!("The Codewhale account session expired. Run `codewhale login` again");
+        }
+        Ok((retried, next_snapshot))
+    }
+
+    fn refresh_snapshot(
+        &self,
+        snapshot: &AccountSessionSnapshot,
+    ) -> Result<Option<(AuthBundle, AccountSessionSnapshot)>> {
+        let Some(mut stored) = snapshot.load()? else {
+            return Ok(None);
+        };
+        self.account_store
             .with_transaction(|transaction| -> Result<_> {
-                if !transaction.matches(&snapshot) {
+                if !transaction.matches(snapshot) {
                     bail!("The signed-in account changed. Refresh and try again.");
                 }
                 let refresh = self.transport.execute(CloudRequest {
@@ -1683,22 +1772,7 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
                 }
                 transaction.replace(next.clone())?;
                 Ok(Some((next, transaction.snapshot())))
-            })?;
-        let Some((next, next_snapshot)) = renewed else {
-            bail!("The Codewhale account session expired. Run `codewhale login` again");
-        };
-        // The rotated token is durable before a potentially failing retry.
-        let retried = self.transport.execute(CloudRequest {
-            method,
-            path: path.into(),
-            bearer: Some(next.access_token),
-            body,
-        })?;
-        if retried.status == 401 {
-            self.account_store.clear_if_unchanged(&next_snapshot)?;
-            bail!("The Codewhale account session expired. Run `codewhale login` again");
-        }
-        Ok((retried, next_snapshot))
+            })
     }
 
     /// Whether an interactive session exists for this profile and origin.
@@ -3111,45 +3185,22 @@ pub fn run_account_login(
     )
 }
 
+pub fn run_account_logout(profile: Option<&str>, config: &mut ConfigStore) -> Result<()> {
+    run(
+        CloudArgs {
+            api_base: None,
+            command: CloudCommand::Logout,
+        },
+        profile,
+        config,
+    )
+}
+
 pub fn reject_inline_api_key(api_key: Option<&str>) -> Result<()> {
     if api_key.is_some() {
         bail!(
             "`codewhale account` does not accept the global `--api-key` flag because command-line values can leak through shell history. Use `account keys set <provider>` for a hidden prompt, `--api-key-stdin`, or `--from-local`"
         );
-    }
-    Ok(())
-}
-
-/// On account sign-in, point a never-configured local route at the managed
-/// Codewhale provider so chat works immediately. A provider the user chose
-/// explicitly, or one that already has a local key (config, secret store or
-/// environment), is left alone: the default provider is DeepSeek, so equality
-/// with the default cannot tell "never configured" from "chose DeepSeek".
-fn select_managed_route_on_login<W: Write>(
-    config: &mut ConfigStore,
-    provider_secrets: &Secrets,
-    out: &mut W,
-) -> Result<()> {
-    let explicit_provider = config
-        .original_body()
-        .and_then(|body| body.parse::<toml::Table>().ok())
-        .is_some_and(|table| table.contains_key("provider"));
-    let has_local_key =
-        resolve_local_key(config, provider_secrets, config.config.provider)?.is_some();
-    if config.config.provider == ProviderKind::default() && !explicit_provider && !has_local_key {
-        config.config.provider = ProviderKind::Codewhale;
-        config.config.model = Some("auto".to_string());
-        config.save()?;
-        writeln!(
-            out,
-            "Using your Codewhale account route (provider codewhale, model auto)."
-        )?;
-    } else {
-        writeln!(
-            out,
-            "Keeping your configured {} route.",
-            config.config.provider.as_str()
-        )?;
     }
     Ok(())
 }
@@ -3172,6 +3223,7 @@ fn run_with<T: CloudTransport, W: Write>(
     let client = CloudClient::new(transport, cloud_secrets, profile, api_base);
     match command {
         CloudCommand::Login(login) => {
+            let snapshot = client.account_store.begin_login()?;
             let device = client.start_device()?;
             validate_user_code(&device.user_code)?;
             validate_verification_url(
@@ -3196,11 +3248,19 @@ fn run_with<T: CloudTransport, W: Write>(
                     "Browser could not be opened; use the URL and code above."
                 )?;
             }
-            let _ =
-                client.poll_device(&device, Duration::from_secs(login.timeout_seconds), sleeper)?;
+            let _ = client.poll_device(
+                &device,
+                &snapshot,
+                Duration::from_secs(login.timeout_seconds),
+                sleeper,
+            )?;
             let user = client.me()?;
             write_account(out, "Signed in to Codewhale.", profile, api_base, &user)?;
-            select_managed_route_on_login(config, provider_secrets, out)?;
+            writeln!(
+                out,
+                "Keeping your configured {} route.",
+                config.config.provider.as_str()
+            )?;
             Ok(())
         }
         CloudCommand::Status => match client.load_auth()? {

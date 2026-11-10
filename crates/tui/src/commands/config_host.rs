@@ -30,9 +30,11 @@ use codewhale_runtime::config::SearchProvider;
 pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
     match action {
         ConfigAction::PermissionRulesChanged => AppAction::PermissionRulesChanged,
+        ConfigAction::OpenModelConnectionSetup => AppAction::OpenModelConnectionSetup,
+        ConfigAction::StartAccountConnect => AppAction::StartAccountConnect,
+        ConfigAction::StartAccountLogin => AppAction::StartAccountLogin,
+        ConfigAction::StartAccountLogout => AppAction::StartAccountLogout,
         ConfigAction::StartXaiDeviceLogin => AppAction::StartXaiDeviceLogin,
-        ConfigAction::StartClaudeLogin => AppAction::StartClaudeLogin,
-        ConfigAction::StartClaudeRevoke => AppAction::StartClaudeRevoke,
         ConfigAction::StartChatgptPkceLogin => AppAction::StartChatgptPkceLogin,
         ConfigAction::StartChatgptRevoke => AppAction::StartChatgptRevoke,
         ConfigAction::StartOrcarouterPkceLogin => AppAction::StartOrcarouterPkceLogin,
@@ -87,9 +89,11 @@ pub(crate) fn config_action_to_app_action(action: ConfigAction) -> AppAction {
 pub(crate) fn app_action_to_config_action(action: AppAction) -> Option<ConfigAction> {
     Some(match action {
         AppAction::PermissionRulesChanged => ConfigAction::PermissionRulesChanged,
+        AppAction::OpenModelConnectionSetup => ConfigAction::OpenModelConnectionSetup,
+        AppAction::StartAccountConnect => ConfigAction::StartAccountConnect,
+        AppAction::StartAccountLogin => ConfigAction::StartAccountLogin,
+        AppAction::StartAccountLogout => ConfigAction::StartAccountLogout,
         AppAction::StartXaiDeviceLogin => ConfigAction::StartXaiDeviceLogin,
-        AppAction::StartClaudeLogin => ConfigAction::StartClaudeLogin,
-        AppAction::StartClaudeRevoke => ConfigAction::StartClaudeRevoke,
         AppAction::StartChatgptPkceLogin => ConfigAction::StartChatgptPkceLogin,
         AppAction::StartChatgptRevoke => ConfigAction::StartChatgptRevoke,
         AppAction::StartOrcarouterPkceLogin => ConfigAction::StartOrcarouterPkceLogin,
@@ -165,7 +169,6 @@ fn to_app_mode(mode: CommandMode) -> AppMode {
     match mode {
         CommandMode::Agent => AppMode::Agent,
         CommandMode::Plan => AppMode::Plan,
-        CommandMode::Operate => AppMode::Operate,
     }
 }
 
@@ -173,7 +176,6 @@ fn from_app_mode(mode: AppMode) -> CommandMode {
     match mode {
         AppMode::Agent => CommandMode::Agent,
         AppMode::Plan => CommandMode::Plan,
-        AppMode::Operate => CommandMode::Operate,
     }
 }
 

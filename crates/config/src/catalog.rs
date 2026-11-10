@@ -584,6 +584,157 @@ pub fn bundled_catalog_offerings() -> Vec<CatalogOffering> {
     rows
 }
 
+/// The bundled list's own default for `provider`, when a row is flagged.
+#[must_use]
+pub fn bundled_listed_default(provider: &str) -> Option<String> {
+    bundled_catalog_offerings().into_iter().find_map(|row| {
+        (row.provider == provider && row.default_for_provider).then_some(row.wire_model_id)
+    })
+}
+
+/// Default id implied by one provider's own model list.
+///
+/// The pin is the fallback. A replacement must be `stem-major.minor` on the
+/// same stem and major, with a higher minor, and must not be a variant or a
+/// regression of tool calling or a published context/output limit. A different
+/// product line is not a successor. Same rule as
+/// `identify_listed_default` in `scripts/catalog_models_dev.py`.
+#[must_use]
+pub fn identify_listed_default(provider: &str, pinned: &str, listed: &[&str]) -> String {
+    let Some((stem, major, _)) = version_id(pinned) else {
+        return pinned.to_string();
+    };
+    let facts: Vec<CatalogOffering> = bundled_catalog_offerings()
+        .into_iter()
+        .filter(|row| row.provider == provider)
+        .collect();
+    let pin_row = facts.iter().find(|row| row.wire_model_id == pinned);
+    let mut best: Option<(&str, Vec<u32>)> = None;
+    for id in listed {
+        if variant_id(id) {
+            continue;
+        }
+        let Some((id_stem, id_major, rest)) = version_id(id) else {
+            continue;
+        };
+        if id_stem != stem || id_major != major {
+            continue;
+        }
+        if let (Some(pin_row), Some(next)) =
+            (pin_row, facts.iter().find(|row| row.wire_model_id == *id))
+            && offering_regresses(pin_row, next)
+        {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(_, best_rest)| rest > *best_rest) {
+            best = Some((id, rest));
+        }
+    }
+    best.map(|(id, _)| id.to_string())
+        .unwrap_or_else(|| pinned.to_string())
+}
+
+fn version_id(model_id: &str) -> Option<(String, u32, Vec<u32>)> {
+    let (stem, version) = model_id.rsplit_once('-')?;
+    if stem.is_empty() {
+        return None;
+    }
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let rest = parts
+        .map(str::parse)
+        .collect::<Result<Vec<u32>, _>>()
+        .ok()?;
+    if rest.is_empty() {
+        return None;
+    }
+    Some((stem.to_ascii_lowercase(), major, rest))
+}
+
+fn variant_id(model_id: &str) -> bool {
+    const TOKENS: &[&str] = &[
+        "audio",
+        "beta",
+        "coder",
+        "distill",
+        "distilled",
+        "embed",
+        "embedding",
+        "experimental",
+        "fast",
+        "haiku",
+        "image",
+        "lite",
+        "max",
+        "micro",
+        "mini",
+        "nano",
+        "preview",
+        "reranker",
+        "small",
+        "tiny",
+        "tts",
+        "turbo",
+        "vision",
+    ];
+    model_id
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| {
+            let token = token.to_ascii_lowercase();
+            TOKENS.contains(&token.as_str()) || token.starts_with("flash")
+        })
+}
+
+/// One current id per `stem-major` line. Older snapshots of that line drop out.
+///
+/// `anthropic/claude-opus-4.6` and `anthropic/claude-opus-4.8` are one line;
+/// the newer minor stays. A different line (`claude-sonnet-…`, `claude-haiku-…`)
+/// stays. Ids that are not `stem-major.minor` stay as themselves.
+#[must_use]
+pub fn current_listed_models(ids: &[String]) -> Vec<String> {
+    let mut best: std::collections::BTreeMap<String, (Vec<u32>, String)> =
+        std::collections::BTreeMap::new();
+    let mut plain = Vec::new();
+    for id in ids {
+        if variant_id(id) {
+            plain.push(id.clone());
+            continue;
+        }
+        if let Some((stem, major, rest)) = version_id(id) {
+            let key = format!("{stem}\0{major}");
+            let replace = best.get(&key).is_none_or(|(prev, _)| rest > *prev);
+            if replace {
+                best.insert(key, (rest, id.clone()));
+            }
+        } else {
+            plain.push(id.clone());
+        }
+    }
+    let mut out: Vec<String> = best.into_values().map(|(_, id)| id).chain(plain).collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn offering_regresses(pin: &CatalogOffering, next: &CatalogOffering) -> bool {
+    if pin.tool_call == Some(true) && next.tool_call == Some(false) {
+        return true;
+    }
+    let Some(pin_limit) = pin.limit.as_ref() else {
+        return false;
+    };
+    let Some(next_limit) = next.limit.as_ref() else {
+        return false;
+    };
+    matches!(
+        (pin_limit.context, next_limit.context),
+        (Some(old), Some(new)) if new < old
+    ) || matches!(
+        (pin_limit.output, next_limit.output),
+        (Some(old), Some(new)) if new < old
+    )
+}
+
 /// Hydrate bundled [`CatalogOffering`] rows from a parsed Models.dev catalog.
 ///
 /// Only text-chat offerings are emitted (TTS/audio-only rows stay in the parsed
@@ -888,7 +1039,7 @@ impl CachedProviderCatalog {
     /// A `ttl_secs` of zero means "always stale" (never serve as fresh).
     #[must_use]
     pub fn is_stale(&self, now_unix: u64) -> bool {
-        self.age_secs(now_unix) >= self.ttl_secs
+        self.fetched_at.saturating_sub(now_unix) > 300 || self.age_secs(now_unix) >= self.ttl_secs
     }
 
     /// Whether this entry may contribute live offerings at `now_unix`.

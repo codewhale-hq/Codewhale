@@ -100,6 +100,9 @@ When the TUI/runtime starts (and is not disabled):
    provider's own credential-scoped `/models` answer at layer 20.
 4. On failure: keep prior cache or fall back to the **bundled** seed. Model
    selection never hard-fails because Models.dev is down.
+5. While the runtime remains open, recheck every 15 minutes. A successful
+   snapshot stays current for the existing 24-hour TTL; a failed network
+   attempt has a short retry backoff, and an explicit refresh bypasses both.
 
 ### Manual force refresh
 
@@ -114,6 +117,33 @@ the composer). When admitted cloud-facts settings are enabled, it also requests
 a cloud refresh; hard-disable and trust-key checks still apply. Implementation lives under
 `crates/tui/src/commands/groups/core/core.rs` and
 `crates/engine/src/models_dev_live.rs`.
+
+Runtime clients use the existing route-scoped endpoint:
+
+```text
+POST /v1/providers/{id}/models/refresh?force_catalog=true
+```
+
+Include `model_provider_id` for a named route. This refreshes public Models.dev
+metadata and that exact provider's model list independently. Omitting
+`force_catalog` keeps the public metadata TTL; setting it bypasses the TTL and
+network-failure backoff. Concurrent public refreshes share one fetch owner.
+`GET /v1/providers` exposes the existing catalog generation as `catalog_revision`.
+It and the refresh receipt expose `public_catalog` with
+`freshness`, `fetched_at`, `outcome`, and a bounded error category. A provider
+listing failure and a public metadata failure remain separate results; neither
+erases the last good public snapshot or changes the selected model.
+
+The desktop and shared browser model picker offer **Refresh models**. Opening
+or focusing the picker checks stale lists; a visible open picker checks the
+Engine's catalog revision every 30 seconds and rereads model rows when it changes.
+This picks up background completion without repeatedly loading the full catalog. A failed
+read keeps the previous rows for that exact route and shows retry feedback.
+Catalog data is discarded when its workspace, account, or Engine owner changes.
+
+New models on an already supported route can appear without a binary update.
+A fresh provider/account roster still owns which IDs that route exposes; public
+metadata cannot grant access or invent a new provider protocol.
 
 ### Env knobs (tests / dogfood / offline)
 

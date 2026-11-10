@@ -260,7 +260,7 @@ pub fn typescript_defs(defs: &BTreeMap<String, Def>, mode: SchemaMode) -> String
                 if mode == SchemaMode::Host {
                     let _ = writeln!(out, "export interface {name} {{}}");
                 } else {
-                    let _ = writeln!(out, "export type {name} = {{}}");
+                    let _ = writeln!(out, "export type {name} = Record<string, never>");
                 }
             }
             Def::Object { fields, extra, .. } => {

@@ -2,6 +2,7 @@
 
 > 英文原文：[PLUGINS.md](../PLUGINS.md)。
 > 最后与英文同步日期（last synced with English revision）：2026-09-26。
+> 2026-11-07 定点更正：版本范围、目录与固定来源、信任确认、本地更新；未做全文重译。
 
 想做一个插件包，先从[编写你的第一个 Codewhale 插件](./PLUGIN_AUTHORING.md)
 和里面可运行的 Skills 示例入手。
@@ -12,9 +13,14 @@
 兼容的 `kimi.plugin.json`、`.claude-plugin/plugin.json`，或旧版 `plugin.toml`。
 本文讲的是文件最初怎么落盘。
 
+版本范围：已发布的 CLI v0.10.2 内置 Computer Use 0.12.1；当前 Engine 源码候选版
+已改为单独安装的普通插件。刷新目录或安装新版 Mac 助手，不会替换旧 CLI 的内置包。
+完整的版本差异、目录时效和更换固定版本的步骤，见
+[英文市场指南](../PLUGIN_MARKETPLACE.md#catalog-freshness-and-pinned-installs)。
+
 `/plugin suggest <task>` 是一个本地、只读的配套命令：它会按名称、关键词、
-描述、所含 skill 名、声明的主机，给已安装的插件包排序，也给你用
-`/plugin marketplace add` 添加的市场目录排序。它还会说明匹配的原因，
+描述、所含 skill 名、声明的主机，给已安装的插件包与可用目录里的候选项排序，
+包括内置目录快照和你用 `/plugin marketplace add` 添加的目录。它还会说明匹配的原因，
 并给出下一步：审查、启用，或从目录安装。但它自己从不安装、信任或启用插件包。
 
 ## Codewhale 如何推荐插件
@@ -32,17 +38,17 @@ Codewhale 在插件上只帮忙，不推销。规则如下：
   在交互式 TUI 里，模型每个会话可以调用一次 `request_plugin_install`，
   请你审查任务需要的某个插件；第二次调用会失败。
   Exec、ACP 和 runtime-API 会话拿不到这个工具。
-- **内置插件从不作为推荐出现。** Computer Use 这类内置插件，
-  只会出现在 `/plugin list` 和 Extensions 里。
+- **内置插件从不作为推荐出现。** 先在 `/plugin list` 和 Extensions 检查已有插件。
+  在 v0.10.2 上，对 Computer Use 执行目录安装只会提示内置包已存在，不会升级它；
+  应审查、信任并启用已有包。安装独立 Computer Use 包的方式适用于当前源码候选版的新布局。
 - **只认具体词。** 泛化词（accessibility、browser、chrome、docs、screenshot、
   web、wiki 等）和 Codewhale 自己的词汇（agent、code、data、MCP、model、
   session、tool）永远不触发推荐，所以问 MCP 服务器为什么卡住，不会冒出某个
   厂商的插件。有辨识度的名称、短语和域名照常匹配。匹配器和市场的
   `check-marketplace.mjs` 共用同一份停用词表。
 - **只推荐本机跑得起来的。** 插件的 `when.os` 若排除了当前操作系统，就不会被推荐。
-- **给出真正的下一步。** 模型请求的那一行会按插件的实际需要写成 Install、
-  Review trust 或 Enable。只有那个按钮可点，它打开的是 `/plugin show <name>`；
-  它从不安装、信任或启用。
+- **审查后再操作。** 模型请求的那一行提供 Review，打开 Extensions 中的插件或市场目录。
+  点击本身不会安装、信任或启用；仍需选择目录中的显式操作并审查已安装的内容。
 - **关闭可以撤销。** 按 Esc 时，如果草稿非空，先清空草稿，然后才隐藏这一行，
   而且只对当前会话生效。“Don't suggest again”是你显式做出的选择，
   会被持久保存。`/plugin dismissals` 会列出这两种；
@@ -50,7 +56,7 @@ Codewhale 在插件上只帮忙，不推销。规则如下：
 - **新插件要靠自己找。** 想找新插件，就看这些文档、`/plugin marketplace list`、
   Extensions，以及下面的浏览器指南。
 
-Codewhale 不会凭空编造远程插件 URL；缺失的插件只会从你添加过的目录里推荐。
+Codewhale 不会凭空编造远程插件 URL；缺失的插件只会从可用目录里推荐。
 磁盘上的插件包有变化时，发送消息时和回合之间仍会弹出 `/plugin reload` 的 toast。
 
 ## 浏览器：选一个
@@ -61,14 +67,16 @@ Codewhale 不会凭空编造远程插件 URL；缺失的插件只会从你添加
 | --- | --- | --- |
 | `chrome-devtools` MCP（`/mcp recommendations`） | 它自己驱动的一个 Chrome，可以包含已登录的页面 | DevTools 级别的检查和性能分析 |
 | Playwright MCP（`/mcp recommendations`） | 带 `--isolated` 的全新隔离 profile | 不带你身份的脚本化流程和测试 |
-| Computer Use 的 `browser_*` 工具（内置，审查前关闭） | 它自己启动的浏览器，用独立的 profile | 更宽泛的桌面任务里的浏览器步骤 |
+| Computer Use 的浏览器工具（审查前关闭） | 它自己启动的浏览器，用独立的 profile | 更宽泛的桌面任务里的浏览器步骤 |
 | Chromewhale（开发者预览版，`codewhale-hq/codewhale-plugin-marketplace`） | 你自己的、已经打开的 Chrome profile；以 unpacked 方式加载 | 读取或操作你当前正看的标签页，每次授权一个站点 |
 
 这些都不会主动推荐给你。按任务需要自己添加。
 
 ## 来源
 
-`/plugin install <spec>` 接受三种来源：
+`/plugin install <spec>` 的常用来源如下。完整来源和限制见
+[英文来源说明](../PLUGINS.md#sources)，包括指定版本的 GitHub 与 npm tarball；
+`codewhale install <spec>` 是使用同一安装器的 shell 入口，不需要模型凭据。
 
 ```text
 /plugin install ./path/to/bundle            # local directory (copied)
@@ -122,6 +130,9 @@ Claude 的 `http` 传输映射为 Streamable HTTP。
 
 这里渲染的审查内容和确认 token 与 `/plugin trust <name>` 完全相同。
 信任走的是严格的、绑定哈希的回执流程，不是一个仅供参考的标记。
+不带 token 的 `/plugin trust <name>` 只显示审查内容，不会授予信任。
+必须执行审查打印出的原样确认命令，保留内容哈希和能力哈希这两个完整值；
+确认信任后，仍需单独执行 `/plugin enable <name>`。
 插件包的内容或声明的能力一旦变化，回执就不再匹配，插件随之失效，直到你重新审查。
 
 ## 更新与卸载
@@ -134,10 +145,13 @@ Claude 的 `http` 传输映射为 Streamable HTTP。
 
 - `update` 会重新下载记录在案的来源。字节完全相同就什么都不做；
   有变化的插件包会被原子替换，其信任回执自动失效（哈希不再匹配），
-  所以想让插件再次激活，必须重新审查。从本地路径安装的插件无法重新下载。
-  要替换已安装的副本，先停用再卸载，然后运行 `/plugin install <path>`
-  并审查新的插件包；原来源目录保持不动。参见
+  所以想让插件再次激活，必须重新审查。本地安装则从记录的原来源目录重新暂存副本，
+  因此应保留该目录；直接修改已安装副本不会修改原来源。参见
   [本地编写循环](./PLUGIN_AUTHORING.md#4-修改并重新审查)。
+- `update` 保留记录中的仓库修订、npm 版本、归档 URL 和包选择路径。
+  刷新市场目录不会改变已安装包的来源。要换到更新的固定版本，见
+  [英文更换步骤](../PLUGIN_MARKETPLACE.md#changing-an-installed-pin)；
+  该步骤仅适用于安装器管理的用户级插件，卸载前应保留原来源与本地修改。
 - `uninstall` 拒绝卸载已启用的插件（先停用），删除插件包目录，
   并移除它持久化的信任/启用记录。
 

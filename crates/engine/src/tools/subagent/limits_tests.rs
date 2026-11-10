@@ -353,21 +353,33 @@ async fn child_wall_time_is_unbounded_unless_an_owner_sets_it() {
     drop(guard);
     for owner_steps in [0, 7] {
         runtime.worker_profile.max_steps = owner_steps;
-        let result = AgentTool::new(Arc::clone(&manager), runtime.clone())
-            .execute(
-                json!({
-                    "action": "start",
-                    "type": "explore",
-                    "prompt": "inspect",
-                    "max_steps": 1,
-                    "wall_time_secs": 1,
-                    "max_output_tokens": 1,
-                    "max_depth": 0
-                }),
-                &runtime.context,
-            )
-            .await
-            .expect("legacy model caps cannot restrict the child");
+        let args = json!({
+            "action": "start",
+            "type": "explore",
+            "prompt": "inspect",
+            "max_steps": 1,
+            "wall_time_secs": 1,
+            "max_output_tokens": 1,
+            "max_depth": 0
+        });
+        let mut closed_before_commit = 0;
+        let result = loop {
+            match AgentTool::new(Arc::clone(&manager), runtime.clone())
+                .execute(args.clone(), &runtime.context)
+                .await
+            {
+                Ok(result) => break result,
+                Err(error)
+                    if closed_before_commit < 50
+                        && error
+                            .to_string()
+                            .contains("prepared child execution owner closed") =>
+                {
+                    closed_before_commit += 1;
+                }
+                Err(error) => panic!("legacy model caps cannot restrict the child: {error}"),
+            }
+        };
         let receipt: Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(receipt["effective_limits"]["max_steps"], owner_steps);
         assert!(receipt["effective_limits"]["wall_deadline_ms"].is_null());

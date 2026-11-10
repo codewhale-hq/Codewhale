@@ -19,8 +19,8 @@ async fn repl_fence_obeys_auto_review_block_under_full_access() {
     let client: crate::core::model_client::SharedModelClient = mock.clone();
     let mut config = deterministic_engine_config(workspace.path());
     // Built through the config entry point, as production does.
-    config.auto_review_policy =
-        crate::core::authority::auto_review::AutoReviewPolicy::from_config(&{
+    config.auto_review_policy = crate::core::authority::auto_review::AutoReviewPolicy::from_config(
+        &{
             let __cw_config_init_0_0 = Some(codewhale_runtime::config::AutoReviewConfig {
                 block: vec![{
                     let __cw_config_init_1_0 = Some("no-code".to_string());
@@ -38,7 +38,8 @@ async fn repl_fence_obeys_auto_review_block_under_full_access() {
             let mut __cw_config_init_0_value: Config = Config::default();
             __cw_config_init_0_value.auto_review = __cw_config_init_0_0;
             __cw_config_init_0_value
-        });
+        },
+    );
     let (mut engine, handle) = Engine::new_with_model_client(config, &Config::default(), client);
     engine.session.auto_approve = true;
     engine.session.add_message(Message {
@@ -990,9 +991,9 @@ async fn initial_routed_usage_is_total_only_emitted_once_and_keeps_parent_route_
     missing_usage_route.billing_mode = crate::cost_status::RouteBillingMode::Metered;
     **initial_routed_usage = crate::cost_status::RuntimeUsageBatch {
         decisions: Vec::new(),
-        records: vec![crate::cost_status::RuntimeUsageRecord {
-            source_id: "auto-router:engine-fixture".to_string(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        records: vec![crate::cost_status::RuntimeUsageRecord::legacy(
+            "auto-router:engine-fixture".to_string(),
+            crate::cost_status::EffectiveRouteUsage {
                 route: crate::cost_status::EffectiveRouteEnvelope::capture(
                     None,
                     ProviderKind::Openai,
@@ -1003,7 +1004,7 @@ async fn initial_routed_usage_is_total_only_emitted_once_and_keeps_parent_route_
                 ),
                 usage: classifier_usage.clone(),
             },
-        }],
+        )],
         drop_records: vec![crate::cost_status::RuntimeUsageDropRecord {
             reason: crate::cost_status::RuntimeUsageMissingReason::default(),
             source_id: "auto-router:engine-fixture:missing-usage".to_string(),
@@ -1521,18 +1522,26 @@ async fn productive_tool_results_do_not_hit_no_user_input_backstop() {
 
     let mock = std::sync::Arc::new(MockLlmClient::new(turns));
     let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let usage_owner = format!("productive-backstop:{}", uuid::Uuid::new_v4());
+    crate::cost_status::register_runtime_usage_sink(&usage_owner, std::sync::Arc::new(|_| true));
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.compaction.runtime_cost_owner = Some(usage_owner.clone());
     let (engine, handle) = Engine::new_with_model_client(
-        deterministic_engine_config(workspace.path()),
+        engine_config,
         &Config::default(),
         client,
     );
     let task = tokio::spawn(engine.run());
+    let mut op = external_user_message_op(
+        "Read every distinct fixture, then report completion.",
+        AppMode::Agent,
+        &Config::default(),
+    );
+    if let Op::SendMessage(spec) = &mut op {
+        spec.compaction.runtime_cost_owner = Some(usage_owner);
+    }
     handle
-        .send(external_user_message_op(
-            "Read every distinct fixture, then report completion.",
-            AppMode::Agent,
-            &Config::default(),
-        ))
+        .send(op)
         .await
         .expect("send productive tool trajectory");
 

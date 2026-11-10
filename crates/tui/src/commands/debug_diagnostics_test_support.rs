@@ -131,8 +131,17 @@ fn context_fixture_for_host(expected: &str, platform: &str, shell: &str) -> Stri
     let environment =
         format!("## Environment\n\n- lang: en\n- platform: {platform}\n- shell: {shell}");
     let tokens = environment.chars().count().div_ceil(3);
-    let total = 2207 - 21 + tokens;
-    expected
+    let text_total = expected.lines().find_map(|line| {
+        line.strip_prefix("Source-entry total: ")
+            .and_then(|rest| rest.strip_suffix(" tokens"))
+            .and_then(|value| value.parse::<usize>().ok())
+    });
+    let json_total = expected.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("\"total_estimated_tokens\": ")
+            .and_then(|rest| rest.trim_end_matches(',').parse::<usize>().ok())
+    });
+    let mut adjusted = expected
         .replace(
             "EnvironmentBlock: Runtime environment [<workspace>] - 21 tokens",
             &format!("EnvironmentBlock: Runtime environment [<workspace>] - {tokens} tokens"),
@@ -144,17 +153,24 @@ fn context_fixture_for_host(expected: &str, platform: &str, shell: &str) -> Stri
         .replace(
             "\"estimated_tokens\": 21,",
             &format!("\"estimated_tokens\": {tokens},"),
-        )
-        .replace(
-            "Source-entry total: 2207 tokens",
+        );
+    let delta = tokens.saturating_sub(21);
+    if let Some(total) = text_total {
+        let total = total + delta;
+        adjusted = adjusted.replace(
+            &format!("Source-entry total: {} tokens", total - delta),
             &format!("Source-entry total: {total} tokens"),
-        )
-        .replace(
-            "\"total_estimated_tokens\": 2207,",
+        );
+    }
+    if let Some(total) = json_total {
+        let total = total + delta;
+        adjusted = adjusted.replace(
+            &format!("\"total_estimated_tokens\": {},", total - delta),
             &format!("\"total_estimated_tokens\": {total},"),
-        )
+        );
+    }
+    adjusted
 }
-
 /// Replace the RFC-3339 `generated_at` report stamp so two captures of the same
 /// source state compare byte-for-byte.
 ///
@@ -291,7 +307,7 @@ fn context_expectations_preserve_counts_for_each_host() {
             .replace("- 21 tokens", "- 22 tokens")
             .replace("environment (21)", "environment (22)")
             .replace("\"estimated_tokens\": 21,", "\"estimated_tokens\": 22,")
-            .replace("2207", "2208");
+            .replace("1878", "1879");
         let expected = context_fixture_for_host(&baseline, "windows", "pwsh.exe");
         assert_eq!(expected, windows, "{name}");
         // A fixture that carries no host-dependent number (the top-source list
@@ -305,7 +321,7 @@ fn context_expectations_preserve_counts_for_each_host() {
             assert_ne!(expected, windows.replace("22", "23"));
         }
         // A regression in another source still fails on every fixture.
-        assert_ne!(expected, windows.replace("1803", "1804"));
+        assert_ne!(expected, windows.replace("1474", "1475"));
     }
 }
 

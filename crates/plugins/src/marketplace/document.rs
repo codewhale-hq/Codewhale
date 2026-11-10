@@ -66,7 +66,13 @@ pub fn load_catalog_document(
 
     let document = MarketplaceDocument {
         catalog_id: MarketplaceCatalogId::new(name),
-        format: MarketplaceFormat::Auto,
+        format: if path.ends_with(".github/plugin/marketplace.json")
+            || path.ends_with(".plugin/marketplace.json")
+        {
+            MarketplaceFormat::Claude
+        } else {
+            MarketplaceFormat::Auto
+        },
         root,
         base: Some(path.display().to_string()),
     };
@@ -76,7 +82,7 @@ pub fn load_catalog_document(
     // nothing useful was parsed; do not persist it.
     if catalog.candidates.is_empty() && catalog.error_count() > 0 {
         return Err(format!(
-            "Catalog `{name}` could not be parsed as any known marketplace format (kimi, claude, codex, codewhale):\n{}",
+            "Catalog `{name}` could not be parsed as any known marketplace format (kimi, claude, codex, dsh, codewhale):\n{}",
             render_diagnostics_inline(&catalog.diagnostics)
         ));
     }
@@ -176,11 +182,6 @@ pub fn resolve_candidate_install<'a>(
 /// let catalog metadata point the installer at an arbitrary directory on this
 /// machine, so such an entry is not installable from the catalog; installing a
 /// directory outside it stays an explicit `/plugin install path:...`.
-///
-/// Known limitation: the check is textual. It inspects the source's path
-/// components and never resolves the filesystem, so a symlink inside the
-/// catalog tree (`plugins/foo -> /elsewhere`) still passes, and the install
-/// follows it out of the catalog directory.
 fn resolve_spec(
     source_path: &str,
     format: MarketplaceFormat,
@@ -200,16 +201,35 @@ fn resolve_spec(
     if let MarketplaceSourceSpec::LocalPath { path } = source
         && let Some(dir) = Path::new(source_path).parent()
     {
-        // Claude keeps its catalog in a manifest-only metadata directory;
-        // relative sources are rooted at the marketplace repository.
-        let dir = if format == MarketplaceFormat::Claude
-            && dir.file_name().is_some_and(|name| name == ".claude-plugin")
-        {
-            dir.parent().unwrap_or(dir)
-        } else {
-            dir
+        let metadata = match format {
+            MarketplaceFormat::Claude if dir.ends_with(".github/plugin") => Some(".github/plugin"),
+            MarketplaceFormat::Claude if dir.ends_with(".claude-plugin") => Some(".claude-plugin"),
+            MarketplaceFormat::Claude if dir.ends_with(".plugin") => Some(".plugin"),
+            MarketplaceFormat::Codex if dir.ends_with(".agents/plugins") => Some(".agents/plugins"),
+            _ => None,
         };
-        return Ok(format!("path:{}", dir.join(path).display()));
+        let dir = metadata
+            .and_then(|suffix| dir.ancestors().nth(Path::new(suffix).components().count()))
+            .unwrap_or(dir);
+        let mut target = dir.to_path_buf();
+        for part in path.components() {
+            target.push(part);
+            match std::fs::symlink_metadata(&target) {
+                Ok(metadata)
+                    if codewhale_util::path_identity::metadata_is_link_or_reparse(&metadata) =>
+                {
+                    return Err(format!(
+                        "Catalog path {} contains a symbolic link",
+                        target.display()
+                    ));
+                }
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.to_string());
+                }
+                _ => {}
+            }
+        }
+        return Ok(format!("path:{}", target.display()));
     }
     // Every other source kind (GitHub, archive/tarball URL) is remote. The
     // installer parses the spec again, and any value it does not recognise

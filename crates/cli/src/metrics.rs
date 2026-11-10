@@ -1,7 +1,7 @@
-//! `codewhale metrics` — reads the audit log and session/task stores and prints
+//! `codewhale metrics` / `stats` — reads native and legacy stores and prints
 //! a human-readable usage rollup.
 //!
-//! Data sources, all resolved through the shared Codewhale state resolvers so
+//! Legacy receipt sources, resolved through the shared Codewhale state resolvers so
 //! the reader lands on the same files the writers use:
 //! - `~/.codewhale/audit.log`   — one JSON line per event (approvals, credentials)
 //! - `~/.codewhale/sessions/`   — saved session JSON files (tool call history)
@@ -17,20 +17,23 @@
 //! excluding records copied across roots. An explicit `CODEWHALE_HOME` never
 //! reads outside that root.
 //!
-//! The three sources overlap and are deliberately not de-duplicated against
+//! The three legacy views overlap and are deliberately not de-duplicated against
 //! each other: an approval receipt, a saved-session transcript entry, and a
 //! runtime `item.*` receipt each describe one tool call from a different
 //! vantage point, and collapsing them would assert an identity the data does
 //! not carry. Cross-reference with `--json` when an exact count matters.
 //!
-//! There is no fourth source. The opt-in tool audit file behind
-//! `CODEWHALE_TOOL_AUDIT_LOG` / `DEEPSEEK_TOOL_AUDIT_LOG` (`emit_tool_audit`)
-//! is a *different* file from `~/.codewhale/audit.log` and is not discovered
-//! here. Because that variable can be pointed at the audit log itself, and
+//! The opt-in tool audit file behind `CODEWHALE_TOOL_AUDIT_LOG` /
+//! `DEEPSEEK_TOOL_AUDIT_LOG` (`emit_tool_audit`) is separate from
+//! `~/.codewhale/audit.log`; the legacy receipt projection does not discover
+//! it. Because that variable can be pointed at the audit log itself, and
 //! because `emit_tool_audit` puts `tool_name` and `success` at the JSON top
 //! level rather than under `details`, the audit reader accepts both shapes.
 
+mod stats;
+
 use std::collections::{HashMap, HashSet};
+use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -49,6 +52,10 @@ pub struct MetricsArgs {
     pub json: bool,
     /// Restrict to events newer than this cutoff (inclusive).
     pub since: Option<DateTime<Utc>>,
+    pub models: Option<usize>,
+    pub tools: Option<usize>,
+    pub project: Option<PathBuf>,
+    pub roles: Option<usize>,
 }
 
 pub fn run(args: MetricsArgs) -> Result<()> {
@@ -61,9 +68,35 @@ pub fn run(args: MetricsArgs) -> Result<()> {
     let sessions = codewhale_config::resolve_state_dir("sessions")?;
     let tasks = codewhale_config::resolve_state_dir("tasks")?;
     let runtime_events = runtime_event_dirs(&tasks, &sessions);
+    anyhow::ensure!(
+        [args.models, args.tools, args.roles]
+            .into_iter()
+            .flatten()
+            .all(|limit| limit > 0),
+        "--models, --tools and --roles must be positive"
+    );
+    let report = stats::collect(&args, &sessions, &runtime_events)?;
+    if args.project.is_some() {
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "stats": report,
+                    "legacy_receipt_projections": null,
+                    "legacy_receipt_projection_scope": "unavailable for a workspace filter; old receipts do not all carry that scope",
+                }))?
+            );
+        } else {
+            stats::print_human(&report);
+            println!("Legacy receipt projections: unavailable for a workspace filter.");
+        }
+        return Ok(());
+    }
 
-    // Collect data from every source; treat missing files as empty.
-    let mut rollup = Rollup::default();
+    let mut rollup = Rollup {
+        stats: Some(report),
+        ..Default::default()
+    };
     read_audit_history(&audit_roots, args.since, &mut rollup);
     read_session_files(&sessions, args.since, &mut rollup);
     read_runtime_events(&runtime_events, args.since, &mut rollup);
@@ -71,6 +104,12 @@ pub fn run(args: MetricsArgs) -> Result<()> {
     if args.json {
         print_json(&rollup)?;
     } else {
+        if let Some(report) = &rollup.stats {
+            stats::print_human(report);
+        }
+        println!(
+            "\nLegacy receipt projections below overlap and are not added to native-source money or unique execution counts."
+        );
         print_human(&rollup, args.since);
     }
 
@@ -389,6 +428,12 @@ pub struct RuntimeRequestStats {
 /// Top-level rollup.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Rollup {
+    stats: Option<stats::StatsReport>,
+    pub receipt_read_gaps: u64,
+    #[serde(skip)]
+    receipt_inspection_bytes: usize,
+    #[serde(skip)]
+    receipt_inspection_exhausted: bool,
     /// UTC timestamp of the earliest event we've seen.
     pub earliest_ts: Option<DateTime<Utc>>,
     /// UTC timestamp of the latest event we've seen.
@@ -413,6 +458,27 @@ struct RuntimeEventDedup {
 }
 
 impl Rollup {
+    fn admit_receipt_inspection(&mut self, value: &Value) -> bool {
+        if self.receipt_inspection_exhausted {
+            return false;
+        }
+        let bytes = value.to_string().len();
+        let next = self.receipt_inspection_bytes.checked_add(bytes);
+        match next {
+            Some(next)
+                if next <= codewhale_engine::session_manager::SESSION_METADATA_READ_LIMIT =>
+            {
+                self.receipt_inspection_bytes = next;
+                true
+            }
+            _ => {
+                self.receipt_read_gaps = self.receipt_read_gaps.saturating_add(1);
+                self.receipt_inspection_exhausted = true;
+                false
+            }
+        }
+    }
+
     fn touch_ts(&mut self, ts: &DateTime<Utc>) {
         match self.earliest_ts {
             None => self.earliest_ts = Some(*ts),
@@ -439,10 +505,99 @@ impl Rollup {
 // Source readers
 // ──────────────────────────────────────────────────────────────────────────────
 
+fn open_diagnostic_file(path: &Path) -> io::Result<std::fs::File> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "diagnostic record has no parent",
+        )
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "diagnostic record has no filename",
+        )
+    })?;
+    codewhale_util::files::WorkspaceFile::open_resolved_root(parent, Path::new(name), false)?
+        .open_file_shared()
+}
+
+fn read_diagnostic_text(path: &Path) -> io::Result<String> {
+    let mut raw = Vec::new();
+    let limit = codewhale_engine::session_manager::SESSION_METADATA_READ_LIMIT;
+    open_diagnostic_file(path)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut raw)?;
+    if raw.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "diagnostic record exceeds the session inspection limit",
+        ));
+    }
+    String::from_utf8(raw)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "diagnostic record is not UTF-8"))
+}
+
+fn read_diagnostic_json(path: &Path) -> Result<Value> {
+    Ok(serde_json::from_str(&read_diagnostic_text(path)?)?)
+}
+
+struct DiagnosticLines {
+    reader: std::io::BufReader<std::fs::File>,
+    finished: bool,
+}
+
+impl Iterator for DiagnosticLines {
+    type Item = io::Result<String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        let mut raw = Vec::new();
+        let limit = codewhale_engine::session_manager::SESSION_METADATA_READ_LIMIT;
+        let result = self
+            .reader
+            .by_ref()
+            .take(limit as u64 + 1)
+            .read_until(b'\n', &mut raw);
+        match result {
+            Ok(0) => {
+                self.finished = true;
+                None
+            }
+            Ok(_) if raw.len() > limit => {
+                self.finished = true;
+                Some(Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "diagnostic frame exceeds the session inspection limit",
+                )))
+            }
+            Ok(_) => Some(String::from_utf8(raw).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "diagnostic frame is not UTF-8")
+            })),
+            Err(error) => {
+                self.finished = true;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
+fn diagnostic_lines(file: std::fs::File) -> DiagnosticLines {
+    DiagnosticLines {
+        reader: std::io::BufReader::new(file),
+        finished: false,
+    }
+}
+
 /// Read both retained generations from each root. A copied legacy record is
 /// counted once across roots, while repeated records within one root retain
 /// their multiplicity. No source log is rewritten or removed.
 fn read_audit_history(roots: &[PathBuf], since: Option<DateTime<Utc>>, rollup: &mut Rollup) {
+    if rollup.receipt_inspection_exhausted {
+        return;
+    }
     let mut earlier_roots = HashMap::new();
     for root in roots {
         let mut root_counts = HashMap::new();
@@ -470,10 +625,14 @@ fn read_audit_log(
     earlier_roots: &HashMap<[u8; 32], u64>,
     root_counts: &mut HashMap<[u8; 32], u64>,
 ) {
-    let file = match std::fs::File::open(path) {
+    if rollup.receipt_inspection_exhausted {
+        return;
+    }
+    let file = match open_diagnostic_file(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
             tracing::trace!(
                 "metrics: could not read audit log {}: {}",
                 path.display(),
@@ -485,8 +644,9 @@ fn read_audit_log(
 
     // Streamed line by line: an append-only log is unbounded, and holding it
     // whole only to aggregate one line at a time made allocation scale with it.
-    for raw_line in std::io::BufRead::lines(std::io::BufReader::new(file)) {
+    for raw_line in diagnostic_lines(file) {
         let Ok(raw_line) = raw_line.inspect_err(|e| {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
             tracing::trace!("metrics: stopped reading audit log {}: {e}", path.display());
         }) else {
             break;
@@ -500,10 +660,20 @@ fn read_audit_log(
         let v: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
+                rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
                 tracing::trace!("metrics: skipping malformed audit line: {e}");
                 continue;
             }
         };
+
+        if let Some(cutoff) = since
+            && parse_ts_field(&v, "ts").is_some_and(|timestamp| timestamp < cutoff)
+        {
+            continue;
+        }
+        if !rollup.admit_receipt_inspection(&v) {
+            break;
+        }
 
         // Copy migration preserves the complete event, including its timestamp.
         // Count occurrences so two identical legitimate records in one source
@@ -673,10 +843,14 @@ fn read_audit_log(
 /// Read session JSON files under `sessions/` (one per session).
 /// These carry tool call history with optional elapsed_ms and result data.
 fn read_session_files(sessions_dir: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rollup) {
+    if rollup.receipt_inspection_exhausted {
+        return;
+    }
     let rd = match std::fs::read_dir(sessions_dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
             tracing::trace!(
                 "metrics: could not list sessions dir {}: {}",
                 sessions_dir.display(),
@@ -686,7 +860,17 @@ fn read_session_files(sessions_dir: &Path, since: Option<DateTime<Utc>>, rollup:
         }
     };
 
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
+                continue;
+            }
+        };
+        if rollup.receipt_inspection_exhausted {
+            break;
+        }
         let path = entry.path();
         // Only look at .json files directly in sessions/; skip sub-dirs.
         if path.is_dir() || path.extension().map(|e| e != "json").unwrap_or(true) {
@@ -697,9 +881,13 @@ fn read_session_files(sessions_dir: &Path, since: Option<DateTime<Utc>>, rollup:
 }
 
 fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rollup) {
-    let content = match std::fs::read_to_string(path) {
+    if rollup.receipt_inspection_exhausted {
+        return;
+    }
+    let content = match read_diagnostic_text(path) {
         Ok(c) => c,
         Err(e) => {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
             tracing::trace!(
                 "metrics: could not read session file {}: {}",
                 path.display(),
@@ -714,6 +902,7 @@ fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
     let v: Value = match serde_json::from_str(&content) {
         Ok(v) => v,
         Err(e) => {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
             tracing::trace!(
                 "metrics: skipping malformed session file {}: {}",
                 path.display(),
@@ -722,6 +911,10 @@ fn read_session_file(path: &Path, since: Option<DateTime<Utc>>, rollup: &mut Rol
             return;
         }
     };
+
+    if !rollup.admit_receipt_inspection(&v) {
+        return;
+    }
 
     rollup.parsed_lines += 1;
 
@@ -859,6 +1052,9 @@ fn runtime_dir_override() -> Option<PathBuf> {
 /// Read every runtime event root under one de-duplication scope, so the same
 /// `(thread_id, seq)` receipt is counted once however many roots list it.
 fn read_runtime_events(events_dirs: &[PathBuf], since: Option<DateTime<Utc>>, rollup: &mut Rollup) {
+    if rollup.receipt_inspection_exhausted {
+        return;
+    }
     let mut dedup = RuntimeEventDedup::default();
     for dir in events_dirs {
         read_runtime_events_dir(dir, since, rollup, &mut dedup);
@@ -872,10 +1068,22 @@ fn read_runtime_events_dir(
     rollup: &mut Rollup,
     dedup: &mut RuntimeEventDedup,
 ) {
+    if rollup.receipt_inspection_exhausted {
+        return;
+    }
+    match std::fs::symlink_metadata(events_dir) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        _ => {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
+            return;
+        }
+    }
     let rd = match std::fs::read_dir(events_dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
         Err(e) => {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
             tracing::trace!(
                 "metrics: could not list events dir {}: {}",
                 events_dir.display(),
@@ -885,7 +1093,14 @@ fn read_runtime_events_dir(
         }
     };
 
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension().map(|e| e != "jsonl").unwrap_or(true) {
             continue;
@@ -900,9 +1115,13 @@ fn read_events_jsonl(
     rollup: &mut Rollup,
     dedup: &mut RuntimeEventDedup,
 ) {
-    let file = match std::fs::File::open(path) {
+    if rollup.receipt_inspection_exhausted {
+        return;
+    }
+    let file = match open_diagnostic_file(path) {
         Ok(file) => file,
         Err(e) => {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
             tracing::trace!(
                 "metrics: could not read events file {}: {}",
                 path.display(),
@@ -913,8 +1132,9 @@ fn read_events_jsonl(
     };
 
     // Streamed like the audit log: allocation follows one line, not the file.
-    for raw_line in std::io::BufRead::lines(std::io::BufReader::new(file)) {
+    for raw_line in diagnostic_lines(file) {
         let Ok(raw_line) = raw_line.inspect_err(|e| {
+            rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
             tracing::trace!(
                 "metrics: stopped reading events file {}: {e}",
                 path.display()
@@ -931,6 +1151,7 @@ fn read_events_jsonl(
         let v: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
+                rollup.receipt_read_gaps = rollup.receipt_read_gaps.saturating_add(1);
                 tracing::trace!("metrics: skipping malformed event line: {e}");
                 continue;
             }
@@ -943,6 +1164,10 @@ fn read_events_jsonl(
                 Some(t) if t < cutoff => continue,
                 _ => {}
             }
+        }
+
+        if !rollup.admit_receipt_inspection(&v) {
+            break;
         }
 
         rollup.parsed_lines += 1;
@@ -958,7 +1183,7 @@ fn read_events_jsonl(
             // Tool and compaction receipts are durable *item* records. The
             // `tool.started` / `tool.completed` names this reader used to
             // match are synthesized for HTTP clients by
-            // `map_compat_stream_event` (`crates/tui/src/runtime_api.rs`) and
+            // `map_compat_stream_event` (`crates/app-server/src/runtime_api.rs`) and
             // are never persisted, so those arms counted nothing.
             "item.started" | "item.completed" | "item.failed" => {
                 record_runtime_item_receipt(event, &v, rollup, dedup);

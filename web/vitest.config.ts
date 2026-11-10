@@ -17,7 +17,7 @@ export default defineConfig({
       // approval is sent at all (#4397). Reaching outside `web/` keeps the
       // test next to the module it covers while still running under the one
       // JS test job CI has.
-      "../crates/tui/src/runtime_web/**/*.test.mjs",
+      "../crates/app-server/src/runtime_web/**/*.test.mjs",
     ],
   },
 });

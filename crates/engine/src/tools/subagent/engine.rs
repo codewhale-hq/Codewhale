@@ -24,116 +24,57 @@ impl ChildAccountingProjection {
     }
     pub fn publish(
         &self,
-        source: &str,
-        route: &crate::cost_status::EffectiveRouteEnvelope,
-        usage: &Usage,
-        reason: crate::cost_status::RuntimeUsageMissingReason,
-    ) -> Option<u64> {
-        let known = usage_has_reported_data(usage);
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> std::io::Result<Option<u64>> {
         let owner = self
             .runtime_usage_lease
             .as_ref()
             .map(crate::cost_status::RuntimeUsageLease::owner);
-        if known {
-            match owner {
-                Some(owner) => crate::cost_status::report_effective_route_for_runtime(
-                    self.origin.cost_scope,
-                    Some(owner),
-                    source,
-                    route,
-                    usage,
-                ),
-                None => self
-                    .origin
-                    .report_ownerless_usage(&self.owner, source, route, usage),
-            }
-            if let Some(mailbox) = &self.mailbox {
-                let _ = mailbox.send(MailboxMessage::token_usage(
-                    &self.owner,
-                    source,
-                    route.clone(),
-                    usage.clone(),
-                ));
-            }
-        } else {
-            match owner {
-                Some(owner) => crate::cost_status::report_missing_runtime_usage(
-                    self.origin.cost_scope,
-                    Some(owner),
-                    source,
-                    route,
-                    reason,
-                ),
-                None => crate::usage_persistence::report_missing_usage_for_interactive_origin(
-                    self.origin.cost_scope,
-                    &self.origin.session_id,
-                    &self.owner,
-                    source,
-                    route,
-                    reason,
-                ),
-            }
-        }
-        known
-            .then(|| priced_usd_microusd(&route.audit(usage)))
-            .flatten()
-    }
-    /// Finish only the worker projection of an already-published receipt.
-    /// The caller supplies its held Engine scheduler; no runtime is created.
-    pub fn recover_settled(
-        &self,
-        scheduler: &tokio::runtime::Handle,
-        source: String,
-        route: crate::cost_status::EffectiveRouteEnvelope,
-        usage: Usage,
-        priced: Option<u64>,
-        reason: crate::cost_status::RuntimeUsageMissingReason,
-    ) {
-        let manager = self.manager.clone();
-        let owner = self.owner.clone();
-        scheduler.spawn(async move {
-            Self::project_worker_receipt(&manager, &owner, &source, &route, &usage, priced, reason)
-                .await;
+        crate::cost_status::report_runtime_usage_record(self.origin.cost_scope, owner, record)?;
+        let reported = record.settlement.as_ref().is_some_and(|revision| {
+            revision.coverage == crate::llm_client::ProviderUsageCoverage::Reported
+                || (revision.coverage == crate::llm_client::ProviderUsageCoverage::Incomplete
+                    && record.usage.usage != Usage::default())
         });
+        if reported && let Some(mailbox) = &self.mailbox {
+            let _ = mailbox.send(MailboxMessage::usage_record(&self.owner, record.clone()));
+        }
+        Ok(reported
+            .then(|| priced_usd_microusd(&record.usage.route.audit_frozen(&record.usage.usage)))
+            .flatten())
     }
+
+    async fn publish_async(
+        &self,
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> std::io::Result<Option<u64>> {
+        let accounting = self.clone();
+        let record = record.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let origin = crate::cost_status::test_cost_scope_id();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            #[cfg(any(test, feature = "test-support"))]
+            let _origin = crate::cost_status::bind_test_cost_scope(origin);
+            accounting.publish(&record).map_err(anyhow::Error::from)
+        })
+        .await
+        .map_err(std::io::Error::other)
+    }
+
     pub async fn project_settled(
         &self,
-        source: &str,
-        route: &crate::cost_status::EffectiveRouteEnvelope,
-        usage: &Usage,
-        priced: Option<u64>,
-        reason: crate::cost_status::RuntimeUsageMissingReason,
-    ) {
-        Self::project_worker_receipt(
-            &self.manager,
-            &self.owner,
-            source,
-            route,
-            usage,
-            priced,
-            reason,
-        )
-        .await;
-    }
-    async fn project_worker_receipt(
-        manager: &SharedSubAgentManager,
-        owner: &str,
-        source: &str,
-        route: &crate::cost_status::EffectiveRouteEnvelope,
-        usage: &Usage,
-        priced: Option<u64>,
-        reason: crate::cost_status::RuntimeUsageMissingReason,
-    ) {
-        let mut manager = manager.write().await;
-        if usage_has_reported_data(usage) {
-            manager.record_worker_routed_usage(owner, source, route, usage, priced);
-        } else {
-            manager.record_worker_missing_usage(
-                owner,
-                source,
-                crate::cost_status::MissingUsageCoverage::for_route(route, reason),
-            );
-        }
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> std::io::Result<()> {
+        let manager = self.manager.clone();
+        let owner = self.owner.clone();
+        let record = record.clone();
+        codewhale_runtime::runtime_control::owner_work(move || {
+            let mut manager = manager.blocking_write();
+            manager.record_worker_source(&owner, &record)?;
+            Ok(())
+        })
+        .await
+        .map_err(std::io::Error::other)
     }
 }
 
@@ -220,6 +161,12 @@ impl ChildAuthority {
     pub fn accounting_projection(&self) -> ChildAccountingProjection {
         ChildAccountingProjection::capture(&self.runtime, &self.owner_agent_id)
     }
+    pub fn usage_origin(&self) -> Option<crate::cost_status::NativeUsageOrigin> {
+        let origin = self.runtime.context.accounting_origin.clone();
+        #[cfg(any(test, feature = "test-support"))]
+        let origin = origin.or_else(|| self.runtime.accounting_origin.test_session_origin());
+        origin
+    }
     pub fn accounting_origin(&self) -> (crate::cost_status::CostScopeToken, String, String) {
         (
             self.runtime.accounting_origin.cost_scope,
@@ -229,33 +176,17 @@ impl ChildAuthority {
     }
     pub async fn settle_response(
         &self,
-        source_id: &str,
-        route: crate::cost_status::EffectiveRouteEnvelope,
-        usage: &Usage,
-    ) {
-        record_provider_response_usage(
-            &self.runtime,
-            &self.owner_agent_id,
-            source_id,
-            route,
-            usage,
-        )
-        .await;
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> std::io::Result<()> {
+        let accounting = self.accounting_projection();
+        accounting.publish_async(record).await?;
+        accounting.project_settled(record).await
     }
     pub async fn project_settled_response(
         &self,
-        source_id: &str,
-        route: &crate::cost_status::EffectiveRouteEnvelope,
-        usage: &Usage,
-    ) {
-        let priced = usage_has_reported_data(usage)
-            .then(|| priced_usd_microusd(&route.audit(usage)))
-            .flatten();
-        self.runtime
-            .manager
-            .write()
-            .await
-            .record_worker_routed_usage(&self.owner_agent_id, source_id, route, usage, priced);
+        record: &crate::cost_status::RuntimeUsageRecord,
+    ) -> std::io::Result<()> {
+        self.accounting_projection().project_settled(record).await
     }
     pub fn new_execution_id(&self) -> String {
         new_child_execution_id(&self.owner_agent_id)
@@ -468,7 +399,7 @@ impl ChildAuthority {
                 .is_some_and(|action| matches!(action, "write" | "edit" | "patch")))
             || (name == "pandoc_convert" && input.get("output_path").is_some());
         if scope_aware_write && self.enforce_write_claim {
-            let paths = mutation_paths(name, input)?;
+            let paths = mutation_paths(name, input, &self.runtime.context.workspace)?;
             if paths.is_empty() {
                 return Err(admission_denied(format!(
                     "Write tool {name} did not expose a bounded repo-relative target for coordination"
@@ -486,30 +417,29 @@ impl ChildAuthority {
             // The typed read-only boundary above already rejected mutation.
             && !self.write_is_denied()
             && !is_internal_coordination_state_tool(name)
-            // A shell run the read-only classifier proves mutation-free cannot
-            // collide with the peer's writes no matter how contended the
-            // checkout is, so the gate below does not apply to it.
-            && !proven_readonly_shell_run(name, input)
-            && (is_unbounded_shell_run(name, input)
-                || registry.get(name).is_some_and(|spec| {
-                    let canonical = canonical_action_alias(name, input);
-                    let is_shell_control = matches!(
-                        canonical,
-                        "exec_shell_wait" | "exec_shell_interact" | "exec_shell_cancel"
-                    );
-                    let capabilities = spec.capabilities();
-                    !is_shell_control
-                        && (spec.approval_requirement_for(input) == ApprovalRequirement::Suggest
-                            || (!spec.is_read_only_for(input)
-                                && capabilities.iter().any(|capability| {
-                                    matches!(
-                                        capability,
-                                        ToolCapability::WritesFiles
-                                            | ToolCapability::ExecutesCode
-                                            | ToolCapability::Network
-                                    )
-                                })))
-                }))
+            // Shell runs are governed by the execution envelope, sandbox and
+            // approval posture. The write claim coordinates bounded file
+            // tools; it no longer denies a child its shell while a peer writes.
+            && !is_unbounded_shell_run(name, input)
+            && registry.get(name).is_some_and(|spec| {
+                let canonical = canonical_action_alias(name, input);
+                let is_shell_control = matches!(
+                    canonical,
+                    "exec_shell_wait" | "exec_shell_interact" | "exec_shell_cancel"
+                );
+                let capabilities = spec.capabilities();
+                !is_shell_control
+                    && (spec.approval_requirement_for(input) == ApprovalRequirement::Suggest
+                        || (!spec.is_read_only_for(input)
+                            && capabilities.iter().any(|capability| {
+                                matches!(
+                                    capability,
+                                    ToolCapability::WritesFiles
+                                        | ToolCapability::ExecutesCode
+                                        | ToolCapability::Network
+                                )
+                            })))
+            })
         {
             let held = self.coordination_manager.clone().read_owned().await;
             let owner = self.owner_agent_id.clone();
@@ -528,13 +458,13 @@ impl ChildAuthority {
             .map_err(|error| admission_denied(error.to_string()))?;
             if !blocking_peers.is_empty() {
                 return Err(admission_denied(format!(
-                    "Tool {name} cannot prove a bounded file target or read-only execution while peers are writing in this shared checkout (blocking peers: {}). Use a bounded write tool, a proven read-only command, or bash with read_only=true for analysis under native enforcement. Executable work that needs writes requires worktree isolation. Disjoint write_roots alone do not constrain arbitrary code.",
+                    "Tool {name} cannot prove a bounded file target while peers are writing in this shared checkout (blocking peers: {}). Use a bounded write tool, or run executable work that needs writes in an isolated worktree. Disjoint write_roots alone do not constrain arbitrary code.",
                     blocking_peers.join(", ")
                 )));
             }
         }
         let observed_paths = if scope_aware_write {
-            mutation_paths(name, input)?
+            mutation_paths(name, input, &self.runtime.context.workspace)?
         } else {
             Vec::new()
         };
@@ -564,7 +494,8 @@ impl ChildAuthority {
                             || self.workspace_write_carve_out_permits(registry, name, input))
                 }
                 ApprovalRequirement::Required => {
-                    Self::is_delegated_builtin_verification(name, input)
+                    self.runtime.accept_verification
+                        && Self::is_delegated_builtin_verification(name, input)
                 }
             })
     }
@@ -967,7 +898,6 @@ pub struct ChildJob {
     pub fork_context: bool,
     parking: Option<Arc<std::sync::atomic::AtomicBool>>,
     artifact: Arc<tokio::sync::Mutex<Option<SubAgentTranscriptArtifactWriter>>>,
-    scheduler: tokio::runtime::Handle,
     pub requests: std::sync::atomic::AtomicU32,
     logical_steps: std::sync::atomic::AtomicU32,
     initial_submission_assigned: std::sync::atomic::AtomicBool,
@@ -995,6 +925,8 @@ impl ChildJob {
         )
         .await?;
         let selected_model = authority.runtime.model.clone();
+        let _ = tokio::runtime::Handle::try_current()
+            .map_err(|_| anyhow!("child admission requires the existing Engine scheduler"))?;
         Ok(Arc::new(Self {
             authority,
             assignment,
@@ -1004,8 +936,6 @@ impl ChildJob {
             fork_context,
             parking,
             artifact: Arc::new(tokio::sync::Mutex::new(Some(artifact))),
-            scheduler: tokio::runtime::Handle::try_current()
-                .map_err(|_| anyhow!("child admission requires the existing Engine scheduler"))?,
             requests: std::sync::atomic::AtomicU32::new(0),
             logical_steps: std::sync::atomic::AtomicU32::new(0),
             initial_submission_assigned: std::sync::atomic::AtomicBool::new(false),
@@ -1243,7 +1173,7 @@ impl ChildJob {
         }
         if matches!(
             error.downcast_ref::<LlmError>(),
-            Some(LlmError::RateLimited { .. })
+            Some(LlmError::RateLimited { .. } | LlmError::QuotaWindow { .. })
         ) && let Some(governor) = self.authority.runtime.governor.as_ref()
         {
             governor.record_rate_limited(Instant::now());
@@ -1262,9 +1192,14 @@ impl ChildJob {
             .fetch_max(logical_step, std::sync::atomic::Ordering::Relaxed);
         self.requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let origin = self.authority.usage_origin();
         ChildDispatchedRequest {
+            accounting_source: crate::cost_status::NativeUsageSource::capture_with_origin(
+                source,
+                crate::cost_status::UsageSpendOwner::Auxiliary,
+                origin,
+            ),
             job: self.clone(),
-            source,
             route,
             settled: None,
             refused: false,
@@ -1537,18 +1472,14 @@ impl ChildJob {
     }
 }
 
-/// Exact primary dispatch ownership. Dropping an actually invoked request
-/// records ambiguity under its captured origin; an unopened/queued turn never
-/// constructs this guard. Billing is synchronous before worker projection.
+/// Exact primary dispatch ownership with durable reservation before invocation.
+/// Dropping retains the captured origin's Unknown reservation and any unacknowledged
+/// final in the existing journal. Billing precedes worker projection.
 pub struct ChildDispatchedRequest {
+    accounting_source: crate::cost_status::NativeUsageSource,
     job: Arc<ChildJob>,
-    source: String,
     route: crate::cost_status::EffectiveRouteEnvelope,
-    settled: Option<(
-        Usage,
-        Option<u64>,
-        crate::cost_status::RuntimeUsageMissingReason,
-    )>,
+    settled: Option<crate::cost_status::RuntimeUsageRecord>,
     refused: bool,
     projected: bool,
 }
@@ -1560,6 +1491,7 @@ pub fn provider_request_refusal_proven(error: &anyhow::Error) -> bool {
         Some(
             LlmError::ConnectError { .. }
                 | LlmError::RateLimited { .. }
+                | LlmError::QuotaWindow { .. }
                 | LlmError::QuotaExhausted(_)
                 | LlmError::AuthenticationError(_)
                 | LlmError::AuthorizationError(_)
@@ -1571,11 +1503,67 @@ pub fn provider_request_refusal_proven(error: &anyhow::Error) -> bool {
     )
 }
 impl ChildDispatchedRequest {
-    pub async fn settle_open_error(&mut self, error: &anyhow::Error) {
-        self.refused = provider_request_refusal_proven(error);
-        if !self.refused {
-            self.settle(&Usage::default(), false).await;
+    pub(crate) fn settlement_acknowledged(&self) -> bool {
+        self.refused || self.projected
+    }
+    pub(crate) async fn bind_dispatch(
+        &mut self,
+        observation: &crate::llm_client::RequestRetryObservation,
+    ) -> std::io::Result<()> {
+        self.accounting_source
+            .bind_dispatch(&self.route, observation)?;
+        if let Some(record) = self.accounting_source.admit_dispatch(&self.route).await? {
+            self.job
+                .authority
+                .accounting_projection()
+                .project_settled(&record)
+                .await?;
         }
+        Ok(())
+    }
+    pub async fn settle_open_error(&mut self, error: &anyhow::Error) {
+        let wire = self.accounting_source.observed_wire();
+        let coverage = if wire.last_transmission.is_some() {
+            wire.usage_coverage(false, false)
+        } else {
+            match error.downcast_ref::<LlmError>().map(LlmError::transmission) {
+                Some(crate::llm_client::RequestTransmission::NotDispatched) => {
+                    crate::llm_client::ProviderUsageCoverage::NotDispatched
+                }
+                Some(crate::llm_client::RequestTransmission::Rejected) => {
+                    crate::llm_client::ProviderUsageCoverage::Rejected
+                }
+                _ => crate::llm_client::ProviderUsageCoverage::Missing,
+            }
+        };
+        let record = match self.accounting_source.prepare_observed(
+            &self.route,
+            &Usage::default(),
+            coverage,
+            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+            &wire,
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::warn!(%error, "child refusal receipt was not admitted");
+                return;
+            }
+        };
+        let accounting = self.job.authority.accounting_projection();
+        let published = accounting.publish_async(&record).await;
+        let projected = if published.is_ok() {
+            accounting.project_settled(&record).await
+        } else {
+            Err(std::io::Error::other("child refusal persistence failed"))
+        };
+        self.settled = Some(record);
+        self.projected = projected.is_ok();
+        self.refused = self.projected
+            && matches!(
+                coverage,
+                crate::llm_client::ProviderUsageCoverage::Rejected
+                    | crate::llm_client::ProviderUsageCoverage::NotDispatched
+            );
     }
     pub async fn settle(&mut self, usage: &Usage, complete: bool) {
         let reason = if complete {
@@ -1583,59 +1571,38 @@ impl ChildDispatchedRequest {
         } else {
             crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown
         };
-        let priced = report_provider_response_usage_origin(
-            &self.job.authority.runtime,
-            &self.job.authority.owner_agent_id,
-            &self.source,
+        let coverage = if complete && usage_has_reported_data(usage) {
+            crate::llm_client::ProviderUsageCoverage::Reported
+        } else if usage_has_reported_data(usage) {
+            crate::llm_client::ProviderUsageCoverage::Incomplete
+        } else {
+            crate::llm_client::ProviderUsageCoverage::Missing
+        };
+        let record = match self.accounting_source.prepare_observed(
             &self.route,
             usage,
+            coverage,
             reason,
-        );
-        self.settled = Some((usage.clone(), priced, reason));
-        self.project(usage, priced, reason).await;
-        self.projected = true;
-    }
-    async fn project(
-        &self,
-        usage: &Usage,
-        priced: Option<u64>,
-        reason: crate::cost_status::RuntimeUsageMissingReason,
-    ) {
-        self.job
-            .authority
-            .accounting_projection()
-            .project_settled(&self.source, &self.route, usage, priced, reason)
-            .await;
-    }
-}
-impl Drop for ChildDispatchedRequest {
-    fn drop(&mut self) {
-        if self.refused || self.projected {
-            return;
+            &self.accounting_source.observed_wire(),
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::warn!(%error, "child usage predecessor remains unsettled");
+                return;
+            }
+        };
+        let accounting = self.job.authority.accounting_projection();
+        if let Err(error) = accounting.publish_async(&record).await {
+            tracing::warn!(%error, "child provider usage remains unacknowledged");
         }
-        let (usage, priced, reason) = self.settled.clone().unwrap_or_else(|| {
-            let reason = crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown;
-            report_provider_response_usage_origin(
-                &self.job.authority.runtime,
-                &self.job.authority.owner_agent_id,
-                &self.source,
-                &self.route,
-                &Usage::default(),
-                reason,
-            );
-            (Usage::default(), None, reason)
-        });
-        // If the actor was aborted while waiting for this projection, the
-        // exact already-settled cost is not billed again. The existing held
-        // scheduler retires only worker metadata under the same source id.
-        self.job.authority.accounting_projection().recover_settled(
-            &self.job.scheduler,
-            self.source.clone(),
-            self.route.clone(),
-            usage,
-            priced,
-            reason,
-        );
+        self.settled = Some(record.clone());
+        self.projected = match accounting.project_settled(&record).await {
+            Ok(()) => record.is_acknowledged(),
+            Err(error) => {
+                tracing::warn!(%error, "worker usage publication failed");
+                false
+            }
+        };
     }
 }
 
@@ -1723,6 +1690,14 @@ pub(super) async fn run_child_agent(
                 .clone()
                 .unwrap_or_else(|| agent_type.as_str().to_owned())
         });
+    let identity = format!(
+        "You are {owner_agent_name}. Scope: {}. Your final answer is delivered to the parent automatically; include the result and its evidence.",
+        if runtime.worker_profile.permissions.write {
+            "you may edit files; keep to what this task assigns"
+        } else {
+            "read-only"
+        }
+    );
     let authority = ChildAuthority::capture(
         runtime.clone(),
         agent_type.clone(),
@@ -1753,7 +1728,7 @@ pub(super) async fn run_child_agent(
         ));
     }
     let prompt = format!(
-        "{prompt}\n\n{}",
+        "{prompt}\n\n{}\n\n{identity}",
         child_runtime_budget_context(&runtime, max_steps)
     );
     let fork = if fork_context {
@@ -1963,6 +1938,9 @@ pub async fn drive_child_actor(
         joined: false,
     };
     let mut approvals = futures_util::stream::FuturesUnordered::new();
+    let mut approval_deliveries = futures_util::stream::FuturesUnordered::<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send>>,
+    >::new();
     let mut steers = futures_util::stream::FuturesUnordered::new();
     let mut events = handle.rx_event.write().await;
     let mut input_open = true;
@@ -2033,25 +2011,31 @@ pub async fn drive_child_actor(
                 drop(input);
             },
             Some((id, decision)) = approvals.next(), if !approvals.is_empty() => {
-                // Manager removed the slot before this exact Core inbox delivery.
                 if runtime.cancel_token.is_cancelled() || handle.is_cancelled() {
                     // Core observes the exact cancelled TurnControl before any
                     // queued Allow; do not stall its join on another inbox send.
                     handle.cancel();
                 } else {
-                    match decision {
-                        Ok(ChildApprovalOutcome::Approved { by }) => handle.approve_tool_call_by(id, by).await?,
-                        Ok(ChildApprovalOutcome::Denied { by }) => handle.deny_tool_call_by(id, by).await?,
-                        _ => handle.deny_tool_call_unavailable(id).await?,
-                    }
+                    let handle = handle.clone();
+                    approval_deliveries.push(Box::pin(async move {
+                        match decision {
+                            Ok(reply) => handle.accept_child_approval(id, reply).await,
+                            Err(_) => handle.deny_tool_call_unavailable(id).await,
+                        }
+                    }));
+                }
+            },
+            Some(delivered) = approval_deliveries.next(), if !approval_deliveries.is_empty() => {
+                if let Err(error) = delivered {
+                    tracing::warn!(%error, "child approval did not match a durable Core decision");
                 }
             },
             event = events.recv() => {
                 let Some(event) = event else { break Err(anyhow!("child Core event stream closed before join")); };
                 observe_start(&event);
                 match &event {
-                    Event::ApprovalRequired { id, tool_name, description, .. } => {
-                        let (_, answer) = runtime.manager.write().await.register_child_approval(&agent_id, id, tool_name, description)?;
+                    Event::ApprovalRequired { id, tool_name, description, publication, .. } => {
+                        let (_, answer) = runtime.manager.write().await.register_child_approval(&agent_id, id, tool_name, description, publication.clone())?;
                         let key = id.clone(); approvals.push(async move { (key, answer.await) });
                         record_agent_progress(&runtime, &agent_id, AgentProgressEventMeta::new(AgentWorkerStatus::WaitingForUser)
                             .with_tool(tool_name.clone()).with_approval_id(id.clone()), description.clone());
@@ -2068,14 +2052,22 @@ pub async fn drive_child_actor(
                                     handle.cancel();
                                 } else {
                                     runtime.manager.write().await.cancel_child_approval(id);
-                                    handle.deny_tool_call_unavailable(id).await?;
+                                    {
+                                        let handle = handle.clone();
+                                        let id = id.clone();
+                                        approval_deliveries.push(Box::pin(async move { handle.deny_tool_call_unavailable(id).await }));
+                                    }
                                 }
                             }
                         } else if runtime.cancel_token.is_cancelled() || handle.is_cancelled() {
                             handle.cancel();
                         } else {
                             runtime.manager.write().await.cancel_child_approval(id);
-                            handle.deny_tool_call_unavailable(id).await?;
+                            {
+                                        let handle = handle.clone();
+                                        let id = id.clone();
+                                        approval_deliveries.push(Box::pin(async move { handle.deny_tool_call_unavailable(id).await }));
+                                    }
                         }
                     }
                     Event::ApprovalWithdrawn { id } => {
@@ -2175,6 +2167,11 @@ pub async fn drive_child_actor(
     // Joining drops the Core receiver and every unsettled steer. Retire those
     // exact outcomes even when the join branch won before the outcome branch.
     use futures_util::StreamExt;
+    while let Some(delivered) = approval_deliveries.next().await {
+        if let Err(error) = delivered {
+            tracing::warn!(%error, "child approval did not match a durable Core decision");
+        }
+    }
     while let Some((input, _outcome)) = steers.next().await {
         drop(input);
     }
@@ -2316,6 +2313,20 @@ impl ChildRequestRetries {
         runtime: &SubAgentRuntime,
         error: &anyhow::Error,
     ) -> Option<ChildRequestRecovery> {
+        if let Some(error @ (LlmError::QuotaWindow { .. } | LlmError::RateLimited { .. })) =
+            error.downcast_ref::<LlmError>()
+            && (matches!(error, LlmError::QuotaWindow { .. })
+                || error.suggested_retry_delay().is_some_and(|delay| {
+                    delay > codewhale_runtime::retry_status::MAX_PROVIDER_PAUSE
+                }))
+        {
+            return Some(ChildRequestRecovery::Interrupted {
+                checkpoint_reason: "api_rate_limited",
+                message: format!(
+                    "Provider quota window requires continuation after reset: {error}"
+                ),
+            });
+        }
         let transmission = error.downcast_ref::<LlmError>().map_or(
             crate::llm_client::RequestTransmission::OutcomeUnknown,
             LlmError::transmission,
@@ -2489,7 +2500,7 @@ mod owner_origin_tests {
     use super::*;
 
     #[tokio::test]
-    async fn canonical_child_unbounded_claim_checks_exact_held_origin_before_peer_projection() {
+    async fn canonical_child_bounded_write_checks_exact_held_origin_before_scope_validation() {
         let _environment = crate::test_support::lock_test_env();
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
@@ -2528,14 +2539,13 @@ mod owner_origin_tests {
         );
         let mut registry = ToolRegistry::new(ToolContext::new(selected.clone()));
         registry.register(Arc::new(crate::tools::shell::BashTool::new("Bash")));
-        let input = serde_json::json!({"command":"python3 -c 'print(1)'"});
-        // No peer exists: ordinary work is still admitted under its held root.
-        assert!(
+        let input = serde_json::json!({"path":"src/lib.rs","content":"x"});
+        assert_eq!(
             authority
-                .validate_claim(&registry, "bash", &input)
+                .validate_claim(&registry, "write_file", &input)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            vec!["src/lib.rs".to_string()]
         );
         {
             let mut held = manager.write().await;
@@ -2546,7 +2556,7 @@ mod owner_origin_tests {
                 .scope = Some(foreign);
         }
         let refused = authority
-            .validate_claim(&registry, "bash", &input)
+            .validate_claim(&registry, "write_file", &input)
             .await
             .unwrap_err();
         assert!(

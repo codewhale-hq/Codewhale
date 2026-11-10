@@ -1,15 +1,15 @@
 //! Shared test-only helpers.
 
-use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use codewhale_util::test_env_lock::{
-    EnvScopeMembership, EnvScopeTicket, TestEnvLock, current_env_scope_generation,
-    current_thread_holds_test_env_lock, env_scope_ticket, join_env_scope, lock_test_env,
-    with_test_env_lock, with_test_env_lock_if_uncontended,
+    EnvScopeMembership, EnvScopeTicket, EnvVarGuard, TestEnvLock, current_env_scope_generation,
+    current_thread_holds_test_env_lock, env_scope_ticket, env_var_currently_guarded,
+    join_env_scope, lock_test_env, register_guarded_env_key, resolve_state_from_environment,
+    state_from_environment, unregister_guarded_env_key, with_test_env_lock,
+    with_test_env_lock_if_uncontended,
 };
 
 /// Mark `workspace` trusted in the test's config, creating it first so the
@@ -30,8 +30,7 @@ pub fn trust_workspace(workspace: &Path) {
 /// values; every other test is confined here — enforced by
 /// [`guarded_environment_provides_state_paths`], not assumed.
 pub fn isolated_test_state_root() -> &'static Path {
-    static ROOT: OnceLock<PathBuf> = OnceLock::new();
-    ROOT.get_or_init(|| {
+    ISOLATED_TEST_STATE_ROOT.get_or_init(|| {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -46,10 +45,48 @@ pub fn isolated_test_state_root() -> &'static Path {
                 root.display()
             )
         });
+        remove_isolated_test_state_root_at_exit();
         // Match resolvers that canonicalize their root (macOS aliases /var to
         // /private/var). Every fence must name the same physical test store.
         root.canonicalize().expect("canonical test state root")
     })
+}
+
+static ISOLATED_TEST_STATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+fn remove_isolated_test_state_root_at_exit() {
+    unsafe extern "C" {
+        fn atexit(callback: extern "C" fn()) -> std::ffi::c_int;
+    }
+    extern "C" fn remove_root() {
+        let Some(root) = ISOLATED_TEST_STATE_ROOT.get() else {
+            return;
+        };
+        if std::fs::remove_dir_all(root).is_err() {
+            #[cfg(unix)]
+            make_directories_writable(root);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+    unsafe { atexit(remove_root) };
+}
+
+#[cfg(unix)]
+fn make_directories_writable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if !metadata.is_dir() {
+        return;
+    }
+    let mode = metadata.permissions().mode() | 0o700;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            make_directories_writable(&entry.path());
+        }
+    }
 }
 
 /// Where the calling test's state should live when it has not sealed the
@@ -160,8 +197,9 @@ where
     Box::pin(make())
 }
 
-/// Drive a test future on a thread with libtest's default 2 MiB stack,
-/// whatever `RUST_MIN_STACK` says (#6362).
+/// Drive a test future on a thread with libtest's default stack (2 MiB, or
+/// 4 MiB on Windows where the same frames are larger), whatever
+/// `RUST_MIN_STACK` says (#6362).
 ///
 /// CI exports a 16 MiB `RUST_MIN_STACK` for every test thread, so a test
 /// that only fits because of that export never learns it overflowed the
@@ -177,6 +215,9 @@ where
     F: std::future::Future<Output = T>,
     T: Send + 'static,
 {
+    #[cfg(windows)]
+    const DEFAULT_TEST_THREAD_STACK: usize = 4 * 1024 * 1024;
+    #[cfg(not(windows))]
     const DEFAULT_TEST_THREAD_STACK: usize = 2 * 1024 * 1024;
     std::thread::Builder::new()
         .name("default-test-stack".into())
@@ -193,67 +234,6 @@ where
         .expect("spawn the default-stack test thread")
         .join()
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-}
-
-/// Restore one environment variable when dropped.
-///
-/// Callers that mutate process-global environment variables must hold
-/// [`lock_test_env`] until after this guard is dropped.
-///
-/// Every live guard is also recorded in [`guarded_env_keys`], so path
-/// resolution can distinguish a test that deliberately redirected `HOME`
-/// from one that merely holds the lock to serialize unrelated env access —
-/// see [`guarded_environment_provides_state_paths`].
-pub struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<OsString>,
-}
-
-fn guarded_env_keys() -> &'static Mutex<std::collections::HashMap<&'static str, usize>> {
-    static KEYS: OnceLock<Mutex<std::collections::HashMap<&'static str, usize>>> = OnceLock::new();
-    KEYS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-}
-
-fn register_guarded_env_key(key: &'static str) {
-    let mut keys = match guarded_env_keys().lock() {
-        Ok(keys) => keys,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    *keys.entry(key).or_insert(0) += 1;
-}
-
-fn unregister_guarded_env_key(key: &'static str) {
-    let mut keys = match guarded_env_keys().lock() {
-        Ok(keys) => keys,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if let Some(count) = keys.get_mut(key) {
-        *count -= 1;
-        if *count == 0 {
-            keys.remove(key);
-        }
-    }
-}
-
-static STATE_FROM_ENVIRONMENT: AtomicBool = AtomicBool::new(false);
-
-pub fn resolve_state_from_environment() {
-    STATE_FROM_ENVIRONMENT.store(true, Ordering::SeqCst);
-}
-
-pub fn state_from_environment() -> bool {
-    STATE_FROM_ENVIRONMENT.load(Ordering::SeqCst)
-}
-
-/// Whether some live [`EnvVarGuard`] currently covers `key`.
-pub fn env_var_currently_guarded(key: &str) -> bool {
-    if state_from_environment() {
-        return true;
-    }
-    match guarded_env_keys().lock() {
-        Ok(keys) => keys.contains_key(key),
-        Err(poisoned) => poisoned.into_inner().contains_key(key),
-    }
 }
 
 /// Whether the calling test actually provided the state-path environment it
@@ -322,50 +302,6 @@ pub fn home_is_sealed() -> bool {
     ["HOME", "USERPROFILE"]
         .iter()
         .any(|var| env_var_currently_guarded(var) && present(var))
-}
-
-impl EnvVarGuard {
-    pub fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-        debug_assert!(
-            current_thread_holds_test_env_lock(),
-            "EnvVarGuard::set({key}) requires lock_test_env()"
-        );
-        let previous = std::env::var_os(key);
-        // SAFETY: callers hold the process-wide test env mutex.
-        unsafe { std::env::set_var(key, value) };
-        register_guarded_env_key(key);
-        Self { key, previous }
-    }
-
-    pub fn remove(key: &'static str) -> Self {
-        debug_assert!(
-            current_thread_holds_test_env_lock(),
-            "EnvVarGuard::remove({key}) requires lock_test_env()"
-        );
-        let previous = std::env::var_os(key);
-        // SAFETY: callers hold the process-wide test env mutex.
-        unsafe { std::env::remove_var(key) };
-        register_guarded_env_key(key);
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        // Withdraw the claim *before* restoring the value: a reader on another
-        // thread that still saw the key as guarded would otherwise follow the
-        // restored — ambient, possibly real — path for the instant in between.
-        unregister_guarded_env_key(self.key);
-        // SAFETY: callers hold the process-wide test env mutex until after this
-        // guard is dropped.
-        unsafe {
-            if let Some(value) = self.previous.take() {
-                std::env::set_var(self.key, value);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
 }
 
 /// Seal the user's home onto a directory the test owns, for the life of one

@@ -98,9 +98,6 @@ fn published_synthetic_names_agree_with_the_synthetic_predicate() {
 
 #[test]
 fn first_turn_surface_is_stable_across_plan_work_and_operate() {
-    // Token diet: agent+workflow (21KB of schema) and get/update_goal
-    // (meaningless without an active goal) stay deferred; discovery via
-    // tool_search restores them on demand.
     assert_eq!(
         DEFAULT_ACTIVE_NATIVE_TOOLS,
         &[
@@ -110,34 +107,38 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "file_search",
             "grep_files",
             "bash",
+            "agent",
             "todo_write",
-            "task_shell_wait",
-            "load_skill",
             "create_goal",
-            "context_archive_get",
-            "context_archive_search"
+            "get_goal",
+            "update_goal",
+            "task_shell_wait",
+            "present",
+            "load_skill"
         ]
     );
     let expected = [
+        "agent",
         "bash",
-        "context_archive_get",
-        "context_archive_search",
         "create_goal",
         "edit",
         "file_search",
+        "get_goal",
         "grep_files",
         "load_skill",
+        "present",
         "read",
         "task_shell_wait",
         "todo_write",
         "tool_search",
+        "update_goal",
         "write",
     ]
     .into_iter()
     .map(str::to_string)
     .collect::<BTreeSet<_>>();
     let mut expected_prefix = None;
-    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Operate] {
+    for mode in [AppMode::Plan, AppMode::Agent] {
         let mut catalog = [
             "read",
             "write",
@@ -152,6 +153,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
             "get_goal",
             "update_goal",
             "task_shell_wait",
+            "present",
             "Git",
             "Run",
             "tasks",
@@ -180,7 +182,7 @@ fn first_turn_surface_is_stable_across_plan_work_and_operate() {
 
 #[test]
 fn eager_workflow_still_respects_command_allow_and_deny_gates() {
-    for mode in [AppMode::Plan, AppMode::Agent, AppMode::Operate] {
+    for mode in [AppMode::Plan, AppMode::Agent] {
         for (allow, deny, expected) in [
             (None, None, true),
             (Some("read"), None, false),
@@ -352,7 +354,7 @@ fn unknown_and_wildcard_allowlists_keep_mcp_startup() {
 }
 
 #[test]
-fn compact_surface_keeps_agent_and_workflow_deferred() {
+fn compact_surface_keeps_agent_eager_defers_workflow() {
     let catalog = build_model_tool_catalog_with_surface(
         [
             "read",
@@ -372,13 +374,13 @@ fn compact_surface_keeps_agent_and_workflow_deferred() {
         crate::model_profile::ToolSurfaceBudget::Compact,
     );
 
-    for name in ["agent", "workflow"] {
+    for (name, deferred) in [("agent", false), ("workflow", true)] {
         assert_eq!(
             catalog
                 .iter()
                 .find(|definition| definition.name == name)
                 .and_then(|definition| definition.defer_loading),
-            Some(true),
+            Some(deferred),
             "{name}"
         );
     }
@@ -386,8 +388,7 @@ fn compact_surface_keeps_agent_and_workflow_deferred() {
 
 #[test]
 fn deferred_core_tools_restore_through_always_load() {
-    // The diet's escape hatch: discovery/activation and the goal-aware
-    // catalog build in `engine.rs` re-eager exactly these names.
+    // Explicitly requested specialized tools join the default eager tools.
     let mut catalog = ["agent", "workflow", "get_goal", "update_goal", "read"]
         .into_iter()
         .map(tool)
@@ -554,8 +555,8 @@ fn strict_mode_applies_per_tool_in_mixed_catalog() {
 
     assert!(!prepare_tools_for_strict_mode(&mut tools));
     assert_eq!(tools[0].strict, Some(true));
-    assert_eq!(tools[0].input_schema["required"], json!(["query"]));
-    assert_eq!(tools[0].input_schema["additionalProperties"], false);
+    assert_eq!(tools[0].input_schema["required"], json!([]));
+    assert!(tools[0].input_schema.get("additionalProperties").is_none());
     assert_eq!(tools[1].strict, None);
     assert!(tools[1].input_schema.get("anyOf").is_some());
     assert_eq!(tools[2].strict, None);
@@ -638,6 +639,6 @@ fn strict_mode_marks_compatible_tools_strict() {
 
     assert!(prepare_tools_for_strict_mode(&mut tools));
     assert_eq!(tools[0].strict, Some(true));
-    assert_eq!(tools[0].input_schema["required"], json!(["query"]));
-    assert_eq!(tools[0].input_schema["additionalProperties"], false);
+    assert_eq!(tools[0].input_schema["required"], json!([]));
+    assert!(tools[0].input_schema.get("additionalProperties").is_none());
 }

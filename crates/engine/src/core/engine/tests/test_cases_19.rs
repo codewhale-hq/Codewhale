@@ -1084,8 +1084,7 @@ async fn idle_engine_routes_child_approval_decisions_to_the_waiting_child() {
                     "agent_child",
                     &format!("agent:agent_child:approval:{}", uuid::Uuid::new_v4()),
                     "bash",
-                    "fixture",
-                )
+                    "fixture", None)
                 .unwrap();
             let expected = if approved {
                 handle.approve_tool_call_by(approval_id, by).await.unwrap();
@@ -1098,12 +1097,12 @@ async fn idle_engine_routes_child_approval_decisions_to_the_waiting_child() {
                 .await
                 .expect("child must be answered while the engine idles")
                 .expect("child prompt resolved, not dropped");
-            assert_eq!(outcome, expected);
+            assert_eq!(outcome.outcome, expected);
             assert_eq!(manager.read().await.pending_child_approvals(), 0);
         }
     }
 
-    // An expired card is still a denial for a child, attributed to the host.
+
     let (approval_id, receiver) = manager
         .write()
         .await
@@ -1111,18 +1110,15 @@ async fn idle_engine_routes_child_approval_decisions_to_the_waiting_child() {
             "agent_child",
             &format!("agent:agent_child:approval:{}", uuid::Uuid::new_v4()),
             "bash",
-            "fixture",
-        )
+            "fixture", None)
         .unwrap();
     handle.deny_tool_call_timed_out(approval_id).await.unwrap();
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), receiver)
             .await
             .expect("child timeout is delivered")
-            .expect("child prompt resolved"),
-        ChildApprovalOutcome::Denied {
-            by: ApprovalDecider::Host,
-        }
+            .expect("child prompt resolved").outcome,
+        ChildApprovalOutcome::TimedOut
     );
 
     // A decision for a parent-shaped id has no child waiter and is not routed.

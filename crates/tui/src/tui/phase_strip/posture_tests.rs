@@ -52,8 +52,6 @@ fn posture_retains_every_host_ink_including_the_pinned_right_fact() {
         let counts = [("C (Ctrl+])".into(), ink)];
         let footer = TidelineFooter::new(&theme, ("P", ink))
             .permission_key(Some("K"))
-            .mode_chip(Some(("M", ink)))
-            .mode_key(Some("Tab"))
             .turn_clock(Some(("W", ink)))
             .counts(&counts)
             .session_clock(Some(("S", ink)))
@@ -77,7 +75,7 @@ fn posture_retains_every_host_ink_including_the_pinned_right_fact() {
                 .find(|x| buf[(*x, area.y)].symbol() == symbol)
                 .unwrap_or_else(|| panic!("{ink:?}: {symbol} did not paint"))
         };
-        for symbol in ["P", "M", "W", "C", "S", "H", "R"] {
+        for symbol in ["P", "W", "C", "S", "H", "R"] {
             let cell = &buf[(column(symbol), area.y)];
             assert_eq!(cell.fg, ink.color(&theme), "{ink:?}: {symbol}");
             assert_eq!(cell.bg, Color::Rgb(30, 40, 50));
@@ -85,10 +83,9 @@ fn posture_retains_every_host_ink_including_the_pinned_right_fact() {
             assert_eq!(cell.modifier.contains(Modifier::BOLD), symbol == "P");
         }
         assert_eq!(buf[(column("K"), area.y)].fg, theme.text_hint);
-        assert_eq!(buf[(column("M") + 2, area.y)].fg, theme.text_hint);
         assert_eq!(targets, [(0, Rect::new(column("C"), area.y, 10, 1))]);
         assert_eq!(buf[(column("C") + 2, area.y)].fg, theme.text_hint);
-        assert_eq!(buf[(column("M") - 1, area.y)].fg, theme.text_dim);
+        assert_eq!(buf[(column("W") - 1, area.y)].fg, theme.text_dim);
         for position in [(3, 2), (102, 2), (60, 2), (3, 3), (109, 4)] {
             assert_eq!(buf[position], before[position], "{ink:?}: {position:?}");
         }

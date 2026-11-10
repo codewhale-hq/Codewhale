@@ -142,19 +142,13 @@ impl WorkflowSpec {
         &self,
         limits: WorkflowFleetLimits,
     ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+        let shape = estimate_fleet_shape(&self.nodes, limits)?;
         validate_workflow_nodes(&self.nodes)
             .map_err(|source| WorkflowFleetLimitError::InvalidWorkflow { source })?;
-        let shape = estimate_fleet_shape(&self.nodes)?;
         if limits.max_total_agents > 0 && shape.total_agents > limits.max_total_agents {
             return Err(WorkflowFleetLimitError::TooManyAgents {
                 total_agents: shape.total_agents,
                 max_total_agents: limits.max_total_agents,
-            });
-        }
-        if limits.max_depth > 0 && shape.max_depth > limits.max_depth {
-            return Err(WorkflowFleetLimitError::RecursionTooDeep {
-                depth: shape.max_depth,
-                max_depth: limits.max_depth,
             });
         }
         Ok(shape)
@@ -1742,6 +1736,12 @@ pub enum WorkflowExecutionError {
         field: &'static str,
         reference: String,
     },
+    #[error("workflow node `{node}` reads {field} `{reference}` before its result is available")]
+    UnavailableNodeReference {
+        node: String,
+        field: &'static str,
+        reference: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1807,32 +1807,45 @@ pub enum WorkflowFleetLimitError {
 
 fn estimate_fleet_shape(
     nodes: &[WorkflowNode],
+    limits: WorkflowFleetLimits,
 ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
-    estimate_fleet_shape_at_depth(nodes, 1)
+    estimate_fleet_shape_at_depth(nodes, 1, limits)
 }
 
 fn estimate_fleet_shape_at_depth(
     nodes: &[WorkflowNode],
     depth: usize,
+    limits: WorkflowFleetLimits,
 ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+    if limits.max_depth > 0 && depth > limits.max_depth {
+        return Err(WorkflowFleetLimitError::RecursionTooDeep {
+            depth,
+            max_depth: limits.max_depth,
+        });
+    }
     nodes
         .iter()
         .try_fold(WorkflowFleetShape::default(), |shape, node| {
-            Ok(shape.add(estimate_node_fleet_shape(node, depth)?))
+            Ok(shape.add(estimate_node_fleet_shape(node, depth, limits)?))
         })
 }
 
 fn estimate_node_fleet_shape(
     node: &WorkflowNode,
     depth: usize,
+    limits: WorkflowFleetLimits,
 ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
     match node {
         WorkflowNode::Leaf(_) => Ok(WorkflowFleetShape {
             total_agents: 1,
             max_depth: depth,
         }),
-        WorkflowNode::BranchSet(spec) => estimate_fleet_shape_at_depth(&spec.children, depth + 1),
-        WorkflowNode::Sequence(spec) => estimate_fleet_shape_at_depth(&spec.children, depth),
+        WorkflowNode::BranchSet(spec) => {
+            estimate_fleet_shape_at_depth(&spec.children, depth + 1, limits)
+        }
+        WorkflowNode::Sequence(spec) => {
+            estimate_fleet_shape_at_depth(&spec.children, depth, limits)
+        }
         WorkflowNode::Reduce(_) | WorkflowNode::TeacherReview(_) => Ok(WorkflowFleetShape {
             total_agents: 0,
             max_depth: 0,
@@ -1843,10 +1856,18 @@ fn estimate_node_fleet_shape(
                     .ok_or_else(|| WorkflowFleetLimitError::UnboundedLoop {
                         node: spec.id.clone(),
                     })? as usize;
-            Ok(estimate_fleet_shape_at_depth(&spec.children, depth)?.repeat(iterations.max(1)))
+            Ok(
+                estimate_fleet_shape_at_depth(&spec.children, depth, limits)?
+                    .repeat(iterations.max(1)),
+            )
         }
-        WorkflowNode::Cond(spec) => Ok(estimate_fleet_shape_at_depth(&spec.then_nodes, depth)?
-            .add(estimate_fleet_shape_at_depth(&spec.else_nodes, depth)?)),
+        WorkflowNode::Cond(spec) => {
+            Ok(
+                estimate_fleet_shape_at_depth(&spec.then_nodes, depth, limits)?.add(
+                    estimate_fleet_shape_at_depth(&spec.else_nodes, depth, limits)?,
+                ),
+            )
+        }
         WorkflowNode::Expand(spec) => {
             let max_children =
                 spec.max_children
@@ -1860,7 +1881,7 @@ fn estimate_node_fleet_shape(
             })?;
             validate_workflow_node_shapes(std::slice::from_ref(template))
                 .map_err(|source| WorkflowFleetLimitError::InvalidWorkflow { source })?;
-            Ok(estimate_node_fleet_shape(template, depth)?.repeat(max_children))
+            Ok(estimate_node_fleet_shape(template, depth, limits)?.repeat(max_children))
         }
     }
 }
@@ -1890,7 +1911,8 @@ pub(crate) fn validate_workflow_nodes(
     }
     let mut seen = BTreeSet::new();
     validate_workflow_nodes_inner(nodes, &mut seen)?;
-    validate_workflow_references(nodes, &seen)
+    validate_workflow_references(nodes, &seen)?;
+    validate_reference_order(nodes, &mut BTreeSet::new())
 }
 
 pub(crate) fn validate_workflow_node_shapes(
@@ -2006,6 +2028,57 @@ fn validate_leaf_role(leaf: &str, role: &str) -> Result<(), WorkflowExecutionErr
             leaf: leaf.to_string(),
             role: role.to_string(),
         });
+    }
+    Ok(())
+}
+
+fn validate_reference_order(
+    nodes: &[WorkflowNode],
+    finished: &mut BTreeSet<String>,
+) -> Result<(), WorkflowExecutionError> {
+    for node in nodes {
+        let (field, references): (&'static str, &[String]) = match node {
+            WorkflowNode::Leaf(spec) => ("depends_on_results", &spec.depends_on_results),
+            WorkflowNode::Reduce(spec) => ("inputs", &spec.inputs),
+            WorkflowNode::TeacherReview(spec) => ("candidates", &spec.candidates),
+            _ => ("", &[]),
+        };
+        let id = node_id(node);
+        if let Some(reference) = references
+            .iter()
+            .find(|reference| !finished.contains(*reference))
+        {
+            return Err(WorkflowExecutionError::UnavailableNodeReference {
+                node: id,
+                field,
+                reference: reference.clone(),
+            });
+        }
+        match node {
+            WorkflowNode::BranchSet(spec) if spec.parallel => {
+                let before = finished.clone();
+                for child in &spec.children {
+                    let mut branch = before.clone();
+                    validate_reference_order(std::slice::from_ref(child), &mut branch)?;
+                    finished.extend(branch);
+                }
+            }
+            WorkflowNode::BranchSet(spec) => validate_reference_order(&spec.children, finished)?,
+            WorkflowNode::Sequence(spec) => validate_reference_order(&spec.children, finished)?,
+            WorkflowNode::LoopUntil(spec) => validate_reference_order(&spec.children, finished)?,
+            WorkflowNode::Cond(spec) => {
+                let mut then_arm = finished.clone();
+                validate_reference_order(&spec.then_nodes, &mut then_arm)?;
+                let mut else_arm = finished.clone();
+                validate_reference_order(&spec.else_nodes, &mut else_arm)?;
+                finished.extend(then_arm.intersection(&else_arm).cloned());
+            }
+            WorkflowNode::Leaf(_)
+            | WorkflowNode::Reduce(_)
+            | WorkflowNode::TeacherReview(_)
+            | WorkflowNode::Expand(_) => {}
+        }
+        finished.insert(id);
     }
     Ok(())
 }
@@ -2950,6 +3023,33 @@ mod tests {
                 max_depth: 8,
             }
         );
+
+        let mut deeper = leaf_node("deeper-leaf");
+        for depth in (0..64).rev() {
+            deeper = WorkflowNode::BranchSet(BranchSpec {
+                id: format!("deep-ring-{depth}"),
+                description: None,
+                parallel: true,
+                budget: BudgetSpec::default(),
+                permissions: PermissionSpec::default(),
+                model_policy: ModelPolicy::default(),
+                children: vec![deeper],
+            });
+        }
+        let deeper = workflow_spec(vec![deeper]);
+        let err = deeper
+            .validate_for_fleet_with_limits(WorkflowFleetLimits {
+                max_depth: 8,
+                ..Default::default()
+            })
+            .expect_err("depth must be rejected before the whole tree is descended");
+        assert_eq!(
+            err,
+            WorkflowFleetLimitError::RecursionTooDeep {
+                depth: 9,
+                max_depth: 8,
+            }
+        );
     }
 
     #[test]
@@ -3819,6 +3919,66 @@ mod tests {
                 reference: "missing-scan".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn workflow_spec_rejects_unavailable_result_references() {
+        let reduce = |id: &str, inputs: &[&str]| {
+            WorkflowNode::Reduce(ReduceSpec {
+                id: id.to_string(),
+                inputs: inputs.iter().map(|input| input.to_string()).collect(),
+                prompt: "combine".to_string(),
+                model_policy: ModelPolicy::default(),
+            })
+        };
+        let parallel = |children: Vec<WorkflowNode>| {
+            WorkflowNode::BranchSet(BranchSpec {
+                id: "fan".to_string(),
+                description: None,
+                parallel: true,
+                budget: BudgetSpec::default(),
+                permissions: PermissionSpec::default(),
+                model_policy: ModelPolicy::default(),
+                children,
+            })
+        };
+        let conditional = || {
+            WorkflowNode::Cond(CondSpec {
+                id: "choice".to_string(),
+                condition: "choose".to_string(),
+                then_nodes: vec![leaf_node("yes")],
+                else_nodes: vec![leaf_node("no")],
+            })
+        };
+        for (nodes, reference) in [
+            (vec![reduce("sum", &["later"]), leaf_node("later")], "later"),
+            (vec![reduce("sum", &["sum"])], "sum"),
+            (
+                vec![parallel(vec![leaf_node("a"), reduce("sum", &["a"])])],
+                "a",
+            ),
+            (vec![parallel(vec![reduce("sum", &["fan"])])], "fan"),
+            (vec![conditional(), reduce("sum", &["yes"])], "yes"),
+            (vec![conditional(), reduce("sum", &["no"])], "no"),
+        ] {
+            assert!(
+                matches!(
+                    workflow_spec(nodes).validate_for_fleet(),
+                    Err(WorkflowFleetLimitError::InvalidWorkflow {
+                        source: WorkflowExecutionError::UnavailableNodeReference { reference: found, .. }
+                    }) if found == reference
+                ),
+                "{reference} must already have completed"
+            );
+        }
+        workflow_spec(vec![
+            parallel(vec![leaf_node("a"), leaf_node("b")]),
+            reduce("sum", &["a", "b", "fan"]),
+            conditional(),
+            reduce("after_choice", &["sum", "choice"]),
+        ])
+        .validate_for_fleet()
+        .expect("completed results remain available");
     }
 
     #[test]

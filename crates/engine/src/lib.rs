@@ -1,6 +1,10 @@
 //! Codewhale's engine: the one turn loop, tools, agents, context, the
 //! session store and thread manager, model clients and the extension host.
-#![allow(clippy::uninlined_format_args)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::uninlined_format_args,
+    rustdoc::private_intra_doc_links
+)]
 
 pub mod agent_roster;
 pub mod approval_log;
@@ -55,6 +59,7 @@ pub mod runtime_options;
 pub mod runtime_threads;
 pub mod scorecard;
 pub mod session_export;
+pub mod session_image_prune;
 pub mod session_manager;
 pub mod session_peek;
 pub mod session_projection;
@@ -73,4 +78,19 @@ pub mod turn_route_plan;
 pub mod usage_persistence;
 pub mod vision;
 pub mod voice;
+pub mod whale_soul;
 pub mod work_graph;
+
+/// The platform HTTP client builder the engine's model, search, vision,
+/// finance and catalog clients start from.
+///
+/// A session builds these clients once and reqwest snapshots the ambient proxy
+/// environment at build time, so one builder decides the route for the whole
+/// process lifetime. Installing the loopback fallback here, rather than at
+/// selected call sites, keeps those clients on the same proxy rules. Reviewed
+/// plugin remotes and guarded fetches do not come through here: they use
+/// `codewhale_net::guard::guarded_reqwest_client_builder`, which disables
+/// ambient proxies on purpose.
+pub(crate) fn platform_client_builder() -> reqwest::ClientBuilder {
+    codewhale_net::proxy::install_loopback_proxy(codewhale_release::tls::reqwest_client_builder())
+}

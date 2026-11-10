@@ -1,4 +1,5 @@
 pub mod agent_card;
+pub mod attachment_preview;
 pub mod key_hint;
 pub mod pending_input_preview;
 mod renderable;
@@ -204,8 +205,6 @@ impl ChatWidget {
         .map(|started| started.elapsed().as_millis());
         let completion_elapsed_ms = completion_life_clock
             .filter(|elapsed| *elapsed < crate::tui::ocean::COMPLETION_SETTLE_MS);
-        let completion_life_active = completion_life_clock
-            .is_some_and(|elapsed| elapsed < crate::tui::ocean::COMPLETION_SETTLE_MS);
         let render_empty_state = should_render_empty_state(app);
         let phase = ShellPhase::from_app(app);
         // Keep the selected underwater scene alive while a turn is doing
@@ -677,7 +676,7 @@ impl ChatWidget {
         // terminal-owned themes and a black hole on painted surfaces
         // (Underwater, Shoreline): the cell's text sat on the terminal's own
         // background, and CJK trailing columns left black remnants when the
-        // cell scrolled (#6704). The footer's `Alt+V:details` hint names it.
+        // cell scrolled (#6704). The footer's `Alt+V details` hint names it.
         //
         // The pinned header is clickable: a click jumps the viewport to the
         // user message it describes. Record the hit box and target line in
@@ -733,11 +732,6 @@ impl ChatWidget {
         app.viewport
             .ocean_semantic_surfaces
             .clone_from(&ocean_protected);
-        let ambient_life = underwater_atmosphere
-            && !app.attention_hold_active()
-            && (browsing_history
-                || matches!(phase, ShellPhase::Working | ShellPhase::Verifying)
-                || completion_life_active);
         Self {
             ocean_paint_theme: app.ui_theme,
             ocean_protected,
@@ -755,12 +749,7 @@ impl ChatWidget {
             ocean_animated,
             life_presence_fixed,
             fish_flee_elapsed_ms,
-            // Fish also accompany intentional transcript browsing in the
-            // selected underwater scene. They only occupy blank cells and are
-            // collision-checked, so history stays legible while the ocean
-            // remains playful when scrolling upward. Hoisted above the
-            // row-cell borrow so `Self` never re-reads the app.
-            ambient_life,
+            ambient_life: false,
             scroll_track,
             scroll_thumb,
             jump_border,
@@ -7519,7 +7508,7 @@ mod tests {
         app.viewport.transcript_scroll = TranscriptScroll::at_line(0);
         let area = Rect::new(0, 0, 100, 20);
         let widget = ChatWidget::new(&mut app, area);
-        assert!(widget.ambient_life);
+        assert!(!widget.ambient_life);
         assert!(widget.ocean_animated);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
@@ -7530,15 +7519,13 @@ mod tests {
     }
 
     #[test]
-    fn browsing_history_keeps_fish_in_available_water() {
-        // Short transcript rows own their text plus a quiet gutter, not the
-        // entire width. Browsing still holds the school in the clear water.
+    fn browsing_history_holds_no_fish() {
         let rows = history_field_rows(4);
         let rendered = rows.join("\n");
-        let (rightward, leftward) = crate::tui::ambient_life::fish_silhouette_counts(&rendered);
-        assert!(
-            rightward + leftward > 0,
-            "open water below the transcript should hold fish:\n{rendered}"
+        assert_eq!(
+            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
+            (0, 0),
+            "{rendered}"
         );
         for index in 0..4 {
             assert!(
@@ -7549,7 +7536,7 @@ mod tests {
     }
 
     #[test]
-    fn active_tail_keeps_fish_after_message_submit() {
+    fn active_tail_holds_no_fish_after_message_submit() {
         let mut app = create_test_app();
         app.low_motion = false;
         app.fancy_animations = true;
@@ -7568,21 +7555,21 @@ mod tests {
         );
         let area = Rect::new(0, 0, 80, 24);
         let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
-        assert!(widget.ambient_life);
+        assert!(!widget.ambient_life);
         assert!(widget.ocean_animated);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
-        let (rightward, leftward) = crate::tui::ambient_life::fish_silhouette_counts(&rendered);
-        assert!(
-            rightward + leftward > 0,
-            "submitting a message must not empty the ocean:\n{rendered}"
+        assert_eq!(
+            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
+            (0, 0),
+            "{rendered}"
         );
         assert!(rendered.contains("release check 17"), "{rendered}");
     }
 
     #[test]
-    fn completed_turn_keeps_bounded_ocean_settle() {
+    fn completed_turn_holds_no_fish() {
         let mut app = create_test_app();
         app.low_motion = false;
         app.fancy_animations = true;
@@ -7594,14 +7581,14 @@ mod tests {
         app.ocean_completion_started_at = Some(Instant::now());
         let area = Rect::new(0, 0, 80, 24);
         let widget = ChatWidget::new_with_ocean_elapsed(&mut app, area, 0);
-        assert!(widget.ambient_life);
+        assert!(!widget.ambient_life);
         let mut buf = Buffer::empty(area);
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
-        let (rightward, leftward) = crate::tui::ambient_life::fish_silhouette_counts(&rendered);
-        assert!(
-            rightward + leftward > 0,
-            "the completion settle must not snap the ocean empty:\n{rendered}"
+        assert_eq!(
+            crate::tui::ambient_life::fish_silhouette_counts(&rendered),
+            (0, 0),
+            "{rendered}"
         );
         assert!(rendered.contains("release receipt"), "{rendered}");
     }

@@ -231,7 +231,7 @@ pub fn new_live_header_cell<R>() -> SharedLiveHeader<R> {
 
 /// Wire-canonical tools serialization: per-tool chat-API JSON in wire
 /// order, joined by `\n`. Each segment goes through
-/// [`codewhale_core::prefix_cache::tool_to_api_json`], so internal-only
+/// [`codewhale_core::prefix_cache::logical_tool_fingerprint_json`], so internal-only
 /// fields (`defer_loading`, `allowed_callers`, …) that never reach the
 /// provider cannot false-negative a byte comparison. Unlike
 /// [`tool_catalog_digest`] (sorted for hashing), order is part of the
@@ -244,7 +244,7 @@ pub fn wire_tool_catalog_json(tools: &[Tool]) -> Option<String> {
         if index > 0 {
             out.push('\n');
         }
-        out.push_str(&codewhale_core::prefix_cache::tool_to_api_json(tool)?);
+        out.push_str(&codewhale_core::prefix_cache::logical_tool_fingerprint_json(tool)?);
     }
     Some(out)
 }
@@ -404,7 +404,7 @@ pub fn resolve_fork_inherit<R: PartialEq>(
             break;
         };
         let tool = tool.clone();
-        let wire = codewhale_core::prefix_cache::tool_to_api_json(&tool);
+        let wire = codewhale_core::prefix_cache::logical_tool_fingerprint_json(&tool);
         if wire.as_deref() != Some(*parent_json) {
             break;
         }

@@ -39,7 +39,7 @@ static LOGIN_INFO: CommandInfo = CommandInfo {
 static CONNECT_INFO: CommandInfo = CommandInfo {
     name: "connect",
     aliases: &[],
-    usage: "/connect [<provider>]",
+    usage: "/connect [account|<provider>]",
     description_key: "cmd_connect_description",
 };
 static DISCONNECT_INFO: CommandInfo = CommandInfo {
@@ -51,7 +51,7 @@ static DISCONNECT_INFO: CommandInfo = CommandInfo {
 static AUTH_INFO: CommandInfo = CommandInfo {
     name: "auth",
     aliases: &[],
-    usage: "/auth xai-device|chatgpt|chatgpt-revoke|claude|claude-revoke|orcarouter|orcarouter-revoke",
+    usage: "/auth xai-device|chatgpt|chatgpt-revoke|orcarouter|orcarouter-revoke",
     description_key: "cmd_auth_description",
 };
 static RAIL_INFO: CommandInfo = CommandInfo {

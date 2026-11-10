@@ -84,9 +84,9 @@
     }
 
     fn late_usage_test_record(source_id: &str) -> crate::cost_status::RuntimeUsageRecord {
-        crate::cost_status::RuntimeUsageRecord {
-            source_id: source_id.to_string(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        crate::cost_status::RuntimeUsageRecord::legacy(
+            source_id.to_string(),
+            crate::cost_status::EffectiveRouteUsage {
                 route: crate::cost_status::EffectiveRouteEnvelope::capture(
                     None,
                     ProviderKind::Deepseek,
@@ -100,7 +100,7 @@
                     ..Default::default()
                 },
             },
-        }
+        )
     }
 
     #[test]
@@ -116,13 +116,13 @@
             .persist_late_runtime_usage(
                 "decision-origin",
                 "origin-turn",
-                &crate::cost_status::RuntimeUsageRecord {
-                    source_id: receipt.source_id.clone(),
-                    usage: crate::cost_status::EffectiveRouteUsage {
+                &crate::cost_status::RuntimeUsageRecord::legacy(
+                    receipt.source_id.clone(),
+                    crate::cost_status::EffectiveRouteUsage {
                         route: receipt.route.clone(),
                         usage: receipt.usage.clone().expect("usage"),
                     },
-                },
+                ),
             )
             .expect("token append dedupes");
         drop(manager);
@@ -173,6 +173,37 @@
         partial.source_id = "partial-provider-response-id".into();
         partial.usage_complete = false;
         partial.usage.as_mut().expect("partial usage").output_tokens = 0;
+        let source = crate::cost_status::NativeUsageSource::capture_with_origin(
+            partial.source_id.clone(),
+            crate::cost_status::UsageSpendOwner::Auxiliary,
+            Some(
+                manager
+                    .load_session_snapshot("decision-partial-origin")
+                    .unwrap()
+                    .write_receipt
+                    .as_ref()
+                    .unwrap()
+                    .usage_origin(crate::cost_status::scope_token())
+                    .unwrap(),
+            ),
+        );
+        let record = source
+            .prepare(
+                &partial.route,
+                partial.usage.as_ref().unwrap(),
+                crate::llm_client::ProviderUsageCoverage::Incomplete,
+                crate::cost_status::RuntimeUsageMissingReason::SuccessWithoutUsage,
+            )
+            .unwrap();
+        manager
+            .with_session_write_admission("decision-partial-origin", || {
+                manager.persist_runtime_usage_record_admitted(
+                    "decision-partial-origin",
+                    "partial-turn",
+                    &record,
+                )
+            })
+            .unwrap();
         manager
             .persist_late_decision_receipt("decision-partial-origin", "partial-turn", &partial)
             .expect("partial diagnostic append");
@@ -180,8 +211,8 @@
             .load_session_snapshot("decision-partial-origin")
             .expect("partial replay");
         assert_eq!(
-            partial_session.metadata.total_tokens, 0,
-            "partial provider counters remain diagnostic rather than an authoritative subtotal"
+            partial_session.metadata.total_tokens, 9,
+            "known partial counters survive independently of incomplete coverage"
         );
         assert_eq!(partial_session.metadata.cost.unpriced_turns, 1);
         assert!(
@@ -315,7 +346,11 @@
             assert_eq!(restored.metadata.cost.usage_source_fingerprints.len(), 1);
             if malformed == "tombstone" {
                 assert!(restored.write_receipt.is_none());
-                assert!(restored.capture_publication(SessionWriteOwner::control()).is_err());
+                assert!(
+                    restored
+                        .capture_publication(SessionWriteOwner::control())
+                        .is_err()
+                );
                 assert!(
                     manager.save_session(&restored).is_err(),
                     "an invalid deletion marker must fail closed for writes"
@@ -847,10 +882,12 @@
     }
 
     #[test]
-    fn interrupted_session_deletion_keeps_recovery_incomplete_and_can_finish() {
+    fn interrupted_session_deletion_keeps_recovery_retired_and_can_finish() {
         let tmp = tempdir().expect("tempdir");
         let manager = SessionManager::new(tmp.path().join("sessions")).expect("manager");
         let saved = save_late_usage_test_session(&manager, "interrupted-delete");
+        let snapshot = manager.validated_session_path("interrupted-delete").unwrap();
+        let snapshot_before = fs::read(&snapshot).unwrap();
         manager
             .save_checkpoint(&saved)
             .expect("checkpoint before deletion");
@@ -868,16 +905,14 @@
             .expect("paths");
         write_atomic(&ledger.with_extension("deleted"), LATE_USAGE_DELETED)
             .expect("crash after tombstone");
-        let recovered = manager
-            .load_session_snapshot("interrupted-delete")
-            .expect("transcript remains recoverable");
-        assert!(
-            recovered
-                .metadata
-                .cost
-                .unpriced_reasons
-                .contains(LATE_USAGE_UNAVAILABLE_REASON)
+        assert_eq!(
+            manager
+                .load_session_snapshot("interrupted-delete")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
         );
+        assert_eq!(fs::read(&snapshot).unwrap(), snapshot_before);
         assert!(
             manager
                 .load_session_checkpoint("interrupted-delete")
@@ -894,9 +929,15 @@
         manager
             .delete_session("interrupted-delete")
             .expect("finish deletion");
+        assert!(!snapshot.exists());
         assert!(manager.list_sessions().expect("list").is_empty());
         assert_eq!(fs::read(&legacy).expect("legacy preserved"), legacy_before);
-        assert!(manager.load_legacy_checkpoint().expect("legacy read").is_none());
+        assert!(
+            manager
+                .load_legacy_checkpoint()
+                .expect("legacy read")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1031,13 +1072,13 @@
             output_tokens: 5,
             ..codewhale_models::Usage::default()
         };
-        let usage_record = crate::cost_status::RuntimeUsageRecord {
-            source_id: "translation:old-turn:assistant:1".to_string(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        let usage_record = crate::cost_status::RuntimeUsageRecord::legacy(
+            "translation:old-turn:assistant:1".to_string(),
+            crate::cost_status::EffectiveRouteUsage {
                 route: priced_route.clone(),
                 usage: usage.clone(),
             },
-        };
+        );
         let missing_record = crate::cost_status::RuntimeUsageDropRecord {
             reason: crate::cost_status::RuntimeUsageMissingReason::default(),
             source_id: "advisor:old-turn:provider-response:0".to_string(),
@@ -1103,7 +1144,9 @@
         )
         .expect("late ledger");
         assert!(!ledger.contains("translation:old-turn"));
-        assert!(!ledger.contains(codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL));
+        assert!(
+            !ledger.contains(codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL)
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1162,7 +1205,8 @@
                     session_id,
                     "bounded-turn",
                     &crate::cost_status::RuntimeUsageDropRecord {
-                        reason: crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
+                        reason:
+                            crate::cost_status::RuntimeUsageMissingReason::RequestOutcomeUnknown,
                         source_id: format!("late-bounded:{index}"),
                         route: route.clone(),
                     },
@@ -1173,10 +1217,7 @@
         let loaded = manager
             .load_session_snapshot(session_id)
             .expect("load bounded");
-        assert_eq!(
-            loaded.metadata.total_tokens,
-            0
-        );
+        assert_eq!(loaded.metadata.total_tokens, 0);
         assert_eq!(loaded.metadata.cost.unpriced_turns, 1);
         assert!(
             loaded
@@ -1186,7 +1227,10 @@
                 .contains("late_usage_ledger_overflow")
         );
         let ledger = manager.load_late_usage(session_id).expect("bounded ledger");
-        assert_eq!(ledger.records.len(), MAX_LATE_USAGE_UNRESOLVED_RECORDS_PER_SESSION);
+        assert_eq!(
+            ledger.records.len(),
+            MAX_LATE_USAGE_UNRESOLVED_RECORDS_PER_SESSION
+        );
         assert!(ledger.overflowed);
     }
 
@@ -1209,16 +1253,16 @@
             Some(codewhale_config::descriptors::defaults::DEFAULT_DEEPSEEK_BASE_URL),
             Utc::now(),
         );
-        let record = crate::cost_status::RuntimeUsageRecord {
-            source_id: "linked-sidecar-response".to_string(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        let record = crate::cost_status::RuntimeUsageRecord::legacy(
+            "linked-sidecar-response".to_string(),
+            crate::cost_status::EffectiveRouteUsage {
                 route,
                 usage: codewhale_models::Usage {
                     input_tokens: 1,
                     ..codewhale_models::Usage::default()
                 },
             },
-        };
+        );
 
         let outside_lock = tmp.path().join("outside.lock");
         fs::write(&outside_lock, b"outside-lock").expect("outside lock");
@@ -1398,6 +1442,7 @@
 
         // Full round-trip of every coverage field.
         let full = SessionCostSnapshot {
+            accounted_usage_sources: BTreeMap::new(),
             session_cost_usd: 2.5,
             session_cost_cny: 3.0,
             subagent_cost_usd: 0.5,
@@ -1421,6 +1466,7 @@
             usage_source_fingerprints: ["response-fingerprint".to_string()].into(),
             missing_usage_sources: Default::default(),
             missing_usage_overflowed: false,
+            in_flight_usage_sources: Default::default(),
             coverage_recorded: true,
         };
         let json = serde_json::to_string(&full).expect("serialize");
@@ -1580,14 +1626,19 @@
             Some("agent"),
         );
         manager.save_session(&session).unwrap();
+        let config = toml::from_str(include_str!(
+            "../../../config/tests/fixtures/custom_models.toml"
+        ))
+        .unwrap();
         let route = crate::cost_status::EffectiveRouteEnvelope::capture(
-            None,
+            Some(&config),
             ProviderKind::Deepseek,
             "deepseek",
-            "deepseek-v4-flash",
-            Some("https://api.deepseek.com/v1"),
+            "deepseek-v4.1-flash-expires-on-0910",
+            Some("https://models.example.test/v1"),
             Utc::now(),
         );
+        assert!(route.provider_live_pricing.is_some());
         for index in 0..65 {
             manager
                 .persist_late_runtime_drop(
@@ -1610,9 +1661,9 @@
         let manager = SessionManager::new(sessions).unwrap();
         let mut changed = route.clone();
         changed.model = "different-model".into();
-        let invalid = crate::cost_status::RuntimeUsageRecord {
-            source_id: "attempt-0".into(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        let invalid = crate::cost_status::RuntimeUsageRecord::legacy(
+            "attempt-0",
+            crate::cost_status::EffectiveRouteUsage {
                 route: changed,
                 usage: codewhale_models::Usage {
                     input_tokens: 1,
@@ -1620,7 +1671,7 @@
                     ..Default::default()
                 },
             },
-        };
+        );
         assert_eq!(
             manager
                 .persist_late_runtime_usage("overflow-origin", "turn", &invalid)
@@ -1629,9 +1680,9 @@
             io::ErrorKind::InvalidData
         );
         for index in 0..65 {
-            let known = crate::cost_status::RuntimeUsageRecord {
-                source_id: format!("attempt-{index}"),
-                usage: crate::cost_status::EffectiveRouteUsage {
+            let known = crate::cost_status::RuntimeUsageRecord::legacy(
+                format!("attempt-{index}"),
+                crate::cost_status::EffectiveRouteUsage {
                     route: route.clone(),
                     usage: codewhale_models::Usage {
                         input_tokens: 1,
@@ -1639,7 +1690,7 @@
                         ..Default::default()
                     },
                 },
-            };
+            );
             for _ in 0..2 {
                 assert!(
                     manager
@@ -1693,6 +1744,8 @@
             }),
             reason: crate::cost_status::RuntimeUsageMissingReason::default(),
             decision: None,
+            settlement: None,
+            diagnostic_only: false,
         };
         let empty_bytes = serde_json::to_vec(&LateUsageLedger::default())
             .unwrap()
@@ -1713,16 +1766,16 @@
         };
         let (path, _) = manager.ensure_late_usage_paths("byte-limit").unwrap();
         SessionManager::write_late_usage_ledger(&path, &original).unwrap();
-        let extra = crate::cost_status::RuntimeUsageRecord {
-            source_id: "must-not-be-marked-handled".into(),
-            usage: crate::cost_status::EffectiveRouteUsage {
+        let extra = crate::cost_status::RuntimeUsageRecord::legacy(
+            "must-not-be-marked-handled",
+            crate::cost_status::EffectiveRouteUsage {
                 route,
                 usage: codewhale_models::Usage {
                     input_tokens: 1,
                     ..Default::default()
                 },
             },
-        };
+        );
         assert_eq!(
             manager
                 .persist_late_runtime_usage("byte-limit", "turn", &extra)

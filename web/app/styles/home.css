@@ -3,18 +3,42 @@
 /* ------------------------------------------------------------------ */
 /*
  * Paper holds the promise, capabilities and reading sections.
- * The live whale rests on the top edge of the real terminal capture under
- * the hero. The page ends in the sea with the install command, which runs
+ * Drawn water rises behind the live whale and real terminal capture under
+ * the hero. The page ends in the sea with the install action, which runs
  * on into the footer.
  */
 
 .home { --home-measure: 36rem; }
+.home-intro { position: relative; isolation: isolate; overflow: clip; }
+.home-water {
+  --strata-haze: rgb(30 143 216 / 0.08);
+  --strata-1: rgb(30 143 216 / 0.12);
+  --strata-2: rgb(30 143 216 / 0.16);
+  --strata-3: rgb(11 72 187 / 0.14);
+  --strata-4: #cfe2f6;
+  --strata-line: var(--brand-light);
+  --strata-thread: var(--brand-deep);
+  position: absolute;
+  inset: 0 0 auto;
+  height: min(64rem, 100%);
+  z-index: -1;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 70%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0, #000 70%, transparent 100%);
+}
+.strata { display: block; width: 100%; height: 100%; pointer-events: none; }
+:root[data-theme="dark"] .home-water {
+  --strata-1: rgb(30 143 216 / 0.08);
+  --strata-2: rgb(11 72 187 / 0.18);
+  --strata-3: rgb(11 72 187 / 0.28);
+  --strata-4: var(--ocean-sky);
+  --strata-line: var(--kit-bioluminescence);
+}
 
 /* ---------- paper: the hero ---------- */
 .home-hero {
   position: relative;
-  padding-block: clamp(2.5rem, 6vw, 4.5rem) 0;
-  background: var(--bg);
+  padding-block: clamp(2rem, 3vw, 2.5rem) 0;
 }
 
 .home-hero-inner {
@@ -28,8 +52,8 @@
 
 .home-hero-copy {
   display: grid;
-  gap: var(--space-5);
-  padding-bottom: clamp(2rem, 4vw, 3rem);
+  gap: var(--space-4);
+  padding-bottom: clamp(1.5rem, 3vw, 2rem);
   min-width: 0;
 }
 
@@ -37,8 +61,8 @@
 /* Measured in em, not ch, so CJK and long compound words wrap the same as
    English; hyphenation lets German compounds break at syllables. */
 .home-title {
-  max-width: 9.5em;
-  font-size: clamp(2.5rem, 1.4rem + 3.6vw, 4.5rem);
+  max-width: 11.25em;
+  font-size: clamp(2.5rem, 1.4rem + 3.6vw, 3.75rem);
   hyphens: auto;
   font-weight: 650;
   line-height: 0.98;
@@ -52,7 +76,7 @@
 .home-lede {
   max-width: var(--home-measure);
   color: var(--muted);
-  font-size: clamp(1.0625rem, 1rem + 0.35vw, 1.25rem);
+  font-size: clamp(1.0625rem, 1rem + 0.2vw, 1.125rem);
   line-height: 1.55;
   text-wrap: pretty;
 }
@@ -71,25 +95,64 @@
   line-break: strict;
 }
 
-.home-hero-copy .hero-install { max-width: 32rem; margin-top: var(--space-2); }
+.home-hero-copy .hero-install { max-width: 35rem; margin-top: var(--space-2); }
 .home-hero-copy .actions { margin-top: calc(var(--space-2) * -1); }
 
-/* The whale rests on the terminal: its lowest point meets the frame's top
-   edge. */
+/* The whale rests above the terminal at the waterline. */
 .home-whale {
   display: flex;
   justify-content: center;
   align-self: end;
   min-width: 0;
 }
-.home-whale .whale-live {
-  --whale-size: clamp(16rem, 30vw, 26rem);
+.home-whale .living-whale {
+  --whale-size: clamp(18rem, 36vw, 29rem);
   width: var(--whale-size);
-  /* The rig fills the middle 72% of the canvas; drop its belly onto the
-     terminal frame below. */
+  /* The rig fills the middle 72% of the canvas; lower its belly toward
+     the terminal below. */
   margin-bottom: calc(var(--whale-size) * -0.26);
   position: relative;
   z-index: 2;
+}
+
+.living-whale {
+  position: relative;
+  aspect-ratio: 1;
+}
+.living-whale > .whale-live {
+  width: 100%;
+  transition: opacity var(--dur-spring) var(--ease-spring);
+}
+.living-whale:not([data-stage="whale"]) > .whale-live { opacity: 0; }
+.living-whale-lights {
+  position: absolute;
+  inset: 14%;
+  width: 72%;
+  height: 72%;
+  overflow: visible;
+  pointer-events: none;
+}
+.living-whale-mark {
+  fill: light-dark(#142352, #faf8f5);
+  opacity: 0;
+  transition: opacity var(--dur-spring) var(--ease-spring);
+}
+.living-whale[data-stage="mark"] .living-whale-mark { opacity: 1; }
+.living-whale-beads {
+  fill: var(--accent);
+  opacity: 0;
+  transition: opacity var(--dur-spring) var(--ease-spring);
+}
+.living-whale[data-stage="lights"] .living-whale-beads { opacity: 1; }
+.living-whale-beads circle[data-star] { fill: color-mix(in oklab, var(--accent) 70%, white); }
+@media (prefers-reduced-motion: no-preference) {
+  .living-whale[data-stage="pending"] > .whale-live { animation: living-whale-late 0s 1.2s forwards; }
+  @keyframes living-whale-late { to { opacity: 1; } }
+}
+@media (prefers-reduced-motion: reduce) {
+  .living-whale-lights { display: none; }
+  .living-whale:not([data-stage="whale"]) > .whale-live,
+  .living-whale > .whale-live { opacity: 1; transition: none; animation: none; }
 }
 
 /* ---------- the live whale ---------- */
@@ -165,11 +228,17 @@
 .home-terminal {
   position: relative;
   z-index: 1;
+}
+.home-terminal-inner {
   width: var(--container);
   margin-inline: auto;
+  padding-block: clamp(2rem, 4vw, 3rem) clamp(2.5rem, 6vw, 4.5rem);
 }
-.home-terminal .figure-frame {
-  box-shadow: 0 1px 0 var(--line), 0 32px 64px -32px rgb(10 30 51 / 0.5);
+.home-shot { max-width: 64rem; margin-inline: auto; }
+.home-shot .figure-frame {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--brand-light) 35%, var(--line));
+  box-shadow: 0 24px 60px -28px rgb(11 72 187 / 0.3);
 }
 
 /* Release, licence and the contributor count read from facts, never typed into copy. */
@@ -178,14 +247,33 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-6);
-  width: var(--container);
-  margin-inline: auto;
-  padding-block: var(--space-5);
-  border-bottom: 1px solid var(--line);
+  padding-top: var(--space-5);
   color: var(--muted);
   font-size: var(--text-ui);
   font-variant-numeric: tabular-nums;
 }
+
+.release-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+}
+.release-card {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-block: var(--space-5);
+  border-block-start: 1px solid var(--line);
+}
+.release-card h3 { font-size: var(--text-ui); font-weight: 600; color: var(--muted); }
+.release-version { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-4); }
+.release-version > a { display: inline-flex; align-items: center; min-height: 2.75rem; font-size: var(--text-title); font-weight: 600; color: var(--accent); }
+.release-version time,
+.release-cached { font-size: var(--text-ui); color: var(--muted); }
+.release-links { display: flex; flex-wrap: wrap; gap: var(--space-5); }
+.release-links a { display: inline-flex; align-items: center; min-height: 2.75rem; }
+.release-update-error { margin-top: var(--space-4); color: var(--muted); font-size: var(--text-ui); }
+.page-body > .release-updates { padding-block-start: 0; margin-block-end: var(--section-gap); }
 
 /* ---------- partner offer ---------- */
 .home-promo { max-width: 1000px; }
@@ -221,6 +309,34 @@
   border-top: 1px solid var(--line);
 }
 
+.home-work-patterns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-6);
+  margin-top: var(--space-7);
+}
+.home-work-patterns dt { font-size: var(--text-heading); font-weight: 600; }
+.home-work-patterns dd { display: grid; gap: var(--space-4); margin: var(--space-3) 0 0; color: var(--muted); line-height: 1.6; }
+.home-work-patterns code { font-size: var(--text-ui); overflow-wrap: anywhere; }
+
+.home-computer-use {
+  border-block: 1px solid var(--line);
+}
+.home-computer-inner {
+  width: var(--container);
+  margin-inline: auto;
+  padding-block: clamp(3rem, 7vw, 6rem);
+}
+.home-computer-inner > .home-section { padding-block: 0; }
+.home-computer-use .section-title { max-width: 19ch; }
+.home-computer-use .btn { margin-top: var(--space-6); }
+.home-computer-use .ruled-list dt { font-family: var(--font-body); font-size: var(--text-body); font-weight: 600; }
+.home-contribution-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-6) clamp(2rem, 6vw, 5rem);
+}
+
 /* Terms read as words, not as code: the brand face, a little weight. */
 .home-body .ruled-list dt {
   font-family: var(--font-body);
@@ -231,6 +347,21 @@
 }
 
 .product-start-links { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-5); margin-top: var(--space-5); }
+
+.home-skill {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sheet);
+  background: var(--surface);
+  text-decoration: none;
+}
+.home-skill h3 { color: var(--text); font-size: var(--text-heading); }
+.home-skill p { color: var(--muted); line-height: 1.6; }
+.home-skill code { margin-top: var(--space-4); color: var(--muted); font-size: var(--text-ui); }
+.home-skill > .icon { color: var(--accent); }
+.home-skill:hover { border-color: var(--accent); }
 
 /* ---------- the sea: install, into the footer ---------- */
 .home-install-inner {
@@ -243,18 +374,22 @@
   padding-block: clamp(4.5rem, 9vw, 7rem) clamp(2.5rem, 5vw, 4rem);
 }
 @media (min-width: 900px) {
-  .home-install-inner { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); }
+  .home-install-inner { grid-template-columns: minmax(0, 1fr) auto; }
 }
-.home-install-channels { color: var(--muted); font-size: var(--text-ui); line-height: 1.6; }
 
 /* ---------- narrow screens ---------- */
 @media (max-width: 900px) {
   .home-hero-inner { grid-template-columns: minmax(0, 1fr); }
   .home-hero-copy { padding-bottom: var(--space-4); }
   .home-whale { justify-content: flex-end; }
-  .home-whale .whale-live { --whale-size: clamp(11rem, 48vw, 16rem); }
+  .home-whale .living-whale { --whale-size: clamp(11rem, 48vw, 16rem); }
+  .home-work-patterns,
+  .home-contribution-grid,
+  .release-cards { grid-template-columns: minmax(0, 1fr); }
+  .home-work-patterns > div + div { padding-top: var(--space-5); border-top: 1px solid var(--line); }
 }
 
 @media (forced-colors: active) {
   .home-install::before { background: CanvasText; }
+  .home-water { display: none; }
 }

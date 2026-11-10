@@ -120,13 +120,15 @@ import tempfile
 binary = str(Path(sys.argv[1]).resolve())
 with tempfile.TemporaryDirectory(prefix="cw-", dir="/tmp") as temporary:
     root = Path(temporary).resolve()
-    home = root / "home"
-    home.mkdir(mode=0o700)
+    state_root = root / "state"
+    state_root.mkdir(mode=0o700)
     config = root / "config.toml"
     config.write_text("telemetry = false\n")
     env = {key: os.environ[key] for key in ("PATH", "USER", "SYSTEMROOT") if key in os.environ}
-    env.update(HOME=str(home), CODEWHALE_HOME=str(home), TMPDIR=str(root), CODEWHALE_NO_UPDATE_CHECK="1")
-    requests = "".join(json.dumps({"jsonrpc": "2.0", "id": i, "method": method}) + "\n"
+    env.update(CODEWHALE_HOME=str(state_root), XDG_CONFIG_HOME=str(root / "config"), XDG_CACHE_HOME=str(root / "cache"), TMPDIR=str(root), CODEWHALE_NO_UPDATE_CHECK="1")
+    requests = json.dumps({"id": 0, "method": "initialize", "params": {"clientInfo": {"name": "codewhale-smoke", "version": "1"}}}) + "\n"
+    requests += json.dumps({"method": "initialized"}) + "\n"
+    requests += "".join(json.dumps({"id": i, "method": method}) + "\n"
         for i, method in enumerate(("healthz", "capabilities", "app/capabilities",
             "prompt/capabilities", "thread/capabilities", "shutdown"), 1))
     process = subprocess.Popen([binary, "app-server", "--stdio", "--config", str(config)],
@@ -144,10 +146,10 @@ with tempfile.TemporaryDirectory(prefix="cw-", dir="/tmp") as temporary:
         sys.exit(1)
     try:
         replies = [json.loads(line) for line in stdout.splitlines()]
-        if {reply.get("id") for reply in replies if "result" in reply} != set(range(1, 7)):
+        if {reply.get("id") for reply in replies if "result" in reply} != set(range(0, 7)):
             raise ValueError("missing successful response")
     except (ValueError, AttributeError):
-        print("app-server stdio did not return six successful JSON-RPC responses", file=sys.stderr)
+        print("app-server stdio did not return seven successful JSON-RPC responses", file=sys.stderr)
         sys.exit(1)
     sys.stdout.buffer.write(stdout)
 PY

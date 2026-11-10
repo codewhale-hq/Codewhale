@@ -5,10 +5,18 @@ use super::*;
 
 pub(super) struct CompactionPass {
     pub trigger: &'static str,
-    pub path: crate::compaction::CompactionPath,
+    pub path: Option<crate::compaction::CompactionPath>,
+    pub messages_before: usize,
+    pub messages_after: Option<usize>,
     pub tokens_before: usize,
     pub threshold_tokens: usize,
+    pub configured_threshold_tokens: usize,
     pub usage: Usage,
+    pub elapsed_ms: u64,
+    pub reported_input_tokens: Option<u64>,
+    pub gate_input_tokens: Option<u64>,
+    pub calibration: (usize, usize),
+    pub compaction_window_tokens: Option<u32>,
 }
 
 /// Which branch the turn loop takes after [`Engine::run_auto_compaction`].
@@ -35,25 +43,39 @@ pub(super) enum AutoCompactionStep {
 struct EngineCompactionNoticeSink {
     tx: mpsc::Sender<Event>,
     child: Option<Arc<crate::tools::subagent::engine::ChildAuthority>>,
+    origin: Option<crate::cost_status::NativeUsageOrigin>,
 }
 
 impl crate::compaction::CompactionNoticeSink for EngineCompactionNoticeSink {
     fn notice(&self, message: String) {
         let _ = self.tx.try_send(Event::Status { message });
     }
-    fn accounting_origin(&self) -> Option<(crate::cost_status::CostScopeToken, String, String)> {
-        self.child.as_ref().map(|child| child.accounting_origin())
+    fn accounting_origin(&self) -> std::io::Result<Option<crate::cost_status::NativeUsageOrigin>> {
+        if let Some(child) = self.child.as_ref() {
+            let origin = child.usage_origin();
+            if origin.is_none() {
+                tracing::warn!(
+                    "child compaction has no admitted accounting origin; cost stays unknown"
+                );
+            }
+            return Ok(origin);
+        }
+        Ok(self.origin.clone())
     }
     fn settled_usage<'a>(
         &'a self,
-        source: &'a str,
-        route: &'a crate::cost_status::EffectiveRouteEnvelope,
-        usage: &'a Usage,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        record: &'a crate::cost_status::RuntimeUsageRecord,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(child) = self.child.as_ref() {
-                child.project_settled_response(source, route, usage).await;
+            if let Some(child) = self.child.as_ref()
+                && let Err(error) = child.project_settled_response(record).await
+            {
+                tracing::warn!(
+                    %error,
+                    "compaction usage projection failed; the pass continues"
+                );
             }
+            Ok(())
         })
     }
 }
@@ -81,35 +103,20 @@ impl Engine {
         id: String,
         auto: bool,
         message: String,
-        messages_before: Option<usize>,
-        messages_after: Option<usize>,
         pass: CompactionPass,
     ) {
         let summary_prompt = self.rendered_compaction_summary();
         // Every call site runs after message replacement and checkpoint
         // commit. Reuse the same complete estimate as context pressure.
         let post_input_tokens = Some(self.estimated_input_tokens() as u64);
-        let reduction_ratio = messages_before
-            .zip(messages_after)
-            .filter(|(before, _)| *before > 0)
-            .map(|(before, after)| 1.0 - after as f64 / before as f64);
+        let messages_before = pass.messages_before;
+        let reduction_ratio = pass
+            .messages_after
+            .filter(|_| messages_before > 0)
+            .map(|after| 1.0 - after as f64 / messages_before as f64);
         self.record_compaction_event(
             "compaction.completed",
-            serde_json::json!({
-                "compaction_id": id,
-                "trigger": pass.trigger,
-                "path": match pass.path {
-                    crate::compaction::CompactionPath::Summary => "summary",
-                    crate::compaction::CompactionPath::PruneOnly => "pruning_only",
-                },
-                "messages_before": messages_before,
-                "messages_after": messages_after,
-                "estimated_tokens_before": pass.tokens_before,
-                "estimated_tokens_after": post_input_tokens,
-                "threshold_tokens": pass.threshold_tokens,
-                "summarizer_usage": pass.usage,
-                "reduction_ratio": reduction_ratio,
-            }),
+            compaction_audit_details("success", &id, &pass, post_input_tokens, reduction_ratio),
         )
         .await;
         let _ = self
@@ -117,8 +124,8 @@ impl Engine {
                 id,
                 auto,
                 message,
-                messages_before,
-                messages_after,
+                messages_before: Some(pass.messages_before),
+                messages_after: pass.messages_after,
                 summary_prompt,
                 post_input_tokens,
             })
@@ -135,6 +142,19 @@ impl Engine {
         details["session_id"] = serde_json::json!(self.session.id);
         details["thread_id"] = serde_json::json!(self.config.runtime_services.active_thread_id);
         details["model"] = serde_json::json!(self.config.model);
+        details["provider"] = serde_json::json!(self.api_provider.as_str());
+        details["provider_identity"] = serde_json::json!(
+            self.api_provider_identity
+                .as_ref()
+                .and_then(|identity| identity.persisted_id())
+        );
+        details["route_model"] = serde_json::json!(self.session.model);
+        details["effective_context_window_tokens"] =
+            serde_json::json!(self.active_context_window.map(|window| window.tokens));
+        details["effective_context_window_source"] = serde_json::json!(
+            self.active_context_window
+                .map(|window| window.source.label())
+        );
         #[cfg(any(test, feature = "test-support"))]
         let env_ticket = crate::test_support::env_scope_ticket();
         if let Err(error) = tokio::task::spawn_blocking(move || {
@@ -153,7 +173,13 @@ impl Engine {
         id: String,
         auto: bool,
         message: String,
+        pass: CompactionPass,
     ) {
+        self.record_compaction_event(
+            "compaction.cancelled",
+            compaction_audit_details("cancelled", &id, &pass, None, None),
+        )
+        .await;
         let _ = self
             .send_event(Event::CompactionCancelled { id, auto, message })
             .await;
@@ -178,7 +204,18 @@ impl Engine {
             .filter(|text| !text.trim().is_empty())
     }
 
-    pub(super) async fn emit_compaction_failed(&mut self, id: String, auto: bool, message: String) {
+    pub(super) async fn emit_compaction_failed(
+        &mut self,
+        id: String,
+        auto: bool,
+        message: String,
+        pass: CompactionPass,
+    ) {
+        self.record_compaction_event(
+            "compaction.failed",
+            compaction_audit_details("failed", &id, &pass, None, None),
+        )
+        .await;
         let _ = self
             .send_event(Event::CompactionFailed { id, auto, message })
             .await;
@@ -295,6 +332,13 @@ impl Engine {
         prepared.session_id = Some(self.session.id.clone());
         prepared.notice_sink = Some(std::sync::Arc::new(EngineCompactionNoticeSink {
             tx: self.tx_event.clone(),
+            origin: self
+                .config
+                .compaction
+                .runtime_cost_owner
+                .is_none()
+                .then(|| self.config.runtime_services.accounting_origin.clone())
+                .flatten(),
             child: self
                 .child_host
                 .as_ref()
@@ -320,12 +364,36 @@ impl Engine {
     ) {
         // Manual compaction terminals identify the compaction operation, never
         // a surrounding host submission or a model turn.
+        let audit_started = Instant::now();
+        let messages_before = self.session.messages.len();
+        let tokens_before = self.estimated_input_tokens();
+        let reported_input_tokens = self.session.latest_parent_input_tokens.map(u64::from);
+        let threshold_tokens = compaction.token_threshold;
+        let compaction_window_tokens = compaction.effective_context_window;
+        let pass = || CompactionPass {
+            trigger: "manual",
+            path: None,
+            messages_before,
+            messages_after: None,
+            tokens_before,
+            threshold_tokens,
+            configured_threshold_tokens: threshold_tokens,
+            usage: Usage::default(),
+            elapsed_ms: elapsed_millis(audit_started),
+            reported_input_tokens,
+            gate_input_tokens: None,
+            calibration: (1, 1),
+            compaction_window_tokens,
+        };
         let compaction_id = Some(id.clone());
         let Some(cancel_token) = self.claim_compaction(&id) else {
             let message = "Making room stopped before it started".to_string();
-            self.emit_compaction_cancelled(id, false, message).await;
+            self.emit_compaction_cancelled(id, false, message, pass())
+                .await;
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id,
@@ -351,11 +419,11 @@ impl Engine {
             previous_source,
         )
         .await;
-        if let Err(err) = self.install_resolved_runtime_route(route) {
+        if let Err(err) = self.install_resolved_runtime_route_async(route).await {
             let message =
                 format!("Cannot compact context because its provider route is not ready: {err}");
             self.finish_compaction(&id);
-            self.emit_compaction_failed(id, false, message.clone())
+            self.emit_compaction_failed(id, false, message.clone(), pass())
                 .await;
             let _ = self
                 .send_event(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
@@ -364,6 +432,8 @@ impl Engine {
             // operation: hosts waiting on its lifecycle must be released.
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id,
@@ -403,6 +473,7 @@ impl Engine {
     ) {
         // Manual compaction terminals identify the compaction operation, never
         // a surrounding host submission or a model turn.
+        let audit_started = Instant::now();
         let compaction_id = Some(id.clone());
         let zero_usage = Usage {
             input_tokens: 0,
@@ -411,14 +482,40 @@ impl Engine {
         };
         let Some(client) = self.codewhale_client.clone() else {
             let message = "Can't make room: no model is connected".to_string();
+            let messages_before = self.session.messages.len();
+            let tokens_before = self.estimated_input_tokens();
+            let reported_input_tokens = self.session.latest_parent_input_tokens.map(u64::from);
+            let threshold_tokens = self.config.compaction.token_threshold;
+            let compaction_window_tokens = self.config.compaction.effective_context_window;
             self.finish_compaction(&id);
-            self.emit_compaction_failed(id, false, message.clone())
-                .await;
+            self.emit_compaction_failed(
+                id,
+                false,
+                message.clone(),
+                CompactionPass {
+                    trigger: "manual",
+                    path: None,
+                    messages_before,
+                    messages_after: None,
+                    tokens_before,
+                    threshold_tokens,
+                    configured_threshold_tokens: threshold_tokens,
+                    usage: Usage::default(),
+                    elapsed_ms: elapsed_millis(audit_started),
+                    reported_input_tokens,
+                    gate_input_tokens: None,
+                    calibration: (1, 1),
+                    compaction_window_tokens,
+                },
+            )
+            .await;
             let _ = self
                 .send_event(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id,
@@ -439,10 +536,28 @@ impl Engine {
         // compaction that drops few but enormous messages reads as a no-op.
         // The emergency path already reports tokens; manual and auto now match.
         let tokens_before = self.estimated_input_tokens();
+        let reported_input_tokens = self.session.latest_parent_input_tokens.map(u64::from);
         let mut turn_status = TurnOutcomeStatus::Completed;
         let mut turn_error = None;
 
         let prepared = self.prepare_compaction_envelope(self.config.compaction.clone());
+        let threshold_tokens = prepared.config.token_threshold;
+        let compaction_window_tokens = prepared.config.effective_context_window;
+        let pass = |path: Option<crate::compaction::CompactionPath>, usage: Usage| CompactionPass {
+            trigger: "manual",
+            path,
+            messages_before,
+            messages_after: None,
+            tokens_before,
+            threshold_tokens,
+            configured_threshold_tokens: threshold_tokens,
+            usage,
+            elapsed_ms: elapsed_millis(audit_started),
+            reported_input_tokens,
+            gate_input_tokens: None,
+            calibration: (1, 1),
+            compaction_window_tokens,
+        };
 
         let started = Instant::now();
         let mut compaction_usage = Usage::default();
@@ -468,10 +583,13 @@ impl Engine {
                 id,
                 false,
                 "Making room stopped; the conversation was not changed".to_string(),
+                pass(None, compaction_usage.clone()),
             )
             .await;
             let _ = self
                 .send_event(Event::TurnComplete {
+                    source_accounting: true,
+
                     turn_id: None,
                     submission_id: None,
                     compaction_id,
@@ -489,6 +607,7 @@ impl Engine {
 
         match compaction_result {
             Ok(mut result) => {
+                let path = result.coverage.path;
                 if !result.messages.is_empty() || self.session.messages.is_empty() {
                     self.append_compaction_agent_topology(&mut result.messages)
                         .await;
@@ -498,10 +617,13 @@ impl Engine {
                             id,
                             false,
                             "Making room stopped; the conversation was not changed".to_string(),
+                            pass(Some(path), compaction_usage.clone()),
                         )
                         .await;
                         let _ = self
                             .send_event(Event::TurnComplete {
+                                source_accounting: true,
+
                                 turn_id: None,
                                 submission_id: None,
                                 compaction_id,
@@ -519,7 +641,6 @@ impl Engine {
                     let messages_after = result.messages.len();
                     let retries_used = result.retries_used;
                     let coverage_clause = result.coverage.receipt_clause();
-                    let path = result.coverage.path;
                     if let Some(job) = self.child_job()
                         && let Err(error) = job
                             .before_replace(&self.session.messages, &result.messages)
@@ -546,25 +667,19 @@ impl Engine {
                             "Made room: {messages_before} → {messages_after} messages ({removed} removed), ~{tokens_before} → ~{tokens_after} tokens ({coverage_clause})"
                         )
                     };
-                    self.emit_compaction_completed(
-                        id.clone(),
-                        false,
-                        message,
-                        Some(messages_before),
-                        Some(messages_after),
-                        CompactionPass {
-                            trigger: "manual",
-                            path,
-                            tokens_before,
-                            threshold_tokens: prepared.config.token_threshold,
-                            usage: compaction_usage.clone(),
-                        },
-                    )
-                    .await;
+                    let mut pass = pass(Some(path), compaction_usage.clone());
+                    pass.messages_after = Some(messages_after);
+                    self.emit_compaction_completed(id.clone(), false, message, pass)
+                        .await;
                 } else {
                     let message = "Making room skipped: the summary came back empty".to_string();
-                    self.emit_compaction_failed(id.clone(), false, message.clone())
-                        .await;
+                    self.emit_compaction_failed(
+                        id.clone(),
+                        false,
+                        message.clone(),
+                        pass(Some(path), compaction_usage.clone()),
+                    )
+                    .await;
                     turn_status = TurnOutcomeStatus::Failed;
                     turn_error = Some(message);
                 }
@@ -577,8 +692,13 @@ impl Engine {
                     false,
                     &err,
                 );
-                self.emit_compaction_failed(id.clone(), false, message.clone())
-                    .await;
+                self.emit_compaction_failed(
+                    id.clone(),
+                    false,
+                    message.clone(),
+                    pass(None, compaction_usage.clone()),
+                )
+                .await;
                 let _ = self.send_event(Event::status(message.clone())).await;
                 turn_status = TurnOutcomeStatus::Failed;
                 turn_error = Some(message);
@@ -589,6 +709,8 @@ impl Engine {
 
         let _ = self
             .send_event(Event::TurnComplete {
+                source_accounting: true,
+
                 turn_id: None,
                 submission_id: None,
                 compaction_id,
@@ -633,6 +755,8 @@ impl Engine {
             self.session.system_prompt.as_ref(),
             self.session.latest_parent_input_tokens,
         );
+        let reported_input_tokens =
+            turn.billed_input_tokens_for_compaction(self.session.latest_parent_input_tokens);
         let prepared = if !*auto_compaction_suppressed
             && auto_compaction_config.enabled
             && billed_input_tokens
@@ -675,6 +799,7 @@ impl Engine {
                             "messages_before": self.session.messages.len(),
                             "estimated_tokens_before": estimated_tokens_before,
                             "billed_input_tokens": billed_input_tokens,
+                            "gate_input_tokens": billed_input_tokens,
                             "threshold_tokens": prepared.config.token_threshold,
                         })).await;
                         let message = match reason {
@@ -735,6 +860,25 @@ impl Engine {
             let turn_cancel = self.cancel_token.clone();
             let started = Instant::now();
             let mut compaction_usage = Usage::default();
+            let threshold_tokens = prepared.config.token_threshold;
+            let compaction_window_tokens = prepared.config.effective_context_window;
+            let calibration = turn.input_token_ratio;
+            let pass =
+                |path: Option<crate::compaction::CompactionPath>, usage: Usage| CompactionPass {
+                    trigger: "auto",
+                    path,
+                    messages_before: auto_messages_before,
+                    messages_after: None,
+                    tokens_before: auto_tokens_before,
+                    threshold_tokens,
+                    configured_threshold_tokens: threshold_tokens,
+                    usage,
+                    elapsed_ms: elapsed_millis(started),
+                    reported_input_tokens,
+                    gate_input_tokens: billed_input_tokens,
+                    calibration,
+                    compaction_window_tokens,
+                };
             // Parked: the compaction pass owns its own bound.
             self.turn_heartbeat
                 .enter(super::turn_heartbeat::TurnPhase::Compacting, None, None);
@@ -762,8 +906,13 @@ impl Engine {
                     "Making room stopped; the conversation was not changed"
                 }
                 .to_string();
-                self.emit_compaction_cancelled(compaction_id, true, message)
-                    .await;
+                self.emit_compaction_cancelled(
+                    compaction_id,
+                    true,
+                    message,
+                    pass(None, compaction_usage.clone()),
+                )
+                .await;
                 if turn_was_canceled {
                     return AutoCompactionStep::EndTurn(TurnOutcomeStatus::Interrupted, None);
                 }
@@ -773,6 +922,7 @@ impl Engine {
             match compaction_result {
                 Ok(mut result) => {
                     // Only update if we got valid messages (never corrupt state)
+                    let path = result.coverage.path;
                     if !result.messages.is_empty() || self.session.messages.is_empty() {
                         self.append_compaction_agent_topology(&mut result.messages)
                             .await;
@@ -786,8 +936,13 @@ impl Engine {
                                 "Making room stopped; the conversation was not changed"
                             }
                             .to_string();
-                            self.emit_compaction_cancelled(compaction_id, true, message)
-                                .await;
+                            self.emit_compaction_cancelled(
+                                compaction_id,
+                                true,
+                                message,
+                                pass(Some(path), compaction_usage.clone()),
+                            )
+                            .await;
                             if turn_was_canceled {
                                 return AutoCompactionStep::EndTurn(
                                     TurnOutcomeStatus::Interrupted,
@@ -799,7 +954,6 @@ impl Engine {
                         let auto_messages_after = result.messages.len();
                         let retries_used = result.retries_used;
                         let coverage_clause = result.coverage.receipt_clause();
-                        let path = result.coverage.path;
                         if let Some(job) = self.child_job()
                             && let Err(error) = job
                                 .before_replace(&self.session.messages, &result.messages)
@@ -836,27 +990,26 @@ impl Engine {
                                 "Made room: {auto_messages_before} → {auto_messages_after} messages ({removed} removed), ~{auto_tokens_before} → ~{auto_tokens_after} tokens ({coverage_clause})"
                             )
                         };
+                        let mut pass = pass(Some(path), compaction_usage.clone());
+                        pass.messages_after = Some(auto_messages_after);
                         self.emit_compaction_completed(
                             compaction_id.clone(),
                             true,
                             status.clone(),
-                            Some(auto_messages_before),
-                            Some(auto_messages_after),
-                            CompactionPass {
-                                trigger: "auto",
-                                path,
-                                tokens_before: auto_tokens_before,
-                                threshold_tokens: prepared.config.token_threshold,
-                                usage: compaction_usage.clone(),
-                            },
+                            pass,
                         )
                         .await;
                     } else {
                         *auto_compaction_suppressed = true;
                         let message =
                             "Making room skipped: the summary came back empty".to_string();
-                        self.emit_compaction_failed(compaction_id.clone(), true, message.clone())
-                            .await;
+                        self.emit_compaction_failed(
+                            compaction_id.clone(),
+                            true,
+                            message.clone(),
+                            pass(Some(path), compaction_usage.clone()),
+                        )
+                        .await;
                         let _ = self.send_event(Event::status(message)).await;
                     }
                 }
@@ -869,8 +1022,13 @@ impl Engine {
                         true,
                         &err,
                     );
-                    self.emit_compaction_failed(compaction_id.clone(), true, message.clone())
-                        .await;
+                    self.emit_compaction_failed(
+                        compaction_id.clone(),
+                        true,
+                        message.clone(),
+                        pass(None, compaction_usage.clone()),
+                    )
+                    .await;
                     let _ = self.send_event(Event::status(message.clone())).await;
                     self.finish_compaction(&compaction_id);
                     return AutoCompactionStep::EndTurn(TurnOutcomeStatus::Failed, Some(message));
@@ -947,6 +1105,7 @@ impl Engine {
             return false;
         }
 
+        let audit_started = Instant::now();
         let id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
         turn.stop_diagnostics.emergency_compaction_attempts = turn
             .stop_diagnostics
@@ -961,11 +1120,33 @@ impl Engine {
         )
         .await;
         let Some(compaction_cancel) = self.claim_compaction(&id) else {
+            let messages_before = self.session.messages.len();
+            let tokens_before = self.estimated_input_tokens();
+            let reported_input_tokens =
+                turn.billed_input_tokens_for_compaction(self.session.latest_parent_input_tokens);
+            let calibration = turn.input_token_ratio;
+            let threshold_tokens = self.config.compaction.token_threshold;
+            let compaction_window_tokens = self.config.compaction.effective_context_window;
             self.emit_compaction_cancelled(
                 id,
                 true,
                 "Making room stopped before it started; the conversation was not changed"
                     .to_string(),
+                CompactionPass {
+                    trigger: "emergency",
+                    path: None,
+                    messages_before,
+                    messages_after: None,
+                    tokens_before,
+                    threshold_tokens,
+                    configured_threshold_tokens: threshold_tokens,
+                    usage: Usage::default(),
+                    elapsed_ms: elapsed_millis(audit_started),
+                    reported_input_tokens,
+                    gate_input_tokens: None,
+                    calibration,
+                    compaction_window_tokens,
+                },
             )
             .await;
             return false;
@@ -982,6 +1163,7 @@ impl Engine {
                 tools,
             ));
         let before_count = self.session.messages.len();
+        let configured_threshold_tokens = self.config.compaction.token_threshold;
 
         let mut forced_config = self.config.compaction.clone();
         forced_config.enabled = true;
@@ -995,6 +1177,27 @@ impl Engine {
 
         let started = Instant::now();
         let mut compaction_usage = Usage::default();
+        let threshold_tokens = prepared.config.token_threshold;
+        let compaction_window_tokens = prepared.config.effective_context_window;
+        let calibration = turn.input_token_ratio;
+        let reported_input_tokens =
+            turn.billed_input_tokens_for_compaction(self.session.latest_parent_input_tokens);
+        let gate_input_tokens = u64::try_from(before_tokens).ok();
+        let pass = |path: Option<crate::compaction::CompactionPath>, usage: Usage| CompactionPass {
+            trigger: "emergency",
+            path,
+            messages_before: before_count,
+            messages_after: None,
+            tokens_before: before_tokens,
+            threshold_tokens,
+            configured_threshold_tokens,
+            usage,
+            elapsed_ms: elapsed_millis(started),
+            reported_input_tokens,
+            gate_input_tokens,
+            calibration,
+            compaction_window_tokens,
+        };
         let (compaction_result, turn_was_canceled) = tokio::select! {
             biased;
             _ = turn_cancel.cancelled() => (None, true),
@@ -1018,7 +1221,8 @@ impl Engine {
                 "Making room stopped; the conversation was not changed"
             }
             .to_string();
-            self.emit_compaction_cancelled(id, true, message).await;
+            self.emit_compaction_cancelled(id, true, message, pass(None, compaction_usage.clone()))
+                .await;
             return false;
         };
 
@@ -1030,7 +1234,13 @@ impl Engine {
                         "Making room: {} refused the summary request's images; retrying with at most {cap} per request. Original conversation was preserved.",
                         prepared.config.model
                     );
-                    self.emit_compaction_failed(id.clone(), true, message).await;
+                    self.emit_compaction_failed(
+                        id.clone(),
+                        true,
+                        message,
+                        pass(None, compaction_usage.clone()),
+                    )
+                    .await;
                     self.finish_compaction(&id);
                     return true;
                 }
@@ -1055,7 +1265,13 @@ impl Engine {
                 if is_provider_rejection(&err) {
                     turn.context_recovery_rejection = Some(err);
                 }
-                self.emit_compaction_failed(id.clone(), true, message).await;
+                self.emit_compaction_failed(
+                    id.clone(),
+                    true,
+                    message,
+                    pass(None, compaction_usage.clone()),
+                )
+                .await;
                 self.finish_compaction(&id);
                 return false;
             }
@@ -1074,7 +1290,13 @@ impl Engine {
                 "Making room stopped; the conversation was not changed"
             }
             .to_string();
-            self.emit_compaction_cancelled(id, true, message).await;
+            self.emit_compaction_cancelled(
+                id,
+                true,
+                message,
+                pass(Some(path), compaction_usage.clone()),
+            )
+            .await;
             return false;
         }
 
@@ -1090,7 +1312,13 @@ impl Engine {
                     "Making room stopped; the conversation was not changed"
                 }
                 .to_string();
-                self.emit_compaction_cancelled(id, true, message).await;
+                self.emit_compaction_cancelled(
+                    id,
+                    true,
+                    message,
+                    pass(Some(path), compaction_usage.clone()),
+                )
+                .await;
                 return false;
             }
         }
@@ -1132,21 +1360,10 @@ impl Engine {
             if retries_used > 0 {
                 details.push_str(&format!(" ({retries_used} retries)"));
             }
-            self.emit_compaction_completed(
-                id.clone(),
-                true,
-                details.clone(),
-                Some(before_count),
-                Some(after_count),
-                CompactionPass {
-                    trigger: "emergency",
-                    path,
-                    tokens_before: before_tokens,
-                    threshold_tokens: prepared.config.token_threshold,
-                    usage: compaction_usage.clone(),
-                },
-            )
-            .await;
+            let mut pass = pass(Some(path), compaction_usage.clone());
+            pass.messages_after = Some(after_count);
+            self.emit_compaction_completed(id.clone(), true, details.clone(), pass)
+                .await;
             let _ = self.send_event(Event::status(details)).await;
             self.finish_compaction(&id);
             return true;
@@ -1170,8 +1387,13 @@ impl Engine {
                  request differently). Original conversation was preserved."
             )
         };
-        self.emit_compaction_failed(id.clone(), true, message.clone())
-            .await;
+        self.emit_compaction_failed(
+            id.clone(),
+            true,
+            message.clone(),
+            pass(Some(path), compaction_usage.clone()),
+        )
+        .await;
         let _ = self.send_event(Event::status(message)).await;
         self.finish_compaction(&id);
         false
@@ -1199,6 +1421,44 @@ impl Engine {
         };
         crate::runtime_handoff::replace_agent_topology_checkpoint(messages, &snapshots);
     }
+}
+
+fn compaction_audit_details(
+    outcome: &'static str,
+    id: &str,
+    pass: &CompactionPass,
+    estimated_tokens_after: Option<u64>,
+    reduction_ratio: Option<f64>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "compaction_id": id,
+        "trigger": pass.trigger,
+        "outcome": outcome,
+        "path": pass.path.map(|path| match path {
+            crate::compaction::CompactionPath::Summary => "summary",
+            crate::compaction::CompactionPath::PruneOnly => "pruning_only",
+        }),
+        "messages_before": pass.messages_before,
+        "messages_after": pass.messages_after,
+        "estimated_tokens_before": pass.tokens_before,
+        "estimated_tokens_after": estimated_tokens_after,
+        "threshold_tokens": pass.threshold_tokens,
+        "configured_threshold_tokens": pass.configured_threshold_tokens,
+        "summarizer_usage": &pass.usage,
+        "reduction_ratio": reduction_ratio,
+        "elapsed_ms": pass.elapsed_ms,
+        "reported_input_tokens": pass.reported_input_tokens,
+        "gate_input_tokens": pass.gate_input_tokens,
+        "calibration": {
+            "numerator": pass.calibration.0,
+            "denominator": pass.calibration.1,
+        },
+        "compaction_window_tokens": pass.compaction_window_tokens,
+    })
+}
+
+fn elapsed_millis(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// A context-recovery failure that came from the provider refusing the
@@ -1238,7 +1498,11 @@ mod tests {
     #[tokio::test]
     async fn compaction_notice_sink_delivers_a_status_event() {
         let (tx, mut rx) = mpsc::channel(4);
-        let sink = EngineCompactionNoticeSink { tx, child: None };
+        let sink = EngineCompactionNoticeSink {
+            tx,
+            child: None,
+            origin: None,
+        };
         sink.notice("Making room re-encoded 2 inline image(s)".to_string());
         match rx.recv().await {
             Some(Event::Status { message }) => {

@@ -588,6 +588,37 @@ fn ttl_marks_entries_stale_and_excludes_them_from_fresh() {
 }
 
 #[test]
+fn future_catalog_timestamps_cannot_extend_freshness() {
+    let fp = base_url_fingerprint("https://api.example.com");
+    let mut cache = ProviderCatalogCache::new();
+    cache.record_success(
+        ProviderCatalogDelta {
+            provider: "acme".into(),
+            base_url_fingerprint: fp.clone(),
+            fetched_at: 1_300,
+            offerings: vec![CatalogOffering {
+                provider: "acme".into(),
+                wire_model_id: "synth-chat-1".into(),
+                ..Default::default()
+            }],
+        },
+        100,
+    );
+    assert_eq!(cache.fresh_offerings("acme", &fp, 1_000).len(), 1);
+    assert!(cache.fresh_offerings("acme", &fp, 999).is_empty());
+    assert!(matches!(
+        cache.status("acme", &fp, 999),
+        CatalogStatus::Stale { .. }
+    ));
+    assert_eq!(cache.get("acme", &fp).unwrap().offerings.len(), 1);
+    let entry = cache.entries.values_mut().next().unwrap();
+    entry.fetched_at = u64::MAX;
+    assert!(!entry.is_fresh(1_000));
+    entry.fetched_at = u64::MAX - 1;
+    assert!(entry.is_fresh(u64::MAX - 2));
+}
+
+#[test]
 fn ttl_zero_is_always_stale() {
     let fp = base_url_fingerprint("https://api.example.com");
     let mut cache = ProviderCatalogCache::new();
@@ -1119,8 +1150,10 @@ fn bundled_asset_yields_real_chat_offerings_for_key_models() {
         Some("disabled")
     );
 
+    let grok_47 = find(&rows, "xai", "grok-4.7");
+    assert!(grok_47.default_for_provider);
     let grok_46 = find(&rows, "xai", "grok-4.6");
-    assert!(grok_46.default_for_provider);
+    assert!(!grok_46.default_for_provider);
     assert_eq!(
         grok_46.limit.as_ref().and_then(|limit| limit.context),
         Some(500_000)

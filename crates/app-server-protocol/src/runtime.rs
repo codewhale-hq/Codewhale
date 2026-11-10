@@ -4,8 +4,32 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod watch_event;
+
 pub const RUNTIME_EVENT_ENVELOPE_SCHEMA_VERSION: u32 = 1;
 pub const RUNTIME_API_VERSION: &str = "1.0";
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FleetProfileDocumentKind {
+    Profile,
+    Fleet,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FleetProfileDocument {
+    pub id: String,
+    pub kind: FleetProfileDocumentKind,
+    pub origin: String,
+    pub path: Option<String>,
+    pub text: String,
+    pub revision: String,
+    pub writable: bool,
+    pub refusal_reason: Option<String>,
+}
 
 /// Maximum JSON input (including base64 expansion) for an image turn.
 pub const MAX_RUNTIME_IMAGE_BODY_BYTES: usize = 8 * 1024 * 1024;
@@ -84,6 +108,28 @@ pub struct RuntimeCapabilities {
     pub thread_create_idempotency: bool,
     #[serde(default)]
     pub thread_idle_precondition: bool,
+    #[serde(default)]
+    pub thread_patch_undo_turn_id: bool,
+    #[serde(default)]
+    pub thread_scoped_reads: bool,
+    /// Git stage, unstage, discard, commit, push and branch accept
+    /// `?thread_id=` and act on that thread's workspace.
+    #[serde(default)]
+    pub thread_scoped_git_writes: bool,
+    /// `GET /v1/snapshots` and `POST /v1/snapshots/{id}/restore` accept
+    /// `?thread_id=` and act on that thread's workspace.
+    #[serde(default)]
+    pub thread_scoped_snapshots: bool,
+    /// `GET /v1/threads/{id}/terminals` lists the thread's live shells, and
+    /// `/v1/threads/{id}/terminals/{terminal_id}/output|input|resize|kill`
+    /// drive one by the identity the Engine issued it.
+    #[serde(default)]
+    pub thread_scoped_terminals: bool,
+    /// `GET`/`POST /v1/worktrees` and `POST /v1/worktrees/remove`.
+    #[serde(default)]
+    pub worktrees: bool,
+    #[serde(default)]
+    pub job_operations: bool,
     /// Explicit per-thread shell opt-in is checked against loaded policy and
     /// cannot broaden a conversation while it has an active turn.
     #[serde(default)]
@@ -96,6 +142,8 @@ pub struct RuntimeCapabilities {
     /// Read-only exact accepted-turn lookup by thread and operation key.
     #[serde(default)]
     pub turn_operation_lookup: bool,
+    #[serde(default)]
+    pub watch_event_turns: bool,
     #[serde(default)]
     pub structured_review_turns: bool,
     #[serde(default)]
@@ -167,19 +215,6 @@ pub struct RuntimeCapabilities {
     /// Durable, workspace-scoped cross-task Agent Mail endpoints and events.
     #[serde(default)]
     pub agent_mail: bool,
-    /// `GET /v1/terminal/{name}/output` — the resumable byte stream over a
-    /// persistent Engine-owned terminal session, with absolute cursors.
-    #[serde(default)]
-    pub terminal_stream: bool,
-    /// `POST /v1/terminal/{name}/input` — bytes into the live session.
-    #[serde(default)]
-    pub terminal_input: bool,
-    /// `POST /v1/terminal/{name}/resize` — the window the child draws for.
-    #[serde(default)]
-    pub terminal_resize: bool,
-    /// `POST /v1/terminal/{name}/kill` — end the live session.
-    #[serde(default)]
-    pub terminal_kill: bool,
     /// `GET /v1/threads/{id}/events` puts the durable `seq` on every journal
     /// frame as the SSE `id:` and resumes from a `Last-Event-ID` header, so a
     /// browser `EventSource` reconnects without a cursor in the query string.
@@ -491,10 +526,18 @@ mod tests {
             threads: true,
             thread_create_idempotency: true,
             thread_idle_precondition: true,
+            thread_patch_undo_turn_id: true,
+            thread_scoped_reads: true,
+            thread_scoped_git_writes: true,
+            thread_scoped_snapshots: true,
+            thread_scoped_terminals: true,
+            worktrees: true,
+            job_operations: true,
             thread_shell_consent: true,
             turns: true,
             turn_operation_idempotency: true,
             turn_operation_lookup: true,
+            watch_event_turns: true,
             structured_review_turns: true,
             structured_review_version: 2,
             automation_mutation_preconditions: true,
@@ -518,10 +561,6 @@ mod tests {
             skill_detail: false,
             plugin_management: false,
             agent_mail: true,
-            terminal_stream: false,
-            terminal_input: false,
-            terminal_resize: false,
-            terminal_kill: false,
             event_stream_resume: true,
         };
         let value = serde_json::to_value(&caps).unwrap();
@@ -538,6 +577,17 @@ mod tests {
                 .client_token_intents
         );
         assert_eq!(obj.get("threads").unwrap(), &json!(true));
+        assert_eq!(obj.get("thread_patch_undo_turn_id"), Some(&json!(true)));
+        let mut legacy_patch_undo = value.clone();
+        legacy_patch_undo
+            .as_object_mut()
+            .unwrap()
+            .remove("thread_patch_undo_turn_id");
+        assert!(
+            !serde_json::from_value::<RuntimeCapabilities>(legacy_patch_undo)
+                .unwrap()
+                .thread_patch_undo_turn_id
+        );
         assert_eq!(obj.get("thread_shell_consent"), Some(&json!(true)));
         assert!(
             serde_json::from_value::<RuntimeCapabilities>(value.clone())
@@ -558,6 +608,17 @@ mod tests {
         assert_eq!(obj.get("account_session").unwrap(), &json!(true));
         assert_eq!(obj.get("turn_operation_idempotency").unwrap(), &json!(true));
         assert_eq!(obj.get("turn_operation_lookup").unwrap(), &json!(true));
+        assert_eq!(obj.get("watch_event_turns").unwrap(), &json!(true));
+        let mut watch_legacy = value.clone();
+        watch_legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("watch_event_turns");
+        assert!(
+            !serde_json::from_value::<RuntimeCapabilities>(watch_legacy)
+                .unwrap()
+                .watch_event_turns
+        );
         let mut without_lookup = value.clone();
         without_lookup
             .as_object_mut()

@@ -4,7 +4,6 @@ use codewhale_localization::MessageId;
 pub(super) fn resolve(key: &str) -> Option<MessageId> {
     Some(match key {
         "app_mode_agent" => MessageId::AppModeAgent,
-        "app_mode_operate" => MessageId::AppModeOperate,
         "app_mode_plan" => MessageId::AppModePlan,
         "permissions_applies_here" => MessageId::PermissionsAppliesHere,
         "permissions_file_empty" => MessageId::PermissionsFileEmpty,
@@ -19,6 +18,7 @@ pub(super) fn resolve(key: &str) -> Option<MessageId> {
         "permissions_no_rules" => MessageId::PermissionsNoRules,
         "permissions_operation_failed" => MessageId::PermissionsOperationFailed,
         "permissions_posture_ask" => MessageId::PermissionsPostureAsk,
+        "permissions_posture_accept_edits" => MessageId::PermissionsPostureAcceptEdits,
         "permissions_posture_auto" => MessageId::PermissionsPostureAuto,
         "permissions_posture_bypass" => MessageId::PermissionsPostureBypass,
         "permissions_posture_header" => MessageId::PermissionsPostureHeader,
@@ -48,6 +48,7 @@ pub(super) fn resolve(key: &str) -> Option<MessageId> {
         "snapshots_failing" => MessageId::SnapshotsFailing,
         "snapshots_history_repaired" => MessageId::SnapshotsHistoryRepaired,
         "status_approval_ask" => MessageId::StatusApprovalAsk,
+        "status_approval_accept_edits" => MessageId::StatusApprovalAcceptEdits,
         "status_approval_auto" => MessageId::StatusApprovalAuto,
         "status_approval_full_access" => MessageId::StatusApprovalFullAccess,
         "status_approval_never" => MessageId::StatusApprovalNever,

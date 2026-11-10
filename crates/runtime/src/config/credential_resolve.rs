@@ -123,18 +123,9 @@ pub(crate) fn resolve_credential_source_with(
     // The public ChatGPT API accepts only Codewhale's own issued registration.
     // Environment tokens and consented Codex files belong to different clients.
     if provider == ProviderKind::Anthropic && auth_mode.as_deref() == Some("oauth") {
-        if !config.provider_uses_custom_endpoint(identity)
-            && let Some(sign_in) =
-                crate::oauth::usable_sign_in(crate::oauth::OAuthProvider::Claude, config)
-        {
-            return CredentialResolution::found(CredentialSource::OAuth {
-                flow: "Claude".to_string(),
-                account: sign_in.account_label,
-            });
-        }
         return CredentialResolution::missing(vec![CredentialProbe::with_fix(
-            "Codewhale-owned Claude sign-in",
-            "codewhale auth claude",
+            "Claude subscription sign-in (removed in 0.10.3)",
+            "codewhale auth set --provider anthropic",
         )]);
     }
     if provider == ProviderKind::OpenaiCodex && !config.provider_uses_custom_endpoint(identity) {

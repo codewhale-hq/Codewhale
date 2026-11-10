@@ -595,6 +595,12 @@ impl ComposerState {
         self.remember_draft_for_recovery(draft);
     }
 
+    pub(crate) fn stash_typed_draft_before_restore(&mut self) {
+        if !self.input.trim().is_empty() {
+            self.stash_current_input_for_recovery();
+        }
+    }
+
     fn remember_draft_for_recovery(&mut self, draft: String) {
         if draft.trim().is_empty() {
             return;
@@ -787,6 +793,12 @@ impl App {
     }
 
     pub fn insert_media_attachment(&mut self, kind: &str, path: &Path, description: Option<&str>) {
+        // An attachment is user input: the launch card dissolves on the first
+        // typed character, and a pasted picture has to leave it too, or an
+        // empty composer keeps the card up and the attachment row behind it.
+        if self.launch.visible && !self.launch.return_to_session {
+            self.launch.dissolve_card(self.ambient_clock_ms);
+        }
         let reference = media_attachment_reference(kind, path, description);
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
@@ -937,6 +949,22 @@ impl App {
         }
     }
 
+    /// True when this paste is the other edge of the key press that just
+    /// pasted. Shared by the composer and the modal paste route so one key
+    /// press cannot paste twice across the two.
+    pub(crate) fn clipboard_paste_within_dedupe_window(&self) -> bool {
+        self.last_clipboard_paste
+            .is_some_and(|last| last.elapsed() < Duration::from_millis(600))
+    }
+
+    /// Stamp a finished clipboard paste. Measured after the read, not before
+    /// it: `ensure_clipboard` can block for up to two seconds, and a stamp
+    /// taken before the read would let the second edge of the same key press
+    /// fall outside the window and paste again.
+    pub(crate) fn note_clipboard_paste(&mut self) {
+        self.last_clipboard_paste = Some(Instant::now());
+    }
+
     /// Paste from clipboard into input.
     ///
     /// Returns whether content was inserted. In SSH sessions without a
@@ -944,11 +972,22 @@ impl App {
     /// clipboard shortcuts surface the local terminal-paste instruction while
     /// `Event::Paste` remains the data path.
     pub fn paste_from_clipboard(&mut self) -> bool {
+        // A terminal may forward both edges of Ctrl+V: Windows Terminal
+        // consumes the press for its own paste action and forwards only the
+        // release, while a terminal that does not own the chord forwards both.
+        // The window is measured from the end of the previous read (see
+        // `note_clipboard_paste`), so a slow clipboard open cannot push the
+        // second edge outside it.
+        if self.clipboard_paste_within_dedupe_window() {
+            return false;
+        }
         if self.clipboard.requires_terminal_paste() {
             self.status_message = Some(self.tr(MessageId::ClipboardSshPasteHint).into_owned());
             return false;
         }
-        if let Some(content) = self.clipboard.read_markdown(self.workspace.as_path()) {
+        let content = self.clipboard.read_markdown(self.workspace.as_path());
+        self.note_clipboard_paste();
+        if let Some(content) = content {
             self.apply_clipboard_content(content);
             return true;
         }
@@ -1860,6 +1899,7 @@ impl App {
             self.needs_redraw = true;
             return;
         }
+        self.stash_typed_draft_before_restore();
         self.input = message.display;
         self.resync_command_line_claim();
         self.cursor_position = char_count(&self.input);

@@ -353,6 +353,31 @@ pub struct DebugCacheTurn {
     pub age_seconds: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugCacheCallOwner {
+    Primary,
+    Auxiliary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugCacheCallCoverage {
+    Reported,
+    Incomplete,
+    Missing,
+    NotDispatched,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugCacheCall {
+    pub source_fingerprint: String,
+    pub owner: Option<DebugCacheCallOwner>,
+    pub coverage: DebugCacheCallCoverage,
+    pub pricing_complete: bool,
+    pub row: DebugCacheTurn,
+}
+
 /// Prompt-cache hit rates, each labelled by whose requests it covers (#6565).
 ///
 /// `parent` is this conversation's own requests: the footer `cache N%` and it
@@ -389,14 +414,18 @@ impl DebugCacheRates {
     }
 }
 
-/// Shared source for `/cache [count|stats|zones]` branches. One host read
-/// preserves ring order, optional telemetry and prefix stability evidence.
+/// Shared source for `/cache [count|calls|stats|zones]` branches. One host read
+/// preserves turn order, bounded call projection, optional telemetry and prefix evidence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DebugCacheTelemetry {
     pub model: String,
     /// Parent/agent/combined percentages computed once by the host.
     pub session_cache_rates: DebugCacheRates,
     pub history: Vec<DebugCacheTurn>,
+    pub calls: Vec<DebugCacheCall>,
+    pub calls_total: usize,
+    pub calls_currency: CommandCurrency,
+    pub calls_legacy_coverage_unknown: bool,
     pub history_capacity: usize,
     pub prefix_stability_pct: Option<u32>,
     pub prefix_checks_total: u64,
@@ -965,6 +994,11 @@ pub trait CommandPluginContext {
     /// Mutation: enable a bundle. Success means enabled; re-read `detail` for
     /// the post-mutation compatibility note.
     fn enable(&mut self, selector: &str) -> Result<(), String>;
+    #[doc = "Restore a missing stage from bytes matching the current trust receipt."]
+    fn restage(&mut self, selector: &str) -> Result<(), String> {
+        let _ = selector;
+        Err("Plugin restaging is not available in this host.".to_string())
+    }
     /// Mutation: disable a bundle.
     fn disable(&mut self, selector: &str) -> Result<(), String>;
     /// Mutation: revoke trust.
@@ -1368,9 +1402,8 @@ pub struct SessionSaveReceipt {
     pub truncated_id: String,
 }
 
-/// `/new` success projection. The handler renders
-/// `Started new session {truncated_id} (New Session). Previous sessions
-/// remain available via /resume.`
+/// `/new` request projection; the host confirms the Engine transition before
+/// resetting the UI and reporting the new session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionNewReceipt {
     pub truncated_id: String,
@@ -1787,6 +1820,7 @@ pub trait CommandSessionControlContext {
 pub struct ExportMetadata {
     /// Host-truncated session id, or the baseline `unsaved` fallback.
     pub session_label: String,
+    pub title: Option<String>,
     pub provider: String,
     pub model: String,
     pub mode: String,
@@ -1974,6 +2008,8 @@ pub trait CommandSessionExportContext {
     /// check, `..` rejection, workspace canonicalization and rebasing, filename
     /// requirement). Errors are returned unwrapped (D7).
     fn resolve_export_path(&self, raw: &str) -> Result<PathBuf, String>;
+
+    fn default_export_path(&self, file_name: &str) -> Result<PathBuf, String>;
 
     /// Write the rendered export to a resolved destination with the baseline
     /// protection checks. Errors are returned unwrapped; the handler wraps them

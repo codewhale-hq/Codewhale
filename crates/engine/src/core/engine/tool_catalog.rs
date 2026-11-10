@@ -44,29 +44,15 @@ const TOOL_SEARCH_MAX_RESULTS_LIMIT: usize = 8;
 #[rustfmt::skip]
 pub const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     // Core work controls are eager; specialized tools stay searchable.
-    "read", "write", "edit", "file_search", "grep_files", "bash", "todo_write",
+    "read", "write", "edit", "file_search", "grep_files", "bash", "agent", "todo_write",
     // Continuation instructions require these controls. Hiding them behind
     // discovery leaves a model unable to stop the work it was asked to run.
-    "task_shell_wait",
-    // The pinned `## Skills` index tells the model to call `load_skill`, so
-    // the tool has to be on the wire for that instruction to be true. Behind
-    // `tool_search` it cost a discovery hop plus a `change:tool_surface`
-    // re-pin every time a skill was used, against ~134 pinned bytes to have
-    // it eager beside the index the prefix already carries.
+    "create_goal", "get_goal", "update_goal", "task_shell_wait",
+    "present",
+    // The prompt core tells the model to discover skills through
+    // `load_skill`, so the tool has to be on the wire for that instruction
+    // to be true.
     "load_skill",
-    // create_goal is eager: it is the entry point. Token diet: agent and
-    // workflow stay deferred despite being core-adjacent — their schemas
-    // cost ~21KB/turn and BM25 discovery (`tool_search`) finds them
-    // reliably when delegation is actually wanted (cued-delegation probe:
-    // discovered and executed; uncued sessions behave identically).
-    // get/update_goal cannot succeed without an active goal, so they ride
-    // `always_load` only while one exists (see the catalog build in
-    // `engine.rs`) instead of taxing every goalless turn.
-    "create_goal",
-    // The compaction handoff note names these two by hand. A model cannot call
-    // a tool it has never seen a schema for, and `tool_search` is not
-    // guaranteed to be the next thing it reaches for mid-task.
-    "context_archive_get", "context_archive_search",
 ];
 
 const CORE_ACTION_TOOL_FALLBACKS: &[CoreActionToolFallback] = &[
@@ -384,7 +370,7 @@ pub fn ensure_advanced_tooling(
         catalog.push(Tool {
             tool_type: Some(TOOL_SEARCH_TYPE.to_string()),
             name: TOOL_SEARCH_NAME.to_string(),
-            description: "Search deferred tool definitions and return matching tool references.".to_string(),
+            description: "Search deferred tool definitions and return matching references. Deferred tools include `Git`, `Run`, `Web`, `tasks`, `workflow`, `request_user_input`, `github`, `automation`, `lsp`, `review`, `session_search`, `terminal/run`, `apply_patch`, `context_archive_search`/`context_archive_get`, connected MCP servers, and the Registry pair (`registry_sync`, `start_registry_mcp_server`). Calling one by name also loads it.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -828,6 +814,14 @@ pub fn active_tools_for_request(
     Some(tools)
 }
 
+pub fn default_tool_choice(strict_tool_mode: bool) -> Value {
+    if strict_tool_mode {
+        json!("required")
+    } else {
+        json!({"type": "auto"})
+    }
+}
+
 pub fn measure_deferred_tools(
     client: &dyn crate::core::model_client::ModelClient,
     model: &str,
@@ -843,13 +837,9 @@ pub fn measure_deferred_tools(
         .collect::<HashSet<_>>();
     let prepare = |active: &HashSet<String>| {
         let tools = active_tools_for_request(catalog, active, strict_tool_mode);
-        let tool_choice = tools.as_ref().map(|_| {
-            if strict_tool_mode {
-                json!("required")
-            } else {
-                json!({"type": "auto"})
-            }
-        });
+        let tool_choice = tools
+            .as_ref()
+            .map(|_| default_tool_choice(strict_tool_mode));
         codewhale_core::request::prepare_primary_turn_request(
             codewhale_core::request::PrimaryTurnRequest {
                 model: model.to_string(),
@@ -887,9 +877,10 @@ pub fn measure_deferred_tools(
             names
                 .iter()
                 .filter(|name| {
-                    wire.omitted_tool_names
-                        .iter()
-                        .any(|omitted| crate::client::wire::from_api_tool_name(omitted) == **name)
+                    wire.omitted_tool_names.iter().any(|omitted| {
+                        omitted == *name
+                            || crate::client::wire::from_api_tool_name(omitted) == **name
+                    })
                 })
                 .cloned()
                 .collect()
@@ -1831,16 +1822,16 @@ pub(super) async fn execute_code_execution_tool(
     })
 }
 
-/// Prepare a complete active tool set for DeepSeek strict function-calling.
+/// Mark strict intent on a complete active tool set.
 ///
-/// Each tool is evaluated independently: compatible schemas are sanitized and
-/// marked strict, while incompatible schemas remain unchanged and non-strict.
+/// Each tool is evaluated independently: compatible schemas are marked strict,
+/// while incompatible schemas remain non-strict. Logical schemas are left
+/// unchanged; the selected route shapes strict parameters at projection time.
 /// Returns `true` only when every tool in the set can use strict mode.
 pub fn prepare_tools_for_strict_mode(tools: &mut [Tool]) -> bool {
     let mut all_strict = true;
     for tool in tools {
         if codewhale_models::schema_sanitize::strict_schema_supported(&tool.input_schema) {
-            codewhale_models::schema_sanitize::sanitize_for_strict(&mut tool.input_schema);
             tool.strict = Some(true);
         } else {
             tool.strict = None;

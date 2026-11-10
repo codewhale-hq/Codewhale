@@ -292,6 +292,7 @@ fn mcp_server_config_omits_headers_when_empty() {
         lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
+        always_allow_tools: Vec::new(),
         headers: HashMap::new(),
         env_headers: HashMap::new(),
         bearer_token_env_var: None,
@@ -2871,6 +2872,7 @@ fn test_server_effective_timeouts() {
         lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
+        always_allow_tools: Vec::new(),
         headers: HashMap::new(),
         env_headers: HashMap::new(),
         bearer_token_env_var: None,
@@ -3033,6 +3035,7 @@ fn test_server_config() -> McpServerConfig {
         lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
+        always_allow_tools: Vec::new(),
         headers: HashMap::new(),
         env_headers: HashMap::new(),
         bearer_token_env_var: None,
@@ -3059,6 +3062,7 @@ fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
         request_id: AtomicU64::new(1),
         state: ConnectionState::Ready,
         config: test_server_config(),
+        runtime_registration: None,
         server_capabilities: None,
         instructions: None,
         discovery_timeout: Duration::from_secs(default_connect_timeout()),
@@ -3766,7 +3770,7 @@ async fn explicit_reload_reconnects_unchanged_config_and_preserves_dynamic_serve
     runtime_config.command = Some("runtime-server".to_string());
     pool.add_runtime_server_config("runtime".to_string(), runtime_config)
         .unwrap();
-    let generation_before = pool.catalog_generation.load(AtomicOrdering::SeqCst);
+    let generation_before = pool.current_catalog_generation();
 
     pool.force_reload_config_sources().unwrap();
     let errors = pool.connect_all().await;
@@ -3779,7 +3783,7 @@ async fn explicit_reload_reconnects_unchanged_config_and_preserves_dynamic_serve
     assert!(!pool.connections.contains_key("local"));
     assert!(pool.server_names().contains(&"runtime".to_string()));
     assert_eq!(
-        pool.catalog_generation.load(AtomicOrdering::SeqCst),
+        pool.current_catalog_generation(),
         generation_before + 1,
         "explicit reload must invalidate every previously advertised route"
     );
@@ -3867,6 +3871,7 @@ fn hash_mcp_config_is_stable_and_change_sensitive() {
             lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            always_allow_tools: Vec::new(),
             headers: HashMap::new(),
             env_headers: HashMap::new(),
             bearer_token_env_var: None,
@@ -5201,6 +5206,7 @@ async fn mcp_connection_supports_streamable_http_event_stream_responses() {
         lazy: false,
         enabled_tools: Vec::new(),
         disabled_tools: Vec::new(),
+        always_allow_tools: Vec::new(),
         headers: HashMap::new(),
         env_headers: HashMap::new(),
         bearer_token_env_var: None,
@@ -6138,6 +6144,7 @@ async fn streamable_http_stale_session_reconnects_and_retries_tool_call() {
             lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            always_allow_tools: Vec::new(),
             headers: HashMap::new(),
             env_headers: HashMap::new(),
             bearer_token_env_var: None,
@@ -6428,6 +6435,7 @@ async fn legacy_sse_closed_stream_reports_unknown_outcome_and_reconnects_without
             lazy: false,
             enabled_tools: Vec::new(),
             disabled_tools: Vec::new(),
+            always_allow_tools: Vec::new(),
             headers: HashMap::new(),
             env_headers: HashMap::new(),
             bearer_token_env_var: None,
@@ -7728,6 +7736,10 @@ async fn needs_auth_server_advertises_synthetic_authenticate_tool() {
     let dir = tempfile::tempdir().unwrap();
     let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
     let _backend = crate::test_support::EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
+    let _manual_bearer = crate::test_support::EnvVarGuard::set(
+        "CW_TEST_MANUAL_BEARER",
+        "cw-test-rejected-manual-bearer",
+    );
     let _loopback = lock_mcp_loopback_tests().await;
     let mock = OAuthMcpMock::spawn().await;
 
@@ -7739,7 +7751,7 @@ async fn needs_auth_server_advertises_synthetic_authenticate_tool() {
     // A server carrying manual bearer configuration that also 401s must not
     // get the OAuth tool: the flow is gated to servers OAuth can serve.
     let mut bearer_config = mock_oauth_server_config(mock.addr);
-    bearer_config.bearer_token_env_var = Some("CW_TEST_UNSET_BEARER".to_string());
+    bearer_config.bearer_token_env_var = Some("CW_TEST_MANUAL_BEARER".to_string());
     mcp_config
         .servers
         .insert("beareronly".to_string(), bearer_config);
@@ -8583,7 +8595,7 @@ async fn plugin_contributed_server_auth_required_names_its_env_credential_not_oa
     let (_, authority) = active_plugin_fixture(&plugin_base);
 
     // A plugin-contributed server whose reviewed environment-backed header is
-    // absent, against an endpoint that 401s without it.
+    // present but rejected by an endpoint that 401s it.
     let mock = OAuthMcpMock::spawn().await;
     let endpoint = mock.url();
     let mut server = mock_oauth_server_config(mock.addr);
@@ -8595,7 +8607,10 @@ async fn plugin_contributed_server_auth_required_names_its_env_credential_not_oa
         ReviewedPluginMcpSource::from_authority(
             authority,
             Some(&endpoint),
-            Arc::new(codewhale_plugins::HostEnvironment::default()),
+            Arc::new(codewhale_plugins::HostEnvironment::from_entries([(
+                std::ffi::OsString::from("CW_TEST_WIKI_PLUGIN_TOKEN"),
+                std::ffi::OsString::from("Bearer stale-plugin-credential"),
+            )])),
         )
         .unwrap(),
     );

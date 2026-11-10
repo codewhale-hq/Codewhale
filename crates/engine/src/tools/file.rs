@@ -526,15 +526,15 @@ pub fn is_codewhale_credential_path(path: &Path) -> bool {
 
 // === small-contract-compatible primitive implementation helpers ===
 
-/// Default model-visible byte budget for one `read` call.
-///
-/// Bytes are the *only* default bound: there is no line cap, so an ordinary
-/// source or prose file comes back whole in one call instead of being paged
-/// at some arbitrary line count with most of the budget unspent.
-const READ_DEFAULT_MAX_BYTES: usize = 100_000;
-/// Hard ceiling on a budget the *model* asks for with `max_bytes`. A larger
-/// request clamps down to this; it is never an error.
-const READ_REQUEST_MAX_BYTES: usize = 500_000;
+/// Byte cap on selected output for one `read` call. Bytes are an internal
+/// safety valve, not a model knob: the model's only paging vocabulary is
+/// lines (`offset`/`limit`).
+const READ_DEFAULT_MAX_BYTES: usize = 50 * 1024;
+/// Default and maximum number of lines returned by one `read` call.
+pub(super) const READ_LIMIT_LINES: usize = 2_000;
+/// Maximum characters returned for a single line; overflow is truncated
+/// with a marker suffix.
+const READ_MAX_LINE_CHARS: usize = 2_000;
 /// Outer bound on the operator's process-wide `[workshop] read_result_max_bytes`
 /// override, and therefore on any read result.
 const READ_RESULT_ABSOLUTE_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -637,28 +637,15 @@ async fn load_contract_source(
     result.map_err(|error| ToolError::execution_failed(format!("File read task: {error}")))?
 }
 
-/// Resolve the byte budget for one `read` call from the three layers that can
-/// set it, highest wins:
-///
-/// 1. **The model's own request** — `max_bytes` on this call, clamped to
-///    [`READ_REQUEST_MAX_BYTES`] (500 000).
-/// 2. **The operator's process-wide override** — `[workshop]
-///    read_result_max_bytes`, clamped into
-///    `[READ_DEFAULT_MAX_BYTES, READ_RESULT_ABSOLUTE_MAX_BYTES]` (2 MiB).
-/// 3. **The default** — [`READ_DEFAULT_MAX_BYTES`] (100 000).
-///
-/// The result is `max(1, 2-or-3)`. Both raising layers can only raise: a model
-/// request never shrinks a budget the operator widened, and an operator who
-/// widened it process-wide keeps that floor when the model asks for less.
-fn effective_read_max_bytes(requested: Option<usize>) -> usize {
-    let baseline = codewhale_runtime::active_workshop::active_read_result_max_bytes()
+/// Resolve the byte cap for one `read` call: the operator's process-wide
+/// `[workshop] read_result_max_bytes` override, clamped into
+/// `[READ_DEFAULT_MAX_BYTES, READ_RESULT_ABSOLUTE_MAX_BYTES]` (2 MiB), or
+/// [`READ_DEFAULT_MAX_BYTES`] when unset. The model cannot move it.
+fn effective_read_max_bytes() -> usize {
+    codewhale_runtime::active_workshop::active_read_result_max_bytes()
         .map_or(READ_DEFAULT_MAX_BYTES, |configured| {
             configured.clamp(READ_DEFAULT_MAX_BYTES, READ_RESULT_ABSOLUTE_MAX_BYTES)
-        });
-    match requested {
-        Some(requested) => baseline.max(requested.min(READ_REQUEST_MAX_BYTES)),
-        None => baseline,
-    }
+        })
 }
 
 /// Byte ceiling for an execution-matched native `read` on the provider wire.
@@ -666,11 +653,10 @@ fn effective_read_max_bytes(requested: Option<usize>) -> usize {
 /// echolocation has its own hard cap. This is not a budget receipt for legacy
 /// results or reads made under a different historical workshop configuration.
 pub(crate) fn contract_read_result_byte_ceiling(input: &Value) -> Option<usize> {
-    let requested = contract_nonnegative_int(input, "max_bytes").ok()?;
-    Some(
-        effective_read_max_bytes(requested)
-            .saturating_add(512 + super::echolocation::POD_FOOTER_MAX_BYTES),
-    )
+    if input.get("max_bytes").is_some() {
+        return None;
+    }
+    Some(effective_read_max_bytes().saturating_add(512 + super::echolocation::POD_FOOTER_MAX_BYTES))
 }
 
 type FileMutationMutex = AsyncMutex<()>;
@@ -858,67 +844,62 @@ fn primitive_image_mime(bytes: &[u8]) -> Option<&'static str> {
     })
 }
 
-fn contract_format_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{bytes}B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 #[derive(Debug)]
 struct ContractReadWindow {
     content: String,
     shown_lines: usize,
-    truncated: bool,
-    first_line_too_large: bool,
+    truncated_by_bytes: bool,
+    line_truncated: bool,
 }
 
-/// Retain only complete lines from the head, stopping at `max_bytes`. A
-/// terminal newline is content but does not add a phantom line to the
-/// truncation counter.
-///
-/// The byte budget is the single bound. There is no line cap to fragment a
-/// file that fits: every retained line costs at least its own newline, so
-/// `max_bytes` already bounds the line count as well.
+/// Build the model-visible window from the selected slice: each
+/// line is first truncated to [`READ_MAX_LINE_CHARS`] chars with a marker
+/// suffix, then counted as its UTF-8 byte length plus one joiner byte
+/// against `max_bytes`; the first line that would cross the cap stops the
+/// window and is not shown. Lines are never cut mid-line for bytes, so a
+/// giant first line returns its truncated form instead of dead-ending.
 fn contract_read_window(content: &str, max_bytes: usize) -> ContractReadWindow {
-    if content
-        .split('\n')
-        .next()
-        .is_some_and(|line| line.len() > max_bytes)
-    {
-        return ContractReadWindow {
-            content: String::new(),
-            shown_lines: 0,
-            truncated: true,
-            first_line_too_large: true,
-        };
+    let mut window = ContractReadWindow {
+        content: String::new(),
+        shown_lines: 0,
+        truncated_by_bytes: false,
+        line_truncated: false,
+    };
+    if content.is_empty() {
+        return window;
     }
-    if content.len() <= max_bytes {
-        return ContractReadWindow {
-            content: content.to_string(),
-            shown_lines: content.split_terminator('\n').count(),
-            truncated: false,
-            first_line_too_large: false,
-        };
-    }
-    let mut shown_lines = 0;
-    let mut bytes = 0usize;
-    for line in content.split_terminator('\n') {
-        let next = line.len() + usize::from(shown_lines > 0);
-        if bytes.saturating_add(next) > max_bytes {
+    let mut output_bytes = 0usize;
+    for line in content.split('\n') {
+        let (text, truncated) = truncate_read_line(line);
+        let bytes = text.len() + usize::from(window.shown_lines > 0);
+        if output_bytes.saturating_add(bytes) > max_bytes {
+            window.truncated_by_bytes = true;
             break;
         }
-        shown_lines += 1;
-        bytes += next;
+        output_bytes += bytes;
+        if window.shown_lines > 0 {
+            window.content.push('\n');
+        }
+        window.content.push_str(&text);
+        window.shown_lines += 1;
+        window.line_truncated |= truncated;
     }
-    ContractReadWindow {
-        content: content[..bytes].to_string(),
-        shown_lines,
-        truncated: true,
-        first_line_too_large: false,
+    window
+}
+
+fn truncate_read_line(line: &str) -> (std::borrow::Cow<'_, str>, bool) {
+    if line.len() <= READ_MAX_LINE_CHARS {
+        return (std::borrow::Cow::Borrowed(line), false);
+    }
+    match line.char_indices().nth(READ_MAX_LINE_CHARS) {
+        Some((byte_index, _)) => (
+            std::borrow::Cow::Owned(format!(
+                "{}... [line truncated at {READ_MAX_LINE_CHARS} chars]",
+                &line[..byte_index]
+            )),
+            true,
+        ),
+        None => (std::borrow::Cow::Borrowed(line), false),
     }
 }
 
@@ -935,7 +916,7 @@ impl ReadFileTool {
         reject_primitive_unknown(
             &input,
             "read",
-            &["path", "offset", "limit", "max_bytes", "expected_revision"],
+            &["path", "offset", "limit", "expected_revision"],
         )?;
         let path_str = required_str(&input, "path")?;
         let expected_revision = optional_str(&input, "expected_revision")?;
@@ -948,7 +929,12 @@ impl ReadFileTool {
         }
         let offset = contract_nonnegative_int(&input, "offset")?;
         let limit = contract_nonnegative_int(&input, "limit")?;
-        let max_bytes = effective_read_max_bytes(contract_nonnegative_int(&input, "max_bytes")?);
+        if limit.is_some_and(|limit| limit > READ_LIMIT_LINES) {
+            return Err(ToolError::execution_failed(format!(
+                "limit must be less than or equal to {READ_LIMIT_LINES}"
+            )));
+        }
+        let max_bytes = effective_read_max_bytes();
         // S1/F2: check the caller's own spelling BEFORE `resolve_path`
         // canonicalizes it. A workspace symlink `notes.txt` -> a denied vault
         // file resolves to the secret's absolute location, and a denial raised
@@ -1055,7 +1041,7 @@ impl ReadFileTool {
                 "Offset {requested_offset} is beyond end of file ({line_count} lines total)"
             )));
         }
-        let selected_lines = limit.unwrap_or(usize::MAX).min(line_count - start);
+        let selected_lines = limit.unwrap_or(READ_LIMIT_LINES).min(line_count - start);
         // An empty selection slices `""` whatever the range start is, so it
         // needs a valid boundary, not the walked one: skip the prefix scan.
         let start_byte = if start == 0 || selected_lines == 0 {
@@ -1077,46 +1063,26 @@ impl ReadFileTool {
         };
         let selected_content = &text[start_byte..end_byte];
         let window = contract_read_window(selected_content, max_bytes);
-        // Truncated means the file holds more than this response shows:
-        // either the byte budget cut the window, or a bounded range stopped
-        // before EOF. A whole file that fits is never truncated.
-        let truncated = window.truncated || limit.is_some() && start + selected_lines < line_count;
+        // Truncated means the file holds more than this response shows: the
+        // byte cap stopped the window, a line was char-truncated, or the
+        // selected range stopped before EOF. A whole file that fits is
+        // never truncated.
+        let truncated = window.truncated_by_bytes
+            || window.line_truncated
+            || start + selected_lines < line_count;
         let first_display = start + 1;
         let revision_hint = expected_revision
             .or(source_revision.as_deref())
             .map(|revision| format!(" expected_revision={revision}"))
             .unwrap_or_default();
         let shown_bytes = window.content.len();
-        let mut output = if window.first_line_too_large {
-            let size = selected_content.split('\n').next().map_or(0, str::len);
-            let hint = if source_revision.is_some() {
-                if size <= READ_REQUEST_MAX_BYTES && max_bytes < READ_REQUEST_MAX_BYTES {
-                    let limit_hint = limit
-                        .map(|limit| format!(" limit={limit}"))
-                        .unwrap_or_default();
-                    format!(
-                        "Use offset={first_display}{limit_hint}{revision_hint} max_bytes={READ_REQUEST_MAX_BYTES} to retry"
-                    )
-                } else {
-                    "No complete line fits the maximum read budget; a shell byte slice would not preserve the revision guard".to_string()
-                }
-            } else {
-                format!("Use bash: sed -n '{first_display}p' {path_str} | head -c {max_bytes}")
-            };
-            format!(
-                "[Line {first_display} is {}, exceeds the {max_bytes}-byte output budget for this call. {hint}]",
-                contract_format_size(size)
-            )
-        } else {
-            window.content
-        };
+        let mut output = window.content;
 
-        if !window.first_line_too_large && window.truncated {
+        // Never advertise skipping the unread tail of a character-truncated
+        // line. The operator owns the byte cap; the model cannot raise it.
+        if window.truncated_by_bytes && !window.line_truncated {
             let last_display = first_display + window.shown_lines.saturating_sub(1);
             let next_offset = last_display + 1;
-            // Continuation must be exact: name the next offset, and when the
-            // caller asked for a bounded range, the part of that range still
-            // unread. `max_bytes` is only offered while it can still go up.
             let mut hint = format!("offset={next_offset}");
             if let Some(limit) = limit {
                 let remaining = limit.saturating_sub(window.shown_lines);
@@ -1125,26 +1091,18 @@ impl ReadFileTool {
                 }
             }
             hint.push_str(&revision_hint);
-            let raise = if max_bytes < READ_REQUEST_MAX_BYTES {
-                format!(", or max_bytes up to {READ_REQUEST_MAX_BYTES} to read more per call")
-            } else {
-                String::new()
-            };
             output.push_str(&format!(
-                "\n\n[Showing lines {first_display}-{last_display} of {} ({} total, {max_bytes}-byte output budget). Use {hint} to continue{raise}.]",
-                line_count,
-                contract_format_size(size_bytes)
+                "\n\n[Showing lines {first_display}-{last_display} of {line_count}; output cap reached. Continue with {hint}.]"
             ));
-        } else if limit.is_some() && selected_lines > 0 && !window.first_line_too_large {
-            let consumed = selected_lines;
-            if start + consumed < line_count {
-                let remaining = line_count - (start + consumed);
-                let next_offset = start + consumed + 1;
-                output.push_str(&format!(
-                    "\n\n[{remaining} more lines in file ({} total). Use offset={next_offset}{revision_hint} to continue.]",
-                    contract_format_size(size_bytes)
-                ));
-            }
+        } else if !window.line_truncated
+            && start + selected_lines < line_count
+            && selected_lines > 0
+        {
+            let last_display = start + selected_lines;
+            output.push_str(&format!(
+                "\n\n[Showing lines {first_display}-{last_display} of {line_count}. Continue with offset={}{revision_hint}.]",
+                last_display + 1
+            ));
         }
 
         // Echolocation: stateless kin footer sounded fresh from source
@@ -1197,7 +1155,11 @@ impl ReadFileTool {
                 navigation.as_ref(),
                 &text,
                 first_display,
-                window.shown_lines,
+                if window.line_truncated {
+                    0
+                } else {
+                    window.shown_lines
+                },
             );
             (echo, navigation)
         })
@@ -3611,7 +3573,7 @@ impl ToolSpec for ListDirTool {
     }
 
     fn description(&self) -> &'static str {
-        "List entries in a workspace directory. This bounded, sandbox-aware tool is searchable when the core read/write/edit/bash toolbox is not enough."
+        "List entries in a workspace directory, bounded and sandbox-aware."
     }
 
     fn input_schema(&self) -> Value {

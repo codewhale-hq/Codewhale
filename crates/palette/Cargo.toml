@@ -19,7 +19,7 @@ default = ["ratatui"]
 ratatui = ["dep:ratatui"]
 
 [dependencies]
-codewhale-config = { path = "../config", version = "0.10.2" }
+codewhale-config = { path = "../config", version = "0.10.3" }
 ratatui = { version = "=0.30.2", features = ["unstable-rendered-line-info"], optional = true }
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }

@@ -239,6 +239,10 @@ impl CommandDebugDiagnosticsContext for DebugDiagnostics {
             model: "example".into(),
             session_cache_rates: DebugCacheRates::default(),
             history: vec![],
+            calls: vec![],
+            calls_total: 0,
+            calls_currency: CommandCurrency::Usd,
+            calls_legacy_coverage_unknown: false,
             history_capacity: 50,
             prefix_stability_pct: None,
             prefix_checks_total: 0,
@@ -3151,6 +3155,16 @@ impl CommandSessionExportContext for FakeExport {
             ))
         })
     }
+    fn default_export_path(&self, file_name: &str) -> Result<PathBuf, String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("default_export_path:{file_name}"));
+        self.resolved.clone().unwrap_or_else(|| {
+            Err(format!(
+                "unexpected default_export_path({file_name}) on empty fake"
+            ))
+        })
+    }
     fn write_export_file(&self, path: &Path, contents: &[u8], force: bool) -> Result<(), String> {
         self.calls.borrow_mut().push(format!(
             "write_export_file:{}:{}:{force}",
@@ -3166,6 +3180,7 @@ impl CommandSessionExportContext for FakeExport {
 fn export_metadata() -> ExportMetadata {
     ExportMetadata {
         session_label: "abc123".to_string(),
+        title: None,
         provider: "deepseek".to_string(),
         model: "deepseek-chat".to_string(),
         mode: "ACT".to_string(),

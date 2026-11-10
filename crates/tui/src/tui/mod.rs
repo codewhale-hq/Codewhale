@@ -11,6 +11,7 @@
 
 // === Submodules ===
 
+pub(crate) mod account_login;
 pub mod active_cell;
 pub(crate) mod agent_details;
 pub(crate) mod agent_focus;
@@ -57,6 +58,7 @@ pub mod hot_tail;
 pub mod hotbar;
 pub mod hover_hit;
 pub mod hover_layer;
+pub(crate) mod image_preview;
 pub mod infoline;
 pub mod key_actions;
 pub mod key_shortcuts;
@@ -70,6 +72,7 @@ pub mod mouse_ui;
 pub mod notifications;
 pub mod ocean;
 pub mod onboarding;
+pub mod orca_offer;
 pub mod output_rows_cache;
 pub mod pager;
 pub mod paste;

@@ -23,7 +23,7 @@ use crate::registry::{
     validate_existing_plugin_state_parent,
 };
 
-const MARKETPLACE_SCHEMA_VERSION: u32 = 1;
+const MARKETPLACE_SCHEMA_VERSION: u32 = 2;
 const MARKETPLACE_STATE_FILE: &str = "marketplaces.json";
 
 /// One stored catalog: the parsed result plus where the document was read
@@ -131,8 +131,32 @@ impl MarketplaceStore {
                 self.path.display()
             ));
         }
-        let state: MarketplaceState = serde_json::from_str(&raw)
+        let mut state: MarketplaceState = serde_json::from_str(&raw)
             .map_err(|e| format!("failed to parse {}: {e}", self.path.display()))?;
+        if state.schema_version == 1 {
+            for entry in state.catalogs.values_mut().filter(|entry| {
+                matches!(
+                    entry.catalog.format,
+                    super::types::MarketplaceFormat::Claude
+                        | super::types::MarketplaceFormat::Codex
+                )
+            }) {
+                for candidate in &mut entry.catalog.candidates {
+                    if candidate.install_plan.is_supported()
+                        && matches!(
+                            candidate.source,
+                            super::types::MarketplaceSourceSpec::GitHub { .. }
+                        )
+                    {
+                        candidate.install_plan = super::types::MarketplaceInstallPlan::Unsupported {
+                            reason: "Re-import this catalog to recover its original Git source, subdirectory and revision.".to_string(),
+                            raw: candidate.name.clone(),
+                        };
+                    }
+                }
+            }
+            state.schema_version = MARKETPLACE_SCHEMA_VERSION;
+        }
         if state.schema_version != MARKETPLACE_SCHEMA_VERSION {
             return Err(format!(
                 "unsupported marketplace state schema {}; expected {MARKETPLACE_SCHEMA_VERSION} at {}",
@@ -333,7 +357,7 @@ mod tests {
         let store = MarketplaceStore::open(Some(&state_path)).unwrap();
         let initial = store.load().unwrap();
         let catalog = initial.get("codewhale").expect("first-party catalog");
-        assert_eq!(catalog.catalog.total_candidates(), 19);
+        assert_eq!(catalog.catalog.total_candidates(), 21);
         assert_eq!(catalog.catalog.error_count(), 0);
         assert_eq!(catalog.catalog.warning_count(), 0);
         assert!(!catalog.catalog.provenance.grants_trust());
@@ -349,7 +373,7 @@ mod tests {
             if candidate.name == "computer-use" {
                 assert_eq!(
                     spec,
-                    "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/latest/download/computer-use.tar.gz"
+                    "https://github.com/codewhale-hq/codewhale-cu-plugin/releases/download/v0.16.0/computer-use.tar.gz#sha256=11a4f5c97c32717fa5648d10c080aa0db48a4798ccdf0d17112d1ae5b9133ae4"
                 );
             } else {
                 assert!(spec.starts_with(

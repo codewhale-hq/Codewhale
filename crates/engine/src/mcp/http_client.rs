@@ -111,29 +111,25 @@ impl McpHttpAuth {
         }
         let mut headers = self.headers.clone();
         for (name, env_var) in &self.env_headers {
-            let value = super::mcp_secret_var(
+            let value = super::required_mcp_secret_var(
                 self.reviewed_plugin.as_ref(),
                 env_var,
                 self.auth_context.as_ref(),
-            );
-            if let Some(value) = value
-                && !value.trim().is_empty()
-            {
-                headers.insert(name.clone(), value);
-            }
+            )?;
+            headers.insert(name.clone(), value);
         }
         if !mcp_headers_have_authorization(&headers)
             && let Some(env_var) = self.bearer_token_env_var.as_deref()
-            && let Some(token) = super::mcp_secret_var(
+        {
+            let token = super::required_mcp_secret_var(
                 self.reviewed_plugin.as_ref(),
                 env_var,
                 self.auth_context.as_ref(),
-            )
-        {
-            let token = token.trim();
-            if !token.is_empty() {
-                headers.insert("Authorization".to_string(), format!("Bearer {token}"));
-            }
+            )?;
+            headers.insert(
+                "Authorization".to_string(),
+                format!("Bearer {}", token.trim()),
+            );
         }
         if !mcp_headers_have_authorization(&headers)
             && let Some(oauth) = &self.oauth
@@ -150,6 +146,18 @@ impl McpHttpAuth {
             if let Some(value) = authorization {
                 headers.insert("Authorization".to_string(), value);
             }
+        }
+        let mut validated = header::HeaderMap::new();
+        for (name, value) in &headers {
+            oauth::insert_header(&mut validated, name, value).map_err(|_| {
+                super::McpCredentialConfigurationError(
+                    if self.suppress_server_error_details {
+                        "Reviewed plugin MCP HTTP headers are invalid (details suppressed)"
+                    } else {
+                        "Configured MCP HTTP headers are invalid; correct the selected headers or credentials before reconnecting"
+                    }.to_string(),
+                )
+            })?;
         }
         Ok(headers)
     }
@@ -1413,7 +1421,7 @@ mod tests {
             "first-header",
         );
         let url = "https://example.invalid/mcp";
-        let session = client(url, false).with_mcp_auth(McpHttpAuth {
+        let mut session = client(url, false).with_mcp_auth(McpHttpAuth {
             headers: HashMap::from([
                 ("Accept".to_string(), "incorrect-accept".to_string()),
                 ("Content-Type".to_string(), "incorrect-type".to_string()),
@@ -1427,6 +1435,21 @@ mod tests {
             bearer_token_env_var: Some("CODEWHALE_TEST_MCP_SESSION_BEARER".to_string()),
             ..Default::default()
         });
+        for selected in ["Accept", "Content-Type", "X-Unsafe"] {
+            let mut invalid = session.clone();
+            invalid.mcp_auth.headers.retain(|name, _| name == selected);
+            let error = invalid
+                .prepare_mcp_request(invalid.post(url), true)
+                .await
+                .expect_err("invalid selected headers must refuse request preparation");
+            assert!(
+                error
+                    .downcast_ref::<super::super::McpCredentialConfigurationError>()
+                    .is_some()
+            );
+            assert!(!super::super::oauth::error_looks_auth_required(&error));
+        }
+        session.mcp_auth.headers.retain(|name, _| name == "X-Live");
         let cloned = session.clone();
         let first = session
             .prepare_mcp_request(

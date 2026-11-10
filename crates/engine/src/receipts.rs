@@ -260,11 +260,17 @@ pub fn thread_receipt(
     turn: Option<&str>,
 ) -> anyhow::Result<Receipt> {
     if let Some(turn) = turn
-        && !turns.iter().any(|record| record.id == turn)
+        && !turns.iter().any(|record| {
+            record.id == turn
+                && crate::runtime_threads::runtime_usage_partition_parent(record).is_none()
+        })
     {
         anyhow::bail!("turn '{turn}' does not belong to thread '{}'", thread.id);
     }
-    let mut ordered: Vec<&TurnRecord> = turns.iter().collect();
+    let mut ordered: Vec<&TurnRecord> = turns
+        .iter()
+        .filter(|record| crate::runtime_threads::runtime_usage_partition_parent(record).is_none())
+        .collect();
     ordered.sort_by_key(|record| record.created_at);
     let items_by_id: HashMap<&str, &TurnItemRecord> =
         items.iter().map(|item| (item.id.as_str(), item)).collect();
@@ -339,7 +345,8 @@ pub fn thread_receipt(
 // Loading from disk (`codewhale receipts`)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ReceiptFormat {
     Md,
     Json,

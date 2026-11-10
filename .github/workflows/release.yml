@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version, without v; dispatch from the matching existing vX.Y.Z tag ref'
+        description: 'Release version without v; dispatch from the matching existing vX.Y.Z or vX.Y.Z-prerelease tag ref'
         required: true
         type: string
 
@@ -34,6 +34,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       sha: ${{ steps.release.outputs.sha }}
       version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -47,8 +48,8 @@ jobs:
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            if ! [[ "${INPUT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::Release version '${INPUT_VERSION}' must use X.Y.Z." >&2
+            if ! [[ "${INPUT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Release version '${INPUT_VERSION}' must use X.Y.Z or X.Y.Z-prerelease." >&2
               exit 1
             fi
             tag="v${INPUT_VERSION}"
@@ -60,8 +61,8 @@ jobs:
             tag="${GITHUB_REF_NAME}"
           fi
 
-          if ! [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Release tag '${tag}' must use vX.Y.Z." >&2
+          if ! [[ "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '${tag}' must use vX.Y.Z or vX.Y.Z-prerelease." >&2
             exit 1
           fi
           if ! git rev-parse --verify "refs/tags/${tag}^{commit}" >/dev/null 2>&1; then
@@ -76,10 +77,16 @@ jobs:
             exit 1
           fi
 
+          version="${tag#v}"
           {
             echo "tag=${tag}"
             echo "sha=${sha}"
-            echo "version=${tag#v}"
+            echo "version=${version}"
+            if [[ "${version}" == *-* ]]; then
+              echo "prerelease=true"
+            else
+              echo "prerelease=false"
+            fi
           } >> "${GITHUB_OUTPUT}"
       - name: Validate tagged release metadata
         shell: bash
@@ -151,7 +158,7 @@ jobs:
 
   docker-build:
     needs: [artifacts, resolve]
-    if: ${{ !cancelled() && needs.artifacts.result == 'success' }}
+    if: ${{ !cancelled() && needs.artifacts.result == 'success' && needs.resolve.outputs.prerelease != 'true' }}
     name: Docker ${{ matrix.platform }}
     timeout-minutes: 60
     strategy:
@@ -282,7 +289,7 @@ jobs:
   docker:
     timeout-minutes: 30
     needs: [docker-build, release, resolve]
-    if: ${{ !cancelled() && needs.docker-build.result == 'success' && needs.release.result == 'success' }}
+    if: ${{ !cancelled() && needs.docker-build.result == 'success' && needs.release.result == 'success' && needs.resolve.outputs.prerelease != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -387,7 +394,7 @@ jobs:
   release:
     timeout-minutes: 30
     needs: [artifacts, docker-build, resolve]
-    if: ${{ !cancelled() && needs.artifacts.result == 'success' && needs.docker-build.result == 'success' }}
+    if: ${{ !cancelled() && needs.artifacts.result == 'success' && (needs.resolve.outputs.prerelease == 'true' || needs.docker-build.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -433,7 +440,7 @@ jobs:
           name: Codewhale ${{ needs.resolve.outputs.tag }}
           files: artifacts/*
           draft: true
-          prerelease: false
+          prerelease: ${{ needs.resolve.outputs.prerelease == 'true' }}
           body_path: release-body.md
           overwrite_files: false
           fail_on_unmatched_files: true
@@ -451,7 +458,7 @@ jobs:
   # also works when GITHUB_TOKEN publication suppresses release events.
   cnb:
     needs: [release, resolve]
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.resolve.outputs.prerelease != 'true' }}
     uses: ./.github/workflows/sync-cnb.yml
     with:
       release_tag: ${{ needs.resolve.outputs.tag }}
@@ -461,7 +468,7 @@ jobs:
 
   gitcode:
     needs: [release, resolve]
-    if: ${{ !cancelled() && needs.release.result == 'success' && vars.GITCODE_MIRROR == 'enabled' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && vars.GITCODE_MIRROR == 'enabled' && needs.resolve.outputs.prerelease != 'true' }}
     uses: ./.github/workflows/sync-gitcode.yml
     with:
       release_tag: ${{ needs.resolve.outputs.tag }}
@@ -512,12 +519,19 @@ jobs:
           # public GitHub Release and therefore needs the same read token as
           # the explicit asset gate above.
           GH_TOKEN: ${{ github.token }}
-        run: npm publish --access public
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi
 
   homebrew:
     timeout-minutes: 20
     needs: [release, resolve]
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.resolve.outputs.prerelease != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -576,7 +590,7 @@ jobs:
   sync-release-record:
     timeout-minutes: 15
     needs: [release, resolve]
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.resolve.outputs.prerelease != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

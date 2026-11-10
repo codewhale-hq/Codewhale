@@ -1,14 +1,9 @@
-//! Process-level acceptance for the v0.9.4 Terminal-Bench P0 exit-path fix.
+//! Process-level acceptance for mid-stream provider drops.
 //!
-//! Benchmark evidence (Terminal-Bench 2.1, codewhale 0.9.4): five tasks were
-//! forfeited when the DeepSeek stream dropped mid-response ("error decoding
-//! response body" after partial content). The engine surfaced the warning
-//! and `codewhale exec` exited 1, and Harbor raised
-//! `NonZeroAgentExitCodeError`. The fix: headless turns re-issue the request
-//! after a mid-stream network drop (bounded by MAX_STREAM_RETRIES), and a
-//! turn that still fails exits `EX_TEMPFAIL` (75) — a retryable
-//! infrastructure failure the harness can distinguish from a genuine task
-//! failure (exit 1).
+//! An opened stream that drops after partial content has an unknown provider
+//! outcome, so the engine must not replay it: `codewhale exec` surfaces the
+//! failure once and exits 1, and an interactive session accepts the next
+//! manual turn.
 //!
 //! These tests drive the real binary against a raw TCP server that sends a
 //! partial SSE body and then closes mid-`content-length`, reproducing the
@@ -36,47 +31,9 @@ const MODEL: &str = "stream-drop-test";
 const CLAIMED_DROP_BODY_LEN: usize = 1_048_576;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn headless_exec_recovers_from_mid_stream_drop() {
+async fn headless_exec_does_not_replay_a_mid_stream_drop() {
     let workspace = TempDir::new().expect("workspace");
     let home = TempDir::new().expect("home");
-    let (base_url, chat_posts, _requests, _server) = start_flaky_server(1, Duration::ZERO).await;
-
-    let output = run_exec(workspace.path(), home.path(), &base_url);
-
-    assert!(
-        output.status.success(),
-        "a recovered stream drop must exit 0\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        chat_posts.load(Ordering::SeqCst),
-        2,
-        "the dropped attempt must be re-issued exactly once"
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("recovered after retry"),
-        "the retried turn's content must stream: {stdout}"
-    );
-    assert!(
-        !stdout.contains(r#""type":"error""#),
-        "a transient drop that the retry recovers must not surface an error event: {stdout}"
-    );
-    let meta = terminal_metadata(&stdout);
-    assert_eq!(
-        meta["meta"]["status"].as_str(),
-        Some("completed"),
-        "recovered run must record a completed terminal receipt: {meta}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn headless_exec_exits_ex_tempfail_after_drop_budget_exhausted() {
-    let workspace = TempDir::new().expect("workspace");
-    let home = TempDir::new().expect("home");
-    // More drops than the engine can consume: initial attempt +
-    // MAX_STREAM_RETRIES (3) resumes, then the turn must fail.
     let (base_url, chat_posts, _requests, _server) =
         start_flaky_server(usize::MAX, Duration::ZERO).await;
 
@@ -84,26 +41,22 @@ async fn headless_exec_exits_ex_tempfail_after_drop_budget_exhausted() {
 
     assert_eq!(
         output.status.code(),
-        Some(75),
-        "retry budget exhausted on a network-class failure must exit EX_TEMPFAIL (75), \
-         not the generic task-failure 1\nstdout:\n{}\nstderr:\n{}",
+        Some(1),
+        "an opened stream that drops has an unknown outcome and fails the exec turn\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
         chat_posts.load(Ordering::SeqCst),
-        4,
-        "initial attempt plus the bounded resume budget (MAX_STREAM_RETRIES = 3)"
+        1,
+        "an opened stream must never be replayed"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let error_events = stdout
         .lines()
         .filter(|line| line.contains(r#""type":"error""#))
         .count();
-    assert_eq!(
-        error_events, 1,
-        "only the final, budget-exhausted attempt may emit an error event: {stdout}"
-    );
+    assert_eq!(error_events, 1, "{stdout}");
     let error_line = stdout
         .lines()
         .find(|line| line.contains(r#""type":"error""#))
@@ -117,7 +70,7 @@ async fn headless_exec_exits_ex_tempfail_after_drop_budget_exhausted() {
     assert_eq!(
         meta["meta"]["error_category"].as_str(),
         Some("network"),
-        "the terminal receipt must classify the failure as retryable infra: {meta}"
+        "the terminal receipt must classify the failure as network: {meta}"
     );
 }
 
@@ -136,7 +89,7 @@ async fn tui_next_manual_turn_completes_after_exhausted_partial_sse_drop() {
     const WAIT: Duration = Duration::from_secs(60);
     let workspace = make_sealed_workspace().expect("sealed workspace");
     let (base_url, chat_posts, requests, server) =
-        start_flaky_server(4, HEALTHY_RESPONSE_DELAY).await;
+        start_flaky_server(1, HEALTHY_RESPONSE_DELAY).await;
     let outbox = workspace.home().join("turn-receipts.jsonl");
     std::fs::write(workspace.home().join(".codewhale/.onboarded"), "").expect("onboarding receipt");
     let trust = workspace.workspace().join(".deepseek");
@@ -196,12 +149,12 @@ path = {outbox}
         first["payload"]["error"]
             .as_str()
             .is_some_and(|error| error.starts_with("Provider stream connection dropped")),
-        "the first UI turn must exhaust an actual partial SSE loss: {first:#}"
+        "the first UI turn must fail on an actual partial SSE loss: {first:#}"
     );
     // The lifecycle outbox contains a bounded user-facing error, not the
     // underlying reqwest chain. The server's partial SSE body and the exact
-    // request count prove the real transport loss and exhausted retry budget.
-    assert_eq!(chat_posts.load(Ordering::SeqCst), 4);
+    // request count prove the real transport loss and that it was not replayed.
+    assert_eq!(chat_posts.load(Ordering::SeqCst), 1);
 
     // No restart, continuation, event injection, approval answer, or queue
     // admission: type into the same running composer after its failed receipt.
@@ -252,13 +205,19 @@ path = {outbox}
             && !event["event"].as_str().unwrap().contains("user_input")
     }));
     let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 5, "four failed attempts then one new turn");
+    assert_eq!(requests.len(), 2, "one failed attempt then one new turn");
     let final_messages = requests.last().unwrap()["messages"].as_array().unwrap();
     let users = final_messages
         .iter()
-        .filter(|message| message["role"] == "user")
+        .filter(|message| {
+            message["role"] == "user" && !message.to_string().contains("codewhale:runtime_event")
+        })
         .collect::<Vec<_>>();
-    assert_eq!(users.len(), 2, "no synthetic continuation user turns");
+    assert_eq!(
+        users.len(),
+        2,
+        "no synthetic continuation user turns: {final_messages:#?}"
+    );
     assert!(users[0]["content"].to_string().contains(FIRST));
     assert!(users[1]["content"].to_string().contains(SECOND));
     assert!(

@@ -79,12 +79,6 @@ const EXTRA_PAGES: readonly { path: string; title: string; description: string }
       "Codewhale release record: the latest published release, the unreleased source candidate, and the notes for each version, drawn from CHANGELOG.md in the repository.",
   },
   {
-    path: "/plugins",
-    title: "Plugins and marketplace",
-    description:
-      "Preview Computer Use for selected desktop apps, and install reviewed plugins from the Codewhale catalog, a GitHub repository, or a tarball.",
-  },
-  {
     path: "/ratatui",
     title: "Codewhale Ratatui",
     description:
@@ -174,6 +168,11 @@ export function buildLlmsTxt(): string {
     `- [Full documentation](${SITE_URL}/llms-full.txt): Every documentation topic as plain text.`,
     `- [Runtime API](${SITE_URL}/docs-markdown/runtime-api.md): HTTP/SSE API and ACP integration.`,
     `- [MCP](${SITE_URL}/docs-markdown/mcp.md): Connect tools or run codewhale mcp-server / codewhale serve --mcp. Default server tools are read-only file_read and search.`,
+    "", "## Plugins and MCP", "",
+    `- [Choose an integration](${SITE_URL}/en/plugins): Skills are instructions; plugins package reviewed capabilities; MCP servers supply external tools, resources and prompts.`,
+    `- [Connect MCP servers](${SITE_URL}/en/docs/mcp): Local stdio and remote Streamable HTTP, legacy SSE, environment-backed tokens and direct-server OAuth. Plugin-bundled MCP does not support OAuth.`,
+    `- [Computer Use](${SITE_URL}/en/computer-use): Mac helper setup, CLI-version limitations and its separate open-source repository.`,
+    `- [Public plugin catalog](https://github.com/codewhale-hq/codewhale-plugin-marketplace): Installed CLI releases bundle a dated snapshot; current catalog entries are not proof of installed versions or end-to-end qualification.`,
     "", "## Documentation", "",
   );
   for (const topic of DOC_TOPICS) {

@@ -540,7 +540,7 @@ impl SetupRuntimeFacts {
             remote_command_provider: remote.command_provider,
             remote_result: remote.result,
             remote_control_result: {
-                use crate::remote_control::Status;
+                use codewhale_app_server::remote_control::Status;
                 let message = match app.remote_control.status() {
                     Status::Connected => MessageId::SetupRemoteStatusReady,
                     Status::Connecting | Status::Stopping => MessageId::SetupStatusInProgress,
@@ -632,14 +632,16 @@ impl SetupRuntimePreset {
 
     pub fn permission_posture(self) -> &'static str {
         match self {
-            Self::AskFirst | Self::NormalAgent => "ask",
+            Self::AskFirst => "ask",
+            Self::NormalAgent => "accept-edits",
             Self::HighTrustLocal => "full-access",
         }
     }
 
     pub fn approval_policy(self) -> Option<&'static str> {
         match self {
-            Self::AskFirst | Self::NormalAgent => Some("on-request"),
+            Self::AskFirst => Some("on-request"),
+            Self::NormalAgent => Some("accept-edits"),
             // Full Access lives in TUI settings; it is intentionally not a
             // top-level approval_policy value.
             Self::HighTrustLocal => None,
@@ -2747,8 +2749,9 @@ impl SetupWizardView {
         }
 
         // The compiled constitution already embodies the balanced posture:
-        // act on clear reversible work, ask when ambiguity is costly, and
-        // require express authorization for irreversible or external effects.
+        // act on clear reversible work without asking, ask with options when a
+        // choice is the user's, and require express authorization for
+        // irreversible or external effects.
         // Accepting the recommendation therefore records Bundled rather than
         // pinning a generated user-global fork that would miss future bundled
         // law improvements. Only Customize writes a GuidedCustom file.

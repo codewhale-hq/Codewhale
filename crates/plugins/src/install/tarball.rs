@@ -30,8 +30,17 @@ pub(super) fn stage_tarball(
 ) -> Result<StagedPlugin> {
     let scan = scan_tarball_for_bundle(bytes, max_size, bundle_path)?;
     let staged_path = fresh_staging_dir(user_plugins_dir)?;
-    let result = extract_into(&scan, bytes, &staged_path, max_size)
-        .and_then(|()| validate_staged(&staged_path));
+    let result = if scan.is_dsh {
+        let raw_dir = tempfile::tempdir().context("failed to create DSH extraction dir")?;
+        extract_into(&scan, bytes, raw_dir.path(), max_size).and_then(|()| {
+            let _ = fs::remove_dir_all(&staged_path);
+            super::dsh::convert_package(raw_dir.path(), &staged_path)?;
+            validate_staged(&staged_path)
+        })
+    } else {
+        extract_into(&scan, bytes, &staged_path, max_size)
+            .and_then(|()| validate_staged(&staged_path))
+    };
     match result {
         Ok((name, content_hash)) => Ok(StagedPlugin {
             name,
@@ -47,13 +56,10 @@ pub(super) fn stage_tarball(
 
 #[derive(Debug)]
 pub(super) struct TarballScan {
-    /// Archive-relative directory containing the bundle's manifest (`""` when
-    /// the manifest sits at the archive root).
     plugin_root: String,
+    is_dsh: bool,
 }
 
-/// First pass: validate entry paths, enforce the uncompressed size cap, and
-/// locate the single bundle root. Nothing is written in this pass.
 #[cfg(test)]
 pub(super) fn scan_tarball(bytes: &[u8], max_size: u64) -> Result<TarballScan> {
     scan_tarball_for_bundle(bytes, max_size, None)
@@ -70,12 +76,13 @@ fn scan_tarball_for_bundle(
 
     let mut total_size: u64 = 0;
     let mut manifest_paths: Vec<String> = Vec::new();
+    let mut dsh_manifest_paths: Vec<String> = Vec::new();
 
     for entry in archive
         .entries()
         .context("failed to read tar entries (corrupt archive?)")?
     {
-        let entry = entry.context("failed to read tar entry")?;
+        let mut entry = entry.context("failed to read tar entry")?;
         let header = entry.header().clone();
         let path = entry
             .path()
@@ -91,41 +98,71 @@ fn scan_tarball_for_bundle(
                 return Err(PluginInstallError::OversizedBundle { limit: max_size }.into());
             }
         }
-        if header.entry_type().is_file()
-            && path.file_name().is_some_and(|name| {
+        if header.entry_type().is_file() {
+            if path.file_name().is_some_and(|name| {
                 name == std::ffi::OsStr::new(crate::agent_plugin::PLUGIN_JSON_NAME)
                     || name == std::ffi::OsStr::new(crate::agent_plugin::KIMI_PLUGIN_JSON_NAME)
                     || name == std::ffi::OsStr::new(crate::agent_plugin::PLUGIN_TOML_NAME)
-            })
-        {
-            manifest_paths.push(path_str);
+            }) {
+                manifest_paths.push(path_str);
+            } else if path.file_name() == Some(std::ffi::OsStr::new("package.json"))
+                && !path
+                    .components()
+                    .any(|part| part.as_os_str() == std::ffi::OsStr::new("node_modules"))
+            {
+                let mut raw = Vec::new();
+                if entry.by_ref().take(65_536).read_to_end(&mut raw).is_ok()
+                    && let Ok(text) = std::str::from_utf8(&raw)
+                    && let Ok(parsed) = super::dsh::parse_json(text)
+                    && parsed
+                        .get("dsh")
+                        .and_then(|dsh| dsh.get("bundle"))
+                        .is_some()
+                {
+                    dsh_manifest_paths.push(path_str);
+                }
+            }
         }
     }
 
-    // A dual-published bundle carries `plugin.json` and `plugin.toml` in the
-    // same directory; that is one root, not two. Manifests in different
-    // directories stay an ambiguous mono-repo and are rejected.
-    let roots: BTreeSet<String> = manifest_paths
-        .iter()
-        .map(|manifest| {
-            crate::agent_plugin::plugin_root_for_manifest(Path::new(manifest))
-                .map(|root| root.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        })
-        .filter(|root| {
-            bundle_path.is_none_or(|wanted| {
-                root == wanted
-                    || root
-                        .split_once('/')
-                        .is_some_and(|(_, relative)| relative == wanted)
+    let filter_roots = |paths: &[String]| -> BTreeSet<String> {
+        paths
+            .iter()
+            .map(|manifest| {
+                crate::agent_plugin::plugin_root_for_manifest(Path::new(manifest))
+                    .map(|root| root.to_string_lossy().into_owned())
+                    .unwrap_or_default()
             })
-        })
-        .collect();
+            .filter(|root| {
+                bundle_path.is_none_or(|wanted| {
+                    root == wanted
+                        || root
+                            .split_once('/')
+                            .is_some_and(|(_, relative)| relative == wanted)
+                })
+            })
+            .collect()
+    };
+
+    let roots = filter_roots(&manifest_paths);
+    if roots.is_empty() {
+        let dsh_roots = filter_roots(&dsh_manifest_paths);
+        if dsh_roots.len() == 1 {
+            let plugin_root = dsh_roots.into_iter().next().unwrap_or_default();
+            return Ok(TarballScan {
+                plugin_root,
+                is_dsh: true,
+            });
+        }
+    }
     if roots.len() != 1 {
         return Err(PluginInstallError::PluginTomlRoots(roots.len()).into());
     }
     let plugin_root = roots.into_iter().next().unwrap_or_default();
-    Ok(TarballScan { plugin_root })
+    Ok(TarballScan {
+        plugin_root,
+        is_dsh: false,
+    })
 }
 
 /// Second pass: extract only entries under the scanned bundle root.

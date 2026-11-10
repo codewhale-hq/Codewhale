@@ -49,7 +49,7 @@
     "is_error": false
   },
   "/cache nonsense": {
-    "message": "Error: Unknown /cache argument `nonsense`. Usage: /cache [count|inspect [--verbose|--json]|stats|zones|warmup]",
+    "message": "Error: Unknown /cache argument `nonsense`. Usage: /cache [count|calls [count]|inspect [--verbose|--json]|stats|zones|warmup]",
     "action": null,
     "is_error": true
   },

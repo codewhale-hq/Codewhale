@@ -78,9 +78,9 @@ pub(crate) enum RedactionGateNotice {
 }
 pub use types::{
     AppAction, AppModeUi, AutomationAction, ComposerDensity, ComposerSubmitAction,
-    ComposerSubmitChord, InflightSteer, InitialInput, McpUiAction, QueuedMessage, ScreenMode,
-    SettingSelection, ShellJobAction, SubmitDisposition, TaskPanelEntry, TaskPanelEntryKind,
-    ToolCollapseMode, ToolDetailRecord, TranscriptSpacing, TuiOptions, VimMode,
+    ComposerSubmitChord, DialStep, InflightSteer, InitialInput, McpUiAction, QueuedMessage,
+    ScreenMode, SettingSelection, ShellJobAction, SubmitDisposition, TaskPanelEntry,
+    TaskPanelEntryKind, ToolCollapseMode, ToolDetailRecord, TranscriptSpacing, TuiOptions, VimMode,
 };
 pub(crate) use types::{
     CacheReplayTarget, GoalControlIntent, PendingGoalControl, UnansweredSubmission,
@@ -530,7 +530,7 @@ pub(crate) fn bound_agent_activity_text(value: &str) -> String {
     let mut visible = String::with_capacity(value.len());
     codewhale_tui_kit::osc8::strip_ansi_into(value, &mut visible);
     let redacted = codewhale_config::persistence::redact_secrets(&visible);
-    crate::tui::history::summarize_tool_output(&redacted)
+    codewhale_app_server::exec_agent::summarize_tool_output(&redacted)
 }
 
 /// One bounded, structured tool outcome for the Agent Details projection.
@@ -597,6 +597,7 @@ pub struct AgentProgressMeta {
     /// spend is unknown renders no token figure at all rather than a
     /// fabricated `0`.
     pub received_tokens: Option<u64>,
+    pub received_usage_sources: HashMap<String, u64>,
     /// Unsettled items on this child's own To-do list, from the latest
     /// `WorkState` envelope. `None` until a real list is published — the
     /// strip never invents a `0 left` chip for agents with no checklist.
@@ -744,7 +745,7 @@ fn load_launch_recent(workspace: &std::path::Path) -> (Vec<LaunchRecentSession>,
     let manager = codewhale_engine::session_manager::SessionManager::default_location().ok();
     let sessions = manager
         .as_ref()
-        .and_then(|manager| manager.list_sessions().ok())
+        .map(|manager| manager.list_sessions_lenient())
         .unwrap_or_default();
     let any_scoped = sessions.iter().any(|session| {
         !session.archived
@@ -1019,6 +1020,7 @@ impl Default for ComposerState {
 
 /// Viewport/scroll state — fields related to transcript scrolling and caching.
 pub struct ViewportState {
+    pub(crate) working_glow_visible: bool,
     /// Per-draw copy of the owning backend's negotiated capability facts.
     /// Unavailable outside a backend draw; never redetect or infer depth.
     pub(crate) ocean_caps: Option<codewhale_ratatui::Caps>,
@@ -1094,6 +1096,7 @@ pub struct ViewportState {
 impl Default for ViewportState {
     fn default() -> Self {
         Self {
+            working_glow_visible: false,
             ocean_caps: None,
             ocean_semantic_surfaces: Vec::new(),
             transcript_scroll: TranscriptScroll::to_bottom(),
@@ -1179,9 +1182,12 @@ pub struct SessionState {
     /// Redacted provider-response identities settled by parent or routed owners.
     /// Membership never adds a child amount; parent usage keeps its own pricing.
     pub subagent_usage_sources: HashSet<String>,
+    pub accounted_usage_sources:
+        std::collections::BTreeMap<String, codewhale_engine::cost_status::UsageSourceContribution>,
     pub missing_usage_sources:
         std::collections::BTreeMap<String, codewhale_engine::cost_status::MissingUsageCoverage>,
     pub missing_usage_overflowed: bool,
+    pub in_flight_usage_sources: BTreeSet<String>,
     pub displayed_cost_high_water: f64,
     pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
@@ -1359,8 +1365,10 @@ impl Default for SessionState {
             subagent_cost: 0.0,
             subagent_cost_cny: 0.0,
             subagent_usage_sources: HashSet::new(),
+            accounted_usage_sources: Default::default(),
             missing_usage_sources: std::collections::BTreeMap::new(),
             missing_usage_overflowed: false,
+            in_flight_usage_sources: BTreeSet::new(),
             displayed_cost_high_water: 0.0,
             displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
@@ -1597,6 +1605,10 @@ pub struct App {
     /// so the replacement shell can be removed or promoted as one unit.
     pub work_surface: crate::tui::work_surface::WorkSurfaceState,
     pub pet_watch: crate::tui::pet_watch::PetWatch,
+    /// Cell-rendered previews of the images attached to this draft. Decoded
+    /// off-thread; painting only ever reads a ready thumbnail. Boxed so the
+    /// cache's channels and maps do not grow every `App` on the stack.
+    pub attachment_preview: Box<crate::tui::image_preview::ThumbnailCache>,
     /// Goal sub-state.
     pub goal: HostGoalState,
     /// Session sub-state (cost, tokens, telemetry).
@@ -1660,7 +1672,7 @@ pub struct App {
     pub(crate) pending_plan_handoff: Option<crate::tui::plan_handoff::PendingPlanHandoff>,
     pub(crate) context_token_cache: RefCell<ContextTokenCache>,
     /// Typed account-owned browser relay for this exact TUI session.
-    pub remote_control: crate::remote_control::RemoteControlController,
+    pub remote_control: codewhale_app_server::remote_control::RemoteControlController,
     pub start_remote_control_on_launch: bool,
     pub is_loading: bool,
     /// One local report edit awaiting the ordinary composer dispatch.
@@ -1682,6 +1694,9 @@ pub struct App {
     /// Used by `enter_with_double_tap()` / `double_tap_window_open()` to
     /// detect a second Enter inside [`Self::DOUBLE_TAP_WINDOW`].
     pub last_enter_instant: Option<Instant>,
+    /// When the clipboard paste last ran, so a terminal that reports both the
+    /// press and the release of Ctrl+V pastes once instead of twice.
+    pub last_clipboard_paste: Option<Instant>,
     /// Whether the once-per-turn provider-wait incident (#3095) has already
     /// been logged for the current turn.
     pub provider_wait_incident_logged: bool,
@@ -1983,7 +1998,6 @@ pub struct App {
     pub launch: LaunchState,
     /// Mouse-selected launch action, consumed by the async UI loop.
     pub pending_launch_action: Option<crate::tui::underwater::LaunchAction>,
-    pub(crate) pending_claude_login: Option<bool>,
     /// Mouse click on the live composer's `[↵]` send target. The async UI loop
     /// consumes it through the same submit dispatcher as Enter.
     pub pending_composer_submit: Option<ComposerSubmitChord>,
@@ -2205,6 +2219,9 @@ pub struct App {
     pub yolo: bool,
     /// One-shot YOLO→Act+Bypass migration notice for this session (#0.8.68 M6).
     yolo_compat_notified: bool,
+    /// One-shot notice for a settings file that still names the retired
+    /// Operate mode, so the mode change is explained instead of silent.
+    operate_retired_notified: bool,
     /// The single serialized owner of `settings.toml` startup-default writes
     /// (mode, thinking, model). Keeping one owner per `App` is what stops two
     /// rapid selections from interleaving their load/modify/save transactions
@@ -2283,6 +2300,7 @@ pub struct App {
     /// The durable desired state lives in `last_known_goal_state`; this queue
     /// preserves in-process ordering and mailbox retry state only.
     pub(crate) pending_goal_controls: VecDeque<PendingGoalControl>,
+    pub(crate) pending_fresh_session: Option<crate::tui::ui::PendingFreshSession>,
     /// Metadata for the active session, cached in memory so automatic
     /// checkpoints never synchronously reload and parse a growing JSON file on
     /// the UI thread.
@@ -3436,7 +3454,7 @@ impl App {
     }
 
     /// Show the one-time Fleet intro as a status line, the first time the
-    /// user opens `/fleet` or enters Operate — never as a first-run push.
+    /// user opens `/fleet` — never as a first-run push.
     /// It inserts no transcript message: a synthetic history cell would hide
     /// the empty launch surface before the user sends anything.
     pub fn maybe_show_feature_intro(&mut self) {
@@ -3637,8 +3655,8 @@ impl App {
     /// application use it because they are re-installing a mode the user
     /// already chose elsewhere, and re-persisting there would let a restored
     /// session silently rewrite the startup default. Every interactive
-    /// selector (Tab/Shift+Tab cycling, the Alt+A/P shortcuts, the hotbar
-    /// mode actions) goes through here instead, so "I switched to Operate"
+    /// selector (the Shift+Tab permission dial, the Alt+A/P shortcuts, the
+    /// hotbar mode actions) goes through here instead, so "I switched to Plan"
     /// survives a restart (reported by Hunter against v0.9.1). The legacy
     /// YOLO entry points go through [`Self::select_yolo_compat`] instead.
     ///
@@ -3667,8 +3685,8 @@ impl App {
     pub fn select_mode(&mut self, mode: AppMode) -> SettingSelection {
         let changed = self.set_mode(mode);
         // Persist an explicit selection even when it matches the live mode.
-        // A restored session can be Operate while the startup default remains
-        // Act; choosing Operate again is a request to make the visible state
+        // A restored session can be Plan while the startup default remains
+        // Work; choosing Plan again is a request to make the visible state
         // durable, not a no-op.
         self.startup_defaults
             .spawn(crate::tui::startup_defaults::StartupDefaults::mode(
@@ -3762,6 +3780,28 @@ impl App {
         );
     }
 
+    fn notify_operate_retired_once(&mut self) {
+        if self.operate_retired_notified {
+            return;
+        }
+        self.operate_retired_notified = true;
+        if let Ok(settings) = codewhale_runtime::settings::Settings::load()
+            && settings.operate_deprecation_shown
+        {
+            return;
+        }
+        let _ = codewhale_runtime::settings::Settings::transact(|settings| {
+            settings.operate_deprecation_shown = true;
+            Ok(())
+        });
+        self.push_status_toast(
+            "Operate mode was retired — this session starts in Work; /fleet runs parallel agents"
+                .to_string(),
+            StatusToastLevel::Info,
+            Some(10_000),
+        );
+    }
+
     /// One-release migration notice for the Shift+Tab/Ctrl+T rebinding: users
     /// pressing Shift+Tab expecting the old thinking cycle land here first.
     fn notify_keybinding_migration_once(&mut self) {
@@ -3804,21 +3844,6 @@ impl App {
     pub(crate) fn setting_locked_message(&self, subject: MessageId) -> String {
         self.tr(MessageId::SettingLockedDuringTurn)
             .replace("{setting}", self.tr(subject).as_ref())
-    }
-
-    /// Cycle through productive modes: Plan → Act → Operate → Plan.
-    pub fn cycle_mode(&mut self) {
-        let next = self.mode.next();
-        let outcome = self.select_mode(next);
-        self.report_mode_selection(next, outcome);
-    }
-
-    /// Cycle through modes in reverse.
-    #[cfg(test)]
-    pub fn cycle_mode_reverse(&mut self) {
-        let next = self.mode.previous();
-        let outcome = self.select_mode(next);
-        self.report_mode_selection(next, outcome);
     }
 
     /// Show the startup-default receipt for a selection that did not move live
@@ -3945,11 +3970,48 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Cycle the durable Agent permission posture: Ask → Auto-Review → Bypass.
-    pub fn cycle_approval_posture(&mut self) -> bool {
-        let Some(next) = self.next_approval_posture(false) else {
-            return false;
+    #[must_use]
+    pub fn permission_dial_next(&self) -> (AppMode, ApprovalMode) {
+        if self.mode == AppMode::Plan {
+            return (AppMode::Agent, ApprovalMode::Auto);
+        }
+        match self.approval_mode {
+            ApprovalMode::AcceptEdits => (AppMode::Plan, ApprovalMode::AcceptEdits),
+            current => (AppMode::Agent, current.cycle_permission_next()),
+        }
+    }
+
+    pub fn step_permission_dial(&mut self, root_control: bool) -> DialStep {
+        let (mode, posture) = self.permission_dial_next();
+        let current_posture = if self.mode == AppMode::Plan {
+            self.mode_prefs.agent_approval_mode
+        } else {
+            self.approval_mode
         };
+        let mut step = DialStep::default();
+        if mode != self.mode {
+            step.mode_changed = self.select_mode(mode) == SettingSelection::Changed;
+        }
+        if posture != current_posture {
+            step.posture_changed = if root_control {
+                self.select_root_approval_posture(posture)
+            } else {
+                self.select_approval_posture(posture)
+            };
+            let posture_locked = if root_control {
+                !self.approval_policy_root_editable
+            } else {
+                self.approval_policy_locked()
+            };
+            if !step.posture_changed && !step.mode_changed && posture_locked {
+                step.mode_changed = self.select_mode(AppMode::Plan) == SettingSelection::Changed;
+            }
+        }
+        step
+    }
+
+    /// Set the durable Agent permission posture.
+    pub fn select_approval_posture(&mut self, next: ApprovalMode) -> bool {
         if self.approval_policy_locked() {
             self.push_status_toast(
                 "Permissions are controlled by config or managed requirements".to_string(),
@@ -3972,14 +4034,11 @@ impl App {
         true
     }
 
-    /// Cycle permissions when the only controlling source is the user's
+    /// Set permissions when the only controlling source is the user's
     /// editable root `config.toml` key. Shift+Tab is an explicit request to
     /// adopt the TUI posture, so persist the next setting first, then remove
     /// the shadowing root key. Roll back the setting if that removal fails.
-    pub fn cycle_root_approval_posture(&mut self) -> bool {
-        let Some(next) = self.next_approval_posture(true) else {
-            return false;
-        };
+    pub fn select_root_approval_posture(&mut self, next: ApprovalMode) -> bool {
         if !self.approval_policy_root_editable {
             self.push_status_toast(
                 "Permissions are controlled by a non-editable policy source".to_string(),
@@ -4073,27 +4132,10 @@ impl App {
         Ok(())
     }
 
-    fn next_approval_posture(&mut self, allow_root_policy: bool) -> Option<ApprovalMode> {
-        // Plan used to refuse the change outright, which welded the two axes
-        // together on the keyboard: Tab cycles the mode, Shift+Tab cycles the
-        // posture, and in Plan the second key silently did nothing. They are
-        // independent settings and both must stay settable.
-        //
-        // Nothing is weakened by allowing it. Plan's read-only guarantee is
-        // derived from the mode, not from the posture: `authority` maps
-        // `(Plan, _, Bypass)` to `SandboxPolicy::ReadOnly` (there is a test
-        // pinning exactly that), and `tool_catalog` gates every write tool on
-        // `mode != AppMode::Plan`. Setting the posture here records the
-        // preference that takes effect on the next Act/Operate turn.
-        if allow_root_policy && !self.approval_policy_root_editable {
-            return None;
-        }
-        Some(self.mode_prefs.agent_approval_mode.cycle_permission_next())
-    }
-
     fn approval_posture_setting(mode: ApprovalMode) -> &'static str {
         match mode {
             ApprovalMode::Suggest => "ask",
+            ApprovalMode::AcceptEdits => "accept-edits",
             ApprovalMode::Auto => "auto-review",
             ApprovalMode::Bypass => "full-access",
             ApprovalMode::Never => "never",
@@ -4102,7 +4144,7 @@ impl App {
 
     /// Persist the Shift+Tab permission posture.
     ///
-    /// Synchronous on purpose: `cycle_approval_posture` only moves the live
+    /// Synchronous on purpose: `select_approval_posture` only moves the live
     /// posture if this succeeded, so the keystroke already required the write.
     /// It runs inside [`Settings::transact`] so it cannot interleave with a
     /// queued mode/thinking write — the two used to load the same bytes and the
@@ -4123,7 +4165,7 @@ impl App {
         if self.mode == AppMode::Plan {
             self.push_status_toast(
                 format!(
-                    "Permissions set to {}. Plan stays Read Only; this applies in Work and Operate.",
+                    "Permissions set to {}. Plan stays Read Only; this applies in Work.",
                     next.permission_chip_label()
                 ),
                 StatusToastLevel::Info,
@@ -4264,6 +4306,9 @@ impl App {
     #[must_use]
     pub fn session_transition_blockers(&self) -> Vec<String> {
         let mut blockers = Vec::new();
+        if self.pending_fresh_session.is_some() {
+            blockers.push("a new session is awaiting Engine confirmation".to_string());
+        }
 
         let mut tasks: Vec<&TaskPanelEntry> = self
             .task_panel
@@ -4673,7 +4718,32 @@ impl App {
             pool.cache_write_tokens,
         );
         self.absorb_background_cost_coverage(&pool);
-        runtime_usage_arrived
+        let mut source_arrived = false;
+        for record in &pool.source_records {
+            match self.absorb_usage_source(record) {
+                Ok(changed) => source_arrived |= changed,
+                Err(error) => {
+                    tracing::warn!(%error, "live usage source projection refused");
+                    self.session
+                        .cost_unpriced_reasons
+                        .insert("usage_correction_unverified".into());
+                    self.session
+                        .cost_cny_unpriced_reasons
+                        .insert("usage_correction_unverified".into());
+                    self.session.missing_usage_overflowed = true;
+                }
+            }
+        }
+        codewhale_engine::cost_status::prune_settled_missing_reasons(
+            &self.session.missing_usage_sources,
+            self.session.missing_usage_overflowed,
+            &mut self.session.in_flight_usage_sources,
+            self.session.cost_unpriced_turns,
+            self.session.cost_cny_unpriced_turns,
+            &mut self.session.cost_unpriced_reasons,
+            &mut self.session.cost_cny_unpriced_reasons,
+        );
+        runtime_usage_arrived || source_arrived
     }
 
     /// Clear every live cost-coverage counter.
@@ -4682,8 +4752,10 @@ impl App {
     /// leave the previous session's priced/unpriced turns attached to a total
     /// that no longer contains them (#4318).
     pub fn reset_cost_coverage(&mut self) {
+        self.session.accounted_usage_sources.clear();
         self.session.missing_usage_sources.clear();
         self.session.missing_usage_overflowed = false;
+        self.session.in_flight_usage_sources.clear();
         self.session.cost_priced_turns = 0;
         self.session.cost_unpriced_turns = 0;
         self.session.cost_cny_priced_turns = 0;
@@ -4756,33 +4828,33 @@ impl App {
 
     /// Copy current session/subagent cost accumulators into session metadata
     /// for persistence.
-    pub fn sync_cost_to_metadata(
+    fn copy_cost_to_snapshot(
         &self,
-        metadata: &mut codewhale_engine::session_manager::SessionMetadata,
+        cost: &mut codewhale_engine::session_manager::SessionCostSnapshot,
     ) {
-        metadata.cost.session_cost_usd = self.session.session_cost;
-        metadata.cost.session_cost_cny = self.session.session_cost_cny;
-        metadata.cost.subagent_cost_usd = self.session.subagent_cost;
-        metadata.cost.subagent_cost_cny = self.session.subagent_cost_cny;
-        metadata.cost.displayed_cost_high_water_usd = self.session.displayed_cost_high_water;
-        metadata.cost.displayed_cost_high_water_cny = self.session.displayed_cost_high_water_cny;
+        cost.session_cost_usd = self.session.session_cost;
+        cost.session_cost_cny = self.session.session_cost_cny;
+        cost.subagent_cost_usd = self.session.subagent_cost;
+        cost.subagent_cost_cny = self.session.subagent_cost_cny;
+        cost.displayed_cost_high_water_usd = self.session.displayed_cost_high_water;
+        cost.displayed_cost_high_water_cny = self.session.displayed_cost_high_water_cny;
         // Coverage travels with the money it qualifies. A restored total without
         // these fields cannot say what it covers, and its serde defaults read as
         // a *complete* total covering zero turns — so they are persisted together
         // and `coverage_recorded` marks that this writer actually knew (#4318).
-        metadata.cost.priced_turns = self.session.cost_priced_turns;
-        metadata.cost.unpriced_turns = self.session.cost_unpriced_turns;
-        metadata.cost.cny_priced_turns = self.session.cost_cny_priced_turns;
-        metadata.cost.cny_unpriced_turns = self.session.cost_cny_unpriced_turns;
-        metadata.cost.unpriced_reasons = self.session.cost_unpriced_reasons.clone();
-        metadata.cost.cny_unpriced_reasons = self.session.cost_cny_unpriced_reasons.clone();
-        metadata.cost.unpriced_classes = self.session.cost_unpriced_classes.clone();
-        metadata.cost.pricing_provenances = self.session.cost_pricing_provenances.clone();
-        metadata.cost.live_pricing_defects = self.session.cost_live_pricing_defects.clone();
-        metadata.cost.live_pricing_unusable_defects =
+        cost.priced_turns = self.session.cost_priced_turns;
+        cost.unpriced_turns = self.session.cost_unpriced_turns;
+        cost.cny_priced_turns = self.session.cost_cny_priced_turns;
+        cost.cny_unpriced_turns = self.session.cost_cny_unpriced_turns;
+        cost.unpriced_reasons = self.session.cost_unpriced_reasons.clone();
+        cost.cny_unpriced_reasons = self.session.cost_cny_unpriced_reasons.clone();
+        cost.unpriced_classes = self.session.cost_unpriced_classes.clone();
+        cost.pricing_provenances = self.session.cost_pricing_provenances.clone();
+        cost.live_pricing_defects = self.session.cost_live_pricing_defects.clone();
+        cost.live_pricing_unusable_defects =
             self.session.cost_live_pricing_unusable_defects.clone();
-        metadata.cost.route_receipts = self.session.cost_route_receipts.clone();
-        metadata.cost.usage_source_fingerprints = self
+        cost.route_receipts = self.session.cost_route_receipts.clone();
+        cost.usage_source_fingerprints = self
             .session
             .subagent_usage_sources
             .iter()
@@ -4791,9 +4863,183 @@ impl App {
         // A session restored as legacy-unknown stays unknown when re-saved:
         // re-writing it as "recorded" would launder the missing evidence into an
         // apparently complete zero.
-        metadata.cost.missing_usage_sources = self.session.missing_usage_sources.clone();
-        metadata.cost.missing_usage_overflowed = self.session.missing_usage_overflowed;
-        metadata.cost.coverage_recorded = !self.session.cost_coverage_unknown_legacy;
+        cost.missing_usage_sources = self.session.missing_usage_sources.clone();
+        cost.missing_usage_overflowed = self.session.missing_usage_overflowed;
+        cost.in_flight_usage_sources = self.session.in_flight_usage_sources.clone();
+        cost.coverage_recorded = !self.session.cost_coverage_unknown_legacy;
+        cost.accounted_usage_sources = self.session.accounted_usage_sources.clone();
+    }
+
+    pub(crate) fn restore_cost_snapshot(
+        &mut self,
+        cost: &codewhale_engine::session_manager::SessionCostSnapshot,
+    ) {
+        let parent = CostEstimate {
+            usd: cost.session_cost_usd,
+            cny: cost.session_cost_cny,
+        }
+        .sanitized();
+        let auxiliary = CostEstimate {
+            usd: cost.subagent_cost_usd,
+            cny: cost.subagent_cost_cny,
+        }
+        .sanitized();
+        self.session.session_cost = parent.usd;
+        self.session.session_cost_cny = parent.cny;
+        self.session.subagent_cost = auxiliary.usd;
+        self.session.subagent_cost_cny = auxiliary.cny;
+        self.session.subagent_usage_sources =
+            cost.usage_source_fingerprints.iter().cloned().collect();
+        self.session.accounted_usage_sources = cost.accounted_usage_sources.clone();
+        self.session.missing_usage_sources = cost.missing_usage_sources.clone();
+        self.session.missing_usage_overflowed = cost.missing_usage_overflowed;
+        self.session.in_flight_usage_sources = cost.in_flight_usage_sources.clone();
+        self.session.cost_priced_turns = cost.priced_turns;
+        self.session.cost_unpriced_turns = cost.unpriced_turns;
+        self.session.cost_cny_priced_turns = cost.cny_priced_turns;
+        self.session.cost_cny_unpriced_turns = cost.cny_unpriced_turns;
+        self.session.cost_unpriced_reasons = cost.unpriced_reasons.clone();
+        self.session.cost_cny_unpriced_reasons = cost.cny_unpriced_reasons.clone();
+        self.session.cost_unpriced_classes = cost.unpriced_classes.clone();
+        self.session.cost_pricing_provenances = cost.pricing_provenances.clone();
+        self.session.cost_live_pricing_defects = cost.live_pricing_defects.clone();
+        self.session.cost_live_pricing_unusable_defects =
+            cost.live_pricing_unusable_defects.clone();
+        self.session.cost_route_receipts = cost.route_receipts.clone();
+        self.session.cost_coverage_unknown_legacy = cost.coverage_is_legacy_unknown();
+        self.session.displayed_cost_high_water = self
+            .session
+            .displayed_cost_high_water
+            .max(cost.displayed_cost_high_water_usd)
+            .max(parent.usd + auxiliary.usd);
+        self.session.displayed_cost_high_water_cny = self
+            .session
+            .displayed_cost_high_water_cny
+            .max(cost.displayed_cost_high_water_cny)
+            .max(parent.cny + auxiliary.cny);
+    }
+
+    pub(crate) fn mark_usage_uncertain(&mut self, reason: &'static str) {
+        if self
+            .session
+            .cost_unpriced_reasons
+            .insert(reason.to_string())
+        {
+            self.session.cost_unpriced_turns = self.session.cost_unpriced_turns.saturating_add(1);
+        }
+        if self
+            .session
+            .cost_cny_unpriced_reasons
+            .insert(reason.to_string())
+        {
+            self.session.cost_cny_unpriced_turns =
+                self.session.cost_cny_unpriced_turns.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn absorb_usage_source(
+        &mut self,
+        record: &codewhale_engine::cost_status::RuntimeUsageRecord,
+    ) -> Result<bool, String> {
+        let key = codewhale_engine::cost_status::usage_source_fingerprint(&record.source_id);
+        let previous = self.session.accounted_usage_sources.get(&key).cloned();
+        let mut cost = codewhale_engine::session_manager::SessionCostSnapshot::default();
+        self.copy_cost_to_snapshot(&mut cost);
+        if previous
+            .as_ref()
+            .is_some_and(|previous| previous.record == *record)
+        {
+            return Ok(false);
+        }
+        let source = self
+            .session_write_receipt
+            .as_ref()
+            .ok_or_else(|| "cost projection has no admitted session scope".to_string())?;
+        let Some((old, new)) = source
+            .project_usage_record(
+                codewhale_engine::cost_status::scope_token(),
+                record,
+                &mut cost,
+            )
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(false);
+        };
+        if old == 0
+            && new == 0
+            && previous
+                .as_ref()
+                .is_some_and(|previous| previous.record == *record)
+        {
+            return Ok(false);
+        }
+        self.restore_cost_snapshot(&cost);
+        let next_usage = &record.usage.usage;
+        let old_usage = previous
+            .as_ref()
+            .map(|previous| &previous.record.usage.usage);
+        let replace = |total: &mut u32, old: u32, new: u32| {
+            *total = total.saturating_sub(old).saturating_add(new);
+        };
+        replace(
+            &mut self.session.total_tokens,
+            u32::try_from(old).unwrap_or(u32::MAX),
+            u32::try_from(new).unwrap_or(u32::MAX),
+        );
+        replace(
+            &mut self.session.total_conversation_tokens,
+            u32::try_from(old).unwrap_or(u32::MAX),
+            u32::try_from(new).unwrap_or(u32::MAX),
+        );
+        let replace_breakdown = |total: &mut u32, old: u32, new: u32| {
+            *total = if new >= old {
+                total.saturating_add(new - old)
+            } else {
+                total.saturating_sub(old - new)
+            };
+        };
+        replace_breakdown(
+            &mut self.session.total_input_tokens,
+            old_usage.map_or(0, |usage| usage.input_tokens),
+            next_usage.input_tokens,
+        );
+        replace_breakdown(
+            &mut self.session.total_output_tokens,
+            old_usage.map_or(0, |usage| usage.output_tokens),
+            next_usage.output_tokens,
+        );
+        let before = old_usage.map(codewhale_engine::pricing::token_usage_for_pricing);
+        let after = codewhale_engine::pricing::token_usage_for_pricing(next_usage);
+        replace_breakdown(
+            &mut self.session.total_cache_hit_tokens,
+            before.as_ref().map_or(0, |usage| {
+                u32::try_from(usage.cache_read).unwrap_or(u32::MAX)
+            }),
+            u32::try_from(after.cache_read).unwrap_or(u32::MAX),
+        );
+        replace_breakdown(
+            &mut self.session.total_cache_miss_tokens,
+            before
+                .as_ref()
+                .map_or(0, |usage| u32::try_from(usage.input).unwrap_or(u32::MAX)),
+            u32::try_from(after.input).unwrap_or(u32::MAX),
+        );
+        replace_breakdown(
+            &mut self.session.total_cache_write_tokens,
+            before.as_ref().map_or(0, |usage| {
+                u32::try_from(usage.cache_write).unwrap_or(u32::MAX)
+            }),
+            u32::try_from(after.cache_write).unwrap_or(u32::MAX),
+        );
+        self.needs_redraw = true;
+        Ok(true)
+    }
+
+    pub fn sync_cost_to_metadata(
+        &self,
+        metadata: &mut codewhale_engine::session_manager::SessionMetadata,
+    ) {
+        self.copy_cost_to_snapshot(&mut metadata.cost);
         // Persist cumulative turn duration so the footer "worked" chip
         // survives session save/restore (#2038).
         metadata.cumulative_turn_secs = self.cumulative_turn_duration.as_secs();
@@ -4905,17 +5151,24 @@ impl App {
 
     /// Price is one number, everywhere (design §2.11 item 5): the session
     /// cost as the footer chip, the price view, and the roster print it.
-    /// Money routes print the amount; subscription, local, and unknown
-    /// routes print the same words the chip uses; a metered route that has
-    /// not spent yet prints `$0.00` rather than vanishing between turns.
+    /// Money routes print the amount; subscription and local routes print the
+    /// same words the chip uses; a metered route that has not spent yet prints
+    /// `$0.00`; a session with no confirmed price says `unknown` rather than
+    /// inventing a zero.
     #[must_use]
     pub fn session_cost_label(&self) -> String {
         let chip = self.cumulative_usage_chip();
+        if matches!(chip, codewhale_engine::route_billing::UsageChip::Hidden) {
+            return self
+                .format_cost_amount(self.displayed_session_cost_for_currency(self.cost_currency));
+        }
         codewhale_engine::route_billing::format_usage_chip(&chip, self.ui_locale).unwrap_or_else(
             || {
-                self.format_cost_amount(
-                    self.displayed_session_cost_for_currency(self.cost_currency),
+                codewhale_localization::tr(
+                    self.ui_locale,
+                    codewhale_localization::MessageId::CmdCostUnknownValue,
                 )
+                .into_owned()
             },
         )
     }

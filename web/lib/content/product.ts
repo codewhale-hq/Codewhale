@@ -42,40 +42,60 @@ export const PRODUCT_COPY = {
     zh: "构建应用，自动化工作流",
   },
   lede: {
-    en: "Codewhale is an open-source coding agent that reads files, writes code and runs commands in your terminal. Connect a hosted or local model and choose which actions need approval.",
-    zh: "Codewhale 是终端里的开源编程智能体，可以读取文件、编写代码并运行命令。连接托管模型或本地模型，并选择哪些操作需要批准。",
+    en: "Codewhale works in your terminal and local browser, using the models you choose.",
+    zh: "Codewhale 在终端和本地浏览器中工作，使用你选择的模型。",
   },
 
-  gainHeading: { en: "What you can build and automate", zh: "可以构建与自动化的工作" },
-  gain: [
+  workHeading: { en: "Keep larger tasks moving", zh: "推进更大的任务" },
+  workPatterns: [
     {
-      title: { en: "Build apps and useful tools", zh: "构建应用和实用工具" },
+      title: { en: "Operate", zh: "Operate" },
       body: {
-        en: "Create a new application, extend a project, turn data into a report, or write a script that saves you time. The agent can create files, run commands and test the result.",
-        zh: "做一个新应用、扩展现有项目、将数据整理成报告，或写一个节省时间的脚本。智能体可以创建文件、运行命令并测试成果。",
+        en: "Plan, delegate and verify a larger task. Operate uses the same permissions as Work.",
+        zh: "计划、委派并验证较大的任务。Operate 遵循与 Work 相同的权限。",
       },
+      href: "/docs/modes",
+      command: "/mode operate",
     },
     {
-      title: { en: "Work across your apps", zh: "让应用一起参与工作" },
+      title: { en: "Fleet", zh: "Fleet" },
       body: {
-        en: "Add tools through plugins and MCP servers, or use APIs from your own scripts. Each service needs its own setup and authentication.",
-        zh: "通过插件和 MCP 服务添加工具，或在自己的脚本中使用 API。每项服务都需要单独配置并完成身份验证。",
+        en: "Give agents different roles and models, then reuse those profiles across tasks.",
+        zh: "为智能体分配不同角色和模型，再在后续任务中复用这些配置。",
       },
+      href: "/docs/fleet",
+      command: "/fleet setup",
     },
     {
-      title: { en: "Make a workflow you can reuse", zh: "把工作变成可复用的流程" },
+      title: { en: "Workflows", zh: "Workflows" },
       body: {
-        en: "Run tasks from scripts or CI with codewhale exec. For larger jobs, save a Fleet of agents with different roles and models and bring the team back when you need it.",
-        zh: "用 codewhale exec 从脚本或 CI 中运行任务。面对更大的工作，保存由不同角色、不同模型组成的 Fleet 智能体团队，需要时再一起上场。",
+        en: "Save steps, parallel work and review gates as a process you can run again.",
+        zh: "把步骤、并行工作与审阅关卡保存为可重复运行的流程。",
       },
+      href: "https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/AUTOMATIC_WORKFLOWS.md",
+      command: "codewhale workflow run <workflow>",
     },
-  ] satisfies ProductRow[],
+    {
+      title: { en: "Skills and plugins", zh: "技能与插件" },
+      body: {
+        en: "Save a checklist or report format in a Markdown skill, then share it as a plugin.",
+        zh: "用 Markdown 技能保存清单或报告格式，再打包为插件分享。",
+      },
+      href: "/docs/skills",
+      command: "SKILL.md",
+    },
+    {
+      title: { en: "Receipts and undo", zh: "回执与撤销" },
+      body: {
+        en: "Preview the next primary request, review recorded actions and restore available file snapshots.",
+        zh: "预览下一次主要请求、查看已记录的操作，并恢复可用的文件快照。",
+      },
+      href: "/docs/review",
+      command: "/receipts",
+    },
+  ],
 
-  availabilityHeading: { en: "Available now and in development", zh: "已可使用和正在开发的版本" },
-  availabilityLede: {
-    en: "The terminal, local browser client, and community CodeWhale GUI are available now and need no Codewhale account. The desktop and hosted web apps are in development and share the same session model; your model connection stays your choice.",
-    zh: "终端、本地浏览器客户端与社区维护的 CodeWhale GUI 现已可用，无需 Codewhale 账户。桌面和托管网页应用正在开发，共用同一会话模型；模型连接仍由你选择。",
-  },
+  availabilityHeading: { en: "Where it runs", zh: "运行平台" },
   availability: [
     {
       surface: { en: "Terminal", zh: "终端" },
@@ -127,13 +147,16 @@ export const PRODUCT_COPY = {
       href: null,
       linkLabel: null,
     },
+    {
+      surface: { en: "Computer Use", zh: "Computer Use" },
+      status: { en: "Mac beta", zh: "Mac 测试版" },
+      detail: { en: "Background app control on macOS 13.5 or later. Requires the separate helper and plugin.", zh: "在 macOS 13.5 或更高版本上后台操作应用。需要单独安装辅助应用与插件。" },
+      href: "/computer-use",
+      linkLabel: { en: "Set up Computer Use", zh: "设置 Computer Use" },
+    },
   ] satisfies ProductAvailabilityRow[],
 
   controlHeading: { en: "Set permissions and approvals", zh: "设置权限与审批方式" },
-  controlLede: {
-    en: "Use Plan to explore, Work to carry out a task, and Operate to coordinate larger jobs. Approval settings decide which actions wait for you.",
-    zh: "用 Plan 探索方案、Work 执行任务、Operate 协调较大的工作。审批设置决定哪些操作需要等你确认。",
-  },
   modes: [
     { title: { en: "Plan", zh: "Plan" }, body: { en: "Blocks file mutation and shell execution. Permitted research may contact external services; session state can still be saved.", zh: "禁止文件修改与 shell 执行。获准的研究可访问外部服务；会话状态仍可保存。" } },
     { title: { en: "Work", zh: "Work" }, body: { en: "Edits files and runs commands within the permission you set.", zh: "在你设定的权限内修改文件、运行命令。" } },
@@ -144,13 +167,6 @@ export const PRODUCT_COPY = {
     { title: { en: "Auto-Review", zh: "Auto-Review" }, body: { en: "Automatically reviews eligible actions and reports any action it cannot approve.", zh: "自动审核符合条件的操作，并报告无法批准的操作。" } },
     { title: { en: "Full Access", zh: "Full Access" }, body: { en: "Reduces approval prompts. It does not bypass hard policy boundaries or grant access outside the allowed scope.", zh: "减少审批提示，但不会绕过强制策略边界，也不会授予允许范围之外的访问权限。" } },
   ] satisfies ProductRow[],
-
-  surfacesHeading: { en: "Work across files and tools", zh: "在文件与工具之间完成工作" },
-  surfacesLede: {
-    en: "Work with your project, connected services, browser tools and agent teams from one session. Choose the model, add the connections you need, and return to the work without starting over.",
-    zh: "在同一个会话中使用项目文件、已连接的服务、浏览器工具和智能体团队。选择模型，添加所需的连接，之后随时接着做，无需从头开始。",
-  },
-  surfacesLink: { en: "See all integrations", zh: "查看全部集成" },
 
   actions: {
     install: { en: "Install Codewhale", zh: "安装 Codewhale" },

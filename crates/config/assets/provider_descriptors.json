@@ -1008,10 +1008,10 @@
       "aliases": ["claude"],
       "wire_policy": "anthropic_messages",
       "credential_help": {
-        "acquisition": "api_key_or_oauth",
+        "acquisition": "api_key",
         "credential_url": "https://console.anthropic.com/settings/keys",
         "docs_url": "https://docs.anthropic.com/en/api/overview",
-        "guidance": "Sign in with Claude Pro or Max using codewhale auth claude, or create an Anthropic API key for separate API billing."
+        "guidance": "Create an Anthropic API key in the Anthropic Console."
       },
       "selectable": true,
       "retired": false,
@@ -1462,7 +1462,7 @@
       "id": "meta",
       "label": "Meta Model API",
       "base_url": "https://api.meta.ai/v1",
-      "default_model": "muse-spark-1.2",
+      "default_model": "muse-spark-1.3",
       "env_vars": [
         "META_MODEL_API_KEY",
         "MODEL_API_KEY"
@@ -1510,7 +1510,7 @@
       "id": "xai",
       "label": "xAI",
       "base_url": "https://api.x.ai/v1",
-      "default_model": "grok-4.6",
+      "default_model": "grok-4.7",
       "env_vars": [
         "XAI_API_KEY"
       ],
@@ -1567,9 +1567,9 @@
       "wire_policy": "chat_completions",
       "credential_help": {
         "acquisition": "api_key",
-        "credential_url": "https://console.mistral.ai/api-keys",
-        "docs_url": "https://docs.mistral.ai/",
-        "guidance": "Create a Mistral API key in the Mistral Console (la Plateforme)."
+        "credential_url": "https://chat.mistral.ai/code/extensions",
+        "docs_url": "https://docs.mistral.ai/vibe/code/cli/api-keys-profiles",
+        "guidance": "Use a Vibe Code API key or a Mistral Studio API key. Plan allowances and pay-as-you-go depend on your organization."
       },
       "selectable": true,
       "retired": false,
@@ -2112,6 +2112,19 @@
   "note": "One built-in and compatible-host metadata owner. Defaults are bootstrap hints; model offerings and route/auth behavior retain their existing Rust and live-catalog authorities.",
   "descriptors": [
     {
+      "id": "tinker",
+      "label": "Thinking Machines Tinker (beta)",
+      "wire": "openai-compatible",
+      "base_url": "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1",
+      "api_key_env": "TINKER_API_KEY",
+      "default_model": "thinkingmachines/Inkling-2-Small:peft:262144:sampling-nvfp4",
+      "discovery": "none",
+      "docs_url": "https://tinker-docs.thinkingmachines.ai/tinker/compatible-apis/openai/",
+      "credential_url": "https://tinker-docs.thinkingmachines.ai/tinker/quickstart/",
+      "guidance": "Tinker serverless and its OpenAI-compatible API are beta. Model-list and key verification are unavailable through this route; configure a documented serverless model ID. A successful model call is needed to verify access.",
+      "aliases": ["thinking-machines", "thinkingmachines"]
+    },
+    {
       "id": "aicraft",
       "label": "AICraft",
       "wire": "openai-compatible",
@@ -2214,6 +2227,18 @@
       "credential_url": "https://console.groq.com/keys"
     },
     {
+      "id": "wafer",
+      "label": "Wafer",
+      "wire": "openai-compatible",
+      "base_url": "https://pass.wafer.ai/v1",
+      "api_key_env": "WAFER_API_KEY",
+      "default_model": "GLM-5.3",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://docs.wafer.ai/serverless",
+      "credential_url": "https://app.wafer.ai",
+      "guidance": "OpenAI-compatible serverless catalog (Chat Completions + public GET /v1/models). Model ids are case-sensitive, such as GLM-5.3. Zero data retention is on for every request; no extra header is required. Store WAFER_API_KEY, not a raw key. A public listing does not verify the key."
+    },
+    {
       "id": "runcrate",
       "label": "Runcrate",
       "wire": "openai-compatible",
@@ -2224,6 +2249,23 @@
       "docs_url": "https://www.runcrate.ai/docs/getting-started/quickstart",
       "credential_url": "https://www.runcrate.ai/dashboard",
       "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models, which is public). Model ids are case-sensitive org/Name ids such as deepseek-ai/DeepSeek-V4.1-Flash. Live /v1/models is the model authority. Store RUNCRATE_API_KEY, not a raw key."
+    },
+    {
+      "id": "tencent",
+      "label": "Tencent TokenHub",
+      "wire": "openai-compatible",
+      "base_url": "https://tokenhub-intl.tencentcloudmaas.com/v1",
+      "api_key_env": "TENCENT_API_KEY",
+      "default_model": "hy4",
+      "discovery": "models_endpoint",
+      "docs_url": "https://www.tencentcloud.com/document/product/1300/80695",
+      "credential_url": "https://console.tencentcloud.com/tokenhub/apikey",
+      "guidance": "Tencent's international TokenHub endpoint; use the exact model id hy4, not tencent/hy4 or hy4-preview. Authenticated GET /v1/models is the availability authority. HY4 supports text, images, tools and reasoning, with a documented 1M context and 64K output. Set providers.tencent.model_context_windows.hy4 explicitly when using the full window; absent live limits the compatible-route fallback remains conservative. Direct prices are not inferred from OpenRouter. Store TENCENT_API_KEY, not a raw key.",
+      "aliases": [
+        "tencent-tokenhub",
+        "tokenhub",
+        "hunyuan"
+      ]
     },
     {
       "id": "opper",

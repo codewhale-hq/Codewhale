@@ -55,6 +55,7 @@ pub enum Focus {
 pub enum FocusScope {
     TerminalPanel,
     RoutePicker,
+    AccountLogin,
     PetHabitat,
     Pet,
     /// Only the sandbox-elevation decision card.
@@ -79,6 +80,7 @@ impl FocusScope {
     pub fn admits(self, focus: Focus) -> bool {
         match self {
             Self::TerminalPanel => focus == Focus::TerminalPanel,
+            Self::AccountLogin => focus == Focus::Modal(ModalKind::AccountLogin),
             Self::RoutePicker => matches!(
                 focus,
                 Focus::Modal(ModalKind::ProviderPicker | ModalKind::ModelPicker)
@@ -110,6 +112,11 @@ impl FocusScope {
 /// Stable binding ids shared by handlers, footer hints, and help catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellBindingId {
+    AccountLoginOpenBrowser,
+    AccountLoginCopyLink,
+    AccountLoginCancel,
+    AccountLoginSelect,
+    AccountLoginNext,
     TerminalNew,
     TerminalNext,
     TerminalPrevious,
@@ -143,9 +150,7 @@ pub enum ShellBindingId {
     Help,
     ExternalEditor,
     Settings,
-    /// Tab: cycle the session mode.
-    ModeCycle,
-    /// Shift+Tab: cycle the permission posture.
+    /// Shift+Tab: step the permission dial.
     PermissionCycle,
     /// Ctrl+Tab / Ctrl+]: the next bottom-dock view, or the next pet view
     /// while the pet main view is showing.
@@ -173,6 +178,21 @@ impl ShellBinding {
     #[must_use]
     pub fn matches(&self, key: &KeyEvent) -> bool {
         match self.id {
+            ShellBindingId::AccountLoginSelect => {
+                key.code == KeyCode::Enter && key.modifiers.is_empty()
+            }
+            ShellBindingId::AccountLoginNext => {
+                matches!(key.code, KeyCode::Down | KeyCode::Tab) && key.modifiers.is_empty()
+            }
+            ShellBindingId::AccountLoginOpenBrowser => {
+                key.code == KeyCode::Char('o') && key.modifiers.is_empty()
+            }
+            ShellBindingId::AccountLoginCopyLink => {
+                key.code == KeyCode::Char('c') && key.modifiers.is_empty()
+            }
+            ShellBindingId::AccountLoginCancel => {
+                key.code == KeyCode::Esc && key.modifiers.is_empty()
+            }
             ShellBindingId::TerminalNew => {
                 key.code == KeyCode::Char('n') && key.modifiers == KeyModifiers::CONTROL
             }
@@ -227,7 +247,6 @@ impl ShellBinding {
             ShellBindingId::Help => is_help_shortcut(key),
             ShellBindingId::ExternalEditor => key_shortcuts::is_external_editor_shortcut(key),
             ShellBindingId::Settings => is_settings_shortcut(key),
-            ShellBindingId::ModeCycle => is_mode_cycle_shortcut(key),
             ShellBindingId::PermissionCycle => is_permission_cycle_shortcut(key),
             ShellBindingId::ViewCycle => is_view_cycle_shortcut(key),
             ShellBindingId::ViewCycleBack => is_view_cycle_back_shortcut(key),
@@ -248,17 +267,43 @@ pub fn route(focus: Focus, key: &KeyEvent) -> Option<ShellBindingId> {
         .find(|binding| {
             binding.focus.admits(focus)
                 && binding.matches(key)
-                && !(focus == Focus::TerminalPanel
-                    && matches!(
-                        binding.id,
-                        ShellBindingId::ModeCycle | ShellBindingId::PermissionCycle
-                    ))
+                && !(focus == Focus::TerminalPanel && binding.id == ShellBindingId::PermissionCycle)
         })
         .map(|binding| binding.id)
 }
 
 /// Canonical shell bindings. Handlers and chrome read from here.
 pub const SHELL_BINDINGS: &[ShellBinding] = &[
+    ShellBinding {
+        id: ShellBindingId::AccountLoginSelect,
+        catalog_chord: "Enter",
+        footer_chord: "Enter",
+        focus: FocusScope::AccountLogin,
+    },
+    ShellBinding {
+        id: ShellBindingId::AccountLoginNext,
+        catalog_chord: "Down / Tab",
+        footer_chord: "↓/Tab",
+        focus: FocusScope::AccountLogin,
+    },
+    ShellBinding {
+        id: ShellBindingId::AccountLoginOpenBrowser,
+        catalog_chord: "o",
+        footer_chord: "o",
+        focus: FocusScope::AccountLogin,
+    },
+    ShellBinding {
+        id: ShellBindingId::AccountLoginCopyLink,
+        catalog_chord: "c",
+        footer_chord: "c",
+        focus: FocusScope::AccountLogin,
+    },
+    ShellBinding {
+        id: ShellBindingId::AccountLoginCancel,
+        catalog_chord: "Esc",
+        footer_chord: "Esc",
+        focus: FocusScope::AccountLogin,
+    },
     ShellBinding {
         id: ShellBindingId::TerminalNew,
         catalog_chord: "Ctrl+N",
@@ -469,17 +514,6 @@ pub const SHELL_BINDINGS: &[ShellBinding] = &[
         focus: FocusScope::Everywhere,
     },
     ShellBinding {
-        id: ShellBindingId::ModeCycle,
-        catalog_chord: "Tab",
-        footer_chord: "Tab",
-        // Tab is the shell's mode cycle. The composer's own completions
-        // get the key first, but *having typed* never disables it. Live on
-        // the launch screen too: the card's rows are arrowed, the composer
-        // is always focused, so Tab had no focus left to move and read as
-        // dead (0.9.12 defect #5).
-        focus: FocusScope::AnyShell,
-    },
-    ShellBinding {
         id: ShellBindingId::PermissionCycle,
         catalog_chord: "Shift+Tab",
         footer_chord: "Shift+Tab",
@@ -669,18 +703,7 @@ pub fn is_settings_shortcut(key: &KeyEvent) -> bool {
     matches!(key.code, KeyCode::F(2)) && key.modifiers.is_empty()
 }
 
-/// Tab cycles the session mode. Terminal chords that mean something else to
-/// the host (Ctrl/Alt/Cmd+Tab) are not ours, and Shift+Tab is the permission
-/// cycle below.
-#[must_use]
-pub fn is_mode_cycle_shortcut(key: &KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Tab)
-        && !key.modifiers.intersects(
-            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::SHIFT,
-        )
-}
-
-/// Shift+Tab cycles the permission posture. Terminals encode the same chord
+/// Shift+Tab steps the permission dial. Terminals encode the same chord
 /// either as `BackTab` or as `Tab` + SHIFT; accept both.
 #[must_use]
 pub fn is_permission_cycle_shortcut(key: &KeyEvent) -> bool {
@@ -746,13 +769,13 @@ mod tests {
             route(Focus::Composer, &ctrl_shift_tab),
             Some(ShellBindingId::ViewCycleBack)
         );
-        // Plain Tab / Shift+Tab stay the mode and permission cycles.
+        // Plain Tab is composer completion only; Shift+Tab is the dial.
         assert_eq!(
             route(
                 Focus::Composer,
                 &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
             ),
-            Some(ShellBindingId::ModeCycle)
+            None
         );
         assert_eq!(
             route(
@@ -1043,16 +1066,12 @@ mod tests {
     fn tab_and_shift_tab_are_distinct_bindings() {
         let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
         let shift_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
-        assert_eq!(
-            route(Focus::Composer, &tab),
-            Some(ShellBindingId::ModeCycle)
-        );
+        assert_eq!(route(Focus::Composer, &tab), None);
         assert_eq!(
             route(Focus::Composer, &shift_tab),
             Some(ShellBindingId::PermissionCycle)
         );
-        // Both shell controls are live on the launch stage as well.
-        assert_eq!(route(Focus::Launch, &tab), Some(ShellBindingId::ModeCycle));
+        assert_eq!(route(Focus::Launch, &tab), None);
         assert_eq!(
             route(Focus::Launch, &shift_tab),
             Some(ShellBindingId::PermissionCycle)
@@ -1166,7 +1185,6 @@ mod tests {
             ShellBindingId::ProviderRoute,
             ShellBindingId::Help,
             ShellBindingId::Settings,
-            ShellBindingId::ModeCycle,
             ShellBindingId::PermissionCycle,
             ShellBindingId::ViewCycle,
             ShellBindingId::ViewCycleBack,

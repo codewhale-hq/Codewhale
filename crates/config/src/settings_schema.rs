@@ -229,6 +229,11 @@ const THINKING_HIGHLIGHT: &[SettingOption] = &[
 const PERMISSION_POSTURE: &[SettingOption] = &[
     SettingOption::new("ask", "ConfigChoiceAsk", "ConfigChoiceDetailAsk"),
     SettingOption::new(
+        "accept-edits",
+        "ConfigChoiceAcceptEdits",
+        "ConfigChoiceDetailAcceptEdits",
+    ),
+    SettingOption::new(
         "auto-review",
         "ConfigChoiceAutoReview",
         "ConfigChoiceDetailAutoReview",
@@ -242,6 +247,11 @@ const PERMISSION_POSTURE: &[SettingOption] = &[
 
 const APPROVAL_MODE: &[SettingOption] = &[
     SettingOption::new("ask", "ConfigChoiceAsk", "ConfigChoiceDetailAsk"),
+    SettingOption::new(
+        "accept-edits",
+        "ConfigChoiceAcceptEdits",
+        "ConfigChoiceDetailAcceptEdits",
+    ),
     SettingOption::new(
         "auto-review",
         "ConfigChoiceAutoReview",
@@ -261,6 +271,11 @@ const APPROVAL_POLICY: &[SettingOption] = &[
         "ConfigChoiceDetailUseTuiDefault",
     ),
     SettingOption::new("ask", "ConfigChoiceAsk", "ConfigChoiceDetailAsk"),
+    SettingOption::new(
+        "accept-edits",
+        "ConfigChoiceAcceptEdits",
+        "ConfigChoiceDetailAcceptEdits",
+    ),
     SettingOption::new(
         "auto-review",
         "ConfigChoiceAutoReview",
@@ -282,11 +297,6 @@ const DEFAULT_MODE: &[SettingOption] = &[
         "ConfigChoiceDetailModeAgent",
     ),
     SettingOption::new("plan", "ConfigChoiceModePlan", "ConfigChoiceDetailModePlan"),
-    SettingOption::new(
-        "operate",
-        "ConfigChoiceModeOperate",
-        "ConfigChoiceDetailModeOperate",
-    ),
 ];
 
 const FOCUS_TEXTURE: &[SettingOption] = &[
@@ -1237,7 +1247,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "permission_posture",
         SettingKind::Enum(PERMISSION_POSTURE),
-        "ask",
+        "accept-edits",
         ui(
             TAB_TRUST,
             "permissions",
@@ -1525,6 +1535,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     ),
     def(
         "yolo_deprecation_shown",
+        SettingKind::Bool(ON_OFF),
+        "false",
+        None,
+    ),
+    def(
+        "operate_deprecation_shown",
         SettingKind::Bool(ON_OFF),
         "false",
         None,

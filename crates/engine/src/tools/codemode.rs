@@ -130,27 +130,19 @@ pub fn execute_tools_tool_definition() -> Tool {
     Tool {
         tool_type: Some(EXECUTE_TOOLS_TOOL_TYPE.to_string()),
         name: EXECUTE_TOOLS_TOOL_NAME.to_string(),
-        description: "Run a JavaScript program that composes tool calls with \
-             `await tools.call(name, args)` and returns a bounded JSON result. Prefer it \
-             whenever you would make several dependent or repetitive calls, MCP and plugin \
-             tools included: intermediate results stay in the program and only what you \
-             return reaches the conversation. Every nested call passes the same permission \
-             checks as a direct call; a call that needs approval pauses the program until \
-             the user decides, and a denied or refused call throws inside the program (catch \
-             it to continue). Inside a program, tools.call('tool_search', {query}) returns \
-             matching tool names with their input schemas without loading them into the \
-             conversation. Each result is {content, metadata, truncated}. A bare single MCP \
-             JSON text block is parsed directly into content; mixed/rich blocks retain \
-             their MCP envelope. Nested results do not deliver inline images to the model; \
-             for visual input, discover the capture tool with a direct tool_search call \
-             and invoke it directly. When a result is cut, truncated names its full size \
-             and saved copy and content is the leading \
-             text of the raw output instead of parsed JSON, so check truncated before \
-             reading fields. Not \
-             available inside programs: agent, workflow, request_user_input, nested \
-             execute_tools, interactive shells, sandbox escalation, Computer Use consent or \
-             scripts, and MCP sign-in. At most 50 nested calls, 4 concurrent; the return \
-             value is capped at 16 KiB."
+        description: "Run a JavaScript program composing tool calls via \
+             `await tools.call(name, args)`; returns bounded JSON. Use for dependent or \
+             repetitive calls (MCP and plugin tools included): intermediate results stay \
+             in the program. Every nested call passes the same permission checks as a \
+             direct call; approval pauses the program until the user decides; denial \
+             throws (catch to continue). tools.call('tool_search', {query}) returns names \
+             with input schemas without loading them. Results are {content, metadata, \
+             truncated}; a bare MCP JSON text block parses into content; check truncated \
+             before reading fields (when set, content is raw leading text, not parsed \
+             JSON). Not available in programs: agent, workflow, request_user_input, \
+             nested execute_tools, interactive shells, sandbox escalation, Computer Use, \
+             MCP sign-in; inline images need a direct call. Max 50 nested calls, 4 \
+             concurrent; return capped at 16 KiB."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -958,6 +950,8 @@ impl CodemodeInvoker {
                 &context.disallowed_tools,
                 // Calls a program makes never carry a person's decision.
                 None,
+                context.account_fence.as_deref(),
+                None,
             )
             .await;
             if let Some(span) = span {
@@ -1599,20 +1593,23 @@ mod tests {
         use codewhale_config::AppMode;
         use std::collections::HashSet;
         let empty = HashSet::new();
-        for mode in [AppMode::Agent, AppMode::Operate] {
-            let mut catalog = Vec::new();
-            crate::core::engine::tool_catalog::ensure_advanced_tooling(
-                &mut catalog,
-                mode,
-                &empty,
-                ToolMode::Direct,
-            );
-            let tool = catalog
-                .iter()
-                .find(|tool| tool.name == EXECUTE_TOOLS_TOOL_NAME)
-                .unwrap_or_else(|| panic!("{mode:?} catalog must advertise execute_tools"));
-            assert_eq!(tool.defer_loading, Some(true), "{mode:?} must defer it");
-        }
+        let mut catalog = Vec::new();
+        crate::core::engine::tool_catalog::ensure_advanced_tooling(
+            &mut catalog,
+            AppMode::Agent,
+            &empty,
+            ToolMode::Direct,
+        );
+        let tool = catalog
+            .iter()
+            .find(|tool| tool.name == EXECUTE_TOOLS_TOOL_NAME)
+            .unwrap_or_else(|| panic!("{:?} catalog must advertise execute_tools", AppMode::Agent));
+        assert_eq!(
+            tool.defer_loading,
+            Some(true),
+            "{:?} must defer it",
+            AppMode::Agent
+        );
         let mut catalog = Vec::new();
         crate::core::engine::tool_catalog::ensure_advanced_tooling(
             &mut catalog,

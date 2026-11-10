@@ -308,7 +308,6 @@ impl Engine {
                 McpAccess::PassiveSnapshot,
                 route_context.clone(),
                 "",
-                planned_prompt_context.goal_objective.as_deref(),
             )
             .await;
 
@@ -317,13 +316,10 @@ impl Engine {
         let active_tools = surface.active.clone().unwrap_or_default();
         let active_catalog_sha256 = active_tool_catalog_sha256(&active_tools);
 
-        let tool_choice = surface.active.as_ref().map(|_| {
-            if surface.strict_tool_mode {
-                json!("required")
-            } else {
-                json!({ "type": "auto" })
-            }
-        });
+        let tool_choice = surface
+            .active
+            .as_ref()
+            .map(|_| default_tool_choice(surface.strict_tool_mode));
 
         // The tool surface is only publishable when the MCP contribution is
         // exactly known. Anything else would be "the tools of some other
@@ -385,7 +381,36 @@ impl Engine {
                 None,
                 effective_reasoning_effort.as_deref(),
             );
+        let whale_soul = if inputs.provenance.can_authorize_work() {
+            self.capture_local_whale_voice().await
+        } else {
+            Ok(self
+                .session
+                .pinned_prompt_context
+                .as_ref()
+                .and_then(|current| current.whale_soul.clone()))
+        };
+        let whale_soul = match whale_soul {
+            Ok(voice) => voice,
+            Err(error) => {
+                let detail = format!("{error:#}");
+                let unavailable = Availability::unavailable_with(
+                    UnavailableReason::RequestPreparationFailed,
+                    detail.clone(),
+                );
+                return RequestManifest::build(ManifestDraft {
+                    session,
+                    route: unavailable,
+                    tools,
+                    body: Availability::unavailable_with(
+                        UnavailableReason::RequestPreparationFailed,
+                        detail,
+                    ),
+                });
+            }
+        };
         let prompt_context = NextTurnPromptContext {
+            whale_soul,
             mode: input_policy.mode,
             context_window: Some(route.context_window),
             planned_output_tokens: Some(planned_output_tokens),
@@ -447,6 +472,7 @@ impl Engine {
         };
 
         let mut context_update_pending = false;
+        let mut preview_assembly: Option<crate::project_context::InstructionAssembly> = None;
         if !self.session.system_prompt_override
             && self.host_owned_system_prompt().is_none()
             && self.session.pinned_prompt_context.as_ref() == Some(&prompt_context)
@@ -458,6 +484,7 @@ impl Engine {
             );
             match self.observe_context_update(&prompt_context, memory.as_deref()) {
                 Ok(observed) => {
+                    preview_assembly = observed.assembly.clone();
                     context_update_pending = observed.message.is_some()
                         || observed
                             .notice
@@ -505,6 +532,14 @@ impl Engine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let previewed_turn_git_snapshot = {
+            self.turn_meta_git_snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        };
+        let preview_turn_git_snapshot = self.capture_turn_meta_git_snapshot().await;
+        self.install_turn_meta_git_snapshot(preview_turn_git_snapshot);
         let mut messages = self.messages_with_turn_metadata();
         let hypothetical_user_message = self.user_text_message_from_snapshot(
             hypothetical_content.clone(),
@@ -524,6 +559,14 @@ impl Engine {
             },
         );
         messages.push(hypothetical_user_message);
+        if let Some(instructions) = Self::planned_project_instructions_message(
+            preview_assembly
+                .as_ref()
+                .or(self.session.instruction_assembly.as_deref()),
+            &messages,
+        ) {
+            messages.push(instructions);
+        }
         if let Some(body) =
             preview_notice.filter(|body| !self.instruction_notice_in_history(body, &messages))
         {
@@ -550,6 +593,10 @@ impl Engine {
             .last_turn_meta_git_snapshot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = previewed_git_snapshot;
+        *self
+            .turn_meta_git_snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = previewed_turn_git_snapshot;
         // Classification input for the provenance section: the prompt this
         // request actually carries, not the session's current one.
         let system_prompt_text =
