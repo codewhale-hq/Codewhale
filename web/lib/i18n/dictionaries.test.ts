@@ -296,11 +296,14 @@ describe("website dictionaries", () => {
       // `metaTitle` rather than `overviewTitle` because docs/mcp's heading is
       // the code-owned literal `MCP` and stays in the page.
       expect(get("zh").metaTitle, `zh ${label}`).not.toBe(reference.metaTitle);
-      // Every other locale renders English today, exactly as the `isZh`
-      // ternaries in the page did before the move.
-      for (const locale of ["ja", "fr", "ar", "und"]) {
-        expect(get(locale), `${locale} ${label}`).toBe(reference);
+      // Roadmap and Contribute ship in every routed locale; the other page
+      // dictionaries still render English outside en and zh.
+      const translated = label === "roadmap" || label === "contribute";
+      for (const locale of ["ja", "fr", "ar"]) {
+        if (translated) expect(get(locale).metaTitle, `${locale} ${label}`).not.toBe(reference.metaTitle);
+        else expect(get(locale), `${locale} ${label}`).toBe(reference);
       }
+      expect(get("und"), `und ${label}`).toBe(reference);
     }
   });
 

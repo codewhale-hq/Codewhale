@@ -149,6 +149,38 @@ import { roadmap as enRoadmap } from "./en/roadmap";
 import { roadmap as zhRoadmap } from "./zh/roadmap";
 import { contribute as enContribute } from "./en/contribute";
 import { contribute as zhContribute } from "./zh/contribute";
+import { roadmap as jaRoadmap } from "./ja/roadmap";
+import { contribute as jaContribute } from "./ja/contribute";
+import { roadmap as viRoadmap } from "./vi/roadmap";
+import { contribute as viContribute } from "./vi/contribute";
+import { roadmap as koRoadmap } from "./ko/roadmap";
+import { contribute as koContribute } from "./ko/contribute";
+import { roadmap as ruRoadmap } from "./ru/roadmap";
+import { contribute as ruContribute } from "./ru/contribute";
+import { roadmap as ukRoadmap } from "./uk/roadmap";
+import { contribute as ukContribute } from "./uk/contribute";
+import { roadmap as esRoadmap } from "./es/roadmap";
+import { contribute as esContribute } from "./es/contribute";
+import { roadmap as ptBrRoadmap } from "./pt-BR/roadmap";
+import { contribute as ptBrContribute } from "./pt-BR/contribute";
+import { roadmap as frRoadmap } from "./fr/roadmap";
+import { contribute as frContribute } from "./fr/contribute";
+import { roadmap as deRoadmap } from "./de/roadmap";
+import { contribute as deContribute } from "./de/contribute";
+import { roadmap as caRoadmap } from "./ca/roadmap";
+import { contribute as caContribute } from "./ca/contribute";
+import { roadmap as idRoadmap } from "./id/roadmap";
+import { contribute as idContribute } from "./id/contribute";
+import { roadmap as hiRoadmap } from "./hi/roadmap";
+import { contribute as hiContribute } from "./hi/contribute";
+import { roadmap as trRoadmap } from "./tr/roadmap";
+import { contribute as trContribute } from "./tr/contribute";
+import { roadmap as itRoadmap } from "./it/roadmap";
+import { contribute as itContribute } from "./it/contribute";
+import { roadmap as plRoadmap } from "./pl/roadmap";
+import { contribute as plContribute } from "./pl/contribute";
+import { roadmap as arRoadmap } from "./ar/roadmap";
+import { contribute as arContribute } from "./ar/contribute";
 import { constitution as enConstitution } from "./en/constitution";
 import { constitution as zhConstitution } from "./zh/constitution";
 import { runtime as enRuntime } from "./en/runtime";
@@ -387,10 +419,42 @@ const FAQ: Record<string, FaqDict> = {
 
 const ROADMAP: Record<string, RoadmapDict> = {
   zh: zhRoadmap,
+  ja: jaRoadmap,
+  vi: viRoadmap,
+  ko: koRoadmap,
+  ru: ruRoadmap,
+  uk: ukRoadmap,
+  es: esRoadmap,
+  "pt-BR": ptBrRoadmap,
+  fr: frRoadmap,
+  de: deRoadmap,
+  ca: caRoadmap,
+  id: idRoadmap,
+  hi: hiRoadmap,
+  tr: trRoadmap,
+  it: itRoadmap,
+  pl: plRoadmap,
+  ar: arRoadmap,
 };
 
 const CONTRIBUTE: Record<string, ContributeDict> = {
   zh: zhContribute,
+  ja: jaContribute,
+  vi: viContribute,
+  ko: koContribute,
+  ru: ruContribute,
+  uk: ukContribute,
+  es: esContribute,
+  "pt-BR": ptBrContribute,
+  fr: frContribute,
+  de: deContribute,
+  ca: caContribute,
+  id: idContribute,
+  hi: hiContribute,
+  tr: trContribute,
+  it: itContribute,
+  pl: plContribute,
+  ar: arContribute,
 };
 
 const CONSTITUTION: Record<string, ConstitutionDict> = {
