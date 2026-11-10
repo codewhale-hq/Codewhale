@@ -334,8 +334,12 @@ credentials `codewhale-review.yml` uses, so CI runs on it (a PR opened with the
 default `GITHUB_TOKEN` does not trigger workflows). The token is limited to
 contents and pull-request write. The workflow runs only from `schedule` and
 `workflow_dispatch`, never `pull_request_target`, and does not run on forks.
-If a check fails after the rows were generated, the PR is opened as a draft and
-the job log shows the failure. If `seed lock` itself refuses (a referenced row
+If a check fails after the rows were generated, the PR is opened or switched to
+a draft and the job log shows the failure; a later passing run marks it ready.
+The checkout does not persist the token, and the push uses
+`--force-with-lease`: commits a maintainer adds to the `catalog-refresh` branch
+make the next run fail instead of being overwritten, so merge or close the PR
+first. If `seed lock` itself refuses (a referenced row
 vanished upstream, a descriptor default now disagrees with its model list) the
 job fails and nothing is opened.
 
@@ -366,6 +370,12 @@ in it, the id to that provider's `models` list. A vendor without a seed provider
 (Mistral, Qwen) gets the public row only.
 
 ### Known limits
+
+- Merging the refresh PR publishes every row it carries, including `unreviewed`
+  ones, on the public /models page; review them against the vendor docs first.
+- Discovery only proposes models released in the last 45 days
+  (`since_days`), so a model models.dev backfills with an old `release_date` is
+  never proposed.
 
 - The site does not deploy itself. Landing the PR on `main` updates what the
   6-hourly facts-drift Worker cron reads (it needs a `GITHUB_TOKEN` in

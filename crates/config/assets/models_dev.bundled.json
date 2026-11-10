@@ -8019,7 +8019,7 @@
           "reasoning"
         ],
         "reasoning": true,
-        "source": "https://models.dev/api.json anthropic/claude-fable-5-2, retrieved 2026-11-10",
+        "source": "https://models.dev/catalog.json anthropic/claude-fable-5-2, retrieved 2026-11-10",
         "family": "Anthropic"
       },
       "claude-opus-5-5": {
@@ -9258,7 +9258,7 @@
         "family": "Google"
       },
       "gemini-4-carbon": {
-        "source": "https://models.dev/api.json google/gemini-4-carbon, retrieved 2026-11-10",
+        "source": "https://models.dev/catalog.json google/gemini-4-carbon, retrieved 2026-11-10",
         "context_window": 1048576,
         "max_output": 32768,
         "reasoning": true,
