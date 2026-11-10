@@ -116,6 +116,15 @@ export DEEPSEEK_API_KEY="your-key"
 codewhale
 ```
 
+Windows 上在 PowerShell 里这样启动（只对当前这个窗口有效）：
+
+```powershell
+$env:DEEPSEEK_API_KEY = "your-key"
+codewhale
+```
+
+想让以后打开的每个窗口都带上这个变量，运行一次 `setx DEEPSEEK_API_KEY "your-key"`，然后**关掉并重新打开**终端再启动 Codewhale；`setx` 不会影响已经打开的窗口。
+
 - **谁说了算**：同一个提供商有多个密钥来源时，配置文件和密钥存储里的密钥**优先于**环境变量。所以只改环境变量、却发现还在用旧密钥时，看下一节第 1 条。
 - **查看当前用的是哪个密钥**：`codewhale auth status --provider deepseek`。它只显示来源和末四位，不显示完整密钥。
 
@@ -134,7 +143,7 @@ codewhale
 列表里有某个模型，不代表你的账户一定能调用它。每次都报同一个错时，换一个模型试试。有的提供商第一次调用还没加载的模型，要等 90 到 150 秒；不要急着判断「模型坏了」，可以调大 `[stream].open_timeout_secs`（默认 45 秒，最多 300 秒）。模型列表过旧时，运行 `codewhale models --update` 刷新。
 
 **5. 网络连不上**
-如果报 `Network error: SSE stream request failed …`，通常是连不到提供商的服务器。可以用 `curl -sI https://api.deepseek.com` 检查（返回 `401` 也正常，说明连得上）。如果你通过代理服务器上网，确认已经设置了 `HTTPS_PROXY`。另外，`codewhale doctor --probe-api` 对密钥错误和网络问题都只显示 `✗ API connection failed`，要结合上面几条一起判断。
+如果报 `Network error: SSE stream request failed …`，通常是连不到提供商的服务器。可以用 `curl -sI https://api.deepseek.com` 检查（返回 `401` 也正常，说明连得上）。如果你通过代理服务器上网，确认已经设置了 `HTTPS_PROXY`。也可以运行 `codewhale doctor --probe-api` 检查：连接失败时第一行是 `✗ API connection failed`（超时则是 `✗ API check got no answer in time`），下一行会给出具体原因，例如 `Invalid API key`（密钥无效）、`API key lacks permissions`（密钥没有权限）、`DNS resolution failed`（域名解析失败）或 `Connection failed`（连不上），按提示对照上面几条处理。
 
 ## 7. 下一步读什么
 
