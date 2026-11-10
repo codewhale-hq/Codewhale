@@ -31,6 +31,7 @@ const CLIENT_NAME: &str = "codewhale";
 const METHOD_NOT_FOUND: i64 = -32601;
 pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const AUTH_REQUIRED: i64 = -32000;
+const ABORT_POLL: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionPolicy {
@@ -193,6 +194,7 @@ pub struct AcpClient {
     stdin: Arc<Mutex<std::process::ChildStdin>>,
     lines: Receiver<Line>,
     next_id: u64,
+    abort: Option<CancellationToken>,
 }
 
 /// A write-only handle that can send `session/cancel` while a prompt blocks
@@ -294,7 +296,12 @@ impl AcpClient {
             stdin: Arc::new(Mutex::new(stdin)),
             lines,
             next_id: 1,
+            abort: None,
         }
+    }
+
+    pub fn abort_requests_on(&mut self, abort: Option<CancellationToken>) {
+        self.abort = abort;
     }
 
     fn write(&self, message: &Value) -> Result<(), AcpError> {
@@ -316,18 +323,34 @@ impl AcpClient {
     }
 
     fn read(&mut self, deadline: Instant, method: &str) -> Result<Value, AcpError> {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(AcpError::timeout(method));
-        }
-        let line = match self.lines.recv_timeout(left) {
-            Ok(Ok(line)) => line,
-            Ok(Err(reason)) => return Err(AcpError::new(reason)),
-            Err(RecvTimeoutError::Timeout) => return Err(AcpError::timeout(method)),
-            Err(RecvTimeoutError::Disconnected) => {
+        let line = loop {
+            if self
+                .abort
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+            {
                 return Err(AcpError::new(format!(
-                    "the agent exited before answering {method}"
+                    "{method} was cancelled before the agent answered"
                 )));
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(AcpError::timeout(method));
+            }
+            let wait = if self.abort.is_some() {
+                left.min(ABORT_POLL)
+            } else {
+                left
+            };
+            match self.lines.recv_timeout(wait) {
+                Ok(Ok(line)) => break line,
+                Ok(Err(reason)) => return Err(AcpError::new(reason)),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(AcpError::new(format!(
+                        "the agent exited before answering {method}"
+                    )));
+                }
             }
         };
         let message: Value = serde_json::from_str(&line).map_err(|err| {

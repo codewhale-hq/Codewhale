@@ -633,3 +633,87 @@ async fn interrupt_during_external_persistence_never_dispatches_prompt() -> Resu
     manager.shutdown_and_wait().await?;
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_abandoned_external_startup_stops_its_agent_inside_the_shutdown_barrier() -> Result<()> {
+    if !node_available() {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let root = tempfile::tempdir()?;
+    let source = std::fs::read_to_string(fixture_script())?;
+    let original = "case 'initialize':";
+    assert!(source.contains(original));
+    let script = root.path().join("paused.mjs");
+    std::fs::write(
+        &script,
+        source.replace(
+            original,
+            "case 'initialize':\n      writeFileSync(join(process.cwd(), 'initialize.pid'), String(process.pid));\n      break;\n    case 'initialize-answered':",
+        ),
+    )?;
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, &script);
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    let manager = test_manager(root.path().join("runtime"))?;
+    let thread = manager
+        .create_thread(fixture_thread_request(&workspace, "ask"))
+        .await?;
+    let starting_manager = manager.clone();
+    let starting_thread = thread.id.clone();
+    let starting = tokio::spawn(async move {
+        starting_manager
+            .start_turn(&starting_thread, prompt("never dispatched"))
+            .await
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let pid = loop {
+        if let Some(pid) = std::fs::read_to_string(workspace.join("initialize.pid"))
+            .ok()
+            .and_then(|pid| pid.parse::<u32>().ok())
+        {
+            break pid;
+        }
+        anyhow::ensure!(
+            !starting.is_finished(),
+            "startup ended before the agent paused"
+        );
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "the agent never reached initialize"
+        );
+        sleep(Duration::from_millis(10)).await;
+    };
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    assert!(alive(), "the paused agent is a real process");
+    assert!(!starting.is_finished());
+    starting.abort();
+    assert!(
+        starting
+            .await
+            .expect_err("the caller is gone")
+            .is_cancelled()
+    );
+    tokio::time::timeout(Duration::from_secs(30), manager.shutdown_and_wait()).await??;
+    assert!(
+        !alive(),
+        "shutdown returned while the abandoned agent process {pid} was still running"
+    );
+    assert!(manager.store.list_turns_for_thread(&thread.id)?.is_empty());
+    assert_eq!(
+        manager
+            .store
+            .load_thread(&thread.id)?
+            .executor
+            .and_then(|record| record.foreign_session_id),
+        None
+    );
+    Ok(())
+}

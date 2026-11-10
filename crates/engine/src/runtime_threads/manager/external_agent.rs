@@ -150,9 +150,9 @@ fn start_session_blocking(
     thread_id: String,
     workspace: PathBuf,
     launch: ExternalAgentLaunch,
-    reopen: Option<String>,
-    model: Option<String>,
+    executor: ExecutorRecord,
     login: Option<&'static str>,
+    abandoned: CancellationToken,
 ) -> Result<SessionStart> {
     let worker_id = format!("acp-{thread_id}");
     let mut host = LocalProcessFleetHostAdapter::new(&log_root);
@@ -171,16 +171,17 @@ fn start_session_blocking(
         bail!("{} started without a protocol channel", launch.agent_name);
     };
     let mut client = AcpClient::new(io);
+    client.abort_requests_on(Some(abandoned));
     let setup = (|| {
         let identity = client.initialize(SETUP_TIMEOUT)?;
-        let session_id = match reopen.as_deref() {
+        let session_id = match executor.foreign_session_id.as_deref() {
             Some(session_id) => {
                 client.reopen_session(&identity, session_id, &workspace, SETUP_TIMEOUT)?;
                 session_id.to_string()
             }
             None => client.new_session(&workspace, SETUP_TIMEOUT)?,
         };
-        if let Some(model) = model.as_deref() {
+        if let Some(model) = executor.model.as_deref() {
             client.set_config_option(&session_id, "model", model, SETUP_TIMEOUT)?;
         }
         Ok::<_, crate::fleet::acp::AcpError>((identity, session_id))
@@ -209,6 +210,7 @@ fn start_session_blocking(
         let _ = host.stop_worker(&worker_id);
         bail!("{} named an invalid session id", launch.agent_name);
     }
+    client.abort_requests_on(None);
     let canceller = client.canceller(&session_id);
     let (commands, receiver) = std_mpsc::channel();
     let session_for_thread = session_id.clone();
@@ -549,7 +551,7 @@ impl RuntimeThreadManager {
         if let Some(state) = self.active.lock().await.external.get(&thread.id) {
             return Ok(Arc::clone(&state.session));
         }
-        let _loading = self.engine_load.lock().await;
+        let loading = Arc::clone(&self.engine_load).lock_owned().await;
         if let Some(state) = self.active.lock().await.external.get(&thread.id) {
             return Ok(Arc::clone(&state.session));
         }
@@ -571,19 +573,23 @@ impl RuntimeThreadManager {
             .context("creating the external agent log directory failed")?;
         let thread_id = thread.id.clone();
         let workspace = thread.workspace.clone();
-        let reopen = executor.foreign_session_id.clone();
-        let model = executor.model.clone();
+        let starting = executor.clone();
         let login = agent.login;
-        let started = tokio::task::spawn_blocking(move || {
-            start_session_blocking(log_root, thread_id, workspace, launch, reopen, model, login)
+        let abandoned = self.cancel_token.child_token();
+        let _abandon = abandoned.clone().drop_guard();
+        let (started, _loading) = tokio::task::spawn_blocking(move || {
+            let started = start_session_blocking(
+                log_root, thread_id, workspace, launch, starting, login, abandoned,
+            );
+            (started, loading)
         })
         .await
-        .context("external agent start worker failed")??;
+        .context("external agent start worker failed")?;
         let SessionStart {
             session,
             identity,
             session_id,
-        } = started;
+        } = started?;
         self.ensure_accepting_execution()?;
         let session = Arc::new(session);
         let store = self.store.clone();
