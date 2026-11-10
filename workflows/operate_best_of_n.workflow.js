@@ -135,7 +135,7 @@ export default async function (args) {
             "You start from a fresh baseline. Use the parent patch only where it supports the declared repair.",
           ] : ["Make an independent first-generation attempt."]),
           `CANDIDATE ID: ${plan.id}`,
-          "Return only the required structured response.",
+          "Summarize the files changed and local checks. The host evaluates your worktree.",
         ].join("\n"),
         label: plan.id,
         type: "implementer",
@@ -145,7 +145,6 @@ export default async function (args) {
         writeAuthority: "worktree_write",
         writeRoots,
         ...(exactFiles.length ? { exactFiles } : {}),
-        responseSchema: candidateSchema,
       })), { mode: "partial" });
       for (let index = 0; index < plans.length; index++) {
         const plan = plans[index];
@@ -250,7 +249,7 @@ export default async function (args) {
         `BRIEF: ${String(brief)}`,
         `RUBRIC: ${String(rubric)}`,
         `CANDIDATE ID: ${id}`,
-        "Return only the required structured response.",
+        "Summarize the files changed and local checks. The host evaluates your worktree.",
       ].join("\n"),
       label: id,
       type: "implementer",
@@ -260,7 +259,6 @@ export default async function (args) {
       writeAuthority: "worktree_write",
       writeRoots,
       ...(exactFiles.length ? { exactFiles } : {}),
-      responseSchema: candidateSchema,
     })), { mode: "partial" });
     const candidates = [];
     for (let index = 0; index < plans.length; index++) {
