@@ -69,6 +69,14 @@ Its 38-case public gate and six-case held-out gate are distinct frozen
 artifacts. Keep each task's `comparison.json` with its own baseline SHA and
 receipts; do not pool runs with different fixture hashes.
 
+The versioned `examples/experimental-evolution-patch-strict` fixture adds a
+strict request/operation shape and validates no-op moves against missing
+sources. It has 46 public process cases and eight held-out cases. It was
+created after the first two smoke tasks showed no first-generation public
+failures; use `--fixture examples/experimental-evolution-patch-strict` and a
+third output directory. Do not reinterpret the earlier frozen runs under this
+revised contract.
+
 The frozen task does not expose the held-out gate to worker prompts. Mutation
 uses the public failure excerpt and parent receipt; the held-out gate runs
 only for the provisional winner's independent replay.
