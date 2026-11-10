@@ -624,11 +624,12 @@ impl HotbarSetupView {
         } else {
             String::new()
         };
+        let pad = codewhale_tui_kit::ui_text::pad_to_display_width;
         let prefix = format!(
-            "{marker}{checked} {:<3} {:<22} {:<8} ",
-            recommended,
-            row.metadata.display_name,
-            row.status_label(self.locale)
+            "{marker}{checked} {} {} {} ",
+            pad(&recommended, 3),
+            pad(&row.metadata.display_name, 22),
+            pad(&row.status_label(self.locale), 8)
         );
         let suffix = if let Some(reason) = row.disabled_reason.as_deref() {
             format!(" ({reason})")
@@ -1534,6 +1535,38 @@ mod tests {
         assert!(codewhale_tui_kit::ui_text::text_display_width(&text) <= 58);
         assert!(text.contains("Open a detailed…"), "{text:?}");
         assert!(!text.contains("Open a detailed s"), "{text:?}");
+    }
+
+    #[test]
+    fn action_row_columns_pad_by_display_width() {
+        let app = test_app_with_locale(Locale::ZhHans);
+        let view = HotbarSetupView::new(&app, &Config::default());
+        let row = |id: &str, name: &str, disabled_reason: Option<&str>| HotbarSetupActionRow {
+            metadata: HotbarActionMetadata {
+                id: id.to_string(),
+                source_id: "test".to_string(),
+                display_name: name.to_string(),
+                compact_label: "test".to_string(),
+                description: "DESC".to_string(),
+                category: HotbarActionCategory::App,
+                args: HotbarArgsBehavior::None,
+                safety: HotbarSafetyClass::LocalUi,
+                recommendation: HotbarRecommendation::Eligible,
+            },
+            disabled_reason: disabled_reason.map(str::to_string),
+        };
+        assert!(view.recommended_action_ids().contains("mode.agent"));
+        let desc_column = |row: &HotbarSetupActionRow| {
+            let text = view
+                .action_row_line(HotbarActionCategory::App, 0, row, 120, true)
+                .to_string();
+            let start = text.find("DESC").expect("description is shown");
+            codewhale_tui_kit::ui_text::text_display_width(&text[..start])
+        };
+
+        let wide = desc_column(&row("mode.agent", "设置", Some("off")));
+        let narrow = desc_column(&row("test.plain", "settings", None));
+        assert_eq!(wide, narrow, "description columns must line up");
     }
 
     #[test]

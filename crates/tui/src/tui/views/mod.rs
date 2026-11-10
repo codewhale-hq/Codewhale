@@ -5211,16 +5211,19 @@ impl ConfigView {
     /// The detail pane: label and key, then the typed facts for the row's
     /// kind, then the description and the activation copy.
     fn setting_detail_lines(&self, row: &ConfigRow, width: usize) -> Vec<Line<'static>> {
-        use codewhale_tui_kit::ui_text::semantic_truncate;
+        use codewhale_tui_kit::ui_text::{
+            pad_to_display_width, semantic_truncate, text_display_width,
+        };
 
         let label = config_label_for_key_for_locale(self.locale, &row.key);
         let kind = self.editor_kind(row);
         let muted = Style::default().fg(palette::TEXT_MUTED);
         let primary = Style::default().fg(palette::TEXT_PRIMARY);
-        let value_width = width.saturating_sub(10);
         let fact_line = |name: MessageId, value: &str| {
+            let label = pad_to_display_width(&self.tr(name), 10);
+            let value_width = width.saturating_sub(text_display_width(&label));
             Line::from(vec![
-                Span::styled(format!("{:<10}", self.tr(name)), muted),
+                Span::styled(label, muted),
                 Span::styled(semantic_truncate(value, value_width), primary),
             ])
         };
@@ -6972,10 +6975,10 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 }
 
 fn fit_config_column(text: &str, width: usize) -> String {
-    let mut fitted = codewhale_tui_kit::ui_text::truncate_line_to_width(text, width);
-    let padding = width.saturating_sub(codewhale_tui_kit::ui_text::text_display_width(&fitted));
-    fitted.push_str(&" ".repeat(padding));
-    fitted
+    codewhale_tui_kit::ui_text::pad_to_display_width(
+        &codewhale_tui_kit::ui_text::truncate_line_to_width(text, width),
+        width,
+    )
 }
 
 #[cfg(test)]
@@ -9978,6 +9981,55 @@ context_window = 131072
                 .any(|x| buf[(x, y)].bg == palette::WHALE_ACTION),
             "selected config row should not use the bright accent background"
         );
+    }
+
+    #[test]
+    fn setting_detail_fact_labels_pad_by_display_width() {
+        let mut view = create_config_view(Locale::ZhHans);
+        let fact_labels: Vec<String> = [
+            MessageId::ConfigFactCurrent,
+            MessageId::ConfigFactSaved,
+            MessageId::ConfigFactStartup,
+            MessageId::ConfigFactSource,
+            MessageId::ConfigFactScope,
+            MessageId::ConfigFactApply,
+            MessageId::ConfigFactKind,
+            MessageId::ConfigFactAvailable,
+            MessageId::ConfigFactObserved,
+            MessageId::ConfigFactOpens,
+        ]
+        .into_iter()
+        .map(|id| tr(Locale::ZhHans, id).into_owned())
+        .collect();
+        let width = 60;
+        let mut checked = 0;
+        for idx in 0..view.rows.len() {
+            view.selected = idx;
+            let row = &view.rows[idx];
+            for line in view.setting_detail_lines(row, width) {
+                let is_fact = line.spans.len() == 2
+                    && fact_labels
+                        .iter()
+                        .any(|label| line.spans[0].content.trim_end() == label);
+                if !is_fact {
+                    continue;
+                }
+                checked += 1;
+                assert_eq!(
+                    line.spans[0].width(),
+                    10,
+                    "{}: fact label column is 10 cells: {line:?}",
+                    row.key
+                );
+                assert!(
+                    line.width() <= width,
+                    "{}: fact line fits {width} cells, got {}: {line:?}",
+                    row.key,
+                    line.width()
+                );
+            }
+        }
+        assert!(checked > 0, "no fact lines were checked");
     }
 
     #[test]

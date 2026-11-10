@@ -21,7 +21,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
-use codewhale_tui_kit::ui_text::truncate_line_to_width;
+use codewhale_tui_kit::ui_text::{pad_to_display_width, truncate_line_to_width};
 
 /// Maximum phase summary chips shown in the expanded body.
 const MAX_PHASE_SUMMARY: usize = 6;
@@ -1196,9 +1196,9 @@ impl WorkflowPanel {
             lines.push(Line::from(Span::styled(
                 truncate_line_to_width(
                     &format!(
-                        "lane {mark} {label:<14} {track} {elapsed} {status}",
+                        "lane {mark} {label} {track} {elapsed} {status}",
                         mark = role_mark(row.profile.as_deref()),
-                        label = short_label(&row.label, 14),
+                        label = pad_to_display_width(&short_label(&row.label, 14), 14),
                         track = lane_track(row, max_elapsed, 16, now_ms()),
                         elapsed = if row.status == WorkflowRowStatus::Unknown {
                             tr(self.locale, MessageId::WorkflowReceiptUnknown).into_owned()
@@ -2520,6 +2520,28 @@ mod tests {
             t1.route.route_source,
             Some(WorkflowRouteSource::AgentProfileModel)
         );
+    }
+
+    #[test]
+    fn history_lane_columns_pad_by_display_width() {
+        let mut panel = WorkflowPanel::new("workflow_abc", "audit", 1_000);
+        panel.apply_json_event(&task_started_json("plain", "deepseek", "deepseek-v4-flash"));
+        panel.apply_json_event(&task_started_json(
+            "审查代码",
+            "deepseek",
+            "deepseek-v4-flash",
+        ));
+        let text = detail(&panel, 200);
+        let track_column = |label: &str| {
+            let line = text
+                .lines()
+                .find(|line| line.starts_with("lane ") && line.contains(label))
+                .expect("lane row renders");
+            let end = line.find(label).expect("label") + label.len();
+            let gap = line[end..].len() - line[end..].trim_start().len();
+            codewhale_tui_kit::ui_text::text_display_width(&line[..end]) + gap
+        };
+        assert_eq!(track_column("plain"), track_column("审查代码"));
     }
 
     /// #4039: completed rows show provider-reported totals with their
