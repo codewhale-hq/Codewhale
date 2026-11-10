@@ -99,16 +99,17 @@ function getCustomDocSearchSections(locale: string): DocSearchSection[] {
     ...INSTALL_GUIDES[pickTextLocale(locale)].guide.searchSections.map(({ id, title, text }) => ({
       href: `/install#${id}`, pageTitle: installTitle, title, text, lang: pickTextLocale(locale),
     })),
-    section("/models", "models-overview", modelTitle, t(MODELS_COPY.title), [
-      t(MODELS_COPY.lead), t(MODELS_COPY.providerDocs), t(MODELS_COPY.install),
-    ]),
+    section("/models", "models-overview", modelTitle, t(MODELS_COPY.title), [t(MODELS_COPY.lead)]),
     section("/models", "models-setup", modelTitle, t(MODELS_COPY.setupTitle), [
-      t(MODELS_COPY.setupLead), ...MODELS_COPY.patterns.flatMap(pattern => [pattern.reference, t(pattern.title), t(pattern.detail)]),
+      t(MODELS_COPY.setupLead), t(MODELS_COPY.providerDocs),
+      ...MODELS_COPY.steps.flatMap(step => [t(step.title), t(step.detail)]),
+      t(MODELS_COPY.routeDeepseekTitle), t(MODELS_COPY.routeDeepseekBody), "DEEPSEEK_API_KEY",
+      t(MODELS_COPY.routeFirstPartyTitle), t(MODELS_COPY.routeFirstPartyBody),
+      t(MODELS_COPY.routeCompatTitle), t(MODELS_COPY.routeCompatBody), t(MODELS_COPY.routeCompatConfig),
     ]),
     section("/models", "models-title", modelTitle, t(MODELS_COPY.modelsTitle), [
-      t(MODELS_COPY.modelsLead), t(MODELS_COPY.colModel), t(MODELS_COPY.colProvider),
-      t(MODELS_COPY.colContext), t(MODELS_COPY.colAdded),
-      ...FACTS.models.flatMap(model => [model.id, model.provider ?? "—", model.reasoning ? t(MODELS_COPY.reasoning) : "", formatModelTokens(model.contextWindow), formatModelDate(model.addedAt, getChrome(locale).dateLocale)]),
+      t(MODELS_COPY.modelsLead), t(MODELS_COPY.colModel), t(MODELS_COPY.colContext), t(MODELS_COPY.colAdded),
+      ...FACTS.models.flatMap(model => [model.id, model.provider ?? "", model.reasoning ? t(MODELS_COPY.reasoning) : "", formatModelTokens(model.contextWindow), formatModelDate(model.addedAt, getChrome(locale).dateLocale)]),
     ]),
     section("/models", "providers-title", modelTitle, t(MODELS_COPY.listTitle), [
       t(MODELS_COPY.listLead), t(MODELS_COPY.provider), t(MODELS_COPY.id), t(MODELS_COPY.credential),
