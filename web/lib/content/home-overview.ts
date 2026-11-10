@@ -1,7 +1,5 @@
 import type { LocalizedText } from "./vocabulary";
 
-export const HOME_MAKERS = ["DeepSeek", "Anthropic", "OpenAI", "Google", "xAI", "Moonshot/Kimi", "Qwen", "Z.ai", "MiniMax", "Mistral"];
-
 export const HOME_OVERVIEW = {
   modelsCount: { en: "{providers} providers and {models} models in the current source.", zh: "当前源码包含 {providers} 个提供商和 {models} 个模型。" },
   modelsAny: { en: "Any OpenAI-compatible endpoint", zh: "任何 OpenAI 兼容端点" },

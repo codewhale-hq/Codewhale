@@ -12,7 +12,7 @@ import { GitHubStar, FaceWall, MergedList, PulseStats } from "@/components/proje
 import { LiveStarLink } from "@/components/github-live";
 import { loadProjectPulse } from "@/lib/project-pulse";
 import { PROJECT_COPY } from "@/lib/content/project";
-import { HOME_MAKERS, HOME_OVERVIEW } from "@/lib/content/home-overview";
+import { HOME_OVERVIEW } from "@/lib/content/home-overview";
 import { PRODUCT_COPY } from "@/lib/content/product";
 import { PARTNER_PROMO } from "@/lib/content/partner-promo";
 import { fill, getChrome, getComputerUse, getHome, pickText, splitToken } from "@/lib/i18n/dictionaries";
@@ -38,9 +38,13 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const sourceIsPublished = publishedRelease?.version === sourceVersion;
   const promoLeft = Date.parse(PARTNER_PROMO.endsAt) - Date.now();
   const promoDays = Math.max(1, Math.ceil(promoLeft / 86_400_000));
+  const showPromo = promoLeft > 0 && PARTNER_PROMO.locales.includes(locale);
   const jsonLd = buildSoftwareApplicationJsonLd(publishedRelease);
   const ledeParts = splitToken(d.heroIntro, "brand");
-  const firstParty = new Set(HOME_MAKERS);
+  const gateways = new Set(["OpenRouter", "Together", "OpenAI Codex"]);
+  const makers = [...new Set(facts.models.map((model) => model.provider).filter((name): name is string => !!name && !gateways.has(name)))]
+    .sort((a, b) => a.localeCompare(b));
+  const firstParty = new Set(makers);
   const newest = facts.models
     .filter((model) => model.addedAt && model.provider && firstParty.has(model.provider))
     .sort((a, b) => (b.addedAt ?? "").localeCompare(a.addedAt ?? ""))
@@ -55,24 +59,6 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: serializeJsonLd(jsonLd) }}
       />
-
-      {promoLeft > 0 && (
-        <aside className="home-promo-bar" aria-label={PARTNER_PROMO.title}>
-          <div className="home-promo-bar-inner">
-            <Image src={PARTNER_PROMO.image.src} alt="" width={64} height={36} className="home-promo-bar-art" unoptimized />
-            <p>
-              <strong>{PARTNER_PROMO.title}</strong>
-              <span>{pickText(PARTNER_PROMO.bar, locale)}</span>
-              <span className="home-promo-bar-days">{fill(pickText(promoDays === 1 ? PARTNER_PROMO.dayLeft : PARTNER_PROMO.daysLeft, locale), { count: promoDays })}</span>
-            </p>
-            <span className="home-promo-bar-tag" title={pickText(PARTNER_PROMO.disclosure, locale)}>{pickText(PARTNER_PROMO.referralTag, locale)}</span>
-            <a href={PARTNER_PROMO.href} rel="sponsored noopener" className="btn btn-primary">
-              {pickText(PARTNER_PROMO.cta, locale)}
-              <Icon name="external" className="icon" />
-            </a>
-          </div>
-        </aside>
-      )}
 
       <div className="home-intro">
         <div className="home-water" aria-hidden="true"><Strata /></div>
@@ -149,7 +135,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
           link={<Link href={`/${locale}/models`} className="section-link">{d.modelsLink}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
         >
           <ul className="home-makers" role="list">
-            {HOME_MAKERS.map((maker) => <li key={maker} className="pill">{maker}</li>)}
+            {makers.map((maker) => <li key={maker} className="pill">{maker}</li>)}
             <li className="pill pill-quiet">{pickText(HOME_OVERVIEW.modelsAny, locale)}</li>
           </ul>
           {newest.length > 0 && (
@@ -164,6 +150,24 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 ))}
               </ol>
             </div>
+          )}
+          {showPromo && (
+            <aside className="home-promo-bar home-promo-inline" aria-label={PARTNER_PROMO.title}>
+              <div className="home-promo-bar-inner">
+                <Image src={PARTNER_PROMO.image.src} alt="" width={64} height={36} className="home-promo-bar-art" unoptimized />
+                <p>
+                  <strong>{PARTNER_PROMO.title}</strong>
+                  <span>{pickText(PARTNER_PROMO.bar, locale)}</span>
+                  <span className="home-promo-bar-days">{fill(pickText(promoDays === 1 ? PARTNER_PROMO.dayLeft : PARTNER_PROMO.daysLeft, locale), { count: promoDays })}</span>
+                </p>
+                <span className="home-promo-bar-tag">{pickText(PARTNER_PROMO.referralTag, locale)}</span>
+                <p className="home-promo-bar-disclosure">{pickText(PARTNER_PROMO.disclosure, locale)}</p>
+                <a href={PARTNER_PROMO.href} rel="sponsored noopener" className="btn btn-primary">
+                  {pickText(PARTNER_PROMO.cta, locale)}
+                  <Icon name="external" className="icon" />
+                </a>
+              </div>
+            </aside>
           )}
         </Section>
 

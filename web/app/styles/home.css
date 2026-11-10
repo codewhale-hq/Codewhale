@@ -138,60 +138,6 @@
   .living-whale-mark { display: none; transition: none; }
 }
 
-/* ---------- the live whale ---------- */
-.whale-live {
-  position: relative;
-  aspect-ratio: 1;
-}
-.whale-live > .whale-live-poster,
-.whale-live > .whale-live-canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-/* The phase, in a word: a small point of light and a label, above the
-   whale's back. Light means live work (DIRECTION.md). */
-.whale-live-state {
-  position: absolute;
-  inset-inline-start: 50%;
-  top: 8%;
-  translate: -50% 0;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0.3rem 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  background: var(--panel);
-  color: var(--text);
-  font-size: var(--text-caption);
-  font-weight: 500;
-  white-space: nowrap;
-  box-shadow: 0 6px 18px -10px rgb(11 72 187 / 0.35);
-}
-.whale-live-dot {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: var(--radius-pill);
-  background: var(--brand-light);
-}
-.whale-live-state[data-state="done"] .whale-live-dot { background: var(--live); }
-.whale-live-state[data-state="rest"] .whale-live-dot { background: var(--muted); }
-@media (prefers-reduced-motion: no-preference) {
-  .whale-live-state:not([data-state="rest"]):not([data-state="done"]) .whale-live-dot {
-    animation: whale-pulse 1.4s var(--ease-out) infinite;
-  }
-}
-@keyframes whale-pulse {
-  0% { box-shadow: 0 0 0 0 rgb(30 143 216 / 0.55); }
-  100% { box-shadow: 0 0 0 0.5rem rgb(30 143 216 / 0); }
-}
-.whale-live-poster { --pose-size: 100%; padding: 14%; box-sizing: border-box; }
-.whale-live-canvas { opacity: 0; }
-.whale-live[data-ready] .whale-live-canvas { opacity: 1; }
-.whale-live[data-ready] .whale-live-poster { visibility: hidden; }
-
 /* The install band ends the page in the sea: one line of light at its top,
    and water that reaches the floor colour by its own bottom edge, so it runs
    into the footer without a seam. */
@@ -294,8 +240,11 @@
 .home-proof-stars { display: inline-flex; align-items: center; gap: var(--space-1); }
 .home-proof-date { color: var(--muted); }
 
-/* ---------- partner offer: a dated strip above the hero ---------- */
+/* ---------- partner offer: a dated strip in the models section (English only, §46) ---------- */
 .home-promo-bar { border-bottom: 1px solid var(--line); background: var(--surface); }
+.home-promo-inline { margin-top: var(--space-7); border: 1px solid var(--line); border-radius: var(--radius-surface); }
+.home-promo-inline .home-promo-bar-inner { width: auto; padding: var(--space-4) var(--space-5); }
+.home-promo-bar-disclosure { flex-basis: 100%; order: 10; margin: 0; color: var(--muted); font-size: var(--text-caption); }
 .home-promo-bar-inner {
   display: flex;
   flex-wrap: wrap;
