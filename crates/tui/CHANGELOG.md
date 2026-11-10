@@ -51,11 +51,12 @@ until the matching tag, packages, checksums, and release assets exist.
 
 ### Work in progress and known limits
 
-This source candidate is not the final 0.10.3 tag. The 2026-11-08 scope
-decision keeps App Server v2, the coarse Engine split and DSH all-33
-compatibility in 0.10.3; the final tag waits for that full list. The near-term
-`0.10.3-beta.2` is a GitHub prerelease for the Boat image and desktop, not this
-tag. Items moved to 0.10.4 by name are marked below.
+This source candidate is not the final 0.10.3 tag. There is no
+`0.10.3-beta.2`: the next release is the full 0.10.3, and its final tag waits
+for the full scope list. Codex App Server v2 is paused and is not part of
+0.10.3; the legacy JSON-RPC dialect is not retired in this release. The coarse
+Engine split and DSH all-33 compatibility stay in 0.10.3, and none of this
+work is declared complete here. Items moved to 0.10.4 by name are marked below.
 
 - **Terminal lifetime (0.10.3 work item):** deleting a conversation now ends the
   terminal sessions and background jobs owned by that Runtime thread. The
