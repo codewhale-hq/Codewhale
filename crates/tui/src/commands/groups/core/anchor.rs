@@ -48,10 +48,11 @@ fn anchor(contexts: CommandContexts<'_>, content: Option<&str>) -> CommandResult
     if input.eq_ignore_ascii_case("list") {
         return list_anchors(workspace);
     }
-    if let Some(rest) = input
-        .strip_prefix("remove ")
-        .or_else(|| input.strip_prefix("rm "))
-        .or_else(|| input.strip_prefix("delete "))
+    if let Some((verb, rest)) = input.split_once(char::is_whitespace)
+        && ["remove", "rm", "delete"]
+            .iter()
+            .any(|removal| verb.eq_ignore_ascii_case(removal))
+        && !rest.trim().contains(char::is_whitespace)
     {
         return remove_anchor(workspace, rest.trim());
     }
