@@ -54,35 +54,36 @@ and it will take longer.
 
 These are always open, and a pull request needs no issue first:
 
-- **Translations.** The terminal language packs, the translated READMEs in
-  `docs/i18n/`, the website, and translated docs in `docs/zh_hans/` and
-  `docs/id/`. The [localization matrix](docs/LOCALIZATION.md) shows what each
-  language has and how to add one. The
+- **Translations.** You can improve the terminal language packs, the translated
+  READMEs in `docs/i18n/`, the website, and the translated docs in
+  `docs/zh_hans/` and `docs/id/`. The [localization matrix](docs/LOCALIZATION.md)
+  shows what each language has and how to add one, and the
   [Chinese localization group](https://github.com/codewhale-hq/CodeWhale/issues/6804)
   is recruiting.
-- **Providers and models.** A missing provider, a new model, a wrong price or
-  context size, a provider quirk. [Providers](docs/PROVIDERS.md) lists what
-  ships, and `python3 scripts/check-provider-registry.py` checks your change.
-- **Documentation.** Typos, unclear steps, a missing example, an instruction
-  that no longer matches the product.
-- **Bug fixes.** If there is no issue yet, describe the bug in the pull
-  request: what you ran, what happened, what you expected.
-- **Planned work.** Anything in a [milestone](docs/ROADMAP.md#releases) or
-  labelled
+- **Providers and models.** You can add a missing provider or a new model, or
+  correct a price, a context size or a provider quirk.
+  [Providers](docs/PROVIDERS.md) lists what ships, and
+  `python3 scripts/check-provider-registry.py` checks your change.
+- **Documentation.** You can fix a typo, an unclear step, a missing example or
+  an instruction that no longer matches the product.
+- **Bug fixes.** If there is no issue yet, describe the bug in the pull request
+  by saying what you ran, what happened and what you expected.
+- **Planned work.** You can take anything in a
+  [milestone](docs/ROADMAP.md#releases) or anything labelled
   [help wanted](https://github.com/codewhale-hq/CodeWhale/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22).
   Comment on the issue to claim it so two people do not build the same thing.
 
 Large changes to planned work are easier in layers; see
 [Layered and EPIC-Sized Work](#layered-and-epic-sized-work).
 
-## What to expect from us
+## How we work with you
 
-- A reply that names what you reported, diagnosed or fixed.
+- We reply by naming what you reported, diagnosed or fixed.
 - Your pull request merges as itself, with you as the author
   ([details](#how-your-contribution-lands)).
 - You do not rebase around our changes, and a red check you did not cause is
   ours to fix.
-- You are credited in the changelog and in
+- We credit you in the changelog and in
   [the contributors list](docs/CONTRIBUTORS.md).
 - If something is not ready or not a fit, we say what is blocked and what would
   change the answer.
@@ -493,8 +494,8 @@ an issue.
 
 What makes agent-assisted work easy to merge is the same as for any other: a
 specific reproduction, a small diff, the checks you ran, and a description of
-the trade-off. One friction point per pull request. A list of ideas for
-improvement belongs in an issue.
+the trade-off. Keep each pull request to one friction point, and put a list of
+ideas for improvement in an issue.
 
 Do not point an agent at auth, credentials, sandbox policy, publishing and
 release plumbing, provider policy, telemetry, sponsorship, branding or global
