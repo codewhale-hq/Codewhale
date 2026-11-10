@@ -427,16 +427,31 @@ impl ArtifactStore {
         let mut result = String::new();
         for entry in &artifact.entries {
             result.push_str(&format!("\nFILE {} {}\n", entry.path, entry.kind));
+            if let Some(previous) = self.baseline.iter().find(|file| file.path == entry.path) {
+                let bytes = fs::read(self.root.join("blobs").join(&previous.blob_hash))
+                    .map_err(|error| error.to_string())?;
+                if digest(&bytes) != previous.blob_hash {
+                    return Err("review baseline blob hash mismatch".to_string());
+                }
+                let Ok(text) = String::from_utf8(bytes) else {
+                    return Ok(None);
+                };
+                result.push_str("BASELINE CONTENT\n");
+                result.push_str(&text);
+                result.push_str("\nCANDIDATE CONTENT\n");
+            }
             if let Some(blob_hash) = &entry.blob_hash {
                 let bytes = fs::read(self.root.join("blobs").join(blob_hash))
                     .map_err(|error| error.to_string())?;
                 if digest(&bytes) != *blob_hash {
                     return Err("review blob hash mismatch".to_string());
                 }
-                match String::from_utf8(bytes) {
-                    Ok(text) => result.push_str(&text),
-                    Err(_) => result.push_str(&format!("[binary sha256={blob_hash}]\n")),
-                }
+                let Ok(text) = String::from_utf8(bytes) else {
+                    return Ok(None);
+                };
+                result.push_str(&text);
+            } else {
+                result.push_str("[deleted]\n");
             }
             if result.len() > 128 * 1024 {
                 return Ok(None);
