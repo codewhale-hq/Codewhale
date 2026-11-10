@@ -3,7 +3,7 @@
  *
  * This module is the single source of truth for the exact product nouns a new
  * user meets on the site: the Fleet/Workflow/Lane/Runtime execution nouns,
- * the Plan/Work/Operate + Ask/Auto-Review/Full Access control vocabulary, the
+ * the source-candidate Plan/Work and permission-posture vocabulary, the
  * public Advisor role, and the fields that make route provenance legible.
  *
  * TRUTH CONTRACT:
@@ -84,58 +84,59 @@ export interface ControlTerm {
   description: LocalizedText;
 }
 
-/** TUI modes — cycle with Tab when the composer is empty (docs/MODES.md). */
+/** Source-candidate TUI modes; Shift+Tab steps the permission dial. */
 export const CONTROL_MODES: ControlTerm[] = [
   {
     term: "Plan",
     kind: "mode",
     description: {
-      en: "Design-first and read-only: the primitive names stay stable while mutation and shell execution are centrally refused.",
-      zh: "设计优先且只读：基础工具名称保持稳定，但修改与 shell 执行会被集中拒绝。",
+      en: "Plan permits workspace inspection and policy-allowed research, but refuses file mutation and shell execution.",
+      zh: "Plan 允许检查工作区和进行策略许可的研究，但拒绝文件修改与 shell 执行。",
     },
   },
   {
     term: "Work",
     kind: "mode",
     description: {
-      en: "The default execution mode: multi-step tool use under the active permission posture, sandbox, and repository rules.",
-      zh: "新会话的默认工作模式：多步骤工具调用，每次 shell 调用都有审批提示把关。",
+      en: "Work uses tools across multiple steps under the active permissions, sandbox and repository rules.",
+      zh: "Work 在当前权限、沙箱和仓库规则下分多步使用工具。",
     },
   },
-  {
-    term: "Operate",
-    kind: "mode",
-    description: {
-      en: "Multitask conductor under the same permission posture, sandbox, and safety rules as Work; background worker dispatch is the default for separable work.",
-      zh: "在与 Work 相同的权限姿态、沙箱和安全规则下进行多任务调度；可分离工作默认派发给后台 worker。",
-    },
-  },
+
 ];
 
-/** Permission postures — cycle with Shift+Tab unless a non-Config modal owns input. */
+/** Source-candidate permission postures; Plan is a separate stop on the dial. */
 export const PERMISSION_POSTURES: ControlTerm[] = [
   {
     term: "Ask",
     kind: "permission-posture",
     description: {
-      en: "The default: Codewhale asks when an unresolved choice materially changes authority, cost, scope, or outcome.",
-      zh: "默认值：当一个未决选择会实质改变权限、成本、范围或结果时，Codewhale 会询问。",
+      en: "Codewhale asks before file edits and commands, including workspace edits; saved approvals and policy rules still apply.",
+      zh: "Codewhale 在修改文件和运行命令前询问，包括工作区内的修改；已保存的批准和策略规则仍然适用。",
+    },
+  },
+  {
+    term: "Accept Edits",
+    kind: "permission-posture",
+    description: {
+      en: "Ordinary edits inside a git workspace can run without a prompt; commands and sensitive-file edits still ask. New source-candidate installs use this posture unless a saved choice or managed policy applies.",
+      zh: "Git 工作区内的普通修改可以不经提示执行；命令和敏感文件修改仍会询问。除非已有保存的选择或托管策略，新安装的源码候选版本使用此权限设置。",
     },
   },
   {
     term: "Auto-Review",
     kind: "permission-posture",
     description: {
-      en: "Fully autonomous: never opens a user question; resolves ambiguity to a safe reversible interpretation or reports that it cannot proceed safely.",
-      zh: "完全自主：从不弹出用户提问；把歧义消解为安全可逆的解释，或明确报告无法安全继续。",
+      en: "Codewhale reviews eligible tool actions automatically and denies high-risk calls or failed reviews. It can still ask you to resolve a user choice.",
+      zh: "Codewhale 自动审查符合条件的工具操作，并拒绝高风险调用或审查失败的调用。它仍可能请你作出用户选择。",
     },
   },
   {
     term: "Full Access",
     kind: "permission-posture",
     description: {
-      en: "Ordinary tool calls skip approval prompts; non-bypassable safety, repository-law, and managed-policy holds still fail closed.",
-      zh: "普通工具调用不再显示审批提示；不可绕过的安全、仓库法则和托管策略拦截仍然会失败关闭。",
+      en: "Commands can reach anything on this computer without approval prompts. Repository law and managed policy still apply.",
+      zh: "命令无需审批提示即可访问这台计算机上的任何内容。仓库规则与托管策略仍然适用。",
     },
   },
 ];
