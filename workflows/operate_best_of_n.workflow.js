@@ -52,6 +52,196 @@ export default async function (args) {
     },
   };
 
+  if (args?.evolution !== undefined) {
+    if (strategy !== "search" || !args.evolution?.manifestPath || !model || !writeRoots.length) {
+      throw new Error("Evolution requires strategy=search, manifestPath, model and writeRoots");
+    }
+    const arm = ["single", "independent", "evolution"].includes(args.evolution.arm)
+      ? args.evolution.arm : "evolution";
+    const evolutionaryPopulation = Math.floor(Math.min(8, Math.max(2, Number(args?.n ?? 4) || 4)));
+    const evolutionaryGenerations = args.evolution.generations === 3 ? 3 : 2;
+    const executionBudget = Math.floor(Math.min(16, Math.max(2,
+      Number(args.evolution.executionBudget ?? evolutionaryPopulation * evolutionaryGenerations) || 8)));
+    const population = arm === "single" ? 1
+      : arm === "independent" ? executionBudget : evolutionaryPopulation;
+    const generations = arm === "evolution" ? evolutionaryGenerations : 1;
+    if (arm === "evolution" && population * generations > executionBudget) {
+      throw new Error("Evolution population exceeds its frozen execution budget");
+    }
+    const clamp = (value, min, max, fallback) =>
+      Math.max(min, Math.min(max, Number.isFinite(Number(value)) ? Number(value) : fallback));
+    const basePolicy = Object.freeze({
+      planning_budget: clamp(args.evolution.policy?.planning_budget, 0, 3, 1),
+      max_repair_rounds: clamp(args.evolution.policy?.max_repair_rounds, 0, 2, 1),
+      extra_verification: args.evolution.policy?.extra_verification === true,
+      candidate_strategy: ["direct", "focused"].includes(args.evolution.policy?.candidate_strategy)
+        ? args.evolution.policy.candidate_strategy : "direct",
+      trace_preference: ["concise", "evidence_refs"].includes(args.evolution.policy?.trace_preference)
+        ? args.evolution.policy.trace_preference : "evidence_refs",
+    });
+    const frozen = await task.experimentalSearch({ action: "summary" });
+    const all = [];
+    let parents = [];
+    const seenFailureSignatures = new Set();
+    for (let generation = 0; generation < generations; generation++) {
+      if (generation > 0 && !parents.length) break;
+      phase(`Evolution generation ${generation}`);
+      const plans = Array.from({ length: population }, (_, index) => {
+        const id = `candidate_g${generation}_${index + 1}`;
+        if (generation === 0) return { id, lineage: {}, policy: basePolicy, parent: null };
+        const parent = parents[index % parents.length];
+        const operator = index % 2 === 0
+          ? "targeted_assertion_repair" : "alternate_implementation_strategy";
+        const policy = Object.freeze({
+          ...basePolicy,
+          planning_budget: Math.min(3, basePolicy.planning_budget + (index % 2)),
+          candidate_strategy: index % 2 === 0 ? "focused" : "direct",
+        });
+        return {
+          id,
+          parent,
+          policy,
+          lineage: {
+            parent_ids: [parent.id],
+            hypothesis: operator === "targeted_assertion_repair"
+              ? "The verified failing assertion identifies a repairable defect in the parent approach."
+              : "The verified failure suggests replacing the parent's implementation strategy.",
+            predicted_effect: "The public hard gate that failed for the parent will pass on fresh replay.",
+            mutation_operator: operator,
+            evidence_refs: [parent.receipt],
+            target_scope: writeRoots,
+            policy,
+          },
+        };
+      });
+      const replies = await parallel(plans.map((plan) => () => task({
+        description: [
+          "You are one isolated Codewhale coding candidate. Implement the brief in this worktree only.",
+          "Do not inspect other candidates, hidden tests, evaluator internals or the parent checkout.",
+          "Do not push or merge. Your self_verdict is informational.",
+          `BRIEF: ${String(brief)}`,
+          `RUBRIC: ${String(rubric)}`,
+          `SHADOW POLICY: ${JSON.stringify(plan.policy)}`,
+          `Spend at most ${plan.policy.planning_budget} short planning steps before editing.`,
+          `After a failed local check, make at most ${plan.policy.max_repair_rounds} repair rounds.`,
+          plan.policy.candidate_strategy === "focused"
+            ? "Prefer the smallest change that addresses the verified defect."
+            : "Implement the brief directly, checking edge cases against the public contract.",
+          plan.policy.extra_verification
+            ? "Run an additional independent local verification before returning."
+            : "Run the relevant local verification before returning.",
+          ...(plan.parent ? [
+            `MUTATION DECLARATION: ${JSON.stringify(plan.lineage)}`,
+            `VERIFIED PARENT FAILURE: ${String(plan.parent.feedback).slice(-2400)}`,
+            ...(plan.policy.trace_preference === "evidence_refs"
+              ? [`PARENT PATCH EXCERPT: ${String(plan.parent.patch).slice(0, 6000)}`]
+              : []),
+            plan.lineage.mutation_operator === "targeted_assertion_repair"
+              ? "Trace the failing assertion to one code path and repair that path."
+              : "Replace the parent approach where the observed failure exposes a design flaw.",
+            "You start from a fresh baseline. Use the parent patch only where it supports the declared repair.",
+          ] : ["Make an independent first-generation attempt."]),
+          `CANDIDATE ID: ${plan.id}`,
+          "Return only the required structured response.",
+        ].join("\n"),
+        label: plan.id,
+        type: "implementer",
+        model,
+        ...(thinking ? { thinking } : {}),
+        worktree: true,
+        writeAuthority: "worktree_write",
+        writeRoots,
+        ...(exactFiles.length ? { exactFiles } : {}),
+        responseSchema: candidateSchema,
+      })), { mode: "partial" });
+      for (let index = 0; index < plans.length; index++) {
+        const plan = plans[index];
+        let receipt;
+        if (replies[index]?.__taskError || replies[index] === null) {
+          receipt = { status: "UNKNOWN", reason: replies[index]?.message ?? "worker failed" };
+        } else {
+          try {
+            receipt = await task.experimentalSearch({
+              action: "evaluate", candidate_id: plan.id, generation, lineage: plan.lineage,
+            });
+          } catch (error) {
+            receipt = { status: "UNKNOWN", reason: String(error) };
+          }
+        }
+        all.push({ id: plan.id, generation, lineage: plan.lineage, policy: plan.policy, receipt });
+      }
+      const failures = all.filter((item) => item.generation === generation
+        && item.receipt.status === "FAIL"
+        && item.receipt.public_failure_feedback);
+      parents = failures.map((item) => ({
+        id: item.id,
+        receipt: item.receipt.receipt,
+        feedback: item.receipt.public_failure_feedback,
+        patch: item.receipt.patch_excerpt,
+      }));
+      const signatures = failures.map((item) =>
+        `${item.receipt.reason}:${String(item.receipt.public_failure_feedback).slice(-400)}`);
+      if (generation > 0 && signatures.length
+        && signatures.every((signature) => seenFailureSignatures.has(signature))) break;
+      for (const signature of signatures) seenFailureSignatures.add(signature);
+    }
+    const passing = all.filter((item) => item.receipt.status === "PASS");
+    passing.sort((a, b) => {
+      const aFootprint = a.receipt.changed_paths?.length ?? Infinity;
+      const bFootprint = b.receipt.changed_paths?.length ?? Infinity;
+      const aCost = a.receipt.usage?.cost_microusd ?? Infinity;
+      const bCost = b.receipt.usage?.cost_microusd ?? Infinity;
+      return aFootprint - bFootprint || aCost - bCost || a.id.localeCompare(b.id);
+    });
+    let winner = null;
+    let replay = null;
+    let review = null;
+    if (passing.length) {
+      const provisional = passing[0];
+      replay = await task.experimentalSearch({
+        action: "replay", candidate_id: provisional.id,
+        generation: provisional.generation, lineage: provisional.lineage,
+      });
+      if (replay.status === "PASS" && replay.patch_sha256 === provisional.receipt.patch_sha256) {
+        phase("Independent read-only review");
+        review = await task({
+          description: [
+            "Review this verified coding patch adversarially. Do not edit or apply it.",
+            `BRIEF: ${String(brief)}`,
+            `PATCH: ${String(provisional.receipt.patch_excerpt).slice(0, 6000)}`,
+            `HOST REPLAY: ${JSON.stringify({ status: replay.status, test_count: replay.test_count })}`,
+            "Return only the required structured response.",
+          ].join("\n"),
+          label: "evolution_reviewer",
+          type: "review",
+          writeAuthority: "read_only",
+          worktree: false,
+          responseSchema: {
+            type: "object", additionalProperties: false,
+            required: ["verdict", "reasons"],
+            properties: {
+              verdict: { type: "string", enum: ["pass", "fail"] },
+              reasons: { type: "array", items: { type: "string" } },
+            },
+          },
+        });
+        if (review.verdict === "pass") winner = provisional.id;
+      }
+    }
+    return {
+      scenario: "operate-evolution", strategy, arm, population, generations, executionBudget,
+      manifest: frozen.manifest, baseline_sha: frozen.baseline_sha,
+      candidates: all.map((item) => ({
+        id: item.id, generation: item.generation, status: item.receipt.status,
+        reason: item.receipt.reason, patch_sha256: item.receipt.patch_sha256,
+        receipt: item.receipt.receipt, lineage: item.lineage, policy: item.policy,
+      })),
+      winner_id: winner ?? "NONE", replay, review,
+      promotion: "proposal_only",
+      apply_policy: "Explicit human review is required before any apply, push or merge.",
+    };
+  }
+
   if (args?.evaluator !== undefined) {
     if (strategy !== "search" || !args.evaluator?.manifestPath || !model || !writeRoots.length) {
       throw new Error("Host evaluation requires strategy=search, manifestPath, model and writeRoots");

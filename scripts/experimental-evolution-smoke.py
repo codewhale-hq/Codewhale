@@ -59,8 +59,8 @@ def write_manifest(directory, workspace, arm, budget):
         "requested_model": "deepseek-flash",
         "resolved_provider": "deepseek",
         "resolved_model": "deepseek-flash",
-        "max_candidates": budget,
-        "max_generations": 1,
+        "max_candidates": 1 if arm == "single" else budget,
+        "max_generations": 2 if arm == "evolution" else 1,
         "max_wall_secs": 3600,
     }
     path = directory / "manifest.json"
@@ -73,7 +73,8 @@ def main():
     parser.add_argument("--codewhale", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--budget", type=int, default=4)
-    parser.add_argument("--arms", nargs="+", choices=["independent"], default=["independent"])
+    parser.add_argument("--arms", nargs="+", choices=["single", "independent", "evolution"],
+                        default=["single", "independent", "evolution"])
     args = parser.parse_args()
     if not 2 <= args.budget <= 16 or args.budget % 2:
         parser.error("budget must be an even integer from 2 to 16")
@@ -97,7 +98,7 @@ def main():
         payload = {
             "action": "run",
             "source_path": "workflows/operate_best_of_n.workflow.js",
-            "token_budget": args.budget * 30000,
+            "token_budget": (1 if arm == "single" else args.budget) * 30000,
             "args": {
                 "strategy": "search",
                 "brief": BRIEF,
@@ -105,7 +106,12 @@ def main():
                 "model": "deepseek-flash",
                 "n": args.budget // 2,
                 "writeRoots": ["src"],
-                "evaluator": {"manifestPath": str(manifest)},
+                "evolution": {
+                    "manifestPath": str(manifest),
+                    "arm": arm,
+                    "executionBudget": args.budget,
+                    "generations": 2,
+                },
             },
         }
         environment = os.environ.copy()
@@ -139,7 +145,7 @@ def main():
                         shutil.copytree(candidate, destination, ignore=shutil.ignore_patterns("*-eval", "*-replay"))
                         evidence.append(str(destination))
         row = {"arm": arm, "exit_code": completed.returncode, "wall_seconds": elapsed,
-               "baseline_sha": baseline_sha, "execution_budget": args.budget,
+               "baseline_sha": baseline_sha, "execution_budget": 1 if arm == "single" else args.budget,
                "evidence": evidence}
         (directory / "run.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
         results.append(row)
