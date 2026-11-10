@@ -1,0 +1,47 @@
+name: Experimental evolution build
+
+on:
+  push:
+    branches:
+      - experiment/evidence-gated-evolution-7250
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux build dependencies
+        run: bash scripts/ci-apt-install.sh libdbus-1-dev pkg-config
+      - name: Build complete CLI
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --locked -p codewhale-cli --bin codewhale 2>&1 | tee evolution-build.log
+          sha256sum target/debug/codewhale | tee evolution-binary.sha256
+      - name: Preserve build log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: evolution-build-log
+          path: evolution-build.log
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Preserve compiled CLI
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: evolution-linux-cli
+          path: |
+            target/debug/codewhale
+            evolution-binary.sha256
+          if-no-files-found: error
+          retention-days: 1
