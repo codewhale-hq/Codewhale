@@ -44,7 +44,7 @@ class FakeKv {
 function draft(overrides: Partial<AgentDraft> = {}): AgentDraft {
   return {
     id: "42",
-    type: "triage",
+    type: "linkcheck",
     bodyEn: "review",
     bodyZh: "审阅",
     generatedAt: "2026-07-17T00:00:00.000Z",
@@ -58,49 +58,49 @@ describe("community-agent draft boundary", () => {
     const kv = new FakeKv();
     await saveDraft(kv.draftStores, draft());
 
-    expect([...kv.values.keys()]).toEqual(["draft:triage:42"]);
-    await expect(hasFreshDraft(kv, "triage", "42", "2026-07-16T00:00:00.000Z")).resolves.toBe(true);
+    expect([...kv.values.keys()]).toEqual(["draft:linkcheck:42"]);
+    await expect(hasFreshDraft(kv, "linkcheck", "42", "2026-07-16T00:00:00.000Z")).resolves.toBe(true);
     await expect(hasFreshDraft(kv, "issue", "42", "2026-07-16T00:00:00.000Z")).resolves.toBe(false);
   });
 
   it("uses the canonical PR review namespace for freshness checks", async () => {
     const kv = new FakeKv();
-    await saveDraft(kv.draftStores, draft({ type: "pr-review" }));
+    await saveDraft(kv.draftStores, draft({ type: "semantic-drift" }));
 
-    expect([...kv.values.keys()]).toEqual(["draft:pr-review:42"]);
-    await expect(hasFreshDraft(kv, "pr-review", "42", "2026-07-16T00:00:00.000Z")).resolves.toBe(true);
+    expect([...kv.values.keys()]).toEqual(["draft:semantic-drift:42"]);
+    await expect(hasFreshDraft(kv, "semantic-drift", "42", "2026-07-16T00:00:00.000Z")).resolves.toBe(true);
     await expect(hasFreshDraft(kv, "pr", "42", "2026-07-16T00:00:00.000Z")).resolves.toBe(false);
   });
 
   it("accepts only canonical draft namespaces and bounded ids", () => {
-    expect(parseDraftKey("draft:pr-review:123")).toEqual({ type: "pr-review", id: "123" });
-    expect(parseDraftKey("dispatch:latest")).toBeNull();
+    expect(parseDraftKey("draft:semantic-drift:123")).toEqual({ type: "semantic-drift", id: "123" });
+    expect(parseDraftKey("agent:state:latest")).toBeNull();
     expect(parseDraftKey("draft:unknown:123")).toBeNull();
-    expect(parseDraftKey("draft:triage:bad:id")).toBeNull();
-    expect(() => draftKey("triage", "bad:id")).toThrow("invalid draft id");
+    expect(parseDraftKey("draft:linkcheck:bad:id")).toBeNull();
+    expect(() => draftKey("linkcheck", "bad:id")).toThrow("invalid draft id");
   });
 
   it("rejects parseable non-drafts and key/object identity mismatches", async () => {
     const kv = new FakeKv();
-    kv.values.set("draft:triage:42", JSON.stringify({ generatedAt: "2026-07-17T00:00:00.000Z" }));
-    kv.values.set("draft:triage:43", JSON.stringify(draft()));
+    kv.values.set("draft:linkcheck:42", JSON.stringify({ generatedAt: "2026-07-17T00:00:00.000Z" }));
+    kv.values.set("draft:linkcheck:43", JSON.stringify(draft()));
 
-    await expect(getDraft(kv, "dispatch:latest")).resolves.toBeNull();
-    await expect(getDraft(kv, "draft:triage:42")).resolves.toBeNull();
-    await expect(getDraft(kv, "draft:triage:43")).resolves.toBeNull();
+    await expect(getDraft(kv, "agent:state:latest")).resolves.toBeNull();
+    await expect(getDraft(kv, "draft:linkcheck:42")).resolves.toBeNull();
+    await expect(getDraft(kv, "draft:linkcheck:43")).resolves.toBeNull();
     await expect(listDrafts(kv)).resolves.toEqual([]);
   });
 
   it("never lets the draft deletion helper cross into another KV namespace", async () => {
     const kv = new FakeKv();
-    kv.values.set("dispatch:latest", JSON.stringify({ state: "running" }));
+    kv.values.set("agent:state:latest", JSON.stringify({ state: "running" }));
 
-    await expect(deleteDraft(kv, "dispatch:latest")).rejects.toThrow("invalid draft key");
+    await expect(deleteDraft(kv, "agent:state:latest")).rejects.toThrow("invalid draft key");
     expect(kv.deleted).toEqual([]);
-    expect(kv.values.has("dispatch:latest")).toBe(true);
+    expect(kv.values.has("agent:state:latest")).toBe(true);
 
     await saveDraft(kv.draftStores, draft());
-    await expect(deleteDraft(kv, "draft:triage:42")).resolves.toBeUndefined();
-    expect(kv.deleted).toEqual(["draft:triage:42"]);
+    await expect(deleteDraft(kv, "draft:linkcheck:42")).resolves.toBeUndefined();
+    expect(kv.deleted).toEqual(["draft:linkcheck:42"]);
   });
 });

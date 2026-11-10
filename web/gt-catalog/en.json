@@ -282,6 +282,7 @@
     "footerDocs": "Docs",
     "footerGuide": "Getting started",
     "footerInstall": "Install",
+    "footerApps": "Desktop and web",
     "footerModels": "Models",
     "footerRuntime": "Runtime",
     "footerFaq": "FAQ",
@@ -296,6 +297,7 @@
     "footerReleases": " · Releases: ",
     "footerReleasesLink": "GitHub Releases",
     "footerSecurity": "Security",
+    "footerLegal": "Legal",
     "switcherLabel": "Language",
     "switcherSwitchTo": "Switch to {label}",
     "partialBadge": "(partial)"
@@ -307,114 +309,16 @@
     "heroIntro": "{brand} is the open-source agent between you and the model. Read its code, or ask it to read its own code and explain what it does. An international community improves it with every release.",
     "getCodewhale": "Install Codewhale",
     "heroInstallAria": "Install command",
-    "exploreProduct": "Explore Codewhale",
     "shotPreview": "Local terminal demo",
     "screenshotAlt": "Codewhale v{version}: a captured terminal view with the conversation, message composer and session controls.",
-    "latestRelease": "Latest release {tag}",
-    "releaseUnavailable": "Release status unavailable",
     "proofContributors": "{count} contributors",
-    "currentSource": "Source",
     "sourceCandidate": "Unreleased",
     "publishedRelease": "released",
-    "gainHeading": "Put your ideas to work",
-    "gainLede": "Start with a project and the result you need. Codewhale can read the files, make changes and run commands to check its work.",
-    "gain": [
-      [
-        "Build and repair software",
-        "Add a feature, trace a bug or write a useful tool. Work through the changes with an agent that can edit the project and run its checks."
-      ],
-      [
-        "Automate work you repeat",
-        "Turn a repeated task into a script or run it with codewhale exec. For larger jobs, give parts of the work to a Fleet of agents with different models."
-      ],
-      [
-        "Connect the tools you use",
-        "Bring in tools through plugins and MCP servers. Connect the services your work needs, with access and authentication you configure."
-      ]
-    ],
-    "chapterModels": "Your models",
     "modelsHeading": "Use the models you choose",
-    "modelsBody": "Use provider API keys, an OpenAI-compatible endpoint or local models.",
-    "modelsFacts": [
-      [
-        "Your API accounts",
-        "Use your own API keys with providers such as DeepSeek, OpenAI, Anthropic and Google. Your provider bills the model usage."
-      ],
-      [
-        "Your gateway",
-        "Use an OpenAI-compatible endpoint and choose the models it serves."
-      ],
-      [
-        "Your inference",
-        "Connect Ollama on your machine, or a self-hosted endpoint such as vLLM or SGLang."
-      ],
-      [
-        "Your ChatGPT plan",
-        "Experimental: connect an eligible ChatGPT plan with codewhale auth chatgpt."
-      ]
-    ],
     "modelsLink": "Browse models and providers",
     "startHeading": "Start with one useful task",
-    "startLede": "Install Codewhale, connect a model and open a project folder. You can add plugins and more agents as you need them.",
-    "startGuideLink": "Follow the getting-started guide",
-    "startVocabularyLink": "Look up a term",
-    "chapterAvailability": "Where it runs",
-    "availabilityHeading": "Available now and in development",
-    "availabilityLede": "Install on macOS, Linux or Windows. Work in your terminal, or run codewhale web for a local browser view. Desktop and hosted web apps are in development.",
-    "availability": [
-      [
-        "Terminal and local browser",
-        "Released",
-        "Install on Linux, macOS, or Windows, then run codewhale, or codewhale web for the local browser client. npm and Cargo also work; Android on Termux is a preview."
-      ],
-      [
-        "CodeWhale GUI (VS Code)",
-        "Available",
-        "A separate, community-maintained project: chat, threads, and file changes in a VS Code sidebar over the same Codewhale Runtime. Install it from the VS Code Marketplace.",
-        "https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode"
-      ],
-      [
-        "Hosted web app",
-        "In development",
-        "Being rebuilt to match the desktop app, and not open yet. For a browser view today, run codewhale web on your machine."
-      ],
-      [
-        "Desktop",
-        "Development build",
-        "A native app on the same engine. Review and commit changes, follow work across projects, and edit a message to resend it as a new branch. No public download yet."
-      ]
-    ],
-    "availabilityNote": "The terminal, local browser, and GUI need no Codewhale account. When you use your own provider key, your provider bills that usage.",
-    "surfacesHeading": "Work across files and tools",
-    "surfaces": [
-      [
-        "Files and terminal",
-        "Create files, run commands, inspect data and test what you build. You set the working folder and permissions."
-      ],
-      [
-        "Plugins and connected apps",
-        "Add skills and tools through plugins and MCP. Review and enable the connections you want the agent to use."
-      ],
-      [
-        "Browser and computer · preview",
-        "Add browser tools or the Computer Use plugin to work in apps and websites. Computer Use on macOS needs system permissions; other platforms remain experimental."
-      ],
-      [
-        "Sessions you can return to",
-        "Keep the conversation, tool results and work history together. Resume the task in the terminal or its local browser client."
-      ],
-      [
-        "Teams of agents",
-        "Use Fleet to split a larger job between agents with different roles and models, and follow their progress in one place."
-      ]
-    ],
-    "runtimeLink": "Explore tools and integrations",
-    "installBandHeading": "Install on macOS or Linux",
     "copy": "Copy",
     "copied": "Copied ✓",
-    "binaries": "Binaries",
-    "chinaMirrors": "China mirrors",
-    "installGuideLink": "Read the install guide",
     "contribute": "Contribute"
   },
   "docs-guide": {
@@ -2062,10 +1966,17 @@
             "p": "`codewhale auth list` shows the credential state Codewhale reports for each provider. For an API-key route, use `codewhale auth set --provider <name>` or its documented environment variable; OAuth and local routes have their own setup."
           },
           {
-            "p": "Local Ollama, vLLM and SGLang servers need no API key by default. Use a loopback endpoint for a model on your machine, then select the model tag it serves:"
+            "p": "Save a key for another hosted provider, then select it and a model:"
           },
           {
-            "code": "codewhale auth list\ncodewhale --provider ollama --model <model-tag>",
+            "code": "codewhale auth set --provider anthropic\ncodewhale --provider anthropic --model claude-sonnet-5-5",
+            "lang": "Terminal"
+          },
+          {
+            "p": "A server you run yourself (vLLM, SGLang, Ollama) needs no API key by default. Connect a loopback endpoint, then select the model tag it serves:"
+          },
+          {
+            "code": "codewhale --provider vllm --model <model-tag>",
             "lang": "Terminal"
           },
           {
@@ -2078,7 +1989,7 @@
         "title": "Codewhale accounts",
         "blocks": [
           {
-            "p": "A provider key and a Codewhale account are different things. Codewhale never needs an account, and new accounts are not open. Provider keys stay on your machine with `codewhale auth set`."
+            "p": "A provider key and a Codewhale account are different things. Local use never needs an account; anyone can sign in, and cloud computers are invite-only. Provider keys stay on your machine with `codewhale auth set`."
           },
           {
             "rows": [
@@ -2098,7 +2009,7 @@
             "codeTerms": true
           },
           {
-            "p": "`codewhale login` does not accept provider keys; those always go through `codewhale auth set`. The session is kept in your operating system's credential manager when one is available, and in the private Codewhale secrets file otherwise — for example over SSH or in a container."
+            "p": "`codewhale login` does not accept provider keys; those always go through `codewhale auth set`. The session is kept in your operating system's credential manager when one is available, and in the private Codewhale secrets file otherwise — for example over SSH or in a container. [Sign in to Codewhale](/docs/account) covers each surface step by step."
           }
         ]
       }
@@ -2164,7 +2075,7 @@
               ],
               [
                 "Stays local entirely",
-                "With a local model (Ollama, vLLM, SGLang), inference never leaves your machine."
+                "With a model you run yourself, inference never leaves your machine."
               ],
               [
                 "Needs no account",

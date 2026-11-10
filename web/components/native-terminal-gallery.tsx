@@ -1,8 +1,6 @@
 "use client";
 
 import { useId, useState } from "react";
-import Link from "next/link";
-import { Icon } from "@/components/icon";
 import { TerminalCapture } from "@/components/terminal-capture";
 import { getNativeTerminalCopy, NATIVE_TERMINAL_VIEWS } from "@/lib/content/native-terminal";
 import { TERMINAL_CAPTURE_FRAMES, type TerminalCaptureFrameId } from "@/lib/terminal-capture.generated";
@@ -95,10 +93,6 @@ export function NativeTerminalGallery({
           </button>
         ) : null}
         <span className="native-terminal-scroll-hint">{copy.scrollHint}</span>
-        <Link href={`/${locale}/ratatui`} className="native-terminal-components-link">
-          {copy.componentsLink}
-          <Icon name="arrow-right" className="icon icon-flip" />
-        </Link>
       </div>
     </div>
   );

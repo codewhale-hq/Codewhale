@@ -14,7 +14,7 @@ export const contentType = "image/png";
 // regeneration on the site fail with a 500 and serve its build snapshot forever.
 async function brandSvgs(): Promise<[string, string]> {
   const [mark, wordmark] = await Promise.all([
-    readFile(join(process.cwd(), "public/whale/rest.svg")),
+    readFile(join(process.cwd(), "public/brand/mark-reversed.svg")),
     readFile(join(process.cwd(), "public/brand/wordmark-inverted.svg")),
   ]);
   return [mark.toString(), wordmark.toString()];
@@ -25,9 +25,6 @@ export default async function OpengraphImage() {
   const markDataUrl = `data:image/svg+xml;base64,${Buffer.from(markSvg).toString("base64")}`;
   const wordmarkDataUrl = `data:image/svg+xml;base64,${Buffer.from(wordmarkSvg).toString("base64")}`;
 
-  // The ocean: navy rising into the logo's blue, the whale in the logo
-  // gradient, the inverted wordmark, and the identity phrase once — the
-  // wordmark is the name, so no second "Codewhale" heading.
   return new ImageResponse(
     (
       <div

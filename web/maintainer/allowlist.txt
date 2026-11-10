@@ -1,0 +1,50 @@
+copy-freshness: web/lib/content/getting-started.ts
+copy-freshness: web/lib/content/install.ts
+copy-freshness: web/lib/content/models.ts
+copy-freshness: web/lib/content/native-terminal.ts
+copy-freshness: web/lib/content/plugins.ts
+copy-freshness: web/lib/content/tools.ts
+copy-freshness: web/lib/content/reference-guides.ts
+copy-freshness: web/lib/content/runtime-integrations.ts
+copy-freshness: web/lib/content/product.ts
+copy-freshness: web/lib/content/home-overview.ts
+copy-freshness: web/lib/content/onboarding-check.ts
+copy-freshness: web/lib/i18n/dictionaries/en/computer-use.ts
+copy-freshness: web/lib/i18n/dictionaries/en/features.ts
+copy-freshness: web/lib/i18n/dictionaries/en/home.ts
+copy-freshness: web/lib/i18n/dictionaries/en/runtime.ts
+copy-freshness: web/lib/i18n/dictionaries/en/states.ts
+copy-freshness: web/lib/i18n/dictionaries/en/chrome.ts
+link-health: web/lib/content/getting-started.ts
+link-health: web/lib/content/install.ts
+link-health: web/lib/content/models.ts
+link-health: web/lib/content/native-terminal.ts
+link-health: web/lib/content/plugins.ts
+link-health: web/lib/content/tools.ts
+link-health: web/lib/content/reference-guides.ts
+link-health: web/lib/content/runtime-integrations.ts
+link-health: web/lib/content/product.ts
+link-health: web/lib/content/home-overview.ts
+link-health: web/lib/content/onboarding-check.ts
+link-health: web/lib/i18n/dictionaries/en/computer-use.ts
+link-health: web/lib/i18n/dictionaries/en/features.ts
+link-health: web/lib/i18n/dictionaries/en/home.ts
+link-health: web/lib/i18n/dictionaries/en/runtime.ts
+link-health: web/lib/i18n/dictionaries/en/states.ts
+link-health: web/lib/i18n/dictionaries/en/chrome.ts
+docs-drift: web/lib/content/docs-*.ts
+docs-drift: web/lib/i18n/dictionaries/en/docs-*.ts
+!web/lib/content/*.generated.ts
+!**/*.test.ts
+!**/*.test.tsx
+!web/lib/**/legal-*
+!web/lib/**/constitution*
+!web/lib/**/enterprise*
+!web/lib/**/partner-promo*
+!web/lib/**/merch*
+!web/lib/**/contributor-merch*
+!web/lib/**/availability*
+!web/lib/**/pricing*
+!web/lib/**/roadmap*
+!web/lib/**/account-entry*
+!web/lib/**/project*

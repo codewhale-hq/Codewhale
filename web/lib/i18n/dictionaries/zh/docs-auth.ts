@@ -61,11 +61,18 @@ codewhale auth status --provider deepseek`,
           p: "`codewhale auth list` 会列出各提供商报告的凭据状态。API 密钥路由使用 `codewhale auth set --provider <name>` 或文档指定的环境变量；OAuth 与本地路由有各自的设置方式。",
         },
         {
-          p: "本地 Ollama、vLLM 和 SGLang 服务默认无需 API 密钥。使用本机模型时，请连接回环地址，再选择该服务提供的准确模型标签：",
+          p: "为其他托管提供商保存密钥，再选择它和模型：",
         },
         {
-          code: `codewhale auth list
-codewhale --provider ollama --model <model-tag>`,
+          code: `codewhale auth set --provider anthropic
+codewhale --provider anthropic --model claude-sonnet-5-5`,
+          lang: "终端",
+        },
+        {
+          p: "你自己运行的服务（vLLM、SGLang、Ollama）默认无需 API 密钥。连接回环地址，再选择该服务提供的准确模型标签：",
+        },
+        {
+          code: `codewhale --provider vllm --model <model-tag>`,
           lang: "终端",
         },
         {
@@ -78,7 +85,7 @@ codewhale --provider ollama --model <model-tag>`,
       title: "Codewhale 账户",
       blocks: [
         {
-          p: "提供商密钥和 Codewhale 账户是两回事。Codewhale 从不需要账户，新账户也暂未开放。提供商密钥通过 `codewhale auth set` 保存在你的机器上。",
+          p: "提供商密钥和 Codewhale 账户是两回事。本地使用从不需要账户；任何人都可以登录，云端计算机仅限受邀使用。提供商密钥通过 `codewhale auth set` 保存在你的机器上。",
         },
         {
           rows: [
@@ -89,7 +96,7 @@ codewhale --provider ollama --model <model-tag>`,
           codeTerms: true,
         },
         {
-          p: "`codewhale login` 不接收提供商密钥，提供商密钥一律通过 `codewhale auth set` 保存。登录会话优先保存在操作系统的凭据管理器中；没有凭据管理器时（例如通过 SSH 或在容器里），则保存在 Codewhale 的私有密钥文件中。",
+          p: "`codewhale login` 不接收提供商密钥，提供商密钥一律通过 `codewhale auth set` 保存。登录会话优先保存在操作系统的凭据管理器中；没有凭据管理器时（例如通过 SSH 或在容器里），则保存在 Codewhale 的私有密钥文件中。每个入口的登录步骤见[登录 Codewhale](/docs/account)。",
         },
       ],
     },

@@ -21,6 +21,7 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
 
 export default async function RuntimePage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
+  const han = locale === "zh";
   const chrome = getChrome(locale);
   const t = getRuntime(locale);
   const facts = await getFacts();
@@ -28,10 +29,10 @@ export default async function RuntimePage({ params }: { params: Promise<{ locale
   return (
     <>
       <PageHeader
-        seal="接"
+        seal={han ? "接" : undefined}
         title={t.title}
-        titleAside={t.titleAside}
-        titleAsideLang={t.titleAsideLang}
+        titleAside={han ? t.titleAside : undefined}
+        titleAsideLang={han ? t.titleAsideLang : undefined}
         lede={t.lede}
         pose="run"
         actions={
@@ -47,7 +48,7 @@ export default async function RuntimePage({ params }: { params: Promise<{ locale
       />
 
       <div className="page-body">
-        <Section id="runtime-integrations" seal="集" title={t.integrationsTitle}>
+        <Section id="runtime-integrations" seal={han ? "集" : undefined} title={t.integrationsTitle}>
           <ul className="dir-list dir-list-card" role="list">
             {INTEGRATIONS.map((item) => (
               <li key={item.name}>
@@ -65,7 +66,7 @@ export default async function RuntimePage({ params }: { params: Promise<{ locale
           </ul>
         </Section>
 
-        <Section id="runtime-trust" layout="split" seal="信" title={t.trustTitle}>
+        <Section id="runtime-trust" layout="split" seal={han ? "信" : undefined} title={t.trustTitle}>
           <dl className="ruled-list ruled-list-stacked">
             {TRUST.map((item) => (
               <div key={item.title.en}>
@@ -76,7 +77,7 @@ export default async function RuntimePage({ params }: { params: Promise<{ locale
           </dl>
         </Section>
 
-        <Section id="runtime-facts" layout="split" seal="数" title={t.factsTitle}>
+        <Section id="runtime-facts" layout="split" seal={han ? "数" : undefined} title={t.factsTitle}>
           <dl className="ruled-list">
             <div>
               <dt>{t.version}</dt>

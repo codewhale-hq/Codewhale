@@ -10,9 +10,9 @@ const CSS = siteCss();
 const TAILWIND = readFileSync(new URL("../tailwind.config.ts", import.meta.url), "utf8");
 
 describe("design grammar contract", () => {
-  it("draws every radius from the 6/10/14/pill grammar", () => {
+  it("draws every radius from the 10/18/pill grammar", () => {
     const defined = [...CSS.matchAll(/--radius-[\w-]+:\s*([^;]+);/g)].map((m) => resolveWhale(m[1].trim()));
-    expect(new Set(defined)).toEqual(new Set(["6px", "10px", "14px", "999px"]));
+    expect(new Set(defined)).toEqual(new Set(["10px", "18px", "999px"]));
     const used = [...CSS.matchAll(/border-radius:\s*([^;]+);/g)].map((m) => m[1].trim());
     expect(used.length).toBeGreaterThan(0);
     // A corner is a grammar token or square; per-corner shorthands combine them.
@@ -32,7 +32,7 @@ describe("design grammar contract", () => {
     expect(CSS).toMatch(/::selection \{ background: var\(--selection\); \}/);
     // The light ring on the dark stage would fall under 3:1, so the stage
     // re-declares it.
-    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--kit-bioluminescence\);/);
+    expect(CSS).toMatch(/\.stage,\s*\.site-footer\s*\{[^}]*--ring: var\(--gpui-dark-accent\);/);
   });
 
   it("paints every primary fill with the logo gradient and white text", () => {

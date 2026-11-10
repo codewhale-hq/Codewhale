@@ -1,4 +1,5 @@
 import { Icon } from "./icon";
+import { LiveMergedList, LivePulseStats, LiveStarCount, type PulseRow } from "./github-live";
 import { GITHUB_STAR_COPY } from "@/lib/content/github-star";
 import { PROJECT_COPY } from "@/lib/content/project";
 import { formatStars, relativeAge, type Face } from "@/lib/github";
@@ -14,30 +15,29 @@ function age(iso: string, locale: string): string {
 }
 
 export function PulseStats({ stats, contributors, locale }: { stats: RepoStats | null; contributors: number; locale: string }) {
-  const rows: { value: string; label: string; href: string }[] = [
-    { value: String(contributors), label: pickText(PROJECT_COPY.statContributors, locale), href: `${REPO_URL}/blob/main/docs/CONTRIBUTORS.md` },
+  const rows: PulseRow[] = [
+    { key: "stars", label: pickText(PROJECT_COPY.statStars, locale), href: REPO_URL, value: stats ? formatStars(stats.stars) : undefined },
+    { key: "contributors", label: pickText(PROJECT_COPY.statContributors, locale), href: `${REPO_URL}/blob/main/docs/CONTRIBUTORS.md`, value: String(contributors) },
+    { key: "pulls", label: pickText(PROJECT_COPY.statPulls, locale), href: `${REPO_URL}/pulls`, value: stats ? String(stats.openPulls) : undefined },
+    { key: "issues", label: pickText(PROJECT_COPY.statIssues, locale), href: `${REPO_URL}/issues`, value: stats ? String(stats.openIssues) : undefined },
   ];
-  if (stats) {
-    rows.unshift({ value: formatStars(stats.stars), label: pickText(PROJECT_COPY.statStars, locale), href: REPO_URL });
-    rows.push(
-      { value: String(stats.openPulls), label: pickText(PROJECT_COPY.statPulls, locale), href: `${REPO_URL}/pulls` },
-      { value: String(stats.openIssues), label: pickText(PROJECT_COPY.statIssues, locale), href: `${REPO_URL}/issues` },
-    );
-  }
-  return (
-    <dl className="pulse-stats">
-      {rows.map((row) => (
-        <div key={row.label}>
-          <dt>{row.label}</dt>
-          <dd><a href={row.href} className="tabular">{row.value}</a></dd>
-        </div>
-      ))}
-    </dl>
-  );
+  return <LivePulseStats rows={rows} numberLocale={getChrome(locale).dateLocale} />;
 }
 
-export function MergedList({ items, locale }: { items: FeedItem[]; locale: string }) {
-  if (items.length === 0) return null;
+export function MergedList({ items, locale, limit = 5 }: { items: FeedItem[]; locale: string; limit?: number }) {
+  if (items.length === 0) {
+    return (
+      <LiveMergedList
+        limit={limit}
+        copy={{
+          heading: pickText(PROJECT_COPY.mergedHeading, locale),
+          mergedAge: pickText(PROJECT_COPY.mergedAge, locale),
+          firstContribution: pickText(PROJECT_COPY.firstContribution, locale),
+          dateLocale: getChrome(locale).dateLocale,
+        }}
+      />
+    );
+  }
   return (
     <ol className="merged-list" role="list">
       {items.map((item) => (
@@ -82,12 +82,11 @@ export function FaceWall({ faces, total, locale }: { faces: Face[]; total: numbe
 
 export function GitHubStar({ stars, locale }: { stars?: number; locale: string }) {
   const label = pickText(GITHUB_STAR_COPY, locale);
-  const count = stars === undefined ? null : new Intl.NumberFormat(getChrome(locale).dateLocale).format(stars);
   return (
     <a href={REPO_URL} className="btn btn-secondary github-star" data-funnel="star_exit">
       <span aria-hidden="true">☆</span>
       <span>{label}</span>
-      {count !== null && <span className="github-star-count tabular">{count}</span>}
+      <LiveStarCount initial={stars} numberLocale={getChrome(locale).dateLocale} />
     </a>
   );
 }

@@ -10,10 +10,12 @@ actual authority.
 
 ## Source and updates
 
-`vendor/codewhale-design/` is the complete versioned GPUI design artifact.
-Its `tokens.json` owns semantic colors, font fallbacks, spacing, control/panel
-radii, focus geometry and native motion constants. Update it from the app's
-design package as one folder; never edit consumer copies by hand.
+`vendor/codewhale-design/` holds only the token files from the design system:
+`tokens.json` and its generated outputs, `generate.py` and the inputs it reads.
+`tokens.json` owns semantic colors, font fallbacks, spacing, control/panel
+radii, focus geometry and native motion constants. Refresh those files from the
+design system together; never edit them by hand, and do not vendor the design
+system's documentation, Figma notes or whale sources into this public repository.
 
 Run `python3 scripts/export-design-tokens.py` to regenerate
 `web/app/tokens.css`. The exporter checks the portable artifact's own generated

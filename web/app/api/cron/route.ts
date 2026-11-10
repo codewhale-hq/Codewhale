@@ -1,11 +1,6 @@
 import { NextResponse } from "next/server";
 import { getEnv } from "@/lib/kv";
 import {
-  runCurate,
-  runTriage,
-  runPrReview,
-  runStale,
-  runDupes,
   runDigest,
   type AgentEnv,
 } from "@/lib/community-agent-tasks";
@@ -15,14 +10,14 @@ import { safeEqual } from "@/lib/community-agent";
 
 export const dynamic = "force-dynamic";
 
-const TASKS = ["curate", "triage", "pr-review", "stale", "dupes", "digest", "facts-drift", "linkcheck", "semantic-drift"] as const;
+const TASKS = ["digest", "facts-drift", "linkcheck", "semantic-drift"] as const;
 type Task = (typeof TASKS)[number];
 
 /**
  * Manual trigger surface for community-agent tasks.
  *
  * Usage:
- *   GET /api/cron?task=curate
+ *   GET /api/cron?task=digest
  *   Header: x-cron-secret: <CRON_SECRET>
  *
  * Real cron scheduling is handled by worker.ts's scheduled() handler.
@@ -71,21 +66,6 @@ export async function GET(req: Request) {
   try {
     let result: Record<string, unknown>;
     switch (task) {
-      case "curate":
-        result = await runCurate(agentEnv);
-        break;
-      case "triage":
-        result = await runTriage(agentEnv);
-        break;
-      case "pr-review":
-        result = await runPrReview(agentEnv);
-        break;
-      case "stale":
-        result = await runStale(agentEnv);
-        break;
-      case "dupes":
-        result = await runDupes(agentEnv);
-        break;
       case "digest":
         result = await runDigest(agentEnv);
         break;

@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { resolveWhale } from "./whale-tokens";
 import { siteCss } from "./site-css";
 
-// The site's type follows GPUI set_theme: Shannon Sans for every role, the
-// system monospace stack at 13px for code, no serif and no all-caps labels.
+// The site's type follows the desktop app: Geist for every role, Geist Mono at
+// 13px for code, no serif and no all-caps labels.
 const CSS = siteCss();
 const LAYOUT = readFileSync(new URL("../app/[locale]/layout.tsx", import.meta.url), "utf8");
 const TAILWIND = readFileSync(new URL("../tailwind.config.ts", import.meta.url), "utf8");
@@ -40,26 +40,24 @@ describe("typography contract", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("resolves every role to Shannon Sans and code to the system mono stack", () => {
-    expect(rootVar("font-body")).toMatch(/^var\(--font-shannon-latin\), var\(--font-shannon-ext\),/);
+  it("resolves every role to Geist and code to Geist Mono", () => {
+    expect(rootVar("font-body")).toMatch(/^var\(--font-geist-sans\), var\(--gpui-font-fallbacks\),/);
     expect(rootVar("font-display")).toBe("var(--font-body)");
-    expect(rootVar("font-mono")).toMatch(/^ui-monospace,/);
+    expect(rootVar("font-mono")).toMatch(/^var\(--font-geist-mono\), ui-monospace,/);
     expect(rootVar("font-cjk")).not.toMatch(/Serif|(?<!sans-)serif/);
     expect(resolveWhale(rootVar("text-mono"))).toBe("0.8125rem");
     expect(resolveWhale(rootVar("text-prose"))).toBe("1rem");
   });
 
-  it("preloads only the Latin subset of Shannon Sans", () => {
+  it("self-hosts Geist and loads no other face", () => {
     const faces = [...LAYOUT.matchAll(/localFont\(\{([\s\S]*?)\n\}\);/g)].map((m) => m[1]);
     expect(faces).toHaveLength(2);
-    const [latin, ext] = faces;
-    expect(latin).toContain("ShannonSans-Variable-latin.woff2");
-    expect(latin).not.toContain("preload: false");
-    expect(ext).toContain("ShannonSans-Variable-ext.woff2");
-    expect(ext).toContain("preload: false");
-    for (const face of faces) expect(face).toContain('prop: "unicode-range"');
-    // The Latin face is the only font on the critical path; keep it small.
-    expect(statSync(new URL("ShannonSans-Variable-latin.woff2", FONTS)).size).toBeLessThan(80_000);
-    expect(statSync(new URL("ShannonSans-Variable-ext.woff2", FONTS)).size).toBeGreaterThan(0);
+    const [sans, mono] = faces;
+    expect(sans).toContain("Geist-Variable.woff2");
+    expect(sans).not.toContain("preload: false");
+    expect(mono).toContain("GeistMono-Variable.woff2");
+    expect(mono).toContain("preload: false");
+    expect(readdirSync(FONTS).sort()).toEqual(["Geist-Variable.woff2", "GeistMono-Variable.woff2", "OFL.txt"]);
+    expect(statSync(new URL("Geist-Variable.woff2", FONTS)).size).toBeLessThan(120_000);
   });
 });

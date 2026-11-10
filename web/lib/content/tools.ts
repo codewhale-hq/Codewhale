@@ -1,10 +1,13 @@
+import { FACTS } from "../facts.generated";
 import type { LocalizedText } from "./vocabulary";
+
+const PUBLISHED_VERSION = FACTS.latestPublishedRelease?.version ?? FACTS.version;
 
 export const TOOLS_COPY = {
   metaTitle: { en: "Built-in tools · Codewhale Docs", zh: "内置工具 · Codewhale 文档" },
   metaDescription: { en: "Core work tools, on-demand discovery, and exact replay compatibility.", zh: "核心工作工具、按需发现与精确回放兼容。" },
   title: { en: "Built-in tools", zh: "内置工具" },
-  lead: { en: "In the 0.10.3 source candidate, every session starts with fourteen native tools for reading, editing, running commands, and delegating. This differs from the published v0.10.2 release. Codewhale loads specialized tools only when a task needs them, and your mode and approval setting still apply to all of them.", zh: "在 0.10.3 源码候选版本中，每个会话一开始就带着十四个原生工具，用于阅读、修改、运行命令和委派任务。这与已发布的 v0.10.2 版本不同。专用工具只在任务需要时才加载，而你的模式和审批设置对所有工具都同样有效。" },
+  lead: { en: `In the ${FACTS.version} source candidate, every session starts with fourteen native tools for reading, editing, running commands, and delegating. This differs from the published v${PUBLISHED_VERSION} release. Codewhale loads specialized tools only when a task needs them, and your mode and approval setting still apply to all of them.`, zh: `在 ${FACTS.version} 源码候选版本中，每个会话一开始就带着十四个原生工具，用于阅读、修改、运行命令和委派任务。这与已发布的 v${PUBLISHED_VERSION} 版本不同。专用工具只在任务需要时才加载，而你的模式和审批设置对所有工具都同样有效。` },
   reference: { en: "Tool contract and design rationale", zh: "工具约定与设计说明" },
   rows: [
     { name: "read", detail: { en: "path · offset? · limit? · expected_revision?", zh: "path · offset? · limit? · expected_revision?" } },

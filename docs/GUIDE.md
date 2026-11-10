@@ -841,8 +841,8 @@ To continue the exact running session from the web app, type `/rc` or launch
 with `codewhale rc`. Approve the one-time code in the system browser. While the
 lease is active, the browser owns new prompts and approvals and the terminal is
 a readable safety surface. Once connected, the banner and a transcript note
-show the live session link (`https://app.codewhale.net/session?run=…`);
-`/rc open` opens it in your browser and `/rc link` prints it. `/rc status`
+show the live session link; `/rc open` opens it in your browser and `/rc link`
+prints it. The hosted browser app at app.codewhale.net is not open yet. `/rc status`
 shows ownership, `/rc stop` returns it to the terminal, and interrupt remains
 available. A dropped connection keeps local input locked until the last web
 lease expires so two controllers never race. Every folder you enroll from one
@@ -853,11 +853,10 @@ If remote control fails, the reason remains in the current terminal transcript
 and TUI log after the error toast expires. The footer then shows `/rc status`;
 run it to inspect the failure and whether retrying must wait for a prior lease.
 
-> Note (2026-09-14): the hosted web app at app.codewhale.net sunsets in phases
-> under the 2026-09-14 product-client decision; the native GPUI desktop app
-> (private `codehwhale-gpui` repo, phase map in `docs/TRANSITION.md`) is the
-> successor surface. `/rc` keeps working against the web app while it remains
-> live.
+> Note: the hosted browser app at app.codewhale.net is not open yet. The
+> desktop app (Electron and React, a development build) is the client being
+> built. The local browser client, `codewhale web`, is released and needs no
+> account.
 
 ### What should I do when the model gets confused?
 

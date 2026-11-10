@@ -6,7 +6,7 @@ import { readCatalogue } from "@/lib/ratatui/catalogue";
 
 // Public, indexable routes (locale-prefixed). /admin and /api are
 // intentionally excluded; see app/robots.ts.
-const PATHS = ["", "/product", "/features", "/runtime", "/docs", "/faq", "/roadmap", "/enterprise", "/feed", "/digest", "/changelog", "/contribute", "/community", "/signin", "/legal/terms", "/legal/privacy"];
+const PATHS = ["", "/product", "/app", "/features", "/runtime", "/docs", "/faq", "/roadmap", "/enterprise", "/feed", "/digest", "/changelog", "/contribute", "/community", "/signin", "/legal/terms", "/legal/privacy"];
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const catalogue = readCatalogue();

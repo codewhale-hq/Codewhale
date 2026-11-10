@@ -38,7 +38,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-10T07:24:43.471Z",
+  "generatedAt": "2026-11-10T23:23:46.078Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -347,6 +347,22 @@ export const FACTS: RepoFacts = {
     }
   ],
   "models": [
+    {
+      "id": "gemini-4-carbon",
+      "provider": "Google",
+      "contextWindow": 1048576,
+      "maxOutput": 32768,
+      "reasoning": true,
+      "addedAt": "2026-11-10"
+    },
+    {
+      "id": "claude-fable-5-2",
+      "provider": "Anthropic",
+      "contextWindow": 1000000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-11-09"
+    },
     {
       "id": "tencent/hy4",
       "provider": "OpenRouter",

@@ -27,6 +27,10 @@
           "canonical": "anthropic/claude-fable-5-1"
         },
         {
+          "id": "claude-fable-5-2",
+          "canonical": "anthropic/claude-fable-5-2"
+        },
+        {
           "id": "claude-haiku-4-5",
           "canonical": "anthropic/claude-haiku-4-5"
         },
@@ -347,6 +351,10 @@
         {
           "id": "gemini-4-argon",
           "canonical": "google/gemini-4-argon"
+        },
+        {
+          "id": "gemini-4-carbon",
+          "canonical": "google/gemini-4-carbon"
         },
         {
           "id": "gemini-flash-latest"

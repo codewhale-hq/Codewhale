@@ -1,22 +1,17 @@
 # Community Assistant Agent
 
-The community assistant is a set of Cloudflare Cron Triggers that call `deepseek-flash` to draft triage comments, PR reviews, stale-issue nudges, duplicate suggestions, and weekly digests. **It never posts to GitHub directly.** Every output is a draft staged in Workers KV for maintainer review.
+The community assistant is a small set of Cloudflare Cron Triggers: the weekly digest drafter (`deepseek-flash`), the facts-drift refresher and the content watchers. Triage, PR-review, stale, duplicate and Today's Dispatch tasks were retired (§132.4); scheduled website upkeep now runs as pull requests from `.github/workflows/web-maintainer.yml` (see `maintainer/README.md`). **The Worker never posts to GitHub directly.** Every drafted output is staged in Workers KV for maintainer review.
 
 ## Architecture
 
 ```
 Cloudflare Cron Triggers
   └─ worker.ts scheduled() handler
-       ├─ */30 min  → triage (new issues) + pr-review (new PRs)
-       ├─ daily     → stale (30d inactive) + dupes (embed-similarity scan)
+       ├─ daily     → linkcheck + semantic-drift watchers
        ├─ weekly    → digest (Mon 09:00 UTC)
-       └─ 6h       → curate (Today's Dispatch — pre-existing)
+       └─ 6h       → facts-drift
 
 Drafts stored in Workers KV (keys always derived via `draftStorageKey` in `lib/community-agent.ts`):
-  draft:triage:<issue-number>
-  draft:pr-review:<pr-number>
-  draft:stale:<issue-number>
-  draft:dupes:<issue-number>
   draft:digest:<year>-W<week>
   draft:linkcheck:<slug>-<sha256-16>          (identity: full broken URL)
   draft:semantic-drift:<slug>-<sha256-16>     (identity: page+claim+evidence+replacement)
@@ -47,9 +42,8 @@ Usage logged to (one record per model call; sum the day's prefix):
 
 | Expression | Frequency | Tasks |
 |---|---|---|
-| `0 */6 * * *` | Every 6 hours | Today's Dispatch (curate) |
-| `*/30 * * * *` | Every 30 min | Issue triage + PR review |
-| `0 0 * * *` | Daily 00:00 UTC | Stale issue nudges + duplicate detection |
+| `0 */6 * * *` | Every 6 hours | Facts drift |
+| `0 0 * * *` | Daily 00:00 UTC | Link check + semantic drift |
 | `0 9 * * 1` | Monday 09:00 UTC | Weekly digest |
 
 ## Voice constraints
@@ -132,10 +126,10 @@ One-time setup before the first `npm run deploy`:
 
 To disable the community agent entirely:
 
-1. Remove all cron triggers from `cloudflare.config.ts` except the original `0 */6 * * *` (curate).
+1. Remove all cron triggers from `cloudflare.config.ts` except the `0 */6 * * *` facts-drift cron.
 2. Redeploy: `npm run deploy`.
 
-The curate cron (Today's Dispatch) continues working independently. Individual tasks remain callable manually for testing through `/api/cron?task=triage`, `/api/cron?task=pr-review`, etc.
+Facts drift continues working independently. Individual tasks remain callable manually for testing through `/api/cron?task=digest`, `/api/cron?task=linkcheck`, etc.
 
 To disable a specific cron task, remove its cron expression from `cloudflare.config.ts` and redeploy.
 

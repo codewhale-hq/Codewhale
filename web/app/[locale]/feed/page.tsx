@@ -25,6 +25,7 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
 
 export default async function FeedPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
+  const han = locale === "zh";
   const t = getFeed(locale);
 
   const env = await getEnv();
@@ -78,6 +79,7 @@ export default async function FeedPage({ params }: { params: Promise<{ locale: s
     { href: "https://github.com/codewhale-hq/CodeWhale/compare", icon: "git-pull-request", label: t.openPull },
     { href: "https://github.com/codewhale-hq/CodeWhale/discussions/categories/q-a", icon: "message", label: t.startDiscussion },
   ];
+  const nothingLoaded = feed.length === 0 && issuesStatus !== "ok" && pullsStatus !== "ok";
   const columns = [
     { id: "feed-pulls", title: t.pulls, items: pulls, status: pullsStatus },
     { id: "feed-issues", title: t.issues, items: issues, status: issuesStatus },
@@ -86,14 +88,17 @@ export default async function FeedPage({ params }: { params: Promise<{ locale: s
   return (
     <>
       <PageHeader
-        seal="动"
+        seal={han ? "动" : undefined}
         title={t.title}
-        titleAside={t.titleAside}
-        titleAsideLang={t.titleAsideLang}
+        titleAside={han ? t.titleAside : undefined}
+        titleAsideLang={han ? t.titleAsideLang : undefined}
         lede={lede}
         pose="browse"
       />
       <div className="page-body">
+        {nothingLoaded ? (
+          <div className="feed-empty">{columnState(issuesStatus === "failed" || pullsStatus === "failed" ? "failed" : issuesStatus)}</div>
+        ) : (
         <div className="grid-2 feed-columns">
           {columns.map((column) => (
             <section key={column.id} className="feed-column" aria-labelledby={column.id}>
@@ -113,6 +118,7 @@ export default async function FeedPage({ params }: { params: Promise<{ locale: s
             </section>
           ))}
         </div>
+        )}
 
         <section className="page-section">
           <ul className="grid-3" role="list">

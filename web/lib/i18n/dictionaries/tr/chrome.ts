@@ -51,6 +51,7 @@ export const chrome: ChromeDict = {
   footerDocs: "Belgeler",
   footerGuide: "Başlangıç",
   footerInstall: "Kurulum",
+  footerApps: "Masaüstü ve web",
   footerModels: "Modeller",
   footerRuntime: "Runtime",
   footerFaq: "SSS",
@@ -65,6 +66,7 @@ export const chrome: ChromeDict = {
   footerReleases: " · Sürümler: ",
   footerReleasesLink: "GitHub sürümleri",
   footerSecurity: "Güvenlik",
+  footerLegal: "Yasal",
 
   switcherLabel: "Dil",
   switcherSwitchTo: "{label} diline geç",

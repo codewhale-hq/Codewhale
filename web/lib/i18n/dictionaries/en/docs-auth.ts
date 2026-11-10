@@ -67,11 +67,18 @@ codewhale auth status --provider deepseek`,
           p: "`codewhale auth list` shows the credential state Codewhale reports for each provider. For an API-key route, use `codewhale auth set --provider <name>` or its documented environment variable; OAuth and local routes have their own setup.",
         },
         {
-          p: "Local Ollama, vLLM and SGLang servers need no API key by default. Use a loopback endpoint for a model on your machine, then select the model tag it serves:",
+          p: "Save a key for another hosted provider, then select it and a model:",
         },
         {
-          code: `codewhale auth list
-codewhale --provider ollama --model <model-tag>`,
+          code: `codewhale auth set --provider anthropic
+codewhale --provider anthropic --model claude-sonnet-5-5`,
+          lang: "Terminal",
+        },
+        {
+          p: "A server you run yourself (vLLM, SGLang, Ollama) needs no API key by default. Connect a loopback endpoint, then select the model tag it serves:",
+        },
+        {
+          code: `codewhale --provider vllm --model <model-tag>`,
           lang: "Terminal",
         },
         {
@@ -84,7 +91,7 @@ codewhale --provider ollama --model <model-tag>`,
       title: "Codewhale accounts",
       blocks: [
         {
-          p: "A provider key and a Codewhale account are different things. Codewhale never needs an account, and new accounts are not open. Provider keys stay on your machine with `codewhale auth set`.",
+          p: "A provider key and a Codewhale account are different things. Local use never needs an account; anyone can sign in, and cloud computers are invite-only. Provider keys stay on your machine with `codewhale auth set`.",
         },
         {
           rows: [
@@ -95,7 +102,7 @@ codewhale --provider ollama --model <model-tag>`,
           codeTerms: true,
         },
         {
-          p: "`codewhale login` does not accept provider keys; those always go through `codewhale auth set`. The session is kept in your operating system's credential manager when one is available, and in the private Codewhale secrets file otherwise — for example over SSH or in a container.",
+          p: "`codewhale login` does not accept provider keys; those always go through `codewhale auth set`. The session is kept in your operating system's credential manager when one is available, and in the private Codewhale secrets file otherwise — for example over SSH or in a container. [Sign in to Codewhale](/docs/account) covers each surface step by step.",
         },
       ],
     },

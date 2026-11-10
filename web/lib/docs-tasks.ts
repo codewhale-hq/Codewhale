@@ -56,12 +56,23 @@ export const DOC_TASKS: DocTask[] = [
     id: "connect-provider",
     label: { en: "Connect a provider", zh: "连接模型提供商" },
     description: {
-      en: "Save a key for DeepSeek, OpenAI, Anthropic, OpenRouter, or another provider — or run a local model with no key.",
-      zh: "为 DeepSeek、OpenAI、Anthropic、OpenRouter 等提供商保存密钥，或者不用密钥运行本地模型。",
+      en: "Save a key for DeepSeek, Anthropic, OpenAI, Google or another provider, or run a model yourself with no key.",
+      zh: "为 DeepSeek、Anthropic、OpenAI、Google 等提供商保存密钥，或者不用密钥自己运行模型。",
     },
     href: "/docs/auth",
     topicId: "auth",
     keywords: { en: "api key byok auth set login account ollama vllm sglang local", zh: "密钥 登录 账户 本地模型" },
+  },
+  {
+    id: "sign-in",
+    label: { en: "Sign in to Codewhale", zh: "登录 Codewhale" },
+    description: {
+      en: "Sign in to an existing account from the web, the desktop app, or the terminal, and sign out again.",
+      zh: "在网页、桌面应用或终端登录已有账户，并在需要时退出登录。",
+    },
+    href: "/docs/account",
+    topicId: "account",
+    keywords: { en: "login logout sign out account export delete data privacy api key", zh: "登录 退出 账户 导出 删除 数据 隐私" },
   },
   {
     id: "choose-model",

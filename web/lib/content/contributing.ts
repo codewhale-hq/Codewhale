@@ -1,4 +1,5 @@
 import type { IconName } from "@/components/icon";
+import { FACTS } from "../facts.generated";
 import type { LocalizedText } from "./vocabulary";
 import { REPO_URL, REPO_ISSUES_URL } from "../i18n/links";
 
@@ -15,7 +16,7 @@ export const SKILL_CONTRIBUTION: ContributionPath = {
     en: "Package a checklist or report format with the two-file plugin tutorial.",
     zh: "用两文件插件教程，将清单或报告格式打包为可分享的技能。",
   },
-  href: "https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md",
+  href: `https://github.com/codewhale-hq/Codewhale/blob/${FACTS.latestPublishedRelease?.tag ?? "main"}/docs/PLUGIN_AUTHORING.md`,
   icon: "layers",
 };
 

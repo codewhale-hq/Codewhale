@@ -1,0 +1,52 @@
+.plugin-kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-surface);
+  overflow: hidden;
+}
+.plugin-kinds > li { display: grid; align-content: start; gap: var(--space-1); min-width: 0; padding: var(--space-4); background: var(--panel); }
+.plugin-kinds h3 { font-size: var(--text-ui); font-weight: 600; }
+.plugin-kinds p { color: var(--muted); font-size: var(--text-ui); line-height: 1.55; }
+
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 10rem), 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.connector-grid > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+}
+.connector-grid > li.connector-more { justify-content: center; border-style: dashed; font-size: var(--text-ui); }
+.connector-name { font-size: var(--text-ui); font-weight: 500; overflow-wrap: anywhere; }
+.connector-auth { flex: none; color: var(--muted); font-size: var(--text-caption); }
+
+.plugin-version { color: var(--muted); font-weight: 400; }
+
+.plugin-flow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.plugin-flow > li { display: grid; align-content: start; gap: var(--space-1); min-width: 0; color: var(--muted); font-size: var(--text-ui); line-height: 1.5; }
+.plugin-flow-title { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text); font-weight: 600; }
+.plugin-flow-command { font-family: var(--font-mono); font-size: var(--text-caption); color: var(--text); overflow-wrap: anywhere; }

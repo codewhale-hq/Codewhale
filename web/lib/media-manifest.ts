@@ -41,11 +41,11 @@ import type { LocalizedText } from "./content/vocabulary";
 export const TERMINAL_SCREENSHOT = {
   capture: "web/lib/terminal-captures/website-home-100x24.json",
   src: "/codewhale-tui-0102-demo.png",
-  width: 1000,
-  height: 480,
-  version: "0.10.2",
-  sourceCommit: "bd0c32567024d5bc3efac7d13331c68711de031e",
-  sha256: "43ebde941cedb690612945b712e9565e92a441045c78646bf8841f3ad43ac369",
+  width: 1872,
+  height: 956,
+  version: "0.10.3",
+  sourceCommit: "e5279420647e15896150728ecf9a1f9fa80aadd1",
+  sha256: "89e30c3e2f31c0c189d8162bdc253f8e36b4bbf4ffc1f56271f88f8a48eff8cb",
 } as const;
 
 /** Published-asset budgets; see the module contract for what tests inspect. */

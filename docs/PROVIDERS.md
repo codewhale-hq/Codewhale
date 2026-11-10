@@ -841,7 +841,7 @@ configuration path instead of guessing a vendor page.
 | `csdn` | [CSDN 星图 console](https://ai.csdn.net/workbench/api-key) — choose the Coding Plan key type for the `glm_for_coding` plan route; a general key bills metered. Docs: [Coding Plan](https://ai.csdn.net/coding-plan). |
 | `concentrate` | [Concentrate dashboard](https://concentrate.ai/) → API Keys → Create API Key (a Universal API key); docs: [API introduction](https://concentrate.ai/docs/api-reference/introduction). BYOK only — the key stays in the local secret store. |
 | `modelstudio-token-plan`, `modelstudio-token-plan-anthropic`, `modelstudio-coding-plan`, `modelstudio-coding-plan-anthropic` | [Alibaba Cloud Model Studio (Bailian console)](https://bailian.console.aliyun.com/) — create or copy a Model Studio API key. |
-| `codewhale` | [Codewhale account settings](https://app.codewhale.net/settings?section=api) — create an API key with the `models:infer` scope, or run `codewhale account api-keys create --name <name> --use`. |
+| `codewhale` | Codewhale account API key — create one with the `models:infer` scope by running `codewhale account api-keys create --name <name> --use` from a signed-in terminal. |
 | `custom` | Set the named provider's `base_url` and `api_key_env` or `api_key`; no canonical vendor credential page exists. |
 
 For Kimi, the official [quickstart](https://platform.kimi.ai/docs/overview)

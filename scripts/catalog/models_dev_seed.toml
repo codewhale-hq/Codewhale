@@ -21,6 +21,13 @@
 [source]
 url = "https://models.dev/catalog.json"
 
+# `seed discover` lists models from the allowlisted vendors that models.dev
+# released inside since_days and the public list does not carry. skip names ids
+# a maintainer decided not to list, so the scheduled job stops proposing them.
+[discover]
+since_days = 45
+skip = []
+
 [meta]
 about = "Offline fallback Models.dev-shaped catalog snapshot for Codewhale (#3385, demoted by #4188, generated since #6396)."
 schema = "Matches crates/config/src/models_dev.rs ModelsDevCatalog ({ models, providers })."
@@ -245,6 +252,7 @@ models = [
   "claude-sonnet-5-5",
   "claude-haiku-5-5",
   "claude-fable-5-1",
+  "claude-fable-5-2",
 ]
 
 [[providers]]
@@ -381,6 +389,7 @@ env = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]
 default = "gemini-3.1-pro-preview"
 models = [
   "gemini-4-argon",
+  "gemini-4-carbon",
   "gemini-3.8-flash",
   "gemini-3.7-flash",
   "gemini-3.6-flash",

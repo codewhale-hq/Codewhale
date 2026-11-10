@@ -78,12 +78,24 @@ export const DOC_TOPICS: DocTopic[] = [
     category: "getting-started",
   },
   {
+    id: "account",
+    slug: "account",
+    label: { en: "Sign in to Codewhale", zh: "登录 Codewhale" },
+    description: {
+      en: "Sign in to an existing account from the web, the desktop app, or the terminal, sign out, and find data export and deletion.",
+      zh: "在网页、桌面应用或终端登录已有账户、退出登录，以及找到数据导出和删除的入口。",
+    },
+    repoSource: ["docs/CONFIGURATION.md", "docs/PROVIDERS.md"],
+    hasPage: true,
+    category: "getting-started",
+  },
+  {
     id: "providers",
     slug: "providers",
     label: { en: "Choose a model", zh: "选择模型" },
     description: {
-      en: "Supported providers, switching models, and local runners such as Ollama, vLLM, and SGLang.",
-      zh: "支持的提供商、切换模型，以及 Ollama、vLLM、SGLang 等本地运行器。",
+      en: "Supported providers, switching models, and running a model yourself.",
+      zh: "支持的提供商、切换模型，以及自己运行模型。",
     },
     repoSource: ["docs/PROVIDERS.md", "docs/MODEL_LAB.md"],
     hasPage: true,
