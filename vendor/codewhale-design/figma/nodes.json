@@ -1,0 +1,790 @@
+{
+ "fileKey": "4JlhR4mjtaginZwjaqZ0NU",
+ "capturedAt": "2026-11-10",
+ "note": "Read-only. source 'mcp get_metadata' means the official Figma MCP returned this node on capturedAt (page list, 229:6 and 267:8); source 'inventory' means the id came from the 2026-11-10 inventory and is verified separately by spot check. Figma exposes no per-node dates.",
+ "nodes": [
+  {
+   "id": "229:2",
+   "name": "Start here",
+   "type": "page",
+   "page": "Start here",
+   "registry": "figma-page.start-here",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "229:3",
+   "name": "Foundations 5",
+   "type": "page",
+   "page": "Foundations 5",
+   "registry": "figma-page.foundations-5",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "267:8",
+   "name": "Whale 5",
+   "type": "page",
+   "page": "Whale 5",
+   "registry": "figma-page.whale-5",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "229:4",
+   "name": "Components 5 · Controls",
+   "type": "page",
+   "page": "Components 5 · Controls",
+   "registry": "figma-page.components-controls",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "214:2",
+   "name": "Components 5 · Sessions and tasks",
+   "type": "page",
+   "page": "Components 5 · Sessions and tasks",
+   "registry": "figma-page.components-sessions",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "229:5",
+   "name": "Components 5 · App",
+   "type": "page",
+   "page": "Components 5 · App",
+   "registry": "figma-page.components-app",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "229:6",
+   "name": "Screens 5 · Desktop and web",
+   "type": "page",
+   "page": "Screens 5 · Desktop and web",
+   "registry": "figma-page.screens-5",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "229:7",
+   "name": "——— Archive · GPUI era and tokens 1.0.0 (not current) ———",
+   "type": "page",
+   "page": "——— Archive · GPUI era and tokens 1.0.0 (not current) ———",
+   "registry": "figma-page.archive-divider",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "0:1",
+   "name": "Archive · Cover",
+   "type": "page",
+   "page": "Archive · Cover",
+   "registry": "figma-page.archive-cover",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "3:11",
+   "name": "Archive · Foundations",
+   "type": "page",
+   "page": "Archive · Foundations",
+   "registry": "figma-page.archive-foundations",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "3:12",
+   "name": "Archive · Components",
+   "type": "page",
+   "page": "Archive · Components",
+   "registry": "figma-page.archive-components",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "3:13",
+   "name": "Archive · Compositions",
+   "type": "page",
+   "page": "Archive · Compositions",
+   "registry": "figma-page.archive-compositions",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "28:2",
+   "name": "Archive · Mobile",
+   "type": "page",
+   "page": "Archive · Mobile",
+   "registry": "figma-page.archive-mobile",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "31:2",
+   "name": "Archive · Addendum — thinkorswim",
+   "type": "page",
+   "page": "Archive · Addendum — thinkorswim",
+   "registry": "figma-page.archive-thinkorswim",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "52:2",
+   "name": "Archive · Beta — accounts and connectors · 2026-09-23",
+   "type": "page",
+   "page": "Archive · Beta — accounts and connectors · 2026-09-23",
+   "registry": "figma-page.archive-beta",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "95:2",
+   "name": "Archive · Direction",
+   "type": "page",
+   "page": "Archive · Direction",
+   "registry": "figma-page.archive-direction",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "101:2",
+   "name": "Archive · Project / Threads",
+   "type": "page",
+   "page": "Archive · Project / Threads",
+   "registry": "figma-page.archive-project-threads",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "118:2",
+   "name": "Archive · Opus · proportions · 2026-10-06",
+   "type": "page",
+   "page": "Archive · Opus · proportions · 2026-10-06",
+   "registry": "figma-page.archive-opus",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "173:2114",
+   "name": "Archive · Claude parity · Full UX map · 2026-10-09",
+   "type": "page",
+   "page": "Archive · Claude parity · Full UX map · 2026-10-09",
+   "registry": "figma-page.archive-claude-parity",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "293:8",
+   "name": "Archive · Unapproved whale study · 2026-11-09",
+   "type": "page",
+   "page": "Archive · Unapproved whale study · 2026-11-09",
+   "registry": "figma-page.archive-whale-study",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (page list)"
+  },
+  {
+   "id": "240:9",
+   "name": "01 Main window · Dark",
+   "type": "frame",
+   "page": "Screens 5 · Desktop and web",
+   "registry": "screen.desktop.main-window",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 229:6"
+  },
+  {
+   "id": "241:550",
+   "name": "02 Main window · Light",
+   "type": "frame",
+   "page": "Screens 5 · Desktop and web",
+   "registry": "screen.desktop.main-window",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 229:6"
+  },
+  {
+   "id": "241:617",
+   "name": "Web · Main window · Dark",
+   "type": "frame",
+   "page": "Screens 5 · Desktop and web",
+   "registry": "surface.web.app-web",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 229:6"
+  },
+  {
+   "id": "242:1255",
+   "name": "03 New session · Dark",
+   "type": "frame",
+   "page": "Screens 5 · Desktop and web",
+   "registry": null,
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 229:6 ; spot-checked by direct get_metadata"
+  },
+  {
+   "id": "243:1344",
+   "name": "04 Settings · Appearance · Dark",
+   "type": "frame",
+   "page": "Screens 5 · Desktop and web",
+   "registry": null,
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 229:6"
+  },
+  {
+   "id": "269:8",
+   "name": "Codewhale/Mark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "mark.mono",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:9",
+   "name": "Codewhale/Whale",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.whale-b",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:18",
+   "name": "Codewhale/Pose",
+   "type": "frame",
+   "page": "Whale 5",
+   "registry": "whale.family.pose",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:10",
+   "name": "Pose=uncurl-0",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.pose-uncurl-0",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:11",
+   "name": "Pose=uncurl-25",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.pose-uncurl-25",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:12",
+   "name": "Pose=uncurl-50",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.pose-uncurl-50",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:13",
+   "name": "Pose=uncurl-75",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.pose-uncurl-75",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:14",
+   "name": "Pose=uncurl-100",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.pose-uncurl-100",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:15",
+   "name": "Pose=stroke-up",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.pose-stroke-up",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:16",
+   "name": "Pose=stroke-down",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.pose-stroke-down",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:17",
+   "name": "Pose=blink",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.pose-blink",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:45",
+   "name": "Codewhale/Indicator",
+   "type": "frame",
+   "page": "Whale 5",
+   "registry": "whale.family.fluke",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:19",
+   "name": "Frame=0, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-0",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:20",
+   "name": "Frame=0, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-0-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8 ; spot-checked by direct get_metadata"
+  },
+  {
+   "id": "269:21",
+   "name": "Frame=1, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-1",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:22",
+   "name": "Frame=1, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-1-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:23",
+   "name": "Frame=2, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-2",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:24",
+   "name": "Frame=2, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-2-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:25",
+   "name": "Frame=3, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-3",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:26",
+   "name": "Frame=3, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-3-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:27",
+   "name": "Frame=4, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-4",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:28",
+   "name": "Frame=4, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-4-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:29",
+   "name": "Frame=5, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-5",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:30",
+   "name": "Frame=5, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-5-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:31",
+   "name": "Frame=6, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-6",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:32",
+   "name": "Frame=6, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-6-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:33",
+   "name": "Frame=7, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-7",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:34",
+   "name": "Frame=7, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-7-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:35",
+   "name": "Frame=8, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-8",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:36",
+   "name": "Frame=8, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-8-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:37",
+   "name": "Frame=9, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-9",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:38",
+   "name": "Frame=9, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-9-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:39",
+   "name": "Frame=10, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-10",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:40",
+   "name": "Frame=10, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-10-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:41",
+   "name": "Frame=11, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-11",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:42",
+   "name": "Frame=11, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-11-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:43",
+   "name": "Frame=Waiting, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-waiting",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:44",
+   "name": "Frame=Waiting, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.fluke-waiting-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:52",
+   "name": "Archive · Rejected pictograms · Codewhale/Sign",
+   "type": "frame",
+   "page": "Whale 5",
+   "registry": "whale.family.sign",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8 ; spot-checked by direct get_metadata"
+  },
+  {
+   "id": "269:46",
+   "name": "Sign=Needs you, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.sign-waiting",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:47",
+   "name": "Sign=Needs you, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.sign-waiting-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:48",
+   "name": "Sign=Blocked, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.sign-blocked",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:49",
+   "name": "Sign=Blocked, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.sign-blocked-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:50",
+   "name": "Sign=Ready, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.sign-complete",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:51",
+   "name": "Sign=Ready, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.sign-complete-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:59",
+   "name": "Codewhale/Formation",
+   "type": "frame",
+   "page": "Whale 5",
+   "registry": "whale.family.drones",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:53",
+   "name": "Shape=C, sidebar, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.drones-sidebar",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:54",
+   "name": "Shape=C, sidebar, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.drones-sidebar-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:55",
+   "name": "Shape=C, launch, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.drones-launch",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:56",
+   "name": "Shape=C, launch, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.drones-launch-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:57",
+   "name": "Shape=Whale, Theme=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.drones-whale",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:58",
+   "name": "Shape=Whale, Theme=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.drones-whale-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:63",
+   "name": "Codewhale/App icon",
+   "type": "frame",
+   "page": "Whale 5",
+   "registry": "whale.family.icon",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:60",
+   "name": "Look=Light",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.icon-light",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:61",
+   "name": "Look=Dark",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.icon-dark",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "269:62",
+   "name": "Look=Tinted",
+   "type": "symbol",
+   "page": "Whale 5",
+   "registry": "whale.svg.icon-tinted",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata 267:8"
+  },
+  {
+   "id": "245:2",
+   "name": "Start here frame",
+   "type": "frame",
+   "page": "Start here / Foundations 5",
+   "registry": "figma-page.start-here",
+   "capturedAt": "2026-11-10",
+   "source": "inventory"
+  },
+  {
+   "id": "245:42",
+   "name": "Not drawn yet",
+   "type": "frame",
+   "page": "Start here / Foundations 5",
+   "registry": "figma-page.start-here",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (spot check 2026-11-10)"
+  },
+  {
+   "id": "231:216",
+   "name": "Whale/Mark",
+   "type": "symbol",
+   "page": "Start here / Foundations 5",
+   "registry": "mark.mono",
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (spot check 2026-11-10)"
+  },
+  {
+   "id": "238:90",
+   "name": "Icon/not-good",
+   "type": "symbol",
+   "page": "Start here / Foundations 5",
+   "registry": null,
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (spot check 2026-11-10)"
+  },
+  {
+   "id": "214:3",
+   "name": "Icon set section",
+   "type": "section",
+   "page": "Start here / Foundations 5",
+   "registry": "icon-family.set",
+   "capturedAt": "2026-11-10",
+   "source": "inventory"
+  },
+  {
+   "id": "245:4",
+   "name": "Whale/Mark",
+   "type": "instance",
+   "page": "Start here / Foundations 5",
+   "registry": null,
+   "capturedAt": "2026-11-10",
+   "source": "mcp get_metadata (spot check 2026-11-10)"
+  }
+ ]
+}

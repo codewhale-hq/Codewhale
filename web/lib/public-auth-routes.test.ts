@@ -13,10 +13,12 @@ import {
   publicAuthRemainder,
 } from "./public-auth-routes";
 
-const SHANNON_SANS_SHA256 = "e1abb82e681b502950da1b0f25e10de3eeb329ea6549315d828dbddf53a68951";
-const SHANNON_SANS_BYTES = 531084;
-const SHANNON_OFL_SHA256 = "19c20bff3654a225895067510552ef14ce64bbcdfb90f3ae04957548e9d2cf4f";
-const SHANNON_OFL_BYTES = 4463;
+const GEIST_SANS_SHA256 = "5c5588027e59e74e205b9d6c7fd877b261091cee367f6bb3a8d505da14cae512";
+const GEIST_SANS_BYTES = 69576;
+const GEIST_MONO_SHA256 = "cf5bf55f69e043b1ecf04b0719119b7298e94add67ebcaa709a925b945b46b25";
+const GEIST_MONO_BYTES = 71272;
+const GEIST_OFL_SHA256 = "930853ee1daa68554d9e35c8a9175affb74f699fad9a5da6ee5ebe76379d9137";
+const GEIST_OFL_BYTES = 4368;
 
 describe("public auth remainders and kinds", () => {
   it("recognizes the observed 404 paths with and without a locale prefix", () => {
@@ -75,12 +77,12 @@ describe("canonical mark", () => {
 });
 
 describe("website font assets", () => {
-  it("ships the pinned Shannon Sans face with the complete adjacent OFL notice", () => {
-    const font = readFileSync(new URL("../public/brand/fonts/ShannonSans-Variable.woff2", import.meta.url));
-    const license = readFileSync(new URL("../public/brand/fonts/OFL.txt", import.meta.url));
-    expect(font.length).toBe(SHANNON_SANS_BYTES);
-    expect(createHash("sha256").update(font).digest("hex")).toBe(SHANNON_SANS_SHA256);
-    expect(license.length).toBe(SHANNON_OFL_BYTES);
-    expect(createHash("sha256").update(license).digest("hex")).toBe(SHANNON_OFL_SHA256);
+  it("ships the pinned Geist faces with the complete adjacent OFL notice", () => {
+    const read = (name: string) => readFileSync(new URL(`../public/brand/fonts/${name}`, import.meta.url));
+    const sha = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+    const [sans, mono, license] = [read("Geist-Variable.woff2"), read("GeistMono-Variable.woff2"), read("OFL.txt")];
+    expect([sans.length, sha(sans)]).toEqual([GEIST_SANS_BYTES, GEIST_SANS_SHA256]);
+    expect([mono.length, sha(mono)]).toEqual([GEIST_MONO_BYTES, GEIST_MONO_SHA256]);
+    expect([license.length, sha(license)]).toEqual([GEIST_OFL_BYTES, GEIST_OFL_SHA256]);
   });
 });
