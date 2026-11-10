@@ -126,7 +126,7 @@ function getCustomDocSearchSections(locale: string): DocSearchSection[] {
     ]),
     section("/plugins", "connectors-title", pluginTitle, t(PLUGINS_COPY.connectorsTitle), [
       t(PLUGINS_COPY.connectorsLead), ...CONNECTORS.map(connector => connector.name), t(PLUGINS_COPY.connectorsNote),
-      t(PLUGINS_COPY.connectorsGoogle), t(PLUGINS_COPY.connectorsDesktop), t(PLUGINS_COPY.connectorsLink),
+      t(PLUGINS_COPY.connectorsGoogle), t(PLUGINS_COPY.connectorsLink),
     ]),
     section("/plugins", "catalog-title", pluginTitle, t(PLUGINS_COPY.catalogTitle), [
       t(PLUGINS_COPY.catalogLead), ...CATALOG_FEATURED.flatMap(entry => [entry.title, t(entry.detail), `/plugin marketplace install codewhale ${entry.name}`]),

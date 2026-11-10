@@ -2,8 +2,6 @@
 // (connections/catalog.json checked 2026-10-26). Do not edit by hand.
 export type ConnectorAuth = "oauth" | "token" | "none";
 
-export const CONNECTORS_CHECKED_AT = "2026-10-26";
-
 export const CONNECTORS: readonly { id: string; name: string; url: string; auth: ConnectorAuth }[] = [
   {
     "id": "baizhi",

@@ -102,16 +102,12 @@ export const PLUGINS_COPY = {
     zh: "个，见目录",
   },
   connectorsNote: {
-    en: "Each service documents its own connection route. That does not mean Codewhale has completed its sign-in, so run one read-only tool after you connect. OAuth works when you add the connector directly; a connector bundled in a plugin reads a token from your environment.",
-    zh: "每个服务各自说明连接方式，这并不表示 Codewhale 已完成其登录，所以连接后请先运行一个只读工具确认。直接添加的连接器可使用 OAuth；插件内置的连接器从环境变量读取令牌。",
+    en: "Add a connector directly to use OAuth; a connector bundled in a plugin can only read a token from your environment. Either way, run one read-only tool after connecting to confirm it works.",
+    zh: "直接添加的连接器可使用 OAuth；插件内置的连接器只能从环境变量读取令牌。无论哪种方式，连接后请先运行一个只读工具确认可用。",
   },
   connectorsGoogle: {
     en: "Gmail and Google Calendar have no connector here. The skills-google plugin adds workflows that use a Gmail or Calendar tool you have connected.",
     zh: "这里没有 Gmail 和 Google Calendar 连接器。skills-google 插件提供的工作流使用你已连接的 Gmail 或日历工具。",
-  },
-  connectorsDesktop: {
-    en: "The desktop app, which is still in development, opens connectors under Customize › Connectors and can import setups from Claude Desktop, Cursor, VS Code and other apps.",
-    zh: "仍在开发中的桌面应用在“Customize › Connectors”中管理连接器，并可从 Claude Desktop、Cursor、VS Code 等应用导入配置。",
   },
   connectorsLink: { en: "MCP setup, authentication and troubleshooting", zh: "MCP 设置、认证与故障排查" },
 

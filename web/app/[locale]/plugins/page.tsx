@@ -21,7 +21,7 @@ const AUTH_LABEL: Record<ConnectorAuth, LocalizedText> = {
 };
 
 const featuredConnectors = FEATURED_CONNECTORS.flatMap((id) => CONNECTORS.find((connector) => connector.id === id) ?? []);
-const exampleConnector = CONNECTORS.find((connector) => connector.id === "notion");
+const connectorCommands = "codewhale mcp add notion --url https://mcp.notion.com/mcp\ncodewhale mcp login notion";
 const pluginVersions = new Map(CATALOG_PLUGINS.map((plugin) => [plugin.name, plugin.version]));
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
@@ -35,9 +35,6 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
   const { locale } = await params;
   const t = (copy: LocalizedText) => pickText(copy, locale);
   const localHref = (href: string) => (href.startsWith("/") ? `/${locale}${href}` : href);
-  const connectorCommands = exampleConnector
-    ? `codewhale mcp add ${exampleConnector.id} --url ${exampleConnector.url}\ncodewhale mcp login ${exampleConnector.id}`
-    : "";
   const moreConnectors = CONNECTORS.length - featuredConnectors.length;
   const moreCatalog = CATALOG_PLUGINS.length - CATALOG_FEATURED.length;
 
@@ -98,7 +95,6 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
           <div className="stack mt-4">
             <p className="section-scope">{t(PLUGINS_COPY.connectorsNote)}</p>
             <p className="section-scope">{t(PLUGINS_COPY.connectorsGoogle)}</p>
-            <p className="section-scope">{t(PLUGINS_COPY.connectorsDesktop)}</p>
             <Link href={`/${locale}/docs/mcp`} className="section-link">
               {t(PLUGINS_COPY.connectorsLink)}
               <Icon name="arrow-right" className="icon icon-flip" />
