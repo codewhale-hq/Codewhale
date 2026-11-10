@@ -385,6 +385,19 @@
         "source": "official vendor model docs, verified 2026-10-17; see source_receipts",
         "family": "Anthropic"
       },
+      "claude-fable-5-2": {
+        "context_window": 1000000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ],
+        "supported_parameters": [
+          "reasoning"
+        ],
+        "reasoning": true,
+        "source": "https://models.dev/api.json anthropic/claude-fable-5-2, retrieved 2026-11-10",
+        "family": "Anthropic"
+      },
       "claude-opus-5-5": {
         "context_window": 1000000,
         "max_output": 128000,
@@ -1618,6 +1631,13 @@
       "gemini-4-argon": {
         "source": "official vendor model docs, verified 2026-10-17; see source_receipts",
         "context_window": 1048576,
+        "family": "Google"
+      },
+      "gemini-4-carbon": {
+        "source": "https://models.dev/api.json google/gemini-4-carbon, retrieved 2026-11-10",
+        "context_window": 1048576,
+        "max_output": 32768,
+        "reasoning": true,
         "family": "Google"
       },
       "gemini-3-pro-preview": {
@@ -3794,6 +3814,14 @@
         ]
       },
       {
+        "id": "claude-fable-5-2",
+        "label": "Anthropic",
+        "added_at": "2026-11-09",
+        "aliases": [
+          "claude-fable-5-2"
+        ]
+      },
+      {
         "id": "gpt-6-sol",
         "label": "OpenAI",
         "added_at": "2026-10-17",
@@ -3823,6 +3851,14 @@
         "added_at": "2026-10-17",
         "aliases": [
           "gemini-4-argon"
+        ]
+      },
+      {
+        "id": "gemini-4-carbon",
+        "label": "Google",
+        "added_at": "2026-11-10",
+        "aliases": [
+          "gemini-4-carbon"
         ]
       },
       {
