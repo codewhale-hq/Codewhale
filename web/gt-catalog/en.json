@@ -715,8 +715,8 @@
           {
             "rows": [
               [
-                "Your message appears but nothing answers",
-                "No key is configured, and v0.10.0 does not warn you. Press F3, choose your provider, and paste the key."
+                "No answer arrives",
+                "Check `codewhale --version`: in v0.10.2, a missing model keeps your message in the composer and opens provider setup, so connect a model and send it again. If setup is complete, check `codewhale auth status --provider <name>`, then run `codewhale doctor --probe-api` for your selected hosted route or `codewhale doctor --probe-local` for a local model; these probes contact the service."
               ],
               [
                 "`API key not found`",

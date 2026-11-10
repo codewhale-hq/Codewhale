@@ -715,8 +715,8 @@
           {
             "rows": [
               [
-                "消息发出后一直没有回复",
-                "没有配置密钥，而 v0.10.0 不会提示你。按 F3，选择你的提供商，粘贴密钥。"
+                "一直没有回复",
+                "先运行 `codewhale --version` 查看版本：在 v0.10.2 中，未连接模型时消息会保留在输入框，并打开提供商设置，请连接模型后重新发送。如果已完成设置，先用 `codewhale auth status --provider <name>` 查看所选提供商的凭据状态，再用 `codewhale doctor --probe-api` 检查当前托管服务，或用 `codewhale doctor --probe-local` 检查本地模型；这些检查会连接相应服务。"
               ],
               [
                 "`API key not found`",
