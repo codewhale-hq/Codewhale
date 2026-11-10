@@ -8,7 +8,7 @@ Sources of truth, read-only (never edit them):
 - web/COPY_STYLE.md and web/MESSAGING.md: how site copy is written.
 
 Files you may edit, and only these:
-- web/lib/content/**/*.ts and web/lib/i18n/dictionaries/en/**/*.ts, excluding *.generated.ts and *.test.ts.
+- the files listed on the `copy-freshness:` lines of web/maintainer/allowlist.txt. Legal, constitution, enterprise, partner, merch, availability, pricing, roadmap and project copy is never editable, and any edit outside the list fails the run.
 
 How to work:
 1. Search the editable files for version numbers (v0.x.y, 0.x.y), model ids, provider names and counts, and install or upgrade commands.

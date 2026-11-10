@@ -81,7 +81,7 @@ afterEach(() => {
 describe("public security boundaries", () => {
   it("rejects a non-draft admin key before any draft KV read or delete", async () => {
     const kv = new FakeKv();
-    kv.values.set("dispatch:latest", JSON.stringify({ state: "running" }));
+    kv.values.set("agent:state:latest", JSON.stringify({ state: "running" }));
     securityMocks.getAgentEnv.mockResolvedValue({
       CURATED_KV: kv,
       MAINTAINER_TOKEN: "configured",
@@ -94,7 +94,7 @@ describe("public security boundaries", () => {
         cookie: "mt_sid=test-session",
         origin: "https://codewhale.net",
       },
-      body: JSON.stringify({ action: "discard", draftKey: "dispatch:latest" }),
+      body: JSON.stringify({ action: "discard", draftKey: "agent:state:latest" }),
     }));
 
     await expect(response.json()).resolves.toEqual({ error: "invalid draftKey namespace" });
@@ -102,7 +102,7 @@ describe("public security boundaries", () => {
     expect(securityMocks.validateSession).toHaveBeenCalledOnce();
     expect(kv.reads).toEqual([]);
     expect(kv.deleted).toEqual([]);
-    expect(kv.values.has("dispatch:latest")).toBe(true);
+    expect(kv.values.has("agent:state:latest")).toBe(true);
   });
 
   it("never forwards an ambient server token through the public feed route", async () => {

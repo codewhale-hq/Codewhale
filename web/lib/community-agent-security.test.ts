@@ -74,7 +74,7 @@ describe("community-agent draft boundary", () => {
 
   it("accepts only canonical draft namespaces and bounded ids", () => {
     expect(parseDraftKey("draft:semantic-drift:123")).toEqual({ type: "semantic-drift", id: "123" });
-    expect(parseDraftKey("dispatch:latest")).toBeNull();
+    expect(parseDraftKey("agent:state:latest")).toBeNull();
     expect(parseDraftKey("draft:unknown:123")).toBeNull();
     expect(parseDraftKey("draft:linkcheck:bad:id")).toBeNull();
     expect(() => draftKey("linkcheck", "bad:id")).toThrow("invalid draft id");
@@ -85,7 +85,7 @@ describe("community-agent draft boundary", () => {
     kv.values.set("draft:linkcheck:42", JSON.stringify({ generatedAt: "2026-07-17T00:00:00.000Z" }));
     kv.values.set("draft:linkcheck:43", JSON.stringify(draft()));
 
-    await expect(getDraft(kv, "dispatch:latest")).resolves.toBeNull();
+    await expect(getDraft(kv, "agent:state:latest")).resolves.toBeNull();
     await expect(getDraft(kv, "draft:linkcheck:42")).resolves.toBeNull();
     await expect(getDraft(kv, "draft:linkcheck:43")).resolves.toBeNull();
     await expect(listDrafts(kv)).resolves.toEqual([]);
@@ -93,11 +93,11 @@ describe("community-agent draft boundary", () => {
 
   it("never lets the draft deletion helper cross into another KV namespace", async () => {
     const kv = new FakeKv();
-    kv.values.set("dispatch:latest", JSON.stringify({ state: "running" }));
+    kv.values.set("agent:state:latest", JSON.stringify({ state: "running" }));
 
-    await expect(deleteDraft(kv, "dispatch:latest")).rejects.toThrow("invalid draft key");
+    await expect(deleteDraft(kv, "agent:state:latest")).rejects.toThrow("invalid draft key");
     expect(kv.deleted).toEqual([]);
-    expect(kv.values.has("dispatch:latest")).toBe(true);
+    expect(kv.values.has("agent:state:latest")).toBe(true);
 
     await saveDraft(kv.draftStores, draft());
     await expect(deleteDraft(kv, "draft:linkcheck:42")).resolves.toBeUndefined();

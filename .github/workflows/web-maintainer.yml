@@ -56,7 +56,7 @@ jobs:
   derived:
     name: Derived files
     needs: plan
-    if: needs.plan.outputs.derived == 'true'
+    if: needs.plan.result == 'success' && needs.plan.outputs.derived == 'true' && vars.WEB_MAINTAINER_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -107,12 +107,10 @@ jobs:
       - name: Run the web checks on the regenerated tree
         if: steps.drift.outputs.drift == 'true'
         working-directory: web
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           npm run check
           npx vitest run
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: steps.drift.outputs.drift == 'true'
         with:
           name: web-maintainer-derived
@@ -123,7 +121,7 @@ jobs:
   lane:
     name: Lane ${{ matrix.lane }}
     needs: plan
-    if: needs.plan.outputs.lanes != '[]'
+    if: needs.plan.result == 'success' && needs.plan.outputs.lanes != '[]' && vars.WEB_MAINTAINER_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -151,6 +149,28 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Prove the command sandbox works or stop
+        run: |
+          sudo apt-get install -y --no-install-recommends bubblewrap util-linux >/dev/null
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null || true
+          probe="$GITHUB_WORKSPACE/.sandbox-probe"
+          rm -f "$probe" /usr/local/sandbox-probe
+          if ! timeout 10 bash -c 'exec 3<>/dev/tcp/api.deepseek.com/443'; then
+            echo "::error::the runner cannot reach api.deepseek.com, so the network denial cannot be proven."
+            exit 1
+          fi
+          if ! /usr/bin/bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
+            --bind "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE" --chdir "$GITHUB_WORKSPACE" -- \
+            bash -c 'touch .sandbox-probe && ! touch /usr/local/sandbox-probe 2>/dev/null && ! timeout 10 bash -c "exec 3<>/dev/tcp/api.deepseek.com/443" 2>/dev/null'; then
+            echo "::error::bubblewrap did not confine a child on this runner (writes outside the workspace or outbound network were not denied). Refusing to give a model a shell."
+            exit 1
+          fi
+          if [ ! -e "$probe" ] || [ -e /usr/local/sandbox-probe ]; then
+            echo "::error::sandbox probe left unexpected state. Refusing to give a model a shell."
+            exit 1
+          fi
+          rm -f "$probe"
+          echo "Sandbox probe passed: workspace-only writes, no outbound network." >> "$GITHUB_STEP_SUMMARY"
       - name: Stage trusted tooling and the pinned CLI
         run: |
           mkdir -p "$RUNNER_TEMP/trusted" "$RUNNER_TEMP/home"
@@ -161,6 +181,11 @@ jobs:
       - name: Probe outbound links
         if: matrix.lane == 'link-health'
         run: node web/maintainer/link-report.mjs "$GITHUB_WORKSPACE/.git/maintainer-input/link-report.json"
+      - name: Record the git state the model must not change
+        run: |
+          git config --local --list | sort > "$RUNNER_TEMP/git-config.before"
+          find .git/hooks -type f ! -name '*.sample' > "$RUNNER_TEMP/hooks.before"
+          test ! -s "$RUNNER_TEMP/hooks.before"
       - name: Run the lane on DeepSeek
         timeout-minutes: 25
         env:
@@ -192,11 +217,13 @@ jobs:
       - name: Enforce the path allowlist
         id: scope
         run: |
-          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
-            echo "::error::the lane left untracked files"
-            git ls-files --others --exclude-standard
+          if git status --porcelain --untracked-files=all --ignored | grep -qv '^ M '; then
+            echo "::error::the lane left untracked, ignored, staged or non-edit entries"
+            git status --porcelain --untracked-files=all --ignored | grep -v '^ M '
             exit 1
           fi
+          git config --local --list | sort | diff - "$RUNNER_TEMP/git-config.before" || { echo "::error::the lane changed .git/config"; exit 1; }
+          find .git/hooks -type f ! -name '*.sample' | diff - "$RUNNER_TEMP/hooks.before" || { echo "::error::the lane added git hooks"; exit 1; }
           git diff --name-status | node "$RUNNER_TEMP/trusted/check-allowlist.mjs" "$RUNNER_TEMP/trusted/allowlist.txt" "$LANE"
           if [ -n "$(git diff --summary)" ]; then
             echo "::error::the lane created, deleted or changed modes"
@@ -215,19 +242,25 @@ jobs:
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
           { echo "Lane ${LANE} proposes:"; echo '```text'; git diff --stat; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Install web dependencies
+      - name: Fresh checkout for verification
         if: steps.scope.outputs.changed == 'true'
-        working-directory: web
-        run: npm ci --no-audit --no-fund
-      - name: Run the web checks on the proposal
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: main
+          path: verify
+          persist-credentials: false
+      - name: Run the web checks on the proposal in a clean tree without secrets
         if: steps.scope.outputs.changed == 'true'
-        working-directory: web
         env:
-          GH_TOKEN: ${{ github.token }}
+          PATCH: ${{ runner.temp }}/out/change.patch
         run: |
+          cd verify
+          git apply --index --whitespace=nowarn "$PATCH"
+          cd web
+          npm ci --no-audit --no-fund
           npm run check
           npx vitest run
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: steps.scope.outputs.changed == 'true'
         with:
           name: web-maintainer-${{ matrix.lane }}
@@ -238,30 +271,43 @@ jobs:
   publish:
     name: Open pull requests
     needs: [plan, derived, lane]
-    if: always() && needs.plan.result == 'success'
+    if: always() && needs.plan.result == 'success' && vars.WEB_MAINTAINER_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
     steps:
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        continue-on-error: true
+        with:
+          pattern: web-maintainer-*
+          path: ${{ runner.temp }}/patches
+      - name: Look for proposed patches
+        id: patches
+        run: |
+          if [ -n "$(find "$RUNNER_TEMP/patches" -name change.patch -size +0c 2>/dev/null)" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No lane proposed a change; no pull request opened." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: steps.patches.outputs.found == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         id: app-token
         with:
           app-id: ${{ vars.CODEWHALE_APP_ID }}
           private-key: ${{ secrets.CODEWHALE_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - if: steps.patches.outputs.found == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           ref: main
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          pattern: web-maintainer-*
-          path: ${{ runner.temp }}/patches
       - name: Open or update one pull request per lane
+        if: steps.patches.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           APP_ID: ${{ vars.CODEWHALE_APP_ID }}
