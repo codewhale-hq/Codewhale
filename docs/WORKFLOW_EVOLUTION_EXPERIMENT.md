@@ -86,6 +86,13 @@ minimum makespan. Run it with
 This task was frozen after the earlier public gates admitted all first
 generation candidates; its results remain a separate task and seed.
 
+The `examples/experimental-evolution-jsonpath` fixture exercises a small
+JSONPath grammar with recursive descent, slicing, filters, JSON value
+comparison and parse errors. Its public and held-out process gates have 41
+and 13 cases. Run it with `--fixture examples/experimental-evolution-jsonpath`
+and its own output directory. This fourth task was added after the scheduler
+smoke also passed at generation zero.
+
 The frozen task does not expose the held-out gate to worker prompts. Mutation
 uses the public failure excerpt and parent receipt; the held-out gate runs
 only for the provisional winner's independent replay.
