@@ -797,7 +797,18 @@ fn anthropic_tool_choice(tool_choice: &Value, model: &str) -> Value {
         Some("none") => json!({ "type": "none" }),
         Some("any" | "required") => json!({ "type": "any" }),
         Some(name) => json!({ "type": "tool", "name": to_api_tool_name(name) }),
-        None => tool_choice.clone(),
+        None => match forced_tool_name(tool_choice) {
+            Some(name) => {
+                let mut choice = tool_choice.clone();
+                choice["type"] = json!("tool");
+                choice["name"] = json!(to_api_tool_name(name));
+                if let Some(object) = choice.as_object_mut() {
+                    object.remove("function");
+                }
+                choice
+            }
+            None => tool_choice.clone(),
+        },
     }
 }
 
@@ -1487,6 +1498,94 @@ mod tests {
             __cw_config_init_3_value
         };
         CodewhaleClient::new(&config).expect("Model Studio Messages client constructs")
+    }
+
+    #[test]
+    fn dotted_tool_names_stay_inside_the_anthropic_pattern_and_decode_back() {
+        let client = test_client();
+        let mut request = request_with("claude-sonnet-4-6", None, None, None);
+        let tool = |name: &str| Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: "d".to_string(),
+            input_schema: json!({"type": "object", "additionalProperties": false}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+            cache_control: None,
+        };
+        request.tools = Some(vec![tool("read_file"), tool("web.run")]);
+        request.tool_choice = Some(json!({"type": "tool", "name": "web.run"}));
+        request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                execution_id: None,
+                id: "toolu_w".to_string(),
+                name: "web.run".to_string(),
+                input: json!({}),
+                caller: None,
+                thought_signature: None,
+            }],
+        });
+
+        let body = client.build_anthropic_body(&request, true);
+        let valid = |name: &str| {
+            (1..=128).contains(&name.len())
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        };
+        let mut sent = Vec::new();
+        for tool in body["tools"].as_array().expect("tools") {
+            sent.push(tool["name"].as_str().expect("tool name").to_string());
+        }
+        sent.push(
+            body.pointer("/tool_choice/name")
+                .and_then(Value::as_str)
+                .expect("forced tool name")
+                .to_string(),
+        );
+        for message in body["messages"].as_array().expect("messages") {
+            for block in message["content"].as_array().into_iter().flatten() {
+                if block["type"] == "tool_use" {
+                    sent.push(block["name"].as_str().expect("tool_use name").to_string());
+                }
+            }
+        }
+        assert!(sent.iter().all(|name| valid(name)), "{sent:?}");
+        assert!(sent.iter().any(|name| name != "read_file"), "{sent:?}");
+
+        let wire = to_api_tool_name("web.run");
+        let message = decode_anthropic_message(json!({
+            "id": "m", "type": "message", "role": "assistant",
+            "model": "claude-sonnet-4-6", "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": "toolu_w", "name": wire, "input": {}}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }))
+        .unwrap();
+        let ContentBlock::ToolUse { name, .. } = &message.content[0] else {
+            panic!("expected tool_use")
+        };
+        assert_eq!(name, "web.run");
+
+        let event = convert_anthropic_sse_data(
+            &json!({
+                "type": "content_block_start", "index": 0,
+                "content_block": {"type": "tool_use", "id": "toolu_w", "name": wire, "input": {}},
+            })
+            .to_string(),
+        )
+        .unwrap()
+        .unwrap();
+        let StreamEvent::ContentBlockStart {
+            content_block: codewhale_models::ContentBlockStart::ToolUse { name, .. },
+            ..
+        } = event
+        else {
+            panic!("expected tool_use start")
+        };
+        assert_eq!(name, "web.run");
     }
 
     #[test]
