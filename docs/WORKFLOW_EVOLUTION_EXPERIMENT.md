@@ -77,6 +77,15 @@ failures; use `--fixture examples/experimental-evolution-patch-strict` and a
 third output directory. Do not reinterpret the earlier frozen runs under this
 revised contract.
 
+The `examples/experimental-evolution-scheduler` fixture is an exact parallel
+build scheduling task with precedence constraints and 1–3 workers. The public
+and held-out process gates each contain 32 requests. Both use deterministic
+independent seeds and a host-side exhaustive event-search oracle for the
+minimum makespan. Run it with
+`--fixture examples/experimental-evolution-scheduler` and a separate output directory.
+This task was frozen after the earlier public gates admitted all first
+generation candidates; its results remain a separate task and seed.
+
 The frozen task does not expose the held-out gate to worker prompts. Mutation
 uses the public failure excerpt and parent receipt; the held-out gate runs
 only for the provisional winner's independent replay.
