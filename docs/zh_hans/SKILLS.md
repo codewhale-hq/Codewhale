@@ -8,7 +8,7 @@
 
 Skills 是可复用的 `SKILL.md` 指令包。Codewhale 从多个根目录发现它们，但**只有 Codewhale 拥有的目录可写**。统一的 `/skills manage` 管理器是审计与变更的交互界面；斜杠别名共享同一条写入路径。
 
-关于 Claude Code 插件边界，参见 [CLAUDE_PLUGIN_COMPAT.md](../CLAUDE_PLUGIN_COMPAT.md)。
+关于 Claude Code 插件边界，参见 [CLAUDE_PLUGIN_COMPAT.md](./CLAUDE_PLUGIN_COMPAT.md)。
 关于 `skills_dir` 和 `[skills]` 配置键，参见 [CONFIGURATION.md](CONFIGURATION.md)。
 
 同一范围内，`.codewhale/skills` 的同名技能优先于兼容目录。项目目录顺序为

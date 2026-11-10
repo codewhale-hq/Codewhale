@@ -52,6 +52,7 @@
 16. [CATALOG_REFRESH.md](./CATALOG_REFRESH.md) —— 模型目录从哪来、怎么刷新
 17. [WEB.md](./WEB.md) —— 本地浏览器客户端：启动方式、会话验证边界与故障排查
 18. [VOICE.md](./VOICE.md) —— 语气与终端视觉章程（产品文案与界面的一致性原则）
+19. [CLAUDE_PLUGIN_COMPAT.md](./CLAUDE_PLUGIN_COMPAT.md) —— Claude Code 技能与插件包的兼容范围：支持哪些、拒绝哪些
 
 ## 四、开发者（阅读源码或为 Codewhale 贡献）
 
