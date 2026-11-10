@@ -45,3 +45,23 @@ export const MODELS_COPY = {
   missing: { en: "Missing your provider?", zh: "没有找到你的提供商？" },
   request: { en: "Request support", zh: "申请支持" },
 } satisfies Record<string, LocalizedText | { title: LocalizedText; detail: LocalizedText; reference: string }[]>;
+
+export function formatModelTokens(n: number | null): string {
+  if (n === null) return "—";
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(2)}M`;
+  }
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
+
+export function formatModelDate(iso: string | null, dateLocale: string): string {
+  if (!iso) return "—";
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (!Number.isFinite(d.getTime())) return "—";
+  return new Intl.DateTimeFormat(dateLocale, {
+    dateStyle: "medium",
+    timeZone: "UTC",
+  }).format(d);
+}

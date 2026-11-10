@@ -229,3 +229,6 @@ export const PLUGIN_COMPATIBILITY = [
   { title: { en: "DeepSeek Harness (DSH)", zh: "DeepSeek Harness（DSH）" }, detail: { en: "Import work is in progress. Full published-plugin workflows and interactive views are not release-qualified; do not assume a DSH package runs unchanged.", zh: "导入兼容工作进行中。已发布插件的完整工作流及交互视图尚未通过发布验证，请勿假定 DSH 包可直接运行。" }, href: "https://github.com/codewhale-hq/Codewhale/blob/main/docs/DSH_PLUGIN_COMPAT.md" },
   { title: { en: "MCP authentication and UI", zh: "MCP 认证与界面" }, detail: { en: "Plugin-bundled MCP does not support OAuth: configure that server directly instead. MCP Apps UI and every optional protocol feature are not generally supported.", zh: "插件内的 MCP 不支持 OAuth，请改为直接配置服务器。MCP Apps 界面及所有可选协议功能并非普遍受支持。" }, href: "/docs/mcp#compatibility" },
 ];
+
+export const MCP_SETUP_COMMANDS = `codewhale mcp add cloudflare-docs --url "https://docs.mcp.cloudflare.com/mcp"
+codewhale mcp tools cloudflare-docs`;

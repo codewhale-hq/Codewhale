@@ -30,7 +30,7 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
   const { guide, lang, sourcePath } = INSTALL_GUIDES[copyLocale];
   return (
     <>
-      <div className="install-head" lang={copyLocale}>
+      <div id="install-overview" className="install-head" lang={copyLocale}>
         <div className="install-head-inner">
           <WhalePose pose="run" className="install-head-pose" priority />
           <div className="install-head-text">
@@ -47,7 +47,7 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
           </div>
         </div>
       </div>
-      <section className="install-guide" lang={copyLocale}>
+      <section id="install-verify" className="install-guide" lang={copyLocale}>
         <h2 className="section-title">{pickText(INSTALL_COPY.verify, locale)}</h2>
         <p>{pickText(INSTALL_COPY.verifyBody, locale)}</p>
         <InstallCodeBlock cmd="codewhale --version" copyLabel={home.copy} copiedLabel={home.copied} copyLocale={locale} />
@@ -57,7 +57,7 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         </div>
         <p>{pickText(INSTALL_COPY.firstTaskBody, locale)}</p>
       </section>
-      <details className="install-guide" lang={lang}>
+      <details id="install-full-guide" className="install-guide" lang={lang}>
         <summary className="section-title">{pickText(INSTALL_COPY.fullGuide, locale)}</summary>
         <article>
         {guide.chunks.map((chunk, index) => chunk.kind === "code" ? (
