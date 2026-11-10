@@ -1292,7 +1292,10 @@
         assert_eq!(client.wire_format, WireFormat::Responses);
         assert_eq!(client.api_provider, ProviderKind::Concentrate);
         assert_eq!(
-            responses_api_url(DEFAULT_CONCENTRATE_BASE_URL, ProviderKind::Concentrate),
+            responses_api_url(
+                DEFAULT_CONCENTRATE_BASE_URL,
+                codewhale_config::responses_dialect::ResponsesPathPolicy::VersionedResponses,
+            ),
             "https://api.concentrate.ai/v1/responses",
             "the official base URL maps to the documented Responses endpoint"
         );

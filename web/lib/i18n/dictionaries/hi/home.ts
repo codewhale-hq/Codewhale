@@ -3,10 +3,10 @@ import type { HomeDict } from "../types";
 /** Hindi home copy: useful work with chosen models and connected tools. */
 
 export const home: HomeDict = {
-  metaTitle: "Codewhale · आपके कंप्यूटर के लिए ओपन-सोर्स एजेंट",
-  metaDescription: "Codewhale आपके टर्मिनल के लिए एक ओपन-सोर्स कोडिंग एजेंट है। अपने होस्ट किए गए या स्थानीय मॉडल से प्रोजेक्ट पढ़ें, बदलें और जाँचें।",
-  heroTitle: "आपके कंप्यूटर के लिए ओपन-सोर्स एजेंट",
-  heroIntro: "अपने टर्मिनल में {brand} से सॉफ़्टवेयर बनाएँ और दोहराने योग्य वर्कफ़्लो चलाएँ। Mac ऐप्स में काम करने के लिए Computer Use जोड़ें।",
+  metaTitle: "Codewhale · किसी भी मॉडल का उपयोग ऐसे एजेंट से करें जिसे आप पढ़ सकते हैं",
+  metaDescription: "Codewhale आपके और किसी भी मॉडल के बीच का ओपन सोर्स एजेंट है। इसका कोड पढ़ें या इससे खुद को समझाने को कहें। एक अंतरराष्ट्रीय समुदाय हर रिलीज़ के साथ इसे बेहतर बनाता है।",
+  heroTitle: "किसी भी मॉडल का उपयोग ऐसे एजेंट से करें जिसे आप पढ़ सकते हैं",
+  heroIntro: "{brand} आपके और मॉडल के बीच का ओपन सोर्स एजेंट है। इसका कोड पढ़ें, या इससे कहें कि यह अपना कोड पढ़कर बताए कि यह क्या करता है। एक अंतरराष्ट्रीय समुदाय हर रिलीज़ के साथ इसे बेहतर बनाता है।",
   getCodewhale: "Codewhale इंस्टॉल करें",
   heroInstallAria: "इंस्टॉल कमांड",
   exploreProduct: "Codewhale देखें",
@@ -124,9 +124,5 @@ export const home: HomeDict = {
   binaries: "बाइनरी",
   chinaMirrors: "चीन मिरर",
   installGuideLink: "इंस्टॉल गाइड पढ़ें",
-  communityHeading: "Codewhale में योगदान दें",
-  communityBody:
-    "{count} लोगों ने Codewhale बनाने में योगदान दिया है। GitHub पर बग की रिपोर्ट करें, दस्तावेज़ सुधारें या कोड में योगदान दें।",
-  communityLinksAria: "समुदाय लिंक",
   contribute: "GitHub पर योगदान दें",
 };

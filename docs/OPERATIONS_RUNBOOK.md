@@ -1,105 +1,102 @@
-# codewhale Operations Runbook
+# Codewhale operations runbook
 
-> 阅读简体中文版：[zh_hans/OPERATIONS_RUNBOOK.md](zh_hans/OPERATIONS_RUNBOOK.md)。
-
-This runbook covers practical debugging and incident response for the local CLI/TUI runtime.
+This runbook covers the local CLI/TUI. Commands below describe current source;
+check `codewhale --version` and compare a published build with the documentation
+at its tag before assuming a candidate-only control exists.
 
 ## Quick Triage
 
-1. Confirm binary + config:
-   - `cargo run -- --version`
-   - `cat ~/.codewhale/config.toml` (or inspect configured profile)
-2. Enable verbose logs:
-   - `RUST_LOG=codewhale_tui=debug cargo run`
-   - For HTTP retries/reconnects: `RUST_LOG=codewhale_tui::client=debug cargo run`
-3. Capture current state:
-   - `ls ~/.codewhale/sessions`
-   - `ls ~/.codewhale/sessions/checkpoints`
-   - `ls ~/.codewhale/tasks`
+Start with offline diagnostics in the affected workspace:
+
+```sh
+codewhale --version
+codewhale config path
+codewhale doctor --json
+```
+
+`doctor --json` reports structural health without probing provider credentials,
+contacting a provider, or starting MCP servers. An offline report is not proof
+that a key works or that a remote service is reachable. Do not attach a raw
+config, secret store, session archive or environment dump to an issue.
+
+If more detail is needed, reproduce with `RUST_LOG=codewhale_tui=debug codewhale`.
+Logs and session content can contain project data, so inspect and redact the
+specific excerpt before sharing it. The [troubleshooting guide](INSTALL.md#13-troubleshooting)
+covers installation and network messages.
 
 ## Incident: Turn Hangs or Stream Stops
 
-Symptoms:
-- TUI remains in loading state
-- partial assistant output with no completion
+First read the transcript for a pending approval, clarification or failed tool.
+If a shell command is still running, `Ctrl+B` backgrounds that command while
+the turn continues; `/jobs` shows it. Ask Codewhale to stop the identified task
+when needed; current source uses `task_shell_wait` with its `task_id` and
+`cancel: true`, rather than treating a task id as an operating-system pid.
 
-Checks:
-1. Inspect retry/health logs (`codewhale_tui::client`)
-2. Verify endpoint connectivity:
-   - `curl -sS https://api.deepseek.com/beta/models -H "Authorization: Bearer $DEEPSEEK_API_KEY"`
-3. Confirm no local sandbox/permission deadlock in tool output
+Press Esc to cancel a turn; close any modal first if it consumes Esc. Interrupting
+a turn does not undo already completed file changes or external actions.
 
-Actions:
-1. If a foreground shell command is running, press `Ctrl+B` to move it to the background (the turn keeps running and the command becomes a background job under `/jobs`); use `Ctrl+C` instead if you want to cancel the turn.
-2. If the command was started in the background, ask the assistant to use `Bash` with `action: "cancel"` and the returned process id.
-3. Use `Esc` or `Ctrl+C` to interrupt the current turn when you want to stop the request itself.
-4. Retry prompt; if still failing, restart TUI.
-5. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state.
+For a hosted route, explicitly opt into a connection test:
+
+```sh
+codewhale auth status --provider <provider-id>
+codewhale doctor --probe-api
+```
+
+Replace the provider id with your selected provider; `--probe-api` tests the
+active route, not necessarily the provider named in the previous command.
+For a local model, use `codewhale doctor --probe-local` instead. These probes
+contact the selected service and may create provider usage; they are not part
+of the offline triage above.
+
+Reconnect or repair credentials before retrying. A retry can repeat external
+actions, so inspect the transcript and [receipts](RECEIPTS.md) first.
 
 ## Incident: Network Outage / Offline Behavior
 
-Expected behavior:
-- New prompts are queued while offline mode is active
-- Queue state persists per session to
-  `~/.codewhale/sessions/checkpoints/<session-id>.offline_queue.json`; a legacy
-  global `offline_queue.json` is adopted once on upgrade
+Use `/queue list` to inspect unsent messages. Offline queue state is persisted
+per session under `~/.codewhale/sessions/checkpoints/`; a legacy global
+`offline_queue.json` may be adopted during migration.
 
-Checks:
-1. Open queue in TUI: `/queue list`
-2. Confirm persisted queue file exists and updates timestamp
-
-Actions:
-1. Restore connectivity
-2. Re-send queued entries (from `/queue edit <n>` + Enter, or normal input flow)
-3. Ensure queue file clears when queue is empty
+After connectivity is restored, inspect an entry with `/queue edit <n>` and
+press Enter to send it. Verify the resulting response and queue state rather
+than assuming queued work ran automatically.
 
 ## Incident: Crash Recovery Needed
 
-Expected behavior:
-- Each session checkpoints to `~/.codewhale/sessions/checkpoints/<session-id>.json`;
-  a legacy `latest.json` is still read for recovery but is no longer written
-- Startup begins a fresh session unless `--resume`/`--continue` is supplied
+List saved sessions with `codewhale sessions`, then resume explicitly with
+`codewhale resume <id>` or `codewhale --continue` for the workspace. Inside the
+TUI, Ctrl+R opens the session picker. A fresh launch does not silently resume
+an interrupted session.
 
-Actions:
-1. Resume prior work explicitly via `codewhale --resume <id>` (alias
-   `codewhale resume <id>`; `codewhale --continue` recovers the newest
-   interrupted checkpoint for the workspace) or `Ctrl+R` in TUI
-2. If checkpoint inspection is needed, inspect `checkpoints/<session-id>.json` (or a leftover legacy
-   `latest.json`) for schema mismatch/details
-3. If schema is newer than binary supports, upgrade binary or remove stale checkpoint
+If recovery fails, preserve the affected state before repair. Use a compatible
+binary for a newer schema; do not delete a checkpoint to silence a schema error.
+The [legacy-path guide](LEGACY_PATHS.md) covers migration from `~/.deepseek`.
 
 ## Incident: Persistent State Schema Errors
 
-Symptoms:
-- Errors like `schema vX is newer than supported vY`
+Record the exact error and binary version. Back up the affected state directory
+before changing files, then use a binary that supports that schema or a documented
+migration path. Do not rewrite schema version fields by hand.
 
-Affected stores:
-- sessions (`~/.codewhale/sessions/*.json`)
-- runtime thread/turn/item records
-- tasks (`~/.codewhale/tasks/tasks/*.json`)
-
-Actions:
-1. Confirm binary version and migration expectations
-2. Back up the state directory before editing
-3. Either:
-   - run with a newer compatible binary, or
-   - archive incompatible records and regenerate state
+Session files, Runtime thread records and Fleet ledgers are different stores;
+identify the one named in the failure. Preserve the original so repair can be
+reviewed or reversed.
 
 ## Incident: MCP/Tool Execution Failures
 
-Checks:
-1. Validate `~/.codewhale/mcp.json` schema and server command paths
-2. Confirm server process can start manually
-3. Check sandbox denials in TUI history / logs
+Review the server entry and exact command in your global or trusted project
+`mcp.json`. Running a server manually or reloading it executes its code and can
+contact its service, so review that authority first. Use `/mcp` diagnostics and
+inspect policy or sandbox refusals rather than widening permissions to make an
+unknown failure disappear.
 
-Actions:
-1. Retry with required approvals (or YOLO only when appropriate)
-2. Temporarily disable failing MCP server and isolate issue
-3. Re-enable after verification with `/mcp` diagnostics
+Back up an existing config before repair. `codewhale mcp init --force` replaces
+configuration; it is not a harmless validation command. After a deliberate
+change, `/mcp reload` refreshes the running connections.
 
 ## Post-Incident Checklist
 
-1. Preserve logs and relevant state files
-2. Record trigger, impact, and mitigation
-3. Add or update regression tests (retry/recovery/schema)
-4. Update this runbook and architecture docs if behavior changed
+Record what you ran, the exact output, the version and the smallest reproducible
+workspace. Include a redacted diagnostic excerpt, the observed result and the
+expected result in a bug report. Distinguish a tested fix from a workaround and
+from an unverified hypothesis.

@@ -26,23 +26,17 @@ const MAX_UNIFIED: u64 = 50;
 /// Resolve untrusted revision text before using it as an argument to another
 /// Git command. Only a verified commit ID crosses that option boundary.
 pub(super) async fn resolve_commit_ref(workspace: &Path, base: &str) -> Result<String, ToolError> {
-    let workspace = workspace.to_path_buf();
     let revision = format!("{base}^{{commit}}");
-    let output = tokio::task::spawn_blocking(move || {
-        run_git_command(
-            &workspace,
-            &[
-                "rev-parse".to_string(),
-                "--verify".to_string(),
-                "--end-of-options".to_string(),
-                revision,
-            ],
-        )
-    })
-    .await
-    .map_err(|error| {
-        ToolError::execution_failed(format!("git resolve task panicked: {error}"))
-    })??;
+    let output = run_git_command_async(
+        workspace.to_path_buf(),
+        vec![
+            "rev-parse".to_string(),
+            "--verify".to_string(),
+            "--end-of-options".to_string(),
+            revision,
+        ],
+    )
+    .await?;
     if !output.status.success() {
         return Err(ToolError::invalid_input(format!(
             "Invalid git base ref '{base}': {}",
@@ -103,13 +97,13 @@ impl ToolSpec for GitStatusTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let context = context.clone();
-        run_git_tool_blocking(move || git_status_blocking(input, &context)).await
+        git_status(input, context.clone()).await
     }
 }
 
-fn git_status_blocking(input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-    let git_ctx = resolve_git_context(context, optional_str(&input, "path")?)?;
+async fn git_status(input: Value, context: ToolContext) -> Result<ToolResult, ToolError> {
+    let path = optional_str(&input, "path")?.map(str::to_string);
+    let git_ctx = on_blocking_pool(move || resolve_git_context(&context, path.as_deref())).await?;
 
     let mut args = vec![
         "-c".to_string(),
@@ -124,7 +118,7 @@ fn git_status_blocking(input: Value, context: &ToolContext) -> Result<ToolResult
     }
 
     let command_str = format_command(&git_ctx.working_dir, &args);
-    let output = run_git_command(&git_ctx.working_dir, &args)?;
+    let output = run_git_command_async(git_ctx.working_dir.clone(), args).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -202,13 +196,13 @@ impl ToolSpec for GitDiffTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let context = context.clone();
-        run_git_tool_blocking(move || git_diff_blocking(input, &context)).await
+        git_diff(input, context.clone()).await
     }
 }
 
-fn git_diff_blocking(input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-    let git_ctx = resolve_git_context(context, optional_str(&input, "path")?)?;
+async fn git_diff(input: Value, context: ToolContext) -> Result<ToolResult, ToolError> {
+    let path = optional_str(&input, "path")?.map(str::to_string);
+    let git_ctx = on_blocking_pool(move || resolve_git_context(&context, path.as_deref())).await?;
     let cached = optional_bool(&input, "cached", false)?;
     let unified = optional_u64(&input, "unified", DEFAULT_UNIFIED)?.min(MAX_UNIFIED);
 
@@ -229,7 +223,7 @@ fn git_diff_blocking(input: Value, context: &ToolContext) -> Result<ToolResult, 
     }
 
     let command_str = format_command(&git_ctx.working_dir, &args);
-    let output = run_git_command(&git_ctx.working_dir, &args)?;
+    let output = run_git_command_async(git_ctx.working_dir.clone(), args).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -308,17 +302,17 @@ impl ToolSpec for GitCommitPlanTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-        let context = context.clone();
-        run_git_tool_blocking(move || git_commit_plan_blocking(input, &context)).await
+        git_commit_plan(input, context.clone()).await
     }
 }
 
-fn git_commit_plan_blocking(input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
-    let git_ctx = resolve_git_context(context, optional_str(&input, "path")?)?;
+async fn git_commit_plan(input: Value, context: ToolContext) -> Result<ToolResult, ToolError> {
+    let path = optional_str(&input, "path")?.map(str::to_string);
+    let git_ctx = on_blocking_pool(move || resolve_git_context(&context, path.as_deref())).await?;
     let working_dir = &git_ctx.working_dir;
 
     let root_args = vec!["rev-parse".to_string(), "--show-toplevel".to_string()];
-    let repo_root = match git_stdout(working_dir, &root_args)? {
+    let repo_root = match git_stdout(working_dir, &root_args).await? {
         Ok(stdout) => PathBuf::from(String::from_utf8_lossy(&stdout).trim_end()),
         Err(failure) => return Ok(failure),
     };
@@ -337,7 +331,7 @@ fn git_commit_plan_blocking(input: Value, context: &ToolContext) -> Result<ToolR
         diff_args.push(pathspec.display().to_string());
     }
     let command = format_command(working_dir, &diff_args);
-    let diff_output = run_git_command(working_dir, &diff_args)?;
+    let diff_output = run_git_command_async(working_dir.clone(), diff_args.clone()).await?;
     let mut files = match stdout_or_failure(working_dir, &diff_args, diff_output) {
         Ok(stdout) => parse_diff(&String::from_utf8_lossy(&stdout)),
         Err(failure) => return Ok(failure),
@@ -359,23 +353,16 @@ fn git_commit_plan_blocking(input: Value, context: &ToolContext) -> Result<ToolR
         untracked_args.push("--".to_string());
         untracked_args.push(pathspec.display().to_string());
     }
-    match git_stdout(working_dir, &untracked_args)? {
-        Ok(stdout) => {
-            for path in String::from_utf8_lossy(&stdout)
-                .split('\0')
-                .filter(|path| !path.is_empty())
-            {
-                files.push(ChangedFile {
-                    path: path.to_string(),
-                    hunks: untracked_hunk(&repo_root, path).into_iter().collect(),
-                    untracked: true,
-                });
-            }
-        }
+    let untracked_paths: Vec<String> = match git_stdout(working_dir, &untracked_args).await? {
+        Ok(stdout) => String::from_utf8_lossy(&stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect(),
         Err(failure) => return Ok(failure),
-    }
+    };
 
-    if files.is_empty() {
+    if files.is_empty() && untracked_paths.is_empty() {
         return Ok(
             ToolResult::success("No changes to plan: the working tree matches HEAD.")
                 .with_metadata(json!({
@@ -392,10 +379,24 @@ fn git_commit_plan_blocking(input: Value, context: &ToolContext) -> Result<ToolR
         "--quiet".to_string(),
     ];
     staged_args.extend(codewhale_dependencies::Git::REVIEW_DIFF_ARGS.map(String::from));
-    let index_has_staged_changes =
-        run_git_command(working_dir, &staged_args)?.status.code() == Some(1);
+    let index_has_staged_changes = run_git_command_async(working_dir.clone(), staged_args)
+        .await?
+        .status
+        .code()
+        == Some(1);
 
-    let commits = match plan_commits(files) {
+    let root = repo_root.clone();
+    let planned = on_blocking_pool(move || {
+        files.extend(untracked_paths.into_iter().map(|path| ChangedFile {
+            hunks: untracked_hunk(&root, &path).into_iter().collect(),
+            path,
+            untracked: true,
+        }));
+        Ok(plan_commits(files))
+    })
+    .await?;
+
+    let commits = match planned {
         Ok(commits) => commits,
         Err(cycle) => {
             let message = format!(
@@ -521,35 +522,44 @@ pub(super) fn read_only_git_command(
         .map_err(|e| ToolError::execution_failed(format!("Failed to prepare git: {e:#}")))
 }
 
-/// Run a git tool's synchronous body (path resolution, filter discovery,
-/// `git` itself) on the blocking pool rather than an async worker
+/// Run a git tool's synchronous preparation (path resolution, untracked-file
+/// reads, planning) on the blocking pool rather than an async worker
 /// (#6561 D03-m1).
-///
-/// Known limitation: there is no deadline or cancellation here — a dropped
-/// call leaves the blocking `git` to finish. These are local read-only
-/// commands with fsmonitor, hooks and filters disabled; `git_fetch`, the
-/// one network command, runs contained under a deadline instead.
-async fn run_git_tool_blocking(
-    work: impl FnOnce() -> Result<ToolResult, ToolError> + Send + 'static,
-) -> Result<ToolResult, ToolError> {
+async fn on_blocking_pool<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, ToolError> + Send + 'static,
+) -> Result<T, ToolError> {
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|error| ToolError::execution_failed(format!("git task panicked: {error}")))?
 }
 
-pub(super) fn run_git_command(
-    working_dir: &Path,
-    args: &[String],
+/// Run a read-only git command for the workspace tools. The command is
+/// prepared on the blocking pool, because filter discovery reads repository
+/// config through git, then runs contained
+/// ([`codewhale_runtime::process_tree::contained_output`]): dropping the
+/// future — a cancelled or timed-out tool call — kills git and everything it
+/// started (D03-m3).
+///
+/// Known limitation: the short config probe inside
+/// [`codewhale_dependencies::Git::review_command`] is not contained; a call
+/// dropped during preparation lets that probe finish on the blocking pool.
+pub(super) async fn run_git_command_async(
+    working_dir: PathBuf,
+    args: Vec<String>,
 ) -> Result<std::process::Output, ToolError> {
-    let mut cmd = read_only_git_command(working_dir)?;
-    cmd.args(args).current_dir(working_dir);
-    cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            ToolError::not_available("git is not installed or not in PATH")
-        } else {
-            ToolError::execution_failed(format!("Failed to run git: {e}"))
-        }
-    })
+    let prepare_dir = working_dir.clone();
+    let command = on_blocking_pool(move || read_only_git_command(&prepare_dir)).await?;
+    let mut command = tokio::process::Command::from(command);
+    command.args(&args).current_dir(&working_dir);
+    codewhale_runtime::process_tree::contained_output(&mut command)
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ToolError::not_available("git is not installed or not in PATH")
+            } else {
+                ToolError::execution_failed(format!("Failed to run git: {e}"))
+            }
+        })
 }
 
 fn format_command(working_dir: &Path, args: &[String]) -> String {
@@ -650,11 +660,11 @@ impl CommitGroup {
 }
 
 /// Run git and hand back stdout, or the operator-facing failure result.
-fn git_stdout(
+async fn git_stdout(
     working_dir: &Path,
     args: &[String],
 ) -> Result<Result<Vec<u8>, ToolResult>, ToolError> {
-    let output = run_git_command(working_dir, args)?;
+    let output = run_git_command_async(working_dir.to_path_buf(), args.to_vec()).await?;
     Ok(stdout_or_failure(working_dir, args, output))
 }
 
@@ -1612,9 +1622,46 @@ Binary files a/image.png and b/image.png differ
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_read_only_git_run_kills_only_its_own_tree() {
+        if !git_available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        let mut bystander = std::process::Command::new("sleep")
+            .arg("300")
+            .spawn()
+            .expect("spawn bystander");
+        let pid_file = tmp.path().join("hang.pid");
+        let args = vec![
+            "-c".to_string(),
+            "alias.hang=!sleep 300 & echo $! > hang.pid; wait".to_string(),
+            "hang".to_string(),
+        ];
+        let run = run_git_command_async(tmp.path().to_path_buf(), args);
+        let grandchild =
+            codewhale_runtime::process_tree::drop_once_pid_written(run, &pid_file).await;
+        let grandchild_exited = codewhale_runtime::process_tree::wait_for_pid_exit(
+            grandchild,
+            std::time::Duration::from_secs(5),
+        );
+        let bystander_alive = bystander.try_wait().expect("poll bystander").is_none();
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+        assert!(
+            grandchild_exited,
+            "a process git started outlived the cancelled call"
+        );
+        assert!(
+            bystander_alive,
+            "cancelling git signalled an unrelated process"
+        );
+    }
+
     fn git_out(root: &Path, args: &[&str]) -> String {
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        let output = run_git_command(root, &args).expect("git");
+        let output = codewhale_dependencies::Git::output(args, root).expect("git");
         assert!(output.status.success(), "git {args:?} failed");
         String::from_utf8_lossy(&output.stdout).to_string()
     }

@@ -36,8 +36,7 @@ export const chrome: ChromeDict = {
   themeAria: "主题：{mode}（点击切换）",
   themeTitle: "主题 · 自动 / 浅色 / 深色",
 
-  footerTagline:
-    "构建应用，自动完成工作。",
+  footerTagline: "通过一个你读得懂的智能体使用任意模型。",
   footerProduct: "产品",
   footerProject: "项目",
   footerDocs: "文档",
@@ -48,6 +47,7 @@ export const chrome: ChromeDict = {
   footerFaq: "常见问题",
   footerIssues: "议题",
   footerContribute: "参与贡献",
+  footerRoadmap: "路线图",
   footerLicense: "MIT 许可证",
   footerTerms: "服务条款",
   footerPrivacy: "隐私政策",

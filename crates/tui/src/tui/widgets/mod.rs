@@ -34,6 +34,7 @@ use codewhale_tui_kit::scrolling::TranscriptLineMeta;
 use codewhale_tui_kit::ui_text::grapheme_display_width;
 #[cfg(test)]
 use codewhale_tui_kit::ui_text::text_display_width;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 #[cfg(test)]
 use ratatui::widgets::BorderType;
 use ratatui::{
@@ -1816,8 +1817,7 @@ impl<'a> ApprovalWidget<'a> {
                     } else {
                         Cow::Borrowed("  ")
                     };
-                    let truncated =
-                        codewhale_util::utils::truncate_with_ellipsis(sline, max_width, "...");
+                    let truncated = truncate_line_to_width(sline, max_width);
                     body.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(
@@ -2167,8 +2167,7 @@ fn push_params_detail_line(
 ) {
     let params_str = request.params_display();
     let params_width = card_width.saturating_sub(14) as usize;
-    let params_truncated =
-        codewhale_util::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
+    let params_truncated = truncate_line_to_width(&params_str, params_width.max(20));
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
@@ -2561,7 +2560,7 @@ impl Renderable for ElevationWidget<'_> {
             Some(command) => Line::from(vec![
                 Span::raw(tr(self.locale, MessageId::ElevationFieldCmd)),
                 Span::styled(
-                    codewhale_util::utils::truncate_with_ellipsis(command, 45, "..."),
+                    truncate_line_to_width(command, 45),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
             ]),
@@ -8860,6 +8859,25 @@ diff --git a/src/b.rs b/src/b.rs\n\
         assert!(rendered.contains("Command:"), "{rendered}");
         assert!(rendered.contains("cargo build ||"), "{rendered}");
         assert!(rendered.contains("echo fallback"), "{rendered}");
+    }
+
+    #[test]
+    fn approval_card_truncates_cjk_text_by_display_width() {
+        let note = "检查宽字符参数".repeat(4);
+        let intent = "需要确认回退构建路径".repeat(4);
+        let request = crate::tui::approval::ApprovalRequest::new_with_intent(
+            "approval-1",
+            "custom_note",
+            "Record a note",
+            &serde_json::json!({ "note": note }),
+            "custom_note",
+            Some(&intent),
+            std::path::Path::new("/tmp/project"),
+        );
+        let rendered = render_approval_request(&request, Rect::new(0, 0, 100, 34)).replace(' ', "");
+
+        assert!(rendered.contains(&intent), "{rendered}");
+        assert!(rendered.contains(&note), "{rendered}");
     }
 
     #[test]

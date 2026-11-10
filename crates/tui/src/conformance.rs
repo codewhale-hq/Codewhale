@@ -14,6 +14,7 @@
 //! | family | production path under test | proves |
 //! |---|---|---|
 //! | `sse` | `CodewhaleClient::create_message_stream` over a loopback HTTP server | wire bytes → normalized stream events |
+//! | `responses` | route resolver, `prepare_outbound_request`, and the same loopback stream | profile id, request body, and Responses termination |
 //! | `events` | `Engine::run` → `run_turn` with a scripted provider | one turn → protocol `EventMsg` sequence |
 //! | `mcp` | `Engine::execute_mcp_tool_with_pool` + `McpPool::to_api_tools` against a transcript server | catalog and call results for one dispatch |
 //! | `prompt` | the first model request of a real turn | model-visible prefix bytes (system prompt + tool catalog) |
@@ -30,7 +31,7 @@
 //! no real provider, MCP server binary, or Node host. The `events`, `prompt`
 //! and `hooks` goldens were recorded on Unix and are compiled only there:
 //! hook fixtures are POSIX shell, and a Windows turn differs in shell and
-//! path facts that no recorded golden covers yet. `sse` and `mcp` run
+//! path facts that no recorded golden covers yet. `sse`, `responses`, and `mcp` run
 //! everywhere.
 #![cfg(test)]
 
@@ -47,6 +48,8 @@ mod mcp;
 #[cfg(unix)]
 #[cfg(test)]
 mod prompt;
+#[cfg(test)]
+mod responses;
 #[cfg(test)]
 mod sse;
 #[cfg(test)]

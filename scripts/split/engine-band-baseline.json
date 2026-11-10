@@ -1,0 +1,33 @@
+{
+  "_comment": "Coarse-split upward-reference ratchet (docs/design/COARSE_SPLIT.md). Keys are lower-crate->upper-crate|src-unit->dst-unit. Counts may only go down and no new pair may appear. Regenerate with python3 scripts/split/crate_map.py check MAP --baseline FILE --update after removing references; never raise a count by hand.",
+  "map": "docs/design/crate-map-coarse-split.toml",
+  "totals": {
+    "upward_pairs": 23,
+    "upward_refs": 52
+  },
+  "upward": {
+    "engine->engine-loop|core/events->core/engine/<self>": 1,
+    "engine->engine-loop|core/ops->core/engine/preview": 1,
+    "engine->engine-loop|core/protocol_parity->core/engine/preview": 1,
+    "engine->engine-loop|core/session->core/engine/<self>": 1,
+    "engine->engine-loop|extension_host/mcp->core/engine/<self>": 1,
+    "engine->engine-loop|extension_host/registry->core/engine/tool_catalog": 1,
+    "engine->engine-loop|mcp/<self>->core/engine/<self>": 7,
+    "engine->engine-loop|receipts->core/engine/<self>": 1,
+    "engine->engine-loop|receipts->runtime_threads/manager/<self>": 1,
+    "engine->engine-loop|rlm->core/engine/rlm_host": 9,
+    "engine->engine-loop|runtime_threads/<self>->core/engine/<self>": 3,
+    "engine->engine-loop|runtime_threads/<self>->core/engine/handle": 1,
+    "engine->engine-loop|task_manager->runtime_threads/manager/<self>": 5,
+    "engine->engine-loop|tool_inspection->core/engine/preview": 1,
+    "engine->engine-loop|tools/codemode->core/engine/<self>": 1,
+    "engine->engine-loop|tools/codemode->core/engine/tool_execution": 1,
+    "engine->engine-loop|tools/registry->core/engine/tool_execution": 1,
+    "engine->engine-loop|tools/registry->tools/subagent/engine": 3,
+    "engine->engine-loop|tools/review_core->core/engine/streaming": 1,
+    "engine->engine-loop|tools/spec->core/engine/<self>": 4,
+    "engine->engine-loop|tools/spec->core/engine/rlm_host": 1,
+    "engine->engine-loop|tools/spec->tools/subagent/engine": 1,
+    "engine->engine-loop|tools/subagent/<self>->core/engine/<self>": 5
+  }
+}

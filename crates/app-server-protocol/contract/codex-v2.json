@@ -1,0 +1,2086 @@
+{
+  "contract": "codewhale-codex-app-server-v2",
+  "version": 1,
+  "upstream": {
+    "repository": "openai/codex",
+    "tag": "rust-v0.166.0",
+    "commit": "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856",
+    "stableExport": {
+      "path": "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-stable.json.zst",
+      "gitBlob": "24ce1c7ad9316cbda4b3d12e5a72258ba70ac69d",
+      "compressedSha256": "c3802deddc224896967bccd29e353e93e62af768b44dbd5d583e35825fb3e02a",
+      "expandedSha256": "7ae41cc257d2a4d9f93d1e99f24560802439d2f2d050ec5685832025ced962a2"
+    },
+    "pinned": [
+      {
+        "path": "tests/pinned/codex/codex_app_server_protocol.schemas.json",
+        "member": "json_schema/codex_app_server_protocol.schemas.json",
+        "sha256": "9b6d53647b00d68a04181b826599025a810cfa78acb3ec4d518c68b4120499c0"
+      },
+      {
+        "path": "tests/pinned/codex/common.rs",
+        "source": "codex-rs/app-server-protocol/src/protocol/common.rs",
+        "gitBlob": "2936c01855e463275d8306df8583ec0303e5c854",
+        "sha256": "b7f0a90dcc822962e59890b252a43142a113cb1355f333d8c6b0f704b97f89f7"
+      }
+    ]
+  },
+  "methods": {
+    "clientRequests": [
+      {
+        "method": "initialize",
+        "tier": "A",
+        "status": "implemented",
+        "basis": "connection lifecycle (CW-7704; on main)",
+        "variant": "Initialize",
+        "params": "InitializeParams",
+        "response": "InitializeResponse"
+      },
+      {
+        "method": "thread/start",
+        "tier": "A",
+        "status": "implemented",
+        "basis": "thread lifecycle",
+        "variant": "ThreadStart",
+        "params": "ThreadStartParams",
+        "response": "ThreadStartResponse"
+      },
+      {
+        "method": "thread/resume",
+        "tier": "A",
+        "status": "partial",
+        "basis": "thread lifecycle",
+        "variant": "ThreadResume",
+        "params": "ThreadResumeParams",
+        "response": "ThreadResumeResponse"
+      },
+      {
+        "method": "thread/fork",
+        "tier": "A",
+        "status": "partial",
+        "basis": "thread lifecycle",
+        "variant": "ThreadFork",
+        "params": "ThreadForkParams",
+        "response": "ThreadForkResponse"
+      },
+      {
+        "method": "thread/archive",
+        "tier": "A",
+        "status": "partial",
+        "basis": "thread lifecycle",
+        "variant": "ThreadArchive",
+        "params": "ThreadArchiveParams",
+        "response": "ThreadArchiveResponse"
+      },
+      {
+        "method": "thread/delete",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: thread delete, revert, shellCommand, compact",
+        "variant": "ThreadDelete",
+        "params": "ThreadDeleteParams",
+        "response": "ThreadDeleteResponse"
+      },
+      {
+        "method": "thread/unsubscribe",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S5 subscriptions and paging",
+        "variant": "ThreadUnsubscribe",
+        "params": "ThreadUnsubscribeParams",
+        "response": "ThreadUnsubscribeResponse"
+      },
+      {
+        "method": "thread/name/set",
+        "tier": "A",
+        "status": "implemented",
+        "basis": "thread lifecycle",
+        "variant": "ThreadSetName",
+        "params": "ThreadSetNameParams",
+        "response": "ThreadSetNameResponse"
+      },
+      {
+        "method": "thread/goal/set",
+        "tier": "A",
+        "status": "partial",
+        "basis": "S8 goals",
+        "variant": "ThreadGoalSet",
+        "params": "ThreadGoalSetParams",
+        "response": "ThreadGoalSetResponse"
+      },
+      {
+        "method": "thread/goal/get",
+        "tier": "A",
+        "status": "partial",
+        "basis": "S8 goals",
+        "variant": "ThreadGoalGet",
+        "params": "ThreadGoalGetParams",
+        "response": "ThreadGoalGetResponse"
+      },
+      {
+        "method": "thread/goal/clear",
+        "tier": "A",
+        "status": "partial",
+        "basis": "S8 goals",
+        "variant": "ThreadGoalClear",
+        "params": "ThreadGoalClearParams",
+        "response": "ThreadGoalClearResponse"
+      },
+      {
+        "method": "thread/metadata/update",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "thread metadata beyond name/goal",
+        "recommended": "B",
+        "variant": "ThreadMetadataUpdate",
+        "params": "ThreadMetadataUpdateParams",
+        "response": "ThreadMetadataUpdateResponse"
+      },
+      {
+        "method": "thread/attachment/add",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments",
+        "recommended": "C",
+        "variant": "ThreadAttachmentAdd",
+        "params": "ThreadAttachmentAddParams",
+        "response": "ThreadAttachmentAddResponse"
+      },
+      {
+        "method": "thread/attachment/list",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments",
+        "recommended": "C",
+        "variant": "ThreadAttachmentList",
+        "params": "ThreadAttachmentListParams",
+        "response": "ThreadAttachmentListResponse"
+      },
+      {
+        "method": "thread/attachmentOwner/list",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments",
+        "recommended": "C",
+        "variant": "ThreadAttachmentOwnerList",
+        "params": "ThreadAttachmentOwnerListParams",
+        "response": "ThreadAttachmentOwnerListResponse"
+      },
+      {
+        "method": "thread/attachment/remove",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments",
+        "recommended": "C",
+        "variant": "ThreadAttachmentRemove",
+        "params": "ThreadAttachmentRemoveParams",
+        "response": "ThreadAttachmentRemoveResponse"
+      },
+      {
+        "method": "thread/section/move",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop sidebar sections; Codewhale projects are CW-7878",
+        "recommended": "C",
+        "variant": "ThreadSectionMove",
+        "params": "ThreadSectionMoveParams",
+        "response": "ThreadSectionMoveResponse"
+      },
+      {
+        "method": "thread/unarchive",
+        "tier": "A",
+        "status": "partial",
+        "basis": "thread lifecycle",
+        "variant": "ThreadUnarchive",
+        "params": "ThreadUnarchiveParams",
+        "response": "ThreadUnarchiveResponse"
+      },
+      {
+        "method": "thread/compact/start",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: thread delete, revert, shellCommand, compact",
+        "variant": "ThreadCompactStart",
+        "params": "ThreadCompactStartParams",
+        "response": "ThreadCompactStartResponse"
+      },
+      {
+        "method": "thread/shellCommand",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: thread delete, revert, shellCommand, compact",
+        "variant": "ThreadShellCommand",
+        "params": "ThreadShellCommandParams",
+        "response": "ThreadShellCommandResponse"
+      },
+      {
+        "method": "thread/approveGuardianDeniedAction",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Guardian auto-review override; Codewhale has its own Auto-Review posture",
+        "recommended": "C",
+        "variant": "ThreadApproveGuardianDeniedAction",
+        "params": "ThreadApproveGuardianDeniedActionParams",
+        "response": "ThreadApproveGuardianDeniedActionResponse"
+      },
+      {
+        "method": "thread/revert",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: thread delete, revert, shellCommand, compact",
+        "variant": "ThreadRevert",
+        "params": "ThreadRevertParams",
+        "response": "ThreadRevertResponse"
+      },
+      {
+        "method": "thread/list",
+        "tier": "A",
+        "status": "implemented",
+        "basis": "thread lifecycle",
+        "variant": "ThreadList",
+        "params": "ThreadListParams",
+        "response": "ThreadListResponse"
+      },
+      {
+        "method": "threadSection/list",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop sidebar sections; Codewhale projects are CW-7878",
+        "recommended": "C",
+        "variant": "ThreadSectionList",
+        "params": "ThreadSectionListParams",
+        "response": "ThreadSectionListResponse"
+      },
+      {
+        "method": "threadSection/create",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop sidebar sections; Codewhale projects are CW-7878",
+        "recommended": "C",
+        "variant": "ThreadSectionCreate",
+        "params": "ThreadSectionCreateParams",
+        "response": "ThreadSectionCreateResponse"
+      },
+      {
+        "method": "threadSection/update",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop sidebar sections; Codewhale projects are CW-7878",
+        "recommended": "C",
+        "variant": "ThreadSectionUpdate",
+        "params": "ThreadSectionUpdateParams",
+        "response": "ThreadSectionUpdateResponse"
+      },
+      {
+        "method": "threadSection/delete",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop sidebar sections; Codewhale projects are CW-7878",
+        "recommended": "C",
+        "variant": "ThreadSectionDelete",
+        "params": "ThreadSectionDeleteParams",
+        "response": "ThreadSectionDeleteResponse"
+      },
+      {
+        "method": "thread/loaded/list",
+        "tier": "A",
+        "status": "implemented",
+        "basis": "thread lifecycle",
+        "variant": "ThreadLoadedList",
+        "params": "ThreadLoadedListParams",
+        "response": "ThreadLoadedListResponse"
+      },
+      {
+        "method": "thread/read",
+        "tier": "A",
+        "status": "implemented",
+        "basis": "thread lifecycle",
+        "variant": "ThreadRead",
+        "params": "ThreadReadParams",
+        "response": "ThreadReadResponse"
+      },
+      {
+        "method": "thread/turns/list",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S5 subscriptions and paging",
+        "variant": "ThreadTurnsList",
+        "params": "ThreadTurnsListParams",
+        "response": "ThreadTurnsListResponse"
+      },
+      {
+        "method": "thread/items/list",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S5 subscriptions and paging",
+        "variant": "ThreadItemsList",
+        "params": "ThreadItemsListParams",
+        "response": "ThreadItemsListResponse"
+      },
+      {
+        "method": "thread/inject_items",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "raw history injection",
+        "recommended": "C",
+        "variant": "ThreadInjectItems",
+        "params": "ThreadInjectItemsParams",
+        "response": "ThreadInjectItemsResponse"
+      },
+      {
+        "method": "skills/list",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: skills",
+        "variant": "SkillsList",
+        "params": "SkillsListParams",
+        "response": "SkillsListResponse"
+      },
+      {
+        "method": "skills/extraRoots/set",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "skills configuration writes",
+        "recommended": "B",
+        "variant": "SkillsExtraRootsSet",
+        "params": "SkillsExtraRootsSetParams",
+        "response": "SkillsExtraRootsSetResponse"
+      },
+      {
+        "method": "hooks/list",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: hooks",
+        "variant": "HooksList",
+        "params": "HooksListParams",
+        "response": "HooksListResponse"
+      },
+      {
+        "method": "marketplace/add",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "MarketplaceAdd",
+        "params": "MarketplaceAddParams",
+        "response": "MarketplaceAddResponse"
+      },
+      {
+        "method": "marketplace/remove",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "MarketplaceRemove",
+        "params": "MarketplaceRemoveParams",
+        "response": "MarketplaceRemoveResponse"
+      },
+      {
+        "method": "marketplace/upgrade",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "MarketplaceUpgrade",
+        "params": "MarketplaceUpgradeParams",
+        "response": "MarketplaceUpgradeResponse"
+      },
+      {
+        "method": "plugin/list",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "PluginList",
+        "params": "PluginListParams",
+        "response": "PluginListResponse"
+      },
+      {
+        "method": "plugin/installed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "PluginInstalled",
+        "params": "PluginInstalledParams",
+        "response": "PluginInstalledResponse"
+      },
+      {
+        "method": "plugin/reconcile",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "PluginReconcile",
+        "params": "PluginReconcileParams",
+        "response": "PluginReconcileResponse"
+      },
+      {
+        "method": "plugin/read",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "PluginRead",
+        "params": "PluginReadParams",
+        "response": "PluginReadResponse"
+      },
+      {
+        "method": "plugin/skill/read",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "PluginSkillRead",
+        "params": "PluginSkillReadParams",
+        "response": "PluginSkillReadResponse"
+      },
+      {
+        "method": "plugin/share/save",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI-hosted plugin sharing; no Codewhale service",
+        "variant": "PluginShareSave",
+        "params": "PluginShareSaveParams",
+        "response": "PluginShareSaveResponse"
+      },
+      {
+        "method": "plugin/share/updateTargets",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI-hosted plugin sharing; no Codewhale service",
+        "variant": "PluginShareUpdateTargets",
+        "params": "PluginShareUpdateTargetsParams",
+        "response": "PluginShareUpdateTargetsResponse"
+      },
+      {
+        "method": "plugin/share/list",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI-hosted plugin sharing; no Codewhale service",
+        "variant": "PluginShareList",
+        "params": "PluginShareListParams",
+        "response": "PluginShareListResponse"
+      },
+      {
+        "method": "plugin/share/checkout",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI-hosted plugin sharing; no Codewhale service",
+        "variant": "PluginShareCheckout",
+        "params": "PluginShareCheckoutParams",
+        "response": "PluginShareCheckoutResponse"
+      },
+      {
+        "method": "plugin/share/delete",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI-hosted plugin sharing; no Codewhale service",
+        "variant": "PluginShareDelete",
+        "params": "PluginShareDeleteParams",
+        "response": "PluginShareDeleteResponse"
+      },
+      {
+        "method": "app/read",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "ChatGPT Apps connectors; no Codewhale service",
+        "variant": "AppsRead",
+        "params": "AppsReadParams",
+        "response": "AppsReadResponse"
+      },
+      {
+        "method": "app/list",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "ChatGPT Apps connectors; no Codewhale service",
+        "variant": "AppsList",
+        "params": "AppsListParams",
+        "response": "AppsListResponse"
+      },
+      {
+        "method": "app/installed",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "ChatGPT Apps connectors; no Codewhale service",
+        "variant": "AppsInstalled",
+        "params": "AppsInstalledParams",
+        "response": "AppsInstalledResponse"
+      },
+      {
+        "method": "fs/readFile",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsReadFile",
+        "params": "FsReadFileParams",
+        "response": "FsReadFileResponse"
+      },
+      {
+        "method": "fs/writeFile",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsWriteFile",
+        "params": "FsWriteFileParams",
+        "response": "FsWriteFileResponse"
+      },
+      {
+        "method": "fs/createDirectory",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsCreateDirectory",
+        "params": "FsCreateDirectoryParams",
+        "response": "FsCreateDirectoryResponse"
+      },
+      {
+        "method": "fs/getMetadata",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsGetMetadata",
+        "params": "FsGetMetadataParams",
+        "response": "FsGetMetadataResponse"
+      },
+      {
+        "method": "fs/readDirectory",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsReadDirectory",
+        "params": "FsReadDirectoryParams",
+        "response": "FsReadDirectoryResponse"
+      },
+      {
+        "method": "fs/remove",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsRemove",
+        "params": "FsRemoveParams",
+        "response": "FsRemoveResponse"
+      },
+      {
+        "method": "fs/copy",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsCopy",
+        "params": "FsCopyParams",
+        "response": "FsCopyResponse"
+      },
+      {
+        "method": "fs/watch",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsWatch",
+        "params": "FsWatchParams",
+        "response": "FsWatchResponse"
+      },
+      {
+        "method": "fs/unwatch",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: fs",
+        "variant": "FsUnwatch",
+        "params": "FsUnwatchParams",
+        "response": "FsUnwatchResponse"
+      },
+      {
+        "method": "skills/config/write",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "skills configuration writes",
+        "recommended": "B",
+        "variant": "SkillsConfigWrite",
+        "params": "SkillsConfigWriteParams",
+        "response": "SkillsConfigWriteResponse"
+      },
+      {
+        "method": "plugin/install",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "PluginInstall",
+        "params": "PluginInstallParams",
+        "response": "PluginInstallResponse"
+      },
+      {
+        "method": "plugin/uninstall",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex plugin marketplace; Codewhale plugins are DSH (CW-7051)",
+        "recommended": "C",
+        "variant": "PluginUninstall",
+        "params": "PluginUninstallParams",
+        "response": "PluginUninstallResponse"
+      },
+      {
+        "method": "turn/start",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S4a full-tool turns",
+        "variant": "TurnStart",
+        "params": "TurnStartParams",
+        "response": "TurnStartResponse"
+      },
+      {
+        "method": "turn/steer",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S4a full-tool turns",
+        "variant": "TurnSteer",
+        "params": "TurnSteerParams",
+        "response": "TurnSteerResponse"
+      },
+      {
+        "method": "turn/interrupt",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S4a full-tool turns",
+        "variant": "TurnInterrupt",
+        "params": "TurnInterruptParams",
+        "response": "TurnInterruptResponse"
+      },
+      {
+        "method": "review/start",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: review",
+        "variant": "ReviewStart",
+        "params": "ReviewStartParams",
+        "response": "ReviewStartResponse"
+      },
+      {
+        "method": "model/list",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: models",
+        "variant": "ModelList",
+        "params": "ModelListParams",
+        "response": "ModelListResponse"
+      },
+      {
+        "method": "account/gatewayOAuth/read",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI gateway OAuth; no Codewhale service"
+      },
+      {
+        "method": "account/gatewayOAuth/login",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI gateway OAuth; no Codewhale service"
+      },
+      {
+        "method": "account/gatewayOAuth/cancel",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI gateway OAuth; no Codewhale service"
+      },
+      {
+        "method": "modelProvider/capabilities/read",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "provider, feature and permission catalogs",
+        "recommended": "B",
+        "variant": "ModelProviderCapabilitiesRead",
+        "params": "ModelProviderCapabilitiesReadParams",
+        "response": "ModelProviderCapabilitiesReadResponse"
+      },
+      {
+        "method": "experimentalFeature/list",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex experimental feature flags",
+        "recommended": "C",
+        "variant": "ExperimentalFeatureList",
+        "params": "ExperimentalFeatureListParams",
+        "response": "ExperimentalFeatureListResponse"
+      },
+      {
+        "method": "permissionProfile/list",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "provider, feature and permission catalogs",
+        "recommended": "B",
+        "variant": "PermissionProfileList",
+        "params": "PermissionProfileListParams",
+        "response": "PermissionProfileListResponse"
+      },
+      {
+        "method": "experimentalFeature/enablement/set",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex experimental feature flags",
+        "recommended": "C",
+        "variant": "ExperimentalFeatureEnablementSet",
+        "params": "ExperimentalFeatureEnablementSetParams",
+        "response": "ExperimentalFeatureEnablementSetResponse"
+      },
+      {
+        "method": "mcpServer/oauth/login",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "MCP actions beyond status",
+        "recommended": "B",
+        "variant": "McpServerOauthLogin",
+        "params": "McpServerOauthLoginParams",
+        "response": "McpServerOauthLoginResponse"
+      },
+      {
+        "method": "config/mcpServer/reload",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "MCP actions beyond status",
+        "recommended": "B"
+      },
+      {
+        "method": "mcpServerStatus/list",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: MCP status",
+        "variant": "McpServerStatusList",
+        "params": "ListMcpServerStatusParams",
+        "response": "ListMcpServerStatusResponse"
+      },
+      {
+        "method": "mcpServer/resource/read",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "MCP actions beyond status",
+        "recommended": "B",
+        "variant": "McpResourceRead",
+        "params": "McpResourceReadParams",
+        "response": "McpResourceReadResponse"
+      },
+      {
+        "method": "mcpServer/tool/call",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "MCP actions beyond status",
+        "recommended": "B",
+        "variant": "McpServerToolCall",
+        "params": "McpServerToolCallParams",
+        "response": "McpServerToolCallResponse"
+      },
+      {
+        "method": "windowsSandbox/setupStart",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Windows sandbox setup; Codewhale has its own AppContainer sandbox",
+        "recommended": "C",
+        "variant": "WindowsSandboxSetupStart",
+        "params": "WindowsSandboxSetupStartParams",
+        "response": "WindowsSandboxSetupStartResponse"
+      },
+      {
+        "method": "windowsSandbox/readiness",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Windows sandbox setup; Codewhale has its own AppContainer sandbox",
+        "recommended": "C"
+      },
+      {
+        "method": "account/login/start",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account sign-in and usage; Codewhale signs in through /auth",
+        "recommended": "C",
+        "variant": "LoginAccount",
+        "params": "LoginAccountParams",
+        "response": "LoginAccountResponse"
+      },
+      {
+        "method": "account/login/cancel",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account sign-in and usage; Codewhale signs in through /auth",
+        "recommended": "C",
+        "variant": "CancelLoginAccount",
+        "params": "CancelLoginAccountParams",
+        "response": "CancelLoginAccountResponse"
+      },
+      {
+        "method": "account/logout",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account sign-in and usage; Codewhale signs in through /auth",
+        "recommended": "C"
+      },
+      {
+        "method": "account/rateLimits/read",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account sign-in and usage; Codewhale signs in through /auth",
+        "recommended": "C"
+      },
+      {
+        "method": "account/rateLimitResetCredit/consume",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI billing and workspace messaging; no Codewhale service",
+        "variant": "ConsumeAccountRateLimitResetCredit",
+        "params": "ConsumeAccountRateLimitResetCreditParams",
+        "response": "ConsumeAccountRateLimitResetCreditResponse"
+      },
+      {
+        "method": "account/usage/read",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account sign-in and usage; Codewhale signs in through /auth",
+        "recommended": "C"
+      },
+      {
+        "method": "account/workspaceMessages/read",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI billing and workspace messaging; no Codewhale service"
+      },
+      {
+        "method": "account/sendAddCreditsNudgeEmail",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "OpenAI billing and workspace messaging; no Codewhale service",
+        "variant": "SendAddCreditsNudgeEmail",
+        "params": "SendAddCreditsNudgeEmailParams",
+        "response": "SendAddCreditsNudgeEmailResponse"
+      },
+      {
+        "method": "feedback/upload",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "uploads feedback to OpenAI; no Codewhale service",
+        "variant": "FeedbackUpload",
+        "params": "FeedbackUploadParams",
+        "response": "FeedbackUploadResponse"
+      },
+      {
+        "method": "feedback/save",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "uploads feedback to OpenAI; no Codewhale service",
+        "variant": "FeedbackSave",
+        "params": "FeedbackSaveParams",
+        "response": "FeedbackSaveResponse"
+      },
+      {
+        "method": "command/exec",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: command/exec",
+        "variant": "OneOffCommandExec",
+        "params": "CommandExecParams",
+        "response": "CommandExecResponse"
+      },
+      {
+        "method": "command/exec/write",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: command/exec",
+        "variant": "CommandExecWrite",
+        "params": "CommandExecWriteParams",
+        "response": "CommandExecWriteResponse"
+      },
+      {
+        "method": "command/exec/terminate",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: command/exec",
+        "variant": "CommandExecTerminate",
+        "params": "CommandExecTerminateParams",
+        "response": "CommandExecTerminateResponse"
+      },
+      {
+        "method": "command/exec/resize",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: command/exec",
+        "variant": "CommandExecResize",
+        "params": "CommandExecResizeParams",
+        "response": "CommandExecResizeResponse"
+      },
+      {
+        "method": "config/read",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: config",
+        "variant": "ConfigRead",
+        "params": "ConfigReadParams",
+        "response": "ConfigReadResponse"
+      },
+      {
+        "method": "externalAgentConfig/detect",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "import config from other agents; Codewhale external agents are CW-7879",
+        "recommended": "C",
+        "variant": "ExternalAgentConfigDetect",
+        "params": "ExternalAgentConfigDetectParams",
+        "response": "ExternalAgentConfigDetectResponse"
+      },
+      {
+        "method": "externalAgentConfig/import",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "import config from other agents; Codewhale external agents are CW-7879",
+        "recommended": "C",
+        "variant": "ExternalAgentConfigImport",
+        "params": "ExternalAgentConfigImportParams",
+        "response": "ExternalAgentConfigImportResponse"
+      },
+      {
+        "method": "externalAgentConfig/import/recordHistory",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "import config from other agents; Codewhale external agents are CW-7879",
+        "recommended": "C",
+        "variant": "ExternalAgentConfigImportHistoryRecord",
+        "params": "ExternalAgentConfigImportHistoryRecordParams",
+        "response": "ExternalAgentConfigImportHistoryRecordResponse"
+      },
+      {
+        "method": "externalAgentConfig/import/readHistories",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "import config from other agents; Codewhale external agents are CW-7879",
+        "recommended": "C"
+      },
+      {
+        "method": "config/value/write",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: config",
+        "variant": "ConfigValueWrite",
+        "params": "ConfigValueWriteParams",
+        "response": "ConfigWriteResponse"
+      },
+      {
+        "method": "config/batchWrite",
+        "tier": "B",
+        "status": "missing",
+        "basis": "S9 services: config",
+        "variant": "ConfigBatchWrite",
+        "params": "ConfigBatchWriteParams",
+        "response": "ConfigWriteResponse"
+      },
+      {
+        "method": "configRequirements/read",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "managed config requirements",
+        "recommended": "B"
+      },
+      {
+        "method": "account/read",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account sign-in and usage; Codewhale signs in through /auth",
+        "recommended": "C",
+        "variant": "GetAccount",
+        "params": "GetAccountParams",
+        "response": "GetAccountResponse"
+      },
+      {
+        "method": "getConversationSummary",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "deprecated v1 API (upstream marks it DEPRECATED; TypeScript-only in the export)",
+        "variant": "GetConversationSummary",
+        "params": "GetConversationSummaryParams",
+        "response": "GetConversationSummaryResponse"
+      },
+      {
+        "method": "gitDiffToRemote",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "deprecated v1 API (upstream marks it DEPRECATED; TypeScript-only in the export)",
+        "variant": "GitDiffToRemote",
+        "params": "GitDiffToRemoteParams",
+        "response": "GitDiffToRemoteResponse"
+      },
+      {
+        "method": "getAuthStatus",
+        "tier": "C",
+        "status": "method-not-found",
+        "basis": "deprecated v1 API (upstream marks it DEPRECATED; TypeScript-only in the export)",
+        "variant": "GetAuthStatus",
+        "params": "GetAuthStatusParams",
+        "response": "GetAuthStatusResponse"
+      },
+      {
+        "method": "fuzzyFileSearch",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "file search",
+        "recommended": "B",
+        "variant": "FuzzyFileSearch",
+        "params": "FuzzyFileSearchParams",
+        "response": "FuzzyFileSearchResponse"
+      }
+    ],
+    "clientNotifications": [
+      {
+        "method": "initialized",
+        "tier": "A",
+        "status": "implemented",
+        "basis": "connection lifecycle (CW-7704; on main)",
+        "variant": "Initialized"
+      }
+    ],
+    "serverRequests": [
+      {
+        "method": "item/commandExecution/requestApproval",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S6 interactions (CW-7704: bidirectional approvals, input, client tools)",
+        "variant": "CommandExecutionRequestApproval",
+        "params": "CommandExecutionRequestApprovalParams",
+        "response": "CommandExecutionRequestApprovalResponse"
+      },
+      {
+        "method": "item/fileChange/requestApproval",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S6 interactions (CW-7704: bidirectional approvals, input, client tools)",
+        "variant": "FileChangeRequestApproval",
+        "params": "FileChangeRequestApprovalParams",
+        "response": "FileChangeRequestApprovalResponse"
+      },
+      {
+        "method": "item/tool/requestUserInput",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S6 interactions (CW-7704: bidirectional approvals, input, client tools)",
+        "variant": "ToolRequestUserInput",
+        "params": "ToolRequestUserInputParams",
+        "response": "ToolRequestUserInputResponse"
+      },
+      {
+        "method": "mcpServer/elicitation/request",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "MCP elicitation",
+        "recommended": "A",
+        "variant": "McpServerElicitationRequest",
+        "params": "McpServerElicitationRequestParams",
+        "response": "McpServerElicitationRequestResponse"
+      },
+      {
+        "method": "item/permissions/requestApproval",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S6 interactions (CW-7704: bidirectional approvals, input, client tools)",
+        "variant": "PermissionsRequestApproval",
+        "params": "PermissionsRequestApprovalParams",
+        "response": "PermissionsRequestApprovalResponse"
+      },
+      {
+        "method": "item/tool/call",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S6 interactions (CW-7704: bidirectional approvals, input, client tools)",
+        "variant": "DynamicToolCall",
+        "params": "DynamicToolCallParams",
+        "response": "DynamicToolCallResponse"
+      },
+      {
+        "method": "account/chatgptAuthTokens/refresh",
+        "tier": "C",
+        "status": "never-sent",
+        "basis": "ChatGPT externally managed auth tokens; no Codewhale service",
+        "variant": "ChatgptAuthTokensRefresh",
+        "params": "ChatgptAuthTokensRefreshParams",
+        "response": "ChatgptAuthTokensRefreshResponse"
+      },
+      {
+        "method": "attestation/generate",
+        "tier": "C",
+        "status": "never-sent",
+        "basis": "OpenAI request attestation; no Codewhale service",
+        "variant": "AttestationGenerate",
+        "params": "AttestationGenerateParams",
+        "response": "AttestationGenerateResponse"
+      },
+      {
+        "method": "applyPatchApproval",
+        "tier": "C",
+        "status": "never-sent",
+        "basis": "deprecated v1 approvals for legacy turns; superseded by item/*/requestApproval",
+        "variant": "ApplyPatchApproval",
+        "params": "ApplyPatchApprovalParams",
+        "response": "ApplyPatchApprovalResponse"
+      },
+      {
+        "method": "execCommandApproval",
+        "tier": "C",
+        "status": "never-sent",
+        "basis": "deprecated v1 approvals for legacy turns; superseded by item/*/requestApproval",
+        "variant": "ExecCommandApproval",
+        "params": "ExecCommandApprovalParams",
+        "response": "ExecCommandApprovalResponse"
+      }
+    ],
+    "serverNotifications": [
+      {
+        "method": "error",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: errors",
+        "variant": "Error",
+        "params": "ErrorNotification"
+      },
+      {
+        "method": "thread/started",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: thread lifecycle",
+        "variant": "ThreadStarted",
+        "params": "ThreadStartedNotification"
+      },
+      {
+        "method": "thread/status/changed",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: thread lifecycle",
+        "variant": "ThreadStatusChanged",
+        "params": "ThreadStatusChangedNotification"
+      },
+      {
+        "method": "thread/readState/changed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "thread state beyond the Tier A set",
+        "recommended": "A",
+        "variant": "ThreadReadStateChanged",
+        "params": "ThreadReadStateChangedNotification"
+      },
+      {
+        "method": "thread/archived",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: thread lifecycle",
+        "variant": "ThreadArchived",
+        "params": "ThreadArchivedNotification"
+      },
+      {
+        "method": "thread/deleted",
+        "tier": "B",
+        "status": "missing",
+        "basis": "pairs with a Tier B service",
+        "variant": "ThreadDeleted",
+        "params": "ThreadDeletedNotification"
+      },
+      {
+        "method": "thread/unarchived",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: thread lifecycle",
+        "variant": "ThreadUnarchived",
+        "params": "ThreadUnarchivedNotification"
+      },
+      {
+        "method": "thread/closed",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: thread lifecycle",
+        "variant": "ThreadClosed",
+        "params": "ThreadClosedNotification"
+      },
+      {
+        "method": "thread/reverted",
+        "tier": "B",
+        "status": "missing",
+        "basis": "pairs with a Tier B service",
+        "variant": "ThreadReverted",
+        "params": "ThreadRevertedNotification"
+      },
+      {
+        "method": "skills/changed",
+        "tier": "B",
+        "status": "missing",
+        "basis": "pairs with a Tier B service",
+        "variant": "SkillsChanged",
+        "params": "SkillsChangedNotification"
+      },
+      {
+        "method": "thread/name/updated",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: thread lifecycle",
+        "variant": "ThreadNameUpdated",
+        "params": "ThreadNameUpdatedNotification"
+      },
+      {
+        "method": "thread/attachment/updated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments, predictions, projects and environments",
+        "recommended": "C",
+        "variant": "ThreadAttachmentUpdated",
+        "params": "ThreadAttachmentUpdatedNotification"
+      },
+      {
+        "method": "thread/goal/updated",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection with S8 goals",
+        "variant": "ThreadGoalUpdated",
+        "params": "ThreadGoalUpdatedNotification"
+      },
+      {
+        "method": "thread/prediction/updated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments, predictions, projects and environments",
+        "recommended": "C",
+        "variant": "ThreadPredictionUpdated",
+        "params": "ThreadPredictionUpdatedNotification"
+      },
+      {
+        "method": "thread/goal/cleared",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection with S8 goals",
+        "variant": "ThreadGoalCleared",
+        "params": "ThreadGoalClearedNotification"
+      },
+      {
+        "method": "thread/queue/changed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "thread state beyond the Tier A set",
+        "recommended": "A",
+        "variant": "ThreadQueueChanged",
+        "params": "ThreadQueueChangedNotification"
+      },
+      {
+        "method": "project/changed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments, predictions, projects and environments",
+        "recommended": "C",
+        "variant": "ProjectChanged",
+        "params": "ProjectChangedNotification"
+      },
+      {
+        "method": "thread/project/updated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments, predictions, projects and environments",
+        "recommended": "C",
+        "variant": "ThreadProjectUpdated",
+        "params": "ThreadProjectUpdatedNotification"
+      },
+      {
+        "method": "thread/environment/connected",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments, predictions, projects and environments",
+        "recommended": "C",
+        "variant": "EnvironmentConnected",
+        "params": "EnvironmentConnectionNotification"
+      },
+      {
+        "method": "thread/environment/disconnected",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex desktop attachments, predictions, projects and environments",
+        "recommended": "C",
+        "variant": "EnvironmentDisconnected",
+        "params": "EnvironmentConnectionNotification"
+      },
+      {
+        "method": "thread/settings/updated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "thread state beyond the Tier A set",
+        "recommended": "A",
+        "variant": "ThreadSettingsUpdated",
+        "params": "ThreadSettingsUpdatedNotification"
+      },
+      {
+        "method": "thread/tokenUsage/updated",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: thread lifecycle",
+        "variant": "ThreadTokenUsageUpdated",
+        "params": "ThreadTokenUsageUpdatedNotification"
+      },
+      {
+        "method": "turn/started",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: turn/*",
+        "variant": "TurnStarted",
+        "params": "TurnStartedNotification"
+      },
+      {
+        "method": "hook/started",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "hook runs; hooks/list is Tier B",
+        "recommended": "B",
+        "variant": "HookStarted",
+        "params": "HookStartedNotification"
+      },
+      {
+        "method": "turn/completed",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: turn/*",
+        "variant": "TurnCompleted",
+        "params": "TurnCompletedNotification"
+      },
+      {
+        "method": "hook/completed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "hook runs; hooks/list is Tier B",
+        "recommended": "B",
+        "variant": "HookCompleted",
+        "params": "HookCompletedNotification"
+      },
+      {
+        "method": "turn/diff/updated",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: turn/*",
+        "variant": "TurnDiffUpdated",
+        "params": "TurnDiffUpdatedNotification"
+      },
+      {
+        "method": "turn/plan/updated",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: turn/*",
+        "variant": "TurnPlanUpdated",
+        "params": "TurnPlanUpdatedNotification"
+      },
+      {
+        "method": "item/started",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "ItemStarted",
+        "params": "ItemStartedNotification"
+      },
+      {
+        "method": "item/autoApprovalReview/started",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Guardian; Codewhale has its own Auto-Review posture",
+        "recommended": "C",
+        "variant": "ItemGuardianApprovalReviewStarted",
+        "params": "ItemGuardianApprovalReviewStartedNotification"
+      },
+      {
+        "method": "item/autoApprovalReview/completed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Guardian; Codewhale has its own Auto-Review posture",
+        "recommended": "C",
+        "variant": "ItemGuardianApprovalReviewCompleted",
+        "params": "ItemGuardianApprovalReviewCompletedNotification"
+      },
+      {
+        "method": "autoApprovalReview/strictReviewRequired",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Guardian; Codewhale has its own Auto-Review posture",
+        "recommended": "C",
+        "variant": "StrictReviewRequired",
+        "params": "StrictReviewRequiredNotification"
+      },
+      {
+        "method": "item/completed",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "ItemCompleted",
+        "params": "ItemCompletedNotification"
+      },
+      {
+        "method": "rawResponseItem/completed",
+        "tier": "C",
+        "status": "never-sent",
+        "basis": "internal-only upstream (Codex Cloud, exact upstream usage); TypeScript-only in the export",
+        "variant": "RawResponseItemCompleted",
+        "params": "RawResponseItemCompletedNotification"
+      },
+      {
+        "method": "rawResponse/completed",
+        "tier": "C",
+        "status": "never-sent",
+        "basis": "internal-only upstream (Codex Cloud, exact upstream usage); TypeScript-only in the export",
+        "variant": "RawResponseCompleted",
+        "params": "RawResponseCompletedNotification"
+      },
+      {
+        "method": "item/agentMessage/delta",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "AgentMessageDelta",
+        "params": "AgentMessageDeltaNotification"
+      },
+      {
+        "method": "item/plan/delta",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "PlanDelta",
+        "params": "PlanDeltaNotification"
+      },
+      {
+        "method": "command/exec/outputDelta",
+        "tier": "B",
+        "status": "missing",
+        "basis": "pairs with a Tier B service",
+        "variant": "CommandExecOutputDelta",
+        "params": "CommandExecOutputDeltaNotification"
+      },
+      {
+        "method": "process/outputDelta",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "background processes",
+        "recommended": "B",
+        "variant": "ProcessOutputDelta",
+        "params": "ProcessOutputDeltaNotification"
+      },
+      {
+        "method": "process/exited",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "background processes",
+        "recommended": "B",
+        "variant": "ProcessExited",
+        "params": "ProcessExitedNotification"
+      },
+      {
+        "method": "item/commandExecution/outputDelta",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "CommandExecutionOutputDelta",
+        "params": "CommandExecutionOutputDeltaNotification"
+      },
+      {
+        "method": "item/commandExecution/terminalInteraction",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "TerminalInteraction",
+        "params": "TerminalInteractionNotification"
+      },
+      {
+        "method": "item/fileChange/outputDelta",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "FileChangeOutputDelta",
+        "params": "FileChangeOutputDeltaNotification"
+      },
+      {
+        "method": "item/fileChange/patchUpdated",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "FileChangePatchUpdated",
+        "params": "FileChangePatchUpdatedNotification"
+      },
+      {
+        "method": "serverRequest/resolved",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S6 interactions (CW-7704)",
+        "variant": "ServerRequestResolved",
+        "params": "ServerRequestResolvedNotification"
+      },
+      {
+        "method": "item/mcpToolCall/progress",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "McpToolCallProgress",
+        "params": "McpToolCallProgressNotification"
+      },
+      {
+        "method": "mcpServer/oauthLogin/completed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "MCP server events",
+        "recommended": "B",
+        "variant": "McpServerOauthLoginCompleted",
+        "params": "McpServerOauthLoginCompletedNotification"
+      },
+      {
+        "method": "mcpServer/startupStatus/updated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "MCP server events",
+        "recommended": "B",
+        "variant": "McpServerStatusUpdated",
+        "params": "McpServerStatusUpdatedNotification"
+      },
+      {
+        "method": "mcpServer/event/stream/notification",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "MCP server events",
+        "recommended": "B",
+        "variant": "McpServerEventStream",
+        "params": "McpServerEventStreamNotification"
+      },
+      {
+        "method": "account/updated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account state",
+        "recommended": "C",
+        "variant": "AccountUpdated",
+        "params": "AccountUpdatedNotification"
+      },
+      {
+        "method": "account/gatewayOAuth/changed",
+        "tier": "C",
+        "status": "never-sent",
+        "basis": "pairs with a Tier C method",
+        "variant": "GatewayOAuthChanged",
+        "params": "GatewayOAuthChangedNotification"
+      },
+      {
+        "method": "account/rateLimits/updated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account state",
+        "recommended": "C",
+        "variant": "AccountRateLimitsUpdated",
+        "params": "AccountRateLimitsUpdatedNotification"
+      },
+      {
+        "method": "app/list/updated",
+        "tier": "C",
+        "status": "never-sent",
+        "basis": "pairs with a Tier C method",
+        "variant": "AppListUpdated",
+        "params": "AppListUpdatedNotification"
+      },
+      {
+        "method": "remoteControl/status/changed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "remote control status",
+        "recommended": "C",
+        "variant": "RemoteControlStatusChanged",
+        "params": "RemoteControlStatusChangedNotification"
+      },
+      {
+        "method": "externalAgentConfig/import/progress",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "pairs with externalAgentConfig/import",
+        "recommended": "C",
+        "variant": "ExternalAgentConfigImportProgress",
+        "params": "ExternalAgentConfigImportProgressNotification"
+      },
+      {
+        "method": "externalAgentConfig/import/completed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "pairs with externalAgentConfig/import",
+        "recommended": "C",
+        "variant": "ExternalAgentConfigImportCompleted",
+        "params": "ExternalAgentConfigImportCompletedNotification"
+      },
+      {
+        "method": "fs/changed",
+        "tier": "B",
+        "status": "missing",
+        "basis": "pairs with a Tier B service",
+        "variant": "FsChanged",
+        "params": "FsChangedNotification"
+      },
+      {
+        "method": "item/reasoning/summaryTextDelta",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "ReasoningSummaryTextDelta",
+        "params": "ReasoningSummaryTextDeltaNotification"
+      },
+      {
+        "method": "item/reasoning/summaryPartAdded",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "ReasoningSummaryPartAdded",
+        "params": "ReasoningSummaryPartAddedNotification"
+      },
+      {
+        "method": "item/reasoning/textDelta",
+        "tier": "A",
+        "status": "missing",
+        "basis": "S3 projection: item/*",
+        "variant": "ReasoningTextDelta",
+        "params": "ReasoningTextDeltaNotification"
+      },
+      {
+        "method": "thread/compacted",
+        "tier": "B",
+        "status": "missing",
+        "basis": "pairs with a Tier B service",
+        "variant": "ContextCompacted",
+        "params": "ContextCompactedNotification"
+      },
+      {
+        "method": "model/rerouted",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI model routing, verification, moderation and safety",
+        "recommended": "C",
+        "variant": "ModelRerouted",
+        "params": "ModelReroutedNotification"
+      },
+      {
+        "method": "model/verification",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI model routing, verification, moderation and safety",
+        "recommended": "C",
+        "variant": "ModelVerification",
+        "params": "ModelVerificationNotification"
+      },
+      {
+        "method": "modelProvider/authRecoveryStarted",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "provider auth recovery",
+        "recommended": "B",
+        "variant": "AuthRecoveryStarted",
+        "params": "AuthRecoveryNotification"
+      },
+      {
+        "method": "modelProvider/authRecoveryCompleted",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "provider auth recovery",
+        "recommended": "B",
+        "variant": "AuthRecoveryCompleted",
+        "params": "AuthRecoveryNotification"
+      },
+      {
+        "method": "turn/moderationMetadata",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI model routing, verification, moderation and safety",
+        "recommended": "C",
+        "variant": "TurnModerationMetadata",
+        "params": "TurnModerationMetadataNotification"
+      },
+      {
+        "method": "model/safetyBuffering/updated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI model routing, verification, moderation and safety",
+        "recommended": "C",
+        "variant": "ModelSafetyBufferingUpdated",
+        "params": "ModelSafetyBufferingUpdatedNotification"
+      },
+      {
+        "method": "warning",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "generic warnings",
+        "recommended": "A",
+        "variant": "Warning",
+        "params": "WarningNotification"
+      },
+      {
+        "method": "guardianWarning",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Guardian; Codewhale has its own Auto-Review posture",
+        "recommended": "C",
+        "variant": "GuardianWarning",
+        "params": "GuardianWarningNotification"
+      },
+      {
+        "method": "deprecationNotice",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "generic warnings",
+        "recommended": "A",
+        "variant": "DeprecationNotice",
+        "params": "DeprecationNoticeNotification"
+      },
+      {
+        "method": "configWarning",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "generic warnings",
+        "recommended": "A",
+        "variant": "ConfigWarning",
+        "params": "ConfigWarningNotification"
+      },
+      {
+        "method": "fuzzyFileSearch/sessionUpdated",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "pairs with fuzzyFileSearch",
+        "recommended": "B",
+        "variant": "FuzzyFileSearchSessionUpdated",
+        "params": "FuzzyFileSearchSessionUpdatedNotification"
+      },
+      {
+        "method": "fuzzyFileSearch/sessionCompleted",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "pairs with fuzzyFileSearch",
+        "recommended": "B",
+        "variant": "FuzzyFileSearchSessionCompleted",
+        "params": "FuzzyFileSearchSessionCompletedNotification"
+      },
+      {
+        "method": "thread/realtime/started",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeStarted",
+        "params": "ThreadRealtimeStartedNotification"
+      },
+      {
+        "method": "thread/realtime/itemAdded",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeItemAdded",
+        "params": "ThreadRealtimeItemAddedNotification"
+      },
+      {
+        "method": "thread/realtime/item/started",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeItemStarted",
+        "params": "ThreadRealtimeItemStartedNotification"
+      },
+      {
+        "method": "thread/realtime/item/transcript/delta",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeItemTranscriptDelta",
+        "params": "ThreadRealtimeItemTranscriptDeltaNotification"
+      },
+      {
+        "method": "thread/realtime/item/completed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeItemCompleted",
+        "params": "ThreadRealtimeItemCompletedNotification"
+      },
+      {
+        "method": "thread/realtime/transcript/delta",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeTranscriptDelta",
+        "params": "ThreadRealtimeTranscriptDeltaNotification"
+      },
+      {
+        "method": "thread/realtime/transcript/done",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeTranscriptDone",
+        "params": "ThreadRealtimeTranscriptDoneNotification"
+      },
+      {
+        "method": "thread/realtime/outputAudio/delta",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeOutputAudioDelta",
+        "params": "ThreadRealtimeOutputAudioDeltaNotification"
+      },
+      {
+        "method": "thread/realtime/sdp",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeSdp",
+        "params": "ThreadRealtimeSdpNotification"
+      },
+      {
+        "method": "thread/realtime/error",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeError",
+        "params": "ThreadRealtimeErrorNotification"
+      },
+      {
+        "method": "thread/realtime/closed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "realtime audio sessions; no Codewhale equivalent",
+        "recommended": "C",
+        "variant": "ThreadRealtimeClosed",
+        "params": "ThreadRealtimeClosedNotification"
+      },
+      {
+        "method": "windows/worldWritableWarning",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Windows sandbox",
+        "recommended": "C",
+        "variant": "WindowsWorldWritableWarning",
+        "params": "WindowsWorldWritableWarningNotification"
+      },
+      {
+        "method": "windowsSandbox/setupCompleted",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "Codex Windows sandbox",
+        "recommended": "C",
+        "variant": "WindowsSandboxSetupCompleted",
+        "params": "WindowsSandboxSetupCompletedNotification"
+      },
+      {
+        "method": "account/login/completed",
+        "tier": "undecided",
+        "status": "missing",
+        "basis": "OpenAI account state",
+        "recommended": "C",
+        "variant": "AccountLoginCompleted",
+        "params": "AccountLoginCompletedNotification"
+      }
+    ]
+  },
+  "dispatch": {
+    "A": "selected for 0.10.3; the typed params/result in src/v2.rs are the wire contract",
+    "B": "selected for 0.10.3 (service methods); the typed params/result in src/v2.rs are the wire contract",
+    "C": "not selected; a client request answers methodNotFound (-32601); the server never sends a Tier C request or notification",
+    "undecided": "not selected until the founder decides; until then it is handled exactly like Tier C (methodNotFound, never sent), and the row keeps its recommendation"
+  },
+  "errors": [
+    {
+      "name": "PARSE_ERROR",
+      "code": -32700,
+      "meaning": "the line or message is not JSON"
+    },
+    {
+      "name": "INVALID_REQUEST",
+      "code": -32600,
+      "meaning": "not a valid request envelope, or a request before initialize"
+    },
+    {
+      "name": "METHOD_NOT_FOUND",
+      "code": -32601,
+      "meaning": "Tier C or undecided method, or a name the pinned export does not have"
+    },
+    {
+      "name": "INVALID_PARAMS",
+      "code": -32602,
+      "meaning": "params do not decode into the selected method's typed params"
+    },
+    {
+      "name": "INTERNAL_ERROR",
+      "code": -32603,
+      "meaning": "the Engine failed while serving a valid request"
+    },
+    {
+      "name": "OVERLOADED",
+      "code": -32001,
+      "meaning": "upstream Codex transport overload code; the outgoing queue is full"
+    },
+    {
+      "name": "THREAD_NOT_FOUND",
+      "code": -32004,
+      "meaning": "the named thread does not exist (existing App Server code)"
+    },
+    {
+      "name": "RUNTIME_UNAVAILABLE",
+      "code": -32005,
+      "meaning": "the Engine could not be reached (existing App Server code)"
+    },
+    {
+      "name": "CAPABILITY_UNSUPPORTED",
+      "code": -32020,
+      "meaning": "the method exists and is selected, but this thread's executor or placement cannot serve it; `data` is `CapabilityRefusalData`; the request has no side effect and never falls back to local execution"
+    }
+  ],
+  "extensions": {
+    "definitions": {
+      "ThreadExecutor": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "agentId"
+        ]
+      },
+      "CapabilityRefusalCode": {
+        "type": "string",
+        "enum": [
+          "unknown_agent",
+          "not_installed",
+          "adapter_missing",
+          "below_min_version",
+          "needs_sign_in",
+          "no_acp",
+          "executor_not_supported",
+          "environment_not_supported",
+          "steer_not_supported",
+          "reopen_not_supported"
+        ]
+      },
+      "CapabilityRefusal": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/definitions/codewhale/CapabilityRefusalCode"
+          },
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "code"
+        ]
+      },
+      "CapabilityRefusalData": {
+        "type": "object",
+        "properties": {
+          "codewhaleRefusal": {
+            "$ref": "#/definitions/codewhale/CapabilityRefusal"
+          }
+        },
+        "required": [
+          "codewhaleRefusal"
+        ]
+      },
+      "ThreadPlacement": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "providerKind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "providerKind"
+        ]
+      }
+    },
+    "fields": [
+      {
+        "type": "Thread",
+        "field": "executor",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/codewhale/ThreadExecutor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      {
+        "type": "Thread",
+        "field": "environment",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/codewhale/ThreadPlacement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    ],
+    "rows": [
+      {
+        "name": "Thread.executor",
+        "kind": "field",
+        "tier": "A",
+        "status": "defined, unpopulated",
+        "shape": "`ThreadExecutor` `{ kind, agentId, agentName? }`: a thread driven by an external agent over ACP; absent for a native thread. Never an environment value or a credential."
+      },
+      {
+        "name": "Thread.environment",
+        "kind": "field",
+        "tier": "B",
+        "status": "defined, unpopulated",
+        "shape": "`ThreadPlacement` `{ id, providerKind }` (named apart from Codex `ThreadEnvironment`, which is a different type): where the thread runs; absent means this computer. A thread placed in an environment this build cannot serve refuses with `CAPABILITY_UNSUPPORTED` (`environment_not_supported`) and never runs locally."
+      },
+      {
+        "name": "codewhale/environment/*",
+        "kind": "server notifications",
+        "tier": "B",
+        "status": "reserved, not implemented",
+        "shape": "environment state changes for placement"
+      },
+      {
+        "name": "ThreadItem.placement",
+        "kind": "field",
+        "tier": "B",
+        "status": "reserved, not implemented",
+        "shape": "where a child or job ran"
+      },
+      {
+        "name": "approval.decided.responder",
+        "kind": "Runtime journal field",
+        "tier": "A",
+        "status": "implemented",
+        "shape": "the client that answered (`desktop`, `phone`, `web`, `tui`, `acp`), as declared by that client"
+      }
+    ]
+  }
+}

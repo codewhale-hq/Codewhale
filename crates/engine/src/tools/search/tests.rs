@@ -1257,6 +1257,11 @@ fn pathological_globs_stay_bounded() {
     assert!(!matches_glob("src/foo.rs", "src/**/**/src"));
     assert!(matches_glob("src1/a/b/file.rs", "src*/**/**/file.rs"));
 
+    let many_stars = format!("{}b", "*a".repeat(10));
+    let a40 = "a".repeat(40);
+    assert!(!matches_glob(&format!("{a40}.rs"), &many_stars));
+    assert!(matches_glob(&format!("{a40}b"), &many_stars));
+
     assert!(
         started.elapsed() < std::time::Duration::from_secs(2),
         "took {:?}",

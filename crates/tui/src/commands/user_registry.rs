@@ -908,7 +908,7 @@ pub fn with_registry_for_app<R>(app: &App, f: impl FnOnce(&UserCommandRegistry) 
 }
 
 pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
-    let parts: Vec<&str> = input.trim().splitn(2, ' ').collect();
+    let parts: Vec<&str> = input.trim().splitn(2, char::is_whitespace).collect();
     let command = normalize_name(parts.first().copied().unwrap_or_default());
     let args = parts.get(1).copied().unwrap_or("").trim();
 
@@ -1349,6 +1349,24 @@ mod tests {
             sent_message(crate::commands::execute("/attach-it now", &mut app)),
             "custom alias now"
         );
+    }
+
+    #[test]
+    fn arguments_after_a_full_width_space_or_newline_dispatch() {
+        let tmp = TempDir::new().unwrap();
+        write_workspace_command(tmp.path(), "ask", "explain $ARGUMENTS");
+        let mut app = test_app(tmp.path().to_path_buf());
+
+        for (input, expected) in [
+            ("/ask\u{3000}闭包", "explain 闭包"),
+            (
+                "/ask\nfirst line\nsecond line",
+                "explain first line\nsecond line",
+            ),
+        ] {
+            let result = try_dispatch(&mut app, input).expect("user command dispatches");
+            assert_eq!(sent_message(result), expected);
+        }
     }
 
     #[test]

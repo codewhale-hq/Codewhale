@@ -226,14 +226,3 @@ mark.search-highlight {
 }
 .skip-link:focus-visible { top: 0.5rem; }
 
-/* The docs band's mark and label (docs/layout.tsx): the reading whale. */
-.portal-mark-pose { --pose-size: 2.25rem; flex: none; }
-.portal-mark {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  margin-bottom: 1.25rem;
-  color: var(--muted);
-  font-size: var(--text-caption);
-  font-weight: 600;
-}

@@ -643,6 +643,23 @@ context_window = 204800
 }
 
 #[test]
+fn negative_retry_delay_is_invalid() {
+    let config: Config = toml::from_str(
+        r#"
+[retry]
+jitter = false
+max_delay = -1.0
+"#,
+    )
+    .expect("a negative delay is syntactically valid TOML");
+
+    let err = config
+        .validate()
+        .expect_err("a negative retry delay should be rejected");
+    assert!(err.to_string().contains("[retry] max_delay"), "{err}");
+}
+
+#[test]
 fn opencode_go_context_window_zero_is_invalid() {
     let config: Config = toml::from_str(
         r#"
@@ -12152,4 +12169,26 @@ fn legacy_root_model_preparation_remints_only_after_verified_model_selection() {
         config.active_provider_identity().unwrap().persisted_id(),
         Some("custom")
     );
+}
+
+#[test]
+fn custom_provider_responses_profile_round_trips() {
+    let config: Config = toml::from_str(
+        r#"
+        [providers.my-gateway]
+        kind = "openai-compatible"
+        wire = "responses"
+        responses_profile = "standard"
+        "#,
+    )
+    .expect("custom responses profile parses");
+    let entry = config
+        .providers
+        .as_ref()
+        .expect("providers")
+        .custom_provider_config("my-gateway")
+        .expect("named table");
+    assert_eq!(entry.responses_profile.as_deref(), Some("standard"));
+    let rendered = toml::to_string(entry).expect("serialize");
+    assert!(rendered.contains("responses_profile = \"standard\""));
 }

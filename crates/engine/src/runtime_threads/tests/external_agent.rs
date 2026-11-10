@@ -5,11 +5,8 @@ fn fixture_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/acp-agent.mjs")
 }
 
-fn node_available() -> bool {
-    std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .is_ok_and(|output| output.status.success())
+async fn node_available() -> bool {
+    crate::fleet::agents::resolve("node").await.is_some()
 }
 
 fn fixture_thread_request(workspace: &Path, posture: &str) -> CreateThreadRequest {
@@ -36,7 +33,8 @@ async fn wait_for_turn(manager: &RuntimeThreadManager, turn_id: &str) -> Result<
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let turn = manager.store.load_turn(turn_id)?;
-        if !turn.status.is_active_work() {
+        if !turn.status.is_active_work() && !manager.external_turn_is_active(&turn.thread_id).await
+        {
             return Ok(turn);
         }
         anyhow::ensure!(Instant::now() < deadline, "turn {turn_id} never settled");
@@ -146,7 +144,7 @@ async fn an_unknown_or_missing_agent_cannot_create_a_thread() -> Result<()> {
 
 #[tokio::test]
 async fn a_fixture_agent_turn_runs_end_to_end_and_never_auto_approves() -> Result<()> {
-    if !node_available() {
+    if !node_available().await {
         return Ok(());
     }
     let _env = crate::test_support::lock_test_env();
@@ -360,7 +358,7 @@ async fn a_fixture_agent_turn_runs_end_to_end_and_never_auto_approves() -> Resul
 
 #[tokio::test]
 async fn external_postures_allow_only_complete_in_workspace_edit_requests() -> Result<()> {
-    if !node_available() {
+    if !node_available().await {
         return Ok(());
     }
     let _env = crate::test_support::lock_test_env();
@@ -573,7 +571,7 @@ async fn duplicate_external_answers_wait_for_the_same_durable_settlement() -> Re
 
 #[tokio::test]
 async fn interrupt_during_external_persistence_never_dispatches_prompt() -> Result<()> {
-    if !node_available() {
+    if !node_available().await {
         return Ok(());
     }
     let _env = crate::test_support::lock_test_env();
@@ -637,7 +635,7 @@ async fn interrupt_during_external_persistence_never_dispatches_prompt() -> Resu
 #[cfg(unix)]
 #[tokio::test]
 async fn an_abandoned_external_startup_stops_its_agent_inside_the_shutdown_barrier() -> Result<()> {
-    if !node_available() {
+    if !node_available().await {
         return Ok(());
     }
     let _env = crate::test_support::lock_test_env();

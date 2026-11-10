@@ -27,6 +27,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use codewhale_config::provider::WireFormat;
+use codewhale_config::responses_dialect::ResponsesProfileId;
 use codewhale_runtime::hashing::canonical_json;
 
 use codewhale_config::ProviderKind;
@@ -295,6 +296,9 @@ pub struct PreparedOutboundRequest {
     /// Which transport entry point prepared this request. Never a substitute
     /// for [`Self::wire_stream_field`], which is the wire truth.
     pub entrypoint: CallerStreamMode,
+    /// Dialect id copied from the client. It is not inserted into `body`, and
+    /// `canonical_body` / `body_sha256` do not cover it.
+    pub responses_profile_id: Option<ResponsesProfileId>,
     /// Wire-normalized tool names omitted by the route tool projection for
     /// this request. It only transports a bounded user-visible warning.
     pub omitted_tool_names: Vec<String>,
@@ -322,6 +326,7 @@ impl PreparedOutboundRequest {
             reasoning,
             replay_input_tokens,
             entrypoint,
+            responses_profile_id: None,
             omitted_tool_names: Vec::new(),
             image_omission_notice: None,
             image_projection: None,
@@ -337,6 +342,12 @@ impl PreparedOutboundRequest {
     #[must_use]
     pub fn with_omitted_tool_names(mut self, names: Vec<String>) -> Self {
         self.omitted_tool_names = names;
+        self
+    }
+
+    #[must_use]
+    pub fn with_responses_profile_id(mut self, profile: Option<ResponsesProfileId>) -> Self {
+        self.responses_profile_id = profile;
         self
     }
 

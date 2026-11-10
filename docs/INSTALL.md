@@ -1289,8 +1289,6 @@ cargo install codewhale-cli --locked   # installs `codewhale`
 
 ### Migrating from npm, Cargo, or another installation
 
-#### Migrating from npm, Cargo, or another installation
-
 Package managers continue to own their files. `codewhale update` gives migration
 instructions for npm, Cargo, Homebrew, and Omarchy instead of overwriting them.
 Known system/package directories are also protected. A `CODEWHALE_INSTALL_METHOD=binary`

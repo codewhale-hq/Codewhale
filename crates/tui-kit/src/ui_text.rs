@@ -190,6 +190,11 @@ pub fn text_display_width(text: &str) -> usize {
     text.graphemes(true).map(grapheme_display_width).sum()
 }
 
+pub fn pad_to_display_width(text: &str, width: usize) -> String {
+    let padding = width.saturating_sub(text_display_width(text));
+    format!("{text}{}", " ".repeat(padding))
+}
+
 /// Visible width of one grapheme: ratatui strips control characters before
 /// painting, so they occupy no cells. Every other grapheme keeps the shared
 /// [`grapheme_display_width`] contract.

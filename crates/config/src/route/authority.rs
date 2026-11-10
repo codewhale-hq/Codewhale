@@ -213,6 +213,7 @@ mod tests {
             base_url_override: None,
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         }
     }
 

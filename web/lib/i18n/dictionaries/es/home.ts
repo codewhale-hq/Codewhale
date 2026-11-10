@@ -3,10 +3,10 @@ import type { HomeDict } from "../types";
 /** Spanish home copy: useful work with chosen models and connected tools. */
 
 export const home: HomeDict = {
-  metaTitle: "Codewhale · Un agente de código abierto para tu ordenador",
-  metaDescription: "Codewhale es un agente de programación de código abierto para tu terminal. Lee, edita y prueba proyectos con tus modelos alojados o locales.",
-  heroTitle: "Un agente de código abierto para tu ordenador",
-  heroIntro: "Crea software y ejecuta flujos de trabajo repetibles con {brand} en tu terminal. Añade Computer Use para trabajar en apps de Mac.",
+  metaTitle: "Codewhale · Usa cualquier modelo con un agente que puedes leer",
+  metaDescription: "Codewhale es el agente de código abierto entre tú y cualquier modelo. Lee su código o pídele que se explique. Una comunidad internacional lo mejora en cada versión.",
+  heroTitle: "Usa cualquier modelo con un agente que puedes leer",
+  heroIntro: "{brand} es el agente de código abierto entre tú y el modelo. Lee su código, o pídele que lea su propio código y explique lo que hace. Una comunidad internacional lo mejora en cada versión.",
   getCodewhale: "Instalar Codewhale",
   heroInstallAria: "Comando de instalación",
   exploreProduct: "Explora Codewhale",
@@ -123,9 +123,5 @@ export const home: HomeDict = {
   binaries: "Binarios",
   chinaMirrors: "Espejos en China",
   installGuideLink: "Leer la guía de instalación",
-  communityHeading: "Contribuye a Codewhale",
-  communityBody:
-    "{count} personas han contribuido a crear Codewhale. Informa de un error, mejora la documentación o contribuye con código en GitHub.",
-  communityLinksAria: "Enlaces de la comunidad",
   contribute: "Contribuye en GitHub",
 };

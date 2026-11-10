@@ -8,14 +8,14 @@ import type { DocsVocabularyDict } from "../types";
 export const docsVocabulary: DocsVocabularyDict = {
   metaTitle: "Vocabulary · Codewhale Docs",
   metaDescription:
-    "The exact product nouns: Fleet, Workflow, Lane, Runtime, Advisor, Plan / Work / Operate and permission postures, plus requested→effective reasoning, routing source, and measurement principles.",
+    "The exact product nouns: Fleet, Workflow, Lane, Runtime, Advisor, Plan / Work and permission postures in the 0.10.3 source candidate, plus requested→effective reasoning, routing source, and measurement principles.",
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Vocabulary",
-  lead: "These nouns mean the same thing on this site, in the TUI, and in receipts. The nouns themselves are never translated; every definition matches the public fact matrix in the repository verbatim.",
+  lead: "These definitions describe Codewhale's product vocabulary, with control names scoped to the source candidate below. The execution nouns match the public fact matrix in the repository.",
   executionHeading: "Execution nouns",
-  controlHeading: "Modes and permission postures",
+  controlHeading: "Modes and permissions in the 0.10.3 source candidate",
   controlLead:
-    "Modes (Tab, composer idle) decide the visible interaction; permission postures (Shift+Tab) decide how aggressively tools ask before executing. The two are orthogonal.",
+    "These controls describe the unpublished 0.10.3 source candidate; the published v0.10.2 release has different controls. Shift+Tab steps Ask → Accept Edits → Plan → Auto-Review → Full Access, while Tab completes text.",
   routeHeading: "Route identity: provider · model · requested→effective reasoning · source",
   advisoryHeading: "Advisory role",
   measurementHeading: "Measurement principles",

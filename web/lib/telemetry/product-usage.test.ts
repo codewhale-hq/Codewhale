@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { handleProductTelemetry, ingestUrl, CANONICAL_INGEST_URL } from "../../app/api/product-telemetry/route";
 import {
   COUNTERS_STORAGE_KEY,
+  FUNNEL_STORAGE_KEY,
+  emptyFunnelCounters,
   INSTALL_ID_ROTATION_MS,
   INSTALL_STORAGE_KEY,
   NOTICE_VERSION,
@@ -65,14 +67,15 @@ describe("product usage envelope", () => {
     counters.page_view = 1;
     const envelope = buildEnvelope({ counters, installId: UUID, appVersion: "0.9.12", surface: "website", now: NOW });
     expect(validateEnvelope(envelope)).toEqual({ ok: true, envelope });
-    expect(SCHEMA_VERSION).toBe(3);
-    expect(NOTICE_VERSION).toBe(5);
-    expect(envelope.notice_version).toBe(5);
+    expect(SCHEMA_VERSION).toBe(5);
+    expect(NOTICE_VERSION).toBe(7);
+    expect(envelope.notice_version).toBe(7);
     expect(envelope).not.toHaveProperty("consent_version");
     expect(envelope.sent_at).toBe("2026-09-04T20:00:00Z");
     if (existsSync(GOLDEN_PATH)) {
       const golden = JSON.parse(readFileSync(GOLDEN_PATH, "utf8"));
-      expect(envelope).toEqual(golden);
+      expect(golden.schema_version).toBe(3);
+      expect(golden.notice_version).toBe(5);
       expect(validateEnvelope(golden).ok).toBe(true);
     }
   });
@@ -103,7 +106,7 @@ describe("usage preference", () => {
   it("is on by default, keeps every recorded opt-out, and fails closed on unreadable state", () => {
     expect(readUsagePreference(null)).toBe("default");
     expect(readUsagePreference(undefined)).toBe("default");
-    expect(readUsagePreference("")).toBe("default");
+    expect(readUsagePreference("")).toBe("off");
     expect(usageCountingEnabled("default")).toBe(true);
     // Unreadable stored state is never replaced with the default.
     expect(readUsagePreference("{not json")).toBe("off");
@@ -343,5 +346,82 @@ describe("same-origin forwarder", () => {
     });
     expect(await response.json()).toEqual({ accepted: false, reason: "unavailable" });
     expect(attempts).toBe(1);
+  });
+});
+
+
+describe("website funnel contract and delivery", () => {
+  it("matches the ingest golden and rejects legacy or malformed funnel payloads", async () => {
+    const { validateBatch } = await import("../../../telemetry-ingest/src/schema");
+    const counters = emptyCounters(); counters.page_view = 1;
+    const funnel = emptyFunnelCounters();
+    funnel.home_view = 1; funnel.install_intent = 1; funnel.docs_search = 1; funnel.docs_search_result = 1;
+    const envelope = buildEnvelope({ counters, funnel, installId: UUID, appVersion: "0.9.12", surface: "website", now: NOW });
+    const golden = JSON.parse(readFileSync(new URL("../../../telemetry-ingest/test/golden/browser-v5.json", import.meta.url), "utf8"));
+    expect(envelope).toEqual(golden);
+    expect(validateBatch(envelope).ok).toBe(true);
+    expect(validateEnvelope(envelope).ok).toBe(true);
+    expect(validateEnvelope({ ...envelope, schema_version: 3, notice_version: 5 }).ok).toBe(false);
+    expect(validateEnvelope({ ...envelope, surface: "desktop" }).ok).toBe(false);
+    for (const bad of [-1, 1.5, 4294967296, "1"]) {
+      const invalid = structuredClone(golden); invalid.events[1].counters.docs_search = bad;
+      expect(validateEnvelope(invalid).ok).toBe(false); expect(validateBatch(invalid).ok).toBe(false);
+    }
+    const unexpected = structuredClone(golden); unexpected.events[1].counters.query = "private words";
+    expect(validateEnvelope(unexpected).ok).toBe(false); expect(validateBatch(unexpected).ok).toBe(false);
+  });
+
+  it.each([
+    [200, { accepted: true }, "accepted"],
+    [200, { accepted: false, reason: "disabled" }, "rejected"],
+    [200, { accepted: false, reason: "unavailable" }, "rejected"],
+    [200, { accepted: true, padding: "x".repeat(513) }, "rejected"],
+    [500, { accepted: true }, "rejected"],
+    [200, { other: true }, "rejected"],
+  ] as const)("requires an explicit bounded acceptance receipt (%s)", async (status, payload, expected) => {
+    const fetchMock = vi.fn(async (endpoint: string, init: RequestInit) => { expect(endpoint).toBe("/api/product-telemetry"); expect(init.method).toBe("POST"); return Response.json(payload, { status }); }); vi.stubGlobal("fetch", fetchMock);
+    try {
+      const recorder = createUsageRecorder({ surface: "website", appVersion: "0.10.3", endpoint: "/api/product-telemetry", storage: memoryStorage(), now: () => NOW, randomUuid: () => UUID, setTimer: () => 0, clearTimer: () => {} });
+      recorder.recordFunnel("quickstart_confirmed"); await recorder.flush();
+      expect(recorder.delivery()).toBe(expected); expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer" });
+      expect(recorder.pendingFunnel()).toEqual(emptyFunnelCounters());
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("fails closed on unreadable storage and a failed opt-out write", async () => {
+    const unreadable = memoryStorage(); unreadable.getItem = () => { throw new Error("blocked"); };
+    const sent: string[] = []; const first = recorderWith(unreadable, sent).recorder;
+    expect(first.preference()).toBe("off"); first.recordFunnel("install_confirmed"); await first.flush(); expect(sent).toEqual([]);
+    const storage = memoryStorage(); const write = storage.setItem;
+    storage.setItem = (key, value) => { if (key === PREFERENCE_STORAGE_KEY) throw new Error("quota"); write(key, value); };
+    const second = recorderWith(storage, sent).recorder;
+    expect(second.disable()).toBe(false); expect(second.preference()).toBe("off");
+    second.record("page_view"); second.recordFunnel("install_confirmed"); await second.flush();
+    expect(sent).toEqual([]); expect(storage.data.has(INSTALL_STORAGE_KEY)).toBe(false);
+  });
+
+  it("aborts delivery and erases both queues when counting is turned off", async () => {
+    const storage = memoryStorage(); let signal: AbortSignal | undefined;
+    const recorder = createUsageRecorder({ surface: "website", appVersion: "0.10.3", endpoint: "/api/product-telemetry", storage, now: () => NOW, randomUuid: () => UUID, setTimer: () => 0, clearTimer: () => {}, send: async (_url, _body, abort) => {
+      signal = abort; return new Promise<boolean>((resolve) => abort!.addEventListener("abort", () => resolve(false), { once: true }));
+    } });
+    recorder.record("install_copy"); recorder.recordFunnel("install_intent"); const delivery = recorder.flush();
+    expect(signal?.aborted).toBe(false); expect(recorder.disable()).toBe(true); await delivery; expect(signal?.aborted).toBe(true);
+    for (const key of [COUNTERS_STORAGE_KEY, FUNNEL_STORAGE_KEY, INSTALL_STORAGE_KEY]) expect(storage.data.has(key)).toBe(false);
+    recorder.recordFunnel("quickstart_confirmed"); await recorder.flush(); expect(recorder.pendingFunnel()).toEqual(emptyFunnelCounters());
+  });
+
+  it("reschedules new interactions during delivery without retrying the previous batch", async () => {
+    const timers: (() => void)[] = []; const sent: { events: { event: string; counters: Record<string, number> }[] }[] = [];
+    let finish: ((accepted: boolean) => void) | undefined;
+    const recorder = createUsageRecorder({ surface: "website", appVersion: "0.10.3", endpoint: "/api/product-telemetry", storage: memoryStorage(), now: () => NOW, randomUuid: () => UUID, setTimer: (callback) => { timers.push(callback); return timers.length; }, clearTimer: () => {}, send: async (_url, body) => {
+      sent.push(JSON.parse(body)); return sent.length === 1 ? new Promise<boolean>((resolve) => { finish = resolve; }) : true;
+    } });
+    recorder.recordFunnel("install_intent"); const first = recorder.flush(); recorder.recordFunnel("docs_search"); timers.at(-1)!();
+    finish!(false); await first; expect(timers).toHaveLength(3); timers.at(-1)!(); await Promise.resolve(); await Promise.resolve(); expect(sent).toHaveLength(2);
+    expect(sent[0].events.find((event) => event.event === "funnel_usage")!.counters.install_intent).toBe(1);
+    const second = sent[1].events.find((event) => event.event === "funnel_usage")!.counters;
+    expect(second.install_intent).toBe(0); expect(second.docs_search).toBe(1);
   });
 });

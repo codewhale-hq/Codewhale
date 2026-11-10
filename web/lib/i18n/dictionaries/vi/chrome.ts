@@ -43,8 +43,7 @@ export const chrome: ChromeDict = {
   themeAria: "Giao diện: {mode} (nhấn để đổi)",
   themeTitle: "Giao diện · tự động / sáng / tối",
 
-  footerTagline:
-    "Tác nhân lập trình mã nguồn mở cho terminal và những mô hình bạn chọn.",
+  footerTagline: "Dùng bất kỳ mô hình nào qua một agent mà bạn đọc được.",
   footerProduct: "Sản phẩm",
   footerProject: "Dự án",
   footerDocs: "Tài liệu",
@@ -56,6 +55,7 @@ export const chrome: ChromeDict = {
   // The GitHub tracker, named as GitHub names it — the same choice id/ja/pt-BR made.
   footerIssues: "Issues",
   footerContribute: "Đóng góp",
+  footerRoadmap: "Lộ trình",
   footerLicense: "Giấy phép MIT",
   footerTerms: "Điều khoản dịch vụ",
   footerPrivacy: "Quyền riêng tư",

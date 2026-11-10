@@ -87,6 +87,7 @@ export interface ChromeDict {
   footerFaq: string;
   footerIssues: string;
   footerContribute: string;
+  footerRoadmap: string;
   footerLicense: string;
   /** Footer link to the terms route, e.g. "Terms". */
   footerTerms: string;
@@ -206,9 +207,6 @@ export interface HomeDict {
   chinaMirrors: string;
   installGuideLink: string;
 
-  communityHeading: string;
-  communityBody: string;
-  communityLinksAria: string;
   contribute: string;
 }
 
@@ -246,7 +244,6 @@ export interface DocsGuideDict {
 export interface DocsShellDict {
   metaTitle: string;
   metaDescription: string;
-  portalMark: string;
   heroTitle: string;
   heroLead: string;
   installCta: string;
@@ -266,6 +263,9 @@ export interface DocsShellDict {
   // --- task/topic search (components/docs-search.tsx) ---
   searchLabel: string;
   searchPlaceholder: string;
+  searchLoading: string;
+  searchUnavailable: string;
+  searchRetry: string;
   searchClear: string;
   /** "{matched} of {total} entries match “{query}”". */
   searchMatches: string;
@@ -748,3 +748,5 @@ export interface ComputerUseDict {
   contributeGuide: string;
   contributeIssue: string;
 }
+
+export type ProjectDict = typeof import("./en/project").project;

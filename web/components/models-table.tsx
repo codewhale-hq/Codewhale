@@ -3,30 +3,10 @@
 import { useMemo, useState } from "react";
 import { Icon } from "./icon";
 import type { ModelFact } from "@/lib/facts";
-import { MODELS_COPY } from "@/lib/content/models";
+import { MODELS_COPY, formatModelTokens, formatModelDate } from "@/lib/content/models";
 import { getChrome, pickText } from "@/lib/i18n/dictionaries";
 
 type SortKey = "added" | "id" | "provider" | "context";
-
-function formatTokens(n: number | null): string {
-  if (n === null) return "—";
-  if (n >= 1_000_000) {
-    const m = n / 1_000_000;
-    return `${Number.isInteger(m) ? m : m.toFixed(2)}M`;
-  }
-  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
-  return String(n);
-}
-
-function formatDate(iso: string | null, dateLocale: string): string {
-  if (!iso) return "—";
-  const d = new Date(`${iso}T00:00:00Z`);
-  if (!Number.isFinite(d.getTime())) return "—";
-  return new Intl.DateTimeFormat(dateLocale, {
-    dateStyle: "medium",
-    timeZone: "UTC",
-  }).format(d);
-}
 
 // Missing values sort last in BOTH directions — an undated model is never
 // "newest" or "oldest", it is simply unknown.
@@ -142,8 +122,8 @@ export function ModelsTable({
                 ) : null}
               </th>
               <td>{model.provider ?? "—"}</td>
-              <td className="tabular">{formatTokens(model.contextWindow)}</td>
-              <td className="tabular">{formatDate(model.addedAt, dateLocale)}</td>
+              <td className="tabular">{formatModelTokens(model.contextWindow)}</td>
+              <td className="tabular">{formatModelDate(model.addedAt, dateLocale)}</td>
             </tr>
           ))}
         </tbody>

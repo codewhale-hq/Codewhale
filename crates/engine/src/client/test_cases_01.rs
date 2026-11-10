@@ -4,7 +4,7 @@ use crate::client::chat::{
     build_chat_messages_for_request_and_provider, count_reasoning_replay_chars, parse_chat_message,
     parse_sse_chunk, sanitize_thinking_mode_messages,
 };
-use crate::client::responses::build_responses_body;
+use crate::client::responses::build_responses_body_for_provider;
 use crate::tools::apply_patch::ApplyPatchTool;
 use crate::tools::spec::ToolSpec;
 use crate::tools::{ToolContext, ToolRegistryBuilder};

@@ -10,11 +10,21 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_PROBE_LINE_BYTES: usize = 256 * 1024;
 const MAX_TEXT_CHARS: usize = 80;
 const MAX_AUTH_METHODS: usize = 8;
+const PROBE_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+const SILENT_HANDSHAKE: &str = "It did not answer the Agent Client Protocol handshake.";
 
 use codewhale_engine::fleet::agents::{
     AGENTS, ExecutorUnavailable, ExternalAgent, below_minimum, cli_version, foreign_command,
-    resolve,
+    not_installed, resolve,
 };
+use codewhale_runtime::process_tree::ProcessTree;
+
+#[derive(Debug)]
+enum Handshake {
+    Answered(Value),
+    Refused(String),
+    Silent,
+}
 
 fn clean(text: &str) -> String {
     text.chars()
@@ -25,10 +35,19 @@ fn clean(text: &str) -> String {
         .to_string()
 }
 
-async fn acp_initialize(path: &Path, args: &[&str]) -> Option<Value> {
-    let mut child = foreign_command(path, args).spawn().ok()?;
-    let mut stdin = child.stdin.take()?;
-    let stdout = child.stdout.take()?;
+async fn acp_initialize(path: &Path, args: &[&str]) -> Handshake {
+    let mut command = foreign_command(path, args);
+    #[cfg(unix)]
+    command.process_group(0);
+    let Ok(mut child) = command.spawn() else {
+        return Handshake::Silent;
+    };
+    let Ok(tree) = ProcessTree::attach_tokio(&child) else {
+        return Handshake::Silent;
+    };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return Handshake::Silent;
+    };
     let request = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -48,35 +67,55 @@ async fn acp_initialize(path: &Path, args: &[&str]) -> Option<Value> {
     });
     let mut line = request.to_string();
     line.push('\n');
-    stdin.write_all(line.as_bytes()).await.ok()?;
-    stdin.flush().await.ok()?;
     let mut lines = crate::stdio::BoundedLines::new(BufReader::new(stdout));
-    let reply = tokio::time::timeout(PROBE_TIMEOUT, async {
+    let handshake = tokio::time::timeout(PROBE_TIMEOUT, async {
+        if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
+            return Handshake::Silent;
+        }
         while let Ok(Some(line)) = lines.next_line().await {
             if line.len() > MAX_PROBE_LINE_BYTES {
-                return None;
+                return Handshake::Refused(
+                    "It answered the Agent Client Protocol handshake with a line larger than Codewhale reads."
+                        .to_string(),
+                );
             }
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
             if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-                return None;
+                return Handshake::Refused(
+                    "It answered without JSON-RPC 2.0, which the Agent Client Protocol requires."
+                        .to_string(),
+                );
             }
-            if message.get("id") == Some(&json!(1)) {
-                let result = message.get("result")?;
-                return (result.get("protocolVersion").and_then(Value::as_u64) == Some(1))
-                    .then(|| result.clone());
+            if message.get("id") != Some(&json!(1)) {
+                continue;
             }
+            let Some(result) = message.get("result") else {
+                return Handshake::Refused(
+                    "It refused the Agent Client Protocol handshake.".to_string(),
+                );
+            };
+            return match result.get("protocolVersion").and_then(Value::as_u64) {
+                Some(1) => Handshake::Answered(result.clone()),
+                Some(version) => Handshake::Refused(format!(
+                    "It speaks Agent Client Protocol version {version}; Codewhale drives version 1."
+                )),
+                None => Handshake::Refused(
+                    "It answered the Agent Client Protocol handshake without a protocol version."
+                        .to_string(),
+                ),
+            };
         }
-        None
+        Handshake::Silent
     })
     .await
-    .ok()
-    .flatten();
+    .unwrap_or(Handshake::Silent);
     drop(stdin);
+    drop(tree);
     let _ = child.start_kill();
-    let _ = child.wait().await;
-    reply
+    let _ = tokio::time::timeout(PROBE_REAP_TIMEOUT, child.wait()).await;
+    handshake
 }
 
 fn auth_methods(result: &Value) -> Vec<Value> {
@@ -132,22 +171,15 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
             "depth": null,
             "auth_status": "unknown",
             "reason_code": ExecutorUnavailable::NOT_INSTALLED,
-            "reason": format!(
-                "{} is not installed.{}",
-                agent.name,
-                agent
-                    .upgrade
-                    .map(|command| format!(" Install it with `{command}`."))
-                    .unwrap_or_default()
-            ),
+            "reason": not_installed(agent).message,
         });
     };
-    let (version, initialized, adapter_installed) = tokio::join!(
+    let (version, handshake, adapter_installed) = tokio::join!(
         cli_version(&path),
         async {
             match agent.acp_args {
                 Some(args) => acp_initialize(&path, args).await,
-                None => None,
+                None => Handshake::Silent,
             }
         },
         async {
@@ -157,6 +189,11 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
             }
         }
     );
+    let (initialized, refusal) = match handshake {
+        Handshake::Answered(result) => (Some(result), None),
+        Handshake::Refused(reason) => (None, Some(reason)),
+        Handshake::Silent => (None, None),
+    };
     let acp = match (&initialized, agent.acp_args) {
         (Some(_), _) => "native",
         (None, Some(_)) => "unreachable",
@@ -167,7 +204,7 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
         .and_then(|result| result.pointer("/agentInfo/version"))
         .and_then(Value::as_str)
         .map(clean);
-    let version = reported.or(version);
+    let version = version.or(reported);
     let needs_update = below_minimum(version.as_deref(), agent.min_version);
     let runnable = !needs_update && (acp == "native" || (acp == "adapter" && adapter_installed));
     let (reason_code, reason) = if needs_update {
@@ -182,7 +219,7 @@ async fn describe(agent: &'static ExternalAgent) -> Value {
     } else if acp == "unreachable" {
         (
             Some(ExecutorUnavailable::NO_ACP),
-            Some("It did not answer the Agent Client Protocol handshake.".to_string()),
+            Some(refusal.unwrap_or_else(|| SILENT_HANDSHAKE.to_string())),
         )
     } else if acp == "adapter" && !adapter_installed {
         let adapter = agent.adapter.unwrap_or("its ACP adapter");
@@ -235,4 +272,82 @@ pub(super) async fn list_external_agents() -> Json<Value> {
             .unwrap_or(usize::MAX)
     });
     Json(json!({ "agents": found }))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nread request\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn handshake_keeps_answered_unsupported_and_silent_agents_distinct() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("agent dir ünï");
+        std::fs::create_dir_all(&dir).unwrap();
+        let answer = |reply: &str| format!("echo 'log line'; echo '{reply}'; sleep 30");
+        let native = script(
+            &dir,
+            "native",
+            &answer(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"version":"2.0.0"},"authMethods":[{"id":"login","name":"Log in","type":"terminal"}]}}"#,
+            ),
+        );
+        let Handshake::Answered(result) = acp_initialize(&native, &["acp"]).await else {
+            panic!("a v1 answer must count as native ACP");
+        };
+        assert_eq!(auth_methods(&result)[0]["type"], "terminal");
+
+        let cases = [
+            (
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2}}"#,
+                "It speaks Agent Client Protocol version 2; Codewhale drives version 1.",
+            ),
+            (
+                r#"{"id":1,"result":{"protocolVersion":1}}"#,
+                "It answered without JSON-RPC 2.0, which the Agent Client Protocol requires.",
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}"#,
+                "It refused the Agent Client Protocol handshake.",
+            ),
+        ];
+        for (index, (reply, expected)) in cases.into_iter().enumerate() {
+            let agent = script(&dir, &format!("refusing {index}"), &answer(reply));
+            match acp_initialize(&agent, &[]).await {
+                Handshake::Refused(reason) => assert_eq!(reason, expected),
+                other => panic!("{reply}: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn silent_handshake_is_bounded_and_kills_the_agent_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("grandchild.pid");
+        let silent = script(
+            root.path(),
+            "silent",
+            &format!("sleep 300 & echo $! > '{}'; sleep 300", pid_file.display()),
+        );
+        let started = Instant::now();
+        assert!(matches!(
+            acp_initialize(&silent, &[]).await,
+            Handshake::Silent
+        ));
+        assert!(started.elapsed() < PROBE_TIMEOUT + PROBE_REAP_TIMEOUT + Duration::from_secs(2));
+        let grandchild =
+            codewhale_runtime::process_tree::read_pid_file(&pid_file, Duration::from_secs(5));
+        assert!(codewhale_runtime::process_tree::wait_for_pid_exit(
+            grandchild,
+            Duration::from_secs(5)
+        ));
+    }
 }

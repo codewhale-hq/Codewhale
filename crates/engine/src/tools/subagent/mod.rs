@@ -4117,7 +4117,6 @@ pub struct SubAgentManager {
     admitted_coordination_roots: HashMap<PathBuf, AdmittedCoordinationRoot>,
     worker_origins: HashMap<String, WorkerOrigin>,
     worker_origin_schema: u32,
-    #[allow(dead_code)] // Stored for future workspace-scoped operations
     workspace: PathBuf,
     /// Root that owns the delegated-agent ledger, complete transcript
     /// artifacts and coordination lock. Defaults to `workspace`; embedders may

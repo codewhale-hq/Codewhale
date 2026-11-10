@@ -46,7 +46,7 @@ local supervisor / SDK / automation harness
 不代管提供商令牌，也不泄漏任何密钥。
 
 关于线程或回合所做之事的只读记录，请参阅
-[`docs/RECEIPTS.md`](../RECEIPTS.md)：CLI 上的 `codewhale receipts`，以及下文
+[`RECEIPTS.md`](RECEIPTS.md)：CLI 上的 `codewhale receipts`，以及下文
 **线程**下的 `/receipt` 路由。
 
 ## 运行时 API 入口
@@ -600,7 +600,7 @@ app-server 存在的意义是让外部 SDK 无需抓取 TUI
 | 事件流 | `GET /v1/threads/{id}/events`（回放 + 实时 SSE） | 可用 |
 | 回合状态 / 终态分类 | `TurnRecord.status` + 错误摘要 | 可用 |
 | Token 用量 | `TurnRecord.usage`；通过 `GET /v1/usage` 聚合 | 可用 |
-| 动作回执（文件、命令、web/MCP 调用、智能体、审批及由谁决定、失败） | `GET /v1/threads/{id}/receipt`、`GET /v1/threads/{id}/turns/{turn_id}/receipt` | 可用（[RECEIPTS.md](../RECEIPTS.md)） |
+| 动作回执（文件、命令、web/MCP 调用、智能体、审批及由谁决定、失败） | `GET /v1/threads/{id}/receipt`、`GET /v1/threads/{id}/turns/{turn_id}/receipt` | 可用（[RECEIPTS.md](RECEIPTS.md)） |
 
 对于一次性/无头自动化，优先使用 `codewhale exec` 并显式给出
 `--provider <id> --model <id>`，这样一旦失败就能确定是哪一对提供商/模型。
@@ -1015,7 +1015,7 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
 - `POST /v1/threads/{id}/read` — 记录客户端已显示到的最新条目
   （请求体 `{"item_id": "<item id>"}`；见下文“已读标记”）
 - `GET /v1/threads/{id}/receipt` — 线程做了什么，每个动作一条
-  （只读；形态见 [RECEIPTS.md](../RECEIPTS.md)）
+  （只读；形态见 [RECEIPTS.md](RECEIPTS.md)）
 - `GET /v1/threads/{id}/turns/{turn_id}/receipt` — 同上，针对一个回合；
   未知线程或不属于该线程的回合返回 `404`
 
@@ -2015,7 +2015,8 @@ POST 前保留预期指纹，并在响应及按键 GET 恢复时核对，之后�
   （仅已跟踪路径——没有 `all`，未跟踪路径失败关闭）；
   `POST /v1/git/commit` `{ "message", "all"? }`；stage、unstage、discard
   与 commit 还接受一个可选的 `expect`（见下文）；`POST /v1/git/push`
-  `{ "remote"?, "set_upstream"? }`（`remote`，或仅提供 `set_upstream` 时使用的 `origin`，必须是已配置的远端名称）；`POST /v1/git/branch`
+  `{ "branch"?, "expect"?: { "head" }, "remote"?, "set_upstream"? }` 恰好
+  推送一个分支上的一个 commit（见下文 *Push*）；`POST /v1/git/branch`
   `{ "name", "create"? }`
 
 `POST /v1/worktrees/remove?thread_id=` 还会在当前运行时跟踪到启动目录与工作树重叠的运行中 shell 作业时，返回 `409 worktree_busy`。工作树删除与 API 作业启动使用和新轮次相同的准入锁；即使 HTTP 连接断开，也会持有保护直到修改完成。此保护覆盖同一个运行时管理器跟踪的作业；持久化客户端作业操作还会在共享存储中拦住重叠的未确认派发，包括 Engine 重启之后。启动目录不能证明命令后来切换到了哪里；脱离跟踪的后代进程、稍后独立启动的子代理以及其他运行时管理器或进程仍不在此保护范围内。这不是操作系统级的进程占用保留。
@@ -2061,6 +2062,28 @@ id 或 `null`；`index` 与 `revision` 为 64 位十六进制（显式的 `revis
 `stale` 列出移动了的组成部分（`head`、`index`、`files`、`revision`）；`stale_paths`
 列出 `rev` 发生变化的 `files` 键。客户端从 `current` 重新渲染，保留用户的选择，
 然后再次询问。
+
+*Push。* 当该路由接受 `branch` 与 `expect.head` 时，`GET /v1/git` 会通告
+`named_push: true`。客户端发送它读到的 `branch` 与 `head_oid`：
+`{ "branch": "feature", "expect": { "head": "<head_oid>" } }`。该分支必须仍处于
+检出状态，且其顶端必须仍是该 commit；否则路由不推送任何内容，并回答
+`409 git_state_changed`，其中 `stale` 指明 `branch`（另一个分支，或分离的 HEAD）
+和/或 `head`，并附带 `current`。只有 `branch` 而没有 `expect.head`、只有 `expect`
+而没有 `branch`、`head: null`，或任何其他 `expect` 字段，都回答 `400`。不带
+`named_push` 的 Engine 会以 `400` 拒绝未知的 `branch` 字段且不推送任何内容，所以
+新客户端面对旧 Engine 时失败关闭。
+
+每一次 push，无论是否具名，都运行
+`git push --no-follow-tags --no-recurse-submodules -- <remote> <commit>:refs/heads/<branch>`：
+一个源 commit、一个同名目标分支，绝不是强制推送。`push.default`、
+`remote.<name>.push`、`push.followTags` 与子模块递归都无法增加 ref，而
+`remote.<name>.mirror` 会让 git 拒绝（`400`）。不带 `branch` 的请求推送已检出分支的
+当前顶端；处于分离的 HEAD 或未出生分支时回答 `400`。远端依次取 `remote`、
+`branch.<b>.pushRemote`、`remote.pushDefault`、`branch.<b>.remote`，最后是
+`origin`，且必须是已配置的远端名称。如果该远端上的上游是一个名称不同的分支，则像
+git 默认的 `simple` 模式一样回答 `400`。`set_upstream: true` 会在 push 成功后记录
+`branch.<b>.remote` 与 `branch.<b>.merge`。不在覆盖范围内：远端自己的钩子、
+`pushurl`，以及用户配置的凭据助手，仍与在用户终端中一样生效。
 
 来自同一个运行时的 stage、unstage、discard、commit 与 branch 是串行化的，因此一次
 检查和它的写入相对于该运行时的其他窗口是原子的；第二个并发写入会回答 `409`，
@@ -2352,10 +2375,10 @@ OpenAI Codex。没有此路由的 Engine 返回 `404`。
 
 报告本机已有哪些外部 agent CLI，不启动任何会话。覆盖 Claude、Codex、Gemini
 CLI、OpenCode、Kimi Code、Mistral Vibe、Qoder、CodeBuddy 和 Grok。`state` 为
-`installed` 或 `not_installed`；程序会在 `PATH` 以及常见的用户 bin 目录中查找。
+`installed` 或 `not_installed`；程序会在 `PATH`（仅绝对路径条目；在 Windows 上为可启动的 PATHEXT 后缀 `.com/.exe/.bat/.cmd` 以及 `%APPDATA%\npm`）以及常见的用户 bin 目录中查找。
 对已安装的 agent，该路由会同时执行 `--version`，并在该 CLI 本身支持 Agent
 Client Protocol 时通过 stdin 发送一次 `initialize`。`acp` 为 `native` 表示握手
-成功，`adapter` 表示需要单独的适配器进程，`unreachable` 表示握手没有回应。
+成功，`adapter` 表示需要单独的适配器进程，`unreachable` 表示握手没有回应，或回应了其他协议版本、不是 JSON-RPC 2.0，或返回了错误；`reason` 会说明属于哪种情况。
 `auth_methods` 来自握手结果；`type: "terminal"` 表示只能在该 agent 自己的终端里
 登录。探测超时为 8 秒（`--version` 为 5 秒），不会收到任何 Codewhale 或服务商
 凭据，也不会保存任何内容。`runnable` 为 `false`：该路由只做报告，不启动 agent。

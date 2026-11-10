@@ -800,6 +800,22 @@ mod anchor {
     }
 
     #[test]
+    fn anchor_text_starting_with_a_removal_verb_is_pinned() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let result = anchor(&mut app, Some("delete the staging DB only after a backup"));
+        assert!(!result.is_error, "{:?}", result.message);
+        assert!(result.message.unwrap().contains("Anchor pinned"));
+
+        let result = anchor(&mut app, Some("Remove\u{3000}1"));
+        assert!(!result.is_error, "{:?}", result.message);
+        assert!(result.message.unwrap().contains("Removed anchor #1"));
+        let result = anchor(&mut app, Some("rm\t1"));
+        assert!(result.is_error);
+        assert!(result.message.unwrap().contains("does not exist"));
+    }
+
+    #[test]
     fn test_anchor_remove_non_numeric() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);

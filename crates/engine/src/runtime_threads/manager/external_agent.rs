@@ -641,6 +641,16 @@ impl RuntimeThreadManager {
         self.active.lock().await.external.contains_key(thread_id)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn external_turn_is_active(&self, thread_id: &str) -> bool {
+        self.active
+            .lock()
+            .await
+            .external
+            .get(thread_id)
+            .is_some_and(|state| state.active_turn.is_some())
+    }
+
     pub async fn stop_external_agent(&self, thread_id: &str) -> Result<bool> {
         let removed = {
             let mut active = self.active.lock().await;

@@ -487,6 +487,19 @@
         );
     }
 
+    #[test]
+    fn token_bucket_saturates_delay_for_a_tiny_refill_rate() {
+        let mut bucket = TokenBucket {
+            enabled: true,
+            capacity: 1.0,
+            tokens: 0.0,
+            refill_per_sec: 1e-30,
+            last_refill: Instant::now(),
+        };
+
+        assert_eq!(bucket.delay_until_available(1.0), Some(Duration::MAX));
+    }
+
     /// Every queued waiter must be given a *distinct* wake time. `client.rs`
     /// releases the bucket lock before sleeping (`wait_for_rate_limit`), and a
     /// clone of the client shares one `Arc<AsyncMutex<TokenBucket>>` across
@@ -898,11 +911,14 @@
             Some("route-cap-test".to_string()),
             Some("https://route-cap.example/v1".to_string()),
         );
+        let profile = (wire_format == WireFormat::Responses).then(crate::client::standard_responses_profile);
         CodewhaleClient::from_parts(
             "https://route-cap.example/v1".to_string(),
             "DeepSeek-V4-Flash".to_string(),
             wire_format,
             Some(limits),
+            profile,
+            false,
             &config,
         )
         .expect("route cap test client")
@@ -970,6 +986,8 @@
                     model.to_string(),
                     wire,
                     Some(RouteLimits::default()),
+                    None,
+                    false,
                     &config,
                 )
                 .unwrap()
@@ -1379,6 +1397,8 @@
                 output_tokens: Some(128),
                 ..RouteLimits::default()
             }),
+            None,
+            false,
             &config,
         )
         .expect("FIM route client");

@@ -46,7 +46,7 @@ codewhale auth status --provider deepseek     # which key is in use`,
       blocks: [
         {
           rows: [
-            ["消息发出后一直没有回复", "没有配置密钥，而 v0.10.0 不会提示你。按 F3，选择你的提供商，粘贴密钥。"],
+            ["一直没有回复", "先运行 `codewhale --version` 查看版本：在 v0.10.2 中，未连接模型时消息会保留在输入框，并打开提供商设置，请连接模型后重新发送。如果已完成设置，先用 `codewhale auth status --provider <name>` 查看所选提供商的凭据状态，再用 `codewhale doctor --probe-api` 检查当前托管服务，或用 `codewhale doctor --probe-local` 检查本地模型；这些检查会连接相应服务。"],
             ["`API key not found`", "哪里都找不到密钥。用 `codewhale auth set --provider <name>` 保存一把。"],
             ["`Authentication Fails … is invalid`", "密钥错误或已被吊销。运行 `auth status` 查看用的是哪个来源——已保存的密钥优先于环境变量——然后保存正确的密钥，或运行 `codewhale auth clear --provider <name>`。"],
             ["`Network error: SSE stream request failed …`", "通常是连不上提供商。用 `curl -sI https://api.deepseek.com` 检查（返回 401 说明能连通）。在代理后面时请导出 `HTTPS_PROXY`；在 Windows 或限制严格的代理环境下，可以试试 `CODEWHALE_FORCE_HTTP1=1`。"],
@@ -96,7 +96,7 @@ codewhale -c                  # the latest session in this folder`,
           list: [
             "修改 `mcp.json` 或服务器凭据后，运行 `/mcp reload`。`/mcp validate` 只会刷新界面上显示的内容。",
             "在 shell 中亲自运行一遍服务器命令，确认它能启动。",
-            "如果配置文件丢失或损坏，`codewhale mcp init --force` 会重新生成一份。",
+            "如果缺少 `mcp.json`，可用 `codewhale mcp init` 创建。修复现有文件前请先备份；`--force` 会替换其中的配置。",
           ],
         },
       ],
@@ -111,11 +111,11 @@ docker run --rm -it \\
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \\
   -v codewhale-home:/home/codewhale/.codewhale \\
   -v "$PWD:/workspace" -w /workspace \\
-  ghcr.io/codewhale-hq/codewhale:latest`,
+  ghcr.io/hmbown/codewhale:v0.10.0`,
           lang: "终端",
         },
         {
-          p: "镜像以非 root 用户运行，把你的设置和会话保存在命名卷里。想要可重复的环境，请固定某个发布标签而不是 `latest`；每个项目使用单独的卷；永远不要把密钥打包进镜像。",
+          p: "此处使用 [Docker 指南](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md) 中记录的镜像与 v0.10.0 标签，不是 0.10.3 源码候选版本。镜像以非 root 用户运行；请将配置保存在命名卷中，每个项目使用独立卷，不要把密钥写入镜像。",
         },
       ],
     },

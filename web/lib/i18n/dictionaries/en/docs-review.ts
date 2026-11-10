@@ -27,8 +27,13 @@ export const docsReview: DocsReviewDict = {
           "p": "Session receipts list recorded file changes, commands, tools, agents, approvals and failures. Review receipts below cover a separate code review."
         },
         {
-          "code": "/receipts\n/receipts json\ncodewhale receipts --last --format md\nGET /v1/threads/{id}/receipt\nGET /v1/threads/{id}/turns/{turn_id}/receipt",
-          "lang": "Codewhale / Terminal / HTTP"
+          "code": "/receipts\n/receipts json",
+          "lang": "Codewhale"
+        },
+        { code: "codewhale receipts --last --format md", lang: "Terminal" },
+        {
+          code: "GET /v1/threads/{id}/receipt\nGET /v1/threads/{id}/turns/{turn_id}/receipt",
+          lang: "HTTP"
         },
         {
           "p": "These surfaces only read records. They never call a provider, run tools or change session state."
@@ -43,11 +48,11 @@ export const docsReview: DocsReviewDict = {
       title: "See the changes",
       blocks: [
         {
-          p: "Every file edit appears in the transcript as a diff when it is made. To see everything at once, run:",
+          p: "File-tool edits appear in the transcript as diffs. To inspect available session changes together, run:",
         },
         { code: "/diff", lang: "Codewhale" },
         {
-          p: "`/diff` shows all changes since this session started. From 0.10.2 it compares with the session's first restore point, so it also works in folders that are not git repositories, and it opens in a pager. Your own git history is untouched, so `git diff` and `git status` work as usual.",
+          p: "From v0.10.2, `/diff` uses the session's first restore point when available, so it can also work in folders without a git repository. Paths that snapshots did not capture remain outside that comparison; your own `git diff` and `git status` continue to use your repository.",
         },
       ],
     },
@@ -71,7 +76,7 @@ export const docsReview: DocsReviewDict = {
           p: "`/undo` reverts your last request and its recorded file changes. It refuses file reversal if restore points are unavailable or files changed afterward. `/restore` selects a workspace snapshot.",
         },
         {
-          note: "Snapshots are kept for 7 days. A workspace larger than 2 GB skips snapshots and Codewhale tells you once; raise `[snapshots] max_workspace_gb` in config if you want them anyway. If git is missing or the disk is full, the turn still runs without a snapshot.",
+          note: "Snapshots default to 7-day retention with count pruning that preserves recent turn restore points; workspaces above 2 GB skip them unless you adjust `[snapshots] max_workspace_gb`. Ignored or skipped files and external effects are not a complete backup, and a turn can run without a snapshot when git or storage is unavailable.",
         },
       ],
     },
@@ -102,7 +107,7 @@ codewhale review --pr 123             # a GitHub pull request (needs gh)`,
       title: "Keep a receipt of the review",
       blocks: [
         {
-          p: "A review receipt records what was reviewed and what the review found, so you can prove the diff you push is the diff that was reviewed.",
+          p: "A review receipt records the reviewed diff fingerprint and reported findings, so you can check whether the diff changed afterward. It does not prove that the review found every defect or that the change is safe.",
         },
         {
           code: `codewhale review --base origin/main --write-receipt
@@ -127,9 +132,12 @@ codewhale review --base origin/main --check-receipt`,
         },
         {
           code: `/export clipboard                  # a redacted copy of this session
-/export file notes/session.md      # the same, written to a file
-codewhale sessions export <id>     # full archive: messages, tool calls, results, artifacts`,
-          lang: "Codewhale / Terminal",
+/export file notes/session.md      # the same, written to a file`,
+          lang: "Codewhale",
+        },
+        {
+          code: "codewhale sessions export <id>",
+          lang: "Terminal",
         },
         {
           p: "`codewhale sessions` lists saved sessions and their ids. The archive holds the complete context, so treat it like source code.",

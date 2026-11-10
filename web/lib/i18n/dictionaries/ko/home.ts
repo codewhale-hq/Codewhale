@@ -3,10 +3,10 @@ import type { HomeDict } from "../types";
 /** Korean home copy: useful work with chosen models and connected tools. */
 
 export const home: HomeDict = {
-  metaTitle: "Codewhale · 내 컴퓨터를 위한 오픈 소스 에이전트",
-  metaDescription: "Codewhale은 터미널에서 실행되는 오픈 소스 코딩 에이전트입니다. 선택한 클라우드 또는 로컬 모델로 프로젝트를 읽고, 수정하고, 테스트하세요.",
-  heroTitle: "내 컴퓨터를 위한 오픈 소스 에이전트",
-  heroIntro: "터미널에서 {brand}로 소프트웨어를 만들고 반복 가능한 워크플로를 실행하세요. Mac 앱에서 작업하려면 Computer Use를 추가하세요.",
+  metaTitle: "Codewhale · 직접 읽어 볼 수 있는 에이전트로 어떤 모델이든 사용하세요",
+  metaDescription: "Codewhale은 사용자와 모든 모델 사이에 있는 오픈 소스 에이전트입니다. 코드를 읽거나 스스로 설명하게 하세요. 전 세계 커뮤니티가 릴리스마다 개선합니다.",
+  heroTitle: "직접 읽어 볼 수 있는 에이전트로 어떤 모델이든 사용하세요",
+  heroIntro: "{brand}은 사용자와 모델 사이에 있는 오픈 소스 에이전트입니다. 코드를 직접 읽거나, 에이전트에게 자신의 코드를 읽고 무엇을 하는지 설명하게 할 수 있습니다. 전 세계 커뮤니티가 릴리스마다 개선합니다.",
   getCodewhale: "Codewhale 설치",
   heroInstallAria: "설치 명령",
   exploreProduct: "Codewhale 둘러보기",
@@ -119,8 +119,5 @@ export const home: HomeDict = {
   binaries: "바이너리",
   chinaMirrors: "중국 미러",
   installGuideLink: "설치 가이드 읽기",
-  communityHeading: "Codewhale에 기여하세요",
-  communityBody: "{count}명이 Codewhale 개발에 참여했습니다. GitHub에서 버그를 신고하거나, 문서를 개선하거나, 코드를 기여하세요.",
-  communityLinksAria: "커뮤니티 링크",
   contribute: "GitHub에서 기여하기",
 };

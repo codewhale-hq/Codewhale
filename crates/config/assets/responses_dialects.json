@@ -1,0 +1,210 @@
+{
+  "schema_version": 1,
+  "default_profile": "standard",
+  "custom_allowed_profiles": ["standard"],
+  "profiles": [
+    {
+      "id": "standard",
+      "endpoint": { "path": "versioned_responses" },
+      "headers": { "protocol_headers": "standard_json" },
+      "request": {
+        "store": "explicit_false",
+        "include": "encrypted_reasoning",
+        "instructions": "top_level",
+        "max_output_tokens": "when_positive",
+        "sampling": "omit"
+      },
+      "reasoning": {
+        "effort_mapping": "openai_compatible",
+        "shape": "effort_with_summary",
+        "summary": "auto"
+      },
+      "replay": {
+        "encrypted_state": "provider_api_model_scoped",
+        "plain_reasoning": "ignore",
+        "system_role": "preserve"
+      },
+      "tools": {
+        "envelope": "function_array",
+        "namespace": null,
+        "parallel_calls": "allow"
+      },
+      "stream": {
+        "malformed_json": "skip_with_diagnostic",
+        "unknown_event": "ignore",
+        "done_marker": "terminal",
+        "completion": "accept_documented_terminal_events",
+        "incomplete": "preserve_provider_incomplete_result"
+      },
+      "usage": {
+        "cache_fields": "top_level_then_nested_fallback",
+        "reasoning_fields": "output_tokens_details",
+        "audio_fields": "nested_details"
+      },
+      "capabilities": {
+        "function_tools": "supported",
+        "server_side_tools": "route_and_adapter_gated"
+      }
+    },
+    {
+      "id": "codex",
+      "endpoint": { "path": "versioned_responses" },
+      "headers": { "protocol_headers": "standard_json" },
+      "request": {
+        "store": "explicit_false",
+        "include": "encrypted_reasoning",
+        "instructions": "top_level",
+        "max_output_tokens": "omit",
+        "sampling": "omit"
+      },
+      "reasoning": {
+        "effort_mapping": "codex",
+        "shape": "effort_with_summary",
+        "summary": "auto"
+      },
+      "replay": {
+        "encrypted_state": "account_api_model_scoped",
+        "plain_reasoning": "ignore",
+        "system_role": "system_to_developer"
+      },
+      "tools": {
+        "envelope": "namespace_wrapped",
+        "namespace": "codewhale",
+        "parallel_calls": "disallow"
+      },
+      "stream": {
+        "malformed_json": "fail",
+        "unknown_event": "ignore",
+        "done_marker": "ignore",
+        "completion": "require_successful_response_completed",
+        "incomplete": "fail"
+      },
+      "usage": {
+        "cache_fields": "top_level_then_nested_fallback",
+        "reasoning_fields": "output_tokens_details",
+        "audio_fields": "nested_details"
+      },
+      "capabilities": {
+        "function_tools": "supported",
+        "server_side_tools": "route_and_adapter_gated"
+      }
+    },
+    {
+      "id": "deepseek_stateless_plain_reasoning",
+      "endpoint": { "path": "unversioned_responses" },
+      "headers": { "protocol_headers": "standard_json" },
+      "request": {
+        "store": "omit",
+        "include": "omit",
+        "instructions": "top_level",
+        "max_output_tokens": "when_positive",
+        "sampling": "temperature_and_top_p"
+      },
+      "reasoning": {
+        "effort_mapping": "deepseek",
+        "shape": "effort_only",
+        "summary": "omit"
+      },
+      "replay": {
+        "encrypted_state": "provider_api_model_scoped",
+        "plain_reasoning": "plain_text_with_tool_placeholder",
+        "system_role": "preserve"
+      },
+      "tools": {
+        "envelope": "function_array",
+        "namespace": null,
+        "parallel_calls": "allow"
+      },
+      "stream": {
+        "malformed_json": "skip_with_diagnostic",
+        "unknown_event": "ignore",
+        "done_marker": "terminal",
+        "completion": "accept_documented_terminal_events",
+        "incomplete": "preserve_provider_incomplete_result"
+      },
+      "usage": {
+        "cache_fields": "top_level_then_nested_fallback",
+        "reasoning_fields": "output_tokens_details",
+        "audio_fields": "nested_details"
+      },
+      "capabilities": {
+        "function_tools": "supported",
+        "server_side_tools": "route_and_adapter_gated"
+      }
+    },
+    {
+      "id": "concentrate",
+      "endpoint": { "path": "versioned_responses" },
+      "headers": { "protocol_headers": "standard_json" },
+      "request": {
+        "store": "omit",
+        "include": "omit",
+        "instructions": "leading_system_input",
+        "max_output_tokens": "when_positive",
+        "sampling": "omit"
+      },
+      "reasoning": {
+        "effort_mapping": "openai_compatible",
+        "shape": "effort_only",
+        "summary": "omit"
+      },
+      "replay": {
+        "encrypted_state": "provider_api_model_scoped",
+        "plain_reasoning": "ignore",
+        "system_role": "preserve"
+      },
+      "tools": {
+        "envelope": "function_array",
+        "namespace": null,
+        "parallel_calls": "allow"
+      },
+      "stream": {
+        "malformed_json": "skip_with_diagnostic",
+        "unknown_event": "ignore",
+        "done_marker": "terminal",
+        "completion": "accept_documented_terminal_events",
+        "incomplete": "preserve_provider_incomplete_result"
+      },
+      "usage": {
+        "cache_fields": "top_level_then_nested_fallback",
+        "reasoning_fields": "output_tokens_details",
+        "audio_fields": "nested_details"
+      },
+      "capabilities": {
+        "function_tools": "supported",
+        "server_side_tools": "route_and_adapter_gated"
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "provider_kind": "OpenaiCodex",
+      "protocol": "responses",
+      "base_url_match": { "type": "any" },
+      "profile": "codex"
+    },
+    {
+      "provider_kind": "Concentrate",
+      "protocol": "responses",
+      "base_url_match": { "type": "any" },
+      "profile": "concentrate"
+    },
+    {
+      "provider_kind": "Deepseek",
+      "protocol": "responses",
+      "endpoint_key": "responses",
+      "base_url_match": {
+        "type": "exact_normalized",
+        "urls": [
+          "https://api.deepseek.com",
+          "https://api.deepseek.com/v1",
+          "https://api.deepseek.com/beta",
+          "https://api.deepseeki.com",
+          "https://api.deepseeki.com/v1",
+          "https://api.deepseeki.com/beta"
+        ]
+      },
+      "profile": "deepseek_stateless_plain_reasoning"
+    }
+  ]
+}

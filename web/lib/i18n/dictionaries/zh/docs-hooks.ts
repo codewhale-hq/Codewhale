@@ -35,31 +35,30 @@ command = "echo 'Codewhale session started'"`,
       title: "在命令执行前拦下它",
       blocks: [
         {
-          p: "`tool_call_before` 钩子会在每次工具调用执行之前看到它，并可以放行、拒绝，或强制弹出审批提示。下面这个钩子会拒绝强制推送。保存脚本并赋予可执行权限：",
+          p: "`tool_call_before` 钩子会在每次工具调用执行之前看到它，并可以放行、拒绝，或强制弹出审批提示。这个 POSIX shell 示例拒绝所有名为 `bash` 的工具调用，而不是猜测命令字符串会执行什么。",
         },
         {
           code: `#!/bin/sh
-# ~/.codewhale/hooks/no-force-push.sh
-case "$DEEPSEEK_TOOL_ARGS" in
-  *"push --force"*|*"push -f"*)
-    echo '{"decision": "deny", "reason": "Force-push is blocked by a hook."}' ;;
-esac
-exit 0`,
-          lang: "no-force-push.sh",
+printf '%s\\n' '{"decision":"deny","reason":"Shell calls are blocked by this hook."}'`,
+          lang: "deny-shell.sh",
         },
+        { p: "创建 `~/.codewhale/hooks/`，把脚本保存为其中的 `deny-shell.sh`，然后在 macOS 或 Linux 上赋予可执行权限：" },
+        { code: "chmod +x ~/.codewhale/hooks/deny-shell.sh", lang: "终端" },
         {
           code: `[[hooks.hooks]]
-name = "no-force-push"
+name = "deny-shell"
 event = "tool_call_before"
-command = "~/.codewhale/hooks/no-force-push.sh"
-condition = { type = "tool_name", name = "bash" }`,
+command = "~/.codewhale/hooks/deny-shell.sh"
+condition = { type = "tool_name", name = "bash" }
+continue_on_error = false`,
           lang: "config.toml",
         },
         {
           p: "钩子从环境变量中读取这次调用，并在标准输出上用 JSON 作答：`allow`、`deny` 或 `ask`，还可以附带 `reason`、改写后的输入（`updatedInput`）或给模型的补充上下文（`additionalContext`）。退出码 2 一律表示拒绝。多个钩子同时作答时，拒绝优先于询问，询问优先于放行。",
         },
+        { note: "这个示例只覆盖名称恰好为 `bash` 的工具，不会阻止其他工具、外部客户端或你自行运行的命令。通过子字符串匹配强制推送标志不是 shell 安全边界；更广泛的限制应使用执行策略与操作系统沙箱。" },
         {
-          note: "在 Ask 和 Auto-Review 下，`ask` 会强制弹出提示。Full Access 从不显示审批提示，因此在那里 `ask` 不会新增提示。",
+          note: "在 Ask、Accept Edits 和 Auto-Review 下，`ask` 会强制弹出提示。Full Access 不增加审批提示，因此 `ask` 在该设置下不会新增提示。",
         },
       ],
     },
@@ -81,7 +80,7 @@ condition = { type = "tool_name", name = "bash" }`,
             ["waiting_for_user", "Codewhale 开始等待你的审批、回答或暂停中的目标时。"],
             ["session_idle / session_busy", "会话闲下来，或重新开始工作时。"],
             ["session_error / on_error", "回合最终失败时，或发生任何错误、工具失败时。"],
-            ["mode_change", "在 Plan、Work、Operate 之间切换时。"],
+            ["mode_change", "在 Plan 与 Work 之间切换时。"],
             ["subagent_spawn / subagent_complete", "子智能体启动或结束时。"],
           ],
           codeTerms: true,
@@ -129,7 +128,7 @@ condition = { type = "tool_name", name = "bash" }`,
         {
           p: "钩子在交互式会话中运行。`codewhale exec` 默认不触发任何钩子；加上 `--hooks` 后会触发 `tool_call_before` 和 `shell_env`。由于没有人可以回应，`ask` 会被当作拒绝。",
         },
-        { code: 'codewhale exec --auto --hooks "run the test suite and fix the first failure"', lang: "终端" },
+        { code: 'codewhale exec --auto --sandbox workspace-write --hooks "run the test suite and fix the first failure"', lang: "终端" },
       ],
     },
   ],
@@ -137,7 +136,7 @@ condition = { type = "tool_name", name = "bash" }`,
     {
       href: "/docs/modes",
       label: "设置模式与审批",
-      note: "钩子的决定如何与 Ask、Auto-Review 和 Full Access 共同起作用。",
+      note: "了解钩子的决定如何与审批设置共同起作用。",
     },
     {
       href: "/docs/mcp",

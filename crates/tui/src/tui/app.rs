@@ -5878,6 +5878,10 @@ impl App {
         if unchanged == 0 && !self.api_messages.is_empty() && !messages.is_empty() {
             self.window_reroot_cause = Some("engine_projection");
         }
+        self.context_token_cache
+            .get_mut()
+            .message_tokens
+            .truncate(exact);
         self.api_messages = messages;
         exact
     }
@@ -5946,6 +5950,7 @@ impl App {
         self.api_message_stamps
             .resize_with(messages.len(), Utc::now);
         self.window_reroot_cause = Some("session_restore");
+        self.context_token_cache.get_mut().clear();
         self.api_messages = Arc::new(messages);
     }
 
@@ -6039,7 +6044,6 @@ impl App {
     /// active-cell entry. Used by the pager / details lookup code so it can
     /// transparently address still-in-flight cells.
     #[must_use]
-    #[allow(dead_code)] // Used by the upcoming pager rewrite (read-only resolver).
     pub fn cell_at_virtual_index(&self, index: usize) -> Option<&HistoryCell> {
         if index < self.history.len() {
             self.history.get(index)

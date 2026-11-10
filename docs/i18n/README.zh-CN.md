@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -225,13 +225,14 @@ macOS 上是 Seatbelt，Linux 上是 bubblewrap（需已安装）。Windows 目�
 
 ## 社区
 
-如果缺少某个提供商，或某个工作流用起来不顺手，
-请[提交 issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose)或
-[提交 PR](../../CONTRIBUTING.md)。被合并的工作会保留贡献者的署名；
-[仓库结构](../../CONTRIBUTING.md#project-structure)说明了各部分代码所在的位置。
+Codewhale 能有今天，靠的是社区。所有反馈我们都欢迎：一个 bug、一个想法，或者只是某处看起来、用起来不对劲。
+这些都可以[提交 issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose)；新功能也最适合从 issue 开始。
+修复、翻译、提供商以及已规划的工作，欢迎直接提交 PR。
+[贡献指南](../../CONTRIBUTING.md)说明了每种帮助该去哪里，[路线图](../ROADMAP.md)说明了项目的方向。
+被合并的工作会保留贡献者的署名；[仓库结构](../../CONTRIBUTING.md#project-structure)说明了各部分代码所在的位置。
 
 欢迎在 [Discord](https://discord.gg/37gfS3ksug) 上交流，或在微信上添加维护者 Hunter
-（`hunterbown`），申请加入 Whale Brothers 群。
+（`hunterbown`），申请加入 Whale Brothers 群。欢迎每一个人。
 
 ## 历史与许可证
 

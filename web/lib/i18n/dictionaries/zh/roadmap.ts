@@ -3,12 +3,12 @@ import type { RoadmapDict } from "../types";
 /** Chinese dictionary for `app/[locale]/roadmap/page.tsx`. */
 export const roadmap: RoadmapDict = {
   metaTitle: "路线图 · Codewhale",
-  metaDescription: "Codewhale 已完成、进行中、考虑中和明确不在范围内的工作。",
+  metaDescription: "七个长期目标、每个版本要做什么，以及你的帮助最能改变结果的地方。",
   eyebrow: "项目路线图",
-  title: "路线图",
+  title: "Codewhale 要去哪里",
   introduction:
-    "这里将已发布版本、正在推进的工作、仍在评估的方案和明确不在范围内的方向分开列出。“已完成”列出 GitHub 上最新的版本，并链接到各自的发布说明；正在推进的工作——包括已合入仓库但尚未发布的改动——归在“进行中”。当实时数据不可用时，以静态摘要代替；安装页与首页标明最新已发布版本。",
-  sectionTitle: "按状态查看工作",
+    "Codewhale 靠使用它并说出实际情况的人而不断变好。这里列出长期目标、接下来的版本，以及尚未解决的部分。这里的内容不是承诺，也没有日期。",
+  sectionTitle: "已完成、进行中与暂不考虑",
   browseIssues: "浏览 open issues",
   trackCount: "{count} 项",
   trackCountOne: "{count} 项",

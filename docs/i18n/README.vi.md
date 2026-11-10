@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -264,14 +264,14 @@ Codewhale cũng kiểm tra GitHub xem có bản phát hành mới không; đặt
 
 ## Cộng đồng
 
-Nếu thiếu một nhà cung cấp hoặc một quy trình làm việc còn bất tiện, hãy
-[mở một issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) hoặc
-[gửi pull request](../../CONTRIBUTING.md). Người đóng góp được ghi nhận cho phần việc
-được tích hợp, và [cấu trúc kho mã](../../CONTRIBUTING.md#project-structure) cho biết
-mọi thứ nằm ở đâu.
+Codewhale có được như hôm nay là nhờ cộng đồng, và mọi phản hồi đều được chào đón: một lỗi, một ý tưởng, hay một chỗ trông hoặc dùng chưa ổn.
+Hãy [mở issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) cho bất kỳ điều nào trong số đó; issue cũng là nơi tốt nhất để bắt đầu một tính năng mới.
+Pull request được chào đón cho các bản sửa lỗi, bản dịch, nhà cung cấp và công việc đã lên kế hoạch.
+[Hướng dẫn đóng góp](../../CONTRIBUTING.md) cho biết mỗi kiểu đóng góp nên gửi về đâu, còn [lộ trình](../ROADMAP.md) cho biết dự án đang hướng tới đâu.
+Người đóng góp được ghi nhận cho phần việc được hợp nhất, và [bố cục kho mã](../../CONTRIBUTING.md#project-structure) cho biết mọi thứ nằm ở đâu.
 
 Trò chuyện trên [Discord](https://discord.gg/37gfS3ksug), hoặc thêm người duy
-trì dự án, Hunter, trên WeChat (`hunterbown`) và xin vào nhóm Whale Brothers.
+trì dự án, Hunter, trên WeChat (`hunterbown`) và xin vào nhóm Whale Brothers. Mọi người đều được chào đón.
 
 ## Lịch sử và giấy phép
 

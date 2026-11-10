@@ -10,7 +10,7 @@ Fleet 和 Workflow 设计上要配合使用，但解决的是问题的不同部�
 - **Workflow** 描述编排：阶段、分支、归约、循环，以及可通过 fleet/子智能体运行时
   派发的 智能体叶子节点。
 
-**默认的产品路径：** 用自然语言提需求。规模小或耦合紧密的工作，Operate 会在
+**默认的产品路径：** 用自然语言提需求。规模小或耦合紧密的工作，Work 会在
 当前权限设置下直接处理。多步委派使用一份精简的 Workflow 计划：具名步骤、依赖、
 受限范围和完成检查；结果与证据传递给需要它们的步骤。一个受限的独立任务可以
 直接用后台智能体（agent）。要继续同一个智能体的工作，用 `followup`。后台任务运行期间，
@@ -75,20 +75,31 @@ codewhale fleet init
       "instructions": "Read docs/FLEET.md and docs/WORKFLOW_AUTHORING.md. Report the command surfaces, current limitations, and any confusing gaps.",
       "worker": {
         "role": "reviewer",
-        "profile": "reviewer",
-        "tools": ["rg", "sed", "git"],
-        "model": "deepseek-v4-flash"
+        "tools": [
+          "rg",
+          "sed",
+          "git"
+        ]
       },
       "workspace": {
-        "required_files": ["docs/FLEET.md", "docs/WORKFLOW_AUTHORING.md"],
+        "required_files": [
+          "docs/FLEET.md",
+          "docs/WORKFLOW_AUTHORING.md"
+        ],
         "writable_paths": [],
         "environment": {
           "required": [],
           "allowlist": []
         }
       },
-      "input_files": ["docs/FLEET.md", "docs/WORKFLOW_AUTHORING.md"],
-      "expected_artifacts": ["log", "report"],
+      "input_files": [
+        "docs/FLEET.md",
+        "docs/WORKFLOW_AUTHORING.md"
+      ],
+      "expected_artifacts": [
+        "log",
+        "report"
+      ],
       "scorer": {
         "kind": "manual"
       },
@@ -103,16 +114,26 @@ codewhale fleet init
       "instructions": "Write a concise Markdown note with the missing fleet + Workflow tutorial steps. Do not edit public docs unless explicitly asked.",
       "worker": {
         "role": "builder",
-        "tools": ["rg", "sed"]
+        "tools": [
+          "rg",
+          "sed"
+        ]
       },
       "workspace": {
-        "required_files": ["docs/FLEET.md"],
-        "writable_paths": [".codewhale/fleet"],
+        "required_files": [
+          "docs/FLEET.md"
+        ],
+        "writable_paths": [
+          ".codewhale/fleet"
+        ],
         "environment": {
           "allowlist": []
         }
       },
-      "expected_artifacts": ["log", "report"],
+      "expected_artifacts": [
+        "log",
+        "report"
+      ],
       "scorer": {
         "kind": "manual"
       }
@@ -121,7 +142,8 @@ codewhale fleet init
 }
 ```
 
-把它保存为 `tasks.json`。
+把它保存为 `tasks.json`。这些 worker 继承当前提供商与模型；验证路由前请先连接提供商。
+`--check` 检查规范和路由，不创建或启动运行，也不能证明凭据或远程模型有效。
 
 常见的任务字段：
 

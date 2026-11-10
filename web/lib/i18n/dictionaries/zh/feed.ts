@@ -13,5 +13,5 @@ export const feed: FeedDict = {
   shownCount: "{count} 条",
   openIssue: "提交议题",
   openPull: "提交拉取请求",
-  startDiscussion: "发起讨论",
+  startDiscussion: "向社区提问",
 };

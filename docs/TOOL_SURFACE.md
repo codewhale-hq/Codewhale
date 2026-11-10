@@ -19,7 +19,9 @@ Implementation sources:
 
 ## Default-active contract
 
-New turns start with fourteen eager native names plus synthetic `tool_search`:
+The 0.10.3 source candidate starts new turns with fourteen eager native names
+plus synthetic `tool_search`. This is the current source contract, not a
+claim about the published v0.10.2 release.
 
 1. `read`
 2. `write`
@@ -38,12 +40,12 @@ New turns start with fourteen eager native names plus synthetic `tool_search`:
 15. `tool_search` (synthetic, always active)
 
 The fourteen native names are `DEFAULT_ACTIVE_NATIVE_TOOLS` in
-`crates/engine/src/core/engine/tool_catalog.rs`, pinned by
-`default_active_contract_keeps_discovery_and_core_tools_eager`. `workflow` and
-the context-archive tools are deferred by default and load via `tool_search`.
-An authority boundary may remove `agent` at the maximum child depth,
-and Plan registers only the foreground shell surface (so no `task_shell_wait`),
-but route size alone must not change this core vocabulary.
+`crates/engine/src/core/engine/tool_catalog.rs`. An authority boundary may
+remove `agent` at the maximum child depth, and Plan registers only the
+foreground shell surface (so no `task_shell_wait`). Route size alone must not
+change this core vocabulary. `workflow`, `context_archive_get` and
+`context_archive_search` remain available through `tool_search` when policy
+permits; they are no longer eager names.
 
 `file_search` matches names and paths, not file contents. `grep_files` searches
 contents for symbols or regex patterns and is available without a discovery

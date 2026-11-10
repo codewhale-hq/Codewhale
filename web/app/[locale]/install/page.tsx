@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { OnboardingCheck } from "@/components/onboarding-check";
 import { HeroInstall } from "@/components/hero-install";
 import { Icon } from "@/components/icon";
 import { InstallCodeBlock } from "@/components/install-code-block";
@@ -30,10 +31,12 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
   const { guide, lang, sourcePath } = INSTALL_GUIDES[copyLocale];
   return (
     <>
-      <div className="install-head" lang={copyLocale}>
+      <div id="install-overview" className="install-head" lang={copyLocale}>
         <div className="install-head-inner">
           <WhalePose pose="run" className="install-head-pose" priority />
           <div className="install-head-text">
+            <h1 className="page-title">{pickText(INSTALL_COPY.heading, locale)}</h1>
+            <p className="page-lede">{pickText(INSTALL_COPY.lead, locale)}</p>
             <HeroInstall locale={locale} ariaLabel={home.heroInstallAria} copyLabel={home.copy} copiedLabel={home.copied} />
             <p className="install-head-source">
               <Icon name="check" className="icon" />
@@ -45,7 +48,20 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
           </div>
         </div>
       </div>
-      <article className="install-guide" lang={lang}>
+      <section id="install-verify" className="install-guide" lang={copyLocale}>
+        <h2 className="section-title">{pickText(INSTALL_COPY.verify, locale)}</h2>
+        <p>{pickText(INSTALL_COPY.verifyBody, locale)}</p>
+        <InstallCodeBlock cmd="codewhale --version" copyLabel={home.copy} copiedLabel={home.copied} copyLocale={locale} />
+        <OnboardingCheck kind="install" locale={locale} />
+        <div className="actions">
+          <Link href={`/${locale}/docs/guide`} className="btn btn-primary">{pickText(INSTALL_COPY.firstTask, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>
+          <Link href={`/${locale}/docs/troubleshooting`} className="section-link">{pickText(INSTALL_COPY.troubleshooting, locale)}</Link>
+        </div>
+        <p>{pickText(INSTALL_COPY.firstTaskBody, locale)}</p>
+      </section>
+      <details id="install-full-guide" className="install-guide" lang={lang}>
+        <summary className="section-title">{pickText(INSTALL_COPY.fullGuide, locale)}</summary>
+        <article>
         {guide.chunks.map((chunk, index) => chunk.kind === "code" ? (
           <InstallCodeBlock key={index} cmd={chunk.text} copyLabel={home.copy} copiedLabel={home.copied} copyLocale={locale} />
         ) : (
@@ -58,7 +74,8 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
             <Icon name="arrow-right" className="icon icon-flip" />
           </Link>
         </p>
-      </article>
+        </article>
+      </details>
     </>
   );
 }

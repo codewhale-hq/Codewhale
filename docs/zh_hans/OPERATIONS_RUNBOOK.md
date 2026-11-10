@@ -1,107 +1,86 @@
-# codewhale 运维手册（Operations Runbook）
+# Codewhale 运维手册
 
-> 英文原文：[OPERATIONS_RUNBOOK.md](../OPERATIONS_RUNBOOK.md)。
-> 最后与英文同步日期（last synced with English revision）：2026-09-29。
-
-本手册覆盖本地 CLI/TUI 运行时（runtime）的实用调试与事故响应。
+本手册介绍本地 CLI/TUI。下方命令依据当前源码编写；请先运行
+`codewhale --version`，并对照已发布版本标签下的文档，不要假定候选版本的控制方式
+已经包含在已发布版本中。
 
 ## 快速分诊
 
-1. 确认二进制与配置：
-   - `cargo run -- --version`
-   - `cat ~/.codewhale/config.toml`（或检查已配置的 profile）
-2. 打开详细日志：
-   - `RUST_LOG=codewhale_tui=debug cargo run`
-   - HTTP 重试／重连：`RUST_LOG=codewhale_tui::client=debug cargo run`
-3. 抓取当前状态：
-   - `ls ~/.codewhale/sessions`
-   - `ls ~/.codewhale/sessions/checkpoints`
-   - `ls ~/.codewhale/tasks`
+在发生问题的工作区先做离线检查：
+
+```sh
+codewhale --version
+codewhale config path
+codewhale doctor --json
+```
+
+`doctor --json` 报告结构性健康状况，不探测提供商凭据、不连接提供商，也不启动 MCP
+服务器。离线报告不能证明密钥有效或远程服务可达。请勿把原始配置、密钥存储、会话归档
+或环境变量转储附到公开 issue。
+
+需要更多信息时，可以用 `RUST_LOG=codewhale_tui=debug codewhale` 复现。
+日志和会话可能包含项目数据，分享前请检查并脱敏相关片段。
+[排查指南](../INSTALL.md#13-troubleshooting) 介绍安装与网络报错。
 
 ## 事故：回合（turn）挂起或流停止
 
-症状：
-- TUI 一直停在加载状态
-- 智能体输出不完整且没有结束
+先查看对话记录中是否有等待审批、澄清问题或工具失败。如果 shell 命令仍在运行，
+`Ctrl+B` 会将命令转到后台，回合继续；`/jobs` 可查看任务。需要时，请要求 Codewhale
+停止指定任务；当前源码使用带 `task_id` 和 `cancel: true` 的 `task_shell_wait`，
+不会把任务 id 当成操作系统进程号。
 
-检查：
-1. 查看重试／健康日志（`codewhale_tui::client`）
-2. 验证端点连通性：
-   - `curl -sS https://api.deepseek.com/beta/models -H "Authorization: Bearer $DEEPSEEK_API_KEY"`
-3. 确认工具输出里没有本地沙箱（sandbox）／权限死锁
+按 Esc 取消回合；如果弹窗先接收 Esc，请先关闭弹窗。中断回合不会撤销已经完成的文件
+修改或外部操作。
 
-处置：
-1. 如果有一个前台 shell 命令正在运行，按 `Ctrl+B` 把它移到后台（回合继续运行，该命令会变成 `/jobs` 下的后台作业）；如果你要取消这个回合，就改用 `Ctrl+C`。
-2. 如果该命令是在后台启动的，请让智能体用 `Bash` 加上 `action: "cancel"` 和返回的进程 id 来取消。
-3. 当你要停掉请求本身时，用 `Esc` 或 `Ctrl+C` 中断当前回合。
-4. 重试提示词（prompt）；如果仍然失败，重启 TUI。
-5. 重启后，确认之前排队中／在途的运行时回合显示为已中断，而不是仍处于运行状态。
+托管路由可在明确同意联网检查后运行：
+
+```sh
+codewhale auth status --provider <provider-id>
+codewhale doctor --probe-api
+```
+
+请把提供商 id 替换为所选提供商；`--probe-api` 检查当前路由，不一定是上一条命令中
+指定的提供商。本地模型应使用 `codewhale doctor --probe-local`。这些探测会连接所选
+服务，可能产生提供商用量，不属于上方的离线分诊。
+
+恢复连接或修复凭据后再重试。重试可能重复外部操作，请先查看对话记录和
+[收据](../RECEIPTS.md)。
 
 ## 事故：网络中断／离线行为
 
-预期行为：
-- 离线模式生效期间，新的提示词会排入队列
-- 队列状态按会话（session）持久化到
-  `~/.codewhale/sessions/checkpoints/<session-id>.offline_queue.json`；旧的全局
-  `offline_queue.json` 会在升级时被采纳一次
+用 `/queue list` 查看尚未发送的消息。离线队列按会话保存在
+`~/.codewhale/sessions/checkpoints/`；迁移时可能接收旧的全局 `offline_queue.json`。
 
-检查：
-1. 在 TUI 中打开队列：`/queue list`
-2. 确认持久化的队列文件存在，且时间戳在更新
-
-处置：
-1. 恢复连通性
-2. 重新发送排队的条目（从 `/queue edit <n>` + Enter，或走正常的输入流程）
-3. 确认队列为空时队列文件会被清除
+恢复连接后，用 `/queue edit <n>` 查看某条消息，按 Enter 发送。请核对回复和队列状态，
+不要假定排队任务已经自动执行。
 
 ## 事故：需要崩溃恢复
 
-预期行为：
-- 每个会话都会把检查点（checkpoint）写到
-  `~/.codewhale/sessions/checkpoints/<session-id>.json`；旧的 `latest.json`
-  仍会被读取用于恢复，但不再写入
-- 除非提供 `--resume`/`--continue`，启动时会开一个新的会话
+用 `codewhale sessions` 列出已保存的会话，再用 `codewhale resume <id>` 明确恢复，
+或用 `codewhale --continue` 恢复工作区会话。TUI 中的 Ctrl+R 可打开会话选择器，
+普通启动不会静默恢复已中断的会话。
 
-处置：
-1. 用 `codewhale --resume <id>` 显式恢复先前的工作（别名
-   `codewhale resume <id>`；`codewhale --continue` 会恢复该工作区里最新的
-   已中断检查点），或在 TUI 里按 `Ctrl+R`
-2. 如果需要检查检查点内容，就查看 `checkpoints/<session-id>.json`（或残留的旧
-   `latest.json`）里的 schema 不匹配／细节
-3. 如果 schema 比二进制支持的更新，就升级二进制，或删除过期的检查点
+恢复失败时，修复前请保留相关状态。较新的数据结构需要兼容的二进制文件，不要为了
+消除报错而删除检查点。[旧路径指南](../LEGACY_PATHS.md) 介绍从 `~/.deepseek` 迁移。
 
 ## 事故：持久化状态的 schema 错误
 
-症状：
-- 类似 `schema vX is newer than supported vY` 的错误
+记录完整报错与二进制版本。修改文件前先备份受影响的状态目录，再使用支持该结构的
+二进制文件或有文档说明的迁移方式；请勿手动改写结构版本字段。
 
-受影响的存储：
-- 会话（`~/.codewhale/sessions/*.json`）
-- 运行时线程／回合／条目记录
-- 任务（`~/.codewhale/tasks/tasks/*.json`）
-
-处置：
-1. 确认二进制版本与迁移预期
-2. 在编辑之前备份状态目录
-3. 二选一：
-   - 换用更新且兼容的二进制运行，或
-   - 归档不兼容的记录并重新生成状态
+会话文件、Runtime 线程记录和 Fleet 日志是不同的存储。先确认报错指向哪一个，并保留
+原始数据，以便复核或撤销修复。
 
 ## 事故：MCP／工具执行失败
 
-检查：
-1. 校验 `~/.codewhale/mcp.json` 的 schema 与服务器命令路径
-2. 确认服务器进程可以手动启动
-3. 在 TUI 历史／日志里检查沙箱拒绝
+检查全局或可信项目 `mcp.json` 中的服务条目及完整命令。手动运行或重新加载服务器会
+执行它的代码，并可能连接其服务，请先审阅权限。使用 `/mcp` 诊断，检查策略或沙箱拒绝，
+不要通过扩大权限来掩盖原因不明的失败。
 
-处置：
-1. 带上所需的审批（approval）重试（只在合适时才用 YOLO）
-2. 暂时禁用出问题的 MCP 服务器，把问题隔离开
-3. 用 `/mcp` 诊断验证之后再重新启用
+修复现有配置前先备份。`codewhale mcp init --force` 会替换配置，不是无副作用的验证
+命令；完成有意的修改后，用 `/mcp reload` 刷新连接。
 
-## 事后清单
+## 事故后检查清单
 
-1. 保留日志和相关的状态文件
-2. 记录触发条件、影响与缓解措施
-3. 增加或更新回归测试（重试／恢复／schema）
-4. 如果行为有变化，就更新本手册和架构文档
+记录执行的命令、完整输出、版本与最小复现工作区。在 bug 报告中附上脱敏诊断片段、
+实际结果和预期结果，并区分经过验证的修复、临时绕过方式与未经验证的假设。

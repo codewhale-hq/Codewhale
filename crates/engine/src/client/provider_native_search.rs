@@ -212,11 +212,18 @@ impl ProviderNativeSearchClient {
         };
         let url = match self.inner.api_provider {
             ProviderKind::Openai | ProviderKind::Xai | ProviderKind::ModelstudioTokenPlan => {
-                api_url(&self.inner.base_url, "responses")
+                responses_api_url(
+                    &self.inner.base_url,
+                    codewhale_config::responses_dialect::ResponsesPathPolicy::VersionedResponses,
+                )
             }
-            ProviderKind::Deepseek => {
-                responses_api_url(&self.inner.base_url, self.inner.api_provider)
-            }
+            ProviderKind::Deepseek => responses_api_url(
+                &self.inner.base_url,
+                codewhale_config::responses_dialect::bound_responses_path(
+                    ProviderKind::Deepseek,
+                    &self.inner.base_url,
+                ),
+            ),
             ProviderKind::Anthropic => anthropic_messages_url(&self.inner.base_url),
             ProviderKind::XiaomiMimo => api_url(&self.inner.base_url, "chat/completions"),
             ProviderKind::Zai => api_url(&self.inner.base_url, "web_search"),

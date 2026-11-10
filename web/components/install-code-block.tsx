@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 import { Icon } from "./icon";
-import { recordUsage } from "./usage-counting";
+import { recordFunnel, recordUsage } from "./usage-counting";
 
 interface Props {
   cmd: string;
   copyLabel?: string;
   copiedLabel?: string;
   copyLocale?: string;
+  installIntent?: boolean;
 }
 
 /**
@@ -17,7 +18,7 @@ interface Props {
  * mark, "Copied" and its announcement appear only after the clipboard write
  * succeeds; a failed write never shows a false confirmation.
  */
-export function InstallCodeBlock({ cmd, copyLabel = "Copy", copiedLabel = "Copied", copyLocale }: Props) {
+export function InstallCodeBlock({ cmd, copyLabel = "Copy", copiedLabel = "Copied", copyLocale, installIntent = false }: Props) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -25,7 +26,10 @@ export function InstallCodeBlock({ cmd, copyLabel = "Copy", copiedLabel = "Copie
     try {
       await navigator.clipboard.writeText(cmd);
       setCopied(true);
-      recordUsage("install_copy");
+      if (installIntent) {
+        recordUsage("install_copy");
+        recordFunnel("install_intent");
+      }
       setTimeout(() => setCopied(false), 1400);
     } catch {
       // Clipboard write failed (permissions, non-secure context, or a focused

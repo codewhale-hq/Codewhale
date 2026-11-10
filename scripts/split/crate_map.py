@@ -18,6 +18,15 @@ first), and edges that point up the declared layer order. The references it
 lists are the work: each must be moved, inverted or deleted before the map can
 be executed as file moves.
 
+`check MAP --baseline FILE` turns the upward references into a ratchet. Every
+crate-crossing unit pair that points up the layer order is keyed
+`lower->upper|src_unit->dst_unit`; the check fails on a new pair, a raised
+count, or a count that dropped without the baseline being lowered, and still
+fails on any unassigned, doubly claimed or unmatched unit and any crate over
+the ceiling. `--update` rewrites the baseline and refuses to raise it.
+`--baseline-ref REV` (CI: the PR base) also fails when the committed baseline
+holds a count above the one at REV, so a hand-edited JSON cannot raise it.
+
 Grouped imports (`use crate::a::{b::C, d}`) are expanded into one path per
 leaf. Limits, stated so nobody mistakes this for the compiler: paths are resolved
 textually. Second-hop names (`use super::spec;` then `spec::ToolSpec`), glob
@@ -47,6 +56,7 @@ import collections
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -296,10 +306,8 @@ def match_units(patterns: list[str], units: set[str]):
     return claims
 
 
-def cmd_check(args) -> int:
-    cfg = tomllib.loads(Path(args.map).read_text())
+def evaluate(cfg: dict, sizes, edges, items) -> dict:
     ceiling, target = cfg.get("ceiling", 50_000), cfg.get("target", 10_000)
-    sizes, edges, items = build(cfg.get("split_above", args.split_above))
     units = set(sizes)
     owner: dict[str, tuple[int, str]] = {}
     duplicates, missing_patterns = [], []
@@ -317,7 +325,7 @@ def cmd_check(args) -> int:
             elif rank == prev[0] and prev[1] != name:
                 duplicates.append(f"{key}: {prev[1]} and {name}")
     crate_of = {u: c for u, (_, c) in owner.items()}
-    unassigned = sorted(units - set(crate_of), key=lambda u: -sizes[u])
+    unassigned = sorted(units - set(crate_of), key=lambda u: (-sizes[u], u))
 
     crate_size = collections.Counter()
     for u, c in crate_of.items():
@@ -334,51 +342,224 @@ def cmd_check(args) -> int:
         (a, b, n) for (a, b), n in cedges.items()
         if layer.get(a) is not None and layer.get(b) is not None and layer[b] > layer[a]
     ]
-    oversize = {c: n for c, n in crate_size.items() if n > ceiling}
+    pairs = {
+        f"{a}->{b}|{s}->{d}": k
+        for a, b, _ in upward for (s, d), k in cvia[(a, b)].items()
+    }
+    return {
+        "ceiling": ceiling, "target": target, "units": units, "sizes": sizes, "items": items,
+        "layer": layer, "crate_of": crate_of, "unassigned": unassigned, "duplicates": duplicates,
+        "missing_patterns": missing_patterns, "crate_size": crate_size, "cedges": cedges, "cvia": cvia,
+        "cycles": comps, "upward": upward, "upward_pairs": pairs,
+        "oversize": {c: n for c, n in crate_size.items() if n > ceiling},
+    }
 
-    print(f"crates: {len(crate_size)}  units: {len(units)}  assigned: {len(crate_of)}  unassigned: {len(unassigned)} ({sum(sizes[u] for u in unassigned)} lines)")
-    for p in missing_patterns:
+
+def summary(r: dict) -> dict:
+    return {
+        "cycles": len(r["cycles"]),
+        "upward_edges": len(r["upward"]),
+        "upward_pairs": len(r["upward_pairs"]),
+        "upward_refs": sum(n for _, _, n in r["upward"]),
+        "oversize": len(r["oversize"]),
+        "unassigned": len(r["unassigned"]),
+        "duplicates": len(r["duplicates"]),
+        "missing_patterns": len(r["missing_patterns"]),
+    }
+
+
+def structural_problems(r: dict) -> list[str]:
+    out = [f"pattern matched nothing: {p}" for p in r["missing_patterns"]]
+    out += [f"claimed twice: {d}" for d in r["duplicates"]]
+    out += [f"unassigned unit: {u} ({r['sizes'][u]} lines)" for u in r["unassigned"]]
+    out += [f"crate over ceiling: {c} {n} > {r['ceiling']}" for c, n in sorted(r["oversize"].items())]
+    return out
+
+
+def compare_upward(baseline: dict, current: dict) -> tuple[list[str], list[str]]:
+    rises, drops = [], []
+    for key, n in sorted(current.items()):
+        b = baseline.get(key)
+        if b is None:
+            rises.append(f"{key}: new upward reference pair ({n} refs)")
+        elif n > b:
+            rises.append(f"{key}: {b} -> {n}")
+    for key, b in sorted(baseline.items()):
+        n = current.get(key, 0)
+        if n < b:
+            drops.append(f"{key}: {b} -> {n}")
+    return rises, drops
+
+
+def baseline_document(map_path: str, r: dict) -> dict:
+    return {
+        "_comment": (
+            "Coarse-split upward-reference ratchet (docs/design/COARSE_SPLIT.md). Keys are "
+            "lower-crate->upper-crate|src-unit->dst-unit. Counts may only go down and no new pair may appear. "
+            "Regenerate with python3 scripts/split/crate_map.py check MAP --baseline FILE --update after "
+            "removing references; never raise a count by hand."
+        ),
+        "map": map_path,
+        "totals": {"upward_pairs": len(r["upward_pairs"]), "upward_refs": sum(r["upward_pairs"].values())},
+        "upward": dict(sorted(r["upward_pairs"].items())),
+    }
+
+
+def git_show(ref: str, path: str) -> str | None:
+    commit = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        cwd=mg.REPO_ROOT, capture_output=True, text=True, check=False,
+    )
+    if commit.returncode != 0:
+        raise ValueError(f"baseline ref {ref!r} is unavailable: {commit.stderr.strip()}")
+    rel = Path(path).resolve().relative_to(mg.REPO_ROOT)
+    shown = subprocess.run(
+        ["git", "show", f"{ref}:{rel.as_posix()}"],
+        cwd=mg.REPO_ROOT, capture_output=True, text=True, check=False,
+    )
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def ratchet_problems(r: dict, baseline: dict, previous: dict | None = None, ref: str | None = None) -> list[str]:
+    problems = []
+    if previous is not None:
+        raised, _ = compare_upward(previous.get("upward", {}), baseline.get("upward", {}))
+        if raised:
+            problems.append(
+                f"the baseline was raised relative to {ref} (counts only go down; "
+                "remove the reference instead of editing the JSON):"
+            )
+            problems.extend(f"  {x}" for x in raised)
+    rises, drops = compare_upward(baseline.get("upward", {}), r["upward_pairs"])
+    if rises:
+        problems.append("upward references rose (the ratchet only goes down):")
+        problems.extend(f"  {x}" for x in rises)
+    if drops:
+        problems.append("upward references dropped but the baseline was not lowered; rerun with --update and commit it:")
+        problems.extend(f"  {x}" for x in drops)
+    return problems
+
+
+def print_report(r: dict, top: int) -> None:
+    units, sizes, layer = r["units"], r["sizes"], r["layer"]
+    print(f"crates: {len(r['crate_size'])}  units: {len(units)}  assigned: {len(r['crate_of'])}  unassigned: {len(r['unassigned'])} ({sum(sizes[u] for u in r['unassigned'])} lines)")
+    for p in r["missing_patterns"]:
         print(f"  pattern matched nothing: {p}")
-    for d in duplicates:
+    for d in r["duplicates"]:
         print(f"  claimed twice: {d}")
-    for u in unassigned[: args.top]:
+    for u in r["unassigned"][:top]:
         print(f"  unassigned {sizes[u]:7d}  {u}")
     print("crate sizes (production lines):")
-    for c, n in crate_size.most_common():
-        flag = "OVER CEILING" if n > ceiling else ("over target" if n > target else "")
+    for c, n in r["crate_size"].most_common():
+        flag = "OVER CEILING" if n > r["ceiling"] else ("over target" if n > r["target"] else "")
         print(f"  {n:8d}  L{layer.get(c)}  {c}  {flag}")
+    cedges, cvia = r["cedges"], r["cvia"]
     print(f"crate edges: {len(cedges)}  cross-crate refs: {sum(cedges.values())}")
-    cut_total = 0
-    for comp in comps:
+    for comp in r["cycles"]:
         inside = {e: n for e, n in cedges.items() if e[0] in comp and e[1] in comp}
         print(f"CYCLE among {comp}:")
         for (a, b), n in sorted(inside.items(), key=lambda kv: kv[1]):
-            top = ", ".join(f"{s}->{d}({k})" for (s, d), k in cvia[(a, b)].most_common(4))
-            print(f"    {n:5d}  {a} -> {b}   via {top}")
-    for a, b, n in sorted(upward, key=lambda t: t[2]):
-        cut_total += n
-        top = ", ".join(f"{s}->{d}({k})" for (s, d), k in cvia[(a, b)].most_common(4))
-        print(f"  UP  {n:5d}  {a}(L{layer[a]}) -> {b}(L{layer[b]})   via {top}")
-    print(f"summary: cycles={len(comps)} upward_edges={len(upward)} upward_refs={cut_total} oversize={len(oversize)} unassigned={len(unassigned)} duplicates={len(duplicates)}")
+            via = ", ".join(f"{s}->{d}({k})" for (s, d), k in cvia[(a, b)].most_common(4))
+            print(f"    {n:5d}  {a} -> {b}   via {via}")
+    for a, b, n in sorted(r["upward"], key=lambda t: t[2]):
+        via = ", ".join(f"{s}->{d}({k})" for (s, d), k in cvia[(a, b)].most_common(4))
+        print(f"  UP  {n:5d}  {a}(L{layer[a]}) -> {b}(L{layer[b]})   via {via}")
+    s = summary(r)
+    print(
+        f"summary: cycles={s['cycles']} upward_edges={s['upward_edges']} upward_refs={s['upward_refs']} "
+        f"oversize={s['oversize']} unassigned={s['unassigned']} duplicates={s['duplicates']}"
+    )
+
+
+def report_json(r: dict, map_path: str, ratchet: dict | None, clean: bool) -> dict:
+    items, cvia = r["items"], r["cvia"]
+    return {
+        "map": map_path,
+        "pass": clean,
+        "summary": summary(r),
+        "ratchet": ratchet,
+        "crate_sizes": dict(r["crate_size"]),
+        "crate_edges": [{"from": a, "to": b, "refs": n} for (a, b), n in sorted(r["cedges"].items())],
+        "unassigned": r["unassigned"],
+        "duplicates": r["duplicates"],
+        "missing_patterns": r["missing_patterns"],
+        "cycles": r["cycles"],
+        "upward": [
+            {"from": a, "to": b, "refs": n, "via": [
+                {"src": s, "dst": d, "refs": k, "items": dict(items[(s, d)].most_common(8))}
+                for (s, d), k in cvia[(a, b)].most_common()
+            ]} for a, b, n in sorted(r["upward"], key=lambda t: -t[2])
+        ],
+        "cycle_edges": [
+            {"from": a, "to": b, "refs": n}
+            for comp in r["cycles"] for (a, b), n in r["cedges"].items() if a in comp and b in comp
+        ],
+    }
+
+
+def cmd_check(args) -> int:
+    cfg = tomllib.loads(Path(args.map).read_text())
+    sizes, edges, items = build(cfg.get("split_above", args.split_above))
+    r = evaluate(cfg, sizes, edges, items)
+    print_report(r, args.top)
+    structural = structural_problems(r)
+    ratchet = None
+    problems = list(structural)
+    if args.baseline:
+        path = Path(args.baseline)
+        if args.update:
+            if structural:
+                print("[crate-map] refusing to write a baseline for a map with structural problems:", file=sys.stderr)
+                for p in structural:
+                    print(f"  {p}", file=sys.stderr)
+                return 1
+            if path.is_file():
+                rises, _ = compare_upward(json.loads(path.read_text()).get("upward", {}), r["upward_pairs"])
+                if rises:
+                    print("[crate-map] refusing to raise the baseline:", file=sys.stderr)
+                    for x in rises:
+                        print(f"  {x}", file=sys.stderr)
+                    return 1
+            path.write_text(json.dumps(baseline_document(args.map, r), indent=2) + "\n", encoding="utf-8")
+            print(f"[crate-map] baseline written: {len(r['upward_pairs'])} pairs, {sum(r['upward_pairs'].values())} refs")
+            return 0
+        if not path.is_file():
+            problems.append(f"missing baseline {path}; run with --update")
+        else:
+            baseline = json.loads(path.read_text())
+            previous = None
+            if args.baseline_ref:
+                try:
+                    text = git_show(args.baseline_ref, str(path))
+                except ValueError as error:
+                    text = None
+                    problems.append(str(error))
+                previous = json.loads(text) if text else None
+            found = ratchet_problems(r, baseline, previous, args.baseline_ref)
+            problems.extend(found)
+            ratchet = {
+                "baseline": str(path),
+                "baseline_ref": args.baseline_ref,
+                "baseline_pairs": len(baseline.get("upward", {})),
+                "baseline_refs": sum(baseline.get("upward", {}).values()),
+                "problems": found,
+            }
+    else:
+        if r["cycles"]:
+            problems.append(f"crate cycles: {r['cycles']}")
+        if r["upward"]:
+            problems.append(f"upward crate edges: {len(r['upward'])}")
+    clean = not problems
     if args.json:
-        Path(args.json).write_text(json.dumps({
-            "crate_sizes": dict(crate_size),
-            "unassigned": unassigned,
-            "duplicates": duplicates,
-            "cycles": comps,
-            "upward": [
-                {"from": a, "to": b, "refs": n, "via": [
-                    {"src": s, "dst": d, "refs": k, "items": dict(items[(s, d)].most_common(8))}
-                    for (s, d), k in cvia[(a, b)].most_common()
-                ]} for a, b, n in sorted(upward, key=lambda t: -t[2])
-            ],
-            "cycle_edges": [
-                {"from": a, "to": b, "refs": n}
-                for comp in comps for (a, b), n in cedges.items() if a in comp and b in comp
-            ],
-        }, indent=1))
-    clean = not (comps or upward or oversize or unassigned or duplicates or missing_patterns)
-    return 0 if clean else 1
+        Path(args.json).write_text(json.dumps(report_json(r, args.map, ratchet, clean), indent=1))
+    if problems:
+        print("[crate-map] FAIL", file=sys.stderr)
+        for p in problems:
+            print(f"  {p}", file=sys.stderr)
+        return 1
+    held = " (upward references within the ratchet baseline)" if args.baseline else ""
+    print(f"[crate-map] PASS{held}")
+    return 0
 
 
 def main(argv=None) -> int:
@@ -393,6 +574,9 @@ def main(argv=None) -> int:
     c.add_argument("--split-above", type=int, default=12_000)
     c.add_argument("--json")
     c.add_argument("--top", type=int, default=25)
+    c.add_argument("--baseline", help="ratchet JSON: upward reference pairs may only go down")
+    c.add_argument("--baseline-ref", help="git revision whose committed baseline the current one may not exceed (CI: the PR base)")
+    c.add_argument("--update", action="store_true", help="lower the --baseline to the current upward references")
     args = ap.parse_args(argv)
     return cmd_graph(args) if args.cmd == "graph" else cmd_check(args)
 

@@ -324,10 +324,34 @@ pub(crate) fn parse_allowed_tools(value: &str) -> Vec<String> {
 /// Substitute $1, $2, $ARGUMENTS placeholders in a command template.
 pub(crate) fn apply_template(template: &str, args: &str) -> String {
     let positional: Vec<&str> = args.split_whitespace().collect();
-    let mut result = template.replace("$ARGUMENTS", args);
-    for (i, arg) in positional.iter().enumerate() {
-        result = result.replace(&format!("${}", i + 1), arg);
+    let mut result = String::with_capacity(template.len() + args.len());
+    let mut rest = template;
+    while let Some(pos) = rest.find('$') {
+        result.push_str(&rest[..pos]);
+        let after = &rest[pos + 1..];
+        if let Some(tail) = after.strip_prefix("ARGUMENTS") {
+            result.push_str(args);
+            rest = tail;
+            continue;
+        }
+        let digits = if after.starts_with('0') {
+            0
+        } else {
+            after.bytes().take_while(u8::is_ascii_digit).count()
+        };
+        let arg = after[..digits]
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| positional.get(n - 1));
+        if let Some(arg) = arg {
+            result.push_str(arg);
+            rest = &after[digits..];
+        } else {
+            result.push('$');
+            rest = after;
+        }
     }
+    result.push_str(rest);
     result
 }
 
@@ -902,5 +926,21 @@ mod tests {
             "Read_File, Grep_Files".to_string()
         )));
         assert_eq!(body, "inspect $ARGUMENTS");
+    }
+
+    #[test]
+    fn apply_template_substitutes_in_one_pass() {
+        assert_eq!(
+            apply_template("explain $ARGUMENTS", "why does awk '{print $1}' fail"),
+            "explain why does awk '{print $1}' fail"
+        );
+        assert_eq!(
+            apply_template("ship $1 with $ARGUMENTS", "$2 off"),
+            "ship $2 with $2 off"
+        );
+        assert_eq!(apply_template("$10|$1", "a b c d e f g h i j"), "j|a");
+        assert_eq!(apply_template("$1 $3 $0 $ x", "a b"), "a $3 $0 $ x");
+        assert_eq!(apply_template("$12", "a"), "$12");
+        assert_eq!(apply_template("$01", "a"), "$01");
     }
 }

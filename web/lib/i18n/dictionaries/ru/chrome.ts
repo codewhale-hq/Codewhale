@@ -42,8 +42,7 @@ export const chrome: ChromeDict = {
   themeAria: "Тема: {mode} (нажмите, чтобы переключить)",
   themeTitle: "Тема · авто / светлая / тёмная",
 
-  footerTagline:
-    "Агент для программирования с открытым кодом для вашего терминала и выбранных вами моделей.",
+  footerTagline: "Используйте любую модель через агента, код которого можно прочитать.",
   footerProduct: "Продукт",
   footerProject: "Проект",
   footerDocs: "Документация",
@@ -54,6 +53,7 @@ export const chrome: ChromeDict = {
   footerFaq: "Вопросы и ответы",
   footerIssues: "Задачи",
   footerContribute: "Участие",
+  footerRoadmap: "Дорожная карта",
   footerLicense: "Лицензия MIT",
   footerTerms: "Условия использования",
   footerPrivacy: "Конфиденциальность",

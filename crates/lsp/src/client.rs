@@ -808,7 +808,7 @@ pub(super) mod tests {
             .diagnostics_for(
                 &fixture_path("closed-channel.rs"),
                 "fn main() {}\n",
-                Duration::from_millis(10),
+                Duration::from_secs(5),
             )
             .await
             .expect_err("a closed transport must not look like an empty lint result");

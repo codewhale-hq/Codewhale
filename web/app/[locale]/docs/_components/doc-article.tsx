@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Fragment, type ReactNode } from "react";
-import { getDocsShell } from "@/lib/i18n/dictionaries";
+import { InstallCodeBlock } from "@/components/install-code-block";
+import { getDocsShell, getHome } from "@/lib/i18n/dictionaries";
 import type { DocsBlock, DocsPageDict } from "@/lib/i18n/dictionaries/types";
 
 /**
@@ -67,9 +68,10 @@ function Block({
   }
   if ("code" in block) {
     return (
-      <pre tabIndex={0} className="code-block mt-4" aria-label={block.lang}>
-        <code>{block.code}</code>
-      </pre>
+      <div className="mt-4 space-y-2">
+        <p className="text-xs font-mono text-ink-soft">{block.lang}</p>
+        <InstallCodeBlock cmd={block.code} copyLabel={getHome(locale).copy} copiedLabel={getHome(locale).copied} copyLocale={locale} installIntent={false} />
+      </div>
     );
   }
   if ("rows" in block) {

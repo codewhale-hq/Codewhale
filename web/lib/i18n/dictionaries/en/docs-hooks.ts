@@ -40,31 +40,30 @@ command = "echo 'Codewhale session started'"`,
       title: "Block a command before it runs",
       blocks: [
         {
-          p: "A `tool_call_before` hook sees each tool call before it executes and can allow it, deny it, or force an approval prompt. This one refuses force-pushes. Save the script and make it executable:",
+          p: "A `tool_call_before` hook sees each tool call before it executes and can allow it, deny it, or force an approval prompt. This POSIX-shell example denies every call named `bash`, rather than guessing what a shell command string will do.",
         },
         {
           code: `#!/bin/sh
-# ~/.codewhale/hooks/no-force-push.sh
-case "$DEEPSEEK_TOOL_ARGS" in
-  *"push --force"*|*"push -f"*)
-    echo '{"decision": "deny", "reason": "Force-push is blocked by a hook."}' ;;
-esac
-exit 0`,
-          lang: "no-force-push.sh",
+printf '%s\\n' '{"decision":"deny","reason":"Shell calls are blocked by this hook."}'`,
+          lang: "~/.codewhale/hooks/deny-shell.sh",
         },
+        { p: "Create `~/.codewhale/hooks/`, save the script there as `deny-shell.sh`, and make it executable on macOS or Linux:" },
+        { code: "chmod +x ~/.codewhale/hooks/deny-shell.sh", lang: "Terminal" },
         {
           code: `[[hooks.hooks]]
-name = "no-force-push"
+name = "deny-shell"
 event = "tool_call_before"
-command = "~/.codewhale/hooks/no-force-push.sh"
-condition = { type = "tool_name", name = "bash" }`,
+command = "~/.codewhale/hooks/deny-shell.sh"
+condition = { type = "tool_name", name = "bash" }
+continue_on_error = false`,
           lang: "config.toml",
         },
         {
           p: "The hook reads the call from environment variables and answers with JSON on standard output: `allow`, `deny`, or `ask`, plus an optional `reason`, a rewritten input (`updatedInput`), or extra context for the model (`additionalContext`). Exit code 2 always denies. When several hooks answer, deny beats ask, and ask beats allow.",
         },
+        { note: "This example covers only the exact `bash` tool; it does not block other tools, external clients or commands you run yourself. A substring match for force-push flags is not a shell security boundary; use the execution policy and OS sandbox for broader restrictions." },
         {
-          note: "`ask` forces a prompt in Ask and Auto-Review. Full Access never shows approval prompts, so there `ask` does not add one.",
+          note: "`ask` forces a prompt in Ask, Accept Edits and Auto-Review. Full Access does not add approval prompts, so `ask` does not add one there.",
         },
       ],
     },
@@ -86,7 +85,7 @@ condition = { type = "tool_name", name = "bash" }`,
             ["waiting_for_user", "When Codewhale starts waiting for an approval, an answer, or a paused goal."],
             ["session_idle / session_busy", "When the session settles or starts working again."],
             ["session_error / on_error", "When a turn fails for good, or on any error or failed tool."],
-            ["mode_change", "When you switch between Plan, Work, and Operate."],
+            ["mode_change", "When you switch between Plan and Work."],
             ["subagent_spawn / subagent_complete", "When a sub-agent starts or finishes."],
           ],
           codeTerms: true,
@@ -134,7 +133,7 @@ condition = { type = "tool_name", name = "bash" }`,
         {
           p: "Hooks run in the interactive session. `codewhale exec` fires none by default; add `--hooks` to fire `tool_call_before` and `shell_env`. With no one to answer, an `ask` becomes a deny.",
         },
-        { code: 'codewhale exec --auto --hooks "run the test suite and fix the first failure"', lang: "Terminal" },
+        { code: 'codewhale exec --auto --sandbox workspace-write --hooks "run the test suite and fix the first failure"', lang: "Terminal" },
       ],
     },
   ],
@@ -142,7 +141,7 @@ condition = { type = "tool_name", name = "bash" }`,
     {
       href: "/docs/modes",
       label: "Set modes and approvals",
-      note: "How hook decisions combine with Ask, Auto-Review, and Full Access.",
+      note: "See how hook decisions combine with your approval setting.",
     },
     {
       href: "/docs/mcp",

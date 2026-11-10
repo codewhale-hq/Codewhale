@@ -43,8 +43,7 @@ export const chrome: ChromeDict = {
   themeAria: "السمة: {mode} (انقر للتبديل)",
   themeTitle: "السمة · تلقائي / فاتح / داكن",
 
-  footerTagline:
-    "وكيل البرمجة مفتوح المصدر لطرفيتك والنماذج التي تختارها.",
+  footerTagline: "استخدم أي نموذج عبر وكيل يمكنك قراءته.",
   footerProduct: "المنتج",
   footerProject: "المشروع",
   footerDocs: "التوثيق",
@@ -55,6 +54,7 @@ export const chrome: ChromeDict = {
   footerFaq: "الأسئلة الشائعة",
   footerIssues: "Issues",
   footerContribute: "المساهمة",
+  footerRoadmap: "خارطة الطريق",
   footerLicense: "رخصة MIT",
   footerTerms: "شروط الخدمة",
   footerPrivacy: "الخصوصية",

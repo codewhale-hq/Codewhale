@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -269,16 +269,15 @@ dan [telemetri](../TELEMETRY.md).
 
 ## Komunitas
 
-Jika ada penyedia yang belum tersedia atau alur kerja yang terasa canggung,
-[buka issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) atau
-[kirim pull request](../../CONTRIBUTING.md). Kontributor tetap mendapat kredit atas
-pekerjaan yang digabungkan, dan
-[struktur repositori](../../CONTRIBUTING.md#project-structure) menunjukkan letak
-setiap bagian.
+Codewhale menjadi seperti sekarang berkat komunitasnya, dan semua masukan disambut: bug, ide, atau sesuatu yang terlihat atau terasa janggal.
+[Buka issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) untuk semua itu; issue juga tempat terbaik untuk memulai fitur baru.
+Pull request disambut untuk perbaikan, terjemahan, penyedia, dan pekerjaan yang sudah direncanakan.
+[Panduan kontribusi](../../CONTRIBUTING.md) menunjukkan ke mana tiap jenis bantuan sebaiknya dikirim, dan [peta jalan](../ROADMAP.md) menunjukkan arah proyek.
+Kontributor tetap mendapat kredit atas pekerjaan yang digabungkan, dan [tata letak repositori](../../CONTRIBUTING.md#project-structure) menunjukkan letak tiap bagian.
 
 Ikuti obrolan di [Discord](https://discord.gg/37gfS3ksug), atau tambahkan
 maintainer, Hunter, di WeChat (`hunterbown`) dan minta bergabung ke grup
-Whale Brothers.
+Whale Brothers. Semua orang disambut.
 
 ## Sejarah dan lisensi
 

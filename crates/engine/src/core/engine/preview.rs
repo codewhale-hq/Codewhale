@@ -714,6 +714,9 @@ impl Engine {
                 .as_deref()
                 .map(SafeLabel::identifier),
             dialect: prepared.dialect.as_str().to_string(),
+            responses_profile_id: prepared
+                .responses_profile_id
+                .map(|id| id.as_str().to_string()),
             route_shape: prepared.endpoint.shape.as_str().to_string(),
             endpoint_host_class: prepared.safe_endpoint_host_class(),
             endpoint_fingerprint: prepared.endpoint_fingerprint(),

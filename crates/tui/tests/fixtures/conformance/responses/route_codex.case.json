@@ -1,0 +1,5 @@
+{
+  "kind": "route",
+  "provider": "openai-codex",
+  "model": "gpt-5.5"
+}

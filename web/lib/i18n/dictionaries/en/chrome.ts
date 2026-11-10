@@ -35,8 +35,7 @@ export const chrome: ChromeDict = {
   themeAria: "Theme: {mode} (click to cycle)",
   themeTitle: "Theme · auto / light / dark",
 
-  footerTagline:
-    "Build apps. Automate work.",
+  footerTagline: "Use any model through an agent you can read.",
   footerProduct: "Product",
   footerProject: "Project",
   footerDocs: "Docs",
@@ -47,6 +46,7 @@ export const chrome: ChromeDict = {
   footerFaq: "FAQ",
   footerIssues: "Issues",
   footerContribute: "Contribute",
+  footerRoadmap: "Roadmap",
   footerLicense: "MIT license",
   footerTerms: "Terms",
   footerPrivacy: "Privacy",

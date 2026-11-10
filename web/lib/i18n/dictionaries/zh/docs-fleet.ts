@@ -8,7 +8,7 @@ export const docsFleet: DocsFleetDict = {
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   title: "运行工作流",
   lede:
-    "大多数多步骤工作，直接提出来就行：在 Operate 模式下，Codewhale 会自己规划步骤，并把彼此独立的步骤并行执行。如果你希望每次都按同一套有序计划来做——分阶段、并行分支、最后汇总——并且每次运行都留有记录，就写一个工作流。",
+    "在 Work 中，你可以请 Codewhale 规划较大的任务，把独立步骤交给智能体。如果你希望重复执行包含阶段和并行分支的有序计划，并保留每次运行的记录，就编写 Workflow。",
   sections: [
     {
       id: "fleet",
@@ -111,7 +111,7 @@ codewhale lane interrupt <lane-id>`,
       title: "批量运行任务",
       blocks: [
         {
-          p: "如果你手上是一串彼此独立的任务，而不是一套计划，就把它们写成任务文件，作为一次 Fleet 运行来执行。每个任务写明目标、角色和允许写入的路径。完整的 `tasks.json` 示例见[教程](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/FLEET_WORKFLOW_TUTORIAL.md)。",
+          p: "如果你手上是一串彼此独立的任务，而不是一套计划，就把它们写成任务文件，作为一次 Fleet 运行来执行。每个任务写明目标、角色和允许写入的路径。完整的 `tasks.json` 示例见[教程](/docs/workflow-tutorial)。",
         },
         {
           code: `codewhale fleet init
@@ -130,6 +130,7 @@ codewhale fleet stop --all`,
     },
   ],
   next: [
+    { href: "/docs/workflow-tutorial", label: "阅读完整 Fleet 教程", note: "启动 worker 前，验证完整任务文件并了解恢复行为。" },
     {
       href: "/docs/subagents",
       label: "并行运行智能体",

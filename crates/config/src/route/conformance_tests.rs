@@ -20,6 +20,7 @@ fn none_request(kind: ProviderKind) -> RouteRequest {
         base_url_override: None,
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     }
 }
 
@@ -127,6 +128,7 @@ fn every_provider_kind_resolves_the_auto_selector() {
             base_url_override: None,
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         };
         let candidate = resolver
             .resolve(&request)

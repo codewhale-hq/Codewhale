@@ -15,7 +15,7 @@ export const docsSubagents: DocsSubagentsDict = {
       title: "直接提出来",
       blocks: [
         {
-          p: "启动子智能体不需要命令，用平常的话提出来就行。在 Operate 模式下，Codewhale 会自己把独立的步骤分派出去；在 Work 模式下，说清楚你想怎么拆分：",
+          p: "在 Work 中，用平常的话请 Codewhale 把任务中独立的部分交给子智能体。请说明你想怎么拆分：",
         },
         {
           code: `Use three explore agents in parallel: one maps the auth code,

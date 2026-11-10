@@ -5217,10 +5217,26 @@ impl ConfigView {
         let kind = self.editor_kind(row);
         let muted = Style::default().fg(palette::TEXT_MUTED);
         let primary = Style::default().fg(palette::TEXT_PRIMARY);
-        let value_width = width.saturating_sub(10);
+        let label_width = [
+            MessageId::ConfigFactCurrent,
+            MessageId::ConfigFactSaved,
+            MessageId::ConfigFactStartup,
+            MessageId::ConfigFactSource,
+            MessageId::ConfigFactScope,
+            MessageId::ConfigFactApply,
+            MessageId::ConfigFactKind,
+            MessageId::ConfigFactAvailable,
+            MessageId::ConfigFactObserved,
+            MessageId::ConfigFactOpens,
+        ]
+        .into_iter()
+        .map(|name| self.tr(name).width())
+        .fold(9, usize::max)
+            + 1;
+        let value_width = width.saturating_sub(label_width);
         let fact_line = |name: MessageId, value: &str| {
             Line::from(vec![
-                Span::styled(format!("{:<10}", self.tr(name)), muted),
+                Span::styled(fit_config_column(&self.tr(name), label_width), muted),
                 Span::styled(semantic_truncate(value, value_width), primary),
             ])
         };
@@ -6972,10 +6988,10 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 }
 
 fn fit_config_column(text: &str, width: usize) -> String {
-    let mut fitted = codewhale_tui_kit::ui_text::truncate_line_to_width(text, width);
-    let padding = width.saturating_sub(codewhale_tui_kit::ui_text::text_display_width(&fitted));
-    fitted.push_str(&" ".repeat(padding));
-    fitted
+    codewhale_tui_kit::ui_text::pad_to_display_width(
+        &codewhale_tui_kit::ui_text::truncate_line_to_width(text, width),
+        width,
+    )
 }
 
 #[cfg(test)]
@@ -9981,6 +9997,55 @@ context_window = 131072
     }
 
     #[test]
+    fn setting_detail_fact_labels_pad_by_display_width() {
+        let mut view = create_config_view(Locale::ZhHans);
+        let fact_labels: Vec<String> = [
+            MessageId::ConfigFactCurrent,
+            MessageId::ConfigFactSaved,
+            MessageId::ConfigFactStartup,
+            MessageId::ConfigFactSource,
+            MessageId::ConfigFactScope,
+            MessageId::ConfigFactApply,
+            MessageId::ConfigFactKind,
+            MessageId::ConfigFactAvailable,
+            MessageId::ConfigFactObserved,
+            MessageId::ConfigFactOpens,
+        ]
+        .into_iter()
+        .map(|id| tr(Locale::ZhHans, id).into_owned())
+        .collect();
+        let width = 60;
+        let mut checked = 0;
+        for idx in 0..view.rows.len() {
+            view.selected = idx;
+            let row = &view.rows[idx];
+            for line in view.setting_detail_lines(row, width) {
+                let is_fact = line.spans.len() == 2
+                    && fact_labels
+                        .iter()
+                        .any(|label| line.spans[0].content.trim_end() == label);
+                if !is_fact {
+                    continue;
+                }
+                checked += 1;
+                assert_eq!(
+                    line.spans[0].width(),
+                    10,
+                    "{}: fact label column is 10 cells: {line:?}",
+                    row.key
+                );
+                assert!(
+                    line.width() <= width,
+                    "{}: fact line fits {width} cells, got {}: {line:?}",
+                    row.key,
+                    line.width()
+                );
+            }
+        }
+        assert!(checked > 0, "no fact lines were checked");
+    }
+
+    #[test]
     fn config_view_keeps_scope_column_aligned_for_long_keys() {
         let mut view = create_config_view(Locale::ZhHans);
         type_filter(&mut view, "composer");
@@ -11431,6 +11496,29 @@ context_window = 131072
         let dump = render_dump(&view, 120, 32);
         let head: String = expected.chars().take(20).collect();
         assert!(dump.contains(&head), "source names the override:\n{dump}");
+    }
+
+    #[test]
+    fn setting_detail_values_share_one_column_in_every_locale() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+        view.focus_key("theme");
+        for locale in [Locale::En, Locale::ZhHans, Locale::De, Locale::Uk] {
+            view.locale = locale;
+            let lines = view.setting_detail_lines(&view.rows[view.selected], 200);
+            let labels: Vec<String> = lines
+                .iter()
+                .filter(|line| line.spans.len() == 2)
+                .map(|line| line.spans[0].content.to_string())
+                .collect();
+            assert_eq!(labels.len(), 8, "{locale:?}: {labels:?}");
+            assert!(
+                labels
+                    .iter()
+                    .all(|label| label.ends_with(' ') && label.width() == labels[0].width()),
+                "{locale:?}: {labels:?}"
+            );
+        }
     }
 
     /// Slice C: Edit Theme live preview — highlighting a theme row emits a

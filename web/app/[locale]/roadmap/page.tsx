@@ -3,8 +3,11 @@ import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { Status, type StatusTone } from "@/components/status-badge";
 import { getCachedRoadmap, type RoadmapItem } from "@/lib/roadmap-feed";
+import { fetchMilestones, type MilestoneProgress } from "@/lib/github";
 import { getEnv } from "@/lib/kv";
-import { fill, getRoadmap, pickTextLocale } from "@/lib/i18n/dictionaries";
+import { GoalList } from "@/components/goal-list";
+import { PROJECT_COPY, PROJECT_RELEASES, RELEASE_STATE_LABEL, type ReleaseState } from "@/lib/content/project";
+import { fill, getRoadmap, pickText, pickTextLocale } from "@/lib/i18n/dictionaries";
 import { buildPageMetadata } from "@/lib/page-meta";
 
 export const revalidate = 1800;
@@ -144,6 +147,7 @@ const tracksZh: Track[] = [
 // Track order is shared by both languages: shipped, underway, considered,
 // ruled out, and the open model platform direction (not started).
 const TRACK_TONES: StatusTone[] = ["ready", "accent", "idle", "idle", "idle"];
+const RELEASE_TONES: Record<ReleaseState, StatusTone> = { progress: "accent", planned: "idle", later: "idle" };
 
 const roadmapText = (text: string) =>
   text.replace(/^>\s*/, "").replaceAll("**", "").replaceAll("CodeWhale", "Codewhale");
@@ -182,17 +186,81 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
     /* keep static fallback */
   }
 
+  let milestones: MilestoneProgress[] = [];
+  try {
+    milestones = await fetchMilestones((await getEnv()).GITHUB_TOKEN);
+  } catch {
+    milestones = [];
+  }
+  const progressFor = (href: string) => milestones.find((m) => href.endsWith(`/${m.number}`));
+
   const links = [
     { title: "Issues", detail: t.issuesDetail, href: "https://github.com/codewhale-hq/CodeWhale/issues" },
-    { title: "Discussions", detail: t.discussionsDetail, href: "https://github.com/codewhale-hq/CodeWhale/discussions/new?category=ideas" },
+    { title: pickText(PROJECT_COPY.featureSteps[0].title, locale), detail: pickText(PROJECT_COPY.featureSteps[0].body, locale), href: "https://github.com/codewhale-hq/CodeWhale/issues/new?template=feature_request.yml" },
     { title: "Pull requests", detail: t.pullsDetail, href: "https://github.com/codewhale-hq/CodeWhale/pulls" },
   ];
 
   return (
     <>
-      <PageHeader kicker={t.eyebrow} title={t.title} lede={t.introduction} pose="browse" />
+      <PageHeader
+        kicker={t.eyebrow}
+        title={t.title}
+        lede={t.introduction}
+        pose="browse"
+        actions={
+          <>
+            <Link href={`/${locale}/contribute`} className="btn btn-primary btn-lg">
+              {pickText(PROJECT_COPY.loopHelp, locale)}
+              <Icon name="arrow-right" className="icon icon-flip" />
+            </Link>
+            <Link href="https://github.com/codewhale-hq/CodeWhale/blob/main/docs/ROADMAP.md" className="btn btn-secondary btn-lg">
+              GitHub
+              <Icon name="external" className="icon" />
+            </Link>
+          </>
+        }
+      />
 
       <div className="page-body">
+        <Section
+          id="roadmap-goals"
+          title={pickText(PROJECT_COPY.goalsListHeading, locale)}
+          scope={pickText(PROJECT_COPY.goalsListScope, locale)}
+        >
+          <GoalList locale={locale} detail />
+        </Section>
+
+        <Section
+          id="roadmap-releases"
+          title={pickText(PROJECT_COPY.releasesHeading, locale)}
+          scope={pickText(PROJECT_COPY.releasesScope, locale)}
+        >
+          <dl className="ruled-list release-plan">
+            {PROJECT_RELEASES.map((release) => (
+              <div key={release.name}>
+                <dt>
+                  <Link href={release.href} className="tabular">{release.name}</Link>
+                </dt>
+                <dd>
+                  <Status tone={RELEASE_TONES[release.state]}>{pickText(RELEASE_STATE_LABEL[release.state], locale)}</Status>
+                  {pickText(release.body, locale)}
+                  {(() => {
+                    const progress = progressFor(release.href);
+                    const total = progress ? progress.open + progress.closed : 0;
+                    if (!progress || total === 0) return null;
+                    return (
+                      <span className="tide-progress">
+                        <span className="tide-track" aria-hidden="true"><span style={{ inlineSize: `${Math.round((progress.closed / total) * 100)}%` }} /></span>
+                        <span className="tabular">{fill(pickText(PROJECT_COPY.milestoneProgress, locale), { closed: progress.closed, total })}</span>
+                      </span>
+                    );
+                  })()}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </Section>
+
         <Section
           id="roadmap-status"
           title={t.sectionTitle}

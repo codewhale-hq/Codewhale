@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -264,15 +264,15 @@ bakın.
 
 ## Topluluk
 
-Bir sağlayıcı eksikse veya bir iş akışı zahmetliyse
-[bir issue açın](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) ya da
-[pull request gönderin](../../CONTRIBUTING.md). Katkıda bulunanlar, kabul edilen işin
-hakkını korur; [depo yapısı](../../CONTRIBUTING.md#project-structure) neyin nerede
-olduğunu gösterir.
+Codewhale bugünkü hâlini topluluğuna borçlu ve her geri bildirim memnuniyetle karşılanır: bir hata, bir fikir ya da görünüşü veya kullanımı tuhaf gelen bir şey.
+Bunların herhangi biri için [issue açın](https://github.com/codewhale-hq/CodeWhale/issues/new/choose); yeni bir özelliğe başlamak için de en iyi yer bir issue’dur.
+Düzeltmeler, çeviriler, sağlayıcılar ve planlanmış işler için pull request’ler memnuniyetle karşılanır.
+[Katkı rehberi](../../CONTRIBUTING.md) her yardım türünün nereye gideceğini, [yol haritası](../ROADMAP.md) ise projenin nereye gittiğini gösterir.
+Kabul edilen çalışmanın emeği katkıda bulunana aittir ve [depo düzeni](../../CONTRIBUTING.md#project-structure) her şeyin nerede olduğunu gösterir.
 
 [Discord](https://discord.gg/37gfS3ksug) üzerinde sohbet edin veya projenin
 bakımcısı Hunter'ı WeChat'te (`hunterbown`) ekleyip Whale Brothers grubuna katılmak
-istediğinizi söyleyin.
+istediğinizi söyleyin. Herkesi bekleriz.
 
 ## Geçmiş ve lisans
 

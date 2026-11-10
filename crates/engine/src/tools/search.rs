@@ -987,49 +987,31 @@ fn next_brace_group(pattern: &str, from: usize) -> Option<(usize, Vec<usize>, us
 
 /// Simple glob matching for single path component
 fn matches_simple_glob(text: &str, pattern: &str) -> bool {
-    let mut text_chars = text.chars().peekable();
-    let mut pattern_chars = pattern.chars().peekable();
-
-    while let Some(p) = pattern_chars.next() {
-        match p {
-            '*' => {
-                // Match zero or more characters
-                let next_pattern: String = pattern_chars.collect();
-                if next_pattern.is_empty() {
-                    return true;
-                }
-
-                // Try matching at each position (use char-indices to stay on
-                // UTF-8 boundaries — byte-index slicing panics on multi-byte
-                // characters like 冰糖, see #249).
-                let remaining: String = text_chars.collect();
-                for (i, _) in remaining.char_indices() {
-                    if matches_simple_glob(&remaining[i..], &next_pattern) {
-                        return true;
-                    }
-                }
-                // Also try the empty suffix at end of string
-                if matches_simple_glob("", &next_pattern) {
-                    return true;
-                }
-                return false;
+    let text: Vec<char> = text.chars().collect();
+    let pattern: Vec<char> = pattern.chars().collect();
+    let (mut t, mut p) = (0, 0);
+    let mut star = None;
+    while t < text.len() {
+        match pattern.get(p) {
+            Some('*') => {
+                star = Some((p, t));
+                p += 1;
             }
-            '?' => {
-                // Match exactly one character
-                if text_chars.next().is_none() {
-                    return false;
-                }
+            Some(&c) if c == '?' || c == text[t] => {
+                p += 1;
+                t += 1;
             }
-            c => {
-                // Match literal character
-                if text_chars.next() != Some(c) {
+            _ => {
+                let Some((star_p, star_t)) = star else {
                     return false;
-                }
+                };
+                p = star_p + 1;
+                t = star_t + 1;
+                star = Some((star_p, t));
             }
         }
     }
-
-    text_chars.next().is_none()
+    pattern[p..].iter().all(|&c| c == '*')
 }
 
 // === Unit Tests ===

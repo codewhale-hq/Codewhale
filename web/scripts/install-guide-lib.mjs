@@ -55,6 +55,26 @@ export function buildInstallGuide(source, { sourcePath = "INSTALL.md", tableLabe
   });
   const tokens = marked.lexer(source);
   marked.walkTokens(tokens, marked.defaults.walkTokens);
+  const searchSlugger = new GithubSlugger();
+  const visibleText = (token) => {
+    if (token.type === "html" || token.type === "space" || token.type === "hr") return "";
+    if (token.type === "table") return [...token.header, ...token.rows.flat()].map(visibleText).join(" ");
+    if (token.items) return token.items.map(visibleText).join(" ");
+    if (token.tokens) return token.tokens.map(visibleText).join(" ");
+    return token.text ?? "";
+  };
+  const searchSections = [];
+  let preamble = "";
+  for (const token of tokens) {
+    if (token.type === "heading") {
+      searchSections.push({ id: searchSlugger.slug(token.text), title: visibleText(token), text: "" });
+    } else if (searchSections.length) {
+      const section = searchSections[searchSections.length - 1];
+      section.text = [section.text, visibleText(token)].filter(Boolean).join(" ");
+    } else {
+      preamble = [preamble, visibleText(token)].filter(Boolean).join(" ");
+    }
+  }
   const chunks = [];
   let htmlTokens = [];
   const flush = () => {
@@ -74,7 +94,7 @@ export function buildInstallGuide(source, { sourcePath = "INSTALL.md", tableLabe
   flush();
   const missing = fragments.filter((id) => !anchors.includes(id));
   if (missing.length) throw new Error(`Missing INSTALL.md anchors: ${missing.join(", ")}`);
-  return { sourceHash: createHash("sha256").update(source).digest("hex"), anchors, chunks };
+  return { sourceHash: createHash("sha256").update(source).digest("hex"), anchors, chunks, searchSections, preamble };
 }
 
 export function installAnchorErrors(text, anchors) {
@@ -85,7 +105,8 @@ export function installAnchorErrors(text, anchors) {
 
 export function renderInstallGuideModule(source, chineseSource) {
   const guide = buildInstallGuide(source);
-  const chineseGuide = chineseSource === undefined ? "" : `\nexport const CHINESE_INSTALL_GUIDE = ${JSON.stringify(buildInstallGuide(chineseSource, { sourcePath: "zh_hans/INSTALL.md", tableLabel: "安装表" }), null, 2)} as const;\n`;
+  const chinese = chineseSource === undefined ? undefined : buildInstallGuide(chineseSource, { sourcePath: "zh_hans/INSTALL.md", tableLabel: "安装表" });
+  const chineseGuide = chineseSource === undefined ? "" : `\nexport const CHINESE_INSTALL_GUIDE = ${JSON.stringify(chinese, null, 2)} as const;\n`;
   const localizedGuides = chineseSource === undefined ? "" : `\nexport const INSTALL_GUIDES = {\n  en: { guide: INSTALL_GUIDE, lang: "en", sourcePath: "INSTALL.md" },\n  zh: { guide: CHINESE_INSTALL_GUIDE, lang: "zh-Hans", sourcePath: "zh_hans/INSTALL.md" },\n} as const;\n`;
   return `// Generated from checked-in installation guides by scripts/derive-install.mjs. Do not edit.\n\nexport const INSTALL_GUIDE = ${JSON.stringify(guide, null, 2)} as const;\n${chineseGuide}${localizedGuides}`;
 }

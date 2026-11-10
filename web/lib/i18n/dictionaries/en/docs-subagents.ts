@@ -21,7 +21,7 @@ export const docsSubagents: DocsSubagentsDict = {
       title: "Ask for it",
       blocks: [
         {
-          p: "You do not start sub-agents with a command; you ask in plain words. In Operate, Codewhale does this on its own for independent steps. In Work, say what you want split up:",
+          p: "In Work, ask Codewhale in plain words to delegate independent parts of a task. Say what you want split up:",
         },
         {
           code: `Use three explore agents in parallel: one maps the auth code,

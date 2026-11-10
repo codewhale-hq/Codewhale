@@ -3,10 +3,10 @@ import type { HomeDict } from "../types";
 /** Vietnamese home copy: useful work with chosen models and connected tools. */
 
 export const home: HomeDict = {
-  metaTitle: "Codewhale · Tác nhân mã nguồn mở cho máy tính của bạn",
-  metaDescription: "Codewhale là tác nhân lập trình mã nguồn mở trong terminal. Đọc, sửa và kiểm thử dự án với mô hình từ xa hoặc cục bộ của bạn.",
-  heroTitle: "Tác nhân mã nguồn mở cho máy tính của bạn",
-  heroIntro: "Xây dựng phần mềm và chạy quy trình có thể lặp lại với {brand} trong terminal. Thêm Computer Use để làm việc trong các ứng dụng Mac.",
+  metaTitle: "Codewhale · Dùng bất kỳ mô hình nào qua một agent mà bạn đọc được",
+  metaDescription: "Codewhale là agent mã nguồn mở đứng giữa bạn và bất kỳ mô hình nào. Đọc mã của nó hoặc bảo nó tự giải thích. Một cộng đồng quốc tế cải thiện nó qua từng bản phát hành.",
+  heroTitle: "Dùng bất kỳ mô hình nào qua một agent mà bạn đọc được",
+  heroIntro: "{brand} là agent mã nguồn mở đứng giữa bạn và mô hình. Hãy đọc mã của nó, hoặc bảo nó tự đọc mã của mình và giải thích nó làm gì. Một cộng đồng quốc tế cải thiện nó qua từng bản phát hành.",
   getCodewhale: "Cài đặt Codewhale",
   heroInstallAria: "Lệnh cài đặt",
   exploreProduct: "Khám phá Codewhale",
@@ -123,9 +123,5 @@ export const home: HomeDict = {
   binaries: "Bản nhị phân",
   chinaMirrors: "Mirror Trung Quốc",
   installGuideLink: "Đọc hướng dẫn cài đặt",
-  communityHeading: "Đóng góp cho Codewhale",
-  communityBody:
-    "{count} người đã góp phần xây dựng Codewhale. Báo lỗi, cải thiện tài liệu hoặc đóng góp mã trên GitHub.",
-  communityLinksAria: "Liên kết cộng đồng",
   contribute: "Đóng góp trên GitHub",
 };

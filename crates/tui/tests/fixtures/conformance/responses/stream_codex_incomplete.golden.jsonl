@@ -1,0 +1,4 @@
+{"profile_id":"codex","request":[{"method":"POST","path":"/v1/responses"}]}
+{"type":"message_start","message":{"id":"","type":"message","role":"assistant","content":[],"model":"gpt-5.5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"message_delta","delta":{"stop_reason":null,"stop_sequence":null},"usage":{"input_tokens":3,"output_tokens":1}}
+{"type":"stream_failure","detail":"Response parsing error: ChatGPT response incomplete [max_tokens]: response incomplete: max_tokens"}

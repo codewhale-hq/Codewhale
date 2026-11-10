@@ -7,11 +7,19 @@
 //! This is intentionally separate from the Chat Completions path
 //! (`client/chat.rs`) to avoid protocol hacks.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::llm_client::StreamEventBox;
 use codewhale_config::ProviderKind;
+use codewhale_config::responses_dialect::{
+    AudioUsageFieldPolicy, CacheUsageFieldPolicy, CompletionPolicy, DoneMarkerPolicy,
+    EncryptedReasoningReplayPolicy, IncludePolicy, IncompleteResponsePolicy, InstructionsPlacement,
+    MalformedEventPolicy, OutputTokenFieldPolicy, ParallelToolCallPolicy,
+    PlainReasoningReplayPolicy, ReasoningEffortMapping, ReasoningSummaryPolicy,
+    ReasoningUsageFieldPolicy, ResponsesDialectProfile, SamplingPolicy, StorePolicy,
+    SystemRoleReplayPolicy, ToolEnvelopePolicy,
+};
 use codewhale_models::tool_projection::{
     RouteToolProjection, ToolSchemaProjection, description_with_constraint_note, forced_tool_name,
     project_tool_schema,
@@ -33,12 +41,22 @@ use super::wire::{
 use super::wire::{extract_sse_data_value, next_sse_line, push_sse_event_data};
 use crate::llm_client::LlmError;
 
-const CHATGPT_TOOL_NAMESPACE: &str = "codewhale";
+pub(super) struct ResponsesReplayContext<'a> {
+    pub(super) provider_id: &'a str,
+    pub(super) wire_model_id: &'a str,
+    pub(super) reasoning_api_id: Option<&'a str>,
+}
 
-/// Build the Responses API request body from a `MessageRequest`.
 #[cfg(test)]
-pub(super) fn build_responses_body(request: &MessageRequest) -> Value {
-    build_responses_body_for_provider(request, ProviderKind::OpenaiCodex, None)
+fn profile_for_provider(provider: ProviderKind) -> &'static ResponsesDialectProfile {
+    let profile_id = match provider {
+        ProviderKind::OpenaiCodex => "codex",
+        ProviderKind::Concentrate => "concentrate",
+        ProviderKind::Deepseek => "deepseek_stateless_plain_reasoning",
+        _ => "standard",
+    };
+    codewhale_config::responses_dialect::profile(profile_id)
+        .unwrap_or_else(|| panic!("responses profile {profile_id}"))
 }
 
 #[cfg(test)]
@@ -47,48 +65,64 @@ pub(super) fn build_responses_body_for_provider(
     provider: ProviderKind,
     reasoning_api: Option<&str>,
 ) -> Value {
-    build_responses_wire_body(request, provider, reasoning_api)
-        .expect("responses body builds")
-        .0
+    build_responses_wire_body(
+        request,
+        profile_for_provider(provider),
+        ResponsesReplayContext {
+            provider_id: provider.as_str(),
+            wire_model_id: request.model.as_str(),
+            reasoning_api_id: reasoning_api,
+        },
+    )
+    .expect("responses body builds")
+    .0
 }
 
-/// Build a provider-aware Responses API request body.
-///
-/// DeepSeek-V4-Flash-0731 implements the Responses wire shape but is stateless
-/// and exposes plain reasoning text rather than OpenAI encrypted summaries.
-/// Keep those exact-route differences here instead of leaking them into the
-/// provider-neutral message model.
-pub(super) fn build_responses_wire_body(
+#[cfg(test)]
+pub(super) fn responses_input_for_provider(
     request: &MessageRequest,
     provider: ProviderKind,
     reasoning_api: Option<&str>,
+) -> Vec<Value> {
+    convert_messages_to_responses_input(
+        request,
+        profile_for_provider(provider),
+        ResponsesReplayContext {
+            provider_id: provider.as_str(),
+            wire_model_id: request.model.as_str(),
+            reasoning_api_id: reasoning_api,
+        },
+    )
+}
+
+/// Build a Responses request body from the admitted dialect profile.
+///
+/// Output limits are already applied to `request.max_tokens`. A mismatched
+/// encrypted reasoning state is dropped and is not rewritten as plain text.
+pub(super) fn build_responses_wire_body(
+    request: &MessageRequest,
+    profile: &ResponsesDialectProfile,
+    context: ResponsesReplayContext<'_>,
 ) -> Result<(Value, Vec<String>)> {
-    let is_deepseek = matches!(provider, ProviderKind::Deepseek);
-    // Concentrate documents `model`, `input`, `stream`, `max_output_tokens`,
-    // `tools` / `tool_choice` / `parallel_tool_calls`, and `reasoning.effort`;
-    // `store`, `include`, `instructions`, and `reasoning.summary` are absent
-    // from its parameter reference, so this route sends only documented
-    // fields and carries the system prompt as a leading `system` message item
-    // (a documented input role) instead of `instructions`.
-    // https://concentrate.ai/docs/api-reference/endpoint/request-parameters
-    let is_concentrate = provider == ProviderKind::Concentrate;
     let model = &request.model;
     let mut body = json!({
         "model": model,
         "stream": true,
     });
-    if !is_deepseek && !is_concentrate {
+    if profile.request.store == StorePolicy::ExplicitFalse {
         body["store"] = json!(false);
     }
     // Every Responses route receives the same resolved request envelope as
     // Chat and Messages. Omitting this field let auxiliary Responses calls
     // escape the central route cap and made preview unable to prove the wire
-    // allowance. The official ChatGPT plan preview contract disallows
-    // max_output_tokens, so that route carries no client-side output cap.
-    if request.max_tokens > 0 && provider != ProviderKind::OpenaiCodex {
+    // allowance. Profiles that omit the field still keep that internal cap;
+    // they only leave it off the JSON.
+    if request.max_tokens > 0
+        && profile.request.max_output_tokens == OutputTokenFieldPolicy::WhenPositive
+    {
         body["max_output_tokens"] = json!(request.max_tokens);
     }
-    if is_deepseek {
+    if profile.request.sampling == SamplingPolicy::TemperatureAndTopP {
         if let Some(temperature) = request.temperature {
             body["temperature"] = json!(temperature);
         }
@@ -97,14 +131,12 @@ pub(super) fn build_responses_wire_body(
         }
     }
 
-    // Supply minimal instructions when the caller did not provide a system prompt.
     let instructions = system_to_instructions(request.system.clone())
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| "You are a helpful assistant.".to_string());
 
-    // Convert messages to Responses input items.
-    let mut input = convert_messages_to_responses_input(request, provider, reasoning_api);
-    if is_concentrate {
+    let mut input = convert_messages_to_responses_input(request, profile, context);
+    if profile.request.instructions == InstructionsPlacement::LeadingSystemInput {
         input.insert(
             0,
             json!({
@@ -158,12 +190,19 @@ pub(super) fn build_responses_wire_body(
             );
         }
         if !responses_tools.is_empty() {
-            body["tools"] = if provider == ProviderKind::OpenaiCodex {
-                json!([{ "type": "namespace", "name": CHATGPT_TOOL_NAMESPACE,
-                    "description": "Codewhale tools running under the user's local permissions.",
-                    "tools": responses_tools }])
-            } else {
-                json!(responses_tools)
+            body["tools"] = match profile.tools.envelope {
+                ToolEnvelopePolicy::NamespaceWrapped => {
+                    let Some(namespace) = profile.tools.namespace else {
+                        anyhow::bail!(
+                            "responses profile {} wraps tools without a namespace",
+                            profile.id.as_str()
+                        );
+                    };
+                    json!([{ "type": "namespace", "name": namespace,
+                        "description": "Codewhale tools running under the user's local permissions.",
+                        "tools": responses_tools }])
+                }
+                ToolEnvelopePolicy::FunctionArray => json!(responses_tools),
             };
             let tool_choice = request.tool_choice.as_ref().and_then(Value::as_str);
             body["tool_choice"] = if tool_choice == Some("none") {
@@ -172,34 +211,30 @@ pub(super) fn build_responses_wire_body(
                 json!("auto")
             };
             // The plan preview decoder tracks one active function-call block.
-            body["parallel_tool_calls"] = json!(provider != ProviderKind::OpenaiCodex);
+            body["parallel_tool_calls"] =
+                json!(profile.tools.parallel_calls == ParallelToolCallPolicy::Allow);
         }
     }
 
-    // Preserve the selected Codex tier through the final wire boundary. The
-    // roster owns each model's available levels; this pure builder must not
-    // collapse newer tiers to an older model's xhigh ceiling. Other Responses
-    // providers retain their own compatibility vocabulary.
+    // The roster owns each model's available levels. This builder only chooses
+    // which existing effort function the profile names.
     if let Some(raw) = request.reasoning_effort.as_deref()
-        && let Some(effort) = if provider == ProviderKind::OpenaiCodex {
-            codex_responses_reasoning_effort(raw)
-        } else {
-            responses_reasoning_effort(raw, is_deepseek)
+        && let Some(effort) = match profile.reasoning.effort_mapping {
+            ReasoningEffortMapping::Codex => codex_responses_reasoning_effort(raw),
+            ReasoningEffortMapping::Deepseek => responses_reasoning_effort(raw, true),
+            ReasoningEffortMapping::OpenaiCompatible => compatible_responses_reasoning_effort(raw),
         }
     {
-        body["reasoning"] = if is_deepseek || is_concentrate {
-            json!({ "effort": effort })
-        } else {
-            json!({
+        body["reasoning"] = match profile.reasoning.summary {
+            ReasoningSummaryPolicy::Omit => json!({ "effort": effort }),
+            ReasoningSummaryPolicy::Auto => json!({
                 "effort": effort,
                 "summary": "auto",
-            })
+            }),
         };
     }
 
-    // OpenAI Codex can replay encrypted reasoning. DeepSeek exposes plain
-    // `reasoning_text` and does not support `include`.
-    if !is_deepseek && !is_concentrate {
+    if profile.request.include == IncludePolicy::EncryptedReasoning {
         body["include"] = json!(["reasoning.encrypted_content"]);
     }
 
@@ -215,7 +250,29 @@ impl CodewhaleClient {
         // Body, endpoint, and route shape all come from the shared
         // prepared-request seam (`prepare_outbound_request`).
         let body = &prepared.body;
-        let is_chatgpt = self.api_provider == ProviderKind::OpenaiCodex;
+        let Some(profile_id) = self.responses_profile_id else {
+            bail!(
+                "responses client for {} has no dialect profile",
+                self.api_provider.as_str()
+            );
+        };
+        let Some(profile) = codewhale_config::responses_dialect::profile(profile_id.as_str())
+        else {
+            bail!(
+                "responses profile {} is not in the dialect table",
+                profile_id.as_str()
+            );
+        };
+        admit_shared_responses_usage(profile);
+        let malformed_json = profile.stream.malformed_json;
+        let done_marker = profile.stream.done_marker;
+        let incomplete = profile.stream.incomplete;
+        let tool_namespace = profile.tools.namespace;
+        let strict_terminal = matches!(
+            profile.stream.completion,
+            CompletionPolicy::RequireSuccessfulResponseCompleted
+        );
+        let codex_identity = self.api_provider == ProviderKind::OpenaiCodex;
         let url = prepared.endpoint.url.clone();
         // The synthetic MessageStart below is emitted from inside the stream
         // closure, which outlives `prepared`. Clone the wire model — the id
@@ -223,10 +280,12 @@ impl CodewhaleClient {
         // remapping — rather than borrowing the request that no longer exists
         // at this layer.
         let wire_model = prepared.wire_model.clone();
-        let reasoning_api = if is_chatgpt {
-            self.chatgpt_reasoning_api.as_deref()
-        } else {
-            Some("openai-responses")
+        let reasoning_api = match profile.replay.encrypted_state {
+            EncryptedReasoningReplayPolicy::AccountApiModelScoped => {
+                self.chatgpt_reasoning_api.as_deref()
+            }
+            EncryptedReasoningReplayPolicy::ProviderApiModelScoped => Some("openai-responses"),
+            EncryptedReasoningReplayPolicy::Disabled => None,
         };
         let reasoning_origin = reasoning_api.map(|api| {
             (
@@ -359,7 +418,7 @@ impl CodewhaleClient {
                             } else if let Some(value) = extract_sse_data_value(&line)
                                 && let Err(err) = push_sse_event_data(&mut event_data, value)
                             {
-                                if is_chatgpt {
+                                if strict_terminal {
                                     yield Err(LlmError::ParseError(err.to_string()).into());
                                     return;
                                 }
@@ -374,7 +433,7 @@ impl CodewhaleClient {
                         }
                         Ok(None) => break,
                         Err(err) => {
-                            if is_chatgpt {
+                            if strict_terminal {
                                 yield Err(LlmError::ParseError(err.to_string()).into());
                                 return;
                             }
@@ -389,14 +448,16 @@ impl CodewhaleClient {
                     {
                         let data = data.as_str();
                         if data == "[DONE]" {
-                            if !is_chatgpt { done = true; }
+                            if done_marker == DoneMarkerPolicy::Terminal {
+                                done = true;
+                            }
                             break;
                         }
 
                         let event: Value = match serde_json::from_str(data) {
                             Ok(v) => v,
                             Err(e) => {
-                                if is_chatgpt {
+                                if malformed_json == MalformedEventPolicy::Fail {
                                     yield Err(LlmError::ParseError("Invalid ChatGPT response event".into()).into());
                                     return;
                                 }
@@ -431,7 +492,10 @@ impl CodewhaleClient {
                                                 Some(content_block_counter - 1);
                                         }
                                         "function_call" => {
-                                            if is_chatgpt && item.get("namespace").and_then(Value::as_str) != Some(CHATGPT_TOOL_NAMESPACE) {
+                                            if let Some(namespace) = tool_namespace
+                                                && item.get("namespace").and_then(Value::as_str)
+                                                    != Some(namespace)
+                                            {
                                                 yield Err(LlmError::ParseError("ChatGPT returned a function outside the Codewhale tool namespace".into()).into());
                                                 return;
                                             }
@@ -603,15 +667,17 @@ impl CodewhaleClient {
                                 }
                             }
                             "response.completed" | "response.incomplete" => {
-                                if is_chatgpt && !event.get("response").is_some_and(Value::is_object) {
+                                if strict_terminal && !event.get("response").is_some_and(Value::is_object) {
                                     yield Err(LlmError::ParseError("ChatGPT completion event has no response".into()).into());
                                     return;
                                 }
-                                if is_chatgpt && event_type == "response.completed" && string_at(&event, "/response/status") != Some("completed") {
+                                if strict_terminal && event_type == "response.completed" && string_at(&event, "/response/status") != Some("completed") {
                                     yield Err(LlmError::ParseError("ChatGPT completion event has an unsuccessful status".into()).into());
                                     return;
                                 }
-                                if is_chatgpt && event_type == "response.incomplete" {
+                                if event_type == "response.incomplete"
+                                    && incomplete == IncompleteResponsePolicy::Fail
+                                {
                                     if let Some(usage_val) = event.pointer("/response/usage") {
                                         yield Ok(StreamEvent::MessageDelta {
                                             delta: MessageDelta { stop_reason: None, stop_sequence: None },
@@ -645,21 +711,24 @@ impl CodewhaleClient {
                             }
                             "error" | "response.failed" => {
                                 let (code, msg) = responses_event_error_details(&event);
-                                if is_chatgpt {
+                                if strict_terminal {
                                     if let Some(usage_val) = event.pointer("/response/usage") {
                                         yield Ok(StreamEvent::MessageDelta {
                                             delta: MessageDelta { stop_reason: None, stop_sequence: None },
                                             usage: Some(parse_responses_usage(usage_val)),
                                         });
                                     }
-                                    if let Some(error) = LlmError::from_subscription_sharing_error_code(&code) {
+                                    if codex_identity
+                                        && let Some(error) =
+                                            LlmError::from_subscription_sharing_error_code(&code)
+                                    {
                                         yield Err(error.into());
                                         return;
                                     }
                                 }
                                 let code = super::redact_model_bound_text(&code, &error_secrets);
                                 let msg = super::redact_model_bound_text(&msg, &error_secrets);
-                                if is_chatgpt {
+                                if strict_terminal {
                                     yield Err(LlmError::ModelError(format!("Responses API error [{code}]: {msg}")).into());
                                     return;
                                 }
@@ -680,12 +749,12 @@ impl CodewhaleClient {
                 }
             }
 
-            // ChatGPT requires a successful response.completed event; other
-            // Responses routes also accept their documented terminal markers.
-            // A bare HTTP EOF is truncation, and
-            // a MessageStop here would hand the turn a partial answer as done.
+            // A strict completion profile requires a successful response.completed
+            // event. Other Responses profiles also accept their documented
+            // terminal markers. A bare HTTP EOF is truncation, and a
+            // MessageStop here would hand the turn a partial answer as done.
             if !done {
-                if is_chatgpt {
+                if strict_terminal {
                     yield Err(LlmError::ParseError("ChatGPT Responses stream closed before a successful completion event".into()).into());
                     return;
                 }
@@ -860,10 +929,11 @@ pub(super) fn responses_tool_output(content: &str, content_blocks: Option<&[Valu
 /// Convert Codewhale messages to Responses API input items.
 pub(super) fn convert_messages_to_responses_input(
     request: &MessageRequest,
-    provider: ProviderKind,
-    reasoning_api: Option<&str>,
+    profile: &ResponsesDialectProfile,
+    context: ResponsesReplayContext<'_>,
 ) -> Vec<Value> {
-    let is_deepseek = matches!(provider, ProviderKind::Deepseek);
+    let plain_with_placeholder =
+        profile.replay.plain_reasoning == PlainReasoningReplayPolicy::PlainTextWithToolPlaceholder;
     let mut items = Vec::new();
 
     for msg in &request.messages {
@@ -928,13 +998,18 @@ pub(super) fn convert_messages_to_responses_input(
                         return None;
                     };
                     if let Some(state) = state {
-                        let matches = state.provider == provider.as_str()
-                            && if provider == ProviderKind::OpenaiCodex {
-                                reasoning_api.is_some_and(|api| state.api == api)
-                            } else {
+                        let api_matches = match profile.replay.encrypted_state {
+                            EncryptedReasoningReplayPolicy::AccountApiModelScoped => {
+                                context.reasoning_api_id.is_some_and(|api| state.api == api)
+                            }
+                            EncryptedReasoningReplayPolicy::ProviderApiModelScoped => {
                                 state.api == "openai-responses"
                             }
-                            && state.model == request.model;
+                            EncryptedReasoningReplayPolicy::Disabled => false,
+                        };
+                        let matches = state.provider == context.provider_id
+                            && api_matches
+                            && state.model == context.wire_model_id;
                         if !matches {
                             return None;
                         }
@@ -948,7 +1023,12 @@ pub(super) fn convert_messages_to_responses_input(
                         }
                         return Some(item);
                     }
-                    is_deepseek.then(|| {
+                    matches!(
+                        profile.replay.plain_reasoning,
+                        PlainReasoningReplayPolicy::PlainText
+                            | PlainReasoningReplayPolicy::PlainTextWithToolPlaceholder
+                    )
+                    .then(|| {
                         let text = if thinking.trim().is_empty() {
                             REASONING_REPLAY_PLACEHOLDER
                         } else {
@@ -963,7 +1043,7 @@ pub(super) fn convert_messages_to_responses_input(
                         })
                     })
                 };
-                if is_deepseek {
+                if plain_with_placeholder {
                     let before = items.len();
                     items.extend(msg.content.iter().filter_map(&reasoning_item));
                     if items.len() == before
@@ -1012,12 +1092,12 @@ pub(super) fn convert_messages_to_responses_input(
                                 "name": to_api_tool_name(name),
                                 "arguments": serde_json::to_string(input).unwrap_or_default(),
                             });
-                            if provider == ProviderKind::OpenaiCodex {
-                                item["namespace"] = json!(CHATGPT_TOOL_NAMESPACE);
+                            if let Some(namespace) = profile.tools.namespace {
+                                item["namespace"] = json!(namespace);
                             }
                             items.push(item);
                         }
-                        ContentBlock::Thinking { .. } if !is_deepseek => {
+                        ContentBlock::Thinking { .. } if !plain_with_placeholder => {
                             if let Some(item) = reasoning_item(block) {
                                 items.push(item);
                             }
@@ -1069,7 +1149,14 @@ pub(super) fn convert_messages_to_responses_input(
                         if !content_items.is_empty() {
                             items.push(json!({
                                 "type": "message",
-                                "role": if provider == ProviderKind::OpenaiCodex && role == "system" { "developer" } else { role },
+                                "role": if profile.replay.system_role
+                                    == SystemRoleReplayPolicy::SystemToDeveloper
+                                    && role == "system"
+                                {
+                                    "developer"
+                                } else {
+                                    role
+                                },
                                 "content": content_items,
                             }));
                         }
@@ -1233,6 +1320,20 @@ pub(super) fn parse_tool_use_id(id: &str) -> (String, String) {
         (id[..pipe_pos].to_string(), id[pipe_pos + 1..].to_string())
     } else {
         (id.to_string(), String::new())
+    }
+}
+
+fn admit_shared_responses_usage(profile: &ResponsesDialectProfile) {
+    match (
+        profile.usage.cache_fields,
+        profile.usage.reasoning_fields,
+        profile.usage.audio_fields,
+    ) {
+        (
+            CacheUsageFieldPolicy::TopLevelThenNestedFallback,
+            ReasoningUsageFieldPolicy::OutputTokensDetails,
+            AudioUsageFieldPolicy::NestedDetails,
+        ) => {}
     }
 }
 

@@ -3,11 +3,11 @@ import type { ContributeDict } from "../types";
 export const contribute: ContributeDict = {
   metaTitle: "Contribute · Codewhale",
   metaDescription:
-    "Help build Codewhale with a bug report, docs fix, translation, test or code contribution. Find a useful place to start.",
+    "All feedback helps Codewhale, with or without code. Find where a bug, an idea, a translation, a provider or a fix should go.",
   kicker: "Build Codewhale together",
-  title: "Contribute to Codewhale",
-  lede: "Report a bug, improve a guide or share a skill.",
-  fileIssue: "File an issue",
+  title: "Help build Codewhale",
+  lede: "All feedback helps, with or without code, and a bug, an idea or a screen that looked wrong is enough to start.",
+  fileIssue: "Open an issue",
   browsePulls: "Browse pull requests",
   fullGuide: "Contributor guide",
   pathsTitle: "Choose where to start",

@@ -49,13 +49,13 @@ export const PRODUCT_COPY = {
   workHeading: { en: "Keep larger tasks moving", zh: "推进更大的任务" },
   workPatterns: [
     {
-      title: { en: "Operate", zh: "Operate" },
+      title: { en: "Work", zh: "Work" },
       body: {
-        en: "Plan, delegate and verify a larger task. Operate uses the same permissions as Work.",
-        zh: "计划、委派并验证较大的任务。Operate 遵循与 Work 相同的权限。",
+        en: "Plan, delegate and verify a larger task in Work. In the 0.10.3 source candidate, Operate is a compatibility alias for Work.",
+        zh: "在 Work 中计划、委派并验证较大的任务。在 0.10.3 源码候选版本中，Operate 是 Work 的兼容别名。",
       },
       href: "/docs/modes",
-      command: "/mode operate",
+      command: "/mode work",
     },
     {
       title: { en: "Fleet", zh: "Fleet" },
@@ -156,16 +156,16 @@ export const PRODUCT_COPY = {
     },
   ] satisfies ProductAvailabilityRow[],
 
-  controlHeading: { en: "Set permissions and approvals", zh: "设置权限与审批方式" },
+  controlHeading: { en: "Set permissions in the 0.10.3 source candidate", zh: "设置 0.10.3 源码候选版本的权限" },
   modes: [
     { title: { en: "Plan", zh: "Plan" }, body: { en: "Blocks file mutation and shell execution. Permitted research may contact external services; session state can still be saved.", zh: "禁止文件修改与 shell 执行。获准的研究可访问外部服务；会话状态仍可保存。" } },
     { title: { en: "Work", zh: "Work" }, body: { en: "Edits files and runs commands within the permission you set.", zh: "在你设定的权限内修改文件、运行命令。" } },
-    { title: { en: "Operate", zh: "Operate" }, body: { en: "Coordinates larger jobs, delegating to other agents when useful. Uses the same tools and permission boundaries as Work.", zh: "协调较大的任务，按需委派其他智能体。使用与 Work 相同的工具，遵循相同的权限边界。" } },
   ] satisfies ProductRow[],
   permissions: [
     { title: { en: "Ask", zh: "Ask" }, body: { en: "Prompts according to the active approval rules; saved permissions and hard policy boundaries still apply.", zh: "按当前审批规则询问；已保存的权限与强制策略边界仍然生效。" } },
+    { title: { en: "Accept Edits", zh: "Accept Edits" }, body: { en: "Allows ordinary edits inside a git workspace and asks before commands or sensitive-file edits. New source-candidate installs use this posture; an explicit saved choice stays in control.", zh: "允许 Git 工作区内的普通文件编辑，并在运行命令或修改敏感文件前询问。新安装的源码候选版本使用此设置；明确保存的选择始终优先。" } },
     { title: { en: "Auto-Review", zh: "Auto-Review" }, body: { en: "Automatically reviews eligible actions and reports any action it cannot approve.", zh: "自动审核符合条件的操作，并报告无法批准的操作。" } },
-    { title: { en: "Full Access", zh: "Full Access" }, body: { en: "Reduces approval prompts. It does not bypass hard policy boundaries or grant access outside the allowed scope.", zh: "减少审批提示，但不会绕过强制策略边界，也不会授予允许范围之外的访问权限。" } },
+    { title: { en: "Full Access", zh: "Full Access" }, body: { en: "Allows commands to reach anything on this computer. Managed policy and repository law still apply.", zh: "允许命令访问这台计算机上的任何内容。托管策略与仓库规则仍然适用。" } },
   ] satisfies ProductRow[],
 
   actions: {

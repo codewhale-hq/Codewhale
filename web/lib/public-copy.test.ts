@@ -13,7 +13,7 @@ describe("public website copy contracts", () => {
     const layout = pageSource("docs/layout.tsx");
     const search = readFileSync(new URL("../components/docs-search.tsx", import.meta.url), "utf8");
 
-    expect(layout).toContain("docs-portal-band");
+    expect(layout).not.toContain("portal-mark");
     // The hero copy is dictionary-driven now (#5337), so assert it where the
     // string actually lives rather than in the TSX.
     expect(EN_DOCS_SHELL.heroTitle).toBe("Install and use Codewhale");

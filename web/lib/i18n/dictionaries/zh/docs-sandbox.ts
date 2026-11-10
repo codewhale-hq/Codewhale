@@ -54,11 +54,12 @@ export const docsSandbox: DocsSandboxDict = {
       blocks: [
         { p: "安装 bubblewrap 后 Codewhale 默认使用它。想让 Linux 命令不被包装，在 `~/.codewhale/config.toml` 中加一行退出：" },
         {
-          code: `sudo apt install bubblewrap      # Fedora: dnf install bubblewrap · Arch: pacman -S bubblewrap
-
-# ~/.codewhale/config.toml
-prefer_bwrap = false`,
-          lang: "终端 / config.toml",
+          code: "sudo apt install bubblewrap",
+          lang: "Debian / Ubuntu — 终端",
+        },
+        {
+          code: "prefer_bwrap = false",
+          lang: "~/.codewhale/config.toml — 可选：关闭 bubblewrap",
         },
         {
           p: "只有当 `/usr/bin/bwrap` 存在、可执行，且探测证明它能创建沙箱命名空间时，Codewhale 才会使用它——装了但被系统拦住的 bwrap 按不存在处理。此后，命令看到的是只读的系统视图，只能写入沙箱模式允许的位置，除非模式允许，否则无法联网。",

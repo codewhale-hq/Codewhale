@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { buildPageMetadata } from "@/lib/page-meta";
-import { PLUGINS_COPY, PLUGIN_COMMANDS, INTEGRATIONS_COPY, INTEGRATION_CHOICES, PLUGIN_EXAMPLES, PLUGIN_COMPATIBILITY } from "@/lib/content/plugins";
+import { PLUGINS_COPY, PLUGIN_COMMANDS, INTEGRATIONS_COPY, INTEGRATION_CHOICES, PLUGIN_EXAMPLES, PLUGIN_COMPATIBILITY, MCP_SETUP_COMMANDS } from "@/lib/content/plugins";
 import type { LocalizedText } from "@/lib/content/vocabulary";
 import { pickText } from "@/lib/i18n/dictionaries";
 
@@ -36,6 +36,7 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
   return (
     <>
       <PageHeader
+        titleId="plugins-overview"
         title={t(PLUGINS_COPY.title)}
         lede={t(PLUGINS_COPY.lead)}
         pose="connect"
@@ -100,8 +101,7 @@ export default async function PluginsPage({ params }: { params: Promise<{ locale
         </Section>
 
         <Section id="mcp-title" title={t(INTEGRATIONS_COPY.mcpTitle)} scope={t(INTEGRATIONS_COPY.mcpLead)}>
-          <pre tabIndex={0} className="code-block">{`codewhale mcp add cloudflare-docs --url "https://docs.mcp.cloudflare.com/mcp"
-codewhale mcp tools cloudflare-docs`}</pre>
+          <pre tabIndex={0} className="code-block">{MCP_SETUP_COMMANDS}</pre>
           <Link href={`/${locale}/docs/mcp`} className="section-link mt-4">
             {t(INTEGRATIONS_COPY.mcpLink)}<Icon name="arrow-right" className="icon icon-flip" />
           </Link>

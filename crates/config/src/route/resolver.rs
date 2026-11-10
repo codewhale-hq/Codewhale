@@ -70,6 +70,10 @@ pub struct RouteRequest {
     /// `wire = "responses"` mints a wire-true candidate instead of Custom's
     /// backward-compatible static Chat policy.
     pub wire_override: Option<WireFormat>,
+    /// Explicit Responses profile from a custom provider table. Built-in
+    /// routes leave this empty and take the binding selected after the
+    /// protocol is known. `None` on a Responses route uses the default profile.
+    pub responses_profile_override: Option<String>,
 }
 
 /// Resolves [`RouteRequest`]s into [`ReadyRouteCandidate`]s.
@@ -541,6 +545,20 @@ impl RouteResolver {
                 .push("endpoint uses insecure http:// (credentials sent in plaintext)".to_string());
         }
         let validation = ValidationReport { ok: true, messages };
+        let responses_profile_id = crate::responses_dialect::select_responses_profile(
+            crate::responses_dialect::ResponsesProfileQuery {
+                protocol,
+                provider: provider_kind,
+                endpoint_key: &endpoint.endpoint_key,
+                base_url: &endpoint.base_url,
+                explicit_profile: req.responses_profile_override.as_deref(),
+            },
+        )
+        .map_err(|err| RouteError::ResponsesProfile {
+            provider: provider_id.clone(),
+            detail: err.to_string(),
+        })?
+        .map(|profile| profile.id);
 
         // Apply caller-requested limit overrides in order, BEFORE the candidate
         // is minted. The candidate is immutable afterwards; the applied
@@ -570,6 +588,7 @@ impl RouteResolver {
             // `Unresolved` at resolution time, not a claimed `Missing`.
             ResolvedAuthSource::Unresolved,
             protocol,
+            responses_profile_id,
             limits,
             selected.capabilities,
             // #3085: honest pricing projected from the matched offering (the

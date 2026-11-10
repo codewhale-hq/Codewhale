@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -274,15 +274,15 @@ prüft Codewhale außerdem auf GitHub, ob es ein neues Release gibt; setze
 
 ## Community
 
-Fehlt ein Anbieter oder ist ein Workflow umständlich,
-[eröffne ein Issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) oder
-[sende einen Pull Request](../../CONTRIBUTING.md). Wer beiträgt, behält die
-Anerkennung für die Arbeit, die übernommen wird, und die
-[Repository-Struktur](../../CONTRIBUTING.md#project-structure) zeigt, wo was liegt.
+Codewhale ist durch seine Community zu dem geworden, was es ist, und jedes Feedback ist willkommen: ein Fehler, eine Idee oder etwas, das falsch aussah oder sich falsch anfühlte.
+[Eröffne ein Issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) für jedes davon; ein Issue ist auch der beste Ort, um ein neues Feature zu beginnen.
+Pull Requests sind willkommen für Korrekturen, Übersetzungen, Anbieter und geplante Arbeit.
+Der [Leitfaden für Beiträge](../../CONTRIBUTING.md) zeigt, wohin welche Art von Hilfe gehört, und die [Roadmap](../ROADMAP.md) zeigt, wohin das Projekt geht.
+Beitragende behalten die Anerkennung für übernommene Arbeit, und der [Aufbau des Repositorys](../../CONTRIBUTING.md#project-structure) zeigt, wo sich was befindet.
 
 Chatte auf [Discord](https://discord.gg/37gfS3ksug), oder füge den Maintainer
 Hunter auf WeChat (`hunterbown`) hinzu und bitte darum, in die Gruppe
-Whale Brothers aufgenommen zu werden.
+Whale Brothers aufgenommen zu werden. Alle sind willkommen.
 
 ## Geschichte und Lizenz
 
