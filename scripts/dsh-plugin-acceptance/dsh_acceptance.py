@@ -105,6 +105,11 @@ def sha256_json(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def refusal_needle(pin: dict) -> str:
+    refusal = pin["refusal"]
+    return f"{refusal['code']}: `{refusal['field']}` requires DSH `{refusal['range']}`"
+
+
 def verdict_of(pin: dict, steps: list[dict]) -> str:
     by_id = {step["id"]: step for step in steps}
     statuses = [by_id[name]["status"] for name in required_steps(pin)]
@@ -118,7 +123,6 @@ def verdict_of(pin: dict, steps: list[dict]) -> str:
 
 
 def validate_receipt(receipt: dict, pins: dict, allow_synthetic: bool = False) -> tuple[str, list[str]]:
-    """Return (verdict, problems). Any problem makes the verdict INVALID."""
     problems: list[str] = []
     if receipt.get("schema") != RECEIPT_SCHEMA:
         return "INVALID", ["schema is not " + RECEIPT_SCHEMA]
@@ -160,6 +164,10 @@ def validate_receipt(receipt: dict, pins: dict, allow_synthetic: bool = False) -
     for name in required_steps(pin):
         if name not in seen:
             problems.append(f"required step missing: {name}")
+    if pin["admission"] != "admit" and seen.get("admission.refused", {}).get("status") == "PASS":
+        message = (seen["admission.refused"].get("evidence") or {}).get("message", "")
+        if refusal_needle(pin) not in message:
+            problems.append("admission.refused: refusal reason does not match the pinned basis")
     engine = receipt.get("engine") or {}
     if not engine.get("sha256") or not engine.get("version"):
         problems.append("engine identity is incomplete")
@@ -168,6 +176,8 @@ def validate_receipt(receipt: dict, pins: dict, allow_synthetic: bool = False) -
     verdict = verdict_of(pin, steps)
     if verdict in ("PASS", "BLOCKED") and engine.get("kind") != "installed":
         problems.append("an accepted row needs the installed Engine artifact, not a source build")
+    if verdict in ("PASS", "BLOCKED") and "(dev)" in str(engine.get("version")):
+        problems.append("an accepted row cannot come from a dev build")
     if receipt.get("verdict") != verdict:
         problems.append(f"claimed verdict {receipt.get('verdict')} differs from computed {verdict}")
     if problems:
@@ -276,7 +286,7 @@ def run_row(args, pins: dict) -> dict:
     steps: list[dict] = []
     receipt = {"schema": RECEIPT_SCHEMA, "row": pin["row"], "package": pin["package"], "version": pin["version"],
                "tarball_sha256": pin["tarball_sha256"], "os": os_name(), "arch": platform.machine().lower(),
-               "source_sha": args.source_sha or None, "flags": list(args.enable), "steps": steps,
+               "flags": list(args.enable), "steps": steps,
                "provider_calls_allowed": bool(args.allow_provider)}
     version = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
     receipt["engine"] = {"path": str(binary), "sha256": sha256_file(binary), "version": version, "kind": args.engine_kind}
@@ -318,9 +328,10 @@ def run_row(args, pins: dict) -> dict:
         engine.start()
         code, preview = engine.request("POST", "/v1/apps/plugins/import/dsh/preview", {"path": str(package)})
         if pin["admission"] != "admit":
-            refused = code == 400 and "refused" in json.dumps(preview).lower()
+            message = str(preview.get("error", {}).get("message", ""))
+            refused = code == 400 and refusal_needle(pin) in message
             record(step("admission.refused", "PASS" if refused else "FAIL", f"HTTP {code}",
-                        {"http": code, "message": preview.get("error", {}).get("message", "")[:300], "pinned_verdict": pin["admission"]}, 1))
+                        {"http": code, "message": message[:600], "pinned_verdict": pin["admission"], "pinned_refusal": refusal_needle(pin)}, 1))
             return receipt
         ok = code == 200 and preview.get("content_hash")
         record(step("admission.preview", "PASS" if ok else "FAIL", f"HTTP {code}",
@@ -372,7 +383,8 @@ def run_row(args, pins: dict) -> dict:
         record(step("security.no_key_leak", "PASS" if scanned and not hits else "FAIL", f"scanned {scanned} files, {len(hits)} hits",
                     {"files_scanned": scanned, "hits": hits[:5], "sentinel": "runtime bearer token"}, scanned))
     except Exception as error:
-        steps.append(step("lifecycle.install", "FAIL", f"driver stopped: {error}")) if "lifecycle.install" not in [s["id"] for s in steps] and pin["admission"] == "admit" and "admission.preview" in [s["id"] for s in steps] else None
+        if "lifecycle.install" not in [s["id"] for s in steps] and pin["admission"] == "admit" and "admission.preview" in [s["id"] for s in steps]:
+            steps.append(step("lifecycle.install", "FAIL", f"driver stopped: {error}"))
         receipt["driver_error"] = str(error)
     finally:
         if engine:
@@ -435,7 +447,10 @@ def synthetic_receipt(pins: dict, row: int, with_pass_everywhere: bool = True) -
     pin = pin_for(pins, row)
     steps = []
     for name in required_steps(pin):
-        steps.append(step(name, "PASS", "synthetic", {"synthetic": True}, 1))
+        evidence = {"synthetic": True}
+        if name == "admission.refused":
+            evidence["message"] = "DSH import refused: " + refusal_needle(pin)
+        steps.append(step(name, "PASS", "synthetic", evidence, 1))
     return {"schema": RECEIPT_SCHEMA, "synthetic": True, "row": pin["row"], "package": pin["package"], "version": pin["version"],
             "tarball_sha256": pin["tarball_sha256"], "os": "macos", "arch": "arm64",
             "engine": {"path": "/x", "sha256": "0" * 64, "version": "synthetic", "kind": "installed"},
@@ -488,6 +503,14 @@ def selftest(pins: dict) -> int:
     check("source build cannot be accepted as installed", "INVALID", source)
     check("synthetic receipt refused in real validation", "INVALID", copy.deepcopy(base), synthetic_ok=False)
     check("refused row passes only as BLOCKED", "BLOCKED", synthetic_receipt(pins, 14))
+    reason = synthetic_receipt(pins, 14)
+    for item in reason["steps"]:
+        if item["id"] == "admission.refused":
+            item["evidence"]["message"] = "DSH import refused: hidden file `.gitignore` is not allowed"
+    check("refusal for the wrong reason is not BLOCKED", "INVALID", reason)
+    dev = copy.deepcopy(base)
+    dev["engine"]["version"] = "codewhale 0.10.3 (dev)"
+    check("dev build cannot be accepted", "INVALID", dev)
     client = synthetic_receipt(pins, 2)
     client["steps"] = [s for s in client["steps"] if s["id"] != "client.seats_rendered"]
     check("declared client seats cannot be skipped", "INVALID", client)
@@ -549,10 +572,9 @@ def main() -> int:
     run = sub.add_parser("run", help="drive one pinned row against an installed Engine")
     run.add_argument("--row", type=int, required=True)
     run.add_argument("--engine", required=True, help="path to the installed codewhale binary")
-    run.add_argument("--engine-kind", choices=["installed", "source-build"], default="installed")
+    run.add_argument("--engine-kind", choices=["installed", "source-build"], required=True)
     run.add_argument("--tarballs", required=True, help="directory holding the pinned tarballs")
     run.add_argument("--enable", action="append", default=[], help="Engine feature to enable (repeatable), e.g. extension_host")
-    run.add_argument("--source-sha", help="source commit the Engine artifact was built from")
     run.add_argument("--allow-provider", action="store_true", help="permit model-provider calls (spend); off by default")
     run.add_argument("--work-dir", default=None, help="scratch parent directory")
     run.add_argument("--out", required=True, help="receipt path")

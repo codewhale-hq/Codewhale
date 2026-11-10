@@ -264,7 +264,12 @@
    ],
    "named_brokers_needed": [
     "llm"
-   ]
+   ],
+   "refusal": {
+    "code": "incompatible-version",
+    "field": "peerDependencies.@deepseek-ai/dsh-agent",
+    "range": "^0.1.0-rc.6"
+   }
   },
   {
    "row": 15,
@@ -365,7 +370,12 @@
    "declared_dsh_slot_keys": [],
    "named_brokers_needed": [
     "approval"
-   ]
+   ],
+   "refusal": {
+    "code": "incompatible-version",
+    "field": "peerDependencies.@deepseek-ai/dsh-agent",
+    "range": "^0.1.0-rc.6"
+   }
   },
   {
    "row": 20,
@@ -556,7 +566,12 @@
     "sidebar.footer.action",
     "sidebar.workspaces"
    ],
-   "named_brokers_needed": []
+   "named_brokers_needed": [],
+   "refusal": {
+    "code": "incompatible-version",
+    "field": "peerDependencies.@deepseek-ai/dsh-agent",
+    "range": "^0.1.0-rc.6"
+   }
   },
   {
    "row": 30,
