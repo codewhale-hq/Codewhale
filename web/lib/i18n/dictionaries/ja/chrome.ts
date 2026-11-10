@@ -49,6 +49,7 @@ export const chrome: ChromeDict = {
   footerDocs: "ドキュメント",
   footerGuide: "はじめかた",
   footerInstall: "インストール",
+  footerApps: "デスクトップとWeb",
   footerModels: "モデル",
   footerRuntime: "ランタイム",
   footerFaq: "よくある質問",

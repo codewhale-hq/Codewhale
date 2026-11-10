@@ -63,6 +63,7 @@ export function secondaryNavLinks(locale: string, chrome: ChromeDict): ChromeLin
 export function footerProductLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
     { href: `/${locale}/computer-use`, label: "Computer Use" },
+    { href: `/${locale}/app`, label: chrome.footerApps },
     { href: `/${locale}/features`, label: chrome.navFeatures },
     { href: `/${locale}/models`, label: chrome.footerModels },
     { href: `/${locale}/plugins`, label: chrome.navPlugins },

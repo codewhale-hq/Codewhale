@@ -54,6 +54,7 @@ export const chrome: ChromeDict = {
   footerDocs: "Documentació",
   footerGuide: "Primers passos",
   footerInstall: "Instal·lació",
+  footerApps: "Escriptori i web",
   footerModels: "Models",
   footerRuntime: "Runtime",
   footerFaq: "PMF",

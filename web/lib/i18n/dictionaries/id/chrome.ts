@@ -48,6 +48,7 @@ export const chrome: ChromeDict = {
   footerDocs: "Dokumentasi",
   footerGuide: "Panduan memulai",
   footerInstall: "Instalasi",
+  footerApps: "Desktop dan web",
   footerModels: "Model",
   footerRuntime: "Antarmuka runtime",
   footerFaq: "Tanya jawab",

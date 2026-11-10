@@ -42,6 +42,7 @@ export const chrome: ChromeDict = {
   footerDocs: "文档",
   footerGuide: "新手指引",
   footerInstall: "安装",
+  footerApps: "桌面与网页",
   footerModels: "模型",
   footerRuntime: "运行时",
   footerFaq: "常见问题",

@@ -311,6 +311,11 @@
 .home-promo-bar-days { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
 .home-promo-bar-tag { padding: 0.125rem 0.5rem; border: 1px solid var(--line-strong); border-radius: var(--radius-control); color: var(--muted); font-size: var(--text-caption); }
 .home-promo-bar .btn { min-height: 2.25rem; padding-block: 0.25rem; }
+@media (max-width: 640px) {
+  .home-promo-bar-art { display: none; }
+  .home-promo-bar-inner { gap: var(--space-2) var(--space-3); padding-block: var(--space-2); }
+  .home-promo-bar p { flex-basis: 100%; }
+}
 
 /* Terms read as words, not as code: the brand face, a little weight. */
 .home-body .ruled-list dt {

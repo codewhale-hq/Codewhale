@@ -51,6 +51,7 @@ export const chrome: ChromeDict = {
   footerDocs: "Belgeler",
   footerGuide: "Başlangıç",
   footerInstall: "Kurulum",
+  footerApps: "Masaüstü ve web",
   footerModels: "Modeller",
   footerRuntime: "Runtime",
   footerFaq: "SSS",

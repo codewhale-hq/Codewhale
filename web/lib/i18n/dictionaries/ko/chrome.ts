@@ -52,6 +52,7 @@ export const chrome: ChromeDict = {
   footerDocs: "문서",
   footerGuide: "시작 가이드",
   footerInstall: "설치",
+  footerApps: "데스크톱 및 웹",
   footerModels: "모델",
   footerRuntime: "런타임",
   footerFaq: "질의응답",

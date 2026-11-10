@@ -82,6 +82,7 @@ export interface ChromeDict {
   footerDocs: string;
   footerGuide: string;
   footerInstall: string;
+  footerApps: string;
   footerModels: string;
   footerRuntime: string;
   footerFaq: string;
