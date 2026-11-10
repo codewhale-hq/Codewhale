@@ -13,6 +13,7 @@
  * render time, never typed here.
  */
 
+import { AVAILABILITY_ROWS } from "./availability";
 import type { LocalizedText } from "./vocabulary";
 
 export interface ProductRow {
@@ -20,14 +21,7 @@ export interface ProductRow {
   body: LocalizedText;
 }
 
-export interface ProductAvailabilityRow {
-  surface: LocalizedText;
-  status: LocalizedText;
-  detail: LocalizedText;
-  /** Locale-relative route with the full story, an absolute external URL, or null. */
-  href: string | null;
-  linkLabel: LocalizedText | null;
-}
+export type { ProductAvailabilityRow } from "./availability";
 
 export const PRODUCT_COPY = {
   metadata: {
@@ -96,65 +90,7 @@ export const PRODUCT_COPY = {
   ],
 
   availabilityHeading: { en: "Where it runs", zh: "运行平台" },
-  availability: [
-    {
-      surface: { en: "Terminal", zh: "终端" },
-      status: { en: "Released", zh: "已发布" },
-      detail: {
-        en: "Install release binaries for Linux, macOS, or Windows; npm and Cargo also work, and Android on Termux is a preview. The interactive TUI and codewhale exec for scripts ship together.",
-        zh: "安装适用于 Linux、macOS 或 Windows 的发布版二进制；也可以用 npm 和 Cargo 安装，Android 上的 Termux 为预览。交互式 TUI 与用于脚本的 codewhale exec 一同发布。",
-      },
-      href: "/install",
-      linkLabel: { en: "Install guide", zh: "安装指南" },
-    },
-    {
-      surface: { en: "Local browser", zh: "本地浏览器" },
-      status: { en: "Included with the terminal", zh: "随终端提供" },
-      detail: {
-        en: "Run codewhale web to open Codewhale in your browser. Read the conversation, send a task, and answer approvals on your machine.",
-        zh: "运行 codewhale web，在浏览器中打开 Codewhale。在本机上查看对话、发送任务并回应审批。",
-      },
-      href: "/docs/web",
-      linkLabel: { en: "Local browser guide", zh: "本地浏览器指南" },
-    },
-    {
-      surface: { en: "CodeWhale GUI (VS Code)", zh: "CodeWhale GUI（VS Code）" },
-      status: { en: "Available", zh: "可用" },
-      detail: {
-        en: "A separate community project: chat, threads, and file changes in a VS Code sidebar over the local Runtime. Install it from the VS Code Marketplace; the source is on GitHub.",
-        zh: "独立的社区项目：在 VS Code 侧边栏中连接本地 Runtime，进行对话、管理线程并查看文件变更。可从 VS Code Marketplace 安装；源码见 GitHub。",
-      },
-      href: "https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode",
-      linkLabel: { en: "VS Code Marketplace", zh: "VS Code Marketplace" },
-    },
-    {
-      surface: { en: "Hosted web app", zh: "托管网页应用" },
-      status: { en: "In development", zh: "开发中" },
-      detail: {
-        en: "Being rebuilt to match the desktop app, and not open yet. For a browser view today, run codewhale web on your machine.",
-        zh: "正在重建，以与桌面应用保持一致，暂未开放。如需现在在浏览器中使用，请在本机运行 codewhale web。",
-      },
-      href: null,
-      linkLabel: null,
-    },
-    {
-      surface: { en: "Desktop", zh: "桌面端" },
-      status: { en: "Development build", zh: "开发版本" },
-      detail: {
-        en: "A native app on the same engine. Review and commit changes, follow work across projects, and edit a message to resend it as a new branch. No public download yet.",
-        zh: "基于同一引擎的原生应用。审阅并提交改动、跨项目跟进工作，还能编辑一条消息并作为新分支重新发送。暂无公开下载。",
-      },
-      href: null,
-      linkLabel: null,
-    },
-    {
-      surface: { en: "Computer Use", zh: "Computer Use" },
-      status: { en: "Mac beta", zh: "Mac 测试版" },
-      detail: { en: "Background app control on macOS 13.5 or later. Requires the separate helper and plugin.", zh: "在 macOS 13.5 或更高版本上后台操作应用。需要单独安装辅助应用与插件。" },
-      href: "/computer-use",
-      linkLabel: { en: "Set up Computer Use", zh: "设置 Computer Use" },
-    },
-  ] satisfies ProductAvailabilityRow[],
+  availability: AVAILABILITY_ROWS.filter((row) => row.pages.includes("product")),
 
   controlHeading: { en: "Set permissions in the 0.10.3 source candidate", zh: "设置 0.10.3 源码候选版本的权限" },
   modes: [

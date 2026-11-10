@@ -97,7 +97,7 @@ describe("sitemap and hreflang preservation", () => {
     expect(sitemapEntries.filter(entry => entry.url.endsWith("/install")).map(entry => entry.url))
       .toEqual([`${SITE_URL}/en/install`]);
     expect(sitemapEntries.some(entry => entry.url.endsWith("/pricing"))).toBe(false);
-    for (const path of ["/product", "/plugins", "/computer-use", "/signin", "/legal/terms", "/legal/privacy"]) {
+    for (const path of ["/product", "/app", "/plugins", "/computer-use", "/signin", "/legal/terms", "/legal/privacy"]) {
       expect(
         sitemapEntries.some((entry) => entry.url === `${SITE_URL}/en${path}`),
         path,

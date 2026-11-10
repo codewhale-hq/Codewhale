@@ -18,6 +18,12 @@ const EXTRA_PAGES: readonly { path: string; title: string; description: string }
       "What Codewhale is and what a person gains: their own models, capable agents, and control on their own machine — with availability stated per surface.",
   },
   {
+    path: "/app",
+    title: "Desktop and browser apps",
+    description:
+      "The desktop app is a development build and the browser app is not open yet; the terminal and the local browser client are released.",
+  },
+  {
     path: "/docs",
     title: "Documentation",
     description:
