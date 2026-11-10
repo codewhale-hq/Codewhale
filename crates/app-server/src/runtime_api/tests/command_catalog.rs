@@ -828,3 +828,126 @@ async fn turn_detail(
         .and_then(|turns| turns.iter().find(|turn| turn["id"] == turn_id))
         .map_or_else(|| "turn absent".to_string(), Value::to_string))
 }
+
+// ── Remote built-in execution ──
+
+/// A catalog that serves exactly one built-in remotely, so the route's name
+/// gate and snapshot hand-off can be observed without the terminal host.
+struct RemoteBuiltinCatalog;
+
+impl CommandCatalog for RemoteBuiltinCatalog {
+    fn answers_to(&self, name: &str) -> bool {
+        name == "system"
+    }
+    fn builtins(&self) -> Vec<BuiltinCommand> {
+        vec![builtin("system", vec!["xitong".to_string()])]
+    }
+    fn user_commands(&self, _workspace: &Path) -> Vec<UserCommand> {
+        Vec::new()
+    }
+    fn serves_builtin(&self, name: &str) -> bool {
+        matches!(name.trim_start_matches('/'), "system" | "xitong")
+    }
+    fn execute_builtin(
+        &self,
+        name: &str,
+        _args: Option<&str>,
+        host: &codewhale_engine::command_catalog::BuiltinCommandHostSnapshot,
+    ) -> Option<codewhale_engine::command_catalog::BuiltinCommandExecution> {
+        if !self.serves_builtin(name) {
+            return None;
+        }
+        Some(codewhale_engine::command_catalog::BuiltinCommandExecution {
+            name: "system".to_string(),
+            text: format!(
+                "{}|{}|{}",
+                host.mode_label,
+                host.model,
+                !matches!(
+                    host.system_prompt,
+                    codewhale_command_contract::facets::DebugSystemPrompt::None
+                )
+            ),
+            is_error: false,
+            text_only: true,
+        })
+    }
+}
+
+/// B5: `POST /v1/threads/{id}/commands/builtin` executes only the names the
+/// installed host serves, and answers everything else like an unknown name.
+#[tokio::test]
+async fn post_thread_builtin_command_serves_only_the_host_allowlist() -> Result<()> {
+    let _env = lock_test_env();
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("builtin-commands-route");
+    let sessions_dir = root.join("sessions");
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&workspace)?;
+    let _catalog =
+        codewhale_engine::command_catalog::CatalogGuard::install(Arc::new(RemoteBuiltinCatalog));
+
+    let Some((addr, runtime_threads, handle)) = spawn_test_server_with_root_token_mobile_workspace(
+        root,
+        sessions_dir,
+        None,
+        false,
+        workspace,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    let client = codewhale_release::tls::reqwest_client();
+    let thread = runtime_threads
+        .create_thread(CreateThreadRequest::default())
+        .await?;
+    let url = format!("http://{addr}/v1/threads/{}/commands/builtin", thread.id);
+
+    // Not on the host's remote surface: the same answer an unknown name gets.
+    for name in ["balance", "cache", "not-a-command"] {
+        let response = client
+            .post(&url)
+            .json(&json!({ "name": name }))
+            .send()
+            .await?;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{name}");
+    }
+
+    // A served name (alias spelling included) reaches the host with the
+    // thread's own state, and its text comes back unchanged.
+    for name in ["system", "/system", "xitong"] {
+        let body: Value = client
+            .post(&url)
+            .json(&json!({ "name": name, "args": "ignored" }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(body["name"], "system");
+        assert_eq!(body["is_error"], false);
+        assert_eq!(body["text_only"], true);
+        // One snapshot field per segment, so a route that assembled the
+        // wrong thread's state cannot pass.
+        let text = body["text"].as_str().context("builtin text")?;
+        let fields: Vec<&str> = text.split('|').collect();
+        assert_eq!(fields.len(), 3, "{text}");
+        assert!(!fields[0].is_empty(), "mode label: {text}");
+        assert_eq!(fields[1], thread.model, "model: {text}");
+        assert_eq!(fields[2], "false", "no system prompt: {text}");
+    }
+
+    // The thread id is still the address: a missing thread stays 404.
+    let missing = client
+        .post(format!(
+            "http://{addr}/v1/threads/thr_missing/commands/builtin"
+        ))
+        .json(&json!({ "name": "system" }))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    handle.abort();
+    Ok(())
+}
