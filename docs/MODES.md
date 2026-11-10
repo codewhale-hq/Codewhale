@@ -28,8 +28,8 @@ One dial says how much Codewhale may do without asking. Press `Shift+Tab` to
 step it: **Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask**. Plan
 is the Plan mode; every other stop is Work with that permission posture. The
 footer shows the current stop and `Shift+Tab to change`. New installs start on
-Accept Edits, and a saved `ask` from before 0.10.3 moves to Accept Edits once;
-pick Ask again and it stays.
+Accept Edits when no permission posture is saved. An explicit saved choice,
+including Ask from an earlier version, stays in control.
 `Tab` only completes composer menus, commands, file mentions and suggestions;
 it never changes the mode, and never sends or queues composer text (use
 `Enter`).

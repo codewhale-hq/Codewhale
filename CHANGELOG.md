@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Permissions:** saved permission choices, including Ask on existing and new installs, survive upgrades and restarts; managed approval policies keep their stricter startup posture when using the new permission dial, and Settings shows Accept Edits as the unconfigured default.
+
 ## [0.10.3] - 2026-11-08
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release
@@ -364,9 +366,8 @@ tag. Items moved to 0.10.4 by name are marked below.
   alternates between that posture and Plan.
 - **Accept Edits is the default posture:** new installs, unset settings and new
   Runtime threads that send no `permission_posture` start on Accept Edits. A
-  saved `permission_posture = "ask"` from an earlier build moves to Accept Edits
-  once (recorded as `ask_to_accept_edits_migrated`), so an Ask you pick
-  afterwards is kept. The "Normal agent" setup preset now writes Accept Edits.
+  saved permission posture, including `ask` from an earlier build, is preserved.
+  The "Normal agent" setup preset now writes Accept Edits.
   ACP still runs Accept Edits as Ask.
 - **Full Access copy says what it does:** its settings description now reads
   "Tools run without asking first, and commands can reach anything on this

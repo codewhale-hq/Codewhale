@@ -4082,15 +4082,6 @@ fn cycle_approval_scenario() {
     }
 }
 
-/// Tab cycles the mode, Shift+Tab cycles the permission posture. They are two
-/// independent axes, and Plan used to veto the second key — which welded them
-/// together on the keyboard: Shift+Tab silently did nothing in Plan.
-///
-/// Allowing it weakens nothing. Plan's read-only guarantee is mode-derived:
-/// `authority` maps `(Plan, _, Bypass)` to `SandboxPolicy::ReadOnly` and
-/// `tool_catalog` gates every write tool on `mode != AppMode::Plan`. So the
-/// cycle moves the durable Act/Operate baseline while the *live* Plan policy
-/// stays `Suggest`, and the new posture lands when the mode leaves Plan.
 #[test]
 fn plan_permission_cycle_moves_the_baseline_and_leaves_plan_read_only() {
     let _env_lock = lock_test_env();
@@ -4586,7 +4577,7 @@ fn yolo_start_with_default_config_restores_interactive_agent_shell_baseline() {
         "default interactive Agent baseline should expose approval-gated shell after YOLO downshift"
     );
     assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    assert_eq!(app.approval_mode, ApprovalMode::AcceptEdits);
 }
 
 #[test]

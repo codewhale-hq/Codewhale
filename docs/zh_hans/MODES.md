@@ -17,7 +17,7 @@ Workflow 通过同一个子智能体运行时执行命名步骤；Fleet 管理�
 
 ## TUI 模式
 
-一个拨盘决定 Codewhale 可以不经询问做多少事。按 `Shift+Tab` 逐档切换：**Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask**。Plan 档就是 Plan 模式；其余每一档都是带该权限姿态的 Work。页脚显示当前档位和 `Shift+Tab to change`。新安装从 Accept Edits 开始；0.10.3 之前保存的 `ask` 会一次性迁移为 Accept Edits，之后再选 Ask 会保持不变。`Tab` 只补全输入框（composer）菜单、命令、文件提及和建议；它不会切换模式，也从不发送或排队输入框中的文本（用 `Enter`）。每次有效权限变化都会在对话记录中写入一行 `Permissions changed to …`。按 `Ctrl+T` 循环切换思考强度。运行 `/mode` 打开模式选择器，或直接用 `/mode work`、`/mode plan` 切换。`operate` 及其写法仍按 Work 解析，并说明 Operate 已退役，所以旧的设置或脚本不会报错。
+一个拨盘决定 Codewhale 可以不经询问做多少事。按 `Shift+Tab` 逐档切换：**Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask**。Plan 档就是 Plan 模式；其余每一档都是带该权限姿态的 Work。页脚显示当前档位和 `Shift+Tab to change`。未保存权限姿态时，新安装从 Accept Edits 开始。显式保存的选择（包括旧版本中的 Ask）在升级和重启后保持不变。`Tab` 只补全输入框（composer）菜单、命令、文件提及和建议；它不会切换模式，也从不发送或排队输入框中的文本（用 `Enter`）。每次有效权限变化都会在对话记录中写入一行 `Permissions changed to …`。按 `Ctrl+T` 循环切换思考强度。运行 `/mode` 打开模式选择器，或直接用 `/mode work`、`/mode plan` 切换。`operate` 及其写法仍按 Work 解析，并说明 Operate 已退役，所以旧的设置或脚本不会报错。
 
 - **Plan**：设计优先的提示方式。原语（primitive）名称保持不变，仍是大家熟悉的那些，但运行时会集中拒绝文件修改和 shell 执行。只读检查与策略允许的研究（包括延迟加载的 Web 搜索/抓取）仍然可用。当一个 Plan 回合成功结束并给出非空回复（包括纯文字计划）时，TUI 会询问如何继续：Work（Ask）、Work（Accept Edits）、Work（Auto-Review），或继续规划。选择 Work 会把已批准的原文作为普通后续消息发送，并保留该回合已有的 To-dos，或追加一个待办的计划项而不替换无关的工作。
 - **Work**（内部为 `agent`）：普通的多步执行。第一回合的工具箱包含 `read`、`write`、`edit`、`file_search`、`bash`、`agent`、`workflow`、`todo_write` 和 `load_skill`，以及无需先搜索即可使用的目标与后台 shell 控制工具 `create_goal`、`get_goal`、`update_goal` 和 `task_shell_wait`。当请求属于一个持久的目标时，智能体会调用 `create_goal`；宿主从不根据措辞去推断目标，契约也不得告诉模型相反的内容。审批、沙箱、仓库规则（repository law）和托管策略决定什么可以执行。

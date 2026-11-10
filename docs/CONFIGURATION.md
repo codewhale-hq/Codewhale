@@ -2267,7 +2267,7 @@ Common settings keys:
   context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (`agent` or `plan`; legacy values such as `normal` and `operate` load as `agent` and are not live mode vocabulary)
-- `permission_posture` (`ask`, `accept-edits`, `auto-review`, `full-access`; default `accept-edits`). A saved `ask` from before 0.10.3 moves to `accept-edits` once, and `ask_to_accept_edits_migrated = true` records it so an Ask picked afterwards is kept.
+- `permission_posture` (`ask`, `accept-edits`, `auto-review`, `full-access`; default `accept-edits` when unset). Explicit saved choices, including `ask` from earlier versions, are preserved on upgrade and restart.
 - `launch_screen` (legacy, migration-only): this historical `on`/`off` value
   is still accepted when reading an existing settings file, but it no longer
   changes behavior and is omitted from new saves. A fresh interactive launch

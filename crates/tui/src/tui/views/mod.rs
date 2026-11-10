@@ -2350,7 +2350,7 @@ impl ConfigView {
                 value: settings
                     .permission_posture
                     .as_deref()
-                    .unwrap_or("ask")
+                    .unwrap_or("accept-edits")
                     .to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
@@ -8296,6 +8296,16 @@ consent_version = 1
 
     #[test]
     fn config_view_permission_row_tracks_the_controlling_saved_source() {
+        let _guard = ConfigSettingsEnvGuard::new("");
+        let default_view = ConfigView::new_for_app(&create_test_app());
+        let default_row = default_view
+            .rows
+            .iter()
+            .find(|row| row.key == "permission_posture")
+            .expect("default permission posture row");
+        assert_eq!(default_row.value, "accept-edits");
+        assert!(default_row.editable);
+
         let explicit_dir = TempDir::new().expect("explicit config tempdir");
         let explicit_path = explicit_dir.path().join("config.toml");
         fs::write(&explicit_path, "approval_policy = \"auto\"\n").expect("explicit config");
