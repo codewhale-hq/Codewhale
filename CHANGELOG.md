@@ -110,7 +110,9 @@ tag. Items moved to 0.10.4 by name are marked below.
   beside the sentence, session summary rows name their agent, and the agent's
   own usage reports are recorded as `agent reported` with cost unknown.
   Steering, compaction, forking and images are not available in these
-  sessions. See `docs/RUNTIME_API.md` (CW-7879).
+  sessions. Quitting Codewhale, or abandoning a session while its agent is
+  still starting, ends that agent before shutdown finishes. See
+  `docs/RUNTIME_API.md` (CW-7879).
 - **DSH market indexes are readable:** `/plugin marketplace add` and
   `GET /v1/apps/marketplaces` now parse the DeepSeek Harness plugin market
   index (format 1) alongside the Kimi, Claude, Codex and Codewhale catalogs.
