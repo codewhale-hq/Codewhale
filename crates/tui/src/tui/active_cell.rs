@@ -103,7 +103,6 @@ impl ActiveCell {
     /// invalidation; the chance of a wrap-around collision is astronomical
     /// over a single session and any miss only causes one extra re-render.
     #[must_use]
-    #[allow(dead_code)] // Used by App::bump_active_cell_revision and future cache wiring.
     pub fn revision(&self) -> u64 {
         self.revision
     }

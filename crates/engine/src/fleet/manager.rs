@@ -2240,17 +2240,6 @@ impl FleetManager {
         }))
     }
 
-    fn record_task_timeout(
-        &self,
-        task: &FleetExecutorTaskContext,
-        limit: Duration,
-    ) -> Result<bool> {
-        match self.prepare_task_timeout(task, limit)? {
-            Some(outcome) => self.publish_task_outcome(&outcome),
-            None => Ok(false),
-        }
-    }
-
     /// Resolve the route snapshot to persist on a task's receipt (#3154).
     ///
     /// Loads the merged agent roster so role/loadout intent composes the same

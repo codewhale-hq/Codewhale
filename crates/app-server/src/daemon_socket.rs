@@ -21,7 +21,7 @@
 //! disconnects the slot frees, so a relaunched shell can re-claim the daemon
 //! it left running — sessions survive UI restarts because the daemon does.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use codewhale_protocol::RuntimeOwnerReceipt;
 use serde::{Deserialize, Serialize};
@@ -1612,23 +1612,6 @@ mod platform {
 use crate::daemon_windows as platform;
 pub use platform::{DaemonSocket, bind_daemon_socket};
 
-/// `codewhale app-server --socket`: bind, announce, serve until the owner's
-/// `shutdown` or a termination signal.
-pub async fn run_daemon_socket(options: DaemonSocketOptions) -> anyhow::Result<()> {
-    let daemon = bind_daemon_socket(options).await?;
-    let path: &Path = daemon.local_path();
-    tracing::info!(path = %path.display(), "codewhale daemon listening on unix socket");
-    eprintln!("codewhale daemon: listening on {}", path.display());
-
-    let handle = daemon.shutdown_handle();
-    tokio::spawn(async move {
-        crate::shutdown_signal().await;
-        handle.trigger();
-    });
-    daemon.serve().await?;
-    Ok(())
-}
-
 #[cfg(any(unix, windows))]
 pub(crate) use platform::bind_captured_owner;
 
@@ -1657,6 +1640,8 @@ pub async fn capture_process_start(pid: u32) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::path::Path;
 
     fn inputs() -> SocketPathInputs {
         SocketPathInputs {

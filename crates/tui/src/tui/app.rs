@@ -6020,7 +6020,6 @@ impl App {
     /// active-cell entry. Used by the pager / details lookup code so it can
     /// transparently address still-in-flight cells.
     #[must_use]
-    #[allow(dead_code)] // Used by the upcoming pager rewrite (read-only resolver).
     pub fn cell_at_virtual_index(&self, index: usize) -> Option<&HistoryCell> {
         if index < self.history.len() {
             self.history.get(index)
