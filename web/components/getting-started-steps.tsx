@@ -22,7 +22,7 @@ export function GettingStartedSteps({
 }) {
   const StepHeading = headingLevel === 2 ? "h2" : "h3";
   const renderStep = (step: (typeof GETTING_STARTED_STEPS)[number], index: number) => (
-        <li key={step.id} data-step-id={step.id}>
+        <li key={step.id} id={step.id} data-step-id={step.id} className="scroll-mt-32">
           {!step.optional && <span className="gs-step-index" aria-hidden="true">{index + 1}</span>}
           <StepHeading className="gs-step-title">{pickText(step.title, locale)}</StepHeading>
           <p>{pickText(step.body, locale)}</p>

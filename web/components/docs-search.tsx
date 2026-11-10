@@ -2,6 +2,8 @@
 
 import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { getDocSearchSections, searchDocSections } from "@/lib/docs-article-search";
 import {
   DOC_CATEGORY_LABELS,
   DOC_TOPICS,
@@ -115,12 +117,11 @@ function TopicRow({
 /* ------------------------------------------------------------------ */
 
 /**
- * The docs hub: one search box over two registries — tasks
- * (`lib/docs-tasks.ts`, "I want to…") and topics (`lib/docs-map.ts`).
- * Searching matches English and Chinese text regardless of the active
- * locale. Every string is dictionary-driven; no locale branch here.
+ * The docs search combines rendered article sections, tasks and topics.
+ * Topic and task metadata match both English and Chinese; article sections
+ * follow the active dictionary. Every string is dictionary-driven.
  */
-export function DocsSearch({ locale }: { locale: string }) {
+export function DocsSearch({ locale, compact = false }: { locale: string; compact?: boolean }) {
   const t = getDocsShell(locale);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -128,6 +129,8 @@ export function DocsSearch({ locale }: { locale: string }) {
   const topicHaystacks = useMemo(() => DOC_TOPICS.map(docTopicHaystack), []);
   const taskHaystacks = useMemo(() => DOC_TASKS.map(docTaskHaystack), []);
 
+  const sections = useMemo(() => getDocSearchSections(locale), [locale]);
+  const sectionMatches = useMemo(() => searchDocSections(sections, query), [sections, query]);
   const q = query.trim().toLowerCase();
   const filteredTasks = useMemo(
     () => (q ? DOC_TASKS.filter((_, i) => taskHaystacks[i].includes(q)) : DOC_TASKS),
@@ -165,8 +168,8 @@ export function DocsSearch({ locale }: { locale: string }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
-  const total = DOC_TOPICS.length + DOC_TASKS.length + FEATURE_CATALOGUE.features.length;
-  const matched = filteredTopics.length + filteredTasks.length + filteredFeatures.length;
+  const total = DOC_TOPICS.length + DOC_TASKS.length + FEATURE_CATALOGUE.features.length + sections.length;
+  const matched = filteredTopics.length + filteredTasks.length + filteredFeatures.length + sectionMatches.length;
   const hasQuery = q.length > 0;
 
   return (
@@ -208,8 +211,20 @@ export function DocsSearch({ locale }: { locale: string }) {
         )}
       </div>
 
-      {matched > 0 ? (
+      {(!compact || hasQuery) && (matched > 0 ? (
         <div className="docs-result-groups">
+          {sectionMatches.length > 0 && <section className="docs-result-group">
+            <div className="docs-result-heading"><h2>{t.searchLabel}</h2><span>{sectionMatches.length}</span></div>
+            <div className="docs-topic-list">{sectionMatches.map((section) => (
+              <Link key={section.href} href={`/${locale}${section.href}`} className="docs-topic-row" onClick={() => { if (compact) setQuery(""); }}>
+                <div className="docs-topic-main">
+                  <div className="docs-topic-title">{highlight(`${section.pageTitle} · ${section.title}`, query)}</div>
+                  <p>{highlight(section.excerpt, query)}</p>
+                </div>
+                <span className="docs-topic-arrow" aria-hidden="true">→</span>
+              </Link>
+            ))}</div>
+          </section>}
           {filteredFeatures.length > 0 && <section className="docs-result-group">
             <div className="docs-result-heading"><h2>{getFeatures(locale).title}</h2><span>{filteredFeatures.length}</span></div>
             <div className="docs-topic-list">{filteredFeatures.map((feature) => <Link key={feature.id} href={`/${locale}/features#${feature.id}`} className="docs-topic-row">
@@ -282,14 +297,20 @@ export function DocsSearch({ locale }: { locale: string }) {
             </a>
           }
         />
-      )}
+      ))}
 
       {/* Registry note (only when not searching) */}
-      {!hasQuery && (
+      {!hasQuery && !compact && (
         <section className="docs-source-note">
           <p>{t.indexNote}</p>
         </section>
       )}
     </div>
   );
+}
+
+export function DocsArticleSearch({ locale }: { locale: string }) {
+  const pathname = usePathname();
+  if (pathname.replace(/\/+$/, "") === `/${locale}/docs`) return null;
+  return <div className="mb-8"><DocsSearch locale={locale} compact /></div>;
 }
