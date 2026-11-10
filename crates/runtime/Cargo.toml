@@ -80,7 +80,6 @@ uuid.workspace = true
 wait-timeout = "0.2"
 
 [dev-dependencies]
-futures-util = "0.3"
 ring = "0.17"
 wiremock = "0.6"
 codewhale-models = { path = "../models", version = "0.10.3", features = [

@@ -907,7 +907,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "toml 1.1.6+spec-1.1.0",
  "webbrowser",
  "zeroize",
 ]
@@ -1150,7 +1149,6 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
- "tokio",
  "uuid",
 ]
 
@@ -1221,7 +1219,6 @@ dependencies = [
  "codewhale-util",
  "codewhale-workflow",
  "codewhale-workflow-js",
- "cucumber",
  "dirs 7.0.0",
  "encoding_rs",
  "fd-lock",
@@ -1240,12 +1237,10 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "portable-pty",
- "pretty_assertions",
  "proc-macro2",
  "regex",
  "reqwest",
  "ring",
- "rio-vt",
  "rmcp",
  "rusqlite",
  "rustls",
@@ -1261,9 +1256,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
- "tiny_http",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
@@ -1616,7 +1609,6 @@ dependencies = [
  "colored",
  "dirs 7.0.0",
  "fd-lock",
- "futures-util",
  "ignore",
  "jsonwebtoken",
  "libc",
@@ -1878,15 +1870,12 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "portable-pty",
- "pretty_assertions",
  "ratatui",
  "regex",
  "reqwest",
  "rio-vt",
  "rquickjs",
- "rusqlite",
  "rustls",
- "schemars 1.2.2",
  "semver",
  "serde",
  "serde_json",
@@ -1896,7 +1885,6 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
@@ -2471,12 +2459,6 @@ dependencies = [
  "syn 2.0.119",
  "unicode-xid",
 ]
-
-[[package]]
-name = "diff"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "digest"
@@ -5680,16 +5662,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
-name = "pretty_assertions"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
-dependencies = [
- "diff",
- "yansi",
-]
-
-[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8842,12 +8814,6 @@ dependencies = [
  "arraydeque",
  "hashlink",
 ]
-
-[[package]]
-name = "yansi"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yoke"

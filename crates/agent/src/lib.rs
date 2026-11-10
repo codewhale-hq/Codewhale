@@ -180,28 +180,6 @@ impl ModelRegistry {
         self.models.clone()
     }
 
-    /// Returns whether a selector is known only outside the selected provider.
-    ///
-    /// This is rejection metadata, never route authority: callers may use it
-    /// to reject a clearly foreign model, but must not use the matching row to
-    /// select a provider or credential slot.
-    #[must_use]
-    pub fn is_known_for_other_provider(
-        &self,
-        requested: &str,
-        selected_provider: ProviderKind,
-    ) -> bool {
-        let known_here = self
-            .models
-            .iter()
-            .any(|model| model.provider == selected_provider && model_matches(model, requested));
-        !known_here
-            && self
-                .models
-                .iter()
-                .any(|model| model.provider != selected_provider && model_matches(model, requested))
-    }
-
     /// Resolves a user-requested model name to a concrete [`ModelInfo`].
     ///
     /// Resolution follows this priority order:

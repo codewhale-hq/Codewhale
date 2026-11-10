@@ -469,8 +469,6 @@ impl WorkflowPlan {
     }
 }
 
-pub type WorkflowIr = WorkflowPlan;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhasePlan {
     pub name: String,
@@ -493,8 +491,6 @@ pub struct Phase {
     #[serde(default)]
     pub tasks: Vec<Task>,
 }
-
-pub type WorkflowPhase = Phase;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -523,9 +519,6 @@ pub struct Task {
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 }
-
-pub type WorkflowTask = Task;
-pub type WorkflowRole = AgentType;
 
 /// The workflow wire's agent type. The serialized spellings are the canonical
 /// Codewhale role vocabulary (founder, 2026-09-02); the pre-rename JS

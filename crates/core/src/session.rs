@@ -60,10 +60,6 @@ impl Thread {
     pub fn leaf_id(&self) -> Option<&str> {
         self.leaf_id.as_deref()
     }
-
-    pub fn set_leaf(&mut self, leaf: Option<String>) {
-        self.leaf_id = leaf;
-    }
 }
 
 /// Ephemeral session within a thread (one engine lifetime / one turn's

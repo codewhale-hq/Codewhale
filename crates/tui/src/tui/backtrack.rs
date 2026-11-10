@@ -85,7 +85,7 @@ impl BacktrackState {
     /// `true` whenever the user has armed or opened backtrack. The UI uses
     /// this to skip the prime hint once the overlay is up and to know
     /// whether arrow keys should drive selection.
-    #[allow(dead_code)] // helper exposed for future UI consumers + tests.
+    #[cfg(test)]
     #[must_use]
     pub fn is_active(&self) -> bool {
         !matches!(self.phase, BacktrackPhase::Inactive)
@@ -94,7 +94,7 @@ impl BacktrackState {
     /// `true` only when the overlay is open and Left/Right should step
     /// through prior user messages. `Primed` is intentionally excluded —
     /// during the prime window arrows still scroll the transcript.
-    #[allow(dead_code)] // helper exposed for future UI consumers + tests.
+    #[cfg(test)]
     #[must_use]
     pub fn is_selecting(&self) -> bool {
         matches!(self.phase, BacktrackPhase::Selecting { .. })

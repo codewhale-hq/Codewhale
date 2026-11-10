@@ -1363,36 +1363,6 @@ fn auto_route_usage_has_reported_data(usage: &codewhale_models::Usage) -> bool {
         || usage.server_tool_use.is_some()
 }
 
-/// Stable, persistence-safe identity for one classifier response. The raw
-/// provider response id is hashed with the frozen dispatch route and instant;
-/// neither it nor any custom route label crosses into telemetry/persistence.
-pub fn auto_route_usage_source_id(route: &EffectiveRouteEnvelope, response_id: &str) -> String {
-    use sha2::{Digest as _, Sha256};
-
-    let mut digest = Sha256::new();
-    let dispatched_at = route.dispatched_at.to_rfc3339();
-    for part in [
-        b"codewhale:auto-route-classifier:v1".as_slice(),
-        route.provider.as_str().as_bytes(),
-        route.provider_identity.as_bytes(),
-        route.model.as_bytes(),
-        route
-            .endpoint_fingerprint
-            .as_deref()
-            .unwrap_or_default()
-            .as_bytes(),
-        dispatched_at.as_bytes(),
-        response_id.as_bytes(),
-    ] {
-        digest.update((part.len() as u64).to_le_bytes());
-        digest.update(part);
-    }
-    format!(
-        "auto-router:{}",
-        codewhale_runtime::hashing::hex_bytes(digest.finalize())
-    )
-}
-
 fn auto_route_attempt_from_response(
     _request_route: EffectiveRouteEnvelope,
     response: &MessageResponse,

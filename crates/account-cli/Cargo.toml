@@ -23,6 +23,5 @@ reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-toml.workspace = true
 webbrowser = "1.0"
 zeroize = "1.8.2"

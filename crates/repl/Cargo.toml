@@ -10,9 +10,6 @@ description = "Codewhale sandboxed Python REPL runtime"
 [lints]
 workspace = true
 
-[features]
-test-support = []
-
 [dependencies]
 codewhale-dependencies = { path = "../dependencies", version = "0.10.3" }
 codewhale-runtime = { path = "../runtime", version = "0.10.3" }

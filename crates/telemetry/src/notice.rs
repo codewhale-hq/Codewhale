@@ -13,9 +13,6 @@
 //!    Sampling and hashing are not the same promise, and a notice that implies
 //!    them when neither is true is worse than no notice.
 
-/// Headline shown above [`NOTICE_BODY`].
-pub const NOTICE_HEADLINE: &str = "Codewhale usage reporting";
-
 /// The notice itself.
 ///
 /// Wrapped at 72 columns so it renders unchanged in the native responsive

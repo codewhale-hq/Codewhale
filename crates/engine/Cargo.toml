@@ -203,14 +203,9 @@ codewhale-util = { path = "../util", version = "0.10.3", features = ["test-suppo
 codewhale-models = { path = "../models", version = "0.10.3", features = [
     "test-support",
 ] }
-cucumber = "0.23.0"
 wiremock = "0.6"
-tiny_http = "0.12"
-pretty_assertions = "1.4"
-rio-vt = "0.5.1"
 rusqlite.workspace = true
 schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
-tokio-tungstenite = "0.30"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
