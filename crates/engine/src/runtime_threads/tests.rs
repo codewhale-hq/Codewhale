@@ -11254,7 +11254,7 @@ async fn start_turn_can_override_thread_auto_approve_to_false() -> Result<()> {
             },
         )
         .await?;
-    assert_eq!(turn.permission_posture.as_deref(), Some("ask"));
+    assert_eq!(turn.permission_posture.as_deref(), Some("accept_edits"));
 
     match rx_op.recv().await {
         Some(Op::SendMessage(TurnSpec {
@@ -11263,7 +11263,7 @@ async fn start_turn_can_override_thread_auto_approve_to_false() -> Result<()> {
             ..
         })) => {
             assert!(!auto_approve);
-            assert_eq!(approval_mode, ApprovalMode::Suggest);
+            assert_eq!(approval_mode, ApprovalMode::AcceptEdits);
         }
         other => panic!("expected SendMessage op, got {other:?}"),
     }

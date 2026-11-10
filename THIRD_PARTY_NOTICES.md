@@ -127,8 +127,8 @@ The same bundle contains `@deepseek-ai/dsh-util-values` 0.2.2-rc.1, and
 excerpts of `@deepseek-ai/dsh-tools` 0.2.2-rc.1 (`lib/index.js` and its shared
 `lib/shared-DTdn5dXO.js` chunk), under the same licence text.
 `crates/engine/extension-host/src/dsh/dsh-message-compat.js` contains verbatim
-excerpts of `@deepseek-ai/dsh-brand` 0.2.2-rc.1, `@deepseek-ai/dsh-llm`
-0.2.2-rc.1, `@deepseek-ai/dsh-session` 0.2.2-rc.1,
+excerpts of `@deepseek-ai/dsh-brand` 0.2.2-rc.1,
+`@deepseek-ai/dsh-llm` 0.2.2-rc.1, `@deepseek-ai/dsh-session` 0.2.2-rc.1,
 `@deepseek-ai/dsh-system-prompt` 0.2.2-rc.1,
 `@deepseek-ai/dsh-user-questions` 0.2.2-rc.1 and
 `@deepseek-ai/dsh-util-crypto` 0.2.2-rc.1, under the same licence text.

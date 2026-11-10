@@ -11326,7 +11326,7 @@ async fn start_turn_accepts_dynamic_tools_and_environment_id() -> Result<()> {
             .json()
             .await?;
         assert_eq!(started["turn"]["thread_id"], thread_id);
-        assert_eq!(started["thread"]["permission_posture"], "ask");
+        assert_eq!(started["thread"]["permission_posture"], "accept_edits");
         assert_eq!(started["turn"]["permission_posture"], "auto_review");
 
         let stored: serde_json::Value = client
