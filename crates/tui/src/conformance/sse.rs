@@ -28,9 +28,9 @@ const FAMILY: &str = "sse";
 const STREAM_DEADLINE: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone)]
-struct ReceivedRequest {
-    method: String,
-    path: String,
+pub(super) struct ReceivedRequest {
+    pub(super) method: String,
+    pub(super) path: String,
 }
 
 #[tokio::test]
@@ -59,9 +59,9 @@ async fn empty_sse_recording_cannot_be_qualified() {
 /// provider that stops sending); `chunked` framing uses HTTP chunks, and
 /// `transport_cut` drops the connection before the terminating chunk so the
 /// client sees a transport error rather than a clean EOF.
-struct LoopbackRecording {
-    base: String,
-    requests: Arc<Mutex<Vec<ReceivedRequest>>>,
+pub(super) struct LoopbackRecording {
+    pub(super) base: String,
+    pub(super) requests: Arc<Mutex<Vec<ReceivedRequest>>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -72,15 +72,26 @@ impl Drop for LoopbackRecording {
 }
 
 #[derive(Clone)]
-struct Framing {
+pub(super) struct Framing {
     chunked: bool,
     transport_cut: bool,
     chunk_bytes: usize,
     hold_open: bool,
 }
 
+impl Framing {
+    pub(super) fn closed() -> Self {
+        Self {
+            chunked: false,
+            transport_cut: false,
+            chunk_bytes: 0,
+            hold_open: false,
+        }
+    }
+}
+
 impl LoopbackRecording {
-    async fn start(body: Vec<u8>, framing: Framing) -> Self {
+    pub(super) async fn start(body: Vec<u8>, framing: Framing) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind loopback");

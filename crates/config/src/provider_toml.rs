@@ -130,6 +130,11 @@ pub struct ProviderConfigToml {
         alias = "dialect"
     )]
     pub wire: Option<String>,
+    /// Responses dialect for a custom table whose `wire` is `responses`.
+    /// Absent keeps the default `standard` profile. Built-in providers reject
+    /// this field; `codex` is not on the custom allowlist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,6 +180,7 @@ impl ProviderConfigToml {
             && self.model_context_windows.is_empty()
             && blank(self.mode.as_ref())
             && blank(self.wire.as_ref())
+            && blank(self.responses_profile.as_ref())
             && blank(self.auth_mode.as_ref())
             && self.insecure_skip_tls_verify.is_none()
             && self.allow_insecure_http.is_none()

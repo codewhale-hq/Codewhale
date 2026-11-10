@@ -1,0 +1,5 @@
+{
+  "kind": "route",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash"
+}

@@ -1,0 +1,2 @@
+data: {"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_tokens"},"usage":{"input_tokens":3,"output_tokens":1}}}
+

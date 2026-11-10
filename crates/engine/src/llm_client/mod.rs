@@ -1532,6 +1532,9 @@ pub struct OutboundWireObservation {
     pub endpoint_fingerprint: String,
     pub wire_model: String,
     pub wire_dialect: String,
+    /// Responses dialect id from the prepared request. Empty for other wires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responses_profile_id: Option<String>,
     pub tools: ToolWireMeasurement,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_projection: Option<ImageProjectionReceipt>,

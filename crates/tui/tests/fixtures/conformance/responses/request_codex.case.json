@@ -1,0 +1,10 @@
+{
+  "kind": "request",
+  "provider": "openai-codex",
+  "model": "gpt-5.5",
+  "system": "You are a coding assistant.",
+  "user": "Inspect the project.",
+  "max_tokens": 64,
+  "reasoning_effort": "high",
+  "tool": true
+}

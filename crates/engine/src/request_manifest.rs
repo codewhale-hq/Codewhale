@@ -374,6 +374,10 @@ pub struct RouteFacts {
     /// Named custom-provider / route identity from the resolved turn plan.
     pub route_id: Option<SafeLabel>,
     pub dialect: String,
+    /// Responses dialect id taken from the prepared request. Empty for every
+    /// other wire. The id is not part of the request body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responses_profile_id: Option<String>,
     pub route_shape: String,
     /// Safe endpoint class. Remote authorities are represented only by a
     /// bounded digest; even a credential-shaped tenant subdomain is never
@@ -1182,6 +1186,7 @@ pub mod test_support {
             provider_display: SafeLabel::identifier("Z.ai"),
             route_id: Some(SafeLabel::identifier("my-gateway")),
             dialect: "chat-completions".to_string(),
+            responses_profile_id: None,
             route_shape: "standard".to_string(),
             endpoint_host_class: "https remote sha256:0123456789ab".to_string(),
             endpoint_fingerprint: codewhale_runtime::hashing::sha256_hex(b"endpoint"),

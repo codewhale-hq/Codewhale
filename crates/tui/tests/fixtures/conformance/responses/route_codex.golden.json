@@ -1,0 +1,5 @@
+{
+  "protocol": "responses",
+  "profile_id": "codex",
+  "endpoint_path_policy": "versioned_responses"
+}

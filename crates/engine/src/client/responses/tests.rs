@@ -610,7 +610,7 @@ fn responses_body_serializes_the_child_catalog_without_duplication() {
     let tools = crate::tools::subagent::kimi_general_child_request_tools_fixture();
     let mut request = minimal_responses_request();
     request.tools = Some(tools);
-    let body = build_responses_body(&request);
+    let body = build_responses_body_for_provider(&request, ProviderKind::OpenaiCodex, None);
     assert_eq!(body["parallel_tool_calls"], false);
     let generic = build_responses_body_for_provider(&request, ProviderKind::Openai, None);
     assert_eq!(generic["parallel_tool_calls"], true);
@@ -1198,6 +1198,8 @@ async fn generic_responses_captures_and_replays_opaque_reasoning() {
         "gpt-5.5".into(),
         codewhale_config::provider::WireFormat::Responses,
         None,
+        Some(crate::client::standard_responses_profile()),
+        false,
         &config,
     )
     .unwrap();
@@ -1276,7 +1278,7 @@ fn codex_responses_body_uses_responses_reasoning_not_deepseek_thinking() {
         top_p: None,
     };
 
-    let body = build_responses_body(&request);
+    let body = build_responses_body_for_provider(&request, ProviderKind::OpenaiCodex, None);
 
     assert_eq!(
         body.pointer("/reasoning/effort").and_then(Value::as_str),
@@ -1529,7 +1531,7 @@ fn responses_input_includes_user_role_tool_results() {
         top_p: None,
     };
 
-    let input = convert_messages_to_responses_input(&request, ProviderKind::OpenaiCodex, None);
+    let input = responses_input_for_provider(&request, ProviderKind::OpenaiCodex, None);
 
     assert_eq!(input[0]["type"], "function_call");
     assert_eq!(input[0]["call_id"], "call_abc");
@@ -1567,12 +1569,12 @@ fn responses_input_encodes_tool_call_names() {
         top_p: None,
     };
 
-    let input = convert_messages_to_responses_input(&request, ProviderKind::OpenaiCodex, None);
+    let input = responses_input_for_provider(&request, ProviderKind::OpenaiCodex, None);
 
     assert_eq!(input[0]["type"], "function_call");
     assert_eq!(input[0]["name"], to_api_tool_name("web.run"));
     assert_eq!(input[0]["namespace"], "codewhale");
-    let generic = convert_messages_to_responses_input(&request, ProviderKind::Openai, None);
+    let generic = responses_input_for_provider(&request, ProviderKind::Openai, None);
     assert!(generic[0].get("namespace").is_none());
 }
 
@@ -1697,7 +1699,7 @@ fn user_image_becomes_an_input_image_item() {
         },
     });
 
-    let items = convert_messages_to_responses_input(&request, ProviderKind::OpenaiCodex, None);
+    let items = responses_input_for_provider(&request, ProviderKind::OpenaiCodex, None);
 
     let user = items
         .iter()
@@ -1751,7 +1753,7 @@ fn tool_result_image_becomes_native_function_output_content() {
         },
     ];
 
-    let items = convert_messages_to_responses_input(&request, ProviderKind::OpenaiCodex, None);
+    let items = responses_input_for_provider(&request, ProviderKind::OpenaiCodex, None);
     let output = items
         .iter()
         .find(|item| item["type"] == "function_call_output")
@@ -1796,7 +1798,7 @@ fn responses_input_preserves_system_history_with_the_provider_role() {
         (ProviderKind::OpenaiCodex, "developer"),
         (ProviderKind::Openai, "system"),
     ] {
-        let items = convert_messages_to_responses_input(&request, provider, None);
+        let items = responses_input_for_provider(&request, provider, None);
         let system = items
             .iter()
             .find(|item| item["role"] == role)
