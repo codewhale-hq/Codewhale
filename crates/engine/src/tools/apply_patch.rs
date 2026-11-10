@@ -1289,6 +1289,16 @@ mod tests {
         assert_eq!(hunks[0].new_count, 3);
     }
 
+    #[test]
+    fn parse_unified_diff_keeps_lines_past_an_undercounted_header() {
+        let patch = "--- a/t\n+++ b/t\n@@ -1,1 +1,1 @@\n-a\n+b\n c\n d\n+e\n";
+        let hunks = parse_unified_diff(patch).unwrap();
+        assert_eq!(hunks[0].lines.len(), 5);
+
+        let huge = format!("--- a/t\n+++ b/t\n@@ -1,{} +1,1 @@\n-a\n+b\n", usize::MAX);
+        assert_eq!(parse_unified_diff(&huge).unwrap()[0].lines.len(), 2);
+    }
+
     /// #6205 — a patch that lands unformatted Rust in an already-clean file is
     /// normalized before the write, and the rendered diff shows the normalized
     /// text, so the model's next patch context matches the bytes on disk.
