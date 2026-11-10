@@ -67,6 +67,7 @@ against the vendor's own docs before trusting any value here:
 | Wafer | `https://pass.wafer.ai/v1` | `GLM-5.3` (default), `GLM-5.2`, `Kimi-K3`, `DeepSeek-V4-Pro` | `WAFER_API_KEY` |
 | Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`, `zai-org/GLM-5.3`, `openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 | Opper | `https://api.opper.ai/v3/compat` | `claude-sonnet-4-6`, `gpt-5.4-mini` (pool names); `anthropic/claude-sonnet-4-6` | `OPPER_API_KEY` |
+| UberLLM | `https://api.uberllm.dev/v1` | `deepseek/deepseek-v4-flash`, `openai/gpt-5.4-mini`, `anthropic/claude-sonnet-4.6` | `UBERLLM_API_KEY` |
 | Tencent TokenHub | `https://tokenhub-intl.tencentcloudmaas.com/v1` | `hy4` | `TENCENT_API_KEY` |
 
 Tinker's OpenAI-compatible API and serverless inference are beta. Select
@@ -156,6 +157,15 @@ pick the route per request; a `provider/model` id such as
 providers' rates with no markup. The authority is
 `GET https://api.opper.ai/v3/compat/models` with your key.
 Docs: <https://docs.opper.ai/build/gateway/drop-in-sdks>.
+
+UberLLM is an OpenAI-compatible gateway with one key for models from OpenAI,
+Anthropic, Google, DeepSeek, Qwen, GLM, Kimi and others. Model ids are
+`vendor/model` ids such as `deepseek/deepseek-v4-flash` (the default) or
+`anthropic/claude-sonnet-4.6`. The authority is the public
+`GET https://api.uberllm.dev/v1/models`, which also lists per-model prices
+(<https://uberllm.dev/models>). Inference requires `UBERLLM_API_KEY`; a
+successful public listing does not verify the key. Create the key at
+<https://uberllm.dev/signup>. Docs: <https://uberllm.dev/docs/quickstart>.
 
 Tencent TokenHub is available as `/provider tencent` (aliases `tokenhub`,
 `tencent-tokenhub`, and `hunyuan`) on the existing Chat Completions transport.

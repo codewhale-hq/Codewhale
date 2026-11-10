@@ -2323,6 +2323,21 @@
       "guidance": "OpenAI-compatible host (Chat Completions + GET /v1/models only). Public model ids: tsubasa-pro and tsubasa-fast, both with a 32,768-token context, so set context_window = 32768 on [providers.tsubasa]. Store TSUBASA_API_KEY, not a raw key."
     },
     {
+      "id": "uberllm",
+      "label": "UberLLM",
+      "wire": "openai-compatible",
+      "base_url": "https://api.uberllm.dev/v1",
+      "api_key_env": "UBERLLM_API_KEY",
+      "default_model": "deepseek/deepseek-v4-flash",
+      "discovery": "public_models_endpoint",
+      "docs_url": "https://uberllm.dev/docs/quickstart",
+      "credential_url": "https://uberllm.dev/signup",
+      "guidance": "OpenAI-compatible gateway (Chat Completions + GET /v1/models, which is public). Model ids are vendor/model ids such as deepseek/deepseek-v4-flash or anthropic/claude-sonnet-4.6. Live /v1/models is the model authority. Store UBERLLM_API_KEY, not a raw key. A public listing does not verify the key.",
+      "aliases": [
+        "uber-llm"
+      ]
+    },
+    {
       "id": "yolo-auto",
       "label": "Yolo-Auto",
       "wire": "openai-compatible",
