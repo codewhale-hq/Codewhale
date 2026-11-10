@@ -782,8 +782,6 @@ impl RuntimeThreadManager {
         Ok(session)
     }
 
-    /// Ask an agent what it offers for one workspace, on a throwaway process
-    /// that is stopped before this returns, on every path.
     pub async fn external_agent_options(&self, agent_id: &str, cwd: &Path) -> Result<AgentOptions> {
         self.ensure_accepting_execution()?;
         let agent = crate::fleet::agents::find(agent_id).ok_or_else(|| {

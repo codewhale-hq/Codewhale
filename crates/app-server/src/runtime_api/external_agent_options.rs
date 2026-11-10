@@ -1,14 +1,3 @@
-//! `GET /v1/agents/external/{id}/options?cwd=` — what one external agent
-//! offers for one workspace.
-//!
-//! The answer is the agent's own `session/new` offer, read on a throwaway
-//! process the Engine stops before it returns. Nothing here comes from
-//! Codewhale's provider catalog.
-//!
-//! Known limitations: probing starts a real agent session in `cwd`, which an
-//! agent may keep in its own history. The route is gated like the rest of the
-//! Runtime API; it does not tie `cwd` to a thread owner.
-
 use std::path::PathBuf;
 
 use axum::Json;

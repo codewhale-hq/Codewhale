@@ -136,7 +136,6 @@ pub struct AgentIdentity {
     pub capabilities: AgentCapabilities,
 }
 
-/// What the agent said it can do at `initialize`; absent means not reported.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AgentCapabilities {
     pub load_session: bool,
@@ -164,8 +163,6 @@ pub enum ControlKind {
     Config,
 }
 
-/// The one ACP method that writes a control, so a choice is never sent through
-/// a different door than the agent offered it on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "method")]
 pub enum ControlWrite {
@@ -208,8 +205,6 @@ impl Control {
     }
 }
 
-/// Everything a session handshake offered, bounded. Choices are the only values
-/// a caller may write; names and descriptions are display text.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SessionOffer {
     pub controls: Vec<Control>,
@@ -242,8 +237,6 @@ pub struct OptionsAgent {
     pub protocol_version: u64,
 }
 
-/// What `GET /v1/agents/external/{id}/options` answers: the agent's own offer
-/// for one workspace, and which Codewhale actions it will and will not carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentOptions {
     pub agent: OptionsAgent,
@@ -349,7 +342,6 @@ pub struct NewSession {
     pub offer: SessionOffer,
 }
 
-/// Token usage an agent put on a prompt answer. Absent fields are unknown.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AgentTokenUsage {
     pub input_tokens: Option<u64>,
@@ -456,10 +448,6 @@ fn config_choices(options: &[Value]) -> (Vec<Choice>, bool) {
 }
 
 impl SessionOffer {
-    /// Parse the `modes`, `models` and `configOptions` a `session/new`,
-    /// `session/load` or `session/resume` answer carries. A config option that
-    /// names a model or mode owns that control; the older `models` and `modes`
-    /// blocks fill only what no config option claimed.
     pub fn from_session_result(result: &Value) -> Self {
         let mut offer = Self::default();
         let mut model_claimed = false;
@@ -1037,7 +1025,6 @@ impl AcpClient {
         .map(|result| SessionOffer::from_session_result(&result))
     }
 
-    /// Write one offered choice through the method its control was offered on.
     pub fn apply_control(
         &mut self,
         session: &str,
