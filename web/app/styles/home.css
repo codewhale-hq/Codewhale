@@ -108,51 +108,34 @@
 .home-whale .living-whale {
   --whale-size: clamp(18rem, 36vw, 29rem);
   width: var(--whale-size);
-  /* The rig fills the middle 72% of the canvas; lower its belly toward
-     the terminal below. */
   margin-bottom: calc(var(--whale-size) * -0.26);
   position: relative;
   z-index: 2;
 }
 
 .living-whale {
+  color: var(--accent);
   position: relative;
   aspect-ratio: 1;
 }
-.living-whale > .whale-live {
-  width: 100%;
-  transition: opacity var(--dur-spring) var(--ease-spring);
-}
-.living-whale:not([data-stage="whale"]) > .whale-live { opacity: 0; }
-.living-whale-lights {
+.living-whale-lights,
+.living-whale-mark {
   position: absolute;
   inset: 14%;
   width: 72%;
   height: 72%;
-  overflow: visible;
   pointer-events: none;
 }
+.living-whale-lights { color: light-dark(#647e9b, #c8e6f3); }
 .living-whale-mark {
-  fill: light-dark(#142352, #faf8f5);
+  background: var(--ink);
+  mask: url("/brand/mark-mono.svg") center / contain no-repeat;
   opacity: 0;
-  transition: opacity var(--dur-spring) var(--ease-spring);
+  transition: opacity 960ms linear;
 }
 .living-whale[data-stage="mark"] .living-whale-mark { opacity: 1; }
-.living-whale-beads {
-  fill: var(--accent);
-  opacity: 0;
-  transition: opacity var(--dur-spring) var(--ease-spring);
-}
-.living-whale[data-stage="lights"] .living-whale-beads { opacity: 1; }
-.living-whale-beads circle[data-star] { fill: color-mix(in oklab, var(--accent) 70%, white); }
-@media (prefers-reduced-motion: no-preference) {
-  .living-whale[data-stage="pending"] > .whale-live { animation: living-whale-late 0s 1.2s forwards; }
-  @keyframes living-whale-late { to { opacity: 1; } }
-}
 @media (prefers-reduced-motion: reduce) {
-  .living-whale-lights { display: none; }
-  .living-whale:not([data-stage="whale"]) > .whale-live,
-  .living-whale > .whale-live { opacity: 1; transition: none; animation: none; }
+  .living-whale-mark { display: none; transition: none; }
 }
 
 /* ---------- the live whale ---------- */
