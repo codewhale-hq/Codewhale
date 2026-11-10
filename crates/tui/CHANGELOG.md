@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Website design:** codewhale.net now uses the desktop app's 5.3 light and dark colour roles and Geist / Geist Mono, replacing the warm-paper palette and Shannon Sans; the vendored design copy is synced to 5.3.0 and the whale-road ocean bands are unchanged.
 
-- ACP: editors can start, list, load, prompt and cancel Codewhale sessions and approve or reject tool permissions through the Runtime; prompts with image or audio blocks and relative session directories are now refused instead of ignored, and edit and read tools report the right kind. Plugins, MCP servers and DSH hooks still do not run in ACP-driven sessions. A real-editor journey is not yet proved.
+- ACP: editors can start, list, load, prompt and cancel Codewhale sessions and approve or reject tool permissions through the Runtime; prompts with image or audio blocks and relative session directories are now refused instead of ignored, and edit and read tools report the right kind. Plugins, DSH and MCP tools are not yet attached to ACP-driven sessions. A real-editor journey is not yet proved.
 - Plugin activation now says when a requested service belongs to the Codewhale core and is not exposed to plugins yet. No plugin, provider or installed-app run exercised it; checked by the extension-host tests only.
 - Codex App Server v2 contract record (paused, not part of 0.10.3): the selected Codex v2 contract is frozen as a generated manifest in the protocol crate, with typed Rust and TypeScript shapes checked against the pinned Codex schema. It changes no wire behavior and adds no dispatch, so nothing is reachable through it yet.
 
