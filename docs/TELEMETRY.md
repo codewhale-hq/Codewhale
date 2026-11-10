@@ -563,3 +563,98 @@ Prompts; completions; tool arguments; diffs; patches; file contents; filenames; 
 Two named traps for the implementer. `crates/state/src/lib.rs` persists `git_sha`, `git_branch`, `git_origin_url`, `cwd`, and `path` on the threads table (`:93, :399, :653`): a payload builder that accepts a `Thread` or `ThreadMeta` and derives `Serialize` breaches the contract in one line. **Never derive `Serialize` over an existing state type** — build every telemetry struct from scratch with explicit fields. And `crates/core/src/lib.rs:1389-1398` is the one place in the tree where the word `telemetry` sits inside a JSON object next to `prompt`, `base_url`, and `has_api_key`. It is the object someone will copy. Do not.
 
 ---
+
+## Website funnel aggregates in the source candidate
+
+The website extension uses `FUNNEL_SCHEMA_VERSION = 5` and notice version `7`.
+The Rust runtime remains on `SCHEMA_VERSION = 4`, notice `6`; existing browser
+schema `3`, notice `5`, and legacy schemas `1` and `2` retain their original
+contracts. Displaying a newer notice never overrides an opt-out or establishes
+human acceptance. Schema 5 is first-party only and does not activate PostHog.
+
+The schema-5 envelope has the same twelve keys as the runtime envelope. Its
+surface is exactly `website`, `git_sha` is null, `os` and `arch` are `other`,
+`libc` is `none`, and `tty` is false. It accepts one to 200 aggregate events;
+each event is either the unchanged thirteen-counter `product_usage` or the
+new `funnel_usage`. Every funnel counter below is required and is an unsigned
+32-bit integer. Unknown fields or values outside the closed contract reject
+the entire batch. The following JSON belongs only to the website extension;
+it is not a new Rust runtime event.
+
+```json
+{
+  "event": "funnel_usage",
+  "counters": {
+    "home_view": 0,
+    "install_view": 0,
+    "quickstart_view": 0,
+    "contribute_view": 0,
+    "install_intent": 0,
+    "install_confirmed": 0,
+    "star_exit": 0,
+    "issue_exit": 0,
+    "help_wanted_exit": 0,
+    "guide_exit": 0,
+    "docs_search": 0,
+    "docs_search_empty": 0,
+    "docs_search_result": 0,
+    "quickstart_confirmed": 0
+  }
+}
+```
+
+The first four counters describe fixed page categories. `install_intent`
+counts successful installer clipboard writes. `install_confirmed` counts an
+explicit reader confirmation after running the version check, and
+`quickstart_confirmed` counts a reader confirmation after checking the answer
+against the cited file lines. These are self-reported interactions, not verified
+physical installations, model executions or useful outcomes. The four exit
+counters count links toward GitHub stars, issues, help-wanted work and the
+quickstart. The three search counters count search interactions, empty results
+and result selections without sending search text or result URLs.
+
+No page URL, query, locale identifier, referrer, account, content, credential or
+website-to-CLI identifier is added. Website and runtime rotating IDs remain
+independent; reports never join them. Existing opt-outs, bounded storage,
+no-retry delivery and the website privacy control remain in force. Counts are
+not unique visitors: repeated interactions can count more than once, dropped
+flushes can lose data, and the ingest has no exactly-once or replay-deduplication
+contract.
+
+`telemetry-ingest/schema/website-funnel-v5.schema.json` is generated from the
+existing validator. Analytics Engine stores the counter object in the existing
+aggregate JSON column; the twenty positional columns are unchanged. Existing
+schema-3/4 product counters remain separate historical series and must not be
+silently reinterpreted as the new funnel measures.
+
+### What the installation and task measures establish
+
+The installer writes a local checksummed `.codewhale-install.sha256` receipt;
+it sends no installation-completion event. Runtime `install_or_upgrade` with
+`kind=install` records first initialization of enabled telemetry state, which
+can happen on an older installation after opting in or losing local state.
+It is an observed launch proxy, not a count of all installations or people.
+
+Runtime `model_usage` with `turns_ok > 0` establishes observed technical model
+turn completion. It does not establish the first-ever primary task or its
+usefulness. Provider responses with no reported usage can be omitted, same-process
+child activity can contribute, and a late cancellation can follow the current
+counter increment. Batch timestamps describe delivery rather than exact task
+time. Reports state these limits and keep browser self-confirmations separate.
+
+The owner report uses existing first-party Analytics Engine rows or explicitly
+labelled offline receipts. Native cohorts use only native IDs and enough
+follow-up history; incomplete cohorts are unavailable rather than zero. Public
+GitHub first-issue and first-merged-PR cohorts use a separately complete public
+history export and produce aggregate output. They have no visitor attribution
+and no GitHub identity is sent in telemetry.
+
+### Rollout remains a separate action
+
+These contracts and local tests are source-candidate evidence. They do not
+establish a configured or deployed collector, accepted production traffic or
+conversion improvement. After explicit deployment authorization, deploy the
+backward-compatible ingest before the website emits schema 5. Old ingest
+rejects schema 5; the website must treat `{ accepted: false }` as non-acceptance,
+even if its local forwarding route returned HTTP 200. Neither deploy is
+authorized by this documentation or by a passing local test.

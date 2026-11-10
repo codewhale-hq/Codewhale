@@ -1,0 +1,52 @@
+{
+  "schema_version": 5,
+  "notice_version": 7,
+  "sent_at": "2026-09-04T20:00:00Z",
+  "install_id": "82b77c4f-4cce-4c74-8e17-8a38ba0581ee",
+  "app_version": "0.9.12",
+  "git_sha": null,
+  "surface": "website",
+  "os": "other",
+  "arch": "other",
+  "libc": "none",
+  "tty": false,
+  "events": [
+    {
+      "event": "product_usage",
+      "counters": {
+        "page_view": 1,
+        "docs_view": 0,
+        "install_copy": 0,
+        "download": 0,
+        "signup": 0,
+        "login": 0,
+        "session_create": 0,
+        "session_resume": 0,
+        "turn_submit": 0,
+        "turn_complete": 0,
+        "settings_open": 0,
+        "integration_connect": 0,
+        "error_shown": 0
+      }
+    },
+    {
+      "event": "funnel_usage",
+      "counters": {
+        "home_view": 1,
+        "install_view": 0,
+        "quickstart_view": 0,
+        "contribute_view": 0,
+        "install_intent": 1,
+        "install_confirmed": 0,
+        "star_exit": 0,
+        "issue_exit": 0,
+        "help_wanted_exit": 0,
+        "guide_exit": 0,
+        "docs_search": 1,
+        "docs_search_empty": 0,
+        "docs_search_result": 1,
+        "quickstart_confirmed": 0
+      }
+    }
+  ]
+}

@@ -322,3 +322,80 @@ CF_ACCOUNT_ID=... CF_API_TOKEN=... npm run report:active-installs
 给实现者的两个具名陷阱。`crates/state/src/lib.rs` 在线程表上持久化 `git_sha`、`git_branch`、`git_origin_url`、`cwd` 和 `path`（`:93, :399, :653`）：一个接受 `Thread` 或 `ThreadMeta` 并 `derive(Serialize)` 的 payload 构建器一行就违反契约。**绝不在现有状态类型上派生 `Serialize`**——从零开始、用显式字段构建每个遥测结构体。而 `crates/core/src/lib.rs:1389-1398` 是整棵树中 `telemetry` 一词与 `prompt`、`base_url`、`has_api_key` 同处一个 JSON 对象的唯一位置。它是某人会复制的那一个对象。不要复制。
 
 ---
+
+## 源码候选版本的网站漏斗聚合统计
+
+网站扩展使用 `FUNNEL_SCHEMA_VERSION = 5` 和告知版本 `7`。Rust 运行时仍使用
+`SCHEMA_VERSION = 4`、告知版本 `6`；现有浏览器 schema `3`、告知版本 `5`，以及
+旧 schema `1` 和 `2` 均保留原有约定。显示新版告知不会覆盖退出选择，也不代表
+用户接受。Schema 5 仅进入第一方采集，不会启用 PostHog。
+
+Schema 5 的批次保持原有十二个字段。`surface` 必须是 `website`，`git_sha` 为 null，
+`os` 和 `arch` 为 `other`，`libc` 为 `none`，`tty` 为 false。一个批次包含一至
+200 个聚合事件，每个事件只能是保留原有十三个计数器的 `product_usage`，或新增
+的 `funnel_usage`。下面十四个计数器全部必填，且只能是无符号 32 位整数。
+未知字段或越界值会使整个批次被拒绝。此 JSON 仅属于网站扩展，并非新增的
+Rust 运行时事件。
+
+```json
+{
+  "event": "funnel_usage",
+  "counters": {
+    "home_view": 0,
+    "install_view": 0,
+    "quickstart_view": 0,
+    "contribute_view": 0,
+    "install_intent": 0,
+    "install_confirmed": 0,
+    "star_exit": 0,
+    "issue_exit": 0,
+    "help_wanted_exit": 0,
+    "guide_exit": 0,
+    "docs_search": 0,
+    "docs_search_empty": 0,
+    "docs_search_result": 0,
+    "quickstart_confirmed": 0
+  }
+}
+```
+
+前四个计数器统计固定页面类别。`install_intent` 统计成功复制安装命令的操作。
+`install_confirmed` 统计读者运行版本检查后明确确认的操作；`quickstart_confirmed`
+统计读者对照引用文件行检查回答后明确确认的操作。这些都是用户自报的交互，
+不证明实际安装、模型执行或结果有用。四个出口计数器统计前往 GitHub Star、
+issue、help wanted 工作和快速入门的链接操作。三个搜索计数器统计搜索、无结果
+和选中结果的操作，不发送搜索文本或结果网址。
+
+不新增页面网址、查询、语言标识、来源、账号、工作内容、凭据或网站与 CLI
+关联标识。网站和运行时的轮换 ID 保持独立，报告不会将两者关联。现有退出机制、
+有上限的本地存储、不重试投递和网站隐私控制仍然适用。计数并非独立访客数：
+重复操作可能重复计数，丢弃的投递可能丢失数据，采集服务也不保证恰好一次或
+重放去重。
+
+`telemetry-ingest/schema/website-funnel-v5.schema.json` 从现有校验器生成。
+Analytics Engine 使用原有聚合 JSON 列保存这些计数，二十个位置列保持不变。
+旧 schema 3/4 的产品计数保留为独立历史序列，不能悄悄改成新漏斗指标。
+
+### 安装和任务指标能够证明什么
+
+安装程序只在本地写入带校验和的 `.codewhale-install.sha256` 回执，不发送安装
+完成事件。运行时的 `install_or_upgrade`、`kind=install` 记录启用遥测状态的首次
+初始化；旧安装在重新开启统计或丢失本地状态后也可能出现此记录。因此它只是
+观察到的启动代理指标，不代表全部安装或人数。
+
+运行时 `model_usage` 的 `turns_ok > 0` 表明观察到模型回合技术性完成，不证明
+用户首次主任务完成或结果有用。提供商未上报用量的回复可能被省略，同进程子任务
+可能计入，当前实现的计数后也可能发生晚到的取消。批次时间是投递时间而非任务
+准确发生时间。报告说明这些局限，并将浏览器中的自报确认单列。
+
+维护者报告使用现有第一方 Analytics Engine 行或明确标注的离线回执。运行时群组
+仅使用运行时 ID 和足够的后续观察历史；历史不完整时显示不可用，而不是零。
+GitHub 首个公开 issue 和首个已合并 PR 群组使用另外的完整公开历史导出，只输出
+聚合结果。不作访客归因，也不向遥测发送 GitHub 身份。
+
+### 部署仍是独立操作
+
+这些约定和本地测试只是源码候选版本证据，不证明采集器已配置、已部署、已接收
+生产流量或转化有所改善。获得明确部署授权后，先部署向后兼容的采集服务，再让
+网站发送 schema 5。旧采集服务会拒绝 schema 5；即使网站转发路由返回 HTTP 200，
+客户端也必须将 `{ accepted: false }` 视为未接收。本文档和本地测试通过均不授权部署。

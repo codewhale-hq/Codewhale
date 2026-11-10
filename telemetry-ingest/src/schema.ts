@@ -22,6 +22,15 @@ export const SCHEMA_VERSION = 4;
 /** Notice-v5 batches without `model_usage`, `tool_usage` or the `ci` source. */
 export const V3_SCHEMA_VERSION = 3;
 
+export const FUNNEL_SCHEMA_VERSION = 5;
+export const FUNNEL_NOTICE_VERSION = 7;
+export const FUNNEL_COUNTER_FIELDS = [
+  "home_view", "install_view", "quickstart_view", "contribute_view",
+  "install_intent", "install_confirmed", "star_exit", "issue_exit",
+  "help_wanted_exit", "guide_exit", "docs_search", "docs_search_empty",
+  "docs_search_result", "quickstart_confirmed",
+] as const;
+
 /** Disclosed default-on policy, not a record of human acceptance. */
 export const NOTICE_VERSION = 6;
 
@@ -274,6 +283,7 @@ export const EVENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   model_usage: ["event", "provider", "model", "counters", "turn_wall"],
   tool_usage: ["event", "tool", "calls", "errors"],
   operations_summary: ["event", ...OPERATIONS_FIELDS],
+  funnel_usage: ["event", "counters"],
 };
 
 /** Every event discriminant, for the doc-match test. */
@@ -375,6 +385,33 @@ export const CWC_PRODUCT_SCHEMA = {
   },
 } as const;
 
+const aggregateEventSchema = (event: string, fields: readonly string[]) => ({
+  type: "object", additionalProperties: false, required: ["event", "counters"],
+  properties: {
+    event: { const: event },
+    counters: {
+      type: "object", additionalProperties: false, required: fields,
+      properties: Object.fromEntries(fields.map((field) => [field, { type: "integer", minimum: 0, maximum: U32_MAX }])),
+    },
+  },
+});
+
+export const WEBSITE_FUNNEL_SCHEMA = {
+  ...CWC_PRODUCT_SCHEMA,
+  $id: "https://codewhale.net/schemas/website-funnel-telemetry-v5.json",
+  title: "Codewhale website aggregate telemetry v5, notice v7",
+  properties: {
+    ...CWC_PRODUCT_SCHEMA.properties,
+    schema_version: { const: FUNNEL_SCHEMA_VERSION },
+    notice_version: { const: FUNNEL_NOTICE_VERSION },
+    surface: { const: "website" },
+    events: {
+      type: "array", minItems: 1, maxItems: BATCH_MAX_EVENTS,
+      items: { oneOf: [aggregateEventSchema("product_usage", PRODUCT_COUNTER_FIELDS), aggregateEventSchema("funnel_usage", FUNNEL_COUNTER_FIELDS)] },
+    },
+  },
+} as const;
+
 // ------------------------------------------------------------------ validation
 
 /** A rejection carries a reason for the tests. It is never sent to a client. */
@@ -388,6 +425,8 @@ export type Errors = Record<(typeof ERROR_FIELDS)[number], number>;
 export type TurnWall = Record<(typeof TURN_WALL_FIELDS)[number], number>;
 
 export type ProductCounters = Record<(typeof PRODUCT_COUNTER_FIELDS)[number], number>;
+
+export type FunnelCounters = Record<(typeof FUNNEL_COUNTER_FIELDS)[number], number>;
 
 export type Event =
   | { event: "install_or_upgrade"; kind: string; previous_version: string | null }
@@ -404,6 +443,7 @@ export type Event =
     }
   | { event: "panic"; site: string }
   | { event: "product_usage"; counters: ProductCounters }
+  | { event: "funnel_usage"; counters: FunnelCounters }
   | {
       event: "model_usage";
       provider: string;
@@ -589,6 +629,8 @@ function validateEvent(value: unknown, where: string): string | null {
     }
     case "product_usage":
       return u32Map(value.counters, PRODUCT_COUNTER_FIELDS, `${where}.counters`);
+    case "funnel_usage":
+      return u32Map(value.counters, FUNNEL_COUNTER_FIELDS, `${where}.counters`);
     case "model_usage": {
       if (typeof value.provider !== "string" || !PROVIDER_RE.test(value.provider)) {
         return `${where}.provider: not a provider id`;
@@ -633,11 +675,13 @@ export function validateBatch(value: unknown): Accepted | Rejection {
 
   const legacy = value.schema_version === 1;
   const explicitConsent = value.schema_version === 2;
-  const preUsage = value.schema_version !== SCHEMA_VERSION;
+  const funnel = value.schema_version === FUNNEL_SCHEMA_VERSION;
+  const preUsage = value.schema_version !== SCHEMA_VERSION && !funnel;
   if (
     !legacy &&
     !explicitConsent &&
     value.schema_version !== SCHEMA_VERSION &&
+    !funnel &&
     value.schema_version !== V3_SCHEMA_VERSION
   ) {
     return { ok: false, reason: "batch.schema_version: unsupported" };
@@ -651,7 +695,7 @@ export function validateBatch(value: unknown): Accepted | Rejection {
   if (
     !legacy &&
     !explicitConsent &&
-    value.notice_version !== (preUsage ? V3_NOTICE_VERSION : NOTICE_VERSION)
+    value.notice_version !== (funnel ? FUNNEL_NOTICE_VERSION : preUsage ? V3_NOTICE_VERSION : NOTICE_VERSION)
   ) {
     return { ok: false, reason: "batch.notice_version: current policy required" };
   }
@@ -676,6 +720,9 @@ export function validateBatch(value: unknown): Accepted | Rejection {
       return { ok: false, reason: "batch.git_sha: not 12 hex chars or null" };
     }
   }
+  if (funnel && (value.surface !== "website" || value.git_sha !== null || value.os !== "other" || value.arch !== "other" || value.libc !== "none" || value.tty !== false)) {
+    return { ok: false, reason: "batch: schema v5 requires the website no-fingerprint envelope" };
+  }
   const enumErrors =
     enumString(value.surface, legacy ? LEGACY_SURFACES : SURFACES, "batch.surface") ??
     enumString(value.os, OSES, "batch.os") ??
@@ -692,9 +739,16 @@ export function validateBatch(value: unknown): Accepted | Rejection {
   if (value.events.length > BATCH_MAX_EVENTS) {
     return { ok: false, reason: "batch.events: over BATCH_MAX_EVENTS" };
   }
+  if (funnel && value.events.length === 0) return { ok: false, reason: "events: schema v5 requires an aggregate" };
   for (let index = 0; index < value.events.length; index += 1) {
     const event = value.events[index];
     if (isPlainObject(event)) {
+      if (funnel && event.event !== "funnel_usage" && event.event !== "product_usage") {
+        return { ok: false, reason: "events: schema v5 website accepts aggregate product/funnel events only" };
+      }
+      if (event.event === "funnel_usage" && (!funnel || value.surface !== "website")) {
+        return { ok: false, reason: "events: funnel_usage requires schema v5 website" };
+      }
       if (legacy && (event.event === "product_usage" || event.event === "operations_summary")) {
         return { ok: false, reason: "events: aggregate product/operations events require schema v2 or v3" };
       }

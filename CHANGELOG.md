@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Responses dialect profiles:** Codex, DeepSeek and Concentrate Responses behavior now comes from one checked dialect table instead of per-provider code, a custom `wire = "responses"` provider can set `responses_profile = "standard"` (the default when omitted), and preview shows the profile each Responses request used. A Responses client whose route cannot be resolved now fails when it is created rather than at its first request ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)). Thanks [@SamhandsomeLee](https://github.com/SamhandsomeLee).
 - **Automations:** a run missed while Codewhale was closed now waits on reopen for Run now or Skip instead of catching up silently; each automation can choose "If missed: ask" (default), "run once" or "skip". Tested in the engine only; no HTTP route tests, no desktop client yet, and a Mac asleep longer than the grace window counts as closed.
+- **Website measurement:** the first-party ingest now accepts a closed website funnel schema while preserving existing runtime and browser batches. Reader confirmations remain self-reports, new website data stays first-party, and no deployment or live conversion gain is established by the source change.
+
+- **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; these website changes still await deployment.
 
 ### Changed
 
