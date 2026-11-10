@@ -5217,10 +5217,26 @@ impl ConfigView {
         let kind = self.editor_kind(row);
         let muted = Style::default().fg(palette::TEXT_MUTED);
         let primary = Style::default().fg(palette::TEXT_PRIMARY);
-        let value_width = width.saturating_sub(10);
+        let label_width = [
+            MessageId::ConfigFactCurrent,
+            MessageId::ConfigFactSaved,
+            MessageId::ConfigFactStartup,
+            MessageId::ConfigFactSource,
+            MessageId::ConfigFactScope,
+            MessageId::ConfigFactApply,
+            MessageId::ConfigFactKind,
+            MessageId::ConfigFactAvailable,
+            MessageId::ConfigFactObserved,
+            MessageId::ConfigFactOpens,
+        ]
+        .into_iter()
+        .map(|name| self.tr(name).width())
+        .fold(9, usize::max)
+            + 1;
+        let value_width = width.saturating_sub(label_width);
         let fact_line = |name: MessageId, value: &str| {
             Line::from(vec![
-                Span::styled(format!("{:<10}", self.tr(name)), muted),
+                Span::styled(fit_config_column(&self.tr(name), label_width), muted),
                 Span::styled(semantic_truncate(value, value_width), primary),
             ])
         };
@@ -11431,6 +11447,29 @@ context_window = 131072
         let dump = render_dump(&view, 120, 32);
         let head: String = expected.chars().take(20).collect();
         assert!(dump.contains(&head), "source names the override:\n{dump}");
+    }
+
+    #[test]
+    fn setting_detail_values_share_one_column_in_every_locale() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+        view.focus_key("theme");
+        for locale in [Locale::En, Locale::ZhHans, Locale::De, Locale::Uk] {
+            view.locale = locale;
+            let lines = view.setting_detail_lines(&view.rows[view.selected], 200);
+            let labels: Vec<String> = lines
+                .iter()
+                .filter(|line| line.spans.len() == 2)
+                .map(|line| line.spans[0].content.to_string())
+                .collect();
+            assert_eq!(labels.len(), 8, "{locale:?}: {labels:?}");
+            assert!(
+                labels
+                    .iter()
+                    .all(|label| label.ends_with(' ') && label.width() == labels[0].width()),
+                "{locale:?}: {labels:?}"
+            );
+        }
     }
 
     /// Slice C: Edit Theme live preview — highlighting a theme row emits a
