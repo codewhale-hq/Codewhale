@@ -272,12 +272,12 @@ drafting behind an explicit preview-before-save gate:
 
 ## Naming: Modes, Workflow, and fleet
 
-These names describe different layers, not competing systems. Plan and Act are
-the everyday work modes. Operate accepts ordinary messages and keeps the
-parent's normal tool surface under the same approval, sandbox, shell, ask-rule,
-and repository protections as Act. It prefers background fleet workers for
-independent, parallel, isolated, or long-running work, but does not require a
-worker for every executable step. Workflow is an optional orchestration overlay
+These names describe different layers, not competing systems. Plan and Work are
+the two modes; Operate was retired, and its orchestration guidance lives in
+every conversation. Background Fleet agents take independent, parallel,
+isolated, or long-running work in any mode, under the same approval, sandbox, shell,
+ask-rule and repository protections as the parent, but no executable step
+requires one. Workflow is an optional orchestration overlay
 for work that needs ordering, gates, shared budgets, replay, or deterministic
 fan-in.
 

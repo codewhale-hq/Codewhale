@@ -2267,6 +2267,7 @@ Common settings keys:
   context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (`agent` or `plan`; legacy values such as `normal` and `operate` load as `agent` and are not live mode vocabulary)
+- `permission_posture` (`ask`, `accept-edits`, `auto-review`, `full-access`; default `accept-edits`). A saved `ask` from before 0.10.3 moves to `accept-edits` once, and `ask_to_accept_edits_migrated = true` records it so an Ask picked afterwards is kept.
 - `launch_screen` (legacy, migration-only): this historical `on`/`off` value
   is still accepted when reading an existing settings file, but it no longer
   changes behavior and is omitted from new saves. A fresh interactive launch
@@ -2313,7 +2314,9 @@ reads the same snapshots as the styled Work surface and owns no parallel
 progress state.
 
 Plan and Work are the two modes in the UI. Switch between them with `/mode` or
-`Tab`. The retired `operate` spelling still parses, as Work. For compatibility, older settings files with
+the `Shift+Tab` permission dial, where Plan sits between Accept Edits and
+Auto-Review. The retired `operate` spelling still parses, as Work, and says so
+once. For compatibility, older settings files with
 `default_mode = "normal"` still load as `agent`.
 
 Localization scope is tracked in [LOCALIZATION.md](LOCALIZATION.md). The v0.7.6
