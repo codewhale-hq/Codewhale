@@ -2716,8 +2716,8 @@ LFS, keep working.
   tree (`git apply [--cached] [--reverse]`). Renames, copies, mode changes,
   creations, deletions and binary patches are refused, and a patch that no
   longer applies fails with git's message and writes nothing. `POST /v1/git/push`
-  `{ "remote"?, "set_upstream"? }` (`remote`, or `origin` when only
-  `set_upstream` is given, must name a configured remote);
+  `{ "branch"?, "expect"?: { "head" }, "remote"?, "set_upstream"? }` pushes
+  exactly one branch at one commit (*Push* below);
   `POST /v1/git/branch`
   `{ "name", "create"? }`
 - Every write above also takes `?thread_id=` (capability
@@ -2805,6 +2805,32 @@ answers `409`:
 `stale` lists the components that moved (`head`, `index`, `files`,
 `revision`); `stale_paths` the `files` keys whose `rev` changed. A client
 re-renders from `current`, keeps the user's selection, and asks again.
+
+*Push.* `GET /v1/git` advertises `named_push: true` when the route accepts
+`branch` and `expect.head`. A client sends the `branch` and `head_oid` it
+read: `{ "branch": "feature", "expect": { "head": "<head_oid>" } }`. The
+branch must still be checked out and its tip must still be that commit;
+otherwise the route pushes nothing and answers `409 git_state_changed` with
+`stale` naming `branch` (another branch, or a detached HEAD) and/or `head`,
+plus `current`. `branch` without `expect.head`, `expect` without `branch`,
+`head: null`, or any other `expect` field answers `400`. An Engine without
+`named_push` rejects the unknown `branch` field with `400` and pushes nothing,
+so a new client fails closed against an old Engine.
+
+Every push, named or not, runs
+`git push --no-follow-tags --no-recurse-submodules -- <remote> <commit>:refs/heads/<branch>`:
+one source commit and one same-named destination branch, never a force push.
+`push.default`, `remote.<name>.push`, `push.followTags` and submodule
+recursion cannot add refs, and `remote.<name>.mirror` makes git refuse
+(`400`). A request without `branch` pushes the checked-out branch at its
+current tip; from a detached HEAD or an unborn branch it answers `400`.
+The remote is `remote`, else `branch.<b>.pushRemote`, `remote.pushDefault`,
+`branch.<b>.remote`, then `origin`, and must be a configured remote name.
+A branch whose upstream on that remote is a differently named branch answers
+`400`, as git's default `simple` mode does. `set_upstream: true` records
+`branch.<b>.remote` and `branch.<b>.merge` after the push succeeds. Not
+covered: the remote's own hooks and `pushurl`, and whatever credential
+helper the user configured, still apply as in the user's terminal.
 
 Stage, unstage, discard, commit and branch from one runtime are serialized,
 so a check and its write are atomic with respect to that runtime's other

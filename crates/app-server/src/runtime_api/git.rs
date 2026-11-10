@@ -21,7 +21,8 @@
 //!   POST /v1/git/unstage   — `{ "paths": [...] }` or `{ "all": true }`
 //!   POST /v1/git/discard   — `{ "paths": [...] }` (tracked only; no `all`)
 //!   POST /v1/git/commit    — `{ "message": "…", "all": false }`
-//!   POST /v1/git/push      — `{ "remote"?, "set_upstream"?: bool }`
+//!   POST /v1/git/push      — `{ "branch"?, "expect"?: { "head" }, "remote"?,
+//!                            "set_upstream"?: bool }`
 //!   POST /v1/git/branch    — `{ "name": "…", "create"?: bool }`
 //!   GET  /v1/worktrees     — the repository's worktrees
 //!   POST /v1/worktrees     — `{ "branch", "base"? }` new branch + worktree
@@ -291,6 +292,7 @@ pub(super) struct GitStatusDetailResponse {
     remote_repositories: Vec<Value>,
     branch_preconditions: bool,
     diff_options: bool,
+    named_push: bool,
 }
 
 pub(super) async fn git_status_detail(
@@ -327,6 +329,7 @@ fn collect_git_status_detail(workspace: &FsPath) -> Result<GitStatusDetailRespon
         remote_repositories: Vec::new(),
         branch_preconditions: true,
         diff_options: true,
+        named_push: true,
     };
     if !status.git_repo {
         return Ok(detail);
@@ -1479,6 +1482,10 @@ pub(super) struct GitPushRequest {
     remote: Option<String>,
     #[serde(default)]
     set_upstream: bool,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    expect: Option<GitExpect>,
 }
 
 #[derive(Deserialize)]
@@ -2174,52 +2181,229 @@ async fn git_read_ok(workspace: &FsPath, args: &[&str]) -> Result<String, ApiErr
     Ok(run.stdout)
 }
 
-/// `git push` arguments for a request. The remote that will be pushed to —
-/// the requested one, or `origin` when only `set_upstream` is asked — must be
-/// a configured remote, and `--` keeps it from ever parsing as an option.
-async fn push_args(
+#[derive(Debug, PartialEq, Eq)]
+struct NamedPush {
+    branch: String,
+    head: String,
+}
+
+fn named_push(
+    branch: Option<&str>,
+    expect: Option<GitExpect>,
+) -> Result<Option<NamedPush>, ApiError> {
+    let branch = branch.map(str::trim);
+    let (branch, expect) = match (branch, expect) {
+        (None, None) => return Ok(None),
+        (None, Some(_)) => {
+            return Err(ApiError::bad_request(
+                "expect on push requires the branch it was read for",
+            ));
+        }
+        (Some(_), None) => {
+            return Err(ApiError::bad_request(
+                "branch requires expect.head read from GET /v1/git",
+            ));
+        }
+        (Some(branch), Some(expect)) => (branch, expect),
+    };
+    let shaped = !branch.is_empty()
+        && branch.len() <= MAX_BRANCH_NAME_BYTES
+        && !branch.starts_with('-')
+        && branch
+            .bytes()
+            .all(|byte| byte > b' ' && byte != 0x7f && byte != b':');
+    if !shaped {
+        return Err(ApiError::bad_request("branch must be a local branch name"));
+    }
+    if expect.index.is_some() || expect.revision.is_some() || expect.files.is_some() {
+        return Err(ApiError::bad_request("push takes only expect.head"));
+    }
+    let head = match expect.head {
+        Some(Some(raw)) => normalized_hex(&raw, &[40, 64], "head")?,
+        Some(None) => {
+            return Err(ApiError::bad_request(
+                "an unborn branch has no commit to push",
+            ));
+        }
+        None => {
+            return Err(ApiError::bad_request(
+                "branch requires expect.head read from GET /v1/git",
+            ));
+        }
+    };
+    Ok(Some(NamedPush {
+        branch: branch.to_string(),
+        head,
+    }))
+}
+
+async fn git_config_value(workspace: &FsPath, key: &str) -> Result<Option<String>, ApiError> {
+    let run = git_read(workspace, &["config", "--get", key]).await?;
+    let value = run.stdout.trim();
+    Ok((run.status_success && !value.is_empty()).then(|| value.to_string()))
+}
+
+#[derive(Debug)]
+struct PushPlan {
+    args: Vec<String>,
+    upstream: Option<(String, String)>,
+}
+
+async fn push_plan(
     workspace: &FsPath,
     remote: Option<&str>,
     set_upstream: bool,
-) -> Result<Vec<String>, ApiError> {
-    let remote = remote.map(str::trim).filter(|remote| !remote.is_empty());
-    let remote = match (remote, set_upstream) {
-        (Some(remote), _) => Some(remote),
-        (None, true) => Some("origin"),
-        (None, false) => None,
-    };
-    let mut args = vec!["push".to_string()];
-    let Some(remote) = remote else {
-        return Ok(args);
-    };
-    validate_push_remote(remote, &git_read_ok(workspace, &["remote"]).await?)?;
-    if set_upstream {
-        let branch = git_read_ok(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
-        let branch = branch.trim();
-        if branch.is_empty() || branch == "HEAD" {
-            return Err(ApiError::bad_request(
-                "cannot set upstream from a detached HEAD",
-            ));
+    named: Option<NamedPush>,
+) -> Result<Result<PushPlan, GitWriteError>, ApiError> {
+    let symbolic = git_read(workspace, &["symbolic-ref", "-q", "HEAD"]).await?;
+    let checked_out = symbolic
+        .status_success
+        .then(|| symbolic.stdout.trim().strip_prefix("refs/heads/"))
+        .flatten()
+        .map(str::to_string);
+    let tip = |branch: &str| {
+        let reference = format!("refs/heads/{branch}^{{commit}}");
+        async move {
+            let run = git_read(workspace, &["rev-parse", "--verify", "-q", &reference]).await?;
+            let oid = run.stdout.trim().to_ascii_lowercase();
+            Ok::<_, ApiError>((run.status_success && !oid.is_empty()).then_some(oid))
         }
-        args.push("--set-upstream".to_string());
-        args.extend(["--".to_string(), remote.to_string(), branch.to_string()]);
-    } else {
-        args.extend(["--".to_string(), remote.to_string()]);
+    };
+    let (branch, head) = match named {
+        Some(NamedPush { branch, head }) => {
+            let mut stale = Vec::new();
+            let mut parts = Vec::new();
+            if checked_out.as_deref() != Some(branch.as_str()) {
+                stale.push("branch");
+                parts.push(match &checked_out {
+                    Some(current) => format!("{current} is checked out, not {branch}"),
+                    None => "HEAD is detached".to_string(),
+                });
+            }
+            if tip(&branch).await?.as_deref() != Some(head.as_str()) {
+                stale.push("head");
+                parts.push(format!("{branch} moved"));
+            }
+            if !stale.is_empty() {
+                let root = workspace.to_path_buf();
+                let current = tokio::task::spawn_blocking(move || collect_git_status_detail(&root))
+                    .await
+                    .map_err(|_| ApiError::internal("git status failed"))??;
+                let mut extra = serde_json::Map::new();
+                extra.insert("stale".to_string(), json!(stale));
+                extra.insert("stale_paths".to_string(), json!([]));
+                extra.insert(
+                    "current".to_string(),
+                    serde_json::to_value(current)
+                        .map_err(|_| ApiError::internal("git status serialization failed"))?,
+                );
+                return Ok(Err(GitWriteError::Coded {
+                    status: StatusCode::CONFLICT,
+                    code: "git_state_changed",
+                    message: format!(
+                        "The repository changed since it was read ({}). Nothing was pushed; refresh and review again.",
+                        parts.join("; ")
+                    ),
+                    extra,
+                }));
+            }
+            (branch, head)
+        }
+        None => {
+            let Some(branch) = checked_out else {
+                return Err(ApiError::bad_request(
+                    "cannot push from a detached HEAD; check out a branch",
+                ));
+            };
+            let Some(head) = tip(&branch).await? else {
+                return Err(ApiError::bad_request(format!(
+                    "{branch} has no commits to push"
+                )));
+            };
+            (branch, head)
+        }
+    };
+    let tracking = git_config_value(workspace, &format!("branch.{branch}.remote")).await?;
+    let remote = match remote.map(str::trim).filter(|remote| !remote.is_empty()) {
+        Some(remote) => remote.to_string(),
+        None => {
+            let mut chosen =
+                git_config_value(workspace, &format!("branch.{branch}.pushRemote")).await?;
+            if chosen.is_none() {
+                chosen = git_config_value(workspace, "remote.pushDefault").await?;
+            }
+            chosen
+                .or_else(|| tracking.clone())
+                .unwrap_or_else(|| "origin".to_string())
+        }
+    };
+    validate_push_remote(&remote, &git_read_ok(workspace, &["remote"]).await?)?;
+    let destination = format!("refs/heads/{branch}");
+    if tracking.as_deref() == Some(remote.as_str())
+        && let Some(merge) = git_config_value(workspace, &format!("branch.{branch}.merge")).await?
+        && merge != destination
+    {
+        return Err(ApiError::bad_request(format!(
+            "{branch} tracks {merge} on {remote}; only a push to the same-named branch is supported"
+        )));
     }
-    Ok(args)
+    let args = vec![
+        "push".to_string(),
+        "--no-follow-tags".to_string(),
+        "--no-recurse-submodules".to_string(),
+        "--".to_string(),
+        remote.clone(),
+        format!("{head}:{destination}"),
+    ];
+    Ok(Ok(PushPlan {
+        args,
+        upstream: set_upstream.then_some((branch, remote)),
+    }))
+}
+
+async fn push(workspace: &FsPath, request: GitPushRequest) -> Result<Json<Value>, GitWriteError> {
+    let named = named_push(request.branch.as_deref(), request.expect)?;
+    let plan = push_plan(
+        workspace,
+        request.remote.as_deref(),
+        request.set_upstream,
+        named,
+    )
+    .await??;
+    let run = git_write(workspace, plan.args).await?;
+    if run.status_success
+        && let Some((branch, remote)) = plan.upstream
+    {
+        for (key, value) in [
+            (format!("branch.{branch}.remote"), remote),
+            (
+                format!("branch.{branch}.merge"),
+                format!("refs/heads/{branch}"),
+            ),
+        ] {
+            let config = git_write(workspace, vec!["config".to_string(), key, value]).await?;
+            if !config.status_success {
+                return Err(ApiError::bad_request(format!(
+                    "The push succeeded but its upstream was not recorded: {}",
+                    output_tail(&config)
+                ))
+                .into());
+            }
+        }
+    }
+    Ok(mutation_response(workspace, run).await?)
 }
 
 pub(super) async fn git_push(
     State(state): State<RuntimeApiState>,
     Query(scope): Query<ThreadScopeQuery>,
     Json(request): Json<GitPushRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Value>, GitWriteError> {
     let root = scoped_workspace(&state, scope.thread_id.as_deref()).await?;
     let workspace = resolve_workspace(&root, true).await?;
-    let args = push_args(&workspace, request.remote.as_deref(), request.set_upstream).await?;
     // Push stays outside the write lock: it crosses the network under a
     // 120 s bound and only moves a remote ref, never the index or worktree.
-    mutation_response(&workspace, git_write(&workspace, args).await?).await
+    push(&workspace, request).await
 }
 
 pub(super) async fn git_branch(
@@ -2702,6 +2886,10 @@ pub(super) async fn worktree_remove(
 }
 
 #[cfg(test)]
+#[path = "tests/git_push.rs"]
+mod git_push_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(unix)]
@@ -2712,7 +2900,7 @@ mod tests {
         pub(super) static GIT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
-    fn git(dir: &FsPath, args: &[&str]) {
+    pub(super) fn git(dir: &FsPath, args: &[&str]) {
         let output = Git::output(args, dir).expect("spawn git");
         assert!(
             output.status.success(),
@@ -2721,7 +2909,7 @@ mod tests {
         );
     }
 
-    fn repo() -> tempfile::TempDir {
+    pub(super) fn repo() -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path();
         git(dir, &["init", "-q", "-b", "main"]);
@@ -3504,54 +3692,6 @@ mod tests {
             let body = diff(path);
             assert!(!body.contains("secret"), "{path} escaped: {body}");
         }
-    }
-
-    #[tokio::test]
-    async fn push_args_validate_the_effective_remote_and_end_options() {
-        let tmp = repo();
-        let root = tmp.path();
-        let status = |error: ApiError| error.status;
-
-        // No remote configured: plain `push` stays git's call, but an
-        // upstream push defaults to `origin`, which must exist too.
-        assert_eq!(push_args(root, None, false).await.unwrap(), ["push"]);
-        assert_eq!(push_args(root, Some("  "), false).await.unwrap(), ["push"]);
-        assert_eq!(
-            push_args(root, None, true)
-                .await
-                .map_err(status)
-                .unwrap_err(),
-            StatusCode::BAD_REQUEST
-        );
-
-        let bare = tempfile::tempdir().unwrap();
-        git(bare.path(), &["init", "-q", "--bare"]);
-        git(
-            root,
-            &["remote", "add", "origin", &bare.path().to_string_lossy()],
-        );
-        assert_eq!(
-            push_args(root, Some(" origin "), false).await.unwrap(),
-            ["push", "--", "origin"]
-        );
-        for remote in ["--mirror", "fork", "../other"] {
-            assert_eq!(
-                push_args(root, Some(remote), true)
-                    .await
-                    .map_err(status)
-                    .unwrap_err(),
-                StatusCode::BAD_REQUEST,
-                "{remote}"
-            );
-        }
-        let args = push_args(root, None, true).await.unwrap();
-        assert_eq!(args, ["push", "--set-upstream", "--", "origin", "main"]);
-
-        // The built arguments are ones git accepts: the push lands in the
-        // bare remote and records the upstream.
-        git(root, &args.iter().map(String::as_str).collect::<Vec<_>>());
-        let upstream = run_git_sync(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).unwrap();
-        assert_eq!(upstream.trim(), "origin/main");
     }
 
     #[test]
