@@ -400,5 +400,5 @@ command = "echo 'Running tool: $TOOL_NAME'"
 - `~/.codewhale/sessions/checkpoints/` - 崩溃检查点 + 离线队列持久化
 - `~/.codewhale/snapshots/` - 供 `/restore` 和 `revert_turn` 使用的 side-git 回合前/后工作区快照
 - `~/.codewhale/tasks/` - 后台任务记录、队列、时间线、产物
-- `~/.codewhale/audit.log` - 仅追加的安全事件：凭据的保存与清除、钩子环境变量的键名、压缩过程、目标完成、终端的审批路由、Auto-Review 裁决，以及开启 `[network]` 审计时的出站网络决定。它不是操作记录：不包含命令或文件改动，app 或 `serve` 回合也不会在这里写入审批。一个会话做了什么，见 `docs/RECEIPTS.md`
+- `~/.codewhale/audit.log` - 仅追加的安全事件：凭据的保存与清除、钩子环境变量的键名、压缩过程、目标完成、终端的审批路由、Auto-Review 裁决，以及开启 `[network]` 审计时的出站网络决定。它不是操作记录：不包含命令或文件改动，app 或 `serve` 回合也不会在这里写入审批。一个会话做了什么，见 [RECEIPTS.md](./RECEIPTS.md)
 - `~/.codewhale/sessions/<id>/approval_receipts.jsonl` - 一个会话的每一次审批请求与决定，包括由谁决定
