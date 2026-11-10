@@ -102,17 +102,17 @@ function getCustomDocSearchSections(locale: string): DocSearchSection[] {
     section("/models", "models-overview", modelTitle, t(MODELS_COPY.title), [t(MODELS_COPY.lead)]),
     section("/models", "models-setup", modelTitle, t(MODELS_COPY.setupTitle), [
       t(MODELS_COPY.setupLead), t(MODELS_COPY.providerDocs),
-      ...MODELS_COPY.steps.flatMap(step => [t(step.title), t(step.detail)]),
+      ...MODELS_COPY.steps.flatMap(step => [t(step.title), t(step.detail).replaceAll("`", "")]),
       t(MODELS_COPY.routeDeepseekTitle), t(MODELS_COPY.routeDeepseekBody), "DEEPSEEK_API_KEY",
       t(MODELS_COPY.routeFirstPartyTitle), t(MODELS_COPY.routeFirstPartyBody),
-      t(MODELS_COPY.routeCompatTitle), t(MODELS_COPY.routeCompatBody), t(MODELS_COPY.routeCompatConfig),
+      t(MODELS_COPY.routeCompatTitle), t(MODELS_COPY.routeCompatBody), t(MODELS_COPY.routeCompatConfig).replaceAll("`", ""),
     ]),
     section("/models", "models-title", modelTitle, t(MODELS_COPY.modelsTitle), [
       t(MODELS_COPY.modelsLead), t(MODELS_COPY.colModel), t(MODELS_COPY.colContext), t(MODELS_COPY.colAdded),
       ...FACTS.models.flatMap(model => [model.id, model.provider ?? "", model.reasoning ? t(MODELS_COPY.reasoning) : "", formatModelTokens(model.contextWindow), formatModelDate(model.addedAt, getChrome(locale).dateLocale)]),
     ]),
     section("/models", "providers-title", modelTitle, t(MODELS_COPY.listTitle), [
-      t(MODELS_COPY.listLead), t(MODELS_COPY.provider), t(MODELS_COPY.id), t(MODELS_COPY.credential),
+      t(MODELS_COPY.provider), t(MODELS_COPY.id), t(MODELS_COPY.credential),
       ...FACTS.providers.flatMap(provider => [provider.label, provider.id, provider.env]),
       t(MODELS_COPY.missing), t(MODELS_COPY.request),
     ]),

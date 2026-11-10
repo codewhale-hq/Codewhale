@@ -26,10 +26,10 @@ export function ModelsCatalog({ models, locale }: { models: ModelFact[]; locale:
             <div className="disclosure-body">
               <div className="data-table-wrap">
                 <table className="data-table">
-                  <caption className="sr-only">{label}</caption>
                   <thead>
                     <tr>
                       <th scope="col">{t(MODELS_COPY.colModel)}</th>
+                      <th scope="col"><span className="sr-only">{t(MODELS_COPY.colKind)}</span></th>
                       <th scope="col">{t(MODELS_COPY.colContext)}</th>
                       <th scope="col">{t(MODELS_COPY.colAdded)}</th>
                     </tr>
@@ -38,9 +38,9 @@ export function ModelsCatalog({ models, locale }: { models: ModelFact[]; locale:
                     {group.models.map((model) => (
                       <tr key={model.id}>
                         <th scope="row">
-                          <code>{model.id}</code>{" "}
-                          {model.reasoning ? <ModelBadge locale={locale} /> : null}
+                          <code>{model.id}</code>
                         </th>
+                        <td>{model.reasoning ? <ModelBadge locale={locale} /> : null}</td>
                         <td className="tabular">{formatModelTokens(model.contextWindow)}</td>
                         <td className="tabular">{formatModelDate(model.addedAt, dateLocale)}</td>
                       </tr>

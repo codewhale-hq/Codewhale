@@ -7,6 +7,7 @@ import {
   formatModelDate,
   formatModelTokens,
   latestFirstPartyModels,
+  splitCode,
   sortProvidersFirstPartyFirst,
 } from "@/lib/content/models";
 import { Icon } from "@/components/icon";
@@ -16,6 +17,10 @@ import type { LocalizedText } from "@/lib/content/vocabulary";
 import { fill, getChrome, pickText } from "@/lib/i18n/dictionaries";
 
 export const revalidate = 300;
+
+function Rich({ text }: { text: string }) {
+  return <>{splitCode(text).map((part, i) => (part.code ? <code key={i}>{part.text}</code> : part.text))}</>;
+}
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
@@ -85,7 +90,7 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
               <li key={i}>
                 <span className="gs-step-index" aria-hidden="true">{i + 1}</span>
                 <h3>{t(step.title)}</h3>
-                <p>{t(step.detail)}</p>
+                <p><Rich text={t(step.detail)} /></p>
               </li>
             ))}
           </ol>
@@ -110,7 +115,7 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
             <div className="tile">
               <h3 className="models-route-title">{t(MODELS_COPY.routeCompatTitle)}</h3>
               <p>{t(MODELS_COPY.routeCompatBody)}</p>
-              <p>{t(MODELS_COPY.routeCompatConfig)}</p>
+              <p><Rich text={t(MODELS_COPY.routeCompatConfig)} /></p>
             </div>
           </div>
         </Section>
@@ -119,7 +124,7 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
           <ModelsCatalog models={facts.models} locale={locale} />
         </Section>
 
-        <Section id="providers-title" title={t(MODELS_COPY.listTitle)} scope={t(MODELS_COPY.listLead)}>
+        <Section id="providers-title" title={t(MODELS_COPY.listTitle)}>
           <details className="group-card disclosure-row">
             <summary>
               <span>{fill(pickText(MODELS_COPY.providerCount, locale), { count: providers.length })}</span>
@@ -128,8 +133,7 @@ export default async function ModelsPage({ params }: { params: Promise<{ locale:
             <div className="disclosure-body">
               <div className="data-table-wrap">
                 <table className="data-table">
-                  <caption className="sr-only">{t(MODELS_COPY.listTitle)}</caption>
-                  <thead>
+                                    <thead>
                     <tr>
                       <th scope="col">{t(MODELS_COPY.provider)}</th>
                       <th scope="col">{t(MODELS_COPY.id)}</th>
