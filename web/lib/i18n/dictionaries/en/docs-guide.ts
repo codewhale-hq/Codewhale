@@ -12,7 +12,7 @@ export const docsGuide: DocsGuideDict = {
   bodyClassName: "text-ink-soft leading-relaxed",
   overviewTitle: "Start your first task",
   overviewLead:
-    "Four steps take you from nothing installed to a finished first task. Each step links to the page with the details; the Fleet step is optional.",
+    "Install Codewhale, connect a model, and check its explanation of a real project file. You need a terminal, an existing project folder, and a provider key or a running local model. Replace /path/to/your/project with your folder. Fleet setup comes afterward and is optional.",
   sessionTitle: "Watch a real session",
   sessionLead: "Follow a task from the first request to the finished result.",
   nextTitle: "Next",

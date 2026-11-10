@@ -1,7 +1,7 @@
 /**
  * getting-started.ts — the canonical new-user path for codewhale.net.
  *
- * Four steps, in order: install → provider connection → first task
+ * Four steps, in order: install → provider connection → first task → verify the answer
  * → optional fleet setup. Both the homepage band and the /docs/guide page
  * render from this module, so the path reads identically everywhere.
  *
@@ -20,11 +20,13 @@
 import type { LocalizedText } from "./vocabulary";
 
 export interface GuideStep {
-  id: "install" | "first-session" | "connect-provider" | "fleet-workflow";
+  id: "install" | "first-session" | "connect-provider" | "verify-answer" | "fleet-workflow";
   title: LocalizedText;
   body: LocalizedText;
   /** Locale-agnostic shell commands shown for the step (may be empty). */
   commands: string[];
+  prompt?: LocalizedText;
+  optional?: boolean;
   /** Deeper-reading link; href is locale-relative. */
   link: { href: string; label: LocalizedText };
 }
@@ -34,10 +36,10 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
     id: "install",
     title: { en: "Install Codewhale", zh: "安装 Codewhale" },
     body: {
-      en: "Install the latest release on macOS or Linux. Follow any PATH instruction the installer prints, then open a folder where you want to work. The guide covers Windows and other install options.",
-      zh: "在 macOS 或 Linux 上安装最新发布版本。按安装程序的提示完成 PATH 设置，然后打开你想工作的文件夹。Windows 和其他安装方式见指南。",
+      en: "Install the latest release on macOS or Linux. Follow any PATH instruction the installer prints, then check that the version command prints a version. You need a terminal and an existing project folder. The guide covers Windows and other install options.",
+      zh: "在 macOS 或 Linux 上安装最新发布版本。按安装程序的提示完成 PATH 设置，再确认版本命令能显示版本号。你需要一个终端和一个已有的项目文件夹。Windows 和其他安装方式见指南。",
     },
-    commands: ["curl -fsSL https://codewhale.net/install.sh | sh"],
+    commands: ["curl -fsSL https://codewhale.net/install.sh | sh", "codewhale --version"],
     link: {
       href: "/install",
       label: { en: "Full install guide", zh: "完整安装指南" },
@@ -47,8 +49,8 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
     id: "connect-provider",
     title: { en: "Connect your model", zh: "连接你的模型" },
     body: {
-      en: "Use a model API you already have, or connect local or self-hosted inference. The command below saves a DeepSeek key; local Ollama models do not need an API key.",
-      zh: "使用你已有的模型 API，或连接本地、自托管推理服务。下方命令用于保存 DeepSeek 密钥；本地 Ollama 模型无需 API 密钥。",
+      en: "Use a model API you already have, or connect local or self-hosted inference. The command below saves a DeepSeek key without echoing it. You need a valid provider key and access to its service; local Ollama models do not need a key.",
+      zh: "使用你已有的模型 API，或连接本地、自托管推理服务。下方命令会保存 DeepSeek 密钥，输入时不会回显。你需要有效的提供商密钥并能访问其服务；本地 Ollama 模型无需密钥。",
     },
     commands: ["codewhale auth set --provider deepseek"],
     link: {
@@ -58,23 +60,38 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
   },
   {
     id: "first-session",
-    title: { en: "Describe your first task", zh: "描述第一个任务" },
+    title: { en: "Ask about one project file", zh: "询问一个项目文件" },
     body: {
-      en: "Start Codewhale and describe the result: a small app, a script that saves you time, or a report from your data. Choose its permissions, review what it does and steer it as you go.",
-      zh: "启动 Codewhale，说出你想要的结果：一个小应用、节省时间的脚本，或一份根据数据生成的报告。设定权限、查看它的工作，并随时调整方向。",
+      en: "In your terminal, open an existing project folder and start Codewhale there. Choose Plan for this read-only task, then paste the prompt below into the message box. Your model receives the file content it needs to answer.",
+      zh: "在终端中进入一个已有的项目文件夹，然后在那里启动 Codewhale。为这个只读任务选择 Plan，再把下方提示粘贴到消息框中。模型会收到回答所需的文件内容。",
     },
-    commands: ["codewhale"],
+    commands: ["cd /path/to/your/project", "codewhale"],
+    prompt: {
+      en: "Read one source file in this project and explain what it does. Cite its file path and the lines that support your explanation. Do not edit files or run commands.",
+      zh: "阅读这个项目中的一个源文件，说明它的作用，并引用文件路径和支持说明的行号。不要修改文件或运行命令。",
+    },
     link: {
       href: "/docs/modes",
       label: { en: "Set modes and approvals", zh: "设置模式与审批" },
     },
   },
   {
-    id: "fleet-workflow",
-    title: { en: "Use multiple agents", zh: "使用多个智能体" },
+    id: "verify-answer",
+    title: { en: "Check the answer against the file", zh: "对照文件检查回答" },
     body: {
-      en: "Save a reusable role and model with /fleet setup. Ask Codewhale to split a larger task across agents, then use /fleet workers to watch the agents in your current session.",
-      zh: "用 /fleet setup 保存可复用的角色和模型，再请 Codewhale 把较大任务分给多个智能体。用 /fleet workers 查看当前会话的智能体。",
+      en: "Open the cited file yourself and compare the cited lines with the explanation. This task is complete when you can confirm what the file does and the cited evidence supports the answer. If it is wrong, ask about the mismatch; if no answer arrives or setup fails, use the troubleshooting guide.",
+      zh: "自行打开引用的文件，对照相关行检查说明。当你能确认文件的作用，而且引用内容支持回答时，这个任务就完成了。如果回答有误，可以追问不一致之处；如果没有回答或设置失败，请查看排查指南。",
+    },
+    commands: [],
+    link: { href: "/docs/troubleshooting", label: { en: "Fix a setup or reply problem", zh: "解决设置或回复问题" } },
+  },
+  {
+    id: "fleet-workflow",
+    optional: true,
+    title: { en: "Use multiple agents when you need them", zh: "需要时再使用多个智能体" },
+    body: {
+      en: "After your first task, you can optionally save a reusable role and model with /fleet setup. Ask Codewhale to split a larger task across agents, then use /fleet workers to watch the agents in your current session.",
+      zh: "完成第一个任务后，你可以按需用 /fleet setup 保存可复用的角色和模型，再请 Codewhale 把较大任务分给多个智能体。用 /fleet workers 查看当前会话的智能体。",
     },
     commands: ["/fleet setup", "/fleet workers"],
     link: {

@@ -8,7 +8,7 @@ export const docsGuide: DocsGuideDict = {
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   overviewTitle: "开始第一个任务",
   overviewLead:
-    "从什么都没装到完成第一个任务，只需四步。每一步都链接到详细说明页；配置 Fleet 这一步是可选的。",
+    "安装 Codewhale、连接模型，再核对它对真实项目文件的说明。你需要一个终端、一个已有的项目文件夹，以及提供商密钥或正在运行的本地模型。请把 /path/to/your/project 替换为你的文件夹路径。Fleet 可在完成后按需配置。",
   sessionTitle: "看一次真实会话",
   sessionLead: "查看一项任务从首次请求到完成的全过程。",
   nextTitle: "下一步",
