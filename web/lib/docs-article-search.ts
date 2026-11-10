@@ -13,7 +13,8 @@ import { INSTALL_COPY, INSTALL_COMMANDS } from "./content/install";
 import { INSTALL_GUIDES } from "./install-guide.generated";
 import { FACTS } from "./facts.generated";
 import { MODELS_COPY, formatModelTokens, formatModelDate } from "./content/models";
-import { PLUGINS_COPY, PLUGIN_COMMANDS, INTEGRATIONS_COPY, INTEGRATION_CHOICES, PLUGIN_EXAMPLES, PLUGIN_COMPATIBILITY, MCP_SETUP_COMMANDS } from "./content/plugins";
+import { PLUGINS_COPY, PLUGIN_KINDS, CATALOG_FEATURED, PLUGIN_SOURCES, PLUGIN_COMMANDS, PLUGIN_COMPATIBILITY } from "./content/plugins";
+import { CONNECTORS } from "./content/connectors.generated";
 import { CONSTITUTION_LAYERS, CONSTITUTION_SCENES } from "./content/constitution";
 import { getDocsAccount } from "./content/docs-account";
 import type { LocalizedText } from "./content/vocabulary";
@@ -119,34 +120,26 @@ function getCustomDocSearchSections(locale: string): DocSearchSection[] {
     section("/plugins", "plugins-overview", pluginTitle, pluginTitle, [
       t(PLUGINS_COPY.lead), t(PLUGINS_COPY.marketplaceCta), t(PLUGINS_COPY.docsCta),
     ]),
-    section("/plugins", "choose-title", pluginTitle, t(INTEGRATIONS_COPY.chooseTitle), [
-      t(INTEGRATIONS_COPY.chooseLead), ...INTEGRATION_CHOICES.flatMap(choice => [t(choice.title), t(choice.detail)]),
+    section("/plugins", "kinds-title", pluginTitle, t(PLUGINS_COPY.kindsTitle), [
+      ...PLUGIN_KINDS.flatMap(kind => [t(kind.title), t(kind.detail)]),
+      t(PLUGINS_COPY.originBefore) + t(PLUGINS_COPY.originName) + t(PLUGINS_COPY.originAfter), t(PLUGINS_COPY.dshStatus), t(PLUGINS_COPY.dshLink),
     ]),
-    section("/plugins", "cu-title", pluginTitle, t(PLUGINS_COPY.cuTitle), [
-      t(PLUGINS_COPY.cuLead), t(INTEGRATIONS_COPY.cuSetupNote), t(PLUGINS_COPY.cuToolsNote),
-      ...PLUGINS_COPY.cuFeatures.slice(0, 2).flatMap(feature => [t(feature.title), t(feature.detail)]),
+    section("/plugins", "connectors-title", pluginTitle, t(PLUGINS_COPY.connectorsTitle), [
+      t(PLUGINS_COPY.connectorsLead), ...CONNECTORS.map(connector => connector.name), t(PLUGINS_COPY.connectorsNote),
+      t(PLUGINS_COPY.connectorsGoogle), t(PLUGINS_COPY.connectorsDesktop), t(PLUGINS_COPY.connectorsLink),
     ]),
     section("/plugins", "catalog-title", pluginTitle, t(PLUGINS_COPY.catalogTitle), [
-      t(PLUGINS_COPY.catalogLead), t(PLUGINS_COPY.catalogBrowse), t(PLUGINS_COPY.catalogNote),
-      ...PLUGIN_EXAMPLES.flatMap(entry => [entry.title, t(entry.detail), `/plugin marketplace install codewhale ${entry.name}`]),
+      t(PLUGINS_COPY.catalogLead), ...CATALOG_FEATURED.flatMap(entry => [entry.title, t(entry.detail), `/plugin marketplace install codewhale ${entry.name}`]),
     ]),
-    section("/plugins", "mcp-title", pluginTitle, t(INTEGRATIONS_COPY.mcpTitle), [
-      t(INTEGRATIONS_COPY.mcpLead), MCP_SETUP_COMMANDS, t(INTEGRATIONS_COPY.mcpLink),
+    section("/plugins", "safe-title", pluginTitle, t(PLUGINS_COPY.safeTitle), [
+      t(PLUGINS_COPY.safeLead), ...PLUGINS_COPY.safeSteps.flatMap(step => [t(step.title), step.command, t(step.detail)]),
+      t(PLUGINS_COPY.safeHashes), t(PLUGINS_COPY.sourcesLead), PLUGIN_SOURCES,
     ]),
-    section("/plugins", "compatibility-title", pluginTitle, t(INTEGRATIONS_COPY.compatibilityTitle), [
-      t(INTEGRATIONS_COPY.compatibilityLead), ...PLUGIN_COMPATIBILITY.flatMap(format => [t(format.title), t(format.detail)]),
+    section("/plugins", "reference-title", pluginTitle, t(PLUGINS_COPY.referenceTitle), [
+      ...PLUGIN_COMMANDS, ...PLUGIN_COMPATIBILITY.flatMap(format => [t(format.title), t(format.detail)]),
     ]),
-    section("/plugins", "sources-title", pluginTitle, t(PLUGINS_COPY.sourcesTitle), [
-      t(PLUGINS_COPY.sourcesLead), ...PLUGINS_COPY.sources.flatMap(source => [t(source.title), t(source.detail), source.reference]),
-    ]),
-    section("/plugins", "trust-title", pluginTitle, t(PLUGINS_COPY.trustTitle), [
-      t(PLUGINS_COPY.trustLead), ...PLUGINS_COPY.trustSteps.flatMap(step => [t(step.title), t(step.detail)]), t(PLUGINS_COPY.trustNote),
-    ]),
-    section("/plugins", "contribute-title", pluginTitle, t(INTEGRATIONS_COPY.contributeTitle), [
-      t(INTEGRATIONS_COPY.contributeLead), t(PLUGINS_COPY.docsCta), t(INTEGRATIONS_COPY.catalogLink),
-    ]),
-    section("/plugins", "commands-title", pluginTitle, t(PLUGINS_COPY.commandsTitle), [
-      t(PLUGINS_COPY.commandsLead), ...PLUGIN_COMMANDS, t(PLUGINS_COPY.docsCta),
+    section("/plugins", "contribute-title", pluginTitle, t(PLUGINS_COPY.contributeTitle), [
+      t(PLUGINS_COPY.contributeLead), t(PLUGINS_COPY.docsCta), t(PLUGINS_COPY.contributeLink),
     ]),
     section("/constitution", "constitution-overview", constitution.title, constitution.title, [
       constitution.kicker, constitution.titleAside, constitution.lede, constitution.since, constitution.sinceBody,

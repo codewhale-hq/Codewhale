@@ -27,8 +27,8 @@ describe("article section search", () => {
         ["winget install --id", "/install#install-overview"],
         ["codewhale --version", "/install#install-verify"],
         ["DEEPSEEK_API_KEY", "/models#models-setup"],
-        ["/plugin trust <name>", "/plugins#commands-title"],
-        ["extension_host", "/plugins#compatibility-title"],
+        ["/plugin trust <name>", "/plugins#safe-title"],
+        ["extension_host", "/plugins#reference-title"],
         [".codewhale/constitution.json", "/constitution#constitution-rank"],
         [CONSTITUTION_SCENES[2].trace, "/constitution#constitution-trace"],
       ];
