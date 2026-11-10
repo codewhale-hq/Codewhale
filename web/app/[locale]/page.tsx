@@ -10,6 +10,9 @@ import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { LivingHeroWhale } from "@/components/living-hero-whale";
 import { getFacts } from "@/lib/facts";
 import { GoalList } from "@/components/goal-list";
+import { FaceWall, MergedList, PulseStats } from "@/components/project-pulse";
+import { WhalePose } from "@/components/whale-pose";
+import { loadProjectPulse } from "@/lib/project-pulse";
 import { PROJECT_COPY } from "@/lib/content/project";
 import { PLUGINS_COPY } from "@/lib/content/plugins";
 import { PRODUCT_COPY } from "@/lib/content/product";
@@ -44,6 +47,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const d = getHome(locale);
   const facts = await getFacts();
   const updates = await getReleaseUpdates(facts.latestPublishedRelease);
+  const pulse = await loadProjectPulse(5, 48);
   const sourceVersion = facts.version ?? "unknown";
   const publishedRelease = updates.terminal.release;
   const sourceIsPublished = publishedRelease?.version === sourceVersion;
@@ -202,18 +206,24 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
         <Section
           id="home-community"
           className="home-section home-community"
-          title={pickText(PROJECT_COPY.loopHeading, locale)}
-          scope={fill(pickText(PROJECT_COPY.loopScope, locale), { count: facts.contributorCount })}
+          label={pulse.merged.length > 0 ? pickText(PROJECT_COPY.liveLabel, locale) : undefined}
+          title={pickText(PROJECT_COPY.liveHeading, locale)}
+          scope={pickText(PROJECT_COPY.liveScope, locale)}
+          link={<Link href={`/${locale}/feed`} className="section-link">{pickText(PROJECT_COPY.liveLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
         >
-          <ol className="home-loop" role="list">
-            {PROJECT_COPY.loop.map((step, index) => (
-              <li key={step.title.en}>
-                <span className="goal-number tabular" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
-                <h3>{pickText(step.title, locale)}</h3>
-                <p>{pickText(step.body, locale)}</p>
-              </li>
-            ))}
-          </ol>
+          <div className="pulse">
+            <div className="pulse-side">
+              <WhalePose pose="pod" className="pulse-pose" />
+              <PulseStats stats={pulse.stats} contributors={facts.contributorCount} locale={locale} />
+            </div>
+            {pulse.merged.length > 0 ? (
+              <div className="pulse-main">
+                <h3 className="pulse-heading"><span className="status status-live"><span className="status-dot" aria-hidden="true" />{pickText(PROJECT_COPY.mergedHeading, locale)}</span></h3>
+                <MergedList items={pulse.merged} locale={locale} />
+              </div>
+            ) : null}
+          </div>
+          <FaceWall faces={pulse.faces} total={facts.contributorCount} locale={locale} />
           <div className="actions">
             <a href={`${REPO_ISSUES_URL}/new/choose`} className="btn btn-primary btn-lg">
               {pickText(PROJECT_COPY.loopFeedback, locale)}

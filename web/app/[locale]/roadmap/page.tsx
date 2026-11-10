@@ -3,6 +3,7 @@ import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { Status, type StatusTone } from "@/components/status-badge";
 import { getCachedRoadmap, type RoadmapItem } from "@/lib/roadmap-feed";
+import { fetchMilestones, type MilestoneProgress } from "@/lib/github";
 import { getEnv } from "@/lib/kv";
 import { GoalList } from "@/components/goal-list";
 import { PROJECT_COPY, PROJECT_RELEASES, RELEASE_STATE_LABEL, type ReleaseState } from "@/lib/content/project";
@@ -185,6 +186,14 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
     /* keep static fallback */
   }
 
+  let milestones: MilestoneProgress[] = [];
+  try {
+    milestones = await fetchMilestones((await getEnv()).GITHUB_TOKEN);
+  } catch {
+    milestones = [];
+  }
+  const progressFor = (href: string) => milestones.find((m) => href.endsWith(`/${m.number}`));
+
   const links = [
     { title: "Issues", detail: t.issuesDetail, href: "https://github.com/codewhale-hq/CodeWhale/issues" },
     { title: "Discussions", detail: t.discussionsDetail, href: "https://github.com/codewhale-hq/CodeWhale/discussions/new?category=ideas" },
@@ -235,6 +244,17 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
                 <dd>
                   <Status tone={RELEASE_TONES[release.state]}>{pickText(RELEASE_STATE_LABEL[release.state], locale)}</Status>
                   {pickText(release.body, locale)}
+                  {(() => {
+                    const progress = progressFor(release.href);
+                    const total = progress ? progress.open + progress.closed : 0;
+                    if (!progress || total === 0) return null;
+                    return (
+                      <span className="tide-progress">
+                        <span className="tide-track" aria-hidden="true"><span style={{ inlineSize: `${Math.round((progress.closed / total) * 100)}%` }} /></span>
+                        <span className="tabular">{fill(pickText(PROJECT_COPY.milestoneProgress, locale), { closed: progress.closed, total })}</span>
+                      </span>
+                    );
+                  })()}
                 </dd>
               </div>
             ))}

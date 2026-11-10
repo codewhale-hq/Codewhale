@@ -17,6 +17,8 @@ Sources: UT Dallas JSOM Business Communication Center guides
 10. **Exact product vocabulary.** Plan / Work / Operate, Ask / Auto-Review / Full Access, Fleet, Runtime, `codewhale exec`, `/provider`, `/model`.
 11. **No public pricing. No desktop download offer.** Placeholders (`{brand}`, `{version}`, `{tag}`) stay verbatim.
 
+12. **Write whole sentences.** No short, choppy fragments or stacked two-word slogans ("Any model. Your machine."), in headlines or body. A heading may be a plain noun phrase; a slogan built from fragments is not. (Founder, 2026-11-10.)
+
 ## Slop blacklist
 Words: seamless, powerful, unlock, leverage, empower, effortless, robust,
 cutting-edge, journey, elevate, supercharge, revolutionize, next-generation,

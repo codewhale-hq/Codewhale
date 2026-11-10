@@ -3,10 +3,10 @@ import type { HomeDict } from "../types";
 /** Arabic home copy: useful work with chosen models and connected tools. */
 
 export const home: HomeDict = {
-  metaTitle: "Codewhale · وكيل مفتوح المصدر لجهاز الكمبيوتر الخاص بك",
-  metaDescription: "Codewhale وكيل برمجة مفتوح المصدر للطرفية. اقرأ المشاريع وعدّلها واختبرها باستخدام نماذجك المستضافة أو المحلية.",
-  heroTitle: "وكيل مفتوح المصدر لجهاز الكمبيوتر الخاص بك",
-  heroIntro: "أنشئ البرمجيات وشغّل مسارات عمل قابلة للتكرار باستخدام {brand} في الطرفية. أضف Computer Use للعمل في تطبيقات Mac.",
+  metaTitle: "Codewhale · استخدم أي نموذج عبر وكيل يمكنك قراءته",
+  metaDescription: "Codewhale هو الوكيل مفتوح المصدر بينك وبين أي نموذج. اقرأ شيفرته أو اطلب منه أن يشرح نفسه. مجتمع دولي يحسّنه مع كل إصدار.",
+  heroTitle: "استخدم أي نموذج عبر وكيل يمكنك قراءته",
+  heroIntro: "{brand} هو الوكيل مفتوح المصدر بينك وبين النموذج. اقرأ شيفرته، أو اطلب منه أن يقرأ شيفرته بنفسه ويشرح ما يفعله. مجتمع دولي يحسّنه مع كل إصدار.",
   getCodewhale: "ثبّت Codewhale",
   heroInstallAria: "أمر التثبيت",
   exploreProduct: "استكشف Codewhale",

@@ -3,10 +3,10 @@ import type { HomeDict } from "../types";
 /** Indonesian home copy: useful work with chosen models and connected tools. */
 
 export const home: HomeDict = {
-  metaTitle: "Codewhale · Agen sumber terbuka untuk komputermu",
-  metaDescription: "Codewhale adalah agen pemrograman sumber terbuka untuk terminal. Baca, edit dan uji proyek dengan model jarak jauh atau lokal pilihan Anda.",
-  heroTitle: "Agen sumber terbuka untuk komputermu",
-  heroIntro: "Bangun perangkat lunak dan jalankan alur kerja yang dapat diulang dengan {brand} di terminalmu. Tambahkan Computer Use untuk bekerja di aplikasi Mac.",
+  metaTitle: "Codewhale · Gunakan model apa pun lewat agen yang bisa Anda baca",
+  metaDescription: "Codewhale adalah agen sumber terbuka di antara Anda dan model apa pun. Baca kodenya, atau minta ia menjelaskan dirinya. Komunitas internasional memperbaikinya di setiap rilis.",
+  heroTitle: "Gunakan model apa pun lewat agen yang bisa Anda baca",
+  heroIntro: "{brand} adalah agen sumber terbuka di antara Anda dan model. Baca kodenya, atau minta ia membaca kodenya sendiri dan menjelaskan apa yang dilakukannya. Komunitas internasional memperbaikinya di setiap rilis.",
   getCodewhale: "Instal Codewhale",
   heroInstallAria: "Perintah instalasi",
   exploreProduct: "Jelajahi Codewhale",

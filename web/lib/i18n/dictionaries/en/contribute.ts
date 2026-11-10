@@ -6,7 +6,7 @@ export const contribute: ContributeDict = {
     "All feedback helps Codewhale, with or without code. Find where a bug, an idea, a translation, a provider or a fix should go.",
   kicker: "Build Codewhale together",
   title: "Help build Codewhale",
-  lede: "All feedback helps, with or without code. A bug, an idea or a screen that looked wrong is enough to start.",
+  lede: "All feedback helps, with or without code, and a bug, an idea or a screen that looked wrong is enough to start.",
   fileIssue: "Open an issue",
   browsePulls: "Browse pull requests",
   fullGuide: "Contributor guide",

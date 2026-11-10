@@ -395,24 +395,8 @@
 .home-goals .section-title { max-width: 14ch; }
 .home-goals .btn { margin-top: var(--space-6); }
 
-.home-loop {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-6);
-  margin-top: var(--space-7);
-  counter-reset: none;
-}
-.home-loop li { display: grid; align-content: start; gap: var(--space-2); padding-top: var(--space-4); border-top: 1px solid var(--line-strong); }
-.home-loop h3 { font-size: var(--text-heading); font-weight: 600; }
-.home-loop p { color: var(--muted); line-height: 1.6; }
 .home-community .actions { margin-top: var(--space-7); }
 .home-install .actions { margin: 0; }
-@media (max-width: 900px) {
-  .home-loop { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 520px) {
-  .home-loop { grid-template-columns: minmax(0, 1fr); }
-}
 @media (forced-colors: active) {
   .home-goals::before { background: CanvasText; }
 }

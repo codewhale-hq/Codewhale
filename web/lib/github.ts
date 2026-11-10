@@ -326,6 +326,67 @@ export async function loadFeed(token?: string, limit = 30): Promise<FeedLoad> {
   return { items: kept, issuesStatus, pullsStatus };
 }
 
+export interface Face {
+  login: string;
+  avatar: string;
+}
+
+export async function fetchFaces(token?: string, limit = 100): Promise<Face[]> {
+  if (isProductionBuild()) return [];
+  const res = await fetch(`${GH}/repos/${REPO}/contributors?per_page=${limit}`, {
+    headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
+    next: { revalidate: 3600 },
+  });
+  const people = await responseArray<{ login?: string; avatar_url?: string; type?: string }>(res);
+  return people
+    .filter((p) => p.login && p.avatar_url && p.type !== "Bot" && !isBot(p.login))
+    .map((p) => ({ login: p.login as string, avatar: p.avatar_url as string }));
+}
+
+export interface MilestoneProgress {
+  number: number;
+  open: number;
+  closed: number;
+}
+
+export async function fetchMilestones(token?: string): Promise<MilestoneProgress[]> {
+  if (isProductionBuild()) return [];
+  const res = await fetch(`${GH}/repos/${REPO}/milestones?state=open&per_page=30`, {
+    headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
+    next: { revalidate: 1800 },
+  });
+  const rows = await responseArray<{ number?: number; open_issues?: number; closed_issues?: number }>(res);
+  return rows
+    .filter((m) => typeof m.number === "number")
+    .map((m) => ({ number: m.number as number, open: m.open_issues ?? 0, closed: m.closed_issues ?? 0 }));
+}
+
+export interface OpenIssue {
+  number: number;
+  title: string;
+  url: string;
+  comments: number;
+  labels: string[];
+}
+
+export async function fetchLabelled(label: string, token?: string, limit = 6): Promise<OpenIssue[]> {
+  if (isProductionBuild()) return [];
+  const res = await fetch(
+    `${GH}/repos/${REPO}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=${limit}&sort=updated&direction=desc`,
+    { headers: headers(token), signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS), next: { revalidate: 1800 } },
+  );
+  const rows = await responseArray<RawIssue>(res);
+  return rows
+    .filter((i) => !i.pull_request)
+    .map((i) => ({
+      number: i.number,
+      title: i.title,
+      url: i.html_url,
+      comments: i.comments,
+      labels: (i.labels ?? []).map((l) => l.name).filter((name) => name !== label),
+    }));
+}
+
 async function responseArray<T>(res: Response): Promise<T[]> {
   if (!res.ok) return [];
   const body = await res.json().catch(() => null);

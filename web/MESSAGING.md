@@ -19,9 +19,12 @@ competitor quality, adoption or completeness.
 
 ## The supported position
 
-**An open-source agent for your computer.** The category comes first; the
-terminal demo and optional Mac Computer Use explain its scope. The existing
-Moda kit supplies the visual identity, not a mandatory slogan.
+**Use any model through an agent you can read.** (founder, 2026-11-10.) The model is the
+part nobody can inspect. Codewhale is the open-source agent between the reader
+and that model: it decides what is sent, which tools run and what is allowed,
+and its code can be read, or Codewhale can be asked to read its own code and
+explain it. An international community improves it with every release. The
+earlier headline, "An open-source agent for your computer", is retired.
 Codewhale combines a model-neutral local agent, coordinated model
 teams, reusable Workflows, connected tools and an independently released
 Computer Use plugin, with visible permissions and recorded execution.
