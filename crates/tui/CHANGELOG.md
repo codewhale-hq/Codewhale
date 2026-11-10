@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; these website changes still await deployment.
-
-- **Chinese docs:** a short setup page for people new to Codewhale ([zh_hans/PROVIDER_QUICKSTART.md](docs/zh_hans/PROVIDER_QUICKSTART.md)) walks through choosing a provider, setting an API key on macOS, Linux or Windows, picking a model and reading `codewhale doctor --probe-api` when the first call fails; the Receipts, Claude plugin compatibility and GitHub review bot pages are now translated into Simplified Chinese and linked from the Chinese index ([#7266](https://github.com/codewhale-hq/Codewhale/pull/7266), [#7264](https://github.com/codewhale-hq/Codewhale/pull/7264), [#7263](https://github.com/codewhale-hq/Codewhale/pull/7263), [#7265](https://github.com/codewhale-hq/Codewhale/pull/7265)). Thanks [@luochen211](https://github.com/luochen211).
-
-- **Recovery safeguards:** workflows reject results that cannot yet exist, implicit session storage refuses an unresolved home, and future-dated provider catalogs cannot stay fresh indefinitely.
-
-- **Permissions:** saved permission choices, including Ask on existing and new installs, survive upgrades and restarts; managed approval policies keep their stricter startup posture when using the new permission dial, and Settings shows Accept Edits as the unconfigured default.
-
 ## [0.10.3] - 2026-11-08
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release
@@ -34,12 +26,17 @@ tag. Items moved to 0.10.4 by name are marked below.
   app, and an Engine restart loses live shells (reported as a new terminal
   `instance`).
   Scrollback beyond the 512 KiB ring is not recoverable.
-- **Windows suite (0.10.3 work item):** the Windows Test job is not green on the
-  current candidate. Scripted journeys are being brought to zero on GitHub-hosted
+- **Windows suite (0.10.3 work item):** the Windows Test job has not been shown
+  green on this candidate. Windows fixes for plugin runtime-root permissions,
+  Fleet ledger compaction and the Fleet role profile lock have landed, but only
+  a green run on the exact final SHA closes this. Scripted journeys are being brought to zero on GitHub-hosted
   native x64 runners; macOS and Linux results do not establish Windows.
 - **Codex App Server compatibility (0.10.3 work item):** the parity bar is Tiers
   A and B (about 55 methods) implemented and Tier C (about 50 Codex-product
   methods) returning "method not found" against a committed inventory. The
+  typed Tier A and B method names and that inventory are now committed in the
+  protocol crate and checked against the pinned Codex export; parameter and
+  response types per method and the dispatch are not part of that change. The
   current HTTP/SSE Runtime remains available; full-tool turns, subscriptions,
   bidirectional interactions, durable settlements, TCP WebSocket and the
   complete SDK remain unfinished in this source candidate. The legacy JSON-RPC
@@ -48,7 +45,9 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **DSH plugins and MCP lifecycle (0.10.3 work item):** "full" compatibility
   means all 33 surveyed plugins, unmodified, each passing its core journey on
   macOS, Linux and Windows, against DSH 0.2.2-rc.1. The uplift comes first;
-  receipts from 0.2.1-rc.5 and earlier are not carried. The source candidate
+  receipts from 0.2.1-rc.5 and earlier are not carried. The host uplift to
+  DSH 0.2.2-rc.1 (Cordis 4.1.0) is in the candidate; no plugin receipt has been
+  recorded against it yet. The source candidate
   restores missing runtime snapshots only from canonical bytes matching the
   current review, generation and policy. Existing mismatched or tampered
   snapshots refuse and require review. Native lifecycle qualification,
@@ -57,6 +56,15 @@ tag. Items moved to 0.10.4 by name are marked below.
   Imported DSH client UIs refuse descriptor and asset grants; their supported
   Native and MCP contributions retain their existing lifecycle.
   Downgrading a newly saved plugin marketplace catalog remains unqualified.
+- **External agents as whole sessions (0.10.3 work item):** a session can run
+  on an installed agent CLI, and shutdown, restart recovery and durable approval
+  answers are now in the candidate. Verification so far uses fixture agents;
+  each real agent CLI, steering, compaction, forking and images remain
+  unqualified or unavailable.
+- **One permission dial (0.10.3 work item):** Shift+Tab steps through every
+  posture and Plan, Accept Edits is the default, and saved choices and strict
+  managed startup are preserved. A founder pass through every stop on a real
+  terminal and on each client that reads the posture has not been recorded.
 - **ChatGPT sign-in on Windows (0.10.3 work item):** the reported 0.10.2
   post-browser identity verification failure has not been confirmed resolved in
   the reporter's environment. More specific errors and clock-skew handling are
@@ -85,10 +93,8 @@ tag. Items moved to 0.10.4 by name are marked below.
   downgrades and older builds reporting the same version remain outside the guard.
 - **Moved to 0.10.4 — long-running ZAI sessions:** scoped watchdog and recovery
   checks do not establish a fix for the original hours-long, tool-heavy silent
-  stall; any further CW-6633 hardening moves with it.
+  stall; any further hardening moves with it.
   ([#6184](https://github.com/codewhale-hq/Codewhale/issues/6184))
-- **Moved to 0.10.4 — audit trackers:** every open row of CW-6943, CW-6945 and
-  CW-6950 is moved by name; CW-6944 is not moved.
 
 ### Added
 
@@ -116,7 +122,7 @@ tag. Items moved to 0.10.4 by name are marked below.
   Steering, compaction, forking and images are not available in these
   sessions. Quitting Codewhale, or abandoning a session while its agent is
   still starting, ends that agent before shutdown finishes. See
-  `docs/RUNTIME_API.md` (CW-7879).
+  `docs/RUNTIME_API.md`.
 - **DSH market indexes are readable:** `/plugin marketplace add` and
   `GET /v1/apps/marketplaces` now parse the DeepSeek Harness plugin market
   index (format 1) alongside the Kimi, Claude, Codex and Codewhale catalogs.
@@ -126,14 +132,13 @@ tag. Items moved to 0.10.4 by name are marked below.
   `engines.dsh` range admits none of the DSH versions this host targets is
   refused before any download. npm sources are listed but not installable
   (Codewhale does not execute npm), and a commit-pinned GitHub source without
-  a package subdirectory installs from the pinned commit. (CW-7051)
+  a package subdirectory installs from the pinned commit.
 - **Plugin catalog over the Runtime API:** `GET /v1/apps/plugins/catalog`
   lists the built-in plugin settings (Subagent, Web search, Shell, Agent
   loop), the experimental features and the remaining features as rows the
   desktop Plugins page renders directly. Enable, disable and the subagents
   concurrency setting persist through the same config writer and reload as
-  `/v1/config`; the agent loop itself cannot be turned off. (CW-7051,
-  CW-7929)
+  `/v1/config`; the agent loop itself cannot be turned off.
 - **Optional host policy on model HTTP clients:** embedders can install an
   in-memory `ModelHttpPolicy` that vets or configures the HTTP builder for
   the primary, model-list, HTTP/1.1 and vision transports before a client is
@@ -147,7 +152,7 @@ tag. Items moved to 0.10.4 by name are marked below.
   `require` exports and bundled `node_modules`) alongside ESM. Admission
   checks `engines.dsh` as a real npm semver range against the host's supported
   DSH versions and refuses bundles whose `dsh.bundle.platforms` excludes this
-  computer; native `.node` addons stay refused. (CW-7051, CW-7054)
+  computer; native `.node` addons stay refused.
 - **Prune pasted images:** `codewhale sessions prune-images` lists pasted
   clipboard images that no saved session, checkpoint, Runtime thread, draft or
   history still names and that are older than 7 days (`--older-than-days`);
@@ -221,7 +226,7 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **Attested watch-turn ingress (preview):** a configured Runtime master bearer can admit typed schedule or pull-request receipts through the existing thread and turn owner, with exact operation replay and read-only recovery lookup. This supplies the Native ingress prerequisite; it does not qualify the complete continuous-operation workflow.
 
 - Goal continuations send the objective once per live conversation window. Later passes show the current goal state, estimated conversation input and the applicable compaction setting. Full notes stay available through `get_goal`. Thanks [@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX) for measuring the repeated text and identifying the misleading token figure ([#7172](https://github.com/codewhale-hq/Codewhale/issues/7172)).
-- **Composition on the first request:** `execute_tools` accepts a bounded named batch from the current MCP catalog, with argument names from its allowed members and the same nested gate as a JavaScript program. Exact tool-name searches work with regex anchors. Stream receipts hash the executable in the background; `CODEWHALE_TIMING=1` reports phase durations. (CW-7649)
+- **Composition on the first request:** `execute_tools` accepts a bounded named batch from the current MCP catalog, with argument names from its allowed members and the same nested gate as a JavaScript program. Exact tool-name searches work with regex anchors. Stream receipts hash the executable in the background; `CODEWHALE_TIMING=1` reports phase durations.
 - **The model can read what compaction replaced (#7173):** two read-only tools,
   `context_archive_search` and `context_archive_get`, search the session's
   saved pre-compaction snapshots and read one archived message by id, with
@@ -328,6 +333,10 @@ tag. Items moved to 0.10.4 by name are marked below.
   picking a terminal view brings the whale back. Reduced motion keeps the still
   whale. Not yet published to codewhale.net.
 
+- **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; the homepage leads with the live project and a new headline, a public roadmap and contributing guide put issues first for features, the shared project sections are translated into all 18 site locales, task guides no longer carry the retired mode instructions, and the missing-reply guide diagnoses a failing provider call without assuming the key is missing. These website changes still await deployment.
+
+- **Chinese docs:** a short setup page for people new to Codewhale ([zh_hans/PROVIDER_QUICKSTART.md](docs/zh_hans/PROVIDER_QUICKSTART.md)) walks through choosing a provider, setting an API key on macOS, Linux or Windows, picking a model and reading `codewhale doctor --probe-api` when the first call fails; the Receipts, Claude plugin compatibility and GitHub review bot pages are now translated into Simplified Chinese and linked from the Chinese index ([#7266](https://github.com/codewhale-hq/Codewhale/pull/7266), [#7264](https://github.com/codewhale-hq/Codewhale/pull/7264), [#7263](https://github.com/codewhale-hq/Codewhale/pull/7263), [#7265](https://github.com/codewhale-hq/Codewhale/pull/7265)). Thanks [@luochen211](https://github.com/luochen211).
+
 ### Changed
 
 - **`read` pages in lines only (breaking).** One `read` call returns at
@@ -388,7 +397,7 @@ tag. Items moved to 0.10.4 by name are marked below.
   `permission_posture: "accept_edits"`, settings and `config.toml`
   `accept-edits`. Project config may tighten Accept Edits to Ask but never
   loosen Ask to it. ACP sessions run it as Ask.
-- **One permission dial; Tab no longer changes the mode (CW-7890):** Shift+Tab
+- **One permission dial; Tab no longer changes the mode:** Shift+Tab
   steps Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask. Plan is the
   Plan mode; every other stop is Work with that posture. Tab only completes
   commands, file mentions and suggestions. The footer shows one chip for the
@@ -400,12 +409,15 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **Accept Edits is the default posture:** new installs, unset settings and new
   Runtime threads that send no `permission_posture` start on Accept Edits. A
   saved permission posture, including `ask` from an earlier build, is preserved.
-  The "Normal agent" setup preset now writes Accept Edits.
+  The "Normal agent" setup preset now writes Accept Edits and Settings shows it
+  as the unconfigured default. Saved choices, including Ask on existing and new
+  installs, survive upgrades and restarts, and managed approval policies keep
+  their stricter startup posture when the dial is used.
   ACP still runs Accept Edits as Ask.
 - **Full Access copy says what it does:** its settings description now reads
   "Tools run without asking first, and commands can reach anything on this
   computer." in every language, instead of implying a folder fence.
-- **Operate compatibility (CW-7849):** `/mode operate` selects Work and says
+- **Operate compatibility:** `/mode operate` selects Work and says
   Operate was retired; a Runtime API request with `mode: "operate"` runs as
   `agent` with the default posture and logs one notice per process, never an
   error. Agents forked from a conversation saved by an earlier Operate build no
@@ -533,12 +545,12 @@ tag. Items moved to 0.10.4 by name are marked below.
   symlink loop, the session warns once, naming the path, and keeps going
   without durable sub-agent cleanup instead of erroring every cycle. A
   state directory that exists but is invalid still refuses, and the
-  credentials-directory error now says which case it hit. (CW-7875)
+  credentials-directory error now says which case it hit.
 - **`resume` and `fork` work without a terminal:** run from a pipe, cron job
   or other non-TTY launcher, `codewhale resume` (and `fork`, which forks
   first) now continues the session through the headless `exec` path — prompt
   from stdin or trailing words — instead of refusing to start. In a real
-  terminal both still open the TUI. (CW-7891)
+  terminal both still open the TUI.
 - **An MCP capture that fails no longer reads as an empty registry.** A
   timed-out or changed-during-capture MCP snapshot emits nothing instead of
   withdrawing every server's instructions; withdrawals now happen only on a
@@ -659,7 +671,7 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **The command palette keeps your draft (#7205):** picking a command that takes an argument, such as `/rename`, no longer discards what was in the composer; the draft is stashed so history search can recover it. Thanks [@Lstarsky0](https://github.com/Lstarsky0).
 - **Old sessions restore with the topology checkpoint in place (#7229):** sessions saved by v0.9.10 to v0.9.12 that compacted with live sub-agents placed the agent-topology checkpoint at the end of the history, which left a tool-then-user message pair that strict Chat Completions templates reject with HTTP 400. Restore now moves the checkpoint to where current saves place it, deletes nothing, and a restore followed by a re-compaction no longer keeps a superseded duplicate. Thanks [@asto18089](https://github.com/asto18089).
 - **`/patch-undo` undoes the turn you chose (#7216):** `POST /v1/threads/{id}/patch-undo` ignored `turn_id` and undid the latest turn instead, so a caller got a different turn than `/undo` removes for the same request. It now removes the named turn and every turn after it. `GET` previews the exact turns and the files that would be restored; sending them back as `expected_turn_ids` and `expected_paths` makes a changed selection answer `409 undo_selection_changed` before any file is touched. Clients should require the `thread_patch_undo_turn_id` capability before sending a selected turn, because older Engines ignore the field. Thanks [@soarkit](https://github.com/soarkit) for the report.
-- **`grep_files` matches brace and nested-directory globs (#7215):** `include` patterns such as `*.{txt,md}` and `**/*.{txt,md}` no longer return an empty result with no error; they match the same files the equivalent separate globs do, at the root and in nested directories. Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+- **`grep_files` matches brace and nested-directory globs (#7215):** `include` patterns such as `*.{txt,md}` and `**/*.{txt,md}` no longer return an empty result with no error; they match the same files the equivalent separate globs do, at the root and in nested directories. Nested brace groups and long runs of `**/` are now bounded, so a hostile pattern can no longer expand to billions of patterns or hang the search ([#7254](https://github.com/codewhale-hq/Codewhale/pull/7254)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
 - **Sub-agent write claims accept absolute in-workspace paths (#7227):** a write-capable sub-agent that spelled an in-workspace target as an absolute path was refused while the relative spelling succeeded. Absolute paths that resolve inside the claimed workspace are accepted; paths outside it, `..` traversal and symlinked ancestors that escape are refused exactly as before. Thanks [@asto18089](https://github.com/asto18089).
 - **WeCom replies are split by UTF-8 bytes (#7209):** the WeCom bridge now caps each reply chunk at 3,800 bytes (`WECOM_MAX_REPLY_BYTES`) on code-point boundaries, so a long Chinese reply is no longer delivered silently truncated at WeCom's 4,096-byte limit. Callers that do not pass a byte cap keep their behavior. Thanks [@gaord](https://github.com/gaord).
 - **`file_search` reports workspace-root paths (#7213):** a search scoped with `path` now returns matches the way `read` and `grep_files` resolve them, so reading a result opens the file that matched. A `path` naming one file and glob searches under a subdirectory are fixed too. Thanks [@Lstarsky0](https://github.com/Lstarsky0).
@@ -714,7 +726,7 @@ tag. Items moved to 0.10.4 by name are marked below.
 - The WinGet manifest generator now selects the published x64 portable executable by exact name and records its checksum and Visual C++ dependency.
 - The Windows setup uninstaller preserves a trailing separator in the current-user PATH and retains other settings stored in the CodeWhale registry key.
 - Inline code in terminal replies preserves embedded backticks. Text after an unmatched delimiter keeps its normal styling. Thanks [@Lstarsky0](https://github.com/Lstarsky0). [#7185](https://github.com/codewhale-hq/Codewhale/pull/7185)
-- Windows Ctrl+Break and terminal-close events now request the same bounded session checkpoint and persistence flush as Ctrl+C (CW-7553).
+- Windows Ctrl+Break and terminal-close events now request the same bounded session checkpoint and persistence flush as Ctrl+C.
 - When a keyless local Ollama route has no resolved chat model, retrying `/provider ollama` refreshes the catalog in the background. You can keep typing while the daemon responds. [#5848](https://github.com/codewhale-hq/Codewhale/issues/5848)
 - Auto checks the served context window on an active keyless Ollama route when its default model still has an unverified limit. A later turn can use the running model’s window once Ollama has loaded it. [#5848](https://github.com/codewhale-hq/Codewhale/issues/5848)
 - The bundled catalog recognizes the bare `deepseek-v4.1-flash` model ID. It reports a 1,000,000-token context window and a 384,000-token output ceiling. [#7183](https://github.com/codewhale-hq/Codewhale/pull/7183)
@@ -909,7 +921,27 @@ tag. Items moved to 0.10.4 by name are marked below.
   looks like a shell error.
 - **Website:** recovered warm paper, clear-blue actions and original drawn water accents; added Computer Use and automatically refreshed terminal/plugin release links; shortened copy, clarified contribution paths and checked setup guidance against published versions.
 
+- **Edit tool:** when an edit only matches after quote, dash or full-width normalization, the rest of the touched line keeps its original characters instead of being rewritten (`：１００（）` no longer becomes `:100()`), and two adjacent fuzzy edits no longer overlap ([#7257](https://github.com/codewhale-hq/Codewhale/pull/7257)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **File mentions:** an `@` mention typed straight after Chinese or Japanese text, such as `请看@src/main.rs`, now attaches the file, completes with Tab and shows its chip, and full-width closing punctuation after a mention is no longer read as part of the file name; mentioning two line ranges of one file attaches both instead of dropping the second ([#7258](https://github.com/codewhale-hq/Codewhale/pull/7258), [#7259](https://github.com/codewhale-hq/Codewhale/pull/7259)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **Footer context meter:** after `/load`, resume, `/branch` or a fork, the context percentage shows the restored conversation instead of the size of the one you left ([#7256](https://github.com/codewhale-hq/Codewhale/pull/7256)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **Custom commands:** a custom slash command now runs when its arguments follow a full-width space or start on a new line, instead of being reported as unknown ([#7260](https://github.com/codewhale-hq/Codewhale/pull/7260)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **/config:** the detail pane lines its values up in one column in every language, including locales with long or full-width labels such as Ukrainian and Chinese ([#7267](https://github.com/codewhale-hq/Codewhale/pull/7267)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **Recovery safeguards:** workflows reject results that cannot yet exist, implicit session storage refuses an unresolved home, and future-dated provider catalogs cannot stay fresh indefinitely.
+
+- **A provider timeout no longer reads "after 0ns":** a timed-out request used to report `Request timed out after 0ns`, which looked like a zero-length budget and hid the real failure. The retry loops now measure the elapsed time per attempt, and where it is unknown the message says so instead of printing a made-up duration ([#7253](https://github.com/codewhale-hq/Codewhale/pull/7253)). Thanks [@gaord](https://github.com/gaord).
+
+- **A failed send keeps what you typed since:** when a message fails to send after you have started a new draft, the failed message is stashed rather than written over the draft, so it stays recoverable ([#7255](https://github.com/codewhale-hq/Codewhale/pull/7255)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **Windows: plugins enable again on a finalized runtime root.** The sandboxed plugin host adds its own AppContainer read and execute grant to the finalized plugin root, and Windows stored the root's inheriting read/execute entry as more than one entry; both made enabling refuse. The root now carries one non-inheriting entry, the verifier still requires a protected owner-only DACL with nothing above read and execute, and the refusal names the underlying check. Fleet ledger compaction is no longer blocked by a live appender, and a blocked checkpoint inspection is reported as such instead of clearing save health. The Windows suite has not been shown green on this candidate, so this is not a Windows qualification.
+
 ### Security
+
+- **Pet companion owner token compared in constant time:** the local companion server's Bearer and cookie checks no longer use plain byte equality, so response timing cannot reveal how much of a guessed token matched. The surface was already loopback-only with Host and Origin pinning and a private owner-checked directory.
 
 - **MCP client advisory (RUSTSEC-2026-0462):** the MCP library moves to
   rmcp 3.9.0, closing unbounded response-body buffering in its Streamable
@@ -979,7 +1011,7 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 - **[@cmdcorp6534](https://github.com/cmdcorp6534)** — reported the Chinese input-method candidate window appearing away from the field being typed into ([#2323](https://github.com/codewhale-hq/Codewhale/issues/2323)).
 - **[@Asteria1028](https://github.com/Asteria1028)** — reported pasted clipboard images piling up with no way to remove them ([#7221](https://github.com/codewhale-hq/Codewhale/issues/7221)).
-- **[@zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)).
+- **[@zhuowp](https://github.com/zhuowp)** (git author `z27014`) — added bounded HTTP rate-limit recovery and corrected retry deadlines, quota guidance and recovery receipts ([#7220](https://github.com/codewhale-hq/Codewhale/pull/7220)). Allowed an optional host policy on model HTTP clients ([#7251](https://github.com/codewhale-hq/Codewhale/pull/7251)).
 - **[@printf033](https://github.com/printf033)** — enabled exclusive rename on Android so Fleet publication does not fall back to SELinux-denied hard links (`fbe9f24ee`).
 - **[@liuyy2](https://github.com/liuyy2)** — diagnosed case-sensitive model selection collisions in the provider picker ([#7214](https://github.com/codewhale-hq/Codewhale/issues/7214)).
 - **[@isaacs](https://github.com/isaacs)** — upstream minimatch preprocessing and glob cancellation fixes reused in compatible web build dependency backports.
@@ -988,9 +1020,9 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **[@d-onistack](https://github.com/d-onistack)** — reported ChatGPT sign-in failing token verification on Windows after a successful browser sign-in, with clock and endpoint checks that narrowed it to local verification ([#7203](https://github.com/codewhale-hq/Codewhale/issues/7203)).
 - **[@Felixkw12](https://github.com/Felixkw12)** — added Opper as a bundled provider ([#7131](https://github.com/codewhale-hq/Codewhale/pull/7131)).
 - **[@7jrxt42BxFZo4iAnN4CX](https://github.com/7jrxt42BxFZo4iAnN4CX)** — per-scope instruction budgets with visible truncation ([#7086](https://github.com/codewhale-hq/Codewhale/pull/7086), [#6526](https://github.com/codewhale-hq/Codewhale/issues/6526)).
-- **[@Lstarsky0](https://github.com/Lstarsky0)** — kept the `/diff` pager's place across a resize ([#7087](https://github.com/codewhale-hq/Codewhale/pull/7087)), said "Goal cleared." only when there was a goal ([#7089](https://github.com/codewhale-hq/Codewhale/pull/7089)), and stopped printing an unpriced session cost as `$0.0000` in `/status` ([#7090](https://github.com/codewhale-hq/Codewhale/pull/7090)), kept Normal-mode keys out of the draft on terminals without bracketed paste ([#7126](https://github.com/codewhale-hq/Codewhale/pull/7126)) and let shifted keys such as `G` reach Normal mode ([#7130](https://github.com/codewhale-hq/Codewhale/pull/7130)), kept the quote rail on every wrapped row of a blockquote ([#7144](https://github.com/codewhale-hq/Codewhale/pull/7144)), kept a nested list paragraph's indent ([#7146](https://github.com/codewhale-hq/Codewhale/pull/7146)), rendered `~~~` fences as code ([#7156](https://github.com/codewhale-hq/Codewhale/pull/7156)), left asterisks that do not open emphasis literal ([#7157](https://github.com/codewhale-hq/Codewhale/pull/7157)), ended bare URLs at full-width punctuation ([#7158](https://github.com/codewhale-hq/Codewhale/pull/7158)), kept a link target's own parentheses ([#7170](https://github.com/codewhale-hq/Codewhale/pull/7170)), rendered code and links inside emphasis ([#7171](https://github.com/codewhale-hq/Codewhale/pull/7171)) and stopped the engine's fleet-roster and stream-timeout statuses from taking over the footer ([#7152](https://github.com/codewhale-hq/Codewhale/pull/7152), [#7169](https://github.com/codewhale-hq/Codewhale/pull/7169)). Preserved indentation and space-only inline code in table cells ([#7184](https://github.com/codewhale-hq/Codewhale/pull/7184)). Reported `file_search` matches relative to the workspace ([#7213](https://github.com/codewhale-hq/Codewhale/pull/7213)). Matched brace and nested-directory globs in `grep_files` ([#7215](https://github.com/codewhale-hq/Codewhale/pull/7215)). Kept the draft when the command palette inserts a command ([#7205](https://github.com/codewhale-hq/Codewhale/pull/7205)).
-- **[@gaord](https://github.com/gaord)** — a running turn's cost and context in the Runtime ([#7074](https://github.com/codewhale-hq/Codewhale/pull/7074)) forks that measure the history they carry ([#7147](https://github.com/codewhale-hq/Codewhale/pull/7147)), and private state on a HarmonyOS mount that cannot express ownership ([#7168](https://github.com/codewhale-hq/Codewhale/pull/7168)). Capped WeCom reply chunks by UTF-8 bytes ([#7209](https://github.com/codewhale-hq/Codewhale/pull/7209)). Accepted media and voice messages on the WeCom bridge ([#7212](https://github.com/codewhale-hq/Codewhale/pull/7212)). Steered a running turn from the WeCom bridge ([#7211](https://github.com/codewhale-hq/Codewhale/pull/7211)). Surfaced WeCom API error details in bridge replies ([#7208](https://github.com/codewhale-hq/Codewhale/pull/7208)) and rotated WeCom stream replies before the ten-minute expiry ([#7210](https://github.com/codewhale-hq/Codewhale/pull/7210)); both were harvested with the original commits kept.
-- **[@luochen211](https://github.com/luochen211)** — one form per term in the Simplified Chinese pack ([#7150](https://github.com/codewhale-hq/Codewhale/pull/7150)) and dropped blanket dead-code allows in fleet alerts and the pet worker ([#7149](https://github.com/codewhale-hq/Codewhale/pull/7149)).
+- **[@Lstarsky0](https://github.com/Lstarsky0)** — kept the `/diff` pager's place across a resize ([#7087](https://github.com/codewhale-hq/Codewhale/pull/7087)), said "Goal cleared." only when there was a goal ([#7089](https://github.com/codewhale-hq/Codewhale/pull/7089)), and stopped printing an unpriced session cost as `$0.0000` in `/status` ([#7090](https://github.com/codewhale-hq/Codewhale/pull/7090)), kept Normal-mode keys out of the draft on terminals without bracketed paste ([#7126](https://github.com/codewhale-hq/Codewhale/pull/7126)) and let shifted keys such as `G` reach Normal mode ([#7130](https://github.com/codewhale-hq/Codewhale/pull/7130)), kept the quote rail on every wrapped row of a blockquote ([#7144](https://github.com/codewhale-hq/Codewhale/pull/7144)), kept a nested list paragraph's indent ([#7146](https://github.com/codewhale-hq/Codewhale/pull/7146)), rendered `~~~` fences as code ([#7156](https://github.com/codewhale-hq/Codewhale/pull/7156)), left asterisks that do not open emphasis literal ([#7157](https://github.com/codewhale-hq/Codewhale/pull/7157)), ended bare URLs at full-width punctuation ([#7158](https://github.com/codewhale-hq/Codewhale/pull/7158)), kept a link target's own parentheses ([#7170](https://github.com/codewhale-hq/Codewhale/pull/7170)), rendered code and links inside emphasis ([#7171](https://github.com/codewhale-hq/Codewhale/pull/7171)) and stopped the engine's fleet-roster and stream-timeout statuses from taking over the footer ([#7152](https://github.com/codewhale-hq/Codewhale/pull/7152), [#7169](https://github.com/codewhale-hq/Codewhale/pull/7169)). Preserved indentation and space-only inline code in table cells ([#7184](https://github.com/codewhale-hq/Codewhale/pull/7184)). Reported `file_search` matches relative to the workspace ([#7213](https://github.com/codewhale-hq/Codewhale/pull/7213)). Matched brace and nested-directory globs in `grep_files` ([#7215](https://github.com/codewhale-hq/Codewhale/pull/7215)). Kept the draft when the command palette inserts a command ([#7205](https://github.com/codewhale-hq/Codewhale/pull/7205)). Bounded nested brace expansion and repeated globstars in `grep_files` ([#7254](https://github.com/codewhale-hq/Codewhale/pull/7254)) and kept a typed draft when a failed send comes back ([#7255](https://github.com/codewhale-hq/Codewhale/pull/7255)).
+- **[@gaord](https://github.com/gaord)** — a running turn's cost and context in the Runtime ([#7074](https://github.com/codewhale-hq/Codewhale/pull/7074)) forks that measure the history they carry ([#7147](https://github.com/codewhale-hq/Codewhale/pull/7147)), and private state on a HarmonyOS mount that cannot express ownership ([#7168](https://github.com/codewhale-hq/Codewhale/pull/7168)). Capped WeCom reply chunks by UTF-8 bytes ([#7209](https://github.com/codewhale-hq/Codewhale/pull/7209)). Accepted media and voice messages on the WeCom bridge ([#7212](https://github.com/codewhale-hq/Codewhale/pull/7212)). Steered a running turn from the WeCom bridge ([#7211](https://github.com/codewhale-hq/Codewhale/pull/7211)). Surfaced WeCom API error details in bridge replies ([#7208](https://github.com/codewhale-hq/Codewhale/pull/7208)) and rotated WeCom stream replies before the ten-minute expiry ([#7210](https://github.com/codewhale-hq/Codewhale/pull/7210)); both were harvested with the original commits kept. Stopped provider timeouts reporting "after 0ns" ([#7253](https://github.com/codewhale-hq/Codewhale/pull/7253)).
+- **[@luochen211](https://github.com/luochen211)** — one form per term in the Simplified Chinese pack ([#7150](https://github.com/codewhale-hq/Codewhale/pull/7150)) and dropped blanket dead-code allows in fleet alerts and the pet worker ([#7149](https://github.com/codewhale-hq/Codewhale/pull/7149)). Added a Chinese provider setup page ([#7266](https://github.com/codewhale-hq/Codewhale/pull/7266)) and translated the Receipts ([#7264](https://github.com/codewhale-hq/Codewhale/pull/7264)), Claude plugin compatibility ([#7263](https://github.com/codewhale-hq/Codewhale/pull/7263)) and GitHub review bot ([#7265](https://github.com/codewhale-hq/Codewhale/pull/7265)) pages.
 - **[@gannp](https://github.com/gannp)** — reported vLLM effort values that ignored the local model template and fixed it with a reviewed template registry ([#7124](https://github.com/codewhale-hq/Codewhale/issues/7124), [#7125](https://github.com/codewhale-hq/Codewhale/pull/7125)).
 - **[Sh1Zuku / @SparkofSpike](https://github.com/SparkofSpike)** — resolved a relocated state root before session-side state opens ([#7097](https://github.com/codewhale-hq/Codewhale/pull/7097)) and made a goal pause to ask instead of inventing the answer ([#7175](https://github.com/codewhale-hq/Codewhale/pull/7175)), and gave the model a way back into the transcript compaction replaced ([#7173](https://github.com/codewhale-hq/Codewhale/pull/7173)). Also preserved journal history when a provisional input receives its Engine metadata ([#7180](https://github.com/codewhale-hq/Codewhale/pull/7180)). Added the bare DeepSeek V4.1 Flash catalog entry ([#7183](https://github.com/codewhale-hq/Codewhale/pull/7183)). Stopped a home-directory workspace from refusing its own state ([#7207](https://github.com/codewhale-hq/Codewhale/pull/7207)).
 - **[@ddlw](https://github.com/ddlw)** — repaired main for the 0.10.3 batch: clippy `-D warnings` across protocol, runtime, util and tui (boxed review and MCP-add payloads, scoped dead-code expectations, cfg-gated platform test helpers), rustfmt, split extension-host imports, the provider-registry identity check, Windows-stable DSH receipt bytes, and the first-party marketplace receipt ([#7108](https://github.com/codewhale-hq/Codewhale/pull/7108), [#7109](https://github.com/codewhale-hq/Codewhale/pull/7109)).
