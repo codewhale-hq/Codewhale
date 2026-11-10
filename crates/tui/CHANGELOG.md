@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cancelling or timing out a read-only Git tool (git_status, git_diff, git_commit_plan, git_log, git_show, git_blame, git_merge_tree) now stops the git process and anything it started, instead of leaving it running in the background. Verified on macOS by unit tests; Linux, Windows and hosted CI are not yet run, and the filter-override probe is still not contained.
 - TUI: the launch resume confirmation no longer treats Meta+Enter, Meta+Y or Hyper+Enter as "resume"; only a plain Enter/Y or Shift+Y answers it. Verified by the focused unit tests only; not tried in a terminal that sends Meta or Hyper.
 
 ## [0.10.3] - 2026-11-08
