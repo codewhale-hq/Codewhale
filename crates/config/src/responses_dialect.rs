@@ -6,13 +6,12 @@
 //! resolver before selection. Replay API scope strings and account identity
 //! stay with the caller. All four profiles share one usage policy.
 
-use std::sync::OnceLock;
-
 use serde::Serialize;
 
 use crate::ProviderKind;
 use crate::provider::WireFormat;
 
+#[cfg(test)]
 #[path = "responses_dialect_data.rs"]
 mod data;
 
@@ -317,12 +316,10 @@ include!(concat!(env!("OUT_DIR"), "/responses_dialects.rs"));
 
 #[must_use]
 pub fn builtin_profiles() -> &'static [ResponsesDialectProfile] {
-    ensure_asset();
     BUILTIN_PROFILES
 }
 
 pub fn profile(id: &str) -> Option<&'static ResponsesDialectProfile> {
-    ensure_asset();
     find_profile(id)
 }
 
@@ -330,7 +327,6 @@ pub fn profile(id: &str) -> Option<&'static ResponsesDialectProfile> {
 /// stay on the versioned Responses path. Matching strips a trailing slash and
 /// lowercases; it does not trim surrounding whitespace.
 pub fn bound_responses_path(provider: ProviderKind, base_url: &str) -> ResponsesPathPolicy {
-    ensure_asset();
     let normalized = base_url.trim_end_matches('/').to_ascii_lowercase();
     for binding in BUILTIN_BINDINGS {
         if binding.provider_kind != provider {
@@ -352,7 +348,6 @@ pub fn bound_responses_path(provider: ProviderKind, base_url: &str) -> Responses
 pub fn accept_custom_responses_profile(
     profile: &str,
 ) -> Result<&'static ResponsesDialectProfile, ResponsesProfileError> {
-    ensure_asset();
     let Some(found) = find_profile(profile) else {
         return Err(ResponsesProfileError::UnknownProfile {
             profile: profile.to_string(),
@@ -371,7 +366,6 @@ pub fn accept_custom_responses_profile(
 pub fn select_responses_profile(
     query: ResponsesProfileQuery<'_>,
 ) -> Result<Option<&'static ResponsesDialectProfile>, ResponsesProfileError> {
-    ensure_asset();
     if query.protocol != WireFormat::Responses {
         return match query.explicit_profile {
             Some(profile) => Err(ResponsesProfileError::NotResponses {
@@ -425,27 +419,6 @@ pub fn select_responses_profile(
     ))
 }
 
-fn ensure_asset() {
-    static OK: OnceLock<()> = OnceLock::new();
-    OK.get_or_init(|| {
-        let parsed = data::parse(include_str!("../assets/responses_dialects.json"))
-            .expect("responses dialect asset");
-        let generated = data::codegen(&parsed);
-        assert_eq!(parsed.profiles.len(), BUILTIN_PROFILES.len());
-        assert_eq!(parsed.bindings.len(), BUILTIN_BINDINGS.len());
-        for profile in &parsed.profiles {
-            assert!(
-                BUILTIN_PROFILES
-                    .iter()
-                    .any(|item| item.id.as_str() == profile.id),
-                "missing generated profile {}",
-                profile.id
-            );
-            assert!(generated.contains(&profile.id));
-        }
-    });
-}
-
 fn find_profile(id: &str) -> Option<&'static ResponsesDialectProfile> {
     BUILTIN_PROFILES
         .iter()
@@ -493,6 +466,25 @@ fn normalize_base_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_asset_matches_the_generated_table() {
+        let parsed = data::parse(include_str!("../assets/responses_dialects.json"))
+            .expect("responses dialect asset");
+        let generated = data::codegen(&parsed);
+        assert_eq!(parsed.profiles.len(), BUILTIN_PROFILES.len());
+        assert_eq!(parsed.bindings.len(), BUILTIN_BINDINGS.len());
+        for profile in &parsed.profiles {
+            assert!(
+                BUILTIN_PROFILES
+                    .iter()
+                    .any(|item| item.id.as_str() == profile.id),
+                "missing generated profile {}",
+                profile.id
+            );
+            assert!(generated.contains(&profile.id));
+        }
+    }
 
     const DEEPSEEK_URLS: &[&str] = &[
         "https://api.deepseek.com",

@@ -4932,17 +4932,17 @@ impl Config {
     /// Single source for the client wire resolver and the capability reporter
     /// so the two cannot drift. `None` means "no preference" — the provider's
     /// static policy applies.
-    pub fn provider_responses_profile(&self, identity: &ProviderIdentity) -> Option<&str> {
+    pub fn provider_wire_dialect(&self, identity: &ProviderIdentity) -> Option<&str> {
         self.provider_config_for(identity)?
-            .responses_profile
+            .wire
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
     }
 
-    pub fn provider_wire_dialect(&self, identity: &ProviderIdentity) -> Option<&str> {
+    pub fn provider_responses_profile(&self, identity: &ProviderIdentity) -> Option<&str> {
         self.provider_config_for(identity)?
-            .wire
+            .responses_profile
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
