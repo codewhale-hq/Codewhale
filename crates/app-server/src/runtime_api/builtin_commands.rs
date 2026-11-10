@@ -21,9 +21,8 @@ use codewhale_command_contract::facets::{
 };
 use codewhale_command_contract::types::{CommandCurrency, CommandMode};
 use codewhale_engine::command_catalog::{self, BuiltinCommandHostSnapshot};
-use codewhale_engine::runtime_threads::manager::RuntimeThreadManager;
+use codewhale_models::SystemPrompt;
 use serde::Deserialize;
-use std::sync::Arc;
 
 use super::{ApiError, RuntimeApiState};
 
@@ -59,10 +58,7 @@ pub(super) async fn run_builtin_command(
     // same answer, and neither can be distinguished by what the read says
     // about the daemon's idle threads.
     if !catalog.serves_builtin(&request.name) {
-        return Err(ApiError::not_found(format!(
-            "no remotely executable builtin command '{}'",
-            request.name
-        )));
+        return Err(not_served(&request.name));
     }
 
     let thread = state
@@ -81,11 +77,17 @@ pub(super) async fn run_builtin_command(
             text_only: execution.text_only,
         })),
         // The host refused the name: the same answer an unknown command gets.
-        None => Err(ApiError::not_found(format!(
-            "no remotely executable builtin command '{}'",
-            request.name
-        ))),
+        None => Err(not_served(&request.name)),
     }
+}
+
+fn not_served(name: &str) -> ApiError {
+    const MAX_ECHOED_NAME_CHARS: usize = 64;
+    let shown: String = name.chars().take(MAX_ECHOED_NAME_CHARS).collect();
+    let ellipsis = if shown.len() < name.len() { "..." } else { "" };
+    ApiError::not_found(format!(
+        "no remotely executable builtin command '{shown}{ellipsis}'"
+    ))
 }
 
 /// Assemble the host snapshot for one thread from the record, the live
@@ -102,9 +104,11 @@ async fn assemble_snapshot(
     // than print zeros.
     let engine = state
         .runtime_threads
-        .get_engine(thread_id)
+        .loaded_engine(thread_id)
         .await
-        .map_err(super::map_thread_err)?;
+        .ok_or_else(|| {
+            ApiError::conflict("this thread's engine is not loaded; send a message first")
+        })?;
     let budget = engine
         .get_context_budget()
         .await
@@ -123,14 +127,14 @@ async fn assemble_snapshot(
     let combined = usage.combined();
 
     // The daemon tracks no UI chat history (that is the client's layer), so
-    // the chat count is a true zero; the model transcript count comes from
-    // the canonical session document.
-    let (api_message_count, chat_message_count) = session_message_counts(
-        &state.runtime_threads,
-        state.sessions_dir.as_path(),
-        thread_id,
-    )
-    .await;
+    // the chat count is a true zero; the model transcript and the effective
+    // system prompt come from the live engine session.
+    let session = engine
+        .get_session_snapshot()
+        .await
+        .map_err(|err| ApiError::internal(format!("engine session snapshot unavailable: {err}")))?;
+    let api_message_count = session.messages.len();
+    let chat_message_count = 0;
 
     // Currency follows the same rule the TUI's cost display applies, so the
     // same config answers the same way on both surfaces: a Simplified-Chinese
@@ -138,7 +142,16 @@ async fn assemble_snapshot(
     // through the canonical parser (which accepts rmb and yuan) rather than a
     // bare string compare. The CNY column is the provider-published subtotal
     // only; a USD-picked currency keeps the authoritative USD numbers.
-    let settings = codewhale_runtime::settings::Settings::load().unwrap_or_default();
+    #[cfg(test)]
+    let env_ticket = codewhale_runtime::test_support::env_scope_ticket();
+    let settings = tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        let _membership = codewhale_runtime::test_support::join_env_scope(env_ticket);
+        codewhale_runtime::settings::Settings::load_read_only()
+    })
+    .await
+    .map_err(|err| ApiError::internal(format!("settings task failed: {err}")))?
+    .map_err(|err| ApiError::internal(format!("settings unavailable: {err}")))?;
     let locale = codewhale_localization::resolve_locale(&settings.locale);
     let currency = match (settings.cost_currency.as_str(), locale.tag()) {
         ("usd", "zh-Hans") => CommandCurrency::Cny,
@@ -168,14 +181,17 @@ async fn assemble_snapshot(
         ),
     };
 
-    let mode = CommandMode::parse(&thread.mode).unwrap_or(CommandMode::Agent);
-    let mode_label = codewhale_config::AppMode::from_setting(&thread.mode)
+    let mode = CommandMode::parse(&session.mode).unwrap_or(CommandMode::Agent);
+    let mode_label = codewhale_config::AppMode::from_setting(&session.mode)
         .label()
         .to_string();
-    let system_prompt = thread
-        .system_prompt
-        .clone()
-        .map_or(DebugSystemPrompt::None, DebugSystemPrompt::Text);
+    let system_prompt = match session.system_prompt {
+        None => DebugSystemPrompt::None,
+        Some(SystemPrompt::Text(text)) => DebugSystemPrompt::Text(text),
+        Some(SystemPrompt::Blocks(blocks)) => {
+            DebugSystemPrompt::Blocks(blocks.into_iter().map(|block| block.text).collect())
+        }
+    };
 
     let cost = DebugCostProjection {
         currency,
@@ -236,26 +252,4 @@ async fn assemble_snapshot(
             cost,
         },
     })
-}
-
-/// The canonical session document's transcript length, and the zero chat
-/// count the daemon genuinely holds. Missing or unreadable documents count
-/// as zero rather than failing a read-only diagnostic.
-async fn session_message_counts(
-    runtime: &Arc<RuntimeThreadManager>,
-    sessions_dir: &std::path::Path,
-    thread_id: &str,
-) -> (usize, usize) {
-    match super::thread_history::snapshot_in_runtime(runtime, sessions_dir, thread_id.to_string())
-        .await
-    {
-        Ok((snapshot, _)) => match serde_json::from_value::<
-            codewhale_engine::session_manager::SavedSession,
-        >(snapshot.session)
-        {
-            Ok(session) => (session.messages.len(), 0),
-            Err(_) => (0, 0),
-        },
-        Err(_) => (0, 0),
-    }
 }

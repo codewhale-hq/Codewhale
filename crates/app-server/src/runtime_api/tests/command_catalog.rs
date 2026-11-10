@@ -863,10 +863,12 @@ impl CommandCatalog for RemoteBuiltinCatalog {
                 "{}|{}|{}",
                 host.mode_label,
                 host.model,
-                !matches!(
-                    host.system_prompt,
-                    codewhale_command_contract::facets::DebugSystemPrompt::None
-                )
+                match &host.system_prompt {
+                    codewhale_command_contract::facets::DebugSystemPrompt::None => 0,
+                    codewhale_command_contract::facets::DebugSystemPrompt::Text(text) => text.len(),
+                    codewhale_command_contract::facets::DebugSystemPrompt::Blocks(blocks) =>
+                        blocks.iter().map(String::len).sum(),
+                }
             ),
             is_error: false,
             text_only: true,
@@ -880,6 +882,7 @@ impl CommandCatalog for RemoteBuiltinCatalog {
 async fn post_thread_builtin_command_serves_only_the_host_allowlist() -> Result<()> {
     let _env = lock_test_env();
     let temp = tempfile::tempdir()?;
+    let token = "builtin-route-fixture-token";
     let root = temp.path().join("builtin-commands-route");
     let sessions_dir = root.join("sessions");
     let workspace = root.join("workspace");
@@ -890,7 +893,7 @@ async fn post_thread_builtin_command_serves_only_the_host_allowlist() -> Result<
     let Some((addr, runtime_threads, handle)) = spawn_test_server_with_root_token_mobile_workspace(
         root,
         sessions_dir,
-        None,
+        Some(token.to_string()),
         false,
         workspace,
     )
@@ -904,10 +907,27 @@ async fn post_thread_builtin_command_serves_only_the_host_allowlist() -> Result<
         .await?;
     let url = format!("http://{addr}/v1/threads/{}/commands/builtin", thread.id);
 
+    let unauthorized = client
+        .post(&url)
+        .json(&json!({ "name": "system" }))
+        .send()
+        .await?;
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let cold = client
+        .post(&url)
+        .bearer_auth(token)
+        .json(&json!({ "name": "system" }))
+        .send()
+        .await?;
+    assert_eq!(cold.status(), StatusCode::CONFLICT, "cold engine");
+    runtime_threads.get_engine(&thread.id).await?;
+
     // Not on the host's remote surface: the same answer an unknown name gets.
     for name in ["balance", "cache", "not-a-command"] {
         let response = client
             .post(&url)
+            .bearer_auth(token)
             .json(&json!({ "name": name }))
             .send()
             .await?;
@@ -919,6 +939,7 @@ async fn post_thread_builtin_command_serves_only_the_host_allowlist() -> Result<
     for name in ["system", "/system", "xitong"] {
         let body: Value = client
             .post(&url)
+            .bearer_auth(token)
             .json(&json!({ "name": name, "args": "ignored" }))
             .send()
             .await?
@@ -935,7 +956,8 @@ async fn post_thread_builtin_command_serves_only_the_host_allowlist() -> Result<
         assert_eq!(fields.len(), 3, "{text}");
         assert!(!fields[0].is_empty(), "mode label: {text}");
         assert_eq!(fields[1], thread.model, "model: {text}");
-        assert_eq!(fields[2], "false", "no system prompt: {text}");
+        let prompt_len: usize = fields[2].parse().context("system prompt length")?;
+        assert!(prompt_len > 0, "effective system prompt reported: {text}");
     }
 
     // The thread id is still the address: a missing thread stays 404.
@@ -943,6 +965,7 @@ async fn post_thread_builtin_command_serves_only_the_host_allowlist() -> Result<
         .post(format!(
             "http://{addr}/v1/threads/thr_missing/commands/builtin"
         ))
+        .bearer_auth(token)
         .json(&json!({ "name": "system" }))
         .send()
         .await?;

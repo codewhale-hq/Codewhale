@@ -2611,8 +2611,12 @@ thread deletion.
   terminal host and is gated a second time by the data each portable handler
   declares it needs, so a route cannot widen without the host widening
   first. Any other name — including one no host knows — answers 404. A
-  thread with no live context estimate answers 409 rather than printing
-  zeros.
+  thread whose engine is not loaded, or that has no live context estimate
+  yet, answers 409 rather than printing zeros; the route never starts an
+  engine. `/system` reports the effective system prompt the engine sends, and
+  `/tokens` counts the live session transcript. Like every other POST route,
+  it answers 403 to a watch-only device token, so a watch client cannot read
+  `/tokens` or `/cost` through it.
 
   `text_only` is `false` when the command also asked the terminal host for an
   action (a balance fetch, a snapshot restore): the text is still what the
