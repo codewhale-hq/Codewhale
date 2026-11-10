@@ -3200,11 +3200,11 @@ refuses OpenAI Codex. An Engine without this route answers `404`.
 Reports which external agent CLIs this computer already has, without starting a
 session. It covers Claude, Codex, DeepSeek Harness, Antigravity (`agy acp`),
 OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy and Grok. `state` is `installed` or `not_installed`; a binary is
-looked up on `PATH` and in the usual per-user bin directories. For an installed
+looked up on `PATH` (absolute entries only; on Windows the spawnable PATHEXT suffixes `.com/.exe/.bat/.cmd` and `%APPDATA%\npm`) and in the usual per-user bin directories. For an installed
 agent the route runs `--version` and, where the CLI speaks Agent Client Protocol
 itself, one `initialize` request on stdin, concurrently. `acp` is `native` when
 that handshake answered, `adapter` for CLIs that need a separate adapter
-process, and `unreachable` when the handshake did not answer. `auth_methods`
+process, and `unreachable` when the handshake did not answer, or answered with another protocol version, without JSON-RPC 2.0, or with an error; `reason` says which. `auth_methods`
 comes from the handshake; `type: "terminal"` means the agent can only be signed
 in by running it in a terminal. The probes time out after 8 s (5 s for
 `--version`), receive no Codewhale or provider credentials, and leave nothing

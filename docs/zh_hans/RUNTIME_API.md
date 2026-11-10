@@ -2375,10 +2375,10 @@ OpenAI Codex。没有此路由的 Engine 返回 `404`。
 
 报告本机已有哪些外部 agent CLI，不启动任何会话。覆盖 Claude、Codex、Gemini
 CLI、OpenCode、Kimi Code、Mistral Vibe、Qoder、CodeBuddy 和 Grok。`state` 为
-`installed` 或 `not_installed`；程序会在 `PATH` 以及常见的用户 bin 目录中查找。
+`installed` 或 `not_installed`；程序会在 `PATH`（仅绝对路径条目；在 Windows 上为可启动的 PATHEXT 后缀 `.com/.exe/.bat/.cmd` 以及 `%APPDATA%\npm`）以及常见的用户 bin 目录中查找。
 对已安装的 agent，该路由会同时执行 `--version`，并在该 CLI 本身支持 Agent
 Client Protocol 时通过 stdin 发送一次 `initialize`。`acp` 为 `native` 表示握手
-成功，`adapter` 表示需要单独的适配器进程，`unreachable` 表示握手没有回应。
+成功，`adapter` 表示需要单独的适配器进程，`unreachable` 表示握手没有回应，或回应了其他协议版本、不是 JSON-RPC 2.0，或返回了错误；`reason` 会说明属于哪种情况。
 `auth_methods` 来自握手结果；`type: "terminal"` 表示只能在该 agent 自己的终端里
 登录。探测超时为 8 秒（`--version` 为 5 秒），不会收到任何 Codewhale 或服务商
 凭据，也不会保存任何内容。`runnable` 为 `false`：该路由只做报告，不启动 agent。
