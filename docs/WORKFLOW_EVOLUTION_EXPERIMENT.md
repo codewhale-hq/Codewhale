@@ -53,6 +53,22 @@ cd examples/experimental-evolution-smoke/task
 python3 ../public_gate.py
 ```
 
+The second process-level task exercises atomic JSON Patch operations, pointer
+decoding, array moves and structured errors. Run it with a separate evidence
+directory:
+
+```bash
+python3 scripts/experimental-evolution-smoke.py \
+  --codewhale /absolute/path/to/codewhale \
+  --fixture examples/experimental-evolution-patch \
+  --output /absolute/path/to/new-patch-evidence-directory \
+  --budget 4
+```
+
+Its 38-case public gate and six-case held-out gate are distinct frozen
+artifacts. Keep each task's `comparison.json` with its own baseline SHA and
+receipts; do not pool runs with different fixture hashes.
+
 The frozen task does not expose the held-out gate to worker prompts. Mutation
 uses the public failure excerpt and parent receipt; the held-out gate runs
 only for the provisional winner's independent replay.

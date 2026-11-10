@@ -11,18 +11,17 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "examples" / "experimental-evolution-smoke"
+DEFAULT_FIXTURES = ROOT / "examples" / "experimental-evolution-smoke"
 WORKFLOW = ROOT / "workflows" / "operate_best_of_n.workflow.js"
-BRIEF = "Implement the Accept-Language negotiation CLI exactly as specified in README.md."
 
 
 def run(command, **kwargs):
     return subprocess.run(command, check=True, text=True, **kwargs)
 
 
-def make_baseline(destination):
+def make_baseline(destination, fixtures):
     destination.mkdir(parents=True)
-    shutil.copytree(FIXTURES / "task", destination, dirs_exist_ok=True)
+    shutil.copytree(fixtures / "task", destination, dirs_exist_ok=True)
     target = destination / "workflows" / WORKFLOW.name
     target.parent.mkdir(parents=True)
     shutil.copy2(WORKFLOW, target)
@@ -41,12 +40,12 @@ def make_baseline(destination):
     return run(["git", "-C", str(destination), "rev-parse", "HEAD"], capture_output=True).stdout.strip()
 
 
-def write_manifest(directory, workspace, arm, budget):
-    public = (FIXTURES / "public_gate.py").resolve()
-    hidden = (FIXTURES / "heldout_gate.py").resolve()
+def write_manifest(directory, workspace, arm, budget, fixtures, brief):
+    public = (fixtures / "public_gate.py").resolve()
+    hidden = (fixtures / "heldout_gate.py").resolve()
     manifest = {
         "version": 1,
-        "objective": BRIEF,
+        "objective": brief,
         "public_fixture_path": str((workspace / "README.md").resolve()),
         "hidden_evaluator_path": str(hidden),
         "allowed_write_roots": ["src"],
@@ -118,6 +117,7 @@ def main():
     parser.add_argument("--codewhale", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--budget", type=int, default=4)
+    parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURES)
     parser.add_argument("--arms", nargs="+", choices=["single", "independent", "evolution"],
                         default=["single", "independent", "evolution"])
     args = parser.parse_args()
@@ -127,10 +127,16 @@ def main():
         parser.error("--codewhale must name a built binary")
     if not os.environ.get("DEEPSEEK_API_KEY"):
         parser.error("DEEPSEEK_API_KEY must be exported for real provider runs")
+    fixtures = args.fixture if args.fixture.is_absolute() else ROOT / args.fixture
+    fixtures = fixtures.resolve()
+    for required in ("task/README.md", "public_gate.py", "heldout_gate.py"):
+        if not (fixtures / required).is_file():
+            parser.error(f"fixture missing {required}: {fixtures}")
+    brief = "Implement the CLI exactly as specified in README.md."
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     baseline = output / "baseline"
-    baseline_sha = make_baseline(baseline)
+    baseline_sha = make_baseline(baseline, fixtures)
     config = output / "config.toml"
     config.write_text('provider = "deepseek"\n[providers.deepseek]\nmodel = "deepseek-flash"\n', encoding="utf-8")
     results = []
@@ -139,14 +145,14 @@ def main():
         directory.mkdir()
         workspace = directory / "workspace"
         run(["git", "clone", "-q", "--local", str(baseline), str(workspace)])
-        manifest = write_manifest(directory, workspace, arm, args.budget)
+        manifest = write_manifest(directory, workspace, arm, args.budget, fixtures, brief)
         payload = {
             "action": "run",
             "source_path": "workflows/operate_best_of_n.workflow.js",
             "token_budget": (1 if arm == "single" else args.budget) * 30000,
             "args": {
                 "strategy": "search",
-                "brief": BRIEF,
+                "brief": brief,
                 "rubric": "Follow README.md. Keep the CLI deterministic and change only src/.",
                 "model": "deepseek-flash",
                 "n": args.budget // 2,
