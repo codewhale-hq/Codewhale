@@ -18,10 +18,6 @@ export const metadata: Metadata = {
 };
 
 const TYPE_LABELS: Record<string, { en: string; zh: string }> = {
-  triage: { en: "Issue Triage", zh: "议题分类" },
-  "pr-review": { en: "PR Review", zh: "PR 审阅" },
-  stale: { en: "Stale Nudge", zh: "过期提醒" },
-  dupes: { en: "Duplicate", zh: "重复检测" },
   digest: { en: "Weekly Digest", zh: "每周摘要" },
   linkcheck: { en: "Broken Link", zh: "失效链接" },
   "semantic-drift": { en: "Content Drift", zh: "内容漂移" },

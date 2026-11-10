@@ -1,0 +1,273 @@
+name: Web maintainer
+
+on:
+  schedule:
+    - cron: '43 6 * * *'
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: Which lane to run
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - derived
+          - copy-freshness
+          - link-health
+          - docs-drift
+
+permissions: {}
+
+concurrency:
+  group: web-maintainer
+  cancel-in-progress: false
+
+env:
+  WEB_MAINTAINER_CLI_VERSION: v0.10.2
+
+jobs:
+  plan:
+    name: Plan
+    if: github.repository == 'codewhale-hq/Codewhale' && github.ref == 'refs/heads/main' && vars.WEB_MAINTAINER_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      lanes: ${{ steps.plan.outputs.lanes }}
+      derived: ${{ steps.plan.outputs.derived }}
+    steps:
+      - id: plan
+        env:
+          INPUT_LANE: ${{ inputs.lane || 'all' }}
+        run: |
+          derived=false
+          lanes='[]'
+          case "$INPUT_LANE" in
+            all) derived=true; lanes='["copy-freshness","link-health","docs-drift"]' ;;
+            derived) derived=true ;;
+            copy-freshness|link-health|docs-drift) lanes="[\"${INPUT_LANE}\"]" ;;
+            *) echo "::error::unknown lane"; exit 1 ;;
+          esac
+          echo "derived=${derived}" >> "$GITHUB_OUTPUT"
+          echo "lanes=${lanes}" >> "$GITHUB_OUTPUT"
+          echo "Web maintainer plan: derived=${derived} lanes=${lanes}" >> "$GITHUB_STEP_SUMMARY"
+
+  derived:
+    name: Derived files
+    needs: plan
+    if: needs.plan.outputs.derived == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Regenerate derived files
+        working-directory: web
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/sync-latest-release.mjs
+          node scripts/derive-facts.mjs
+          node scripts/derive-changelog.mjs
+          node scripts/derive-install.mjs
+          node scripts/render-terminal-capture.mjs
+      - name: Check what changed
+        id: drift
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "::error::regeneration produced untracked files"
+            git ls-files --others --exclude-standard
+            exit 1
+          fi
+          git diff --name-status | node web/maintainer/check-allowlist.mjs web/maintainer/derived.txt derived
+          if [ -n "$(git diff --summary)" ]; then
+            echo "::error::regeneration created, deleted or changed modes"
+            exit 1
+          fi
+          git diff --binary > "$RUNNER_TEMP/out/change.patch"
+          if [ -s "$RUNNER_TEMP/out/change.patch" ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            git diff --stat >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "Derived files are current." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Run the web checks on the regenerated tree
+        if: steps.drift.outputs.drift == 'true'
+        working-directory: web
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm run check
+          npx vitest run
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: steps.drift.outputs.drift == 'true'
+        with:
+          name: web-maintainer-derived
+          path: ${{ runner.temp }}/out/change.patch
+          retention-days: 3
+          if-no-files-found: error
+
+  lane:
+    name: Lane ${{ matrix.lane }}
+    needs: plan
+    if: needs.plan.outputs.lanes != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        lane: ${{ fromJSON(needs.plan.outputs.lanes) }}
+    env:
+      LANE: ${{ matrix.lane }}
+    steps:
+      - name: Require the DeepSeek key
+        env:
+          KEY: ${{ secrets.WEB_MAINTAINER_DEEPSEEK_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::WEB_MAINTAINER_DEEPSEEK_API_KEY is not set. Create a dedicated DeepSeek key with a provider-side monthly cap and add it as that repository secret, or unset WEB_MAINTAINER_ENABLED. See web/maintainer/README.md."
+            exit 1
+          fi
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Stage trusted tooling and the pinned CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/trusted" "$RUNNER_TEMP/home"
+          cp web/maintainer/allowlist.txt web/maintainer/check-allowlist.mjs "$RUNNER_TEMP/trusted/"
+          cp "web/maintainer/lanes/${LANE}.md" "$RUNNER_TEMP/trusted/prompt.md"
+          CODEWHALE_VERSION="$WEB_MAINTAINER_CLI_VERSION" CODEWHALE_INSTALL_DIR="$RUNNER_TEMP/bin" sh web/public/install.sh
+          "$RUNNER_TEMP/bin/codewhale" --version
+      - name: Probe outbound links
+        if: matrix.lane == 'link-health'
+        run: node web/maintainer/link-report.mjs "$GITHUB_WORKSPACE/.git/maintainer-input/link-report.json"
+      - name: Run the lane on DeepSeek
+        timeout-minutes: 25
+        env:
+          WEB_MAINTAINER_DEEPSEEK_API_KEY: ${{ secrets.WEB_MAINTAINER_DEEPSEEK_API_KEY }}
+        run: |
+          env -i \
+            PATH="$PATH" \
+            HOME="$RUNNER_TEMP/home" \
+            CODEWHALE_HOME="$RUNNER_TEMP/home/.codewhale" \
+            CODEWHALE_SECRET_BACKEND=file \
+            CODEWHALE_MEMORY=false \
+            CODEWHALE_TELEMETRY=false \
+            DEEPSEEK_API_KEY="$WEB_MAINTAINER_DEEPSEEK_API_KEY" \
+            "$RUNNER_TEMP/bin/codewhale" \
+              --no-project-config \
+              --skip-onboarding \
+              --workspace "$GITHUB_WORKSPACE" \
+              exec \
+              --provider deepseek \
+              --model deepseek-flash \
+              --reasoning-effort low \
+              --auto \
+              --sandbox workspace-write \
+              --max-turns 40 \
+              --output-format stream-json \
+              -- "$(cat "$RUNNER_TEMP/trusted/prompt.md")" \
+            > "$RUNNER_TEMP/exec.jsonl"
+          echo "Model run finished: $(wc -l < "$RUNNER_TEMP/exec.jsonl") stream events." >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce the path allowlist
+        id: scope
+        run: |
+          if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "::error::the lane left untracked files"
+            git ls-files --others --exclude-standard
+            exit 1
+          fi
+          git diff --name-status | node "$RUNNER_TEMP/trusted/check-allowlist.mjs" "$RUNNER_TEMP/trusted/allowlist.txt" "$LANE"
+          if [ -n "$(git diff --summary)" ]; then
+            echo "::error::the lane created, deleted or changed modes"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/out"
+          git diff --binary > "$RUNNER_TEMP/out/change.patch"
+          if [ ! -s "$RUNNER_TEMP/out/change.patch" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Lane ${LANE}: no change proposed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$(wc -c < "$RUNNER_TEMP/out/change.patch")" -gt 262144 ]; then
+            echo "::error::patch exceeds 256 KiB"
+            exit 1
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          { echo "Lane ${LANE} proposes:"; echo '```text'; git diff --stat; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Install web dependencies
+        if: steps.scope.outputs.changed == 'true'
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Run the web checks on the proposal
+        if: steps.scope.outputs.changed == 'true'
+        working-directory: web
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm run check
+          npx vitest run
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: steps.scope.outputs.changed == 'true'
+        with:
+          name: web-maintainer-${{ matrix.lane }}
+          path: ${{ runner.temp }}/out/change.patch
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    name: Open pull requests
+    needs: [plan, derived, lane]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        id: app-token
+        with:
+          app-id: ${{ vars.CODEWHALE_APP_ID }}
+          private-key: ${{ secrets.CODEWHALE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: web-maintainer-*
+          path: ${{ runner.temp }}/patches
+      - name: Open or update one pull request per lane
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_ID: ${{ vars.CODEWHALE_APP_ID }}
+          ARTIFACTS_DIR: ${{ runner.temp }}/patches
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/trusted"
+          cp web/maintainer/allowlist.txt web/maintainer/derived.txt web/maintainer/check-allowlist.mjs web/maintainer/publish-prs.sh "$RUNNER_TEMP/trusted/"
+          TRUSTED_DIR="$RUNNER_TEMP/trusted" bash "$RUNNER_TEMP/trusted/publish-prs.sh"

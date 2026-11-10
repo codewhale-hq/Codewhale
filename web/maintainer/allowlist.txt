@@ -1,0 +1,9 @@
+copy-freshness: web/lib/content/**
+copy-freshness: web/lib/i18n/dictionaries/en/**
+link-health: web/lib/content/**
+link-health: web/lib/i18n/dictionaries/en/**
+docs-drift: web/lib/content/docs-*.ts
+docs-drift: web/lib/i18n/dictionaries/en/docs-*.ts
+!web/lib/content/*.generated.ts
+!**/*.test.ts
+!**/*.test.tsx
