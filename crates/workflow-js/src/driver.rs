@@ -277,6 +277,15 @@ pub trait WorkflowDriver: Send + Sync {
     /// corresponding `task()` call.
     async fn spawn_task(&self, request: TaskRequest) -> Result<SpawnedTask, DriverError>;
 
+    async fn experimental_search(
+        &self,
+        _request: serde_json::Value,
+    ) -> Result<serde_json::Value, DriverError> {
+        Err(DriverError::Rejected(
+            "experimental search requires a host-frozen evaluator manifest".to_string(),
+        ))
+    }
+
     /// Cancel every in-flight task belonging to this run. Idempotent.
     fn cancel_all(&self);
 

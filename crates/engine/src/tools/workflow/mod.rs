@@ -3,6 +3,7 @@
 //! The JS VM stays in `codewhale-workflow-js`; this module supplies the TUI
 //! driver that turns each `task(...)` call into a real `SubAgentManager` spawn.
 
+mod experimental_search;
 mod plan_schema;
 #[cfg(test)]
 mod shortlist_tests;
@@ -56,6 +57,7 @@ use crate::work_graph::{
 };
 use codewhale_agent_contract::role::{FleetRole, public_role_label};
 use codewhale_util::utils::spawn_supervised;
+use experimental_search::ExperimentalSearch;
 
 /// Keep promoted artifacts compact without clipping ordinary evidence reports.
 /// A 900-character cap cut six-line source receipts in half during live Fleet
@@ -1423,6 +1425,58 @@ async fn start_workflow(
         WorkflowFleetBinding::None
     };
     let run_id = format!("workflow_{}", &Uuid::new_v4().to_string()[..8]);
+    let search_requested = args.get("evolution").is_some() || args.get("evaluator").is_some();
+    let manifest_path = args
+        .pointer("/evolution/manifestPath")
+        .or_else(|| args.pointer("/evaluator/manifestPath"))
+        .and_then(Value::as_str);
+    if args.get("evolution").is_some() && args.get("evaluator").is_some() {
+        return Err(ToolError::invalid_input(
+            "choose one experimental search caller",
+        ));
+    }
+    if search_requested
+        && (manifest_path.is_none()
+            || args.get("strategy").and_then(Value::as_str) != Some("search"))
+    {
+        return Err(ToolError::invalid_input(
+            "experimental search requires strategy=search and a manifestPath",
+        ));
+    }
+    let experiment = if let Some(path) = manifest_path {
+        if source.source != include_str!("../../../../../workflows/operate_best_of_n.workflow.js") {
+            return Err(ToolError::invalid_input(
+                "experimental search requires the checked-in best-of-N Workflow source",
+            ));
+        }
+        let brief = args
+            .get("brief")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ToolError::invalid_input("experimental search requires an explicit brief")
+            })?
+            .to_string();
+        let model = args
+            .get("model")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ToolError::invalid_input("experimental search requires an explicit model")
+            })?
+            .to_string();
+        let path = PathBuf::from(path);
+        let workspace = context.workspace.clone();
+        let id = run_id.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                ExperimentalSearch::freeze(&path, &workspace, &id, &brief, &model)
+            })
+            .await
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?
+            .map_err(ToolError::invalid_input)?,
+        )
+    } else {
+        None
+    };
     let gate_specs = source
         .spec
         .as_ref()
@@ -1532,6 +1586,13 @@ async fn start_workflow(
         gate_specs,
         context.workspace.clone(),
     );
+    if let Some(experiment) = experiment {
+        *driver
+            .experiment
+            .lock()
+            .map_err(|_| ToolError::execution_failed("experimental search lock poisoned"))? =
+            Some(Arc::new(Mutex::new(experiment)));
+    }
     let vm_cancel = WorkflowRunCancel::new();
     let controller = Arc::new(
         WorkflowRunController::new(driver.clone(), vm_cancel.clone()).with_parent_completion(!wait),
@@ -4018,6 +4079,7 @@ struct SubAgentWorkflowDriver {
     /// Workspace root, for durable `responseSchema` raw-output artifacts
     /// written beside the run report (#5583).
     workspace: PathBuf,
+    experiment: Mutex<Option<Arc<Mutex<ExperimentalSearch>>>>,
 }
 
 /// A single-consumer handoff remains reserved during admission. If routing,
@@ -4102,6 +4164,7 @@ impl SubAgentWorkflowDriver {
             fleet_name,
             fleet,
             workspace,
+            experiment: Mutex::new(None),
         });
         spawn_completion_pump(driver.clone(), completion_rx);
         driver
@@ -5029,6 +5092,20 @@ impl SubAgentWorkflowDriver {
 #[async_trait]
 impl WorkflowDriver for SubAgentWorkflowDriver {
     async fn spawn_task(&self, mut request: TaskRequest) -> Result<SpawnedTask, DriverError> {
+        let experiment = self
+            .experiment
+            .lock()
+            .map_err(|_| DriverError::Unavailable("experimental search lock poisoned".to_string()))?
+            .clone();
+        if let Some(experiment) = experiment {
+            experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .admit(&request)
+                .map_err(DriverError::Rejected)?;
+        }
         if request.max_depth.take().is_some() {
             self.progress(ProgressEvent::Log {
                 message: "Ignored model task maxDepth; trusted Fleet, role and parent delegation constraints apply.".to_string(),
@@ -5058,6 +5135,102 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
             self.record_dispatch_failure(label, phase, err.to_string(), queue_ticket);
         }
         result
+    }
+
+    async fn experimental_search(&self, request: Value) -> Result<Value, DriverError> {
+        let experiment = self
+            .experiment
+            .lock()
+            .map_err(|_| DriverError::Unavailable("experimental search lock poisoned".to_string()))?
+            .clone()
+            .ok_or_else(|| {
+                DriverError::Rejected(
+                    "experimental search was not frozen before candidate admission".to_string(),
+                )
+            })?;
+        let action = request
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DriverError::Rejected("experimental search action is required".to_string())
+            })?;
+        if action == "summary" {
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })
+                .map(|experiment| experiment.summary());
+        }
+        if action != "evaluate" && action != "replay" {
+            return Err(DriverError::Rejected(
+                "unsupported experimental search action".to_string(),
+            ));
+        }
+        let candidate_id = request
+            .get("candidate_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DriverError::Rejected("candidate_id is required".to_string()))?
+            .to_string();
+        let generation = request
+            .get("generation")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
+            as u32;
+        let record = self
+            .task_records
+            .lock()
+            .map_err(|_| {
+                DriverError::Unavailable("workflow task ledger lock poisoned".to_string())
+            })?
+            .values()
+            .find(|record| record.label.as_deref() == Some(&candidate_id))
+            .cloned()
+            .ok_or_else(|| {
+                DriverError::Rejected("candidate task label was not observed".to_string())
+            })?;
+        if record.status != IrWorkflowRunStatus::Succeeded {
+            return Err(DriverError::Rejected(
+                "candidate worker did not complete".to_string(),
+            ));
+        }
+        let manager = self.manager.clone();
+        let cancel = self.runtime.cancel_token.clone();
+        let lineage = request.get("lineage").cloned().unwrap_or(Value::Null);
+        let replay = action == "replay";
+        let value = tokio::task::spawn_blocking(move || {
+            let result = manager
+                .blocking_read()
+                .get_result(&record.agent_id)
+                .map_err(|error| error.to_string())?;
+            experiment
+                .lock()
+                .map_err(|_| "experimental search lock poisoned".to_string())?
+                .evaluate(
+                    &candidate_id,
+                    generation,
+                    &lineage,
+                    &result,
+                    replay,
+                    &cancel,
+                )
+        })
+        .await
+        .map_err(|error| DriverError::Unavailable(error.to_string()))?
+        .map_err(DriverError::Rejected)?;
+        Ok(json!({
+            "candidate_id": value.get("candidate_id"),
+            "status": value.get("status"),
+            "reason": value.get("reason"),
+            "patch_sha256": value.get("patch_sha256"),
+            "public_failure_feedback": value.get("public_failure_feedback"),
+            "changed_paths": value.get("changed_paths"),
+            "test_count": value.get("test_count"),
+            "receipt": value.get("receipt_path"),
+            "patch_excerpt": value.get("patch_excerpt"),
+            "usage": value.get("usage"),
+            "lineage": value.get("lineage")
+        }))
     }
 
     fn cancel_all(&self) {

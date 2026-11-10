@@ -52,6 +52,91 @@ export default async function (args) {
     },
   };
 
+  if (args?.evaluator !== undefined) {
+    if (strategy !== "search" || !args.evaluator?.manifestPath || !model || !writeRoots.length) {
+      throw new Error("Host evaluation requires strategy=search, manifestPath, model and writeRoots");
+    }
+    const frozen = await task.experimentalSearch({ action: "summary" });
+    const plans = Array.from({ length: n }, (_, index) => `candidate_g0_${index + 1}`);
+    const replies = await parallel(plans.map((id) => () => task({
+      description: [
+        "Implement the brief independently in this isolated worktree.",
+        "Do not inspect other candidates, hidden tests or evaluator internals.",
+        `BRIEF: ${String(brief)}`,
+        `RUBRIC: ${String(rubric)}`,
+        `CANDIDATE ID: ${id}`,
+        "Return only the required structured response.",
+      ].join("\n"),
+      label: id,
+      type: "implementer",
+      model,
+      ...(thinking ? { thinking } : {}),
+      worktree: true,
+      writeAuthority: "worktree_write",
+      writeRoots,
+      ...(exactFiles.length ? { exactFiles } : {}),
+      responseSchema: candidateSchema,
+    })), { mode: "partial" });
+    const candidates = [];
+    for (let index = 0; index < plans.length; index++) {
+      let receipt;
+      if (replies[index]?.__taskError || replies[index] === null) {
+        receipt = { status: "UNKNOWN", reason: replies[index]?.message ?? "worker failed" };
+      } else {
+        try {
+          receipt = await task.experimentalSearch({
+            action: "evaluate", candidate_id: plans[index], generation: 0, lineage: {},
+          });
+        } catch (error) {
+          receipt = { status: "UNKNOWN", reason: String(error) };
+        }
+      }
+      candidates.push({ id: plans[index], ...receipt });
+    }
+    const passing = candidates.filter((candidate) => candidate.status === "PASS");
+    passing.sort((a, b) => (a.changed_paths?.length ?? Infinity)
+      - (b.changed_paths?.length ?? Infinity) || a.id.localeCompare(b.id));
+    let replay = null;
+    let review = null;
+    let winner = null;
+    if (passing.length) {
+      const provisional = passing[0];
+      replay = await task.experimentalSearch({
+        action: "replay", candidate_id: provisional.id, generation: 0, lineage: {},
+      });
+      if (replay.status === "PASS" && replay.patch_sha256 === provisional.patch_sha256) {
+        review = await task({
+          description: [
+            "Review this verified patch without editing or applying it.",
+            `BRIEF: ${String(brief)}`,
+            `PATCH: ${String(provisional.patch_excerpt).slice(0, 6000)}`,
+            `HOST REPLAY: ${JSON.stringify({ status: replay.status, test_count: replay.test_count })}`,
+            "Return only the required structured response.",
+          ].join("\n"),
+          label: "evaluator_reviewer",
+          type: "review",
+          writeAuthority: "read_only",
+          worktree: false,
+          responseSchema: {
+            type: "object", additionalProperties: false,
+            required: ["verdict", "reasons"],
+            properties: {
+              verdict: { type: "string", enum: ["pass", "fail"] },
+              reasons: { type: "array", items: { type: "string" } },
+            },
+          },
+        });
+        if (review.verdict === "pass") winner = provisional.id;
+      }
+    }
+    return {
+      scenario: "operate-host-evaluator", strategy,
+      manifest: frozen.manifest, baseline_sha: frozen.baseline_sha,
+      candidates, winner_id: winner ?? "NONE", replay, review,
+      promotion: "proposal_only",
+    };
+  }
+
   phase("Candidates");
   const candidateFns = [];
   for (let i = 1; i <= n; i++) {
