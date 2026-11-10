@@ -16,6 +16,7 @@
 3. [INSTALL.md](./INSTALL.md) —— 所有受支持平台的安装方式与常见安装失败排查
 4. [TERMUX.md](./TERMUX.md) —— 在 Android 手机（Termux）上安装运行，目前为预览支持
 5. [CNB_MIRROR.md](./CNB_MIRROR.md) —— 国内网络下载慢或连不上 GitHub 时的镜像说明
+6. [PROVIDER_QUICKSTART.md](./PROVIDER_QUICKSTART.md) —— 装好以后怎么配提供商、API 密钥和模型，拿到第一个回答（中文新手页）
 
 ## 二、入门用户（已经装好程序、但仍然对 harness 不够了解）
 
