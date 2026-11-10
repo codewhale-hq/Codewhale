@@ -6,6 +6,9 @@
   "crates/account-cli/src/work.rs": {
     "std_fs": 1
   },
+  "crates/app-server-protocol/src/bin/contract.rs": {
+    "std_fs": 5
+  },
   "crates/app-server-protocol/src/bin/export.rs": {
     "std_fs": 3
   },
