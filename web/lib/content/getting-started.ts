@@ -36,8 +36,8 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
     id: "install",
     title: { en: "Install Codewhale", zh: "安装 Codewhale" },
     body: {
-      en: "Install the latest release on macOS or Linux. Follow any PATH instruction the installer prints, then check that the version command prints a version. You need a terminal and an existing project folder. The guide covers Windows and other install options.",
-      zh: "在 macOS 或 Linux 上安装最新发布版本。按安装程序的提示完成 PATH 设置，再确认版本命令能显示版本号。你需要一个终端和一个已有的项目文件夹。Windows 和其他安装方式见指南。",
+      en: "Install the latest release on macOS or Linux, follow any PATH instruction, and check that the version command prints a version. The guide covers Windows and other install options.",
+      zh: "在 macOS 或 Linux 上安装最新发布版本，按提示完成 PATH 设置，再确认版本命令能显示版本号。Windows 和其他安装方式见指南。",
     },
     commands: ["curl -fsSL https://codewhale.net/install.sh | sh", "codewhale --version"],
     link: {
@@ -49,8 +49,8 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
     id: "connect-provider",
     title: { en: "Connect your model", zh: "连接你的模型" },
     body: {
-      en: "Use a model API you already have, or connect local or self-hosted inference. The command below saves a DeepSeek key without echoing it. You need a valid provider key and access to its service; local Ollama models do not need a key.",
-      zh: "使用你已有的模型 API，或连接本地、自托管推理服务。下方命令会保存 DeepSeek 密钥，输入时不会回显。你需要有效的提供商密钥并能访问其服务；本地 Ollama 模型无需密钥。",
+      en: "Connect a model API with a valid provider key, or use a running local model such as Ollama without a key. The command below saves a DeepSeek key without echoing it.",
+      zh: "使用有效的提供商密钥连接模型 API，或使用正在运行的 Ollama 等本地模型，无需密钥。下方命令会保存 DeepSeek 密钥，输入时不会回显。",
     },
     commands: ["codewhale auth set --provider deepseek"],
     link: {
@@ -62,8 +62,8 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
     id: "first-session",
     title: { en: "Ask about one project file", zh: "询问一个项目文件" },
     body: {
-      en: "In your terminal, open an existing project folder and start Codewhale there. Choose Plan for this read-only task, then paste the prompt below into the message box. Your model receives the file content it needs to answer.",
-      zh: "在终端中进入一个已有的项目文件夹，然后在那里启动 Codewhale。为这个只读任务选择 Plan，再把下方提示粘贴到消息框中。模型会收到回答所需的文件内容。",
+      en: "Open an existing project folder in your terminal, start Codewhale, choose Plan, and paste the prompt below into the message box. The model receives the file content it needs to answer.",
+      zh: "在终端中进入一个已有的项目文件夹，启动 Codewhale，选择 Plan，再把下方提示粘贴到消息框中。模型会收到回答所需的文件内容。",
     },
     commands: ["cd /path/to/your/project", "codewhale"],
     prompt: {
@@ -79,8 +79,8 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
     id: "verify-answer",
     title: { en: "Check the answer against the file", zh: "对照文件检查回答" },
     body: {
-      en: "Open the cited file yourself and compare the cited lines with the explanation. This task is complete when you can confirm what the file does and the cited evidence supports the answer. If it is wrong, ask about the mismatch; if no answer arrives or setup fails, use the troubleshooting guide.",
-      zh: "自行打开引用的文件，对照相关行检查说明。当你能确认文件的作用，而且引用内容支持回答时，这个任务就完成了。如果回答有误，可以追问不一致之处；如果没有回答或设置失败，请查看排查指南。",
+      en: "Open the cited file yourself and confirm that the cited lines support the explanation to complete this task. Ask about any mismatch, or use the troubleshooting guide if setup fails or no reply arrives.",
+      zh: "自行打开引用的文件，确认相关行支持说明后，这个任务就完成了。你可以追问不一致之处；如果设置失败或没有回复，请查看排查指南。",
     },
     commands: [],
     link: { href: "/docs/troubleshooting", label: { en: "Fix a setup or reply problem", zh: "解决设置或回复问题" } },
