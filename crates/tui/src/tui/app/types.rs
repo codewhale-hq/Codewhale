@@ -546,7 +546,6 @@ pub enum AppAction {
         save: bool,
     },
     Quit,
-    #[allow(dead_code)] // For explicit /load command
     LoadSession(PathBuf),
     RemoteControl(codewhale_app_server::remote_control::RemoteControlAction),
     NewSession {

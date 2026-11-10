@@ -21,7 +21,6 @@ use crate::rlm::RlmBridge;
 use crate::rlm::bridge::wait_for_deadline;
 use crate::rlm::session::{ContextMeta, OutputFeedback, RlmSession, derive_session_name};
 use crate::tools::fetch_url::FetchUrlTool;
-use crate::tools::handle::VarHandle;
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
 };
@@ -949,8 +948,6 @@ fn preview_output(text: &str) -> String {
         crate::tools::handle::HANDLE_READ_ACTIVATION_HINT
     )
 }
-
-fn _assert_var_handle_shape(_: Option<VarHandle>) {}
 
 #[cfg(test)]
 mod tests {

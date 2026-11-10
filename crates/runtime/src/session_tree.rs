@@ -238,12 +238,6 @@ impl SessionJournal {
     pub fn index(&self) -> HashMap<&str, &SessionEntry> {
         self.entries.iter().map(|e| (e.id.as_str(), e)).collect()
     }
-    pub fn children_of(&self, parent_id: Option<&str>) -> Vec<&SessionEntry> {
-        self.entries
-            .iter()
-            .filter(|e| e.parent_id.as_deref() == parent_id)
-            .collect()
-    }
     pub fn contains(&self, entry_id: &str) -> bool {
         self.entries.iter().any(|e| e.id == entry_id)
     }

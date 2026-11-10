@@ -772,10 +772,6 @@ pub async fn run_owned_stdio(state: AppState) -> Result<()> {
     Ok(())
 }
 
-pub async fn run_stdio(config_path: Option<PathBuf>) -> Result<()> {
-    daemon_client::forward_stdio(config_path).await
-}
-
 #[cfg(test)]
 fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Result<AppState> {
     build_state_with_transport(config_path, auth_token, AppTransport::Http)

@@ -91,7 +91,6 @@ pub struct ProjectContext {
     /// Path to the repo constitution file that produced `constitution_block`.
     pub constitution_source_path: Option<PathBuf>,
     /// Project root directory
-    #[allow(dead_code)] // Part of ProjectContext public interface
     pub project_root: PathBuf,
     /// Whether this is a trusted project
     pub is_trusted: bool,
@@ -207,40 +206,4 @@ pub fn repo_relative_source_label(path: &Path, root: Option<&Path>) -> String {
         return relative.to_string_lossy().replace('\\', "/");
     }
     path.display().to_string()
-}
-
-/// Merge multiple project contexts (e.g., from nested directories)
-#[allow(dead_code)] // Public API for monorepo context merging
-pub fn merge_contexts(contexts: &[ProjectContext]) -> Option<String> {
-    let non_empty: Vec<_> = contexts
-        .iter()
-        .filter_map(ProjectContext::as_system_block)
-        .collect();
-
-    if non_empty.is_empty() {
-        None
-    } else {
-        Some(non_empty.join("\n\n"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_merge_contexts() {
-        let mut ctx1 = ProjectContext::empty(PathBuf::from("/a"));
-        ctx1.instructions = Some("Instructions A".to_string());
-        ctx1.source_path = Some(PathBuf::from("/a/AGENTS.md"));
-
-        let mut ctx2 = ProjectContext::empty(PathBuf::from("/b"));
-        ctx2.instructions = Some("Instructions B".to_string());
-        ctx2.source_path = Some(PathBuf::from("/b/AGENTS.md"));
-
-        let merged = merge_contexts(&[ctx1, ctx2]).expect("merge");
-
-        assert!(merged.contains("Instructions A"));
-        assert!(merged.contains("Instructions B"));
-    }
 }

@@ -835,12 +835,6 @@ mod platform {
         }
     }
 
-    pub async fn forward_stdio(config_path: Option<PathBuf>) -> Result<()> {
-        connect(config_path, None)
-            .await?
-            .forward(tokio::io::stdin(), tokio::io::stdout())
-            .await
-    }
     #[cfg(all(test, unix))]
     mod tests {
         use super::*;
@@ -867,11 +861,6 @@ mod platform {
 pub use platform::{
     HostOwnerProbe, OwnerClient, PublicationChangedBeforeAttach, UnavailablePublication, connect,
     connect_acp_if_published, connect_if_published, connect_listener_if_published,
-    connect_scoped_control_if_published, connect_selected_acp_if_published, forward_stdio,
+    connect_scoped_control_if_published, connect_selected_acp_if_published,
     probe_owner_for_host_startup, publication_is_absent,
 };
-
-#[cfg(not(any(unix, windows)))]
-pub async fn forward_stdio(_config_path: Option<PathBuf>) -> Result<()> {
-    anyhow::bail!("authenticated live-owner control is not implemented on this platform")
-}

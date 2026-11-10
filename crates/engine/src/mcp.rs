@@ -3047,7 +3047,6 @@ impl McpConnection {
     }
 
     /// Get server name
-    #[allow(dead_code)] // Public API for MCP consumers
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -3085,7 +3084,6 @@ impl McpConnection {
     }
 
     /// Get connection state
-    #[allow(dead_code)] // Public API for MCP consumers
     pub fn state(&self) -> ConnectionState {
         self.state
     }
@@ -5853,7 +5851,6 @@ impl McpPool {
     }
 
     /// Get all discovered resource templates with server-prefixed names
-    #[allow(dead_code)] // Public API for MCP resource discovery
     pub fn all_resource_templates(&self) -> Vec<(String, &McpResourceTemplate)> {
         let mut templates = Vec::new();
         for (server, conn) in &self.connections {
@@ -6749,7 +6746,6 @@ impl McpPool {
     }
 
     /// Get list of configured server names (static + dynamic)
-    #[allow(dead_code)] // Public API for MCP consumers
     pub fn server_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .config
