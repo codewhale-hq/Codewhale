@@ -1,0 +1,53 @@
+{
+  "profile_id": "standard",
+  "method": "POST",
+  "path": "/v1/responses",
+  "wire_model": "gpt-5.6",
+  "body": {
+    "model": "gpt-5.6",
+    "stream": true,
+    "store": false,
+    "max_output_tokens": 64,
+    "instructions": "You are a coding assistant.",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Inspect the project."
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "read_file",
+        "description": "Read a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "strict": false
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "reasoning": {
+      "effort": "high",
+      "summary": "auto"
+    },
+    "include": [
+      "reasoning.encrypted_content"
+    ]
+  }
+}

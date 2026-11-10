@@ -23,6 +23,10 @@ schemars = { version = "1.2.1", optional = true, features = ["derive", "preserve
 jsonschema.workspace = true
 
 [[bin]]
+name = "codewhale-codex-contract"
+path = "src/bin/contract.rs"
+
+[[bin]]
 name = "codewhale-app-server-schema"
 path = "src/bin/export.rs"
 required-features = ["schema"]

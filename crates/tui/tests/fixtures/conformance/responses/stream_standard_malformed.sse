@@ -1,0 +1,12 @@
+data: {not-json}
+
+data: {"type":"response.output_item.added","item":{"type":"message","id":"msg_1","status":"in_progress","role":"assistant","content":[]}}
+
+data: {"type":"response.output_text.delta","delta":"Hello"}
+
+data: {"type":"response.output_item.done","item":{"type":"message","id":"msg_1","status":"completed"}}
+
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}
+
+data: [DONE]
+

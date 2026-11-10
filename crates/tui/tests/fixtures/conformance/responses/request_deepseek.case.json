@@ -1,0 +1,13 @@
+{
+  "kind": "request",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com/v1",
+  "system": "You are a coding assistant.",
+  "user": "Inspect the project.",
+  "max_tokens": 64,
+  "reasoning_effort": "high",
+  "temperature": 0.5,
+  "top_p": 0.25,
+  "tool": true
+}

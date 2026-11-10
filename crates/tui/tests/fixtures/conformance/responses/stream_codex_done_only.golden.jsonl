@@ -1,0 +1,3 @@
+{"profile_id":"codex","request":[{"method":"POST","path":"/v1/responses"}]}
+{"type":"message_start","message":{"id":"","type":"message","role":"assistant","content":[],"model":"gpt-5.5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"stream_failure","detail":"Response parsing error: ChatGPT Responses stream closed before a successful completion event"}

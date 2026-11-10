@@ -61,15 +61,19 @@ impl ModalView for LaunchResumeConfirmView {
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         // Resuming replaces the whole session, so only a plain press answers:
-        // a release/repeat, or a Ctrl/Alt/Super chord that happens to end in
-        // Enter or `y`, is not a confirmation (U01-05). Shift stays allowed
-        // for `Y`.
+        // a release/repeat, or a Ctrl/Alt/Super/Meta/Hyper chord that happens
+        // to end in Enter or `y`, is not a confirmation (U01-05). Shift stays
+        // allowed for `Y`.
         if key.kind != KeyEventKind::Press {
             return ViewAction::None;
         }
-        let chord = key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+        let chord = key.modifiers.intersects(
+            KeyModifiers::CONTROL
+                | KeyModifiers::ALT
+                | KeyModifiers::SUPER
+                | KeyModifiers::META
+                | KeyModifiers::HYPER,
+        );
         match key.code {
             KeyCode::Enter if !chord => {
                 if self.selected == 0 {
@@ -275,20 +279,70 @@ mod tests {
 
         // U01-05: a chord that ends in Enter or `y`, and a key release, are
         // not a confirmation.
+        let dispatched = |code, modifiers| {
+            KeyEvent::new(
+                code,
+                crate::tui::composer_ui::normalize_macos_modifiers(modifiers),
+            )
+        };
         for key in [
             KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
             KeyEvent::new(KeyCode::Char('y'), KeyModifiers::SUPER),
+            dispatched(KeyCode::Char('y'), KeyModifiers::SUPER),
+            dispatched(KeyCode::Enter, KeyModifiers::META),
+            dispatched(KeyCode::Char('y'), KeyModifiers::META),
+            dispatched(KeyCode::Enter, KeyModifiers::HYPER),
+            dispatched(
+                KeyCode::Char('Y'),
+                KeyModifiers::HYPER | KeyModifiers::SHIFT,
+            ),
+            dispatched(KeyCode::Char('y'), KeyModifiers::META | KeyModifiers::SHIFT),
             KeyEvent::new_with_kind(
                 KeyCode::Enter,
                 KeyModifiers::NONE,
                 crossterm::event::KeyEventKind::Release,
+            ),
+            KeyEvent::new_with_kind(
+                KeyCode::Char('y'),
+                KeyModifiers::NONE,
+                crossterm::event::KeyEventKind::Repeat,
             ),
         ] {
             let mut confirm = view();
             assert!(
                 matches!(confirm.handle_key(key), ViewAction::None),
                 "{key:?} must not resume"
+            );
+        }
+
+        for key in [
+            dispatched(KeyCode::Enter, KeyModifiers::NONE),
+            dispatched(KeyCode::Char('y'), KeyModifiers::NONE),
+            dispatched(KeyCode::Char('Y'), KeyModifiers::SHIFT),
+        ] {
+            let mut confirm = view();
+            assert!(
+                matches!(
+                    confirm.handle_key(key),
+                    ViewAction::EmitAndClose(ViewEvent::LaunchResumeConfirmed { .. })
+                ),
+                "{key:?} must still confirm"
+            );
+        }
+
+        for modifiers in [
+            KeyModifiers::META,
+            KeyModifiers::HYPER,
+            KeyModifiers::CONTROL,
+        ] {
+            let mut confirm = view();
+            assert!(
+                matches!(
+                    confirm.handle_key(dispatched(KeyCode::Esc, modifiers)),
+                    ViewAction::Close
+                ),
+                "{modifiers:?}+Esc must still back out"
             );
         }
     }

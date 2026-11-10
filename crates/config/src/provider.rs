@@ -525,10 +525,99 @@ pub fn wire_dialect_override(table: &str, wire: Option<&str>) -> Option<WireForm
     }
 }
 
+/// The explicit Responses profile a custom table may request.
+///
+/// An empty value selects nothing, so an existing `wire = "responses"` table
+/// keeps the default profile. A set value is rejected unless this is a custom
+/// provider whose wire dialect is Responses and the id is on the custom
+/// allowlist. Built-in profiles stay on their route bindings.
+pub fn responses_profile_override(
+    kind: crate::ProviderKind,
+    table: &str,
+    wire: Option<&str>,
+    profile: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(profile) = profile.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if kind != crate::ProviderKind::Custom {
+        return Err(format!("provider {table} cannot set responses_profile"));
+    }
+    if !wire_dialect_prefers_responses(wire) {
+        return Err(format!(
+            "provider {table} responses_profile `{profile}` requires wire = \"responses\""
+        ));
+    }
+    crate::responses_dialect::accept_custom_responses_profile(profile)
+        .map_err(|err| format!("provider {table}: {err}"))?;
+    Ok(Some(profile.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::descriptors::defaults::*;
+
+    #[test]
+    fn responses_profile_override_rejects_the_wrong_wire_and_identity() {
+        assert_eq!(
+            responses_profile_override(
+                crate::ProviderKind::Custom,
+                "gateway",
+                Some("responses"),
+                None
+            )
+            .expect("absent"),
+            None
+        );
+        assert_eq!(
+            responses_profile_override(
+                crate::ProviderKind::Custom,
+                "gateway",
+                Some("responses"),
+                Some(" standard "),
+            )
+            .expect("standard"),
+            Some("standard".to_string())
+        );
+        for (kind, wire, profile, needle) in [
+            (
+                crate::ProviderKind::Openai,
+                Some("responses"),
+                Some("standard"),
+                "cannot set",
+            ),
+            (
+                crate::ProviderKind::Custom,
+                Some("chat"),
+                Some("standard"),
+                "requires wire",
+            ),
+            (
+                crate::ProviderKind::Custom,
+                Some("anthropic"),
+                Some("standard"),
+                "requires wire",
+            ),
+            (
+                crate::ProviderKind::Custom,
+                Some("responses"),
+                Some("codex"),
+                "allowed: standard",
+            ),
+            (
+                crate::ProviderKind::Custom,
+                Some("responses"),
+                Some("missing"),
+                "unknown responses profile",
+            ),
+        ] {
+            let error = responses_profile_override(kind, "gateway", wire, profile)
+                .expect_err("rejected profile");
+            assert!(error.contains(needle), "{error}");
+            assert!(error.contains("gateway"), "{error}");
+        }
+    }
 
     #[test]
     fn wire_dialect_override_parses_the_canonical_alias_sets() {

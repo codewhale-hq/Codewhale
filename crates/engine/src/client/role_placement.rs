@@ -374,7 +374,7 @@ mod adapter_agreement_tests {
 
     #[test]
     fn responses_preserves_positioned_instruction_history_and_marks_interrupted_history() {
-        let items = responses::convert_messages_to_responses_input(
+        let items = responses::responses_input_for_provider(
             &request(transcript()),
             ProviderKind::Openai,
             None,

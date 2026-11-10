@@ -10,6 +10,7 @@ use std::process::Output;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use super::git::run_git_command_async;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
@@ -232,11 +233,7 @@ impl ToolSpec for GitShowTool {
         }
 
         let command_str = format_command(&git_ctx.working_dir, &args);
-        let working_dir = git_ctx.working_dir.clone();
-        let output =
-            tokio::task::spawn_blocking(move || super::git::run_git_command(&working_dir, &args))
-                .await
-                .map_err(|e| ToolError::execution_failed(format!("git task panicked: {e}")))??;
+        let output = run_git_command_async(git_ctx.working_dir.clone(), args).await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Ok(ToolResult::error(format!(
@@ -371,11 +368,7 @@ impl ToolSpec for GitBlameTool {
         args.push(pathspec.display().to_string());
 
         let command_str = format_command(working_dir, &args);
-        let blame_dir = working_dir.to_path_buf();
-        let output =
-            tokio::task::spawn_blocking(move || super::git::run_git_command(&blame_dir, &args))
-                .await
-                .map_err(|e| ToolError::execution_failed(format!("git task panicked: {e}")))??;
+        let output = run_git_command_async(working_dir.to_path_buf(), args).await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Ok(ToolResult::error(format!(
@@ -877,23 +870,6 @@ fn pathspec_from(working_dir: &Path, resolved: &Path) -> PathBuf {
         Ok(rel) => rel.to_path_buf(),
         Err(_) => PathBuf::from("."),
     }
-}
-
-/// History reads share the read-only runner in `git.rs`, which disables the
-/// workspace's fsmonitor, hooks and filters.
-fn run_git_command(working_dir: &Path, args: &[String]) -> Result<Output, ToolError> {
-    super::git::run_git_command(working_dir, args)
-}
-
-/// Async wrapper that offloads the blocking `git` invocation onto a
-/// blocking-capable thread so the tokio worker is not stalled.
-async fn run_git_command_async(
-    working_dir: PathBuf,
-    args: Vec<String>,
-) -> Result<Output, ToolError> {
-    tokio::task::spawn_blocking(move || run_git_command(&working_dir, &args))
-        .await
-        .map_err(|e| ToolError::execution_failed(format!("git task panicked: {e}")))?
 }
 
 /// Run git under a hard deadline. `Ok(None)` means the deadline passed and the

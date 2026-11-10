@@ -1,0 +1,7 @@
+{
+  "kind": "stream",
+  "provider": "openai-codex",
+  "model": "gpt-5.5",
+  "system": "You are a coding assistant.",
+  "user": "Hello"
+}

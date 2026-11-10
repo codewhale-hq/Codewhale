@@ -1,0 +1,57 @@
+{
+  "profile_id": "concentrate",
+  "method": "POST",
+  "path": "/v1/responses",
+  "wire_model": "gpt-5.6-sol",
+  "body": {
+    "model": "gpt-5.6-sol",
+    "stream": true,
+    "max_output_tokens": 64,
+    "input": [
+      {
+        "type": "message",
+        "role": "system",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "You are a coding assistant."
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Inspect the project."
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "read_file",
+        "description": "Read a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "strict": false
+      }
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "reasoning": {
+      "effort": "high"
+    }
+  }
+}
