@@ -7,6 +7,190 @@ fn tool() -> FileTool {
 }
 
 #[tokio::test]
+async fn native_navigation_local_helpers_are_actionable_and_guarded() {
+    use crate::tools::echolocation::delivered_navigation_refs;
+
+    let tmp = tempdir().unwrap();
+    let context = ToolContext::new(tmp.path());
+    let prefix: String = (0..30).map(|n| format!("fn unused_{n}() {{}}\n")).collect();
+    let helper = "/// Check the input.\nfn helper() -> bool {\n    true\n}\n";
+    let source = format!(
+        "mod feature {{\nfn entry() -> bool {{\n    helper()\n}}\nfn shadowed(helper: fn() -> bool) -> bool {{\n    helper()\n}}\nfn explicit(helper: fn() -> bool) -> bool {{\n    self::helper()\n}}\nfn misleading() {{\n    let _ = \"decoy()\";\n    // decoy();\n    stringify!(decoy());\n    fn nested() {{ decoy(); }}\n}}\nstruct Object;\nimpl Object {{\n    fn method(&self) -> bool {{\n        helper()\n    }}\n}}\n{prefix}{helper}fn decoy() {{}}\n}}\n"
+    );
+    let path = tmp.path().join("calls.rs");
+    std::fs::write(&path, &source).unwrap();
+    let whole = ReadTool
+        .execute(json!({"path": "calls.rs"}), &context)
+        .await
+        .unwrap();
+    assert!(delivered_navigation_refs(&whole.content).is_empty());
+    let metadata = whole.metadata.as_ref().unwrap()["navigation"].clone();
+    let window = |start: &str, end: &str| {
+        let begin = source.find(start).unwrap();
+        let finish = begin + source[begin..].find(end).unwrap() + end.len();
+        (
+            source[..begin].lines().count() + 1,
+            source[begin..finish].lines().count(),
+        )
+    };
+    let footer = |content: &str| -> Value {
+        let start = content.rfind("[Code navigation: ").unwrap();
+        assert!(content.len() - start + 2 <= 600);
+        serde_json::from_str(
+            content[start..]
+                .strip_prefix("[Code navigation: ")
+                .unwrap()
+                .strip_suffix(']')
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let mut reference = Value::Null;
+    for (declaration, caller) in [
+        ("fn entry()", "feature::entry"),
+        ("fn explicit(", "feature::explicit"),
+        ("    fn method(", "feature::impl@18::method"),
+    ] {
+        let (offset, limit) = window(declaration, "}\n");
+        let args = json!({"path": "calls.rs", "offset": offset, "limit": limit});
+        let result = ReadTool.execute(args.clone(), &context).await.unwrap();
+        assert_eq!(result.metadata.as_ref().unwrap()["navigation"], metadata);
+        let navigation = footer(&result.content);
+        let candidate = navigation["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|symbol| symbol["call_candidate_from"] == caller)
+            .unwrap_or_else(|| {
+                panic!(
+                    "reading {caller} must offer its local helper, not unrelated neighbors: {}",
+                    result.content
+                )
+            });
+        assert_eq!(candidate["name"], "feature::helper");
+        assert_eq!(candidate["source"], helper);
+        reference = candidate["read"].clone();
+        assert_eq!(
+            reference["expected_revision"],
+            crate::tools::file::content_hash(source.as_bytes())
+        );
+        assert!(
+            delivered_navigation_refs(&result.content)
+                .iter()
+                .any(|read| serde_json::to_value(read).unwrap() == reference)
+        );
+        let repeat = ReadTool.execute(args, &context).await.unwrap();
+        assert_eq!(repeat.content, result.content);
+        let followed = ReadTool.execute(reference.clone(), &context).await.unwrap();
+        assert!(followed.content.starts_with(helper));
+    }
+    // A wider read cuts through neighboring declarations but still shows the
+    // entry's complete helper call. Boundary completions must not starve it.
+    let widened = ReadTool
+        .execute(
+            json!({"path": "calls.rs", "offset": 3, "limit": 7}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let navigation = footer(&widened.content);
+    let candidate = navigation["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|symbol| symbol["call_candidate_from"] == "feature::entry")
+        .expect("a displayed call must retain its helper ahead of boundary completions");
+    assert_eq!(candidate["read"], reference);
+    assert_eq!(widened.metadata.as_ref().unwrap()["navigation"], metadata);
+
+    for declaration in ["fn shadowed(", "fn misleading()"] {
+        let (offset, limit) = window(declaration, "}\n");
+        let result = ReadTool
+            .execute(
+                json!({"path": "calls.rs", "offset": offset, "limit": limit}),
+                &context,
+            )
+            .await
+            .unwrap();
+        assert!(
+            footer(&result.content)["symbols"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|symbol| symbol["call_candidate_from"].is_null())
+        );
+    }
+    // A call outside the delivered header is not evidence for a helper yet.
+    let header = ReadTool
+        .execute(
+            json!({"path": "calls.rs", "offset": 2, "limit": 1}),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(
+        footer(&header.content)["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|symbol| symbol["call_candidate_from"].is_null())
+    );
+    std::fs::write(&path, source.replace("    true\n", "    false\n")).unwrap();
+    let error = ReadTool
+        .execute(reference, &context)
+        .await
+        .expect_err("helper reads must reject edited snapshots");
+    assert!(error.to_string().contains("stale"));
+}
+
+#[tokio::test]
+async fn native_navigation_local_helpers_rank_callers() {
+    let tmp = tempdir().unwrap();
+    let context = ToolContext::new(tmp.path());
+    let calls: String = (0..23).map(|n| format!("    early_{n}();\n")).collect();
+    let helpers: String = (0..23).map(|n| format!("fn early_{n}() {{}}\n")).collect();
+    let source = format!(
+        "fn earlier() {{\n    shared();\n{calls}}}\nfn middle() {{\n    shared();\n}}\nfn right() {{\n    right_helper();\n}}\n{}fn shared() {{}}\nfn right_helper() {{}}\n{helpers}",
+        "\n".repeat(32)
+    );
+    std::fs::write(tmp.path().join("ranked.rs"), source).unwrap();
+    let mut choices = Vec::new();
+    // The first caller fills the old cap and shares a helper with the middle.
+    // Prefer a complete caller even over a nearer partial one; then compare
+    // centers, preserving file order on an exact tie.
+    for (offset, limit) in [(2, 28), (1, 58), (1, 62)] {
+        let result = ReadTool
+            .execute(
+                json!({"path": "ranked.rs", "offset": offset, "limit": limit}),
+                &context,
+            )
+            .await
+            .unwrap();
+        let start = result.content.rfind("[Code navigation: ").unwrap();
+        assert!(result.content.len() - start + 2 <= 600);
+        let navigation: Value = serde_json::from_str(
+            result.content[start..]
+                .strip_prefix("[Code navigation: ")
+                .unwrap()
+                .strip_suffix(']')
+                .unwrap(),
+        )
+        .unwrap();
+        let first = &navigation["symbols"][0];
+        choices.push((first["name"].clone(), first["call_candidate_from"].clone()));
+    }
+    assert_eq!(
+        choices,
+        vec![
+            (json!("shared"), json!("middle")),
+            (json!("shared"), json!("middle")),
+            (json!("right_helper"), json!("right")),
+        ],
+        "rank callers before the cap and shared-helper deduplication"
+    );
+}
+
+#[tokio::test]
 async fn native_navigation_footer_follows_displayed_lines() {
     use crate::tools::echolocation::delivered_navigation_refs;
 

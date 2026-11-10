@@ -386,6 +386,7 @@ impl ToolSpec for GrepFilesTool {
                             crate::tools::file::content_hash(source.as_bytes()),
                             &source,
                             &lines,
+                            &regex,
                             MAX_NAVIGATION_BYTES - 2,
                         ),
                     );

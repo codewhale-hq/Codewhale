@@ -19,7 +19,7 @@
 //! Tuning: `CODEWHALE_ECHO` gates sections for ablation trials
 //! (comma-separated `off:<name>` entries, e.g. `off:links,off:mates`;
 //! section names: mates, symbols, imports, links, callers, pods,
-//! soundings, navigation, grep_navigation). Unset or malformed means everything on.
+//! soundings, navigation, grep_navigation, call_candidates). Unset or malformed means everything on.
 //!
 //! Terminal buzz: the read footer deepens when the model is closing in.
 //! Two distinct files read in a pod (see
@@ -61,13 +61,105 @@ pub(crate) struct NavigationSymbol {
     read: CodeReadReference,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_candidate_from: Option<String>,
     #[serde(skip)]
     definition_match: bool,
 }
 
+/// Borrowed grep inputs, never retained in observations or their cache.
+#[derive(Clone, Copy)]
+struct SearchSelection<'a> {
+    lines: &'a [usize],
+    regex: &'a regex::Regex,
+    source: &'a str,
+    span_offset: usize,
+}
+
+impl SearchSelection<'_> {
+    fn definition_match(self, identifier: &syn::Ident) -> bool {
+        let span = identifier.span();
+        if !self.lines.contains(&span.start().line) {
+            return false;
+        }
+        let range = span.byte_range();
+        let start = range.start + self.span_offset;
+        let end = range.end + self.span_offset;
+        let Some(prefix) = self.source.get(..start) else {
+            return false;
+        };
+        let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
+        let Some(line) = self.source[line_start..].lines().next() else {
+            return false;
+        };
+        // Match the original line, not the identifier in isolation: anchors,
+        // word boundaries and a retained BOM must keep the grep's semantics.
+        self.regex
+            .find_iter(line)
+            .take_while(|matched| line_start + matched.start() < end)
+            .any(|matched| !matched.is_empty() && line_start + matched.end() > start)
+    }
+}
+
+struct LocalCaller<'ast> {
+    items: &'ast [syn::Item],
+    scope: String,
+    name: String,
+    signature: &'ast syn::Signature,
+    block: &'ast syn::Block,
+    start: usize,
+}
+
+/// Per-read syntax only. Names are candidates, never semantic call resolution.
+struct LocalCalls {
+    window: (usize, usize),
+    names: Vec<(String, bool)>,
+    bindings: BTreeSet<String>,
+    local_items: bool,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for LocalCalls {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = call.func.as_ref()
+            && path.qself.is_none()
+            && path.path.leading_colon.is_none()
+        {
+            let segments = &path.path.segments;
+            let qualified = segments.len() == 2 && segments[0].ident == "self";
+            if (segments.len() == 1 || qualified)
+                && let Some(segment) = segments.last()
+                && segment.ident.span().start().line >= self.window.0
+                && call.paren_token.span.close().end().line <= self.window.1
+                && self.names.len() < MAX_SYMBOLS
+            {
+                let name = (segment.ident.to_string(), qualified);
+                if !self.names.contains(&name) {
+                    self.names.push(name);
+                }
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+        self.bindings.insert(pattern.ident.to_string());
+        syn::visit::visit_pat_ident(self, pattern);
+    }
+
+    fn visit_item(&mut self, _: &'ast syn::Item) {
+        // Local declarations/imports can shadow module names. Their bodies
+        // belong to a different caller, so do not descend into them.
+        self.local_items = true;
+    }
+
+    fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+}
+
 /// Syntax only: no macro expansion, cfg evaluation, name/type resolution or
-/// LSP authority. V1 covers outer functions and impl methods in inline
-/// modules; ranges exclude preceding attributes/modifiers and local items.
+/// LSP authority. V1 covers module-level declarations, trait members and impl
+/// methods/types/constants in inline modules. Ranges preserve outer attributes,
+/// visibility and supported modifiers, but exclude local/foreign items. Impl
+/// labels identify source blocks, not resolved receiver types or relationships.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SourceNavigation {
     pub(crate) producer: String,
@@ -98,6 +190,46 @@ pub(crate) fn navigation_cache_identity(workspace: &Path, path: &Path) -> Option
     Some((namespace, relative))
 }
 
+// Use parser-owned prefix tokens without enabling syn's printing feature or
+// serializing entire syntax trees just to obtain their starting spans.
+fn declaration_start(
+    attributes: &[syn::Attribute],
+    visibility: Option<&syn::Visibility>,
+    start: usize,
+) -> usize {
+    let start = match visibility {
+        Some(syn::Visibility::Public(token)) => start.min(token.span.start().line),
+        Some(syn::Visibility::Restricted(visibility)) => {
+            start.min(visibility.pub_token.span.start().line)
+        }
+        _ => start,
+    };
+    attributes
+        .iter()
+        .filter(|attribute| matches!(attribute.style, syn::AttrStyle::Outer))
+        .fold(start, |start, attribute| {
+            start.min(attribute.pound_token.span.start().line)
+        })
+}
+
+fn function_start(signature: &syn::Signature, modifiers: &syn::FnModifiers) -> usize {
+    modifiers
+        .defaultness
+        .as_ref()
+        .map(|token| token.span)
+        .or_else(|| signature.constness.as_ref().map(|token| token.span))
+        .or_else(|| signature.asyncness.as_ref().map(|token| token.span))
+        .or_else(|| match &signature.safety {
+            syn::Safety::Safe(token) => Some(token.span),
+            syn::Safety::Unsafe(token) => Some(token.span),
+            _ => None,
+        })
+        .or_else(|| signature.abi.as_ref().map(|abi| abi.extern_token.span))
+        .unwrap_or(signature.fn_token.span)
+        .start()
+        .line
+}
+
 impl SourceNavigation {
     pub(crate) fn definition_match(&self) -> bool {
         self.symbols.iter().any(|symbol| symbol.definition_match)
@@ -126,10 +258,17 @@ impl SourceNavigation {
         revision: String,
         source: &str,
         matched_lines: &[usize],
+        regex: &regex::Regex,
         max_bytes: usize,
     ) -> Self {
+        let selection = SearchSelection {
+            lines: matched_lines,
+            regex,
+            source,
+            span_offset: 0,
+        };
         let mut navigation =
-            Self::from_selected_source(path, revision, source, true, Some(matched_lines));
+            Self::from_selected_source(path, revision, source, true, Some(selection));
         while serde_json::to_vec(&navigation).is_ok_and(|bytes| bytes.len() > max_bytes) {
             if navigation.symbols.pop().is_none() {
                 break;
@@ -158,7 +297,7 @@ impl SourceNavigation {
         revision: String,
         source: &str,
         utf8_valid: bool,
-        matched_lines: Option<&[usize]>,
+        mut matched_lines: Option<SearchSelection<'_>>,
     ) -> Self {
         let mut result = Self {
             producer: NAVIGATION_PRODUCER.to_string(),
@@ -183,7 +322,17 @@ impl SourceNavigation {
             return result;
         }
         match syn::parse_file(source) {
-            Ok(file) => result.visit_items(&file.items, "", 0, None, matched_lines),
+            Ok(file) => {
+                if let Some(selection) = &mut matched_lines {
+                    // syn strips one BOM and the shebang text, but preserves
+                    // the shebang's newline. Spans are relative to that suffix.
+                    selection.span_offset = source
+                        .strip_prefix('\u{feff}')
+                        .map_or(0, |rest| source.len() - rest.len())
+                        + file.shebang.as_ref().map_or(0, String::len);
+                }
+                result.visit_items(&file.items, "", 0, None, matched_lines);
+            }
             Err(_) => {
                 result.status = "unavailable".to_string();
                 result.reason = Some("syntax_error".to_string());
@@ -209,12 +358,175 @@ impl SourceNavigation {
         scope: &str,
         depth: usize,
         window: Option<(usize, usize)>,
-        matched_lines: Option<&[usize]>,
+        matched_lines: Option<SearchSelection<'_>>,
     ) {
         for item in items {
             match item {
                 syn::Item::Fn(function) => {
-                    self.note_function(scope, &function.sig, &function.block, window, matched_lines)
+                    self.note_function(scope, function, window, matched_lines)
+                }
+                syn::Item::Type(declaration) => self.note_declaration(
+                    scope,
+                    &declaration.ident,
+                    (
+                        declaration_start(
+                            &declaration.attrs,
+                            Some(&declaration.vis),
+                            declaration.type_token.span.start().line,
+                        ),
+                        declaration.semi_token.span.end().line,
+                    ),
+                    window,
+                    matched_lines,
+                ),
+                syn::Item::Const(declaration) if declaration.ident != "_" => self.note_declaration(
+                    scope,
+                    &declaration.ident,
+                    (
+                        declaration_start(
+                            &declaration.attrs,
+                            Some(&declaration.vis),
+                            declaration.const_token.span.start().line,
+                        ),
+                        declaration.semi_token.span.end().line,
+                    ),
+                    window,
+                    matched_lines,
+                ),
+                syn::Item::Static(declaration) => self.note_declaration(
+                    scope,
+                    &declaration.ident,
+                    (
+                        declaration_start(
+                            &declaration.attrs,
+                            Some(&declaration.vis),
+                            declaration.static_token.span.start().line,
+                        ),
+                        declaration.semi_token.span.end().line,
+                    ),
+                    window,
+                    matched_lines,
+                ),
+                syn::Item::Union(declaration) => self.note_declaration(
+                    scope,
+                    &declaration.ident,
+                    (
+                        declaration_start(
+                            &declaration.attrs,
+                            Some(&declaration.vis),
+                            declaration.union_token.span.start().line,
+                        ),
+                        declaration.fields.brace_token.span.close().end().line,
+                    ),
+                    window,
+                    matched_lines,
+                ),
+                syn::Item::Struct(declaration) => {
+                    let end = if let syn::Fields::Named(fields) = &declaration.fields {
+                        fields.brace_token.span.close().end().line
+                    } else if let Some(semi) = &declaration.semi_token {
+                        // Tuple structs can have a where-clause after their fields.
+                        semi.span.end().line
+                    } else {
+                        continue;
+                    };
+                    self.note_declaration(
+                        scope,
+                        &declaration.ident,
+                        (
+                            declaration_start(
+                                &declaration.attrs,
+                                Some(&declaration.vis),
+                                declaration.struct_token.span.start().line,
+                            ),
+                            end,
+                        ),
+                        window,
+                        matched_lines,
+                    );
+                }
+                syn::Item::Enum(declaration) => self.note_declaration(
+                    scope,
+                    &declaration.ident,
+                    (
+                        declaration_start(
+                            &declaration.attrs,
+                            Some(&declaration.vis),
+                            declaration.enum_token.span.start().line,
+                        ),
+                        declaration.brace_token.span.close().end().line,
+                    ),
+                    window,
+                    matched_lines,
+                ),
+                syn::Item::Trait(declaration) => {
+                    self.note_declaration(
+                        scope,
+                        &declaration.ident,
+                        (
+                            declaration_start(
+                                &declaration.attrs,
+                                Some(&declaration.vis),
+                                declaration
+                                    .unsafety
+                                    .as_ref()
+                                    .map(|token| token.span)
+                                    .or_else(|| {
+                                        declaration
+                                            .modifiers
+                                            .auto_token
+                                            .as_ref()
+                                            .map(|token| token.span)
+                                    })
+                                    .unwrap_or(declaration.trait_token.span)
+                                    .start()
+                                    .line,
+                            ),
+                            declaration.brace_token.span.close().end().line,
+                        ),
+                        window,
+                        matched_lines,
+                    );
+                    let scope = format!("{scope}{}::", declaration.ident);
+                    for item in &declaration.items {
+                        let (identifier, attributes, start, end) = match item {
+                            syn::TraitItem::Type(item) => (
+                                &item.ident,
+                                &item.attrs,
+                                item.type_token.span.start().line,
+                                item.semi_token.span.end().line,
+                            ),
+                            syn::TraitItem::Const(item) if item.ident != "_" => (
+                                &item.ident,
+                                &item.attrs,
+                                item.const_token.span.start().line,
+                                item.semi_token.span.end().line,
+                            ),
+                            syn::TraitItem::Fn(item) => {
+                                let end = if let Some(block) = &item.default {
+                                    block.brace_token.span.close().end().line
+                                } else if let Some(semi) = &item.semi_token {
+                                    semi.span.end().line
+                                } else {
+                                    continue;
+                                };
+                                (
+                                    &item.sig.ident,
+                                    &item.attrs,
+                                    function_start(&item.sig, &item.modifiers),
+                                    end,
+                                )
+                            }
+                            _ => continue,
+                        };
+                        self.note_declaration(
+                            &scope,
+                            identifier,
+                            (declaration_start(attributes, None, start), end),
+                            window,
+                            matched_lines,
+                        );
+                    }
                 }
                 syn::Item::Impl(implementation) => {
                     let scope = format!(
@@ -222,15 +534,47 @@ impl SourceNavigation {
                         implementation.impl_token.span.start().line
                     );
                     for item in &implementation.items {
-                        if let syn::ImplItem::Fn(function) = item {
-                            self.note_function(
-                                &scope,
-                                &function.sig,
-                                &function.block,
-                                window,
-                                matched_lines,
-                            );
-                        }
+                        let (identifier, attributes, visibility, start, end) = match item {
+                            syn::ImplItem::Type(item) => (
+                                &item.ident,
+                                &item.attrs,
+                                &item.vis,
+                                item.modifiers
+                                    .defaultness
+                                    .as_ref()
+                                    .map_or(item.type_token.span, |token| token.span)
+                                    .start()
+                                    .line,
+                                item.semi_token.span.end().line,
+                            ),
+                            syn::ImplItem::Const(item) if item.ident != "_" => (
+                                &item.ident,
+                                &item.attrs,
+                                &item.vis,
+                                item.modifiers
+                                    .defaultness
+                                    .as_ref()
+                                    .map_or(item.const_token.span, |token| token.span)
+                                    .start()
+                                    .line,
+                                item.semi_token.span.end().line,
+                            ),
+                            syn::ImplItem::Fn(item) => (
+                                &item.sig.ident,
+                                &item.attrs,
+                                &item.vis,
+                                function_start(&item.sig, &item.modifiers),
+                                item.block.brace_token.span.close().end().line,
+                            ),
+                            _ => continue,
+                        };
+                        self.note_declaration(
+                            &scope,
+                            identifier,
+                            (declaration_start(attributes, Some(visibility), start), end),
+                            window,
+                            matched_lines,
+                        );
                     }
                 }
                 syn::Item::Mod(module) => {
@@ -256,24 +600,45 @@ impl SourceNavigation {
     fn note_function(
         &mut self,
         scope: &str,
-        signature: &syn::Signature,
-        block: &syn::Block,
+        function: &syn::ItemFn,
         window: Option<(usize, usize)>,
-        matched_lines: Option<&[usize]>,
+        matched_lines: Option<SearchSelection<'_>>,
     ) {
-        let name = format!("{scope}{}", signature.ident);
-        let start = signature.fn_token.span.start().line;
-        let end = block.brace_token.span.close().end().line;
-        if matched_lines
-            .is_some_and(|lines| !lines.iter().any(|line| start <= *line && *line <= end))
-        {
+        self.note_declaration(
+            scope,
+            &function.sig.ident,
+            (
+                declaration_start(
+                    &function.attrs,
+                    Some(&function.vis),
+                    function_start(&function.sig, &function.modifiers),
+                ),
+                function.block.brace_token.span.close().end().line,
+            ),
+            window,
+            matched_lines,
+        );
+    }
+
+    fn note_declaration(
+        &mut self,
+        scope: &str,
+        identifier: &syn::Ident,
+        range: (usize, usize),
+        window: Option<(usize, usize)>,
+        matched_lines: Option<SearchSelection<'_>>,
+    ) {
+        let name = format!("{scope}{identifier}");
+        let (start, end) = range;
+        if matched_lines.is_some_and(|selection| {
+            !selection
+                .lines
+                .iter()
+                .any(|line| start <= *line && *line <= end)
+        }) {
             return;
         }
-        if self.symbols.len() >= MAX_SYMBOLS
-            || name.len() > MAX_NAME_LEN
-            || start == 0
-            || end < start
-        {
+        if name.len() > MAX_NAME_LEN || start == 0 || end < start {
             self.symbols_omitted += 1;
             return;
         }
@@ -287,17 +652,194 @@ impl SourceNavigation {
             self.symbols_omitted += 1;
             return;
         }
+        let definition_match =
+            matched_lines.is_some_and(|selection| selection.definition_match(identifier));
+        if self.symbols.len() >= MAX_SYMBOLS {
+            self.symbols_omitted += 1;
+            if !definition_match {
+                return;
+            }
+            // Keep definition priority inside the cap, not only after it.
+            // Evict the last non-definition so equal-priority scopes keep file order.
+            let Some(index) = self
+                .symbols
+                .iter()
+                .rposition(|symbol| !symbol.definition_match)
+            else {
+                return;
+            };
+            self.symbols.remove(index);
+        }
         self.symbols.push(NavigationSymbol {
             name,
             read,
             source: None,
-            definition_match: matched_lines
-                .is_some_and(|lines| lines.contains(&signature.ident.span().start().line)),
+            call_candidate_from: None,
+            definition_match,
         });
     }
 
+    fn collect_local_helpers(&mut self, items: &[syn::Item], window: (usize, usize)) {
+        let mut callers = Vec::new();
+        Self::collect_local_callers(items, "", 0, window, &mut callers);
+        callers.retain(|caller| {
+            caller.block.brace_token.span.open().start().line <= window.1
+                && caller.block.brace_token.span.close().end().line >= window.0
+        });
+        // Stable ties preserve file order. Rank before helper deduplication and
+        // the cap; doubled midpoints avoid rounding away half-line differences.
+        callers.sort_by_key(|caller| {
+            let end = caller.block.brace_token.span.close().end().line;
+            (
+                caller.start < window.0 || end > window.1,
+                caller
+                    .start
+                    .saturating_add(end)
+                    .abs_diff(window.0.saturating_add(window.1)),
+            )
+        });
+        for caller in callers {
+            if self.symbols.len() >= MAX_SYMBOLS {
+                break;
+            }
+            self.note_local_helpers(
+                caller.items,
+                &caller.scope,
+                &caller.name,
+                caller.signature,
+                caller.block,
+                window,
+            );
+        }
+    }
+
+    fn collect_local_callers<'ast>(
+        items: &'ast [syn::Item],
+        scope: &str,
+        depth: usize,
+        window: (usize, usize),
+        callers: &mut Vec<LocalCaller<'ast>>,
+    ) {
+        for item in items {
+            match item {
+                syn::Item::Fn(function) => callers.push(LocalCaller {
+                    items,
+                    scope: scope.to_string(),
+                    name: format!("{scope}{}", function.sig.ident),
+                    signature: &function.sig,
+                    block: &function.block,
+                    start: declaration_start(
+                        &function.attrs,
+                        Some(&function.vis),
+                        function_start(&function.sig, &function.modifiers),
+                    ),
+                }),
+                syn::Item::Impl(implementation) => {
+                    for item in &implementation.items {
+                        if let syn::ImplItem::Fn(function) = item {
+                            callers.push(LocalCaller {
+                                items,
+                                scope: scope.to_string(),
+                                name: format!(
+                                    "{scope}impl@{}::{}",
+                                    implementation.impl_token.span.start().line,
+                                    function.sig.ident
+                                ),
+                                signature: &function.sig,
+                                block: &function.block,
+                                start: declaration_start(
+                                    &function.attrs,
+                                    Some(&function.vis),
+                                    function_start(&function.sig, &function.modifiers),
+                                ),
+                            });
+                        }
+                    }
+                }
+                syn::Item::Mod(module) if depth < 16 => {
+                    if let Some((brace, children)) = &module.content
+                        && brace.span.open().start().line <= window.1
+                        && brace.span.close().end().line >= window.0
+                    {
+                        Self::collect_local_callers(
+                            children,
+                            &format!("{scope}{}::", module.ident),
+                            depth + 1,
+                            window,
+                            callers,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn note_local_helpers(
+        &mut self,
+        items: &[syn::Item],
+        scope: &str,
+        caller: &str,
+        signature: &syn::Signature,
+        block: &syn::Block,
+        window: (usize, usize),
+    ) {
+        use syn::visit::Visit;
+        if block.brace_token.span.open().start().line > window.1
+            || block.brace_token.span.close().end().line < window.0
+            || caller.len() > MAX_NAME_LEN
+        {
+            return;
+        }
+        let mut calls = LocalCalls {
+            window,
+            names: Vec::new(),
+            bindings: BTreeSet::new(),
+            local_items: false,
+        };
+        for argument in &signature.inputs {
+            if let syn::FnArg::Typed(argument) = argument {
+                calls.visit_pat(&argument.pat);
+            }
+        }
+        calls.visit_block(block);
+        for (name, qualified) in calls.names {
+            if !qualified && (calls.local_items || calls.bindings.contains(&name)) {
+                continue;
+            }
+            let mut targets = items.iter().filter_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+                _ => None,
+            });
+            let Some(target) = targets.next() else {
+                continue;
+            };
+            if targets.next().is_some()
+                || self
+                    .symbols
+                    .iter()
+                    .any(|symbol| symbol.name == format!("{scope}{name}"))
+            {
+                continue;
+            }
+            let start = declaration_start(
+                &target.attrs,
+                Some(&target.vis),
+                function_start(&target.sig, &target.modifiers),
+            );
+            if start <= window.1 && target.block.brace_token.span.close().end().line >= window.0 {
+                continue;
+            }
+            let previous = self.symbols.len();
+            self.note_function(scope, target, None, None);
+            if self.symbols.len() > previous {
+                self.symbols.last_mut().unwrap().call_candidate_from = Some(caller.to_string());
+            }
+        }
+    }
+
     /// Whole actionable objects under half the existing footer budget.
-    /// Cached metadata stays range-independent; partially displayed functions
+    /// Cached metadata stays range-independent; partially displayed declarations
     /// are selected before observation caps when the cached prefix is incomplete.
     /// A non-fitting candidate must not block smaller references later in that order.
     fn render_footer(&self, source: &str, first_line: usize, shown_lines: usize) -> String {
@@ -305,17 +847,22 @@ impl SourceNavigation {
             return String::new();
         }
         let last_line = first_line.saturating_add(shown_lines.saturating_sub(1));
-        let focused = if self.status == "ready"
+        let focused_read = self.status == "ready"
             && shown_lines > 0
-            && self.symbols_omitted > 0
             && source.len() <= MAX_NAVIGATION_SOURCE_BYTES
+            && (first_line > 1 || source.split_terminator('\n').nth(last_line).is_some());
+        let needs_focus = self.symbols_omitted > 0
             && self
                 .symbols
                 .last()
-                .is_none_or(|symbol| symbol.read.offset < last_line)
-            && (first_line > 1 || source.split_terminator('\n').nth(last_line).is_some())
-        {
-            syn::parse_file(source).ok().map(|file| {
+                .is_none_or(|symbol| symbol.read.offset < last_line);
+        let parsed = if focused_read && (needs_focus || !echo_off("call_candidates")) {
+            syn::parse_file(source).ok()
+        } else {
+            None
+        };
+        let focused = if needs_focus {
+            parsed.as_ref().map(|file| {
                 let mut focused = self.clone();
                 focused.symbols.clear();
                 focused.symbols_omitted = 0;
@@ -334,16 +881,31 @@ impl SourceNavigation {
             .filter(|symbol| shown_lines > 0 && symbol.read.extends_window(first_line, last_line))
             .collect();
         symbols.sort_by_key(|symbol| {
-            symbol
+            let end = symbol
                 .read
                 .offset
-                .saturating_add(symbol.read.limit.saturating_sub(1))
-                <= last_line
+                .saturating_add(symbol.read.limit.saturating_sub(1));
+            // Inner members complete before enclosing traits. Non-nested
+            // declarations retain file order within each direction group.
+            (end <= last_line, end, std::cmp::Reverse(symbol.read.offset))
         });
+        let related = if !echo_off("call_candidates")
+            && let Some(file) = &parsed
+        {
+            let mut related = self.clone();
+            related.symbols.clear();
+            related.symbols_omitted = 0;
+            related.collect_local_helpers(&file.items, (first_line, last_line));
+            related.symbols
+        } else {
+            Vec::new()
+        };
         let mut shown = self.clone();
         shown.symbols.clear();
         shown.symbols_omitted += self.symbols.len();
-        for symbol in symbols {
+        // Try helper references before boundary completions. Both are existing
+        // declarations counted in the omitted total; optional bodies come last.
+        for symbol in related.iter().chain(symbols) {
             shown.symbols.push(symbol.clone());
             shown.symbols_omitted -= 1;
             if serde_json::to_string(&shown).is_ok_and(|text| {
@@ -351,6 +913,30 @@ impl SourceNavigation {
             }) {
                 shown.symbols.pop();
                 shown.symbols_omitted += 1;
+            }
+        }
+        if shown
+            .symbols
+            .iter()
+            .any(|symbol| symbol.call_candidate_from.is_some())
+        {
+            let lines: Vec<_> = source.split_inclusive('\n').collect();
+            for index in 0..shown.symbols.len() {
+                let symbol = &shown.symbols[index];
+                if symbol.call_candidate_from.is_none() {
+                    continue;
+                }
+                let read = &symbol.read;
+                if let Some(body) = lines.get(read.offset - 1..read.offset - 1 + read.limit)
+                    && body.iter().map(|line| line.len()).sum::<usize>() <= 2048
+                {
+                    shown.symbols[index].source = Some(body.concat());
+                    if serde_json::to_string(&shown).is_ok_and(|text| {
+                        text.len() + NAVIGATION_MARKER.len() + 3 > POD_FOOTER_MAX_BYTES / 2
+                    }) {
+                        shown.symbols[index].source = None;
+                    }
+                }
             }
         }
         let footer = format!(
@@ -546,7 +1132,7 @@ pub(crate) fn sound_echolocation(
         symbols = navigation
             .symbols
             .iter()
-            .map(|symbol| format!("fn {}:{}", symbol.name, symbol.read.offset))
+            .map(|symbol| format!("{}:{}", symbol.name, symbol.read.offset))
             .collect();
         symbols.len() + navigation.symbols_omitted
     } else {
