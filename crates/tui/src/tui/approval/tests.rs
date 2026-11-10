@@ -2634,6 +2634,15 @@ fn test_elevation_render_en_has_expected_strings() {
 }
 
 #[test]
+fn elevation_command_truncates_by_display_width() {
+    let command = format!("echo {}", "宽字符命令".repeat(4));
+    let request = ElevationRequest::for_shell("test-id", &command, "blocked", true, false);
+    let view = ElevationView::new(request, Locale::En);
+    let joined = compact_elevation_text(&render_elevation_lines(&view, 70, 22));
+    assert!(joined.contains(&command.replace(' ', "")), "{joined}");
+}
+
+#[test]
 fn elevation_always_paints_every_option_including_the_safe_exit() {
     // The card used to be a fixed 22 rows centred on the frame, with no scroll
     // rail and no truncation hint, so the option list ran off the bottom and

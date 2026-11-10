@@ -40,6 +40,15 @@ changelog or release notes, and this contributor record.
 ## Contributors by time
 
 <details open>
+<summary><strong>Unreleased — landed after v0.10.3</strong></summary>
+
+**Contributions**
+
+- **[SamhandsomeLee](https://github.com/SamhandsomeLee)** — drove Responses request, URL and stream behavior from one checked dialect profile table ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)).
+
+</details>
+
+<details open>
 <summary><strong>v0.10.3 — unreleased candidate</strong></summary>
 
 **Contributions**

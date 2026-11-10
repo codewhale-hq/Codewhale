@@ -112,6 +112,7 @@ use codewhale_runtime::skill_state::SkillStateStore;
 
 mod account;
 mod auth;
+mod automations;
 mod avatars;
 mod builtin_commands;
 mod computer_display;
@@ -3422,6 +3423,20 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route("/v1/automations/{id}/pause", post(pause_automation))
         .route("/v1/automations/{id}/resume", post(resume_automation))
         .route("/v1/automations/{id}/runs", get(list_automation_runs))
+        .route("/v1/automations/missed", get(automations::list_missed))
+        .route("/v1/automations/{id}/missed", get(automations::get_missed))
+        .route(
+            "/v1/automations/{id}/missed/policy",
+            put(automations::set_missed_policy),
+        )
+        .route(
+            "/v1/automations/{id}/missed/run",
+            post(automations::run_missed),
+        )
+        .route(
+            "/v1/automations/{id}/missed/skip",
+            post(automations::skip_missed),
+        )
         .route("/v1/triggers", get(list_triggers).post(create_trigger))
         .route("/v1/triggers/{id}", get(get_trigger).delete(cancel_trigger))
         .route(

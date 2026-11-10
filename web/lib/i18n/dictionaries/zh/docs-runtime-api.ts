@@ -8,7 +8,7 @@ export const docsRuntimeApi: DocsRuntimeApiDict = {
   bodyClassName: "text-ink-soft leading-[1.9] tracking-wide",
   title: "用 Runtime API 自动化",
   lede:
-    "脚本和应用可以驱动你在终端里使用的同一个引擎。单个任务用 `codewhale exec`；需要会话线程、实时事件和审批的应用，则运行本地的 Runtime API。一切都在你的机器上运行，没有托管中转。",
+    "单次任务可使用 `codewhale exec`；本教程演示如何通过本地 Runtime API 创建线程并读取回合事件流。[完整源码候选版参考](/docs/runtime-reference) 介绍路由、请求字段、事件和兼容性限制。",
   sections: [
     {
       id: "exec",
@@ -29,13 +29,17 @@ codewhale exec --auto --sandbox workspace-write --output-format stream-json "upd
       id: "start",
       title: "启动 Runtime API",
       blocks: [
+        { p: "请使用具备 `curl`、`jq` 和 `openssl` 的 POSIX shell，以及支持 `app-server --http` 的 Codewhale 构建。在同一个终端中完成所有步骤，才能保留令牌、服务进程 id 和线程 id。" },
+        { note: "本教程描述尚未发布的 0.10.3 源码候选版本；请先运行 `codewhale --version` 核对版本。下方回合需要已连接的提供商，并按其正常规则计费；启动服务和检查 `/health` 不发送模型请求。" },
         {
           code: `export CODEWHALE_RUNTIME_TOKEN="$(openssl rand -hex 32)"
-codewhale app-server --http            # http://127.0.0.1:7878`,
+codewhale app-server --http &
+CODEWHALE_RUNTIME_PID=$!
+curl --fail --silent --show-error --retry 10 --retry-connrefused \  --retry-delay 1 http://127.0.0.1:7878/health`,
           lang: "终端",
         },
         {
-          p: "请在启动前自己设置令牌；如果不设置，Codewhale 会为该进程生成一个令牌，但不会打印出来。每个 `/v1/*` 请求都必须以 `Authorization: Bearer <token>` 的形式携带它。`--port` 可以更改端口。",
+          p: "健康检查成功后再继续；如果失败或端口被占用，请查看服务输出。请妥善保管生成的令牌，每个 `/v1/*` 请求都必须以 `Authorization: Bearer <token>` 的形式携带它。",
         },
       ],
     },
@@ -47,17 +51,17 @@ codewhale app-server --http            # http://127.0.0.1:7878`,
           code: `API=http://127.0.0.1:7878
 AUTH="Authorization: Bearer $CODEWHALE_RUNTIME_TOKEN"
 
-THREAD=$(curl -s -X POST "$API/v1/threads" -H "$AUTH" \\
-  -H "Content-Type: application/json" -d '{}' | jq -r .id)
+THREAD=$(curl -fsS -X POST "$API/v1/threads" -H "$AUTH" \\
+  -H "Content-Type: application/json" -d '{}' | jq -er .id)
 
-curl -s -X POST "$API/v1/threads/$THREAD/turns" -H "$AUTH" \\
+curl -fsS -X POST "$API/v1/threads/$THREAD/turns" -H "$AUTH" \\
   -H "Content-Type: application/json" -d '{"prompt": "Summarize README.md"}'
 
-curl -N "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
+curl -fN "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
           lang: "终端",
         },
         {
-          p: "线程就是一段对话；回合是一次请求，以及 Codewhale 为它所做的一切。事件流会从你给出的序号开始回放，然后保持连接等待新事件，因此重新连接的客户端不会漏掉任何内容。",
+          p: "请确认创建线程后返回非空 id，回合请求返回已接受的回合，事件流随后应显示回合及其记录的结果。重新连接时保留最后接受的 `seq`，处理终止帧 `stream.end`，并遵循[回放约定](/docs/runtime-reference#ending-and-resuming-a-thread-stream)，不要假定所有断线都能恢复。",
         },
         {
           rows: [
@@ -68,8 +72,16 @@ curl -N "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
           ],
         },
         {
-          p: "[docs/RUNTIME_API.md](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/RUNTIME_API.md) 列出了所有路由、请求体和事件。",
+          p: "[Runtime API 参考](/docs/runtime-reference) 展示规范源码，包括端点表、请求字段、事件封装和版本限制。",
         },
+      ],
+    },
+    {
+      id: "stop",
+      title: "停止教程服务",
+      blocks: [
+        { p: "按 Ctrl+C 关闭事件流，然后停止你在此终端启动的服务。仅关闭事件流不会停止服务，也不会中断正在运行的模型回合；需要时请使用上方的中断端点。" },
+        { code: 'kill "$CODEWHALE_RUNTIME_PID"\nunset CODEWHALE_RUNTIME_TOKEN CODEWHALE_RUNTIME_PID', lang: "终端" },
       ],
     },
     {
@@ -103,6 +115,7 @@ curl -N "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
     },
   ],
   next: [
+    { href: "/docs/runtime-reference", label: "阅读 Runtime API 参考", note: "查找准确的路由、字段、事件结构和兼容性行为。" },
     {
       href: "/docs/web",
       label: "打开浏览器客户端",

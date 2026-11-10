@@ -16,6 +16,7 @@ Usage examples:
   scripts/catalog_models_dev.py seed render           # write the seed
   scripts/catalog_models_dev.py seed render --check   # CI: seed == render
   scripts/catalog_models_dev.py seed age --max-days 30 # CI: the pin is not stale
+  scripts/catalog_models_dev.py seed discover [--write] # new allowlisted-vendor models
 
   # Dry-run: fetch + validate, print counts (no write)
   scripts/catalog_models_dev.py refresh
@@ -44,7 +45,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -595,9 +596,21 @@ def normalize_seed_spec(spec: dict[str, Any], source: str) -> dict[str, Any]:
         if not entry.get("key"):
             die(f"{source}: canonical entries need a key")
         canonical.append({"key": entry["key"], "upstream": entry.get("upstream", entry["key"])})
+    discover = spec.get("discover", {})
+    skip = discover.get("skip", [])
+    since_days = discover.get("since_days", DISCOVER_DEFAULT_SINCE_DAYS)
+    if (
+        not isinstance(skip, list)
+        or not all(isinstance(item, str) for item in skip)
+        or not isinstance(since_days, int)
+        or isinstance(since_days, bool)
+        or since_days <= 0
+    ):
+        die(f"{source}: [discover] needs skip = [ids] and a positive integer since_days")
     return {
         "source": spec["source"],
         "meta": meta,
+        "discover": {"skip": skip, "since_days": since_days},
         "providers": providers,
         "curated": curated,
         "canonical": canonical,
@@ -1177,6 +1190,166 @@ def cmd_seed_age(args: argparse.Namespace) -> None:
     print(f"ok: offline seed pinned {fetched_at} ({age_days:.1f} days old, limit {args.max_days}d)")
 
 
+DISCOVER_VENDORS: dict[str, tuple[str, str | None, tuple[str, ...]]] = {
+    "anthropic": ("Anthropic", "anthropic", ()),
+    "openai": ("OpenAI", "openai", ()),
+    "google": ("Google", "google", ()),
+    "deepseek": ("DeepSeek", "deepseek", ()),
+    "xai": ("xAI", "xai", ()),
+    "moonshotai": ("Moonshot/Kimi", "moonshot", ()),
+    "zai": ("Z.ai", "zai", ()),
+    "minimax": ("MiniMax", "minimax", ()),
+    "alibaba": ("Qwen", None, ("qwen", "qwq")),
+    "mistral": ("Mistral", None, ("mistral", "codestral", "ministral", "devstral", "magistral", "pixtral")),
+    "meta": ("Meta", "meta", ()),
+    "xiaomi": ("Xiaomi MiMo", "xiaomi-mimo", ()),
+    "stepfun": ("StepFun", "stepfun", ()),
+}
+DISCOVER_DEFAULT_SINCE_DAYS = 45
+DISCOVER_NON_CHAT_TOKENS = {
+    "asr", "audio", "computer", "embed", "embedding", "image", "imagine", "latest",
+    "live", "moderation", "ocr", "realtime", "rerank", "reranker", "research",
+    "transcribe", "tts", "video",
+}
+DISCOVER_SNAPSHOT_ID = re.compile(r"-(\d{8}|\d{4}-\d{2}-\d{2})$")
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DISCOVER_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+
+
+def discover_exclusion(model_id: str, row: dict[str, Any], since: str) -> str | None:
+    """Why a models.dev row is not a public chat model, or None when it qualifies."""
+    if not DISCOVER_SAFE_ID.match(model_id):
+        return "id outside the safe character set"
+    release = row.get("release_date")
+    if not isinstance(release, str) or not ISO_DATE.match(release):
+        return "no release_date"
+    if release < since:
+        return "older than the window"
+    if row.get("status") in ("deprecated", "retired"):
+        return "deprecated"
+    if DISCOVER_SNAPSHOT_ID.search(model_id):
+        return "dated snapshot"
+    if DISCOVER_NON_CHAT_TOKENS & set(re.split(r"[^a-z0-9]+", model_id.lower())):
+        return "not a chat model id"
+    if (row.get("modalities") or {}).get("output") != ["text"] or row.get("tool_call") is not True:
+        return "not a text model with tool calling"
+    context = (row.get("limit") or {}).get("context")
+    if not isinstance(context, int) or isinstance(context, bool) or context <= 0:
+        return "no context limit"
+    return None
+
+
+def discover_candidates(
+    upstream: dict[str, Any],
+    reviewed: dict[str, Any],
+    skip: list[str],
+    since: str,
+) -> list[dict[str, Any]]:
+    """Allowlisted-vendor chat models released since `since` that the public list lacks."""
+    known = {str(key).lower() for key in reviewed.get("intrinsic", {})}
+    for entry in reviewed.get("public_models", []):
+        known.add(entry["id"].lower())
+        known.update(str(alias).lower() for alias in entry.get("aliases", []))
+    known.update(str(item).lower() for item in skip)
+    found: list[dict[str, Any]] = []
+    for vendor, (label, spec_provider, prefixes) in DISCOVER_VENDORS.items():
+        rows = (upstream.get("providers", {}).get(vendor) or {}).get("models") or {}
+        for model_id, row in sorted(rows.items()):
+            if prefixes and not model_id.lower().startswith(prefixes):
+                continue
+            if model_id.lower() in known or discover_exclusion(model_id, row, since):
+                continue
+            limit = row["limit"]
+            output = limit.get("output")
+            found.append(
+                {
+                    "vendor": vendor,
+                    "label": label,
+                    "spec_provider": spec_provider,
+                    "id": model_id,
+                    "release_date": row["release_date"],
+                    "context_window": limit["context"],
+                    "max_output": output if isinstance(output, int) and not isinstance(output, bool) and output > 0 else None,
+                    "reasoning": row.get("reasoning") is True,
+                }
+            )
+    found.sort(key=lambda item: (item["release_date"], item["vendor"], item["id"]))
+    return found
+
+
+def append_spec_model(spec_text: str, provider_id: str, model_id: str) -> str:
+    """Add a bare model id to the end of one provider's `models` array."""
+    block = re.search(rf'^\[\[providers\]\]\nid = "{re.escape(provider_id)}"\n', spec_text, re.M)
+    if block is None:
+        die(f"seed spec has no provider {provider_id}")
+    opener = re.compile(r"^models = \[\n", re.M).search(spec_text, block.end())
+    nxt = spec_text.find("[[providers]]", block.end())
+    if opener is None or (nxt != -1 and opener.start() > nxt):
+        die(f"seed spec provider {provider_id}: could not find its models array")
+    end = spec_text.index("\n]\n", opener.end() - 1) + 1
+    return spec_text[:end] + f'  "{model_id}",\n' + spec_text[end:]
+
+
+def apply_discoveries(
+    found: list[dict[str, Any]],
+    corrections: dict[str, Any],
+    spec: dict[str, Any],
+    spec_text: str,
+    today: str,
+) -> tuple[dict[str, Any], str]:
+    reviewed = corrections["reviewed"]
+    seeded = {(p["id"], m["id"].lower()) for p in spec["providers"] for m in p["models"]}
+    for item in found:
+        intrinsic: dict[str, Any] = {
+            "source": f"models.dev {item['vendor']}/{item['id']}, discovered {today}; unreviewed",
+            "context_window": item["context_window"],
+        }
+        if item["max_output"]:
+            intrinsic["max_output"] = item["max_output"]
+        intrinsic["reasoning"] = item["reasoning"]
+        intrinsic["family"] = item["label"]
+        reviewed["intrinsic"][item["id"].lower()] = intrinsic
+        reviewed["public_models"].append(
+            {
+                "id": item["id"],
+                "label": item["label"],
+                "added_at": item["release_date"],
+                "aliases": [item["id"]],
+            }
+        )
+        if item["spec_provider"] and (item["spec_provider"], item["id"].lower()) not in seeded:
+            spec_text = append_spec_model(spec_text, item["spec_provider"], item["id"])
+    return corrections, spec_text
+
+
+def cmd_seed_discover(args: argparse.Namespace) -> None:
+    spec = load_seed_spec(Path(args.spec))
+    since = args.since or (
+        datetime.now(timezone.utc) - timedelta(days=spec["discover"]["since_days"])
+    ).strftime("%Y-%m-%d")
+    if not ISO_DATE.match(since):
+        die(f"--since must be YYYY-MM-DD, got {since!r}")
+    _, source, upstream = load_upstream_payload(spec, args.snapshot)
+    corrections_path = Path(args.corrections)
+    corrections = read_json_file(corrections_path)
+    found = discover_candidates(upstream, corrections["reviewed"], spec["discover"]["skip"], since)
+    print(f"upstream: {public_source_label(source)}; vendors: {', '.join(DISCOVER_VENDORS)}; released since {since}")
+    for item in found:
+        target = item["spec_provider"] or "public list only"
+        print(f"  {item['release_date']} {item['vendor']}/{item['id']} ctx {item['context_window']} out {item['max_output']} -> {target}")
+    print(f"{len(found)} new model(s)")
+    if not args.write or not found:
+        return
+    spec_path = Path(args.spec)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    corrections, spec_text = apply_discoveries(
+        found, corrections, spec, spec_path.read_text(encoding="utf-8"), today
+    )
+    corrections_path.write_text(json.dumps(corrections, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    spec_path.write_text(spec_text, encoding="utf-8")
+    print(f"wrote {corrections_path} and {spec_path}; next: seed lock, seed render")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Secret-free Models.dev / OpenRouter catalog automation (#4117)"
@@ -1277,6 +1450,17 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--descriptors", default=str(DESCRIPTORS_ASSET))
     lock.set_defaults(func=cmd_seed_lock)
     render.set_defaults(func=cmd_seed_render)
+
+    discover = seed_sub.add_parser(
+        "discover",
+        help="List (or with --write, add) allowlisted-vendor models the public list lacks",
+    )
+    discover.add_argument("--write", action="store_true", help="Add the rows to the spec and corrections")
+    discover.add_argument("--since", help="Earliest release_date, YYYY-MM-DD (default: spec window)")
+    discover.add_argument("--snapshot", help="Read a local models.dev JSON instead of fetching")
+    discover.add_argument("--spec", default=str(SEED_SPEC))
+    discover.add_argument("--corrections", default=str(CORRECTIONS_ASSET))
+    discover.set_defaults(func=cmd_seed_discover)
 
     defaults = sub.add_parser(
         "defaults", help="Audit shipped provider defaults against a live catalog"

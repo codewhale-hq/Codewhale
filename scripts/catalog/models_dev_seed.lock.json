@@ -1,8 +1,8 @@
 {
   "source": {
     "url": "https://models.dev/catalog.json",
-    "fetched_at": "2026-11-06T04:39:42Z",
-    "sha256": "83270dc8406a2bc8ab486a5fcce9fb208bd6de19792c90bcb0cca2223a2a57ec"
+    "fetched_at": "2026-11-10T21:14:00Z",
+    "sha256": "019e248c87ca384d63f16bfd2fde60f8e26b2c6fa1126927a1dac25fe88c9740"
   },
   "models": {
     "deepseek/deepseek-v4-pro-0813": {
@@ -1215,6 +1215,71 @@
           "cache_write": 12.5
         }
       },
+      "claude-fable-5-2": {
+        "id": "claude-fable-5-2",
+        "canonical_model_id": "anthropic/claude-fable-5-2",
+        "name": "Claude Fable 5.2",
+        "description": "Claude model for demanding reasoning and long-horizon agentic work",
+        "family": "claude-fable",
+        "knowledge": "2026-06",
+        "release_date": "2026-11-09",
+        "last_updated": "2026-11-09",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": false,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1000000,
+          "output": 128000
+        },
+        "cost": {
+          "input": 8,
+          "output": 40,
+          "cache_read": 0.2,
+          "cache_write": 10
+        },
+        "experimental": {
+          "modes": {
+            "fast": {
+              "cost": {
+                "input": 16,
+                "output": 80,
+                "cache_read": 0.4,
+                "cache_write": 20
+              },
+              "provider": {
+                "body": {
+                  "speed": "fast"
+                }
+              }
+            }
+          }
+        }
+      },
       "claude-haiku-4-5": {
         "id": "claude-haiku-4-5",
         "canonical_model_id": "anthropic/claude-haiku-4-5",
@@ -2315,6 +2380,54 @@
           "input_audio": 2
         }
       },
+      "gemini-4-carbon": {
+        "id": "gemini-4-carbon",
+        "canonical_model_id": "google/gemini-4-carbon",
+        "name": "Gemini 4 Carbon",
+        "description": "Google's most capable reasoning model for complex software engineering, deep math and science, high factual accuracy, and long-horizon autonomous agents",
+        "family": "gemini",
+        "knowledge": "2026-03",
+        "release_date": "2026-11-10",
+        "last_updated": "2026-11-10",
+        "attachment": true,
+        "reasoning": true,
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        ],
+        "tool_call": true,
+        "structured_output": true,
+        "temperature": true,
+        "open_weights": false,
+        "modalities": {
+          "input": [
+            "text",
+            "image",
+            "video",
+            "audio",
+            "pdf"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "limit": {
+          "context": 1048576,
+          "output": 32768
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1,
+          "input_audio": 2
+        }
+      },
       "gemini-flash-latest": {
         "id": "gemini-flash-latest",
         "name": "Gemini Flash Latest",
@@ -3107,7 +3220,7 @@
         "id": "kimi-k3.1-pro",
         "canonical_model_id": "moonshotai/kimi-k3.1-pro",
         "name": "Kimi K3.1 Pro",
-        "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+        "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
         "family": "kimi-k3",
         "release_date": "2026-10-23",
         "last_updated": "2026-10-23",
@@ -3129,7 +3242,7 @@
         "tool_call": true,
         "structured_output": true,
         "temperature": false,
-        "open_weights": false,
+        "open_weights": true,
         "modalities": {
           "input": [
             "text",
@@ -3155,7 +3268,7 @@
         "id": "kimi-k3.1-pro-highspeed",
         "canonical_model_id": "moonshotai/kimi-k3.1-pro",
         "name": "Kimi K3.1 Pro Highspeed",
-        "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+        "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
         "family": "kimi-k3",
         "release_date": "2026-10-23",
         "last_updated": "2026-10-23",
@@ -3177,7 +3290,7 @@
         "tool_call": true,
         "structured_output": true,
         "temperature": false,
-        "open_weights": false,
+        "open_weights": true,
         "modalities": {
           "input": [
             "text",
@@ -4825,9 +4938,9 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.006,
+          "input": 0.007,
           "output": 6.8,
-          "cache_read": 0.005
+          "cache_read": 0.006
         }
       },
       "z-ai/glm-5.3": {
@@ -4908,11 +5021,11 @@
         },
         "limit": {
           "context": 1048576,
-          "output": 943717
+          "output": 131072
         },
         "cost": {
-          "input": 0.15,
-          "output": 0.5,
+          "input": 0.0399,
+          "output": 0.0784,
           "cache_read": 0.03
         }
       }

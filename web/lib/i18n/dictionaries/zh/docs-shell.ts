@@ -10,7 +10,6 @@ export const docsShell: DocsShellDict = {
   metaTitle: "文档 · Codewhale",
   metaDescription:
     "安装 Codewhale，连接模型提供商，然后把事情做完：模式与审批、查看改动、工作流、子智能体、MCP 工具、钩子、Runtime API 以及问题排查。",
-  portalMark: "Codewhale 文档",
   heroTitle: "安装与使用 Codewhale",
   heroLead: "查找安装步骤、模型连接、工具配置和问题排查指南。每份指南都包含可以运行的命令和示例。",
   installCta: "安装 Codewhale",
@@ -22,7 +21,10 @@ export const docsShell: DocsShellDict = {
   releaseChangelog: "更新日志 →",
 
   searchLabel: "搜索文档",
-  searchPlaceholder: "按任务或主题搜索…（按 / 快速聚焦）",
+  searchPlaceholder: "搜索指南与参考",
+  searchLoading: "正在加载文档索引。搜索词只保留在此浏览器中。",
+  searchUnavailable: "完整索引未能加载。请重试，以搜索正文和参考命令。",
+  searchRetry: "重新加载索引",
   searchClear: "清除",
   searchMatches: "{matched} / {total} 条匹配 “{query}”",
   searchNoMatches: "没有条目匹配 “{query}”",

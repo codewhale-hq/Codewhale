@@ -20,6 +20,7 @@ fn req(provider: Option<ProviderKind>, model: Option<&str>) -> RouteRequest {
         base_url_override: None,
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     }
 }
 
@@ -85,6 +86,11 @@ fn concentrate_passes_ids_through_and_strips_only_its_own_namespace() {
             out.protocol(),
             RequestProtocol::Responses,
             "{raw} must ride the Responses wire"
+        );
+        assert_eq!(
+            out.responses_profile_id().map(|id| id.as_str()),
+            Some("concentrate"),
+            "{raw} profile"
         );
     }
 
@@ -266,6 +272,12 @@ fn resolver_records_exact_limit_override_provenance() {
         .expect("Codex route with sourced overrides resolves");
 
     assert_eq!(candidate.applied_limit_overrides(), overrides.as_slice());
+    assert_eq!(candidate.protocol(), RequestProtocol::Responses);
+    assert_eq!(
+        candidate.responses_profile_id().map(|id| id.as_str()),
+        Some("codex")
+    );
+    assert_ne!(candidate.endpoint().endpoint_key, "responses");
 }
 
 #[test]
@@ -396,6 +408,10 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
     assert_eq!(default_flash.protocol(), RequestProtocol::Responses);
     assert_eq!(default_flash.endpoint().endpoint_key, "responses");
     assert_eq!(
+        default_flash.responses_profile_id().map(|id| id.as_str()),
+        Some("deepseek_stateless_plain_reasoning")
+    );
+    assert_eq!(
         default_flash.capabilities().server_side_web_search,
         CapabilityState::Supported
     );
@@ -409,6 +425,10 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
     assert_eq!(flash.protocol(), RequestProtocol::Responses);
     assert_eq!(flash.endpoint().endpoint_key, "responses");
     assert_eq!(
+        flash.responses_profile_id().map(|id| id.as_str()),
+        Some("deepseek_stateless_plain_reasoning")
+    );
+    assert_eq!(
         flash.capabilities().server_side_web_search,
         CapabilityState::Supported
     );
@@ -418,6 +438,7 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
         .expect("official Pro route resolves");
     assert_eq!(pro.protocol(), RequestProtocol::ChatCompletions);
     assert_eq!(pro.endpoint().endpoint_key, "chat");
+    assert!(pro.responses_profile_id().is_none());
     assert_eq!(
         pro.capabilities().server_side_web_search,
         CapabilityState::Supported
@@ -431,6 +452,7 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
         .expect("unknown future model preserves direct-provider pass-through");
     assert_eq!(future.protocol(), RequestProtocol::ChatCompletions);
     assert_eq!(future.endpoint().endpoint_key, "chat");
+    assert!(future.responses_profile_id().is_none());
 
     let legacy_unknown = resolver
         .resolve(&req(
@@ -440,6 +462,7 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
         .expect("unknown unversioned model preserves historical Chat pass-through");
     assert_eq!(legacy_unknown.protocol(), RequestProtocol::ChatCompletions);
     assert_eq!(legacy_unknown.endpoint().endpoint_key, "chat");
+    assert!(legacy_unknown.responses_profile_id().is_none());
 
     let custom = resolver
         .resolve(&RouteRequest {
@@ -449,10 +472,12 @@ fn resolver_routes_only_official_deepseek_flash_over_responses() {
             base_url_override: Some("https://compatible.example/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         })
         .expect("custom compatible Flash route remains pass-through");
     assert_eq!(custom.protocol(), RequestProtocol::ChatCompletions);
     assert_eq!(custom.endpoint().endpoint_key, "chat");
+    assert!(custom.responses_profile_id().is_none());
     assert_eq!(
         custom.capabilities().server_side_web_search,
         CapabilityState::Unknown
@@ -497,6 +522,7 @@ fn resolver_sources_deepseek_files_api_only_on_exact_official_flash_routes() {
             base_url_override: Some("https://compatible.example/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         })
         .expect("custom compatible endpoint resolves");
     assert_eq!(custom.capabilities().files_api, CapabilityState::Unknown);
@@ -556,6 +582,7 @@ fn resolver_routes_deepseek_vision_exp_over_chat_with_image_input() {
                 base_url_override: base_url_override.map(str::to_string),
                 limit_overrides: Vec::new(),
                 wire_override: None,
+                responses_profile_override: None,
             })
             .expect("experimental vision route resolves");
 
@@ -668,6 +695,7 @@ fn resolver_keeps_custom_deepseek_same_name_capabilities_unverified() {
             base_url_override: Some("https://deepseek-proxy.example.test/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         })
         .expect("same-name custom proxy route resolves");
 
@@ -952,6 +980,7 @@ fn resolver_direct_owned_row_match_survives_casing_mismatch() {
         base_url_override: Some("https://compatible.example.test/v1".to_string()),
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     };
     let out = r
         .resolve(&custom)
@@ -1019,6 +1048,7 @@ fn resolver_custom_endpoint_allows_namespaced_selector_for_strict_provider() {
         base_url_override: Some("https://example.local/v1".to_string()),
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     };
     let out = r
         .resolve(&request)
@@ -1043,6 +1073,7 @@ fn resolver_treats_every_official_deepseek_endpoint_as_strict_direct() {
             base_url_override: Some(base_url.to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         };
         assert!(
             matches!(
@@ -1064,6 +1095,7 @@ fn resolver_does_not_trust_deepseek_hostname_substrings() {
         base_url_override: Some("https://api.deepseek.com.evil.example/v1".to_string()),
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     };
     let route = resolver
         .resolve(&request)
@@ -1084,6 +1116,7 @@ fn resolver_explicit_custom_with_base_url_override_passes_model_through_verbatim
         base_url_override: Some("https://api.example.com/v1".to_string()),
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     };
     let out = r
         .resolve(&request)
@@ -1096,6 +1129,7 @@ fn resolver_explicit_custom_with_base_url_override_passes_model_through_verbatim
         out.protocol(),
         crate::route::RequestProtocol::ChatCompletions
     );
+    assert!(out.responses_profile_id().is_none());
     assert!(out.validation().ok);
     assert!(out.validation().messages.is_empty());
 }
@@ -1125,17 +1159,57 @@ fn custom_wire_override_mints_a_wire_true_candidate() {
             base_url_override: Some("https://relay.example.com/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: Some(dialect),
+            responses_profile_override: None,
         };
         let out = r
             .resolve(&request)
             .expect("custom provider should resolve via pass-through");
         assert_eq!(out.protocol(), protocol, "{dialect:?} must mint its wire");
+        assert_eq!(
+            out.responses_profile_id().map(|id| id.as_str()),
+            (protocol == RequestProtocol::Responses).then_some("standard"),
+            "{dialect:?} profile"
+        );
         assert_eq!(out.endpoint().base_url, "https://relay.example.com/v1");
         assert_eq!(out.wire_model_id().as_str(), "gpt-5.5");
         assert!(out.validation().ok);
         // The override must not resurrect first-party catalog facts.
         assert!(out.canonical_model().is_none());
     }
+}
+
+#[test]
+fn custom_responses_profile_override_stays_on_the_allowlist() {
+    let resolver = RouteResolver::new();
+    let mut request = RouteRequest {
+        explicit_provider: Some(ProviderKind::Custom),
+        model_selector: Some(LogicalModelRef::from("gpt-5.5")),
+        saved_provider_model: None,
+        base_url_override: Some("https://relay.example.com/v1".to_string()),
+        limit_overrides: Vec::new(),
+        wire_override: Some(crate::provider::WireFormat::Responses),
+        responses_profile_override: Some("standard".to_string()),
+    };
+    let standard = resolver.resolve(&request).expect("standard profile");
+    assert_eq!(
+        standard.responses_profile_id().map(|id| id.as_str()),
+        Some("standard")
+    );
+    request.responses_profile_override = None;
+    let omitted = resolver.resolve(&request).expect("default profile");
+    assert_eq!(
+        omitted.responses_profile_id().map(|id| id.as_str()),
+        Some("standard")
+    );
+    request.responses_profile_override = Some("codex".to_string());
+    let denied = resolver.resolve(&request).expect_err("codex is not custom");
+    assert!(denied.to_string().contains("allowed: standard"), "{denied}");
+    request.wire_override = None;
+    request.responses_profile_override = Some("standard".to_string());
+    let chat = resolver
+        .resolve(&request)
+        .expect_err("profile requires responses");
+    assert!(chat.to_string().contains("not responses"), "{chat}");
 }
 
 #[test]
@@ -1150,6 +1224,7 @@ fn wire_override_is_ignored_for_builtin_kinds() {
         base_url_override: None,
         limit_overrides: Vec::new(),
         wire_override: Some(crate::provider::WireFormat::Responses),
+        responses_profile_override: None,
     };
     let out = r.resolve(&request).expect("deepseek resolves");
     assert_eq!(
@@ -1172,6 +1247,7 @@ fn custom_wire_override_defaults_to_the_chat_policy() {
             base_url_override: Some("https://api.example.com/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override,
+            responses_profile_override: None,
         };
         let out = r.resolve(&request).expect("custom resolves");
         assert_eq!(
@@ -1318,6 +1394,7 @@ fn together_custom_endpoint_preserves_its_explicit_model_id() {
             base_url_override: Some("http://127.0.0.1:8000/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         })
         .expect("custom Together-compatible endpoint should resolve");
 
@@ -1354,6 +1431,7 @@ fn openrouter_custom_endpoint_preserves_qwen37_alias() {
             base_url_override: Some("https://gateway.example.test/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         })
         .expect("custom OpenRouter-compatible endpoint should resolve");
 
@@ -1633,6 +1711,7 @@ fn opencode_zen_resolver_fails_closed_for_unproven_protocols() {
                 base_url_override,
                 limit_overrides: Vec::new(),
                 wire_override: None,
+                responses_profile_override: None,
             };
             assert!(
                 matches!(
@@ -1753,6 +1832,7 @@ fn resolver_empty_saved_provider_model_is_empty_model_error() {
         base_url_override: None,
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     };
     assert!(matches!(r.resolve(&request), Err(RouteError::EmptyModel)));
 }
@@ -1950,6 +2030,7 @@ fn provider_native_web_search_requires_exact_direct_endpoint_offering() {
             base_url_override: Some("https://gateway.example.test/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         })
         .expect("custom compatible endpoint resolves");
     assert_eq!(
@@ -1992,6 +2073,7 @@ fn mimo_native_search_is_exact_to_documented_chat_models() {
             base_url_override: Some("https://compatible.example.test/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         })
         .expect("custom MiMo-compatible route resolves");
     assert_eq!(
@@ -2017,6 +2099,7 @@ fn zai_native_search_requires_exact_general_api_product() {
                 base_url_override: Some(base_url.to_string()),
                 limit_overrides: Vec::new(),
                 wire_override: None,
+                responses_profile_override: None,
             })
             .expect("general API route resolves");
         assert_eq!(
@@ -2039,6 +2122,7 @@ fn zai_native_search_requires_exact_general_api_product() {
                 base_url_override: Some(base_url.to_string()),
                 limit_overrides: Vec::new(),
                 wire_override: None,
+                responses_profile_override: None,
             })
             .expect("adjacent route resolves");
         assert_eq!(
@@ -2089,6 +2173,7 @@ fn qwen_native_search_is_exact_to_token_plan_responses_routes() {
                 base_url_override: Some(base_url.to_string()),
                 limit_overrides: Vec::new(),
                 wire_override: None,
+                responses_profile_override: None,
             })
             .expect("alternate product route resolves");
         assert_eq!(
@@ -2119,6 +2204,7 @@ fn moonshot_native_search_requires_exact_product_model_pair() {
                 base_url_override: Some(base_url.to_string()),
                 limit_overrides: Vec::new(),
                 wire_override: None,
+                responses_profile_override: None,
             })
             .expect("documented Moonshot/Kimi route resolves");
         assert_eq!(
@@ -2142,6 +2228,7 @@ fn moonshot_native_search_requires_exact_product_model_pair() {
                 base_url_override: Some(base_url.to_string()),
                 limit_overrides: Vec::new(),
                 wire_override: None,
+                responses_profile_override: None,
             })
             .expect("adjacent Moonshot/Kimi route resolves");
         assert_eq!(
@@ -2185,6 +2272,7 @@ fn custom_endpoint_does_not_inherit_first_party_pricing() {
             base_url_override: Some("https://deepseek-proxy.example.test/v1".to_string()),
             limit_overrides: Vec::new(),
             wire_override: None,
+            responses_profile_override: None,
         })
         .expect("same-name custom proxy route resolves");
 
@@ -2206,6 +2294,7 @@ fn exact_endpoint_catalog_may_carry_its_own_pricing_on_a_custom_base_url() {
         base_url_override: Some("https://authenticated-catalog.example.test/v1".to_string()),
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     };
     let out = priced_deepseek_resolver()
         .resolve_with_endpoint_catalog_authority(&request)
@@ -2263,6 +2352,7 @@ fn req_with_base(provider: ProviderKind, model: &str, base_url: &str) -> RouteRe
         base_url_override: Some(base_url.to_string()),
         limit_overrides: Vec::new(),
         wire_override: None,
+        responses_profile_override: None,
     }
 }
 

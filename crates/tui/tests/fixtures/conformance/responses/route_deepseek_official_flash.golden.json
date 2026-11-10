@@ -1,0 +1,5 @@
+{
+  "protocol": "responses",
+  "profile_id": "deepseek_stateless_plain_reasoning",
+  "endpoint_path_policy": "unversioned_responses"
+}

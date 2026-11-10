@@ -126,7 +126,7 @@ holds the next one while it is being built.
 
 | Milestone | What it is for |
 | --- | --- |
-| [0.10.3](https://github.com/codewhale-hq/CodeWhale/milestone/73) | This release is in progress. It fixes undo, sign-in, model selection and install problems reported against 0.10.2, and it adds DeepSeek Harness plugin compatibility, other agents running inside Codewhale and a larger Runtime API. The changelog lists its [known limits](../CHANGELOG.md). |
+| [0.10.3](https://github.com/codewhale-hq/CodeWhale/milestone/73) | This release is in progress; follow [#7284](https://github.com/codewhale-hq/Codewhale/issues/7284) for what is left and how to help. It fixes undo, sign-in, model selection and install problems reported against 0.10.2, and it adds DeepSeek Harness plugin compatibility and ACP in both directions: other agents running inside Codewhale, and editors driving Codewhale. Codex App Server v2 compatibility moved out of this release. The changelog lists its [known limits](../CHANGELOG.md). |
 | [0.10.4](https://github.com/codewhale-hq/CodeWhale/milestone/75) | This release improves reliability through process cleanup, resource limits, fail-closed error handling and dead-code removal. |
 | [0.10.5](https://github.com/codewhale-hq/CodeWhale/milestone/76) | This release improves usability with running-command detail, usage and tool diagnostics, and file previews. |
 | [0.11](https://github.com/codewhale-hq/CodeWhale/milestone/72) | This release reworks the architecture with smaller crates, provider profiles, one command contract and cache-stable context folding. |

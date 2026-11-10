@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Receipt types land incrementally; stream JSON is the first consumer.
-
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};

@@ -5,20 +5,18 @@ import { HeroInstall } from "@/components/hero-install";
 import { Icon } from "@/components/icon";
 import { Section } from "@/components/page-header";
 import { Strata } from "@/components/strata";
-import { ReleaseUpdates } from "@/components/release-updates";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { LivingHeroWhale } from "@/components/living-hero-whale";
 import { getFacts } from "@/lib/facts";
-import { GoalList } from "@/components/goal-list";
 import { GitHubStar, FaceWall, MergedList, PulseStats } from "@/components/project-pulse";
-import { WhalePose } from "@/components/whale-pose";
+import { LiveStarLink } from "@/components/github-live";
 import { loadProjectPulse } from "@/lib/project-pulse";
 import { PROJECT_COPY } from "@/lib/content/project";
-import { PLUGINS_COPY } from "@/lib/content/plugins";
+import { HOME_OVERVIEW } from "@/lib/content/home-overview";
 import { PRODUCT_COPY } from "@/lib/content/product";
 import { PARTNER_PROMO } from "@/lib/content/partner-promo";
 import { fill, getChrome, getComputerUse, getHome, pickText, splitToken } from "@/lib/i18n/dictionaries";
-import { REPO_ISSUES_URL } from "@/lib/i18n/links";
+import { REPO_ISSUES_URL, REPO_URL } from "@/lib/i18n/links";
 import { serializeJsonLd } from "@/lib/json-ld";
 import { TERMINAL_SCREENSHOT } from "@/lib/media-manifest";
 import { buildSoftwareApplicationJsonLd } from "@/lib/software-application-schema";
@@ -28,40 +26,32 @@ import { getReleaseUpdates } from "@/lib/release-updates";
 // minutes. `getFacts()` rejects legacy or older KV snapshots.
 export const dynamic = "force-dynamic";
 
-/**
- * The whale-road homepage: the promise, capabilities and reading
- * sections sit on paper. The live v2 whale (the desktop app's own Director)
- * rests above the captured terminal with drawn water behind it,
- * and the page ends in the sea with the install action, running into the
- * footer.
- *
- * One memorable thing moves: the whale. It breathes, glances toward the
- * pointer, and performs its existing poses. Everything else is still.
- * Reduced motion shows the still drone formation.
- *
- * Public copy resolves through `getHome(locale)`; product names and package
- * channels keep their canonical spelling.
- */
 export default async function HomePage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
   const d = getHome(locale);
+  const chrome = getChrome(locale);
   const facts = await getFacts();
   const updates = await getReleaseUpdates(facts.latestPublishedRelease);
   const pulse = await loadProjectPulse(5, 48);
   const sourceVersion = facts.version ?? "unknown";
   const publishedRelease = updates.terminal.release;
   const sourceIsPublished = publishedRelease?.version === sourceVersion;
-  const showPromo = Date.now() < Date.parse(PARTNER_PROMO.endsAt);
-
-  // The install URL resolves published artifacts, so its structured version
-  // must come from the published-release receipt rather than source-candidate
-  // facts. When no release is known, the schema omits softwareVersion.
+  const promoLeft = Date.parse(PARTNER_PROMO.endsAt) - Date.now();
+  const promoDays = Math.max(1, Math.ceil(promoLeft / 86_400_000));
+  const showPromo = promoLeft > 0 && PARTNER_PROMO.locales.includes(locale);
   const jsonLd = buildSoftwareApplicationJsonLd(publishedRelease);
-
-  // The lede typesets the brand in its own span. Splitting on the {brand}
-  // token keeps the sentence a single translated unit — no concatenation of
-  // fragments around a variable, and a locale may place the brand anywhere.
   const ledeParts = splitToken(d.heroIntro, "brand");
+  const gateways = new Set(["OpenRouter", "Together", "OpenAI Codex"]);
+  const makers = [...new Set(facts.models.map((model) => model.provider).filter((name): name is string => !!name && !gateways.has(name)))]
+    .sort((a, b) => a.localeCompare(b));
+  const firstParty = new Set(makers);
+  const newest = facts.models
+    .filter((model) => model.addedAt && model.provider && firstParty.has(model.provider))
+    .sort((a, b) => (b.addedAt ?? "").localeCompare(a.addedAt ?? ""))
+    .slice(0, 6);
+  const releaseDate = publishedRelease
+    ? new Intl.DateTimeFormat(chrome.dateLocale, { month: "short", day: "numeric", year: "numeric" }).format(new Date(publishedRelease.publishedAt))
+    : null;
 
   return (
     <div className="home">
@@ -72,8 +62,6 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
 
       <div className="home-intro">
         <div className="home-water" aria-hidden="true"><Strata /></div>
-        {/* PAPER — the promise, one primary action, the install command, and
-            the whale resting on the terminal below. */}
         <section className="home-hero" aria-labelledby="home-title">
           <div className="home-hero-inner">
             <div className="home-hero-copy">
@@ -91,11 +79,11 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 <Link href={`/${locale}/install`} className="btn btn-primary btn-lg">
                   {d.getCodewhale}
                 </Link>
+                <GitHubStar stars={pulse.stats?.stars} locale={locale} />
                 <Link href={`/${locale}/contribute`} className="btn btn-ghost btn-lg">
                   {d.contribute}
                   <Icon name="arrow-right" className="icon icon-flip" />
                 </Link>
-                <GitHubStar stars={pulse.stats?.stars} locale={locale} />
               </div>
             </div>
             <div className="home-whale">
@@ -115,30 +103,79 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                   label={fill(d.screenshotAlt, { version: TERMINAL_SCREENSHOT.version })}
                 />
               </div>
-              <figcaption className="figure-caption">{d.shotPreview}</figcaption>
             </figure>
             <div
               className="home-proof"
               data-source-state={sourceIsPublished ? "published release" : "source candidate"}
               data-source-state-label={sourceIsPublished ? d.publishedRelease : d.sourceCandidate}
             >
-              <Link href={`/${locale}/changelog`} className="section-link">{getChrome(locale).footerChangelog}</Link>
-              <span>{facts.license ?? "MIT"}</span>
+              {publishedRelease ? (
+                <Link href={`/${locale}/changelog`} className="section-link">
+                  {fill(pickText(HOME_OVERVIEW.releaseLabel, locale), { version: `v${publishedRelease.version}` })}
+                  {releaseDate ? <span className="home-proof-date"> · {releaseDate}</span> : null}
+                </Link>
+              ) : (
+                <Link href={`/${locale}/changelog`} className="section-link">{chrome.footerChangelog}</Link>
+              )}
+              <LiveStarLink initial={pulse.stats?.stars} label={pickText(PROJECT_COPY.statStars, locale)} href={REPO_URL} numberLocale={chrome.dateLocale} />
               <Link href={`/${locale}/contribute`} className="section-link">{fill(d.proofContributors, { count: facts.contributorCount })}</Link>
-              <Link href={`/${locale}/roadmap`} className="section-link">{getChrome(locale).footerRoadmap}</Link>
+              <span>{facts.license ?? "MIT"}</span>
+              <Link href={`/${locale}/roadmap`} className="section-link">{chrome.footerRoadmap}</Link>
             </div>
           </div>
         </section>
       </div>
 
-      {/* PAPER — models, connections, and the getting-started path. */}
       <div className="home-body">
-        <ReleaseUpdates key={`${locale}:${updates.fetchedAt}`} locale={locale} initial={updates} />
+        <Section
+          id="home-models"
+          className="home-section"
+          title={d.modelsHeading}
+          scope={fill(pickText(HOME_OVERVIEW.modelsCount, locale), { providers: facts.providers.length, models: facts.models.length })}
+          link={<Link href={`/${locale}/models`} className="section-link">{d.modelsLink}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+        >
+          <ul className="home-makers" role="list">
+            {makers.map((maker) => <li key={maker} className="pill">{maker}</li>)}
+            <li className="pill pill-quiet">{pickText(HOME_OVERVIEW.modelsAny, locale)}</li>
+          </ul>
+          {newest.length > 0 && (
+            <div className="home-newest">
+              <h3 className="home-newest-title">{pickText(HOME_OVERVIEW.modelsNewest, locale)}</h3>
+              <ol className="home-newest-list" role="list">
+                {newest.map((model) => (
+                  <li key={model.id}>
+                    <code>{model.id}</code>
+                    <span>{model.provider}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {showPromo && (
+            <aside className="home-promo-bar home-promo-inline" aria-label={PARTNER_PROMO.title}>
+              <div className="home-promo-bar-inner">
+                <Image src={PARTNER_PROMO.image.src} alt="" width={64} height={36} className="home-promo-bar-art" unoptimized />
+                <p>
+                  <strong>{PARTNER_PROMO.title}</strong>
+                  <span>{pickText(PARTNER_PROMO.bar, locale)}</span>
+                  <span className="home-promo-bar-days">{fill(pickText(promoDays === 1 ? PARTNER_PROMO.dayLeft : PARTNER_PROMO.daysLeft, locale), { count: promoDays })}</span>
+                </p>
+                <span className="home-promo-bar-tag">{pickText(PARTNER_PROMO.referralTag, locale)}</span>
+                <p className="home-promo-bar-disclosure">{pickText(PARTNER_PROMO.disclosure, locale)}</p>
+                <a href={PARTNER_PROMO.href} rel="sponsored noopener" className="btn btn-primary">
+                  {pickText(PARTNER_PROMO.cta, locale)}
+                  <Icon name="external" className="icon" />
+                </a>
+              </div>
+            </aside>
+          )}
+        </Section>
+
         <Section
           id="home-capabilities"
           className="home-section"
           title={pickText(PRODUCT_COPY.workHeading, locale)}
-          link={<Link href={`/${locale}/features`} className="section-link">{getChrome(locale).navFeatures}</Link>}
+          link={<Link href={`/${locale}/features`} className="section-link">{chrome.navFeatures}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
         >
           <dl className="home-work-patterns">
             {PRODUCT_COPY.workPatterns.slice(0, 3).map((pattern) => (
@@ -150,71 +187,34 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 </dd>
               </div>
             ))}
+            <div>
+              <dt>{pickText(HOME_OVERVIEW.computerUseTitle, locale)} <span className="pill pill-quiet">{pickText(HOME_OVERVIEW.computerUseTag, locale)}</span></dt>
+              <dd>
+                <p>{pickText(HOME_OVERVIEW.computerUseBody, locale)}</p>
+                <Link className="section-link" href={`/${locale}/computer-use`}>{getComputerUse(locale).setup}<Icon name="arrow-right" className="icon icon-flip" /></Link>
+              </dd>
+            </div>
           </dl>
         </Section>
 
-      </div>
-
-      <div className="home-computer-use">
-        <div className="home-computer-inner">
-          <Section
-            id="home-computer-use"
-            layout="split"
-            className="home-section"
-            label={pickText(PLUGINS_COPY.cuTitle, locale)}
-            title={pickText(PLUGINS_COPY.cuHomeTitle, locale)}
-            scope={pickText(PLUGINS_COPY.cuLabel, locale)}
-            link={<Link href={`/${locale}/computer-use`} className="btn btn-secondary">{getComputerUse(locale).setup}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
-          >
-            <dl className="ruled-list">
-              {[0, 1, 6].map((index) => {
-                const feature = PLUGINS_COPY.cuFeatures[index];
-                return <div key={feature.title.en}><dt>{pickText(feature.title, locale)}</dt><dd>{pickText(feature.detail, locale)}</dd></div>;
-              })}
-            </dl>
-          </Section>
-        </div>
-      </div>
-
-      <div className="home-body">
         <Section
-          id="home-models"
+          id="home-plugins"
           className="home-section"
-          title={d.modelsHeading}
-          scope={d.modelsBody}
-          link={<Link href={`/${locale}/models`} className="section-link">{d.modelsLink}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
+          title={pickText(HOME_OVERVIEW.pluginsTitle, locale)}
+          scope={pickText(HOME_OVERVIEW.pluginsBody, locale)}
+          link={<Link href={`/${locale}/plugins`} className="section-link">{pickText(HOME_OVERVIEW.pluginsLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
         />
 
-      </div>
-
-      <div className="home-goals stage">
-        <div className="home-goals-inner">
-          <Section
-            id="home-goals"
-            layout="split"
-            className="home-section"
-            label={pickText(PROJECT_COPY.goalsLabel, locale)}
-            title={pickText(PROJECT_COPY.goalsHeading, locale)}
-            scope={pickText(PROJECT_COPY.goalsScope, locale)}
-            link={<Link href={`/${locale}/roadmap`} className="btn btn-secondary">{pickText(PROJECT_COPY.goalsLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
-          >
-            <GoalList locale={locale} />
-          </Section>
-        </div>
-      </div>
-
-      <div className="home-body">
         <Section
           id="home-community"
           className="home-section home-community"
-          label={pulse.merged.length > 0 ? pickText(PROJECT_COPY.liveLabel, locale) : undefined}
+          label={pickText(PROJECT_COPY.liveLabel, locale)}
           title={pickText(PROJECT_COPY.liveHeading, locale)}
           scope={pickText(PROJECT_COPY.liveScope, locale)}
           link={<Link href={`/${locale}/feed`} className="section-link">{pickText(PROJECT_COPY.liveLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
         >
           <div className="pulse">
             <div className="pulse-side">
-              <WhalePose pose="pod" className="pulse-pose" />
               <PulseStats stats={pulse.stats} contributors={facts.contributorCount} locale={locale} />
             </div>
             {pulse.merged.length > 0 ? (
@@ -222,9 +222,10 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 <h3 className="pulse-heading"><span className="status status-live"><span className="status-dot" aria-hidden="true" />{pickText(PROJECT_COPY.mergedHeading, locale)}</span></h3>
                 <MergedList items={pulse.merged} locale={locale} />
               </div>
-            ) : null}
+            ) : (
+              <MergedList items={pulse.merged} locale={locale} />
+            )}
           </div>
-          <div className="actions"><GitHubStar stars={pulse.stats?.stars} locale={locale} /></div>
           <FaceWall faces={pulse.faces} total={facts.contributorCount} locale={locale} />
           <div className="actions">
             <a href={`${REPO_ISSUES_URL}/new/choose`} className="btn btn-primary btn-lg">
@@ -237,35 +238,8 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
             </Link>
           </div>
         </Section>
-
-        {showPromo && (
-          <section className="home-section home-promo" aria-labelledby="home-promo-title">
-            <a href={PARTNER_PROMO.href} rel="sponsored" className="home-promo-card">
-              <span className="figure-frame">
-                <Image
-                  src={PARTNER_PROMO.image.src}
-                  alt={pickText(PARTNER_PROMO.image.alt, locale)}
-                  width={PARTNER_PROMO.image.width}
-                  height={PARTNER_PROMO.image.height}
-                  unoptimized
-                />
-              </span>
-              <span className="home-promo-text">
-                <span className="home-promo-title" id="home-promo-title">{PARTNER_PROMO.title}</span>
-                <span className="home-promo-body">{pickText(PARTNER_PROMO.body, locale)}</span>
-                <span className="home-promo-body">{pickText(PARTNER_PROMO.disclosure, locale)}</span>
-                <span className="section-link">
-                  {pickText(PARTNER_PROMO.cta, locale)}
-                  <Icon name="external" />
-                </span>
-              </span>
-            </a>
-          </section>
-        )}
       </div>
 
-      {/* THE SEA AGAIN — the install action where the page ends; the water
-          runs on into the footer. */}
       <section className="home-install stage sea-continues" aria-labelledby="home-install">
         <div className="home-install-inner">
           <h2 className="section-title" id="home-install">{d.startHeading}</h2>
@@ -274,7 +248,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
               {d.getCodewhale}
               <Icon name="arrow-right" className="icon icon-flip" />
             </Link>
-            <Link href={`/${locale}/community`} className="btn btn-ghost btn-lg">{getChrome(locale).navCommunity}</Link>
+            <Link href={`/${locale}/docs/guide`} className="btn btn-ghost btn-lg">{chrome.footerGuide}</Link>
           </div>
         </div>
       </section>

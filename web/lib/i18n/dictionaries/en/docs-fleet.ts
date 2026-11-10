@@ -117,7 +117,7 @@ codewhale lane interrupt <lane-id>`,
       title: "Run a batch of tasks",
       blocks: [
         {
-          p: "When you have a list of separate tasks rather than one plan, write them as a task file and run them as a Fleet run. Each task names its goal, its role, and the paths it may write. [The tutorial](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/FLEET_WORKFLOW_TUTORIAL.md) has a complete `tasks.json`.",
+          p: "When you have a list of separate tasks rather than one plan, write them as a task file and run them as a Fleet run. Each task names its goal, its role, and the paths it may write. [The tutorial](/docs/workflow-tutorial) has a complete `tasks.json`.",
         },
         {
           code: `codewhale fleet init
@@ -136,6 +136,7 @@ codewhale fleet stop --all`,
     },
   ],
   next: [
+    { href: "/docs/workflow-tutorial", label: "Read the full Fleet tutorial", note: "Validate a complete task file and inspect recovery behavior before starting workers." },
     {
       href: "/docs/subagents",
       label: "Run agents in parallel",

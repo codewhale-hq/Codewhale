@@ -172,6 +172,103 @@ pub enum AutomationDeliveryMode {
     Watcher,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationMissedPolicy {
+    Ask,
+    RunOnce,
+    Skip,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissedRunDecision {
+    RunNow,
+    Skip,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissedRunOutcomeKind {
+    Ran,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissedRunDecider {
+    Person,
+    Policy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwedOccurrence {
+    pub due_at: DateTime<Utc>,
+    pub detected_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MissedRunOutcome {
+    pub due_at: DateTime<Utc>,
+    pub decided_at: DateTime<Utc>,
+    pub outcome: MissedRunOutcomeKind,
+    pub decided_by: MissedRunDecider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct AutomationMissedState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy: Option<AutomationMissedPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owed: Option<OwedOccurrence>,
+    #[serde(default)]
+    outcomes: Vec<MissedRunOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutomationMissedStatus {
+    pub automation_id: String,
+    pub name: String,
+    pub policy: AutomationMissedPolicy,
+    pub policy_is_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owed: Option<OwedOccurrence>,
+    #[serde(default)]
+    pub outcomes: Vec<MissedRunOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MissedRunResolution {
+    pub status: AutomationMissedStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<AutomationRunRecord>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct SchedulerPresence {
+    awake_since: DateTime<Utc>,
+    last_tick: DateTime<Utc>,
+}
+
+const MISSED_OUTCOMES_RETAINED: usize = 20;
+const SCHEDULER_PRESENCE_FILE: &str = "scheduler-presence.json";
+const SCHEDULER_PRESENCE_MIN_GRACE_SECS: i64 = 120;
+
+fn default_missed_policy(automation: &AutomationRecord) -> AutomationMissedPolicy {
+    if automation.task_mode() == "operate" {
+        AutomationMissedPolicy::RunOnce
+    } else {
+        AutomationMissedPolicy::Ask
+    }
+}
+
+enum DueDisposition {
+    Due,
+    Held,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutomationRecord {
     #[serde(default = "default_automation_schema_version")]
@@ -1077,6 +1174,7 @@ pub struct AutomationManager {
     runs_dir: PathBuf,
     triggers_dir: PathBuf,
     archive_dir: PathBuf,
+    missed_dir: PathBuf,
 }
 
 impl AutomationManager {
@@ -1159,6 +1257,7 @@ impl AutomationManager {
         let runs_dir = root.join("runs");
         let triggers_dir = root.join("triggers");
         let archive_dir = root.join("archive");
+        let missed_dir = root.join("missed");
         fs::create_dir_all(&automations_dir)
             .with_context(|| format!("Failed to create {}", automations_dir.display()))?;
         fs::create_dir_all(&runs_dir)
@@ -1167,6 +1266,8 @@ impl AutomationManager {
             .with_context(|| format!("Failed to create {}", triggers_dir.display()))?;
         fs::create_dir_all(&archive_dir)
             .with_context(|| format!("Failed to create {}", archive_dir.display()))?;
+        fs::create_dir_all(&missed_dir)
+            .with_context(|| format!("Failed to create {}", missed_dir.display()))?;
         Ok(Self {
             execution_scope: None,
             thread_events: None,
@@ -1174,6 +1275,7 @@ impl AutomationManager {
             runs_dir,
             triggers_dir,
             archive_dir,
+            missed_dir,
         })
     }
 
@@ -1668,6 +1770,12 @@ impl AutomationManager {
                     )
                 })?;
             }
+            let missed = self.missed_path(id)?;
+            if missed.try_exists()? {
+                fs::remove_file(&missed).with_context(|| {
+                    format!("Failed to delete missed-run state {}", missed.display())
+                })?;
+            }
             let path = self.automation_path(id)?;
             fs::remove_file(&path)
                 .with_context(|| format!("Failed to delete automation {}", path.display()))?;
@@ -1933,6 +2041,7 @@ impl AutomationManager {
     ) -> Result<Vec<(AutomationRecord, AutomationRunRecord)>> {
         self.with_transaction(|| {
             let mut due = Vec::new();
+            let awake_since = self.read_presence().map(|presence| presence.awake_since);
             for mut automation in self.readable_automations()? {
                 if automation.status != AutomationStatus::Active
                     || !self.eligible_scope(automation.execution_scope.as_deref())
@@ -1980,10 +2089,25 @@ impl AutomationManager {
                     continue;
                 };
                 if due_at <= now {
-                    due.push((
-                        automation.clone(),
-                        new_run_record(&automation.id, due_at, now),
-                    ));
+                    match self.due_disposition(
+                        &mut automation,
+                        &schedule,
+                        due_at,
+                        now,
+                        awake_since,
+                    ) {
+                        Ok(DueDisposition::Due) => due.push((
+                            automation.clone(),
+                            new_run_record(&automation.id, due_at, now),
+                        )),
+                        Ok(DueDisposition::Held) => {}
+                        Err(error) => {
+                            tracing::warn!(
+                                "Holding automation {} whose missed-run state cannot be evaluated: {error:#}",
+                                automation.id
+                            );
+                        }
+                    }
                 }
             }
             Ok(due)
@@ -2127,6 +2251,254 @@ impl AutomationManager {
             automation.status = AutomationStatus::Paused;
         }
         self.save_automation_unlocked(automation)
+    }
+
+    fn missed_path(&self, automation_id: &str) -> Result<PathBuf> {
+        ensure_safe_storage_id("automation id", automation_id)?;
+        Ok(self.missed_dir.join(format!("{automation_id}.json")))
+    }
+
+    fn presence_path(&self) -> Result<PathBuf> {
+        Ok(self
+            .automations_dir
+            .parent()
+            .context("automation root")?
+            .join(SCHEDULER_PRESENCE_FILE))
+    }
+
+    fn read_missed_state(&self, automation_id: &str) -> Result<AutomationMissedState> {
+        let path = self.missed_path(automation_id)?;
+        if !path.try_exists()? {
+            return Ok(AutomationMissedState::default());
+        }
+        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+    }
+
+    fn save_missed_state(&self, automation_id: &str, state: &AutomationMissedState) -> Result<()> {
+        write_json_atomic(&self.missed_path(automation_id)?, state)
+    }
+
+    fn missed_status_for(
+        automation: &AutomationRecord,
+        state: AutomationMissedState,
+    ) -> AutomationMissedStatus {
+        AutomationMissedStatus {
+            automation_id: automation.id.clone(),
+            name: automation.name.clone(),
+            policy: state
+                .policy
+                .unwrap_or_else(|| default_missed_policy(automation)),
+            policy_is_default: state.policy.is_none(),
+            owed: valid_owed(automation, &state),
+            outcomes: state.outcomes,
+        }
+    }
+
+    pub fn missed_status(&self, automation_id: &str) -> Result<AutomationMissedStatus> {
+        let automation = self.get_automation(automation_id)?;
+        let state = self.read_missed_state(automation_id)?;
+        Ok(Self::missed_status_for(&automation, state))
+    }
+
+    pub fn list_missed(&self) -> Result<Vec<AutomationMissedStatus>> {
+        let mut out = Vec::new();
+        for automation in self.readable_automations()? {
+            let state = match self.read_missed_state(&automation.id) {
+                Ok(state) => state,
+                Err(error) => {
+                    tracing::warn!(
+                        "Skipping damaged missed-run state for automation {}: {error:#}",
+                        automation.id
+                    );
+                    continue;
+                }
+            };
+            let status = Self::missed_status_for(&automation, state);
+            if status.owed.is_some() {
+                out.push(status);
+            }
+        }
+        out.sort_by_key(|status| status.owed.as_ref().map(|owed| owed.due_at));
+        Ok(out)
+    }
+
+    pub fn set_missed_policy(
+        &self,
+        automation_id: &str,
+        policy: Option<AutomationMissedPolicy>,
+    ) -> Result<AutomationMissedStatus> {
+        self.with_transaction(|| {
+            let automation = self.get_automation(automation_id)?;
+            let mut state = self.read_missed_state(automation_id)?;
+            state.policy = policy;
+            self.save_missed_state(automation_id, &state)?;
+            self.emit_automation_event("automation.updated", &automation);
+            Ok(Self::missed_status_for(&automation, state))
+        })
+    }
+
+    pub fn note_scheduler_presence(
+        &self,
+        now: DateTime<Utc>,
+        grace: Duration,
+    ) -> Result<DateTime<Utc>> {
+        self.with_transaction(|| {
+            let path = self.presence_path()?;
+            let previous = self.read_presence();
+            let awake_since = match previous {
+                Some(previous) if now - previous.last_tick <= grace => {
+                    previous.awake_since.min(now)
+                }
+                _ => now,
+            };
+            write_json_atomic(
+                &path,
+                &SchedulerPresence {
+                    awake_since,
+                    last_tick: now,
+                },
+            )?;
+            Ok(awake_since)
+        })
+    }
+
+    fn read_presence(&self) -> Option<SchedulerPresence> {
+        let path = self.presence_path().ok()?;
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                tracing::warn!(
+                    "Unreadable scheduler presence {}: {error:#}",
+                    path.display()
+                );
+                return None;
+            }
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(presence) => Some(presence),
+            Err(error) => {
+                tracing::warn!("Damaged scheduler presence {}: {error:#}", path.display());
+                None
+            }
+        }
+    }
+
+    fn due_disposition(
+        &self,
+        automation: &mut AutomationRecord,
+        schedule: &AutomationSchedule,
+        due_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+        awake_since: Option<DateTime<Utc>>,
+    ) -> Result<DueDisposition> {
+        let mut state = self.read_missed_state(&automation.id)?;
+        if state
+            .owed
+            .as_ref()
+            .is_some_and(|owed| owed.due_at == due_at)
+        {
+            return Ok(DueDisposition::Held);
+        }
+        if !awake_since.is_some_and(|awake_since| due_at < awake_since) {
+            return Ok(DueDisposition::Due);
+        }
+        match state
+            .policy
+            .unwrap_or_else(|| default_missed_policy(automation))
+        {
+            AutomationMissedPolicy::RunOnce => Ok(DueDisposition::Due),
+            AutomationMissedPolicy::Skip => {
+                state.owed = None;
+                push_missed_outcome(
+                    &mut state,
+                    MissedRunOutcome {
+                        due_at,
+                        decided_at: now,
+                        outcome: MissedRunOutcomeKind::Skipped,
+                        decided_by: MissedRunDecider::Policy,
+                        run_id: None,
+                    },
+                );
+                self.save_missed_state(&automation.id, &state)?;
+                self.advance_automation_after_slot(automation, schedule, due_at, now)?;
+                self.emit_automation_event("automation.missed_skipped", automation);
+                Ok(DueDisposition::Held)
+            }
+            AutomationMissedPolicy::Ask => {
+                state.owed = Some(OwedOccurrence {
+                    due_at,
+                    detected_at: now,
+                });
+                self.save_missed_state(&automation.id, &state)?;
+                self.emit_automation_event("automation.missed", automation);
+                Ok(DueDisposition::Held)
+            }
+        }
+    }
+
+    fn admit_missed_decision(
+        &self,
+        automation_id: &str,
+        decision: MissedRunDecision,
+        task_data_dir: &Path,
+        now: DateTime<Utc>,
+    ) -> Result<(AutomationMissedStatus, Option<AutomationRunRecord>)> {
+        self.with_transaction(|| {
+            let mut current = self.get_automation(automation_id)?;
+            if !self.eligible_scope(current.execution_scope.as_deref()) {
+                bail!("Automation belongs to another Runtime execution scope");
+            }
+            let mut state = self.read_missed_state(automation_id)?;
+            let Some(owed) = valid_owed(&current, &state) else {
+                if state.owed.take().is_some() {
+                    self.save_missed_state(automation_id, &state)?;
+                }
+                bail!("No missed run of {} is waiting for an answer", current.name);
+            };
+            let schedule = AutomationSchedule::parse_rrule(&current.rrule)?;
+            let mut outcome = MissedRunOutcome {
+                due_at: owed.due_at,
+                decided_at: now,
+                outcome: MissedRunOutcomeKind::Skipped,
+                decided_by: MissedRunDecider::Person,
+                run_id: None,
+            };
+            let mut admitted = None;
+            if decision == MissedRunDecision::RunNow {
+                let history = self.list_runs_with_visibility(automation_id, None, true)?;
+                if history.iter().any(|existing| {
+                    matches!(
+                        existing.status,
+                        AutomationRunStatus::Queued | AutomationRunStatus::Running
+                    )
+                }) {
+                    bail!(
+                        "An earlier run of {} is still in progress; answer again when it finishes",
+                        current.name
+                    );
+                }
+                outcome.outcome = MissedRunOutcomeKind::Ran;
+                if let Some(existing) = history
+                    .iter()
+                    .find(|existing| existing.scheduled_for == owed.due_at)
+                {
+                    outcome.run_id = Some(existing.id.clone());
+                } else {
+                    let mut run = new_run_record(automation_id, owed.due_at, now);
+                    bind_run_dispatch(&mut run, &current, task_data_dir, true)?;
+                    self.save_run(&run)?;
+                    outcome.run_id = Some(run.id.clone());
+                    admitted = Some(run);
+                }
+            }
+            state.owed = None;
+            push_missed_outcome(&mut state, outcome);
+            self.save_missed_state(automation_id, &state)?;
+            self.advance_automation_after_slot(&mut current, &schedule, owed.due_at, now)?;
+            Ok((Self::missed_status_for(&current, state), admitted))
+        })
     }
 
     /// Active receipts are independent of the definition's lifetime and of
@@ -2351,6 +2723,91 @@ impl AutomationManager {
             })
             .collect())
     }
+}
+
+fn valid_owed(
+    automation: &AutomationRecord,
+    state: &AutomationMissedState,
+) -> Option<OwedOccurrence> {
+    state.owed.clone().filter(|owed| {
+        automation.status == AutomationStatus::Active && automation.next_run_at == Some(owed.due_at)
+    })
+}
+
+fn push_missed_outcome(state: &mut AutomationMissedState, outcome: MissedRunOutcome) {
+    if state
+        .outcomes
+        .last()
+        .is_some_and(|last| last.due_at == outcome.due_at && last.outcome == outcome.outcome)
+    {
+        return;
+    }
+    state.outcomes.push(outcome);
+    let excess = state
+        .outcomes
+        .len()
+        .saturating_sub(MISSED_OUTCOMES_RETAINED);
+    state.outcomes.drain(..excess);
+}
+
+pub async fn resolve_missed_run_shared(
+    automations: &SharedAutomationManager,
+    automation_id: &str,
+    decision: MissedRunDecision,
+    task_manager: &SharedTaskManager,
+) -> Result<MissedRunResolution> {
+    automations.lock().await.bind_task_manager(task_manager)?;
+    let task_manager = Arc::clone(task_manager);
+    let task_data_dir = task_manager.data_dir();
+    resolve_missed_run_inner(
+        automations,
+        automation_id,
+        decision,
+        &task_data_dir,
+        Utc::now(),
+        move |mut run| async move {
+            enqueue_run_task(&mut run, &task_manager).await;
+            run
+        },
+    )
+    .await
+}
+
+async fn resolve_missed_run_inner<F, Fut>(
+    automations: &SharedAutomationManager,
+    automation_id: &str,
+    decision: MissedRunDecision,
+    task_data_dir: &Path,
+    now: DateTime<Utc>,
+    enqueue: F,
+) -> Result<MissedRunResolution>
+where
+    F: FnOnce(AutomationRunRecord) -> Fut,
+    Fut: Future<Output = AutomationRunRecord>,
+{
+    let mut lock = automations.lock().await.open_lock("dispatch.lock")?;
+    let _dispatch = lock
+        .try_write()
+        .context("Automation dispatcher is busy; retry the answer")?;
+    let (status, admitted) = with_manager_blocking(automations, {
+        let automation_id = automation_id.to_string();
+        let task_data_dir = task_data_dir.to_path_buf();
+        move |manager| manager.admit_missed_decision(&automation_id, decision, &task_data_dir, now)
+    })
+    .await?;
+    let run = match admitted {
+        Some(run) => {
+            let run = enqueue(run).await;
+            with_manager_blocking(automations, {
+                let run = run.clone();
+                move |manager| manager.finish_scheduled_run(&run, Utc::now())
+            })
+            .await?;
+            Some(run)
+        }
+        None => None,
+    };
+    Ok(MissedRunResolution { status, run })
 }
 
 fn new_run_record(
@@ -3290,6 +3747,13 @@ pub fn spawn_scheduler(
         std::panic::Location::caller(),
         async move {
             let interval = config.tick_interval_secs.max(5);
+            let grace = Duration::seconds(
+                SCHEDULER_PRESENCE_MIN_GRACE_SECS.max(
+                    i64::try_from(interval)
+                        .unwrap_or(i64::MAX / 8)
+                        .saturating_mul(4),
+                ),
+            );
             loop {
                 if cancel.is_cancelled() {
                     break;
@@ -3298,7 +3762,15 @@ pub fn spawn_scheduler(
                 // Lock scope lives inside the shared helpers: the manager
                 // mutex is dropped across every task-manager await so API and
                 // tool callers are never queued behind enqueue/status latency.
-                if let Err(err) = scheduler_tick_shared(&automations, &task_manager).await {
+                let presence = with_manager_blocking(&automations, move |manager| {
+                    manager.note_scheduler_presence(Utc::now(), grace)
+                })
+                .await;
+                if let Err(err) = presence {
+                    tracing::warn!(
+                        "automation scheduler presence could not be recorded; holding due work: {err:#}"
+                    );
+                } else if let Err(err) = scheduler_tick_shared(&automations, &task_manager).await {
                     tracing::warn!("automation scheduler tick failed: {err}");
                 }
                 if let Err(err) = reconcile_run_statuses_shared(&automations, &task_manager).await {

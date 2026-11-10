@@ -4,8 +4,6 @@
 //! into a review outcome and emits enough structured context for audit logs.
 //! Enforcement and pre-push receipts are wired by higher-level surfaces.
 
-#![allow(dead_code)]
-
 pub use crate::core::authority::RunOrigin;
 
 use crate::core::authority::{RiskLevel, ToolCategory, classify_risk, get_tool_category_for_call};

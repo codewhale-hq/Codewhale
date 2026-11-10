@@ -2775,6 +2775,9 @@ pub struct ProviderConfig {
         alias = "dialect"
     )]
     pub wire: Option<String>,
+    /// Responses dialect for a custom table whose `wire` is `responses`.
+    #[serde(default, alias = "responsesProfile")]
+    pub responses_profile: Option<String>,
     #[serde(alias = "authMode")]
     pub auth_mode: Option<String>,
     /// Core-owned public-client OAuth descriptor for a named plugin provider.
@@ -4138,6 +4141,17 @@ impl Config {
                 );
             }
         }
+        if let Some(retry) = &self.retry {
+            for (key, value) in [
+                ("initial_delay", retry.initial_delay),
+                ("max_delay", retry.max_delay),
+                ("exponential_base", retry.exponential_base),
+            ] {
+                if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+                    anyhow::bail!("[retry] {key} must be a finite number of at least 0");
+                }
+            }
+        }
         if let Some(budget) = self.instruction_budget.as_ref() {
             budget
                 .validate()
@@ -4932,6 +4946,14 @@ impl Config {
     pub fn provider_wire_dialect(&self, identity: &ProviderIdentity) -> Option<&str> {
         self.provider_config_for(identity)?
             .wire
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn provider_responses_profile(&self, identity: &ProviderIdentity) -> Option<&str> {
+        self.provider_config_for(identity)?
+            .responses_profile
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -10344,6 +10366,7 @@ fn merge_provider_config(base: ProviderConfig, override_cfg: ProviderConfig) -> 
             .or(base.model_context_windows),
         mode: override_cfg.mode.or(base.mode),
         wire: override_cfg.wire.or(base.wire),
+        responses_profile: override_cfg.responses_profile.or(base.responses_profile),
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         oauth: override_cfg.oauth.or(base.oauth),
         plugin_authority: base.plugin_authority,

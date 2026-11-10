@@ -21,8 +21,13 @@ export const docsReview: DocsReviewDict = {
           "p": "会话收据列出已记录的文件修改、命令、工具、智能体、审批与失败。下方的审查收据记录单独的代码审查。"
         },
         {
-          "code": "/receipts\n/receipts json\ncodewhale receipts --last --format md\nGET /v1/threads/{id}/receipt\nGET /v1/threads/{id}/turns/{turn_id}/receipt",
-          "lang": "Codewhale / Terminal / HTTP"
+          "code": "/receipts\n/receipts json",
+          "lang": "Codewhale"
+        },
+        { code: "codewhale receipts --last --format md", lang: "Terminal" },
+        {
+          code: "GET /v1/threads/{id}/receipt\nGET /v1/threads/{id}/turns/{turn_id}/receipt",
+          lang: "HTTP"
         },
         {
           "p": "这些接口只读取记录，不会调用提供商、运行工具或修改会话状态。"
@@ -36,10 +41,10 @@ export const docsReview: DocsReviewDict = {
       id: "diff",
       title: "查看改动",
       blocks: [
-        { p: "每次修改文件，都会以 diff 的形式出现在对话记录里。想一次看全，运行：" },
+        { p: "文件工具的修改会以 diff 形式出现在对话记录里。想一起检查可用的会话改动，可以运行：" },
         { code: "/diff", lang: "Codewhale" },
         {
-          p: "`/diff` 会显示本次会话开始以来的全部改动。从 0.10.2 起，它会与本次会话的第一个还原点比较，因此在不是 git 仓库的文件夹里也能使用，并在分页器中打开。你自己的 git 历史不受影响，`git diff` 和 `git status` 照常可用。",
+          p: "从 v0.10.2 起，`/diff` 在可用时会使用会话的第一个还原点，因此也可用于没有 git 仓库的文件夹。快照未捕获的路径不在比较范围内；你自己的 `git diff` 与 `git status` 仍使用原仓库。",
         },
       ],
     },
@@ -63,7 +68,7 @@ export const docsReview: DocsReviewDict = {
           p: "`/undo` 撤回上一次请求及其记录的文件改动。还原点不可用或文件后来又被修改时，会拒绝恢复文件。`/restore` 用于选择工作区快照。",
         },
         {
-          note: "快照保留 7 天。超过 2 GB 的工作区不做快照，Codewhale 会提示你一次；如果仍想要快照，可以在配置中调大 `[snapshots] max_workspace_gb`。如果没有安装 git 或磁盘已满，回合照常运行，只是不做快照。",
+          note: "快照默认保留 7 天，按数量清理时会保留近期回合的还原点；超过 2 GB 的工作区会跳过快照，除非调整 `[snapshots] max_workspace_gb`。被忽略或跳过的文件以及外部影响不在完整备份范围内；git 或存储不可用时，回合可能在没有快照的情况下运行。",
         },
       ],
     },
@@ -94,7 +99,7 @@ codewhale review --pr 123             # a GitHub pull request (needs gh)`,
       title: "为审查保留回执",
       blocks: [
         {
-          p: "审查回执记录了审查了什么、发现了什么，让你能证明推送出去的 diff 正是被审查过的那一份。",
+          p: "审查回执记录已审查 diff 的指纹及报告的发现，供你检查之后是否又有变化。它不能证明审查找出了所有缺陷，也不能证明改动安全。",
         },
         {
           code: `codewhale review --base origin/main --write-receipt
@@ -117,9 +122,10 @@ codewhale review --base origin/main --check-receipt`,
         { p: "想保留或分享一次会话的完整记录，可以导出：" },
         {
           code: `/export clipboard                  # a redacted copy of this session
-/export file notes/session.md      # the same, written to a file
-codewhale sessions export <id>     # full archive: messages, tool calls, results, artifacts`,
-          lang: "Codewhale / 终端",
+/export file notes/session.md      # the same, written to a file`,
+          lang: "Codewhale",
+        },
+        { code: "codewhale sessions export <id>", lang: "终端",
         },
         {
           p: "`codewhale sessions` 会列出已保存的会话及其 id。完整归档包含全部上下文，请像对待源代码一样对待它。",

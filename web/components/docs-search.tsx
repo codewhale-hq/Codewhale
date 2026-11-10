@@ -3,7 +3,7 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { getDocSearchSections, searchDocSections } from "@/lib/docs-article-search";
+import { searchDocSections, type DocSearchSection } from "@/lib/doc-search-match";
 import {
   DOC_CATEGORY_LABELS,
   DOC_TOPICS,
@@ -15,6 +15,8 @@ import { DOC_TASKS, docTaskHaystack, type DocTask } from "@/lib/docs-tasks";
 import { fill, getDocsShell, getFeatures, pickText } from "@/lib/i18n/dictionaries";
 import { FEATURE_CATALOGUE } from "@/lib/features";
 import { Status } from "./status-badge";
+import { readBoundedBody } from "@/lib/bounded-body";
+import { recordFunnel } from "./usage-counting";
 import { docTopicHaystack, highlightSpan } from "@/lib/search-utils";
 import { isSlashShortcut } from "@/lib/slash-shortcut";
 import { EmptyState } from "./surface-state";
@@ -46,9 +48,9 @@ function highlight(text: string, query: string): React.ReactNode {
 /*  Rows                                                               */
 /* ------------------------------------------------------------------ */
 
-function TaskRow({ task, locale, query }: { task: DocTask; locale: string; query: string }) {
+function TaskRow({ task, locale, query, onSelect }: { task: DocTask; locale: string; query: string; onSelect?: () => void }) {
   return (
-    <Link href={`/${locale}${task.href}`} className="docs-topic-row docs-task-row">
+    <Link href={`/${locale}${task.href}`} className="docs-topic-row docs-task-row" onClick={onSelect}>
       <div className="docs-topic-main">
         <div className="docs-topic-title">{highlight(pickText(task.label, locale), query)}</div>
         <p>{highlight(pickText(task.description, locale), query)}</p>
@@ -65,6 +67,7 @@ function TopicRow({
   webGuideTag,
   sourceDocTag,
   sourceDetails,
+  onSelect,
 }: {
   topic: DocTopic;
   locale: string;
@@ -72,6 +75,7 @@ function TopicRow({
   webGuideTag: string;
   sourceDocTag: string;
   sourceDetails: string;
+  onSelect?: () => void;
 }) {
   const href = docTopicHref(topic, locale);
   const isExternal = docTopicIsExternal(topic);
@@ -87,6 +91,7 @@ function TopicRow({
         target={isExternal ? "_blank" : undefined}
         rel={isExternal ? "noreferrer" : undefined}
         className="docs-topic-row"
+        onClick={onSelect}
       >
         <div className="docs-topic-main">
           <div className="docs-topic-title">
@@ -121,6 +126,15 @@ function TopicRow({
  * Topic and task metadata match both English and Chinese; article sections
  * follow the active dictionary. Every string is dictionary-driven.
  */
+function isSearchSection(value: unknown): value is DocSearchSection {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).some((key) => !["href", "pageTitle", "title", "text", "lang"].includes(key))) return false;
+  return typeof row.href === "string" && /^\/(?:docs|install|models|plugins|constitution)(?:[\/#]|$)/.test(row.href)
+    && typeof row.pageTitle === "string" && typeof row.title === "string" && typeof row.text === "string"
+    && (row.lang === undefined || (typeof row.lang === "string" && row.lang.length <= 35));
+}
+
 export function DocsSearch({ locale, compact = false }: { locale: string; compact?: boolean }) {
   const t = getDocsShell(locale);
   const [query, setQuery] = useState("");
@@ -129,7 +143,37 @@ export function DocsSearch({ locale, compact = false }: { locale: string; compac
   const topicHaystacks = useMemo(() => DOC_TOPICS.map(docTopicHaystack), []);
   const taskHaystacks = useMemo(() => DOC_TASKS.map(docTaskHaystack), []);
 
-  const sections = useMemo(() => getDocSearchSections(locale), [locale]);
+  const [loaded, setLoaded] = useState<{ locale: string; sections: DocSearchSection[] } | null>(null);
+  const [loadingLocale, setLoadingLocale] = useState<string | null>(null);
+  const [errorLocale, setErrorLocale] = useState<string | null>(null);
+  const request = useRef<{ locale: string; controller: AbortController } | null>(null);
+  const ready = loaded?.locale === locale;
+  const sections = useMemo(() => loaded?.locale === locale ? loaded.sections : [], [loaded, locale]);
+  const loadSections = useCallback(async () => {
+    if (loaded?.locale === locale || request.current?.locale === locale) return;
+    request.current?.controller.abort();
+    const controller = new AbortController();
+    request.current = { locale, controller };
+    setLoadingLocale(locale);
+    setErrorLocale(null);
+    try {
+      const response = await fetch(`/api/docs/search/${encodeURIComponent(locale)}`, {
+        credentials: "omit", referrerPolicy: "no-referrer",
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]),
+      });
+      if (!response.ok) throw new Error("unavailable");
+      const bytes = await readBoundedBody(response, 2 * 1024 * 1024);
+      const payload: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      const entries = payload && typeof payload === "object" ? (payload as { sections?: unknown }).sections : null;
+      if (!Array.isArray(entries) || entries.length === 0 || entries.length > 10000 || !entries.every(isSearchSection)) throw new Error("invalid index");
+      if (!controller.signal.aborted) setLoaded({ locale, sections: entries });
+    } catch {
+      if (!controller.signal.aborted) setErrorLocale(locale);
+    } finally {
+      if (request.current?.controller === controller) { request.current = null; setLoadingLocale(null); }
+    }
+  }, [locale, loaded]);
+  useEffect(() => () => request.current?.controller.abort(), []);
   const sectionMatches = useMemo(() => searchDocSections(sections, query), [sections, query]);
   const q = query.trim().toLowerCase();
   const filteredTasks = useMemo(
@@ -171,6 +215,28 @@ export function DocsSearch({ locale, compact = false }: { locale: string; compac
   const total = DOC_TOPICS.length + DOC_TASKS.length + FEATURE_CATALOGUE.features.length + sections.length;
   const matched = filteredTopics.length + filteredTasks.length + filteredFeatures.length + sectionMatches.length;
   const hasQuery = q.length > 0;
+  const measuredQuery = useRef<string | null>(null);
+  const measureSearch = useCallback(() => {
+    if (!q || !ready) return;
+    const key = `${locale}:${q}`;
+    if (measuredQuery.current === key) return;
+    measuredQuery.current = key;
+    recordFunnel("docs_search");
+    if (matched === 0) recordFunnel("docs_search_empty");
+  }, [q, matched, ready, locale]);
+  useEffect(() => {
+    if (!q) { measuredQuery.current = null; return; }
+    if (!ready) return;
+    const timer = setTimeout(measureSearch, 400);
+    return () => clearTimeout(timer);
+  }, [q, ready, measureSearch]);
+  const selectSearchResult = () => {
+    if (!q || !ready) return;
+    measureSearch();
+    recordFunnel("docs_search_result");
+    if (compact) setQuery("");
+  };
+  useEffect(() => { if (q) void loadSections(); }, [q, loadSections]);
 
   return (
     <div className="docs-index">
@@ -186,6 +252,8 @@ export function DocsSearch({ locale, compact = false }: { locale: string; compac
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => void loadSections()}
+            aria-keyshortcuts="/"
             placeholder={t.searchPlaceholder}
             className="search-input docs-search-input w-full"
             aria-label={t.searchLabel}
@@ -202,7 +270,7 @@ export function DocsSearch({ locale, compact = false }: { locale: string; compac
             </button>
           )}
         </div>
-        {hasQuery && (
+        {hasQuery && ready && (
           <div className="docs-search-count" aria-live="polite">
             {matched > 0
               ? fill(t.searchMatches, { matched, total, query: query.trim() })
@@ -211,15 +279,17 @@ export function DocsSearch({ locale, compact = false }: { locale: string; compac
         )}
       </div>
 
-      {(!compact || hasQuery) && (matched > 0 ? (
+      {loadingLocale === locale && <p role="status">{t.searchLoading}</p>}
+      {errorLocale === locale && <div role="status"><p>{t.searchUnavailable}</p><button type="button" className="btn btn-secondary" onClick={() => void loadSections()}>{t.searchRetry}</button></div>}
+      {(!compact || hasQuery) && (!hasQuery || ready) && (matched > 0 ? (
         <div className="docs-result-groups">
           {sectionMatches.length > 0 && <section className="docs-result-group">
             <div className="docs-result-heading"><h2>{t.searchLabel}</h2><span>{sectionMatches.length}</span></div>
             <div className="docs-topic-list">{sectionMatches.map((section) => (
-              <Link key={section.href} href={`/${locale}${section.href}`} className="docs-topic-row" onClick={() => { if (compact) setQuery(""); }}>
+              <Link key={section.href} href={`/${locale}${section.href}`} className="docs-topic-row" onClick={selectSearchResult}>
                 <div className="docs-topic-main">
                   <div className="docs-topic-title">{highlight(`${section.pageTitle} · ${section.title}`, query)}</div>
-                  <p>{highlight(section.excerpt, query)}</p>
+                  <p lang={section.lang}>{highlight(section.excerpt, query)}</p>
                 </div>
                 <span className="docs-topic-arrow" aria-hidden="true">→</span>
               </Link>
@@ -227,7 +297,7 @@ export function DocsSearch({ locale, compact = false }: { locale: string; compac
           </section>}
           {filteredFeatures.length > 0 && <section className="docs-result-group">
             <div className="docs-result-heading"><h2>{getFeatures(locale).title}</h2><span>{filteredFeatures.length}</span></div>
-            <div className="docs-topic-list">{filteredFeatures.map((feature) => <Link key={feature.id} href={`/${locale}/features#${feature.id}`} className="docs-topic-row">
+            <div className="docs-topic-list">{filteredFeatures.map((feature) => <Link key={feature.id} href={`/${locale}/features#${feature.id}`} className="docs-topic-row" onClick={selectSearchResult}>
               <div className="docs-topic-main" lang="en" dir="ltr"><div className="docs-topic-title">{highlight(feature.name, query)}</div><p>{highlight(feature.summary, query)}</p></div>
               <Status tone={feature.status === "stable" ? "ready" : "attention"}>{getFeatures(locale)[feature.status]}</Status>
             </Link>)}</div>
@@ -242,7 +312,7 @@ export function DocsSearch({ locale, compact = false }: { locale: string; compac
               {!hasQuery && <p className="docs-result-lead">{t.tasksLead}</p>}
               <div className="docs-topic-list">
                 {filteredTasks.map((task) => (
-                  <TaskRow key={task.id} task={task} locale={locale} query={query} />
+                  <TaskRow key={task.id} task={task} locale={locale} query={query} onSelect={hasQuery ? selectSearchResult : undefined} />
                 ))}
               </div>
             </section>
@@ -273,6 +343,7 @@ export function DocsSearch({ locale, compact = false }: { locale: string; compac
                         webGuideTag={t.webGuideTag}
                         sourceDocTag={t.sourceDocTag}
                         sourceDetails={t.sourceDetails}
+                      onSelect={hasQuery ? selectSearchResult : undefined}
                       />
                     ))}
                   </div>

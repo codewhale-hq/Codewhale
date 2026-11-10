@@ -60,20 +60,6 @@ async function gh<T>(url: string, ghToken?: string): Promise<T | null> {
 interface GhRelease { tag_name: string; name: string | null; body: string | null; html_url: string; prerelease: boolean; draft: boolean }
 interface GhIssue { number: number; title: string; html_url: string; body: string | null; state: string; pull_request?: unknown }
 
-const FALLBACK_SHIPPED: RoadmapItem[] = [
-  {
-    title: "v0.8.45",
-    note: "Moonshot/Kimi provider support, API-key setup guidance, provider-surface sync, and current Windows install/runtime guidance",
-    href: "https://github.com/codewhale-hq/CodeWhale/releases/tag/v0.8.45",
-  },
-];
-
-function withPinnedShipped(items: RoadmapItem[]): RoadmapItem[] {
-  // Safety net only: the static fallback entry must never sit ahead of live
-  // releases — use it solely when the live list is empty.
-  return items.length > 0 ? items : FALLBACK_SHIPPED;
-}
-
 function summarizeReleaseBody(body: string | null): string {
   if (!body) return "";
   const lines = body.split(/\r?\n/).map((l) => l.trim());
@@ -143,11 +129,11 @@ export async function fetchRoadmap(ghToken?: string): Promise<RoadmapFeed> {
       note: summarizeReleaseBody(r.body) || r.tag_name,
       href: r.html_url,
     }))
-    : FALLBACK_SHIPPED;
+    : [];
 
   return {
     generatedAt: new Date().toISOString(),
-    shipped: withPinnedShipped(shipped),
+    shipped,
     underway,
     considered,
     ruledOut,
@@ -160,11 +146,12 @@ export async function getCachedRoadmap(kv: KVNamespace | undefined, ghToken: str
       const cached = await kv.get(KV_KEY);
       if (cached) {
         const parsed = JSON.parse(cached) as RoadmapFeed;
-        return { ...parsed, shipped: withPinnedShipped(parsed.shipped ?? []) };
+        return { ...parsed, shipped: parsed.shipped ?? [] };
       }
     }
     const fresh = await fetchRoadmap(ghToken);
-    if (kv) {
+    const hasLive = fresh.shipped.length + fresh.underway.length + fresh.considered.length + fresh.ruledOut.length > 0;
+    if (kv && hasLive) {
       await kv.put(KV_KEY, JSON.stringify(fresh), { expirationTtl: KV_TTL });
     }
     return fresh;

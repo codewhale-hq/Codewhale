@@ -128,6 +128,7 @@ function toDataPoint(batch: Batch, event: Event): DataPoint {
       blobs[17] = JSON.stringify(counts);
       break;
     }
+    case "funnel_usage":
     case "product_usage":
       blobs[17] = JSON.stringify(event.counters);
       break;

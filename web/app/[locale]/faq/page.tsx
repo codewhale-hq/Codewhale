@@ -21,6 +21,7 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
 
 export default async function FaqPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
+  const han = locale === "zh";
   const t = getFaq(locale);
   const p = (path: string) => `/${locale}${path}`;
   const items = { en: faqEn, zh: faqZh }[pickTextLocale(locale)](p);
@@ -38,11 +39,11 @@ export default async function FaqPage({ params }: { params: Promise<{ locale: st
         dangerouslySetInnerHTML={{ __html: serializeJsonLd(jsonLd) }}
       />
       <PageHeader
-        seal="问"
+        seal={han ? "问" : undefined}
         kicker={t.eyebrow}
         title={t.title}
-        titleAside={t.titleAside}
-        titleAsideLang={t.titleAsideLang}
+        titleAside={han ? t.titleAside : undefined}
+        titleAsideLang={han ? t.titleAsideLang : undefined}
         lede={t.lead}
         pose="talk"
       />

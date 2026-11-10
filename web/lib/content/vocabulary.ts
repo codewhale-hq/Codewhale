@@ -151,8 +151,8 @@ export const ROUTE_IDENTITY: { term: string; description: LocalizedText }[] = [
   {
     term: "Provider",
     description: {
-      en: "Who serves inference — a hosted API, a gateway, or a loopback local runtime (Ollama, vLLM, SGLang). A configured provider is never inferred from a model name.",
-      zh: "谁提供推理——托管 API、网关或本机回环本地运行时（Ollama、vLLM、SGLang）。绝不会根据模型名称推断已配置的 provider。",
+      en: "Who serves inference — a hosted API, a gateway, or a loopback local runtime. A configured provider is never inferred from a model name.",
+      zh: "谁提供推理——托管 API、网关或本机回环本地运行时。绝不会根据模型名称推断已配置的 provider。",
     },
   },
   {

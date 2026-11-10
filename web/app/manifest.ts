@@ -2,10 +2,8 @@ import type { MetadataRoute } from "next";
 import { SITE_NAME } from "@/lib/page-meta";
 
 /**
- * Web app manifest. Icons are the brand mark itself — the C-shaped whale in
- * the logo gradient (#1E8FD8 -> #0B48BB) on a transparent ground, the
- * resting pose from public/whale/rest.svg rasterised to the sizes below
- * (app/icon.svg is the same drawing). No tile.
+ * Web app manifest. The PWA icons are the desktop app icon tile (cream mark on
+ * the near-black tile) rasterised from codewhale-design/whale/svg/icon-light.svg.
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {

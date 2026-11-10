@@ -117,6 +117,7 @@ base prompt". Two more corollaries earned here:
   flag, provider or user-visible feature adds or updates its row in
   `docs/features.toml` in the same change;
   `cargo test -p codewhale-tui --test feature_registry` fails on flag drift.
+- **Public planned-work issues are written for contributors.** An issue opened for planned or release work has the parts in CONTRIBUTING.md § "What a planned-work issue gives you": status, ways to help with files, a local test command and a done-when, what maintainers already hold, and how to claim. Keep it current as pieces land or are claimed.
 - **Write `close`/`fix`/`resolve #N` only when you mean it.** GitHub closes the
   issue on merge even inside "does not close #N"; use `Refs #N` otherwise.
 

@@ -13,7 +13,7 @@ export const docsRuntimeApi: DocsRuntimeApiDict = {
   bodyClassName: "text-ink-soft leading-relaxed",
   title: "Automate with the Runtime API",
   lede:
-    "Scripts and apps can drive the same engine you use in the terminal. For a single job, use `codewhale exec`. For an app that needs threads, live events, and approvals, run the local Runtime API. Everything runs on your machine; there is no hosted relay.",
+    "Use `codewhale exec` for a one-shot job, or follow this tutorial to create a thread and stream a turn through the local Runtime API. The [complete source-candidate reference](/docs/runtime-reference) covers routes, request fields, events and compatibility limits.",
   sections: [
     {
       id: "exec",
@@ -34,13 +34,17 @@ codewhale exec --auto --sandbox workspace-write --output-format stream-json "upd
       id: "start",
       title: "Start the Runtime API",
       blocks: [
+        { p: "Use a POSIX shell with `curl`, `jq` and `openssl`, and a Codewhale build that supports `app-server --http`. Run all steps in the same terminal so the token, server process id and thread id remain available." },
+        { note: "This tutorial follows the unpublished 0.10.3 source candidate; check `codewhale --version` before comparing behavior. Connecting a provider is required for the turn below, and that request uses your provider's normal billing; starting the server and checking `/health` do not send a model request." },
         {
           code: `export CODEWHALE_RUNTIME_TOKEN="$(openssl rand -hex 32)"
-codewhale app-server --http            # http://127.0.0.1:7878`,
+codewhale app-server --http &
+CODEWHALE_RUNTIME_PID=$!
+curl --fail --silent --show-error --retry 10 --retry-connrefused \  --retry-delay 1 http://127.0.0.1:7878/health`,
           lang: "Terminal",
         },
         {
-          p: "Set the token yourself before starting; if you do not, Codewhale generates one for the process and does not print it. Every `/v1/*` request must send it as `Authorization: Bearer <token>`. `--port` changes the port.",
+          p: "The health command must return successfully before you continue; inspect the server output if it fails or the port is occupied. Keep the generated token private and send it as `Authorization: Bearer <token>` on every `/v1/*` request.",
         },
       ],
     },
@@ -52,17 +56,17 @@ codewhale app-server --http            # http://127.0.0.1:7878`,
           code: `API=http://127.0.0.1:7878
 AUTH="Authorization: Bearer $CODEWHALE_RUNTIME_TOKEN"
 
-THREAD=$(curl -s -X POST "$API/v1/threads" -H "$AUTH" \\
-  -H "Content-Type: application/json" -d '{}' | jq -r .id)
+THREAD=$(curl -fsS -X POST "$API/v1/threads" -H "$AUTH" \\
+  -H "Content-Type: application/json" -d '{}' | jq -er .id)
 
-curl -s -X POST "$API/v1/threads/$THREAD/turns" -H "$AUTH" \\
+curl -fsS -X POST "$API/v1/threads/$THREAD/turns" -H "$AUTH" \\
   -H "Content-Type: application/json" -d '{"prompt": "Summarize README.md"}'
 
-curl -N "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
+curl -fN "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
           lang: "Terminal",
         },
         {
-          p: "A thread is a conversation; a turn is one request and everything Codewhale does for it. The events stream replays from the sequence number you give and then stays open for new events, so a client that reconnects misses nothing.",
+          p: "Check that thread creation returns a nonempty id and the turn request returns an accepted turn; the events stream should then show the turn and its recorded result. Keep the last accepted `seq` for reconnects, handle the terminal `stream.end` frame, and follow the [replay contract](/docs/runtime-reference#ending-and-resuming-a-thread-stream) instead of assuming every disconnect is recoverable.",
         },
         {
           rows: [
@@ -73,8 +77,16 @@ curl -N "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
           ],
         },
         {
-          p: "[docs/RUNTIME_API.md](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/RUNTIME_API.md) lists every route, request body, and event.",
+          p: "The [Runtime API reference](/docs/runtime-reference) renders the canonical source contract, including endpoint tables, request fields, event envelopes and version limits.",
         },
+      ],
+    },
+    {
+      id: "stop",
+      title: "Stop the tutorial server",
+      blocks: [
+        { p: "Press Ctrl+C to close the event stream, then stop the server you started in this terminal. Closing the stream alone does not stop the server or interrupt an active model turn; use the interrupt endpoint above if needed." },
+        { code: 'kill "$CODEWHALE_RUNTIME_PID"\nunset CODEWHALE_RUNTIME_TOKEN CODEWHALE_RUNTIME_PID', lang: "Terminal" },
       ],
     },
     {
@@ -108,6 +120,7 @@ curl -N "$API/v1/threads/$THREAD/events?since_seq=0" -H "$AUTH"`,
     },
   ],
   next: [
+    { href: "/docs/runtime-reference", label: "Read the Runtime API reference", note: "Find exact routes, fields, event schemas and compatibility behavior." },
     {
       href: "/docs/web",
       label: "Open the browser client",

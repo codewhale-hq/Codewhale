@@ -132,6 +132,9 @@
           },
           {
             "p": "管理器打开时不访问网络，并显示 Codewhale 自有目录。启用兼容目录扫描即可检查外部文件夹；导入目标始终是 Codewhale 自有目录。"
+          },
+          {
+            "note": "`/skill <name>` 为下一回合启用指令；启用本身不等于模型已经回复，也不能证明模型遵循了指令。插件教程提供一个问候标记，可在你明确发送消息后核对。"
           }
         ]
       },
@@ -140,7 +143,7 @@
         "title": "安装到自有目录",
         "blocks": [
           {
-            "p": "按照[双文件插件教程](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md)编写并分享技能。"
+            "p": "按照[双文件插件教程](/docs/plugin-authoring)编写并分享技能。"
           },
           {
             "code": "/skill install --project <spec>\n/skill install --global <spec>\n/skill trust --project <name>",
@@ -279,6 +282,7 @@
     "footerDocs": "文档",
     "footerGuide": "新手指引",
     "footerInstall": "安装",
+    "footerApps": "桌面与网页",
     "footerModels": "模型",
     "footerRuntime": "运行时",
     "footerFaq": "常见问题",
@@ -293,6 +297,7 @@
     "footerReleases": " · 发布：",
     "footerReleasesLink": "GitHub 发布页",
     "footerSecurity": "安全",
+    "footerLegal": "法律",
     "switcherLabel": "语言",
     "switcherSwitchTo": "切换到 {label}",
     "partialBadge": "(部分)"
@@ -304,114 +309,16 @@
     "heroIntro": "{brand} 是你和模型之间的开源智能体。你可以阅读它的代码，也可以让它读自己的代码并解释它在做什么。来自世界各地的社区让它在每个版本中变得更好。",
     "getCodewhale": "安装 Codewhale",
     "heroInstallAria": "安装命令",
-    "exploreProduct": "探索 Codewhale",
     "shotPreview": "本地终端演示",
     "screenshotAlt": "Codewhale v{version} 的终端实录画面，包含对话、消息输入框与会话控制。",
-    "latestRelease": "最新发布 {tag}",
-    "releaseUnavailable": "发布状态暂不可用",
     "proofContributors": "{count} 位贡献者",
-    "currentSource": "源码",
     "sourceCandidate": "未发布",
     "publishedRelease": "已发布",
-    "gainHeading": "把想法变成成果",
-    "gainLede": "打开项目，说出你需要的结果。Codewhale 可以读取文件、修改内容，并运行命令检查自己的工作。",
-    "gain": [
-      [
-        "构建与修复软件",
-        "添加功能、排查问题，或编写实用工具。与能修改项目并运行检查的智能体一起完成工作。"
-      ],
-      [
-        "让重复工作自动完成",
-        "从终端、脚本或 CI 中运行工作流。任务较大时，可以把部分工作交给使用不同模型的 Fleet 智能体团队。"
-      ],
-      [
-        "连接你常用的工具",
-        "通过插件和 MCP 服务器接入工作所需的工具与服务。访问范围和身份验证由你配置。"
-      ]
-    ],
-    "chapterModels": "你的模型",
     "modelsHeading": "使用你选择的模型",
-    "modelsBody": "使用提供商 API 密钥、OpenAI 兼容端点或本地模型。",
-    "modelsFacts": [
-      [
-        "你的 API 账户",
-        "使用自己的 API 密钥连接 DeepSeek、OpenAI、Anthropic、Google 等提供商。模型用量由提供商计费。"
-      ],
-      [
-        "你的网关",
-        "连接 OpenAI 兼容端点，选择它提供的模型。"
-      ],
-      [
-        "你的推理服务",
-        "通过 Ollama、vLLM 或 SGLang 运行本地或自托管模型。"
-      ],
-      [
-        "你的 ChatGPT 套餐",
-        "实验功能：运行 codewhale auth chatgpt，连接符合条件的 ChatGPT 套餐。"
-      ]
-    ],
     "modelsLink": "浏览模型与提供商",
     "startHeading": "从一件有用的任务开始",
-    "startLede": "安装 Codewhale，连接模型，然后打开项目文件夹。需要时，再添加插件或更多智能体。",
-    "startGuideLink": "按照新手指引操作",
-    "startVocabularyLink": "查名词",
-    "chapterAvailability": "在哪里运行",
-    "availabilityHeading": "当前可用与开发中的功能",
-    "availabilityLede": "在 macOS、Linux 或 Windows 上安装。在终端里工作，或运行 codewhale web 打开本地浏览器界面。桌面应用和托管网页应用仍在开发。",
-    "availability": [
-      [
-        "终端与本地浏览器",
-        "已发布",
-        "在 Linux、macOS 或 Windows 上安装，然后运行 codewhale，或运行 codewhale web 打开本地浏览器客户端。也可以用 npm 或 Cargo 安装；Android 上的 Termux 版本为预览版。"
-      ],
-      [
-        "CodeWhale GUI（VS Code）",
-        "可用",
-        "由社区维护的独立项目：在 VS Code 侧边栏中连接同一个 Codewhale Runtime，进行对话、管理线程并查看文件变更。可从 VS Code Marketplace 安装。",
-        "https://marketplace.visualstudio.com/items?itemName=HengQuWorld.brotherwhale-vscode"
-      ],
-      [
-        "托管网页应用",
-        "开发中",
-        "正在重建，以与桌面应用保持一致，暂未开放。如需现在在浏览器中使用，请在本机运行 codewhale web。"
-      ],
-      [
-        "桌面端",
-        "开发版本",
-        "基于同一引擎的原生应用。审阅并提交改动、跨项目跟进工作，还能编辑一条消息并作为新分支重新发送。暂无公开下载。"
-      ]
-    ],
-    "availabilityNote": "终端、本地浏览器和 GUI 无需 Codewhale 账户。使用你自己的提供商密钥时，相应用量由该提供商计费。",
-    "surfacesHeading": "使用文件和工具开展工作",
-    "surfaces": [
-      [
-        "文件与终端",
-        "创建文件、运行命令、分析数据，并测试你构建的成果。工作目录和权限由你设定。"
-      ],
-      [
-        "插件与已连接的应用",
-        "通过插件和 MCP 添加技能与工具。审核并启用你希望智能体使用的连接。"
-      ],
-      [
-        "浏览器与电脑操作 · 预览",
-        "添加浏览器工具或 Computer Use 插件，操作应用与网站。macOS 上的 Computer Use 需要系统权限；其他平台仍为实验支持。"
-      ],
-      [
-        "随时接着做的会话",
-        "将对话、工具结果和工作记录保存在一起。在终端或本地浏览器客户端中继续之前的任务。"
-      ],
-      [
-        "智能体团队",
-        "用 Fleet 将大任务分配给不同角色和模型的智能体，在一处查看它们的进度。"
-      ]
-    ],
-    "runtimeLink": "探索工具与集成",
-    "installBandHeading": "在 macOS 或 Linux 上安装",
     "copy": "复制",
     "copied": "已复制 ✓",
-    "binaries": "预编译包",
-    "chinaMirrors": "中国镜像",
-    "installGuideLink": "阅读安装指南",
     "contribute": "参与贡献"
   },
   "docs-guide": {
@@ -428,7 +335,6 @@
   "docs-shell": {
     "metaTitle": "文档 · Codewhale",
     "metaDescription": "安装 Codewhale，连接模型提供商，然后把事情做完：模式与审批、查看改动、工作流、子智能体、MCP 工具、钩子、Runtime API 以及问题排查。",
-    "portalMark": "Codewhale 文档",
     "heroTitle": "安装与使用 Codewhale",
     "heroLead": "查找安装步骤、模型连接、工具配置和问题排查指南。每份指南都包含可以运行的命令和示例。",
     "installCta": "安装 Codewhale",
@@ -438,7 +344,10 @@
     "releaseMatches": "本站文档描述的是已发布的 {tag}。",
     "releaseChangelog": "更新日志 →",
     "searchLabel": "搜索文档",
-    "searchPlaceholder": "按任务或主题搜索…（按 / 快速聚焦）",
+    "searchPlaceholder": "搜索指南与参考",
+    "searchLoading": "正在加载文档索引。搜索词只保留在此浏览器中。",
+    "searchUnavailable": "完整索引未能加载。请重试，以搜索正文和参考命令。",
+    "searchRetry": "重新加载索引",
     "searchClear": "清除",
     "searchMatches": "{matched} / {total} 条匹配 “{query}”",
     "searchNoMatches": "没有条目匹配 “{query}”",
@@ -500,18 +409,28 @@
         "title": "在命令执行前拦下它",
         "blocks": [
           {
-            "p": "`tool_call_before` 钩子会在每次工具调用执行之前看到它，并可以放行、拒绝，或强制弹出审批提示。下面这个钩子会拒绝强制推送。保存脚本并赋予可执行权限："
+            "p": "`tool_call_before` 钩子会在每次工具调用执行之前看到它，并可以放行、拒绝，或强制弹出审批提示。这个 POSIX shell 示例拒绝所有名为 `bash` 的工具调用，而不是猜测命令字符串会执行什么。"
           },
           {
-            "code": "#!/bin/sh\n# ~/.codewhale/hooks/no-force-push.sh\ncase \"$DEEPSEEK_TOOL_ARGS\" in\n  *\"push --force\"*|*\"push -f\"*)\n    echo '{\"decision\": \"deny\", \"reason\": \"Force-push is blocked by a hook.\"}' ;;\nesac\nexit 0",
-            "lang": "no-force-push.sh"
+            "code": "#!/bin/sh\nprintf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"Shell calls are blocked by this hook.\"}'",
+            "lang": "deny-shell.sh"
           },
           {
-            "code": "[[hooks.hooks]]\nname = \"no-force-push\"\nevent = \"tool_call_before\"\ncommand = \"~/.codewhale/hooks/no-force-push.sh\"\ncondition = { type = \"tool_name\", name = \"bash\" }",
+            "p": "创建 `~/.codewhale/hooks/`，把脚本保存为其中的 `deny-shell.sh`，然后在 macOS 或 Linux 上赋予可执行权限："
+          },
+          {
+            "code": "chmod +x ~/.codewhale/hooks/deny-shell.sh",
+            "lang": "终端"
+          },
+          {
+            "code": "[[hooks.hooks]]\nname = \"deny-shell\"\nevent = \"tool_call_before\"\ncommand = \"~/.codewhale/hooks/deny-shell.sh\"\ncondition = { type = \"tool_name\", name = \"bash\" }\ncontinue_on_error = false",
             "lang": "config.toml"
           },
           {
             "p": "钩子从环境变量中读取这次调用，并在标准输出上用 JSON 作答：`allow`、`deny` 或 `ask`，还可以附带 `reason`、改写后的输入（`updatedInput`）或给模型的补充上下文（`additionalContext`）。退出码 2 一律表示拒绝。多个钩子同时作答时，拒绝优先于询问，询问优先于放行。"
+          },
+          {
+            "note": "这个示例只覆盖名称恰好为 `bash` 的工具，不会阻止其他工具、外部客户端或你自行运行的命令。通过子字符串匹配强制推送标志不是 shell 安全边界；更广泛的限制应使用执行策略与操作系统沙箱。"
           },
           {
             "note": "在 Ask、Accept Edits 和 Auto-Review 下，`ask` 会强制弹出提示。Full Access 不增加审批提示，因此 `ask` 在该设置下不会新增提示。"
@@ -633,7 +552,7 @@
             "p": "钩子在交互式会话中运行。`codewhale exec` 默认不触发任何钩子；加上 `--hooks` 后会触发 `tool_call_before` 和 `shell_env`。由于没有人可以回应，`ask` 会被当作拒绝。"
           },
           {
-            "code": "codewhale exec --auto --hooks \"run the test suite and fix the first failure\"",
+            "code": "codewhale exec --auto --sandbox workspace-write --hooks \"run the test suite and fix the first failure\"",
             "lang": "终端"
           }
         ]
@@ -774,7 +693,7 @@
             "list": [
               "修改 `mcp.json` 或服务器凭据后，运行 `/mcp reload`。`/mcp validate` 只会刷新界面上显示的内容。",
               "在 shell 中亲自运行一遍服务器命令，确认它能启动。",
-              "如果配置文件丢失或损坏，`codewhale mcp init --force` 会重新生成一份。"
+              "如果缺少 `mcp.json`，可用 `codewhale mcp init` 创建。修复现有文件前请先备份；`--force` 会替换其中的配置。"
             ]
           }
         ]
@@ -784,11 +703,11 @@
         "title": "在 Docker 中运行",
         "blocks": [
           {
-            "code": "docker volume create codewhale-home\ndocker run --rm -it \\\n  -e DEEPSEEK_API_KEY=\"$DEEPSEEK_API_KEY\" \\\n  -v codewhale-home:/home/codewhale/.codewhale \\\n  -v \"$PWD:/workspace\" -w /workspace \\\n  ghcr.io/codewhale-hq/codewhale:latest",
+            "code": "docker volume create codewhale-home\ndocker run --rm -it \\\n  -e DEEPSEEK_API_KEY=\"$DEEPSEEK_API_KEY\" \\\n  -v codewhale-home:/home/codewhale/.codewhale \\\n  -v \"$PWD:/workspace\" -w /workspace \\\n  ghcr.io/hmbown/codewhale:v0.10.0",
             "lang": "终端"
           },
           {
-            "p": "镜像以非 root 用户运行，把你的设置和会话保存在命名卷里。想要可重复的环境，请固定某个发布标签而不是 `latest`；每个项目使用单独的卷；永远不要把密钥打包进镜像。"
+            "p": "此处使用 [Docker 指南](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md) 中记录的镜像与 v0.10.0 标签，不是 0.10.3 源码候选版本。镜像以非 root 用户运行；请将配置保存在命名卷中，每个项目使用独立卷，不要把密钥写入镜像。"
           }
         ]
       }
@@ -1016,7 +935,7 @@
         "title": "批量运行任务",
         "blocks": [
           {
-            "p": "如果你手上是一串彼此独立的任务，而不是一套计划，就把它们写成任务文件，作为一次 Fleet 运行来执行。每个任务写明目标、角色和允许写入的路径。完整的 `tasks.json` 示例见[教程](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/FLEET_WORKFLOW_TUTORIAL.md)。"
+            "p": "如果你手上是一串彼此独立的任务，而不是一套计划，就把它们写成任务文件，作为一次 Fleet 运行来执行。每个任务写明目标、角色和允许写入的路径。完整的 `tasks.json` 示例见[教程](/docs/workflow-tutorial)。"
           },
           {
             "code": "codewhale fleet init\ncodewhale fleet run tasks.json --check\ncodewhale fleet run tasks.json --max-workers 4\ncodewhale fleet status\ncodewhale fleet logs <worker-id>\ncodewhale fleet resume <run-id>\ncodewhale fleet stop --all",
@@ -1029,6 +948,11 @@
       }
     ],
     "next": [
+      {
+        "href": "/docs/workflow-tutorial",
+        "label": "阅读完整 Fleet 教程",
+        "note": "启动 worker 前，验证完整任务文件并了解恢复行为。"
+      },
       {
         "href": "/docs/subagents",
         "label": "并行运行智能体",
@@ -1425,7 +1349,7 @@
     "metaDescription": "用你自己的脚本和应用驱动 Codewhale：在 CI 中运行一次性任务，或启动本地 HTTP API 来发送回合、接收事件流并回应审批。",
     "bodyClassName": "text-ink-soft leading-[1.9] tracking-wide",
     "title": "用 Runtime API 自动化",
-    "lede": "脚本和应用可以驱动你在终端里使用的同一个引擎。单个任务用 `codewhale exec`；需要会话线程、实时事件和审批的应用，则运行本地的 Runtime API。一切都在你的机器上运行，没有托管中转。",
+    "lede": "单次任务可使用 `codewhale exec`；本教程演示如何通过本地 Runtime API 创建线程并读取回合事件流。[完整源码候选版参考](/docs/runtime-reference) 介绍路由、请求字段、事件和兼容性限制。",
     "sections": [
       {
         "id": "exec",
@@ -1445,11 +1369,17 @@
         "title": "启动 Runtime API",
         "blocks": [
           {
-            "code": "export CODEWHALE_RUNTIME_TOKEN=\"$(openssl rand -hex 32)\"\ncodewhale app-server --http            # http://127.0.0.1:7878",
+            "p": "请使用具备 `curl`、`jq` 和 `openssl` 的 POSIX shell，以及支持 `app-server --http` 的 Codewhale 构建。在同一个终端中完成所有步骤，才能保留令牌、服务进程 id 和线程 id。"
+          },
+          {
+            "note": "本教程描述尚未发布的 0.10.3 源码候选版本；请先运行 `codewhale --version` 核对版本。下方回合需要已连接的提供商，并按其正常规则计费；启动服务和检查 `/health` 不发送模型请求。"
+          },
+          {
+            "code": "export CODEWHALE_RUNTIME_TOKEN=\"$(openssl rand -hex 32)\"\ncodewhale app-server --http &\nCODEWHALE_RUNTIME_PID=$!\ncurl --fail --silent --show-error --retry 10 --retry-connrefused   --retry-delay 1 http://127.0.0.1:7878/health",
             "lang": "终端"
           },
           {
-            "p": "请在启动前自己设置令牌；如果不设置，Codewhale 会为该进程生成一个令牌，但不会打印出来。每个 `/v1/*` 请求都必须以 `Authorization: Bearer <token>` 的形式携带它。`--port` 可以更改端口。"
+            "p": "健康检查成功后再继续；如果失败或端口被占用，请查看服务输出。请妥善保管生成的令牌，每个 `/v1/*` 请求都必须以 `Authorization: Bearer <token>` 的形式携带它。"
           }
         ]
       },
@@ -1458,11 +1388,11 @@
         "title": "发送一个回合并观察它",
         "blocks": [
           {
-            "code": "API=http://127.0.0.1:7878\nAUTH=\"Authorization: Bearer $CODEWHALE_RUNTIME_TOKEN\"\n\nTHREAD=$(curl -s -X POST \"$API/v1/threads\" -H \"$AUTH\" \\\n  -H \"Content-Type: application/json\" -d '{}' | jq -r .id)\n\ncurl -s -X POST \"$API/v1/threads/$THREAD/turns\" -H \"$AUTH\" \\\n  -H \"Content-Type: application/json\" -d '{\"prompt\": \"Summarize README.md\"}'\n\ncurl -N \"$API/v1/threads/$THREAD/events?since_seq=0\" -H \"$AUTH\"",
+            "code": "API=http://127.0.0.1:7878\nAUTH=\"Authorization: Bearer $CODEWHALE_RUNTIME_TOKEN\"\n\nTHREAD=$(curl -fsS -X POST \"$API/v1/threads\" -H \"$AUTH\" \\\n  -H \"Content-Type: application/json\" -d '{}' | jq -er .id)\n\ncurl -fsS -X POST \"$API/v1/threads/$THREAD/turns\" -H \"$AUTH\" \\\n  -H \"Content-Type: application/json\" -d '{\"prompt\": \"Summarize README.md\"}'\n\ncurl -fN \"$API/v1/threads/$THREAD/events?since_seq=0\" -H \"$AUTH\"",
             "lang": "终端"
           },
           {
-            "p": "线程就是一段对话；回合是一次请求，以及 Codewhale 为它所做的一切。事件流会从你给出的序号开始回放，然后保持连接等待新事件，因此重新连接的客户端不会漏掉任何内容。"
+            "p": "请确认创建线程后返回非空 id，回合请求返回已接受的回合，事件流随后应显示回合及其记录的结果。重新连接时保留最后接受的 `seq`，处理终止帧 `stream.end`，并遵循[回放约定](/docs/runtime-reference#ending-and-resuming-a-thread-stream)，不要假定所有断线都能恢复。"
           },
           {
             "rows": [
@@ -1485,7 +1415,20 @@
             ]
           },
           {
-            "p": "[docs/RUNTIME_API.md](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/RUNTIME_API.md) 列出了所有路由、请求体和事件。"
+            "p": "[Runtime API 参考](/docs/runtime-reference) 展示规范源码，包括端点表、请求字段、事件封装和版本限制。"
+          }
+        ]
+      },
+      {
+        "id": "stop",
+        "title": "停止教程服务",
+        "blocks": [
+          {
+            "p": "按 Ctrl+C 关闭事件流，然后停止你在此终端启动的服务。仅关闭事件流不会停止服务，也不会中断正在运行的模型回合；需要时请使用上方的中断端点。"
+          },
+          {
+            "code": "kill \"$CODEWHALE_RUNTIME_PID\"\nunset CODEWHALE_RUNTIME_TOKEN CODEWHALE_RUNTIME_PID",
+            "lang": "终端"
           }
         ]
       },
@@ -1535,6 +1478,11 @@
       }
     ],
     "next": [
+      {
+        "href": "/docs/runtime-reference",
+        "label": "阅读 Runtime API 参考",
+        "note": "查找准确的路由、字段、事件结构和兼容性行为。"
+      },
       {
         "href": "/docs/web",
         "label": "打开浏览器客户端",
@@ -1623,8 +1571,12 @@
             "p": "安装 bubblewrap 后 Codewhale 默认使用它。想让 Linux 命令不被包装，在 `~/.codewhale/config.toml` 中加一行退出："
           },
           {
-            "code": "sudo apt install bubblewrap      # Fedora: dnf install bubblewrap · Arch: pacman -S bubblewrap\n\n# ~/.codewhale/config.toml\nprefer_bwrap = false",
-            "lang": "终端 / config.toml"
+            "code": "sudo apt install bubblewrap",
+            "lang": "Debian / Ubuntu — 终端"
+          },
+          {
+            "code": "prefer_bwrap = false",
+            "lang": "~/.codewhale/config.toml — 可选：关闭 bubblewrap"
           },
           {
             "p": "只有当 `/usr/bin/bwrap` 存在、可执行，且探测证明它能创建沙箱命名空间时，Codewhale 才会使用它——装了但被系统拦住的 bwrap 按不存在处理。此后，命令看到的是只读的系统视图，只能写入沙箱模式允许的位置，除非模式允许，否则无法联网。"
@@ -1999,6 +1951,9 @@
             "lang": "终端"
           },
           {
+            "note": "显示凭据来源不代表提供商已经接受该密钥。`doctor --json` 只做离线结构检查；`doctor --probe-api` 会连接所选服务，可能产生提供商用量。"
+          },
+          {
             "p": "在 Linux 上，密钥存储是 `~/.codewhale/secrets/` 下的一个私有文件（权限 0600），而不是系统钥匙串。`codewhale doctor --probe-api` 会发起一次测试调用，确认密钥和网络都正常。"
           }
         ]
@@ -2008,13 +1963,20 @@
         "title": "使用其他提供商或本地模型",
         "blocks": [
           {
-            "p": "`codewhale auth list` 会列出 Codewhale 支持的所有提供商，以及每个提供商是否已有密钥。所有提供商的用法都一样：`codewhale auth set --provider <name>`，或者设置该提供商的环境变量。"
+            "p": "`codewhale auth list` 会列出各提供商报告的凭据状态。API 密钥路由使用 `codewhale auth set --provider <name>` 或文档指定的环境变量；OAuth 与本地路由有各自的设置方式。"
           },
           {
-            "p": "本地 Ollama、vLLM 和 SGLang 服务默认无需 API 密钥。使用本机模型时，请连接回环地址，再选择该服务提供的准确模型标签："
+            "p": "为其他托管提供商保存密钥，再选择它和模型："
           },
           {
-            "code": "codewhale auth list\ncodewhale --provider ollama --model <model-tag>",
+            "code": "codewhale auth set --provider anthropic\ncodewhale --provider anthropic --model claude-sonnet-5-5",
+            "lang": "终端"
+          },
+          {
+            "p": "你自己运行的服务（vLLM、SGLang、Ollama）默认无需 API 密钥。连接回环地址，再选择该服务提供的准确模型标签："
+          },
+          {
+            "code": "codewhale --provider vllm --model <model-tag>",
             "lang": "终端"
           },
           {
@@ -2047,7 +2009,7 @@
             "codeTerms": true
           },
           {
-            "p": "`codewhale login` 不接收提供商密钥，提供商密钥一律通过 `codewhale auth set` 保存。登录会话优先保存在操作系统的凭据管理器中；没有凭据管理器时（例如通过 SSH 或在容器里），则保存在 Codewhale 的私有密钥文件中。"
+            "p": "`codewhale login` 不接收提供商密钥，提供商密钥一律通过 `codewhale auth set` 保存。登录会话优先保存在操作系统的凭据管理器中；没有凭据管理器时（例如通过 SSH 或在容器里），则保存在 Codewhale 的私有密钥文件中。每个入口的登录步骤见[登录 Codewhale](/docs/account)。"
           }
         ]
       }
@@ -2113,7 +2075,7 @@
               ],
               [
                 "完全留在本地",
-                "使用本地模型（Ollama、vLLM、SGLang）时，推理完全不离开你的机器。"
+                "使用你自己运行的模型时，推理完全不离开你的机器。"
               ],
               [
                 "无需账户",

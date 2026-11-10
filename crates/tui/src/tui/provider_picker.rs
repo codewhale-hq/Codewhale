@@ -889,34 +889,44 @@ impl ProviderDashboardRow {
                 )
             })
             .flatten();
-        let route = if let Some(model) = declared_default {
-            codewhale_engine::route_runtime::resolve_declared_model_candidate_with_wire_override(
-                provider,
-                &provider_id,
-                model,
-                &route_base,
-                config.context_window_for_provider_config(&identity),
-                config.model_context_windows_for(&identity),
-                config.custom_models.as_deref().unwrap_or_default(),
-                wire_override,
-            )
-        } else {
-            // Browsing a provider is a snapshot projection, not execution
-            // admission. Actual local requests still require an explicit tag
-            // or a fresh endpoint-owned roster in resolve_runtime_route.
-            codewhale_engine::route_runtime::resolve_route_candidate_with_context_metadata_and_wire_override(
-                provider,
-                configured_model
-                    .as_deref()
-                    .or_else(|| identity.compatibility().map(|row| row.default_model)),
-                None,
-                Some(route_base.clone()),
-                config.context_window_for_provider_config(&identity),
-                config.model_context_windows_for(&identity),
-                None,
-                wire_override,
-            )
-        };
+        let responses_profile_override = codewhale_config::provider::responses_profile_override(
+            provider,
+            identity.key.as_str(),
+            config.provider_wire_dialect(&identity),
+            config.provider_responses_profile(&identity),
+        );
+        let route = responses_profile_override.and_then(|responses_profile_override| {
+            if let Some(model) = declared_default {
+                codewhale_engine::route_runtime::resolve_declared_model_candidate_with_wire_override(
+                    provider,
+                    &provider_id,
+                    model,
+                    &route_base,
+                    config.context_window_for_provider_config(&identity),
+                    config.model_context_windows_for(&identity),
+                    config.custom_models.as_deref().unwrap_or_default(),
+                    wire_override,
+                    responses_profile_override,
+                )
+            } else {
+                // Browsing a provider is a snapshot projection, not execution
+                // admission. Actual local requests still require an explicit tag
+                // or a fresh endpoint-owned roster in resolve_runtime_route.
+                codewhale_engine::route_runtime::resolve_route_candidate_with_context_metadata_and_wire_override(
+                    provider,
+                    configured_model
+                        .as_deref()
+                        .or_else(|| identity.compatibility().map(|row| row.default_model)),
+                    None,
+                    Some(route_base.clone()),
+                    config.context_window_for_provider_config(&identity),
+                    config.model_context_windows_for(&identity),
+                    None,
+                    wire_override,
+                    responses_profile_override,
+                )
+            }
+        });
         let (
             base_url,
             supported_protocols,

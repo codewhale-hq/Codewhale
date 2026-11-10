@@ -495,6 +495,15 @@ pub fn route_is_valid_for_model(
                 )
             })
             .flatten(),
+        responses_profile_override: match codewhale_config::provider::responses_profile_override(
+            kind,
+            identity.key.as_str(),
+            config.provider_wire_dialect(identity),
+            config.provider_responses_profile(identity),
+        ) {
+            Ok(profile) => profile,
+            Err(_) => return false,
+        },
     };
     RouteResolver::bundled()
         .resolve(&request)

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { PageHeader, Section } from "@/components/page-header";
-import { Status, type StatusTone } from "@/components/status-badge";
+import { Status } from "@/components/status-badge";
 import { NativeTerminalGallery } from "@/components/native-terminal-gallery";
 import { PRODUCT_COPY } from "@/lib/content/product";
 import { fill, getChrome, getHome, pickText } from "@/lib/i18n/dictionaries";
@@ -19,10 +19,6 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
     description: pickText(PRODUCT_COPY.metadata.description, locale),
   });
 }
-
-// Terminal released · local browser ships with it · CodeWhale GUI
-// available · hosted web in development · desktop development build · Mac beta.
-const AVAILABILITY_TONES: StatusTone[] = ["ready", "ready", "ready", "idle", "idle", "attention"];
 
 /**
  * /product — what Codewhale is and what a person gains, with availability
@@ -107,11 +103,11 @@ export default async function ProductPage({ params }: { params: Promise<{ locale
           title={t(PRODUCT_COPY.availabilityHeading)}
         >
           <dl className="ruled-list">
-            {PRODUCT_COPY.availability.map((row, index) => (
-              <div key={row.surface.en}>
+            {PRODUCT_COPY.availability.map((row) => (
+              <div key={row.id}>
                 <dt>{t(row.surface)}</dt>
                 <dd>
-                  <Status tone={AVAILABILITY_TONES[index] ?? "idle"}>{t(row.status)}</Status>
+                  <Status tone={row.tone}>{t(row.status)}</Status>
                   {t(row.detail)}
                   {row.href && row.linkLabel && (
                     <>

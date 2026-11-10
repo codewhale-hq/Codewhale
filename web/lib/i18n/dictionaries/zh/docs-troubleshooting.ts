@@ -96,7 +96,7 @@ codewhale -c                  # the latest session in this folder`,
           list: [
             "修改 `mcp.json` 或服务器凭据后，运行 `/mcp reload`。`/mcp validate` 只会刷新界面上显示的内容。",
             "在 shell 中亲自运行一遍服务器命令，确认它能启动。",
-            "如果配置文件丢失或损坏，`codewhale mcp init --force` 会重新生成一份。",
+            "如果缺少 `mcp.json`，可用 `codewhale mcp init` 创建。修复现有文件前请先备份；`--force` 会替换其中的配置。",
           ],
         },
       ],
@@ -111,11 +111,11 @@ docker run --rm -it \\
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \\
   -v codewhale-home:/home/codewhale/.codewhale \\
   -v "$PWD:/workspace" -w /workspace \\
-  ghcr.io/codewhale-hq/codewhale:latest`,
+  ghcr.io/hmbown/codewhale:v0.10.0`,
           lang: "终端",
         },
         {
-          p: "镜像以非 root 用户运行，把你的设置和会话保存在命名卷里。想要可重复的环境，请固定某个发布标签而不是 `latest`；每个项目使用单独的卷；永远不要把密钥打包进镜像。",
+          p: "此处使用 [Docker 指南](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/DOCKER.md) 中记录的镜像与 v0.10.0 标签，不是 0.10.3 源码候选版本。镜像以非 root 用户运行；请将配置保存在命名卷中，每个项目使用独立卷，不要把密钥写入镜像。",
         },
       ],
     },

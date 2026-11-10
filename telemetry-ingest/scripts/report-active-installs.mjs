@@ -196,7 +196,7 @@ export function formatReport(rows, { days, now = new Date(), newestEvent = null 
   return lines.join("\n");
 }
 
-async function querySql({ accountId, apiToken, sql, fetchImpl = fetch }) {
+export async function querySql({ accountId, apiToken, sql, fetchImpl = fetch }) {
   const response = await fetchImpl(SQL_ENDPOINT(accountId), {
     method: "POST",
     headers: {
@@ -206,8 +206,7 @@ async function querySql({ accountId, apiToken, sql, fetchImpl = fetch }) {
     body: sql,
   });
   if (!response.ok) {
-    const body = (await response.text()).slice(0, 500);
-    throw new Error(`Cloudflare SQL request failed (${response.status}): ${body}`);
+    throw new Error(`Cloudflare SQL request failed (${response.status})`);
   }
   return response.json();
 }

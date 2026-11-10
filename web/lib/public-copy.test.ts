@@ -13,7 +13,7 @@ describe("public website copy contracts", () => {
     const layout = pageSource("docs/layout.tsx");
     const search = readFileSync(new URL("../components/docs-search.tsx", import.meta.url), "utf8");
 
-    expect(layout).toContain("docs-portal-band");
+    expect(layout).not.toContain("portal-mark");
     // The hero copy is dictionary-driven now (#5337), so assert it where the
     // string actually lives rather than in the TSX.
     expect(EN_DOCS_SHELL.heroTitle).toBe("Install and use Codewhale");
@@ -84,14 +84,13 @@ describe("public website copy contracts", () => {
     // The machine-readable source-state attribute stays a literal.
     expect(homepage).toContain('data-source-state={sourceIsPublished ? "published release" : "source candidate"}');
     expect(homepage).toContain("getReleaseUpdates(facts.latestPublishedRelease)");
-    expect(homepage).toContain("initial={updates}");
+    expect(homepage).toContain("publishedRelease.version");
     expect(readFileSync(new URL("../components/release-updates.tsx", import.meta.url), "utf8")).toContain("href={release.url}");
     // The visible wording moved into the dictionary layer (#4934). Assert the
     // rendered contract — the EN reference value plus the page's use of it —
     // instead of a raw TSX string, and hold every locale to a real value.
     expect(homepage).toContain("d.sourceCandidate");
     expect(EN_HOME.sourceCandidate).toBe("Unreleased");
-    expect(EN_HOME.currentSource).toBe("Source");
     // A development-source route count is not a released-provider total.
     expect(homepage).not.toContain("<span>{providerRoutes}</span>");
     expect(homepage).not.toContain("releases/tag/v${version}");

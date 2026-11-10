@@ -17,7 +17,8 @@ export const docsSkills: DocsPageDict = {
         },
         {
           "p": "管理器打开时不访问网络，并显示 Codewhale 自有目录。启用兼容目录扫描即可检查外部文件夹；导入目标始终是 Codewhale 自有目录。"
-        }
+        },
+        { note: "`/skill <name>` 为下一回合启用指令；启用本身不等于模型已经回复，也不能证明模型遵循了指令。插件教程提供一个问候标记，可在你明确发送消息后核对。" }
       ]
     },
     {
@@ -25,7 +26,7 @@ export const docsSkills: DocsPageDict = {
       "title": "安装到自有目录",
       "blocks": [
         {
-          "p": "按照[双文件插件教程](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md)编写并分享技能。"
+          "p": "按照[双文件插件教程](/docs/plugin-authoring)编写并分享技能。"
         },
         {
           "code": "/skill install --project <spec>\n/skill install --global <spec>\n/skill trust --project <name>",

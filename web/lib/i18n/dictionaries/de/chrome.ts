@@ -54,6 +54,7 @@ export const chrome: ChromeDict = {
   footerDocs: "Dokumentation",
   footerGuide: "Erste Schritte",
   footerInstall: "Installation",
+  footerApps: "Desktop und Web",
   footerModels: "Modelle",
   footerRuntime: "Runtime",
   footerFaq: "FAQ",
@@ -68,6 +69,7 @@ export const chrome: ChromeDict = {
   footerReleases: " · Releases: ",
   footerReleasesLink: "GitHub-Releases",
   footerSecurity: "Sicherheit",
+  footerLegal: "Rechtliches",
 
   switcherLabel: "Sprache",
   switcherSwitchTo: "Zu {label} wechseln",

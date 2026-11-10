@@ -1,0 +1,31 @@
+{
+  "format": "codewhale-public-contributions-v1",
+  "repository": "codewhale-hq/CodeWhale",
+  "source": "synthetic",
+  "coverage": {
+    "issues_complete": true,
+    "pulls_complete": true
+  },
+  "issues": [
+    {
+      "number": 1,
+      "created_at": "2026-10-01T00:00:00Z",
+      "user": {
+        "login": "synthetic-person",
+        "type": "User",
+        "id": 42
+      }
+    }
+  ],
+  "pulls": [
+    {
+      "number": 2,
+      "merged_at": "2026-10-03T00:00:00Z",
+      "user": {
+        "login": "synthetic-person",
+        "type": "User",
+        "id": 42
+      }
+    }
+  ]
+}

@@ -5855,6 +5855,19 @@ context_window = 262144
     }
 
     #[test]
+    fn config_key_and_value_split_on_any_whitespace() {
+        let dir = tempfile::tempdir().expect("isolated config dir");
+        let mut app = create_test_app();
+        app.config_path = Some(dir.path().join("config.toml"));
+        let result = config_command(&mut app, Some("approval_mode\tauto"));
+        assert!(!result.is_error, "{:?}", result.message);
+        assert_eq!(app.approval_mode, ApprovalMode::Auto);
+        let result = config_command(&mut app, Some("approval_mode\u{3000}never"));
+        assert!(!result.is_error, "{:?}", result.message);
+        assert_eq!(app.approval_mode, ApprovalMode::Never);
+    }
+
+    #[test]
     fn config_approval_mode_save_persists_top_level_policy() {
         let temp_root = env::temp_dir().join(format!(
             "codewhale-approval-policy-save-test-{}",

@@ -17,6 +17,8 @@ export const docsSkills: DocsPageDict = {
         },
         {
           "p": "The manager opens without network access and shows owned roots. Turn on compatible-root scanning to inspect external folders; importing targets a Codewhale-owned root."
+        },
+        { note: "`/skill <name>` activates instructions for the next turn; activation alone is not a model reply or proof that the model followed them. The plugin tutorial includes a greeting marker you can check after explicitly sending a message."
         }
       ]
     },
@@ -25,7 +27,7 @@ export const docsSkills: DocsPageDict = {
       "title": "Install into an owned folder",
       "blocks": [
         {
-          "p": "Write and share a skill with the [two-file plugin tutorial](https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/PLUGIN_AUTHORING.md)."
+          "p": "Write and share a skill with the [two-file plugin tutorial](/docs/plugin-authoring)."
         },
         {
           "code": "/skill install --project <spec>\n/skill install --global <spec>\n/skill trust --project <name>",

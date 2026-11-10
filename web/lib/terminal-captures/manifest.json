@@ -1,18 +1,17 @@
 {
   "source": "Native Codewhale PTY via qa_harness; website_current_terminal_capture sequence with a deterministic loopback demo provider",
   "command": "Run the opt-in launch_card_pty::website_current_terminal_capture test from the cucumber target built with long-running-tests, with QA_TUI_BIN and QA_LAUNCH_CAPTURE_DIR set. The real Engine edits export.py, runs three local Python tests, delegates a read-only review and captures six actual TUI views. Render the cells using web/scripts/render-terminal-capture.mjs; no cell contents are edited.",
-  "binaryVersion": "0.10.2 (dev)",
+  "binaryVersion": "0.10.3 (dev)",
   "binaryBuildFeatures": [
     "codewhale-tui/long-running-tests"
   ],
   "captureBuildFeatures": [
     "long-running-tests"
   ],
-  "baseCommit": "bd0c32567024d5bc3efac7d13331c68711de031e",
+  "baseCommit": "e5279420647e15896150728ecf9a1f9fa80aadd1",
   "sourceDirty": true,
-  "sourceDiffSha256": "499468bbf066901c9b229c912fe64d7fdcb672674483ce8dbe59db7c66110c45",
-  "sourceProvenance": "Development build from a dirty 0.10.2 working tree based on baseCommit; sourceDiffSha256 covers the tracked source diff and untracked source content hashes. This is a local scripted demo, not published-release or commercial-provider qualification.",
-  "capturedAt": "2026-10-08T09:01:16Z",
+  "sourceProvenance": "Development build of the 0.10.3 source at baseCommit. sourceDiffSha256 covers the tracked non-web diff from baseCommit: documentation-only edits and the capture-sequence change in crates/tui/tests/cucumber/launch_card_pty.rs that drops the /workbar off and /workbar bottom commands so the home frame carries no slash-command notes. This is a local scripted demo, not published-release or commercial-provider qualification.",
+  "capturedAt": "2026-11-10T21:37:39Z",
   "conditions": {
     "colorterm": "truecolor",
     "fixtureHistory": false,
@@ -32,54 +31,55 @@
       "file": "website-provider-picker-100x24.json",
       "rows": 24,
       "state": "configured provider manager with the local website-demo route",
-      "sha256": "93d5118e513d975894e0e28c343dea3dda77a72f2ad12e1f9f23d617b96d37fe"
+      "sha256": "883f8779c73ed2e98126001e30194ce7900b7e232031c57494b79b30ad0f2fca"
     },
     {
       "cols": 100,
       "file": "website-home-100x24.json",
       "rows": 24,
-      "state": "completed JSON export task, real local tests and delegated review in the conversation",
-      "sha256": "7903b163aaae2c69c359b58877dc9e1f9bb2c4682daee3755c8dc4910a3216d0"
+      "state": "completed JSON export task with the Tasks workbar showing all three steps done",
+      "sha256": "e49d5ac2e1813f3213585e14e2b7e472fdb1d151662ae9bb63ea25e492e6d6cb"
     },
     {
       "cols": 100,
       "file": "website-composer-100x24.json",
       "rows": 24,
       "state": "a typed unsent follow-up in the completed demo session",
-      "sha256": "ea915a2ee7784b0464685590bdb5798d604e0dd2e8812fb603ce039f7ba9704b"
+      "sha256": "9476b624cd0fc162bb029343161baae7d0682c84f39bfd0421aa682d7749e083"
     },
     {
       "cols": 100,
       "file": "website-help-100x24.json",
       "rows": 24,
       "state": "actual /help overlay in the configured demo session",
-      "sha256": "397eab474c39ce229f56c7a467f9e221a3782692cb31d58913fd44bfbd2260ac"
+      "sha256": "7dfb271d45e211f6728e901eed6e8629d980718c9390a6fed41e955deb7779e7"
     },
     {
       "cols": 100,
       "file": "website-workbar-fleet-100x32.json",
       "rows": 32,
       "state": "actual Fleet workbar containing the completed source-grounded export-review worker",
-      "sha256": "d18924108199ed7e476e3afd0c32ea6e04da5d4bdef5675a539929b2096a2486"
+      "sha256": "9043cc89eeed8cf31b82fc7680ae65c51d0a0e603785406642b02201f3eb6c44"
     },
     {
       "cols": 100,
       "file": "website-workbar-100x32.json",
       "rows": 32,
       "state": "actual Tasks workbar populated by the executed JSON export workflow",
-      "sha256": "99b4efbfb170c61308054e687d457d2366e409c38b54e44a16c4d6fa535016f6"
+      "sha256": "68be1f61409993ec47930378c151018fcafccbf86a1312dcbe33f7bd5b1888bf"
     }
   ],
   "schema": "{rows, cols, cells: [row][col] -> {x, text, fg, bg, flags}}; fg/bg are null (terminal default), a 0-255 palette index, or [r,g,b]; flags are rio-vt style bits (see crates/tui/tests/support/qa_harness/frame.rs capture_cells)",
-  "binarySha256": "6ac94bff89046b5de4386c4ed39da2b86b2c53233d3c652f09022c83095e14dd",
-  "captureToolSha256": "0f68190d05fafa8c2f5800d29ebb3527b36daf716eec77a2f045814e5289b79d",
-  "testBinarySha256": "de3748adfc90dee3d5c4f9e9b9323db90835084620b2f8e14e53e47a04165f70",
+  "binarySha256": "fffd1d3f3b679eac6ea2b83a33c5871935770c850755086dd15c1b633bbe9609",
+  "captureToolSha256": "0f17852ae86498f5793b0da2bab03c597c580c129a8e54a47cd25547a12a2e51",
+  "testBinarySha256": "1f9ac98a16f4c44c79b0fa9d5085438588461b6612808c3b9a0384afeb15bc26",
   "workflowEvidence": {
     "rootRequests": 10,
     "reviewerRequests": 2,
     "reviewReadConfirmed": true,
     "reviewCompleted": true,
     "localTestsPassed": 3,
-    "receiptSha256": "91486ac841a78f709291e36692444cf996a1a3405d34960c6224cdee288c2694"
-  }
+    "receiptSha256": "0a4c25bb40b9b0152d689869bd8f11be901a9ce28bc207cc5de8a6c2fc168909"
+  },
+  "sourceDiffSha256": "79a63eac14177de2ebf178ccd124ae46b3f37a0013a226d508306e2e933ae65f"
 }

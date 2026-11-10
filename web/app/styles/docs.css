@@ -6,22 +6,6 @@
   background: var(--paper);
 }
 
-.docs-portal .hero {
-  padding-block: 0.75rem;
-}
-
-.docs-portal-band {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 1rem;
-}
-
-.docs-portal-band .portal-mark,
-.docs-portal-band .release-truth {
-  margin: 0;
-}
-
 .docs-hub-lede {
   margin: 0.8rem 0 1.5rem;
   color: var(--ink-soft);

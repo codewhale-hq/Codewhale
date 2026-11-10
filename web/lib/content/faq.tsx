@@ -58,7 +58,7 @@ brew install Hmbown/deepseek-tui/codewhale
     q: "Is Codewhale free? Do I need an account?",
     a: (
       <>
-        Codewhale is free and MIT licensed, and the terminal app needs no account. With your own API key you pay the provider directly; local models through Ollama, vLLM or SGLang need no key.
+        Codewhale is free and MIT licensed, and the terminal app needs no account. With your own API key you pay the provider directly; a model you run yourself needs no key.
         Keys you add with <code className="inline">/provider</code> stay on your machine. The footer and <code className="inline">/cost</code> show what a session has cost when the price is known, and an unknown price is shown as unknown, never as free.
       </>
     ),
@@ -139,7 +139,7 @@ codewhale doctor         # offline configuration checks`}
           Use <code className="inline">codewhale auth clear --provider deepseek</code> to remove a saved key.
         </p>
         <p>
-          To test a live connection, run <code className="inline">codewhale doctor --probe-api</code> for your hosted provider or <code className="inline">codewhale doctor --probe-local</code> for a local endpoint. The local probe may start a managed service such as Ollama.
+          To test a live connection, run <code className="inline">codewhale doctor --probe-api</code> for your hosted provider or <code className="inline">codewhale doctor --probe-local</code> for a local endpoint. The local probe may start a managed local service.
         </p>
       </>
     ),
@@ -152,11 +152,12 @@ codewhale doctor         # offline configuration checks`}
         <p className="mb-2">The current source declares {FACTS.providers.length} built-in provider routes:</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft mb-3">
           <li><strong>DeepSeek</strong> — bundled default with a native API route, reasoning streaming, cache metrics, and thinking effort control.</li>
-          <li><strong>OpenRouter</strong> — unified API for DeepSeek models and other open-model routes.</li>
-          <li><strong>{FACTS.providers.length - 2} more routes</strong> — including OpenAI-compatible, Anthropic, Mistral AI, OpenAI Codex, xAI, Moonshot/Kimi, Z.ai, MiniMax, StepFun, Volcengine Ark, Baidu Qianfan, Model Studio, NVIDIA NIM, Fireworks AI, Together AI, DeepInfra, SiliconFlow, Novita AI, Hugging Face, Arcee AI, AtlasCloud, and the keyless local endpoints SGLang, vLLM, and Ollama. <Link href={p("/models")} className="body-link">The full list is generated from the provider registry</Link>.</li>
+          <li><strong>Anthropic, OpenAI and Google</strong> — your own API account or plan for each, switchable per session.</li>
+          <li><strong>Any OpenAI-compatible endpoint</strong> — gateways and servers you host yourself, through the <code className="inline">openai</code> provider with a custom <code className="inline">base_url</code>.</li>
+          <li><strong>{FACTS.providers.length - 5} more routes</strong> — including xAI, Mistral AI, Moonshot/Kimi, Z.ai, MiniMax, StepFun, Volcengine Ark, Baidu Qianfan, Model Studio, NVIDIA NIM, Fireworks AI, Together AI, DeepInfra, SiliconFlow, Novita AI, Hugging Face, OpenRouter, and the keyless local endpoints SGLang, vLLM and Ollama. <Link href={p("/models")} className="body-link">The full list is generated from the provider registry</Link>.</li>
         </ul>
         <p>
-          Set the corresponding env var (e.g. <code className="inline">OPENROUTER_API_KEY</code>) and your provider in <code className="inline">~/.codewhale/config.toml</code>.
+          Set the corresponding env var (e.g. <code className="inline">ANTHROPIC_API_KEY</code>) and your provider in <code className="inline">~/.codewhale/config.toml</code>.
           Self-hosted OpenAI-compatible endpoints are supported through the provider config.
         </p>
       </>
@@ -164,34 +165,34 @@ codewhale doctor         # offline configuration checks`}
     sources: ["docs/CONFIGURATION.md", "#1978", "#1710"],
   },
   {
-    q: "How do I use OpenRouter with Codewhale?",
+    q: "How do I use a gateway or custom endpoint?",
     a: (
       <>
         <p className="mb-2">
-          To make OpenRouter the default, put the provider and model settings before the provider table in <code className="inline">~/.codewhale/config.toml</code>:
+          Use the <code className="inline">openai</code> provider with your endpoint. Put the provider and model before the provider table in <code className="inline">~/.codewhale/config.toml</code>:
         </p>
         <pre tabIndex={0} className="code-block mb-2">
 {`# ~/.codewhale/config.toml
-provider = "openrouter"
-default_text_model = "deepseek/deepseek-v4.1-flash"
+provider = "openai"
+default_text_model = "your-model-id"
 
-[providers.openrouter]
-api_key = "sk-or-v1-..."`}
+[providers.openai]
+api_key = "YOUR_API_KEY"
+base_url = "https://your-gateway.example/v1"`}
         </pre>
         <p>
-          OpenRouter uses the same reasoning/cache parser as the native DeepSeek provider.
-          Model IDs are OpenRouter's own slugs (e.g. <code className="inline">deepseek/deepseek-v4.1-flash</code>); pick the route with <code className="inline">--provider openrouter</code> or top-level <code className="inline">provider = &quot;openrouter&quot;</code>.
+          The model ID is whatever the gateway expects. Pick the route with <code className="inline">--provider openai</code> or the top-level <code className="inline">provider</code> key.
         </p>
       </>
     ),
-    sources: ["docs/CONFIGURATION.md", "#1978"],
+    sources: ["docs/CONFIGURATION.md"],
   },
   {
-    q: "Can I use self-hosted or local models (vLLM, Ollama, llama.cpp)?",
+    q: "Can I use a self-hosted model or my own endpoint?",
     a: (
       <>
-        Yes. Use the <code className="inline">vllm</code>, <code className="inline">sglang</code>, or <code className="inline">ollama</code> providers with your local endpoint.
-        For OpenAI-compatible endpoints (llama.cpp server, text-generation-webui, Aphrodite, etc.), you can use the <code className="inline">openai</code> provider with a custom <code className="inline">base_url</code>.
+        Yes. Point the <code className="inline">openai</code> provider at any OpenAI-compatible server (llama.cpp, text-generation-webui, Aphrodite and others) with a custom <code className="inline">base_url</code>.
+        The <code className="inline">vllm</code> and <code className="inline">sglang</code> providers are built in, and <code className="inline">ollama</code> works too.
         Codewhale also respects <code className="inline">DEEPSEEK_ALLOW_INSECURE_HTTP=true</code> for local HTTP endpoints.
         Hugging Face Inference Providers are also available through the <code className="inline">huggingface</code> provider. Broader Hub discovery, model cards, datasets, and Jobs belong to Model Lab.
       </>
@@ -347,7 +348,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     a: (
       <>
         <p className="mb-2">Start with <code className="inline">codewhale doctor</code> for an offline report of configuration paths, declared credential sources and tool setup. It does not test live connectivity by default.</p>
-        <p className="mb-2">Use <code className="inline">codewhale doctor --probe-api</code> to explicitly test your hosted provider, or <code className="inline">codewhale doctor --probe-local</code> for a local endpoint. A local probe may start a managed service such as Ollama.</p>
+        <p className="mb-2">Use <code className="inline">codewhale doctor --probe-api</code> to explicitly test your hosted provider, or <code className="inline">codewhale doctor --probe-local</code> for a local endpoint. A local probe may start a managed local service.</p>
         <p className="mb-2">Common causes:</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft">
           <li>Stale <code className="inline">DEEPSEEK_API_KEY</code> in shell startup file — open a fresh shell or use <code className="inline">codewhale auth set</code></li>
@@ -445,7 +446,7 @@ brew install Hmbown/deepseek-tui/codewhale
     q: "Codewhale 免费吗？需要注册账号吗？",
     a: (
       <>
-        Codewhale 免费，采用 MIT 许可证，终端应用无需账号。使用你自己的 API 密钥时，费用直接付给提供商；通过 Ollama、vLLM 或 SGLang 运行的本地模型无需密钥。
+        Codewhale 免费，采用 MIT 许可证，终端应用无需账号。使用你自己的 API 密钥时，费用直接付给提供商；你自己运行的模型无需密钥。
         通过 <code className="inline">/provider</code> 添加的密钥只保存在你的机器上。价格已知时，页脚和 <code className="inline">/cost</code> 会显示本次会话的花费；价格未知时显示为未知，绝不显示为免费。
       </>
     ),
@@ -525,7 +526,7 @@ codewhale doctor         # 离线配置检查`}
           使用 <code className="inline">codewhale auth clear --provider deepseek</code> 移除已保存的密钥。
         </p>
         <p>
-          要实际测试连接，运行 <code className="inline">codewhale doctor --probe-api</code> 检查托管提供商，或用 <code className="inline">codewhale doctor --probe-local</code> 检查本地端点。本地探针可能启动由桌面应用管理的 Ollama 等服务。
+          要实际测试连接，运行 <code className="inline">codewhale doctor --probe-api</code> 检查托管提供商，或用 <code className="inline">codewhale doctor --probe-local</code> 检查本地端点。本地探针可能启动由桌面应用管理的本地服务。
         </p>
       </>
     ),
@@ -538,11 +539,12 @@ codewhale doctor         # 离线配置检查`}
         <p className="mb-2">当前源码声明了 {FACTS.providers.length} 条内置提供商路由：</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft mb-3">
           <li><strong>DeepSeek</strong> — 内置默认原生 API 路由，支持推理流、缓存指标和思考力度控制。</li>
-          <li><strong>OpenRouter</strong> — 统一 API，可访问 DeepSeek 和其他开放模型路由。</li>
-          <li><strong>另外 {FACTS.providers.length - 2} 条路由</strong>——包括 OpenAI 兼容、Anthropic、Mistral AI、OpenAI Codex、xAI、Moonshot/Kimi、Z.ai、MiniMax、StepFun、Volcengine Ark、百度千帆、Model Studio、NVIDIA NIM、Fireworks、Together AI、DeepInfra、SiliconFlow、Novita、Hugging Face、Arcee AI、AtlasCloud，以及无需密钥的本地端点 SGLang、vLLM 和 Ollama。<Link href={p("/models")} className="body-link">完整列表由提供商注册表生成</Link>。</li>
+          <li><strong>Anthropic、OpenAI 和 Google</strong> — 使用你自己的 API 账户或套餐，可按会话切换。</li>
+          <li><strong>任何 OpenAI 兼容端点</strong> — 网关或你自己托管的服务，通过 <code className="inline">openai</code> 提供商并设置自定义 <code className="inline">base_url</code> 接入。</li>
+          <li><strong>另外 {FACTS.providers.length - 5} 条路由</strong>——包括 xAI、Mistral AI、Moonshot/Kimi、Z.ai、MiniMax、StepFun、Volcengine Ark、百度千帆、Model Studio、NVIDIA NIM、Fireworks、Together AI、DeepInfra、SiliconFlow、Novita、Hugging Face、OpenRouter，以及无需密钥的本地端点 SGLang、vLLM 和 Ollama。<Link href={p("/models")} className="body-link">完整列表由提供商注册表生成</Link>。</li>
         </ul>
         <p>
-          设置对应的环境变量（如 <code className="inline">OPENROUTER_API_KEY</code>）并在 <code className="inline">~/.codewhale/config.toml</code> 中配置你的提供商。
+          设置对应的环境变量（如 <code className="inline">ANTHROPIC_API_KEY</code>）并在 <code className="inline">~/.codewhale/config.toml</code> 中配置你的提供商。
           自托管 OpenAI 兼容端点可通过 provider 配置接入。
         </p>
       </>
@@ -550,34 +552,34 @@ codewhale doctor         # 离线配置检查`}
     sources: ["docs/CONFIGURATION.md", "#1978", "#1710"],
   },
   {
-    q: "如何使用 OpenRouter？",
+    q: "如何使用网关或自定义端点？",
     a: (
       <>
         <p className="mb-2">
-          要将 OpenRouter 设为默认路由，请在 <code className="inline">~/.codewhale/config.toml</code> 中把提供商和模型设置放在提供商配置表之前：
+          使用 <code className="inline">openai</code> 提供商并指向你的端点。请在 <code className="inline">~/.codewhale/config.toml</code> 中把提供商和模型设置放在提供商配置表之前：
         </p>
         <pre tabIndex={0} className="code-block mb-2">
 {`# ~/.codewhale/config.toml
-provider = "openrouter"
-default_text_model = "deepseek/deepseek-v4.1-flash"
+provider = "openai"
+default_text_model = "your-model-id"
 
-[providers.openrouter]
-api_key = "sk-or-v1-..."`}
+[providers.openai]
+api_key = "YOUR_API_KEY"
+base_url = "https://your-gateway.example/v1"`}
         </pre>
         <p>
-          OpenRouter 使用与原生 DeepSeek 提供商相同的推理/缓存解析器。
-          模型 ID 使用 OpenRouter 自己的 slug（如 <code className="inline">deepseek/deepseek-v4.1-flash</code>）；通过 <code className="inline">--provider openrouter</code> 或顶层 <code className="inline">provider = &quot;openrouter&quot;</code> 选择路由。
+          模型 ID 以网关要求的为准。通过 <code className="inline">--provider openai</code> 或顶层 <code className="inline">provider</code> 选择路由。
         </p>
       </>
     ),
-    sources: ["docs/CONFIGURATION.md", "#1978"],
+    sources: ["docs/CONFIGURATION.md"],
   },
   {
-    q: "可以使用自托管或本地模型吗（vLLM、Ollama、llama.cpp）？",
+    q: "可以使用自托管模型或我自己的端点吗？",
     a: (
       <>
-        可以。使用 <code className="inline">vllm</code>、<code className="inline">sglang</code> 或 <code className="inline">ollama</code> 提供商连接本地端点。
-        对于 OpenAI 兼容端点（llama.cpp server、text-generation-webui 等），可以使用 <code className="inline">openai</code> 提供商并设置自定义 <code className="inline">base_url</code>。
+        可以。把 <code className="inline">openai</code> 提供商指向任何 OpenAI 兼容服务（llama.cpp、text-generation-webui、Aphrodite 等），并设置自定义 <code className="inline">base_url</code>。
+        <code className="inline">vllm</code> 和 <code className="inline">sglang</code> 提供商已内置，<code className="inline">ollama</code> 同样可用。
         Codewhale 也支持 <code className="inline">DEEPSEEK_ALLOW_INSECURE_HTTP=true</code> 用于本地 HTTP 端点。
         Hugging Face Inference Providers 也可以通过 <code className="inline">huggingface</code> provider 使用。更完整的 Hub 发现、模型卡片、数据集和 Jobs 属于 Model Lab。
       </>
@@ -719,7 +721,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     a: (
       <>
         <p className="mb-2">先运行 <code className="inline">codewhale doctor</code>，查看配置路径、已声明的凭据来源和工具设置的离线报告。默认情况下，它不测试实际连接。</p>
-        <p className="mb-2">用 <code className="inline">codewhale doctor --probe-api</code> 明确测试托管提供商，或用 <code className="inline">codewhale doctor --probe-local</code> 检查本地端点。本地探针可能启动由桌面应用管理的 Ollama 等服务。</p>
+        <p className="mb-2">用 <code className="inline">codewhale doctor --probe-api</code> 明确测试托管提供商，或用 <code className="inline">codewhale doctor --probe-local</code> 检查本地端点。本地探针可能启动由桌面应用管理的本地服务。</p>
         <p className="mb-2">常见原因：</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft">
           <li>Shell 启动文件中的 <code className="inline">DEEPSEEK_API_KEY</code> 已过期——打开新 Shell 或使用 <code className="inline">codewhale auth set</code></li>

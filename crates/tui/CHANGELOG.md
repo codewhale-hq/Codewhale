@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Website home page:** the page is reorganized around what a visitor does: a dated OrcaRouter offer strip with a visible referral tag, one proof strip (release, stars, contributors), a models section with the newest first-party models, one capabilities section that includes Computer Use, an "Everything is a plugin" teaser and a community panel whose live GitHub numbers fill in from the browser and hide when unavailable. Unused home copy was removed from all 18 site languages.
+- **Website models and plugins:** /models leads with recently added models, three ways to connect (DeepSeek, first-party providers, any OpenAI-compatible endpoint) and a catalog grouped by maker; Ollama and OpenRouter are listed but no longer featured. /plugins leads with "Everything is a plugin" (credited to DeepSeek Harness) and shows MCP connectors from the connection catalog.
+- **Model catalog:** Claude Fable 5.2 (`claude-fable-5-2`) and Gemini 4 Carbon (`gemini-4-carbon`) are in the bundled catalog, and a daily catalog-refresh workflow proposes new first-party models from models.dev as a pull request. The workflow has not run in GitHub Actions yet.
+- **Website brand and app pages:** the header, footer and favicon use the black-and-white Codewhale mark, keeping the colored whale for character moments. New /app and /docs/account pages say plainly that the desktop app is a development build, the browser app is not open yet, and how sign-in works where it exists. The terminal demo was recaptured from the 0.10.3 source.
+- **Website docs:** documentation pages no longer stack a second "Codewhale documentation" header under the site navigation; the line saying which release the docs describe now sits under the breadcrumb.
+- **Website languages:** the Roadmap and Contribute pages now show their titles, introductions and actions in all 18 site languages instead of English outside English and Chinese. The translations have had no native review yet.
+- **Responses dialect profiles:** Codex, DeepSeek and Concentrate Responses behavior now comes from one checked dialect table instead of per-provider code, a custom `wire = "responses"` provider can set `responses_profile = "standard"` (the default when omitted), and preview shows the profile each Responses request used. A Responses client whose route cannot be resolved now fails when it is created rather than at its first request ([#7261](https://github.com/codewhale-hq/Codewhale/pull/7261)). Thanks [@SamhandsomeLee](https://github.com/SamhandsomeLee).
+- **Automations:** a run missed while Codewhale was closed now waits on reopen for Run now or Skip instead of catching up silently; each automation can choose "If missed: ask" (default), "run once" or "skip". Tested in the engine only; no HTTP route tests, no desktop client yet, and a Mac asleep longer than the grace window counts as closed.
+- **Website measurement:** the first-party ingest now accepts a closed website funnel schema while preserving existing runtime and browser batches. Reader confirmations remain self-reports, new website data stays first-party, and no deployment or live conversion gain is established by the source change.
+
+- **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; these website changes still await deployment.
+
+### Changed
+
+- Codex App Server v2 contract record (paused, not part of 0.10.3): the selected Codex v2 contract is frozen as a generated manifest in the protocol crate, with typed Rust and TypeScript shapes checked against the pinned Codex schema. It changes no wire behavior and adds no dispatch, so nothing is reachable through it yet.
+
+### Fixed
+
+- External agents installed through npm on Windows (`claude.cmd`, `codex.cmd`, ...) are now found instead of the unrunnable shell shim, `GET /v1/agents/external` says whether an agent answered with an unsupported protocol rather than reporting every failure as no answer, and a hung `--version` or handshake probe no longer leaves the agent's child processes running. Verified on macOS and Linux; the Windows code has never been compiled or run, and no agent row is qualified by this change.
+- The Runtime API's `POST /v1/git/push` now pushes exactly one branch at one commit (`<commit>:refs/heads/<branch>`, no follow-tags or submodule recursion), so `push.default`, `remote.<name>.push` and `push.followTags` can no longer publish other branches or tags. Clients can bind a push to a named branch and expected HEAD with `branch` + `expect.head` (advertised as `named_push` in `GET /v1/git`); a stale branch or HEAD answers `409 git_state_changed` and pushes nothing. A bare push from a detached HEAD or an unborn branch is now refused, and the desktop app has not yet adopted the named form. Verified on macOS by unit tests against a local bare remote; no real network remote, Linux, Windows or hosted CI run.
+- Cancelling or timing out a read-only Git tool (git_status, git_diff, git_commit_plan, git_log, git_show, git_blame, git_merge_tree) now stops the git process and anything it started, instead of leaving it running in the background. Verified on macOS by unit tests; Linux, Windows and hosted CI are not yet run, and the filter-override probe is still not contained.
+- TUI: the launch resume confirmation no longer treats Meta+Enter, Meta+Y or Hyper+Enter as "resume"; only a plain Enter/Y or Shift+Y answers it. Verified by the focused unit tests only; not tried in a terminal that sends Meta or Hyper.
+
 ## [0.10.3] - 2026-11-08
 
 This is the Codewhale v0.10.3 source candidate. It is not a published release

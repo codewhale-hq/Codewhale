@@ -16,7 +16,7 @@ Related docs: [`PROVIDERS.md`](./PROVIDERS.md), RFC
 |---|---|
 | Do users need a special model just to refresh models? | **No.** |
 | Does Codewhale auto-update the public model catalog? | **Yes, at runtime**, from [Models.dev](https://models.dev/catalog.json), ~24 h TTL. |
-| Is the offline bundled seed auto-committed in CI? | **No, but it is generated.** A maintainer runs `seed lock` and `seed render` and lands the verified generated slice on main; CI fails a hand edit (`seed render --check`) and a pin nobody re-locked (`seed age --max-days 30`). |
+| Is the offline bundled seed refreshed automatically? | **Yes, by pull request.** `.github/workflows/catalog-refresh.yml` runs daily, regenerates the seed and opens one PR; a maintainer reviews and merges it. Nothing is pushed to `main`. CI still fails a hand edit (`seed render --check`) and a pin nobody re-locked (`seed age --max-days 30`). |
 | Should an LLM rewrite catalog JSON? | **No.** Ingest is deterministic public JSON. An LLM can *review* a PR, not own the source of truth. |
 
 ---
@@ -79,7 +79,8 @@ Key code:
 | Provider lake merge | `crates/engine/src/provider_lake.rs` | Shared catalog projection with exact route-scoped provider authority |
 | Offline seed asset | `crates/config/assets/models_dev.bundled.json` | Compact offline fallback only (`_meta.role` says so) |
 | Codewhale corrections | `crates/config/assets/catalog_corrections.json` | Field patches applied to every Models.dev row (`crates/config/src/catalog/corrections.rs`) |
-| Validation script | `scripts/catalog_models_dev.py` | Secret-free fetch/validate dry-run (#4117) |
+| Validation and generator script | `scripts/catalog_models_dev.py` | Secret-free fetch/validate, seed lock/render/age and `seed discover` (#4117) |
+| Scheduled refresh | `.github/workflows/catalog-refresh.yml` | Daily PR that re-locks, discovers new models and regenerates the web facts |
 | Script tests | `scripts/catalog_models_dev_test.py` | Offline shape/scrub checks |
 
 ---
@@ -167,11 +168,11 @@ Freshness values exposed for UI / status chips: `bundled` | `live` | `stale` |
 
 ## What does **not** auto-update (repo / release)
 
-These stay hand-maintained or release-lane work until a scheduled PR lands:
+These stay hand-maintained or release-lane work. The scheduled PR below refreshes the generated seed and adds new models, nothing else:
 
 | Surface | Why it drifts |
 |---|---|
-| `models_dev.bundled.json` | Offline seed, generated from a reviewed spec and a pinned lock (see below); refreshed by a verified maintainer slice, not at runtime |
+| `models_dev.bundled.json` | Offline seed, generated from a reviewed spec and a pinned lock (see below); refreshed by the scheduled PR or a maintainer slice, never at runtime |
 | `provider_descriptors.json` default model IDs | Product choice, not pure catalog dump; constant projections are generated |
 | `catalog_corrections.json` `reviewed` | Intrinsic/selector/transport compatibility facts with exact source receipts; generated into the same seed |
 | Rust pricing policy | Vendor billing windows, independent USD/CNY rates, withheld/tiered behavior; pure reference observations live in the reviewed supplement |
@@ -304,29 +305,97 @@ first live refresh.
    always another re-lock.
 
 Optional: use a cheap model to summarize “new / removed / default-risk” in
-the PR body — never as the author of the JSON.
+the PR body — never as the author of the JSON. The scheduled job does steps 1
+to 4 for you; review its PR the same way.
 
 ---
 
-## Recommended scheduled job (not shipped yet)
+## The scheduled job
 
-Goal: keep the **in-repo offline seed** from rotting, without giving CI write
-power over secrets or unsupervised LLM rewrites.
+`.github/workflows/catalog-refresh.yml` runs daily at 05:17 UTC and on
+`workflow_dispatch`. It is deterministic Python and shell; no model writes any
+row. It never pushes to `main`.
 
 ```text
-cron (daily or weekly)
-  → fetch Models.dev (public, no keys)
-  → validate shape + scrub
-  → compare against crates/config/assets/models_dev.bundled.json
-     (and optionally report new ids vs provider defaults)
-  → if material change: open PR
-       title: chore(catalog): refresh Models.dev offline seed
-  → optional: include an agent-written, human-readable diff summary in the PR body
+cron or dispatch
+  -> fetch https://models.dev/catalog.json once (public, no keys)
+  -> seed discover --write   new text models from the vendor allowlist
+  -> seed lock, seed render  re-pin the referenced rows, regenerate the seed
+  -> node web/scripts/derive-facts.mjs   regenerate web/lib/facts.generated.ts
+  -> open a PR only if something material changed, or the pin on main is
+     older than 7 days
+  -> checks: seed render --check, seed age, the script unit tests, check-facts
+  -> push branch `catalog-refresh` and open or update the one PR
 ```
 
-Such a job would run `seed lock` and `seed render` and open the PR. A PR
-opened with the default `GITHUB_TOKEN` does not trigger CI, so it needs a bot
-token or GitHub App, which a maintainer has to provision.
+The PR is created with a GitHub App installation token minted from
+`vars.CODEWHALE_APP_ID` and `secrets.CODEWHALE_APP_PRIVATE_KEY`, the same
+credentials `codewhale-review.yml` uses, so CI runs on it (a PR opened with the
+default `GITHUB_TOKEN` does not trigger workflows). The token is limited to
+contents and pull-request write. The workflow runs only from `schedule` and
+`workflow_dispatch`, never `pull_request_target`, and does not run on forks.
+If a check fails after the rows were generated, the PR is opened or switched to
+a draft and the job log shows the failure; a later passing run marks it ready.
+The checkout does not persist the token, and the push uses
+`--force-with-lease`: commits a maintainer adds to the `catalog-refresh` branch
+make the next run fail instead of being overwritten, so merge or close the PR
+first. If `seed lock` itself refuses (a referenced row
+vanished upstream, a descriptor default now disagrees with its model list) the
+job fails and nothing is opened.
+
+### `seed discover`
+
+```bash
+python3 scripts/catalog_models_dev.py seed discover            # report only
+python3 scripts/catalog_models_dev.py seed discover --write    # add the rows
+```
+
+It lists models released inside a window (`[discover].since_days` in the seed
+spec, 45 by default, or `--since YYYY-MM-DD`) that the public list does not
+carry. The vendor allowlist is `DISCOVER_VENDORS` in the script: anthropic,
+openai, google, deepseek, xai, moonshotai, zai, minimax, alibaba (Qwen ids only),
+mistral (Mistral-family ids only), meta, xiaomi and stepfun. A row qualifies
+when it has a `release_date`, a context limit, tool calling and text-only
+output, is not deprecated, and is not a dated snapshot, a `-latest` alias or an
+embedding, speech, image, realtime or similar id. Ids already in
+`reviewed.public_models`, its aliases or `reviewed.intrinsic` are never
+proposed again, and neither are ids in `[discover].skip`, which is how a
+maintainer declines a model for good.
+
+With `--write` it appends, for each new model, a `reviewed.intrinsic` entry
+(context, output limit, reasoning, family, all from models.dev, source marked
+`unreviewed`), a `reviewed.public_models` row whose `added_at` is the models.dev
+`release_date`, and, when the vendor has a seed provider and the id is not yet
+in it, the id to that provider's `models` list. A vendor without a seed provider
+(Mistral, Qwen) gets the public row only.
+
+### Known limits
+
+- Merging the refresh PR publishes every row it carries, including `unreviewed`
+  ones, on the public /models page; review them against the vendor docs first.
+- Discovery only proposes models released in the last 45 days
+  (`since_days`), so a model models.dev backfills with an old `release_date` is
+  never proposed.
+
+- The site does not deploy itself. Landing the PR on `main` updates what the
+  6-hourly facts-drift Worker cron reads (it needs a `GITHUB_TOKEN` in
+  production), and a deploy stays a manual `web.yml` dispatch.
+- The workflow needs the GitHub App (`CODEWHALE_APP_ID`, `CODEWHALE_APP_PRIVATE_KEY`)
+  to be installed with contents and pull-request write on this repository.
+  Without it the first step fails and nothing is proposed.
+- Discovery filters by id and models.dev metadata only. It cannot tell a model
+  the vendor has not opened to API users, and an upstream wrong date or limit
+  becomes our row until someone fixes it. Review each proposed row against the
+  vendor's docs; per-model facts a human knows (aliases for `/model`
+  selection, reference prices, a Rust pricing decision, a billing policy for a
+  fast mode) are not generated.
+- A newly listed model can overtake a provider default under the same-line
+  rule. That is flagged by the existing descriptor/seed default check and shows
+  up as a failed check on the draft PR, to be settled by a human.
+- It only adds. A model that models.dev removes or deprecates stays listed
+  until someone edits the spec and corrections by hand.
+- The public list reflects the catalog on `main`, not the live picker on a
+  user's machine.
 
 ### In scope for automation
 
@@ -343,15 +412,8 @@ token or GitHub App, which a maintainer has to provision.
 - Treating Models.dev as the only truth for OAuth-scoped routes (Codex
   roster remains special-cased)
 
-### Suggested workflow home
-
-`CodeWhale/.github/workflows/catalog-refresh.yml` (or similar), reusing
-`scripts/catalog_models_dev.py` after a deliberate **write-safe** extension
-that only runs in CI with a bot token for PR creation — still not on
-`workflow_dispatch` without review if writes land in-repo.
-
-Nightly today (`/.github/workflows/nightly.yml`) builds release artifacts
-only; it does **not** refresh catalogs.
+Nightly (`/.github/workflows/nightly.yml`) builds release artifacts only; it
+does not refresh catalogs.
 
 ---
 
@@ -362,7 +424,7 @@ only; it does **not** refresh catalogs.
 | Job | Right tool |
 |---|---|
 | Keep known models/windows/prices from Models.dev fresh for users | Runtime live fetch (already shipped) |
-| Keep offline seed + release assets current in git | Scheduled CI → PR (to build) |
+| Keep offline seed + release assets current in git | Scheduled CI → PR (`catalog-refresh.yml`) |
 | Decide whether to bump a product default model | Human (or agent *review* on the PR) |
 | Wire a brand-new provider kind / dialect | Human PR + tests |
 
