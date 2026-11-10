@@ -1727,6 +1727,12 @@ pub enum WorkflowExecutionError {
         field: &'static str,
         reference: String,
     },
+    #[error("workflow node `{node}` reads {field} `{reference}` before its result is available")]
+    UnavailableNodeReference {
+        node: String,
+        field: &'static str,
+        reference: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1896,7 +1902,8 @@ pub(crate) fn validate_workflow_nodes(
     }
     let mut seen = BTreeSet::new();
     validate_workflow_nodes_inner(nodes, &mut seen)?;
-    validate_workflow_references(nodes, &seen)
+    validate_workflow_references(nodes, &seen)?;
+    validate_reference_order(nodes, &mut BTreeSet::new())
 }
 
 pub(crate) fn validate_workflow_node_shapes(
@@ -2012,6 +2019,57 @@ fn validate_leaf_role(leaf: &str, role: &str) -> Result<(), WorkflowExecutionErr
             leaf: leaf.to_string(),
             role: role.to_string(),
         });
+    }
+    Ok(())
+}
+
+fn validate_reference_order(
+    nodes: &[WorkflowNode],
+    finished: &mut BTreeSet<String>,
+) -> Result<(), WorkflowExecutionError> {
+    for node in nodes {
+        let (field, references): (&'static str, &[String]) = match node {
+            WorkflowNode::Leaf(spec) => ("depends_on_results", &spec.depends_on_results),
+            WorkflowNode::Reduce(spec) => ("inputs", &spec.inputs),
+            WorkflowNode::TeacherReview(spec) => ("candidates", &spec.candidates),
+            _ => ("", &[]),
+        };
+        let id = node_id(node);
+        if let Some(reference) = references
+            .iter()
+            .find(|reference| !finished.contains(*reference))
+        {
+            return Err(WorkflowExecutionError::UnavailableNodeReference {
+                node: id,
+                field,
+                reference: reference.clone(),
+            });
+        }
+        match node {
+            WorkflowNode::BranchSet(spec) if spec.parallel => {
+                let before = finished.clone();
+                for child in &spec.children {
+                    let mut branch = before.clone();
+                    validate_reference_order(std::slice::from_ref(child), &mut branch)?;
+                    finished.extend(branch);
+                }
+            }
+            WorkflowNode::BranchSet(spec) => validate_reference_order(&spec.children, finished)?,
+            WorkflowNode::Sequence(spec) => validate_reference_order(&spec.children, finished)?,
+            WorkflowNode::LoopUntil(spec) => validate_reference_order(&spec.children, finished)?,
+            WorkflowNode::Cond(spec) => {
+                let mut then_arm = finished.clone();
+                validate_reference_order(&spec.then_nodes, &mut then_arm)?;
+                let mut else_arm = finished.clone();
+                validate_reference_order(&spec.else_nodes, &mut else_arm)?;
+                finished.extend(then_arm.intersection(&else_arm).cloned());
+            }
+            WorkflowNode::Leaf(_)
+            | WorkflowNode::Reduce(_)
+            | WorkflowNode::TeacherReview(_)
+            | WorkflowNode::Expand(_) => {}
+        }
+        finished.insert(id);
     }
     Ok(())
 }
@@ -3852,6 +3910,66 @@ mod tests {
                 reference: "missing-scan".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn workflow_spec_rejects_unavailable_result_references() {
+        let reduce = |id: &str, inputs: &[&str]| {
+            WorkflowNode::Reduce(ReduceSpec {
+                id: id.to_string(),
+                inputs: inputs.iter().map(|input| input.to_string()).collect(),
+                prompt: "combine".to_string(),
+                model_policy: ModelPolicy::default(),
+            })
+        };
+        let parallel = |children: Vec<WorkflowNode>| {
+            WorkflowNode::BranchSet(BranchSpec {
+                id: "fan".to_string(),
+                description: None,
+                parallel: true,
+                budget: BudgetSpec::default(),
+                permissions: PermissionSpec::default(),
+                model_policy: ModelPolicy::default(),
+                children,
+            })
+        };
+        let conditional = || {
+            WorkflowNode::Cond(CondSpec {
+                id: "choice".to_string(),
+                condition: "choose".to_string(),
+                then_nodes: vec![leaf_node("yes")],
+                else_nodes: vec![leaf_node("no")],
+            })
+        };
+        for (nodes, reference) in [
+            (vec![reduce("sum", &["later"]), leaf_node("later")], "later"),
+            (vec![reduce("sum", &["sum"])], "sum"),
+            (
+                vec![parallel(vec![leaf_node("a"), reduce("sum", &["a"])])],
+                "a",
+            ),
+            (vec![parallel(vec![reduce("sum", &["fan"])])], "fan"),
+            (vec![conditional(), reduce("sum", &["yes"])], "yes"),
+            (vec![conditional(), reduce("sum", &["no"])], "no"),
+        ] {
+            assert!(
+                matches!(
+                    workflow_spec(nodes).validate_for_fleet(),
+                    Err(WorkflowFleetLimitError::InvalidWorkflow {
+                        source: WorkflowExecutionError::UnavailableNodeReference { reference: found, .. }
+                    }) if found == reference
+                ),
+                "{reference} must already have completed"
+            );
+        }
+        workflow_spec(vec![
+            parallel(vec![leaf_node("a"), leaf_node("b")]),
+            reduce("sum", &["a", "b", "fan"]),
+            conditional(),
+            reduce("after_choice", &["sum", "choice"]),
+        ])
+        .validate_for_fleet()
+        .expect("completed results remain available");
     }
 
     #[test]

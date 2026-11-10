@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Recovery safeguards:** workflows reject results that cannot yet exist, implicit session storage refuses an unresolved home, and future-dated provider catalogs cannot stay fresh indefinitely.
+
 - **Permissions:** saved permission choices, including Ask on existing and new installs, survive upgrades and restarts; managed approval policies keep their stricter startup posture when using the new permission dial, and Settings shows Accept Edits as the unconfigured default.
 
 ## [0.10.3] - 2026-11-08

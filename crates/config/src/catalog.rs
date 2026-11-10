@@ -1039,7 +1039,7 @@ impl CachedProviderCatalog {
     /// A `ttl_secs` of zero means "always stale" (never serve as fresh).
     #[must_use]
     pub fn is_stale(&self, now_unix: u64) -> bool {
-        self.age_secs(now_unix) >= self.ttl_secs
+        self.fetched_at.saturating_sub(now_unix) > 300 || self.age_secs(now_unix) >= self.ttl_secs
     }
 
     /// Whether this entry may contribute live offerings at `now_unix`.
