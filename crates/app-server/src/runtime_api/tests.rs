@@ -18,6 +18,8 @@ use uuid::Uuid;
 mod command_catalog;
 #[cfg(unix)]
 mod control_socket_selection;
+#[cfg(unix)]
+mod external_agent_options;
 mod headless_catalog;
 #[cfg(unix)]
 mod owner_bootstrap;

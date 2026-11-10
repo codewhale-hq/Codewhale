@@ -117,6 +117,7 @@ mod avatars;
 mod computer_display;
 mod context;
 mod diagnostics;
+mod external_agent_options;
 mod external_agents;
 mod git;
 mod jobs;
@@ -3461,6 +3462,10 @@ pub fn build_router(state: RuntimeApiState) -> Router {
         .route(
             "/v1/agents/external",
             get(external_agents::list_external_agents),
+        )
+        .route(
+            "/v1/agents/external/{id}/options",
+            get(external_agent_options::get_external_agent_options),
         )
         .route("/v1/providers", get(list_providers))
         .route("/v1/providers/{id}/models", get(list_provider_models))

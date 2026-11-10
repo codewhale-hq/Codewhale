@@ -22,6 +22,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -32,6 +33,21 @@ const METHOD_NOT_FOUND: i64 = -32601;
 pub const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const AUTH_REQUIRED: i64 = -32000;
 const ABORT_POLL: Duration = Duration::from_millis(25);
+pub const MAX_CONTROLS: usize = 32;
+pub const MAX_CHOICES: usize = 256;
+pub const MAX_VALUE_BYTES: usize = 128;
+const MAX_NAME_CHARS: usize = 200;
+const MAX_DESCRIPTION_CHARS: usize = 400;
+
+pub mod refusal {
+    pub const CONTROL_NOT_OFFERED: &str = "control_not_offered";
+    pub const CONTROL_UNAVAILABLE: &str = "control_unavailable";
+    pub const CHOICE_NOT_OFFERED: &str = "choice_not_offered";
+    pub const CHOICE_REJECTED: &str = "choice_rejected";
+    pub const UNSUPPORTED_CONTROL: &str = "unsupported_control";
+    pub const CONTROL_TYPE_UNSUPPORTED: &str = "control_type_unsupported";
+    pub const CONTROL_HAS_NO_CHOICES: &str = "control_has_no_choices";
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionPolicy {
@@ -117,6 +133,482 @@ pub struct AgentIdentity {
     pub protocol_version: u64,
     pub load_session: bool,
     pub resume_session: bool,
+    pub capabilities: AgentCapabilities,
+}
+
+/// What the agent said it can do at `initialize`; absent means not reported.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct AgentCapabilities {
+    pub load_session: bool,
+    pub resume_session: bool,
+    pub fork_session: bool,
+    pub list_sessions: bool,
+    pub prompt_image: bool,
+    pub prompt_audio: bool,
+    pub prompt_embedded_context: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Choice {
+    pub value: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlKind {
+    Model,
+    Mode,
+    Config,
+}
+
+/// The one ACP method that writes a control, so a choice is never sent through
+/// a different door than the agent offered it on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "method")]
+pub enum ControlWrite {
+    #[serde(rename = "session/set_config_option")]
+    SetConfigOption { config_id: String },
+    #[serde(rename = "session/set_model")]
+    SetModel,
+    #[serde(rename = "session/set_mode")]
+    SetMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ControlRefusal {
+    pub code: &'static str,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Control {
+    pub id: String,
+    pub kind: ControlKind,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
+    pub choices: Vec<Choice>,
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write: Option<ControlWrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<ControlRefusal>,
+}
+
+impl Control {
+    pub fn offers(&self, value: &str) -> bool {
+        self.unavailable.is_none() && self.choices.iter().any(|choice| choice.value == value)
+    }
+}
+
+/// Everything a session handshake offered, bounded. Choices are the only values
+/// a caller may write; names and descriptions are display text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SessionOffer {
+    pub controls: Vec<Control>,
+    pub malformed_controls: usize,
+}
+
+impl SessionOffer {
+    pub fn control(&self, id: &str) -> Option<&Control> {
+        self.controls.iter().find(|control| control.id == id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ActionSupport {
+    pub action: &'static str,
+    pub supported: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_reports: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OptionsAgent {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub protocol_version: u64,
+}
+
+/// What `GET /v1/agents/external/{id}/options` answers: the agent's own offer
+/// for one workspace, and which Codewhale actions it will and will not carry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgentOptions {
+    pub agent: OptionsAgent,
+    pub cwd: String,
+    pub capabilities: AgentCapabilities,
+    pub controls: Vec<Control>,
+    pub malformed_controls: usize,
+    pub actions: Vec<ActionSupport>,
+}
+
+impl AgentOptions {
+    pub fn new(identity: &AgentIdentity, id: &str, cwd: &Path, offer: SessionOffer) -> Self {
+        let actions = action_support(&identity.capabilities, &offer);
+        Self {
+            agent: OptionsAgent {
+                id: id.to_string(),
+                name: identity.name.clone(),
+                version: identity.version.clone(),
+                protocol_version: identity.protocol_version,
+            },
+            cwd: cwd.display().to_string(),
+            capabilities: identity.capabilities.clone(),
+            controls: offer.controls,
+            malformed_controls: offer.malformed_controls,
+            actions,
+        }
+    }
+}
+
+fn action_support(capabilities: &AgentCapabilities, offer: &SessionOffer) -> Vec<ActionSupport> {
+    let offered = |kind: ControlKind| {
+        offer
+            .controls
+            .iter()
+            .any(|control| control.kind == kind && control.unavailable.is_none())
+    };
+    let choice = |action, kind| {
+        let supported = offered(kind);
+        ActionSupport {
+            action,
+            supported,
+            code: (!supported).then_some(refusal::CONTROL_NOT_OFFERED),
+            reason: (!supported).then_some("The agent did not offer this control."),
+            agent_reports: None,
+        }
+    };
+    let refused = |action, reason, agent_reports| ActionSupport {
+        action,
+        supported: false,
+        code: Some(refusal::UNSUPPORTED_CONTROL),
+        reason: Some(reason),
+        agent_reports,
+    };
+    vec![
+        choice("model_choice", ControlKind::Model),
+        choice("mode_choice", ControlKind::Mode),
+        choice("config_choice", ControlKind::Config),
+        refused(
+            "steering",
+            "Agent Client Protocol has no way to steer a running turn; interrupt it and send a new message.",
+            None,
+        ),
+        refused(
+            "compaction",
+            "Codewhale cannot compact another agent's context.",
+            None,
+        ),
+        refused(
+            "fork",
+            "Codewhale does not fork another agent's session.",
+            Some(capabilities.fork_session),
+        ),
+        refused(
+            "images",
+            "Codewhale sends text prompts to another agent only.",
+            Some(capabilities.prompt_image),
+        ),
+        refused(
+            "dynamic_tools",
+            "The agent uses its own tools; Codewhale tools cannot be added.",
+            None,
+        ),
+        refused(
+            "output_limit",
+            "Codewhale cannot cap another agent's output tokens.",
+            None,
+        ),
+        refused(
+            "provider_override",
+            "Codewhale providers do not apply; choose the agent's own model.",
+            None,
+        ),
+        refused(
+            "remote_placement",
+            "The agent runs on this computer only.",
+            None,
+        ),
+    ]
+}
+
+pub struct NewSession {
+    pub session_id: String,
+    pub offer: SessionOffer,
+}
+
+/// Token usage an agent put on a prompt answer. Absent fields are unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct AgentTokenUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub thought_tokens: Option<u64>,
+    pub cached_read_tokens: Option<u64>,
+    pub cached_write_tokens: Option<u64>,
+}
+
+impl AgentTokenUsage {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn from_result(result: &Value) -> Option<Self> {
+        let usage = result.get("usage")?.as_object()?;
+        let field = |name: &str| usage.get(name).and_then(Value::as_u64);
+        let parsed = Self {
+            input_tokens: field("inputTokens"),
+            output_tokens: field("outputTokens"),
+            total_tokens: field("totalTokens"),
+            thought_tokens: field("thoughtTokens"),
+            cached_read_tokens: field("cachedReadTokens"),
+            cached_write_tokens: field("cachedWriteTokens"),
+        };
+        (!parsed.is_empty()).then_some(parsed)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptReply {
+    pub stop_reason: String,
+    pub usage: Option<AgentTokenUsage>,
+}
+
+fn bounded_text(value: Option<&Value>, max_chars: usize) -> Option<String> {
+    let text: String = value?
+        .as_str()?
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(max_chars)
+        .collect();
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+fn offered_value(value: Option<&Value>) -> Option<String> {
+    let value = value?.as_str()?;
+    (!value.is_empty() && value.len() <= MAX_VALUE_BYTES && !value.chars().any(char::is_control))
+        .then(|| value.to_string())
+}
+
+fn push_choice(
+    choices: &mut Vec<Choice>,
+    truncated: &mut bool,
+    value: Option<String>,
+    name: Option<&Value>,
+    description: Option<&Value>,
+) {
+    let Some(value) = value else {
+        *truncated = true;
+        return;
+    };
+    if choices.iter().any(|choice| choice.value == value) {
+        return;
+    }
+    if choices.len() >= MAX_CHOICES {
+        *truncated = true;
+        return;
+    }
+    choices.push(Choice {
+        name: bounded_text(name, MAX_NAME_CHARS).unwrap_or_else(|| value.clone()),
+        description: bounded_text(description, MAX_DESCRIPTION_CHARS),
+        value,
+    });
+}
+
+fn config_choices(options: &[Value]) -> (Vec<Choice>, bool) {
+    let mut choices = Vec::new();
+    let mut truncated = false;
+    for option in options {
+        if let Some(group) = option.get("options").and_then(Value::as_array) {
+            for grouped in group {
+                push_choice(
+                    &mut choices,
+                    &mut truncated,
+                    offered_value(grouped.get("value")),
+                    grouped.get("name"),
+                    grouped.get("description"),
+                );
+            }
+        } else {
+            push_choice(
+                &mut choices,
+                &mut truncated,
+                offered_value(option.get("value")),
+                option.get("name"),
+                option.get("description"),
+            );
+        }
+    }
+    (choices, truncated)
+}
+
+impl SessionOffer {
+    /// Parse the `modes`, `models` and `configOptions` a `session/new`,
+    /// `session/load` or `session/resume` answer carries. A config option that
+    /// names a model or mode owns that control; the older `models` and `modes`
+    /// blocks fill only what no config option claimed.
+    pub fn from_session_result(result: &Value) -> Self {
+        let mut offer = Self::default();
+        let mut model_claimed = false;
+        let mut mode_claimed = false;
+        let options = result
+            .get("configOptions")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for option in options {
+            if offer.controls.len() >= MAX_CONTROLS {
+                offer.malformed_controls += 1;
+                continue;
+            }
+            let Some(config_id) = offered_value(option.get("id")) else {
+                offer.malformed_controls += 1;
+                continue;
+            };
+            let category = bounded_text(option.get("category"), 64);
+            let kind = if !model_claimed
+                && (config_id == "model" || category.as_deref() == Some("model"))
+            {
+                model_claimed = true;
+                ControlKind::Model
+            } else if !mode_claimed && (config_id == "mode" || category.as_deref() == Some("mode"))
+            {
+                mode_claimed = true;
+                ControlKind::Mode
+            } else {
+                ControlKind::Config
+            };
+            let id = match kind {
+                ControlKind::Model => "model".to_string(),
+                ControlKind::Mode => "mode".to_string(),
+                ControlKind::Config => format!("config:{config_id}"),
+            };
+            if offer.control(&id).is_some() {
+                offer.malformed_controls += 1;
+                continue;
+            }
+            let is_select = option.get("type").and_then(Value::as_str) == Some("select");
+            let (choices, truncated) = if is_select {
+                config_choices(
+                    option
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                )
+            } else {
+                (Vec::new(), false)
+            };
+            let unavailable = if !is_select {
+                Some(ControlRefusal {
+                    code: refusal::CONTROL_TYPE_UNSUPPORTED,
+                    reason: "Codewhale can only write select-type agent options.".to_string(),
+                })
+            } else if choices.is_empty() {
+                Some(ControlRefusal {
+                    code: refusal::CONTROL_HAS_NO_CHOICES,
+                    reason: "The agent offered this option with no choices.".to_string(),
+                })
+            } else {
+                None
+            };
+            offer.controls.push(Control {
+                name: bounded_text(option.get("name"), MAX_NAME_CHARS)
+                    .unwrap_or_else(|| config_id.clone()),
+                description: bounded_text(option.get("description"), MAX_DESCRIPTION_CHARS),
+                category,
+                current: offered_value(option.get("currentValue")),
+                write: unavailable
+                    .is_none()
+                    .then_some(ControlWrite::SetConfigOption { config_id }),
+                id,
+                kind,
+                choices,
+                truncated,
+                unavailable,
+            });
+        }
+        if !model_claimed
+            && let Some(models) = result.get("models").filter(|value| value.is_object())
+        {
+            offer.push_legacy(
+                ControlKind::Model,
+                models.get("currentModelId"),
+                models.get("availableModels"),
+                "modelId",
+                ControlWrite::SetModel,
+            );
+        }
+        if !mode_claimed && let Some(modes) = result.get("modes").filter(|value| value.is_object())
+        {
+            offer.push_legacy(
+                ControlKind::Mode,
+                modes.get("currentModeId"),
+                modes.get("availableModes"),
+                "id",
+                ControlWrite::SetMode,
+            );
+        }
+        offer
+    }
+
+    fn push_legacy(
+        &mut self,
+        kind: ControlKind,
+        current: Option<&Value>,
+        available: Option<&Value>,
+        value_key: &str,
+        write: ControlWrite,
+    ) {
+        let mut choices = Vec::new();
+        let mut truncated = false;
+        for entry in available
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            push_choice(
+                &mut choices,
+                &mut truncated,
+                offered_value(entry.get(value_key)),
+                entry.get("name"),
+                entry.get("description"),
+            );
+        }
+        if choices.is_empty() {
+            self.malformed_controls += 1;
+            return;
+        }
+        let (id, name) = match kind {
+            ControlKind::Model => ("model", "Model"),
+            _ => ("mode", "Mode"),
+        };
+        self.controls.push(Control {
+            id: id.to_string(),
+            kind,
+            name: name.to_string(),
+            description: None,
+            category: None,
+            current: offered_value(current),
+            choices,
+            truncated,
+            write: Some(write),
+            unavailable: None,
+        });
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -456,7 +948,25 @@ impl AcpClient {
             .and_then(Value::as_u64)
             .filter(|version| *version == 1)
             .ok_or_else(|| AcpError::new("the agent did not negotiate ACP protocol version 1"))?;
+        let flag = |pointer: &str| {
+            capabilities
+                .pointer(pointer)
+                .is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
+        };
+        let capability_report = AgentCapabilities {
+            load_session: capabilities
+                .get("loadSession")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            resume_session: flag("/sessionCapabilities/resume"),
+            fork_session: flag("/sessionCapabilities/fork"),
+            list_sessions: flag("/sessionCapabilities/list"),
+            prompt_image: flag("/promptCapabilities/image"),
+            prompt_audio: flag("/promptCapabilities/audio"),
+            prompt_embedded_context: flag("/promptCapabilities/embeddedContext"),
+        };
         Ok(AgentIdentity {
+            capabilities: capability_report,
             name: info
                 .get("name")
                 .and_then(Value::as_str)
@@ -478,7 +988,7 @@ impl AcpClient {
         })
     }
 
-    pub fn new_session(&mut self, cwd: &Path, timeout: Duration) -> Result<String, AcpError> {
+    pub fn new_session(&mut self, cwd: &Path, timeout: Duration) -> Result<NewSession, AcpError> {
         let deadline = Instant::now() + timeout;
         let result = self.request(
             "session/new",
@@ -488,11 +998,15 @@ impl AcpClient {
             &mut DiscardHandler,
             None,
         )?;
-        result
+        let session_id = result
             .get("sessionId")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| AcpError::new("session/new did not name a session"))
+            .ok_or_else(|| AcpError::new("session/new did not name a session"))?;
+        Ok(NewSession {
+            session_id,
+            offer: SessionOffer::from_session_result(&result),
+        })
     }
 
     pub fn reopen_session(
@@ -501,7 +1015,7 @@ impl AcpClient {
         session: &str,
         cwd: &Path,
         timeout: Duration,
-    ) -> Result<(), AcpError> {
+    ) -> Result<SessionOffer, AcpError> {
         let method = if identity.resume_session {
             "session/resume"
         } else if identity.load_session {
@@ -515,6 +1029,45 @@ impl AcpClient {
         self.request(
             method,
             json!({"sessionId": session, "cwd": cwd.display().to_string(), "mcpServers": []}),
+            Some(session),
+            deadline,
+            &mut DiscardHandler,
+            None,
+        )
+        .map(|result| SessionOffer::from_session_result(&result))
+    }
+
+    /// Write one offered choice through the method its control was offered on.
+    pub fn apply_control(
+        &mut self,
+        session: &str,
+        control: &Control,
+        value: &str,
+        timeout: Duration,
+    ) -> Result<(), AcpError> {
+        let deadline = Instant::now() + timeout;
+        let (method, params) = match control.write.as_ref() {
+            Some(ControlWrite::SetConfigOption { config_id }) => (
+                "session/set_config_option",
+                json!({"sessionId": session, "configId": config_id, "value": value}),
+            ),
+            Some(ControlWrite::SetModel) => (
+                "session/set_model",
+                json!({"sessionId": session, "modelId": value}),
+            ),
+            Some(ControlWrite::SetMode) => (
+                "session/set_mode",
+                json!({"sessionId": session, "modeId": value}),
+            ),
+            None => {
+                return Err(AcpError::new(
+                    "the agent did not offer this control for writing",
+                ));
+            }
+        };
+        self.request(
+            method,
+            params,
             Some(session),
             deadline,
             &mut DiscardHandler,
@@ -549,7 +1102,7 @@ impl AcpClient {
         timeout: Duration,
         handler: &mut dyn AcpHandler,
         cancel: Option<&CancellationToken>,
-    ) -> Result<String, AcpError> {
+    ) -> Result<PromptReply, AcpError> {
         let deadline = Instant::now() + timeout;
         let result = self.request(
             "session/prompt",
@@ -559,12 +1112,16 @@ impl AcpClient {
             handler,
             cancel,
         )?;
-        result
+        let stop_reason = result
             .get("stopReason")
             .and_then(Value::as_str)
             .filter(|reason| !reason.is_empty())
             .map(str::to_string)
-            .ok_or_else(|| AcpError::new("session/prompt did not report a stop reason"))
+            .ok_or_else(|| AcpError::new("session/prompt did not report a stop reason"))?;
+        Ok(PromptReply {
+            stop_reason,
+            usage: AgentTokenUsage::from_result(&result),
+        })
     }
 
     pub fn prompt(
@@ -575,7 +1132,7 @@ impl AcpClient {
         timeout: Duration,
     ) -> Result<PromptOutcome, AcpError> {
         let mut outcome = PromptOutcome::default();
-        let stop_reason = self.prompt_with(
+        let reply = self.prompt_with(
             session,
             text,
             timeout,
@@ -585,7 +1142,7 @@ impl AcpClient {
             },
             None,
         )?;
-        outcome.stop_reason = stop_reason;
+        outcome.stop_reason = reply.stop_reason;
         Ok(outcome)
     }
 
@@ -645,6 +1202,104 @@ mod tests {
     }
 
     #[test]
+    fn a_session_offer_is_parsed_bounded_and_never_widened() {
+        let many: Vec<Value> = (0..(MAX_CHOICES + 40))
+            .map(|index| json!({"value": format!("v{index}"), "name": "x".repeat(900)}))
+            .collect();
+        let offer = SessionOffer::from_session_result(&json!({
+            "configOptions": [
+                {"id": "model", "name": "Model", "category": "model", "type": "select",
+                 "currentValue": "a",
+                 "options": [{"group": "g", "name": "G", "options": [
+                    {"value": "a", "name": "A"}, {"value": "a", "name": "dup"}, {"value": "b", "name": "B", "description": "d"}]},
+                    {"value": "c", "name": "C"}]},
+                {"id": "flag", "name": "Flag", "type": "boolean", "currentValue": true},
+                {"id": "none", "name": "None", "type": "select", "options": []},
+                {"id": "", "name": "No id", "type": "select", "options": []},
+                {"id": "big", "name": "Big", "type": "select", "currentValue": "v0", "options": many},
+                {"id": "bad\nid", "name": "Control char", "type": "select", "options": [{"value": "x"}]}
+            ],
+            "modes": {"currentModeId": "m1", "availableModes": [{"id": "m1", "name": "M1"}, {"id": "", "name": "bad"}]},
+            "models": {"currentModelId": "legacy", "availableModels": [{"modelId": "legacy", "name": "Legacy"}]}
+        }));
+        let ids: Vec<&str> = offer.controls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["model", "config:flag", "config:none", "config:big", "mode"]
+        );
+        assert_eq!(offer.malformed_controls, 2);
+        let model = offer.control("model").unwrap();
+        let values: Vec<&str> = model.choices.iter().map(|c| c.value.as_str()).collect();
+        assert_eq!(
+            values,
+            ["a", "b", "c"],
+            "groups flatten and duplicates collapse"
+        );
+        assert_eq!(model.choices[1].description.as_deref(), Some("d"));
+        assert!(model.offers("c") && !model.offers("legacy") && !model.offers(""));
+        assert_eq!(
+            offer
+                .control("config:flag")
+                .unwrap()
+                .unavailable
+                .as_ref()
+                .unwrap()
+                .code,
+            refusal::CONTROL_TYPE_UNSUPPORTED
+        );
+        assert!(!offer.control("config:flag").unwrap().offers("true"));
+        assert_eq!(
+            offer
+                .control("config:none")
+                .unwrap()
+                .unavailable
+                .as_ref()
+                .unwrap()
+                .code,
+            refusal::CONTROL_HAS_NO_CHOICES
+        );
+        let big = offer.control("config:big").unwrap();
+        assert_eq!(big.choices.len(), MAX_CHOICES);
+        assert!(big.truncated);
+        assert!(big.choices[0].name.chars().count() <= MAX_NAME_CHARS);
+        assert!(!big.offers(&format!("v{}", MAX_CHOICES + 1)));
+        let mode = offer.control("mode").unwrap();
+        assert_eq!(mode.write, Some(ControlWrite::SetMode));
+        assert_eq!(mode.choices.len(), 1);
+        assert!(
+            mode.truncated,
+            "a dropped malformed choice marks the list incomplete"
+        );
+
+        let legacy = SessionOffer::from_session_result(&json!({
+            "models": {"currentModelId": "legacy", "availableModels": [{"modelId": "legacy", "name": "Legacy"}]}
+        }));
+        assert_eq!(
+            legacy.control("model").unwrap().write,
+            Some(ControlWrite::SetModel)
+        );
+        assert!(
+            SessionOffer::from_session_result(&json!({}))
+                .controls
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn prompt_usage_keeps_only_what_the_agent_reported() {
+        let usage = AgentTokenUsage::from_result(&json!({
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 5, "outputTokens": "many", "totalTokens": 9}
+        }))
+        .unwrap();
+        assert_eq!(usage.input_tokens, Some(5));
+        assert_eq!(usage.output_tokens, None);
+        assert_eq!(usage.total_tokens, Some(9));
+        assert!(AgentTokenUsage::from_result(&json!({"stopReason": "end_turn"})).is_none());
+        assert!(AgentTokenUsage::from_result(&json!({"usage": {}})).is_none());
+    }
+
+    #[test]
     fn a_json_rpc_worker_speaks_acp_end_to_end() {
         let Some(_node) = node() else {
             return;
@@ -677,7 +1332,8 @@ mod tests {
 
         let session = client
             .new_session(workspace.path(), Duration::from_secs(20))
-            .unwrap();
+            .unwrap()
+            .session_id;
         let allowed = client
             .prompt(
                 &session,
@@ -821,7 +1477,8 @@ mod tests {
         client.initialize(Duration::from_secs(20)).unwrap();
         let session = client
             .new_session(workspace.path(), Duration::from_secs(20))
-            .unwrap();
+            .unwrap()
+            .session_id;
         let canceller = client.canceller(&session);
         let prompt_session = session.clone();
         let blocked = std::thread::spawn(move || {
