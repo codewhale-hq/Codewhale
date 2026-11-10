@@ -1120,7 +1120,7 @@ fn local_context_from_file_mentions(
         // path to key on, and the workspace-root guess must not become one.
         let dedup_key = if exists {
             match range {
-                Some(FileRange { start, end }) => format!("{display_path}:{start}-{end}"),
+                Some(FileRange { start, end }) => format!("{display_path}\0{start}-{end}"),
                 None => display_path.clone(),
             }
         } else {
@@ -1734,6 +1734,17 @@ mod tests {
 
         assert!(content.contains("lines=\"1-1\">\none\n"), "got: {content}");
         assert!(content.contains("lines=\"4-4\">\nfour\n"), "got: {content}");
+
+        if cfg!(unix) {
+            std::fs::write(tmp.path().join("notes.txt:1-1"), "literal\n").expect("write");
+            let content = user_request_with_file_mentions(
+                "@notes.txt:01-01 @notes.txt:1-1",
+                tmp.path(),
+                None,
+            );
+            assert!(content.contains("lines=\"1-1\">\none\n"), "got: {content}");
+            assert!(content.contains("literal\n"), "got: {content}");
+        }
     }
 
     /// Negative test: a truly missing path still produces `<missing-file>`
