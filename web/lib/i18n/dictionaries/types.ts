@@ -244,7 +244,6 @@ export interface DocsGuideDict {
 export interface DocsShellDict {
   metaTitle: string;
   metaDescription: string;
-  portalMark: string;
   heroTitle: string;
   heroLead: string;
   installCta: string;

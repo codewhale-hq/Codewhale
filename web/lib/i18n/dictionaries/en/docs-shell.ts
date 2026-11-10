@@ -11,7 +11,6 @@ export const docsShell: DocsShellDict = {
   metaTitle: "Docs · Codewhale",
   metaDescription:
     "Install Codewhale, connect a provider, and get work done: modes and approvals, reviewing changes, workflows, sub-agents, MCP tools, hooks, the Runtime API, and troubleshooting.",
-  portalMark: "Codewhale documentation",
   heroTitle: "Install and use Codewhale",
   heroLead:
     "Find installation steps, model setup, tool configuration and troubleshooting. The guides include commands and examples you can run.",

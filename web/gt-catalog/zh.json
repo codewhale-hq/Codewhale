@@ -431,7 +431,6 @@
   "docs-shell": {
     "metaTitle": "文档 · Codewhale",
     "metaDescription": "安装 Codewhale，连接模型提供商，然后把事情做完：模式与审批、查看改动、工作流、子智能体、MCP 工具、钩子、Runtime API 以及问题排查。",
-    "portalMark": "Codewhale 文档",
     "heroTitle": "安装与使用 Codewhale",
     "heroLead": "查找安装步骤、模型连接、工具配置和问题排查指南。每份指南都包含可以运行的命令和示例。",
     "installCta": "安装 Codewhale",
