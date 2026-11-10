@@ -334,7 +334,7 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **The transcript shows the work, not the decoration.** The idle footer no longer carries a `Work bar` label (its key still opens the dock); fish, bubbles and the whale cameo swim only on the empty start screen and never behind transcript text; a streaming reasoning block is one `Thinking…` line instead of `Thinking…` above `reasoning...`, and the hidden-reasoning line and window title say thinking too; the tool-card hint reads `⌥V details` in dim text instead of `⌥V:details`.
 - **Sub-agents and goals by default.** The constitution now tells the agent to start independent parts of a request as parallel sub-agents in one message, keep working while their results arrive on their own, and end the turn when only waiting remains; to give each child a complete prompt and its own files; to inspect a write-capable child's evidence, review the diff and run the checks itself; to have an independent reviewer try to refute a non-trivial change before calling it done; and to start a goal for any request, in any language, whose verifiable end state needs more than one turn. Sub-agents, workflows and goals within the current request are in scope; spending real money (purchases, paid providers, billing) still needs the user's express authorization. Cost alone is not a reason to stop; only limits the user or configuration sets apply. **This changes the session-pinned prompt and tool descriptions, so each session re-pins its prompt cache once after upgrade.**
 - **Operate's contract is retired.** The Engine no longer appends the Operate contract to a session; its review, cost and evidence rules now live in the constitution for every session. Saved sessions that contain it still replay.
-- **The Operate mode is gone; Work and Plan are the two modes.** Tab cycles between them, `/mode` and the config editor offer only those two, and a saved `default_mode = "operate"` loads as Work with a one-time notice that `/fleet` runs parallel agents. `operate`, `operation`, `ops` and `3` still parse, as Work, so an old setting or script never errors. Fan-out is unchanged — 64 live sub-agents per message, workflows at a 64 default with a 128 ceiling — while the Operate-only launch-concurrency floor and its top-level child auto-accept posture are gone; a child's edits follow the permission posture like every other action. "Plan stays Read Only; this applies in Work" now says exactly that.
+- **The Operate mode is gone; Work and Plan are the two modes.** The Shift+Tab permission dial reaches both, `/mode` and the config editor offer only those two, and a saved `default_mode = "operate"` loads as Work with a one-time notice that `/fleet` runs parallel agents. `operate`, `operation`, `ops` and `3` still parse, as Work, so an old setting or script never errors. Fan-out is unchanged — 64 live sub-agents per message, workflows at a 64 default with a 128 ceiling — while the Operate-only launch-concurrency floor and its top-level child auto-accept posture are gone; a child's edits follow the permission posture like every other action. "Plan stays Read Only; this applies in Work" now says exactly that.
 - **Clearer tool text.** The `agent` description leads with when to delegate, gives one trigger per role and an example child brief, and drops Operate and legacy wording; the start receipt says results arrive automatically. `create_goal` and `update_goal` say when to start a goal and what complete, blocked and yield mean (blocked means the same obstacle persists; difficulty is not blocked). `tool_search` lists the deferred tool groups. The eager tool schemas shrink by 681 bytes.
 - **Workflow fan-out default 16 → 64.** `[workflow] max_concurrent` now defaults to 64 live agents per run, matching sub-agents; the per-run ceiling rises from 16 to 128. No spend caps were added.
 - **Bundled skill `goals` is now `personal-goals`.** It tracks personal resolutions in `goals.md` and no longer collides with goal mode; `goals` still resolves to it. An untouched installed `goals` copy becomes `personal-goals` on upgrade; an edited one stays as `goals`.
@@ -347,12 +347,35 @@ tag. Items moved to 0.10.4 by name are marked below.
   an edit whose every target stays inside the workspace git work tree runs
   without a card, while `.git`, `.codewhale`, `.env*`, credential and key
   files, folders without git, commands, network and connected apps still ask.
-  Shift+Tab cycles Ask → Accept Edits → Auto-Review → Full Access, so one
-  press restores the previous Ask behaviour. `/permissions`, `/status`,
+  Accept Edits is the default (see the permission dial entry below).
+  `/permissions`, `/status`,
   `/config` and the Plan handoff offer it; the Runtime wire spells it
   `permission_posture: "accept_edits"`, settings and `config.toml`
   `accept-edits`. Project config may tighten Accept Edits to Ask but never
   loosen Ask to it. ACP sessions run it as Ask.
+- **One permission dial; Tab no longer changes the mode (CW-7890):** Shift+Tab
+  steps Ask → Accept Edits → Plan → Auto-Review → Full Access → Ask. Plan is the
+  Plan mode; every other stop is Work with that posture. Tab only completes
+  commands, file mentions and suggestions. The footer shows one chip for the
+  current stop with `Shift+Tab to change`; the separate mode chip and its Tab
+  hint are gone. The dial moves mid-turn too, into or out of Plan, and applies
+  at the agent's next step without restarting a response or changing the pinned
+  prompt. When config or managed policy owns the posture, the dial still
+  alternates between that posture and Plan.
+- **Accept Edits is the default posture:** new installs, unset settings and new
+  Runtime threads that send no `permission_posture` start on Accept Edits. A
+  saved `permission_posture = "ask"` from an earlier build moves to Accept Edits
+  once (recorded as `ask_to_accept_edits_migrated`), so an Ask you pick
+  afterwards is kept. The "Normal agent" setup preset now writes Accept Edits.
+  ACP still runs Accept Edits as Ask.
+- **Full Access copy says what it does:** its settings description now reads
+  "Tools run without asking first, and commands can reach anything on this
+  computer." in every language, instead of implying a folder fence.
+- **Operate compatibility (CW-7849):** `/mode operate` selects Work and says
+  Operate was retired; a Runtime API request with `mode: "operate"` runs as
+  `agent` with the default posture and logs one notice per process, never an
+  error. Agents forked from a conversation saved by an earlier Operate build no
+  longer inherit its contract message.
 - **Brighter terminal working states:** the Ocean palette has stronger accents,
   and active work uses a restrained left-to-right text sweep. Quiet and
   reduced-motion settings keep stable working indicators. The shared

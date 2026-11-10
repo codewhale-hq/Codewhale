@@ -727,25 +727,16 @@ pub(crate) enum TabDispatch {
     Completion,
     /// Nobody owns Tab in this focus state.
     Ignored,
-    /// The session mode cycled. The caller syncs the engine.
-    ModeCycled {
-        prior_mode: AppMode,
-        prior_model: String,
-    },
 }
 
 /// Tab dispatch, lifted out of the event loop body so a test can press Tab.
 ///
 /// The composer's completions get the key first: a mention menu, a slash
 /// menu, an in-progress command or file mention, a waiting prompt
-/// suggestion. Those are genuine composer *editing* questions about the
-/// text. Once none of them claims the key, Tab is the shell's mode cycle,
-/// admitted by [`App::focus`] alone — whether the composer holds text is not
-/// part of that decision. It used to be: `if !app.input.is_empty()
-/// { continue; }` killed Tab the moment the user typed anything.
+/// suggestion. Tab never changes the mode: the permission dial on Shift+Tab
+/// owns that.
 pub(crate) fn dispatch_tab_key(
     app: &mut App,
-    key: &KeyEvent,
     mention_menu_entries: &[String],
     slash_menu_entries: &[crate::tui::widgets::SlashMenuEntry],
 ) -> TabDispatch {
@@ -771,19 +762,7 @@ pub(crate) fn dispatch_tab_key(
         app.needs_redraw = true;
         return TabDispatch::Completion;
     }
-    if shell_binding_for_key(app, key) != Some(ShellBindingId::ModeCycle) {
-        return TabDispatch::Ignored;
-    }
-    // Sending or queueing input is reserved for Enter, so Tab never changes
-    // roles based on whether a turn happens to be running.
-    let prior_model = app.model.clone();
-    let prior_mode = app.mode;
-    app.cycle_mode();
-    app.note_footer_hint_used(crate::tui::footer_hints::MODE_CYCLE);
-    TabDispatch::ModeCycled {
-        prior_mode,
-        prior_model,
-    }
+    TabDispatch::Ignored
 }
 
 /// Whether a mouse event is a wheel/trackpad scroll in any direction.
@@ -1154,7 +1133,7 @@ pub async fn run_tui(
         && !app.onboarding_missing_key_recovery
     {
         // The one-time Fleet intro is no longer a launch push: it appears the
-        // first time the user opens `/fleet` or enters Operate (apply.rs).
+        // first time the user opens `/fleet` (apply.rs).
         let _ = open_setup_checkpoint_if_due(&mut app, config, options.skip_onboarding);
     }
 
@@ -1464,7 +1443,7 @@ pub async fn run_tui(
     // Join the startup-default writer before anything else tears down.
     //
     // The last thing a user does before quitting is very often the selection
-    // they most want to survive — Tab into Operate, then Ctrl+C. Those writes
+    // they most want to survive — Shift+Tab into Plan, then Ctrl+C. Those writes
     // are queued off the event loop on purpose, so at this point one may still
     // be in flight or not yet started. Draining here is what makes "the last
     // immediate selection lands" true rather than a race against process exit.
@@ -7455,26 +7434,8 @@ pub(crate) async fn run_event_loop(
                     app.scroll_down(page);
                 }
                 KeyCode::Tab => {
-                    match dispatch_tab_key(app, &key, &mention_menu_entries, &slash_menu_entries) {
-                        TabDispatch::Completion | TabDispatch::Ignored => continue,
-                        TabDispatch::ModeCycled {
-                            prior_mode,
-                            prior_model,
-                        } => {
-                            if app.mode != prior_mode {
-                                sync_mode_update(app, &engine_handle).await;
-                            }
-                            if app.model != prior_model {
-                                let _ = engine_handle
-                                    .send(Op::SetModel {
-                                        model: app.model.clone(),
-                                        mode: app.mode,
-                                        route_limits: app.active_route_limits,
-                                    })
-                                    .await;
-                            }
-                        }
-                    }
+                    dispatch_tab_key(app, &mention_menu_entries, &slash_menu_entries);
+                    continue;
                 }
                 // Transcript-nav shortcuts now require Alt, leaving most bare
                 // letters free to insert as text. Requiring Alt is also why

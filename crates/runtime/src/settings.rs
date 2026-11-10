@@ -499,6 +499,8 @@ pub struct Settings {
     /// `bottom` migration ran, so a user who picks `top` afterwards keeps it.
     #[serde(default)]
     pub work_surface_bottom_migrated: bool,
+    #[serde(default)]
+    pub ask_to_accept_edits_migrated: bool,
     /// Persisted impression counts for action-triggered, ephemeral product
     /// guidance. Keys are stable tip identifiers; values are bounded by the
     /// behavioral-tip engine and omitted entirely before the first sighting.
@@ -619,6 +621,7 @@ impl Default for Settings {
             operate_deprecation_shown: false,
             legacy_operate_default: false,
             work_surface_bottom_migrated: false,
+            ask_to_accept_edits_migrated: false,
             behavioral_tip_impressions: std::collections::BTreeMap::new(),
             dismissed_plugin_suggestions: std::collections::BTreeSet::new(),
             footer_hint_uses: std::collections::BTreeMap::new(),
@@ -1014,6 +1017,12 @@ impl Settings {
                 .and_then(normalize_permission_posture);
             if legacy_yolo_default && s.permission_posture.is_none() {
                 s.permission_posture = Some("full-access".to_string());
+            }
+            if !s.ask_to_accept_edits_migrated {
+                if s.permission_posture.as_deref() == Some("ask") {
+                    s.permission_posture = Some("accept-edits".to_string());
+                }
+                s.ask_to_accept_edits_migrated = true;
             }
             s.sandbox_mode = s.sandbox_mode.as_deref().and_then(normalize_sandbox_mode);
             s
@@ -3596,6 +3605,28 @@ mod tests {
         assert!(settings.set("work_surface_top_height", "17").is_err());
         assert!(settings.set("work_surface_top_height", "4").is_err());
         assert!(settings.set("work_surface_side_width", "25").is_err());
+    }
+
+    #[test]
+    fn saved_ask_migrates_once_to_accept_edits_and_a_later_ask_is_kept() {
+        let _g = config_path_test_guard();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let settings_path = tmp.path().join("settings.toml");
+        let _config_override =
+            EnvVarRestore::set("DEEPSEEK_CONFIG_PATH", tmp.path().join("config.toml"));
+
+        std::fs::write(&settings_path, "permission_posture = \"ask\"\n").expect("settings");
+        let loaded = Settings::load().expect("load settings");
+        assert_eq!(loaded.permission_posture.as_deref(), Some("accept-edits"));
+        assert!(loaded.ask_to_accept_edits_migrated);
+
+        Settings::transact(|settings| settings.set("permission_posture", "ask")).expect("pick Ask");
+        let reloaded = Settings::load().expect("reload settings");
+        assert_eq!(reloaded.permission_posture.as_deref(), Some("ask"));
+
+        std::fs::write(&settings_path, "permission_posture = \"auto-review\"\n").expect("settings");
+        let other = Settings::load().expect("load settings");
+        assert_eq!(other.permission_posture.as_deref(), Some("auto-review"));
     }
 
     #[test]

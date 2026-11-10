@@ -1991,7 +1991,7 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                             .and_then(|settings| settings.permission_posture)
                             .as_deref()
                             .and_then(ApprovalMode::from_config_value)
-                            .unwrap_or(ApprovalMode::Suggest);
+                            .unwrap_or(ApprovalMode::AcceptEdits);
                         app.set_agent_approval_posture(saved_mode);
                         app.clear_saved_approval_policy_lock();
                         config_action_reply(

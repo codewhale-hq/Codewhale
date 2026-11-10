@@ -668,7 +668,7 @@ fn thinking_is_locked_but_mode_moves_while_a_turn_is_running() {
         app.status_message
     );
 
-    app.cycle_mode();
+    app.select_mode(AppMode::Plan);
     assert_ne!(app.mode, AppMode::Agent, "mode changes mid-turn");
 }
 
@@ -3783,35 +3783,6 @@ fn entering_operate_preserves_user_rail_panel() {
 }
 
 #[test]
-fn test_cycle_scenario() {
-    // Scenario consolidation of: test_cycle_mode_transitions, test_cycle_mode_reverse_transitions
-    // from test_cycle_mode_transitions
-    {
-        let mut app = App::new(test_options(false), &Config::default());
-        let initial_mode = app.mode;
-        app.cycle_mode();
-        // Mode should have changed
-        assert_ne!(app.mode, initial_mode);
-    }
-    // from test_cycle_mode_reverse_transitions
-    {
-        let mut app = App::new(test_options(false), &Config::default());
-
-        app.mode = AppMode::Plan;
-        app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Agent);
-
-        app.mode = AppMode::Agent;
-        app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Plan);
-
-        app.mode = AppMode::Agent;
-        app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Plan);
-    }
-}
-
-#[test]
 fn effective_route_display_tracks_inflight_and_last_auto_provider() {
     let mut app = App::new(test_options(false), &Config::default());
     app.auto_model = true;
@@ -3836,8 +3807,8 @@ fn test_mode_scenario() {
     // from test_mode_switch_does_not_emit_redundant_toast
     {
         let mut app = App::new(test_options(false), &Config::default());
-        let first_mode = app.mode.next();
-        let second_mode = first_mode.next();
+        let first_mode = AppMode::Plan;
+        let second_mode = AppMode::Agent;
 
         app.set_mode(first_mode);
         app.sync_status_message_to_toasts();
@@ -4051,8 +4022,8 @@ fn base_policy_for_mode_projects_the_mode_permission_table() {
 
 #[test]
 fn cycle_approval_scenario() {
-    // Scenario consolidation of: cycle_approval_posture_cycles_suggest_auto_bypass, cycle_approval_posture_emits_rebinding_notice_once
-    // from cycle_approval_posture_cycles_suggest_auto_bypass
+    // Scenario consolidation of: the permission dial walk, cycle_approval_posture_emits_rebinding_notice_once
+    // from the permission dial walk
     {
         let _env_lock = lock_test_env();
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -4062,19 +4033,22 @@ fn cycle_approval_scenario() {
         options.start_in_agent_mode = true;
         options.config_path = Some(config_path);
         let mut app = App::new(options, &Config::default());
-        app.approval_mode = ApprovalMode::Suggest;
+        app.set_agent_approval_posture(ApprovalMode::Suggest);
 
-        assert!(app.cycle_approval_posture());
-        assert_eq!(app.approval_mode, ApprovalMode::AcceptEdits);
-
-        assert!(app.cycle_approval_posture());
-        assert_eq!(app.approval_mode, ApprovalMode::Auto);
-
-        assert!(app.cycle_approval_posture());
-        assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-        assert!(app.cycle_approval_posture());
-        assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+        for (mode, posture) in [
+            (AppMode::Agent, ApprovalMode::AcceptEdits),
+            (AppMode::Plan, ApprovalMode::AcceptEdits),
+            (AppMode::Agent, ApprovalMode::Auto),
+            (AppMode::Agent, ApprovalMode::Bypass),
+            (AppMode::Agent, ApprovalMode::Suggest),
+        ] {
+            assert!(app.step_permission_dial(false).changed());
+            assert_eq!(app.mode, mode);
+            assert_eq!(app.mode_prefs.agent_approval_mode, posture);
+            if mode == AppMode::Agent {
+                assert_eq!(app.approval_mode, posture);
+            }
+        }
         let persisted =
             std::fs::read_to_string(tmp.path().join("settings.toml")).expect("settings");
         assert!(persisted.contains("permission_posture = \"ask\""));
@@ -4090,7 +4064,7 @@ fn cycle_approval_scenario() {
         options.config_path = Some(config_path);
         let mut app = App::new(options, &Config::default());
 
-        assert!(app.cycle_approval_posture());
+        assert!(app.select_approval_posture(ApprovalMode::Auto));
         let notices = app
             .status_toasts
             .iter()
@@ -4098,7 +4072,7 @@ fn cycle_approval_scenario() {
             .count();
         assert_eq!(notices, 1, "first cycle posts the rebinding notice");
 
-        assert!(app.cycle_approval_posture());
+        assert!(app.select_approval_posture(ApprovalMode::Bypass));
         let notices = app
             .status_toasts
             .iter()
@@ -4130,8 +4104,8 @@ fn plan_permission_cycle_moves_the_baseline_and_leaves_plan_read_only() {
     app.set_mode(AppMode::Plan);
 
     assert!(
-        app.cycle_approval_posture(),
-        "Shift+Tab must still change permissions while in Plan"
+        app.select_approval_posture(ApprovalMode::Bypass),
+        "permissions must still change while in Plan"
     );
     assert_eq!(
         app.mode_prefs.agent_approval_mode,
@@ -4178,11 +4152,11 @@ fn busy_permission_cycle_moves_the_live_posture() {
     let mut options = test_options(false);
     options.config_path = Some(config_path);
     let mut app = App::new(options, &Config::default());
-    let before = app.approval_mode;
+    let before = (app.mode, app.mode_prefs.agent_approval_mode);
     app.is_loading = true;
 
-    assert!(app.cycle_approval_posture());
-    assert_ne!(app.mode_prefs.agent_approval_mode, before);
+    assert!(app.step_permission_dial(false).changed());
+    assert_ne!((app.mode, app.mode_prefs.agent_approval_mode), before);
     assert!(
         !app.status_message
             .as_deref()
@@ -4193,11 +4167,11 @@ fn busy_permission_cycle_moves_the_live_posture() {
 #[test]
 fn permission_postures_persist_across_restart() {
     let _env_lock = lock_test_env();
-    for (cycles, expected) in [
-        (1, ApprovalMode::AcceptEdits),
-        (2, ApprovalMode::Auto),
-        (3, ApprovalMode::Bypass),
-        (4, ApprovalMode::Suggest),
+    for expected in [
+        ApprovalMode::AcceptEdits,
+        ApprovalMode::Auto,
+        ApprovalMode::Bypass,
+        ApprovalMode::Suggest,
     ] {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("config.toml");
@@ -4206,9 +4180,10 @@ fn permission_postures_persist_across_restart() {
         options.start_in_agent_mode = true;
         options.config_path = Some(path.clone());
         let mut app = App::new(options.clone(), &Config::default());
-        for _ in 0..cycles {
-            assert!(app.cycle_approval_posture());
+        if app.approval_mode == expected {
+            assert!(app.select_approval_posture(ApprovalMode::Auto));
         }
+        assert!(app.select_approval_posture(expected));
         assert_eq!(app.approval_mode, expected);
         assert_eq!(app.trust_mode, expected == ApprovalMode::Bypass);
 
@@ -4241,7 +4216,7 @@ fn shift_tab_migrates_user_root_policy_to_durable_tui_posture() {
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
     assert!(app.approval_policy_locked());
 
-    assert!(app.cycle_root_approval_posture());
+    assert!(app.step_permission_dial(true).posture_changed);
     assert_eq!(app.approval_mode, ApprovalMode::AcceptEdits);
     assert!(!app.approval_policy_locked());
     let saved_config = std::fs::read_to_string(&config_path).expect("saved config");
@@ -4380,12 +4355,19 @@ fn managed_requirements_ignore_saved_full_access_and_lock_changes() {
     assert!(app.approval_policy_locked());
     assert!(app.approval_policy_requirements_managed());
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-    assert!(!app.cycle_approval_posture());
+    assert!(!app.select_approval_posture(ApprovalMode::AcceptEdits));
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
     assert!(
         app.status_toasts
             .iter()
             .any(|toast| toast.text.contains("controlled"))
+    );
+    let step = app.step_permission_dial(false);
+    assert!(!step.posture_changed);
+    assert_eq!(
+        app.mode,
+        AppMode::Plan,
+        "a locked posture still reaches Plan"
     );
 }
 
@@ -4423,7 +4405,7 @@ fn sandbox_requirements_prevent_full_access_overrides() {
         assert!(!app.trust_mode);
         assert!(!app.yolo);
         assert!(app.approval_policy_requirements_managed());
-        assert!(!app.cycle_approval_posture());
+        assert!(!app.select_approval_posture(ApprovalMode::AcceptEdits));
         assert_eq!(app.select_yolo_compat(), SettingSelection::Refused);
         assert!(matches!(
             codewhale_engine::core::authority::sandbox_policy_for_turn(
@@ -6865,9 +6847,14 @@ fn interactive_mode_cycle_persists_the_startup_default() {
 
     let mut app = App::new(test_options(false), &Config::default());
     app.mode = AppMode::Agent;
-    app.cycle_mode();
+    app.approval_mode = ApprovalMode::AcceptEdits;
+    assert!(app.step_permission_dial(false).mode_changed);
 
-    assert_eq!(app.mode, AppMode::Plan, "Work -> Plan is the Tab cycle");
+    assert_eq!(
+        app.mode,
+        AppMode::Plan,
+        "Accept Edits -> Plan is the dial's next stop"
+    );
     let reloaded = Settings::load().expect("reload settings");
     assert_eq!(
         reloaded.default_mode, "plan",
@@ -6962,10 +6949,11 @@ fn mode_change_while_a_turn_runs_is_live_and_persisted() {
     let mut app = App::new(test_options(false), &Config::default());
     app.select_mode(AppMode::Plan);
     app.is_loading = true;
-    app.cycle_mode();
+    assert!(app.step_permission_dial(false).mode_changed);
     app.startup_defaults.flush();
 
-    assert_eq!(app.mode, AppMode::Plan.next());
+    assert_eq!(app.mode, AppMode::Agent);
+    assert_eq!(app.approval_mode, ApprovalMode::Auto);
     assert_eq!(
         Settings::load().expect("reload").default_mode,
         app.mode.as_setting(),
@@ -7254,7 +7242,7 @@ async fn mode_and_permission_posture_writes_do_not_clobber_each_other() {
             "mode selection must change mode"
         );
         assert!(
-            app.cycle_approval_posture(),
+            app.select_approval_posture(app.mode_prefs.agent_approval_mode.cycle_permission_next()),
             "the posture write must succeed, or the assertion below is vacuous"
         );
     }
@@ -7358,7 +7346,9 @@ async fn rapid_mixed_writes_settle_on_the_last_value_for_every_field() {
         );
         app.apply_reasoning_effort_cycle();
         // Synchronous direct writers.
-        assert!(app.cycle_approval_posture());
+        assert!(
+            app.select_approval_posture(app.mode_prefs.agent_approval_mode.cycle_permission_next())
+        );
         Settings::transact(|settings| settings.set("max_history", &(200 + index).to_string()))
             .expect("the direct write must land");
     }

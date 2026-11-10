@@ -20143,8 +20143,8 @@ fn mode_only_override_preserves_legacy_full_access_posture() -> Result<()> {
     assert_eq!(policy.mode, AppMode::Plan);
     assert_eq!(policy.permission_wire(), "full_access");
 
-    let ask = runtime_policy_with_overrides(&thread, Some("act"), None, Some(false))?;
-    assert_eq!(ask.permission_wire(), "ask");
+    let default = runtime_policy_with_overrides(&thread, Some("act"), None, Some(false))?;
+    assert_eq!(default.permission_wire(), "accept_edits");
     Ok(())
 }
 

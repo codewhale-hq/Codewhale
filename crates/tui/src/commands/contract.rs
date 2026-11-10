@@ -130,7 +130,6 @@ pub(crate) fn from_command_mode(mode: CommandMode) -> AppMode {
     match mode {
         CommandMode::Agent => AppMode::Agent,
         CommandMode::Plan => AppMode::Plan,
-        CommandMode::Operate => AppMode::Agent,
     }
 }
 

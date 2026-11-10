@@ -17,7 +17,6 @@ pub struct CommandProviderId(pub String);
 pub enum CommandMode {
     Agent,
     Plan,
-    Operate,
 }
 
 impl CommandMode {
@@ -27,10 +26,18 @@ impl CommandMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "agent" | "act" | "work" | "auto" | "1" => Some(Self::Agent),
             "plan" | "2" => Some(Self::Plan),
-            "operate" | "operation" | "ops" | "3" => Some(Self::Operate),
+            other if Self::is_retired_operate_alias(other) => Some(Self::Agent),
             other if Self::is_legacy_bypass_alias(other) => Some(Self::Agent),
             _ => None,
         }
+    }
+
+    #[must_use]
+    pub fn is_retired_operate_alias(value: &str) -> bool {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "operate" | "operation" | "ops" | "3"
+        )
     }
 
     /// Legacy bypass spellings (`yolo`, `4`, `bypass`, …) that carry full access.
@@ -48,7 +55,6 @@ impl CommandMode {
         match self {
             Self::Agent => "Work",
             Self::Plan => "Plan",
-            Self::Operate => "Operate",
         }
     }
 }

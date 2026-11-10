@@ -5455,22 +5455,11 @@ impl ConfigView {
         let approval = value_of("approval_mode")
             .or_else(|| value_of("permission_posture"))
             .and_then(|value| codewhale_execpolicy::ApprovalMode::from_config_value(&value))
-            .unwrap_or(codewhale_execpolicy::ApprovalMode::Suggest);
-        let mode_label = crate::tui::underwater::mode_label(self.locale, mode);
-        let permission =
-            codewhale_engine::core::authority::permission_label_for(self.locale, mode, approval);
-        let footer = crate::tui::phase_strip::TidelineFooter::new(
-            &theme,
-            (
-                permission.as_ref(),
-                crate::tui::underwater::header_permission_ink(approval),
-            ),
-        )
-        .mode_chip(Some((
-            mode_label.as_ref(),
-            crate::tui::underwater::header_mode_ink(mode),
-        )))
-        .context_percent(context_percent);
+            .unwrap_or(codewhale_execpolicy::ApprovalMode::AcceptEdits);
+        let (dial, dial_ink) = crate::tui::underwater::dial_chip_for(self.locale, mode, approval);
+        let footer =
+            crate::tui::phase_strip::TidelineFooter::new(&theme, (dial.as_ref(), dial_ink))
+                .context_percent(context_percent);
         crate::tui::phase_strip::render_tideline_footer(
             Rect {
                 x: area.x.saturating_add(label_width),

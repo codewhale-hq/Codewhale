@@ -19,7 +19,6 @@ pub(crate) const USES_TO_RETIRE: u8 = 2;
 /// Stable hint keys. The footer shows a hint until its key reaches
 /// [`USES_TO_RETIRE`] uses, then renders the bare state.
 pub(crate) const PERMISSION_CYCLE: &str = "permission_cycle";
-pub(crate) const MODE_CYCLE: &str = "mode_cycle";
 pub(crate) const ESC_INTERRUPT: &str = "esc_interrupt";
 pub(crate) const ENTER_AGAIN: &str = "enter_again";
 pub(crate) const AGENT_ARROWS: &str = "agent_arrows";
@@ -90,13 +89,7 @@ mod tests {
     fn hints_retire_after_two_uses() {
         let uses = BTreeMap::new();
         assert!(!retired(&uses, PERMISSION_CYCLE));
-        for key in [
-            PERMISSION_CYCLE,
-            MODE_CYCLE,
-            ESC_INTERRUPT,
-            ENTER_AGAIN,
-            AGENT_ARROWS,
-        ] {
+        for key in [PERMISSION_CYCLE, ESC_INTERRUPT, ENTER_AGAIN, AGENT_ARROWS] {
             let mut uses = BTreeMap::new();
             uses.insert(key.to_string(), 1);
             assert!(!retired(&uses, key), "{key} at 1 use still shows");
@@ -118,6 +111,6 @@ mod tests {
         app.note_footer_hint_used(PERMISSION_CYCLE);
         assert!(retired(&app.footer_hint_uses, PERMISSION_CYCLE));
         // Other keys are unaffected.
-        assert!(!retired(&app.footer_hint_uses, MODE_CYCLE));
+        assert!(!retired(&app.footer_hint_uses, ESC_INTERRUPT));
     }
 }

@@ -570,8 +570,8 @@ pub fn settings(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigComma
     }
 }
 
-/// `/mode [act|plan|operate|1|2|3]` and the `/jihua`/`/zidong` aliases.
-/// `/mode [act|plan|operate|1|2|3]` (aliases `/jihua`, `/zidong`).
+/// `/mode [work|plan|1|2]` (aliases `/jihua`, `/zidong`). A retired Operate
+/// spelling selects Work and says so.
 ///
 /// The command owns the alias handling, parse and message composition; the
 /// mode-policy facet applies the selection and reports the outcome.
@@ -599,18 +599,24 @@ pub fn mode(contexts: CommandContexts<'_>, arg: Option<&str>) -> ConfigCommandRe
             }
         };
     }
+    let retired = if CommandMode::is_retired_operate_alias(arg) {
+        " Operate mode was retired; /fleet runs parallel agents."
+    } else {
+        ""
+    };
     match CommandMode::parse(arg) {
         Some(mode) => {
             let selection = facet.select_mode(mode);
             let label = facet.mode_label(mode);
             match selection {
                 CommandModeSelection::Changed => ConfigCommandResult::with_message_and_action(
-                    format!("Switched to {label} mode."),
+                    format!("Switched to {label} mode.{retired}"),
                     ConfigAction::ModeChanged(mode),
                 ),
-                CommandModeSelection::PersistedSame => {
-                    ConfigCommandResult::message(facet.mode_startup_default_receipt(mode))
-                }
+                CommandModeSelection::PersistedSame => ConfigCommandResult::message(format!(
+                    "{}{retired}",
+                    facet.mode_startup_default_receipt(mode)
+                )),
                 CommandModeSelection::Refused => {
                     ConfigCommandResult::message(facet.setting_locked_mode_message())
                 }

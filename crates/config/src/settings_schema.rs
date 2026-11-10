@@ -1247,7 +1247,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "permission_posture",
         SettingKind::Enum(PERMISSION_POSTURE),
-        "ask",
+        "accept-edits",
         ui(
             TAB_TRUST,
             "permissions",
@@ -1548,6 +1548,12 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     // Round 3 work-bar placement migration ran once (`top` → `bottom`).
     def(
         "work_surface_bottom_migrated",
+        SettingKind::Bool(ON_OFF),
+        "false",
+        None,
+    ),
+    def(
+        "ask_to_accept_edits_migrated",
         SettingKind::Bool(ON_OFF),
         "false",
         None,

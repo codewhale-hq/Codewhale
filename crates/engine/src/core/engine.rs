@@ -6347,8 +6347,11 @@ impl Engine {
                 &self.session.id,
             )
             .await;
+            let mut messages = self.messages_with_turn_metadata();
+            messages
+                .retain(|message| !crate::runtime_handoff::is_operate_contract_message(message));
             Some(SubAgentForkContext {
-                messages: self.messages_with_turn_metadata(),
+                messages,
                 structured_state_block: state.to_system_block(),
                 // Resolve at spawn time so a todo_write earlier in this turn
                 // reaches the child rather than freezing turn-start state.

@@ -753,7 +753,7 @@ pub(crate) fn apply_goal_snapshot_to_app(app: &mut App, snapshot: &GoalSnapshot)
 /// Apply an explicit mode selection from a user shortcut (Alt+A/P/Y).
 ///
 /// Uses `select_mode`, not `set_mode`, so an explicitly chosen mode is also the
-/// startup default next launch – matching the Tab cycle and hotbar paths.
+/// startup default next launch – matching the permission dial and hotbar paths.
 pub(crate) async fn apply_mode_update(
     app: &mut App,
     engine_handle: &EngineHandle,

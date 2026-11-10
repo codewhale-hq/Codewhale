@@ -68,6 +68,15 @@ impl RuntimePolicyProjection {
         let parsed_mode = parse_runtime_mode(mode).ok_or_else(|| {
             anyhow::anyhow!("unsupported Runtime mode {mode:?}; expected plan or agent")
         })?;
+        if AppMode::is_retired_operate_alias(mode) {
+            static OPERATE_RETIRED_NOTICE: std::sync::Once = std::sync::Once::new();
+            OPERATE_RETIRED_NOTICE.call_once(|| {
+                tracing::warn!(
+                    target: "runtime_policy",
+                    "Runtime mode {mode:?} is retired: Operate is no longer a mode, so this runs as agent with the default permission posture; use /fleet for parallel agents"
+                );
+            });
+        }
         let permission = match permission_posture {
             Some(value) => ApprovalMode::from_config_value(value).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -75,7 +84,7 @@ impl RuntimePolicyProjection {
                 )
             })?,
             None if AppMode::is_legacy_bypass_alias(mode) || auto_approve.unwrap_or(false) => ApprovalMode::Bypass,
-            None => ApprovalMode::Suggest,
+            None => ApprovalMode::AcceptEdits,
         };
         if permission == ApprovalMode::Never {
             bail!("permission posture 'never' is not part of the Runtime product contract");

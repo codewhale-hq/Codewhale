@@ -178,7 +178,6 @@ impl PermissionsMessages {
 #[derive(Debug, Clone, Copy)]
 pub enum StatusText {
     AppModeAgent,
-    AppModeOperate,
     AppModePlan,
     SessionMetricsCache,
     SessionMetricsInput,
@@ -261,7 +260,6 @@ pub enum StatusText {
 
 pub struct StatusMessages {
     app_mode_agent: String,
-    app_mode_operate: String,
     app_mode_plan: String,
     session_metrics_cache: String,
     session_metrics_input: String,
@@ -346,7 +344,6 @@ impl StatusMessages {
     pub fn load(presentation: &dyn CommandPresentationContext) -> Result<Self, String> {
         Ok(Self {
             app_mode_agent: presentation.translate("app_mode_agent", &[])?,
-            app_mode_operate: presentation.translate("app_mode_operate", &[])?,
             app_mode_plan: presentation.translate("app_mode_plan", &[])?,
             session_metrics_cache: presentation.translate("session_metrics_cache", &[])?,
             session_metrics_input: presentation.translate("session_metrics_input", &[])?,
@@ -528,7 +525,6 @@ impl StatusMessages {
         Cow::Owned(
             match id {
                 StatusText::AppModeAgent => &self.app_mode_agent,
-                StatusText::AppModeOperate => &self.app_mode_operate,
                 StatusText::AppModePlan => &self.app_mode_plan,
                 StatusText::SessionMetricsCache => &self.session_metrics_cache,
                 StatusText::SessionMetricsInput => &self.session_metrics_input,

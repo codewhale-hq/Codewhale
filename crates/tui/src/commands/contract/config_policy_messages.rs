@@ -4,7 +4,6 @@ use codewhale_localization::MessageId;
 pub(super) fn resolve(key: &str) -> Option<MessageId> {
     Some(match key {
         "app_mode_agent" => MessageId::AppModeAgent,
-        "app_mode_operate" => MessageId::AppModeOperate,
         "app_mode_plan" => MessageId::AppModePlan,
         "permissions_applies_here" => MessageId::PermissionsAppliesHere,
         "permissions_file_empty" => MessageId::PermissionsFileEmpty,

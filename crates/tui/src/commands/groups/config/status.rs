@@ -301,7 +301,6 @@ fn posture_summary(view: &ConfigStatusView, locale: &Messages) -> String {
         match view.mode {
             CommandMode::Agent => MessageId::AppModeAgent,
             CommandMode::Plan => MessageId::AppModePlan,
-            CommandMode::Operate => MessageId::AppModeOperate,
         },
     );
     let approval = approval_summary(view.approval_mode, locale);
