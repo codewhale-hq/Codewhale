@@ -26,10 +26,25 @@ The command writes `schema/json/runtime.schema.json`,
 `--check` compares all three without writing. Normal runtime startup does not
 generate files or enable schema machinery.
 
-`src/methods.rs` holds the typed Tier A and B Codex method enums. `METHODS.md` is the
-committed inventory of every pinned Codex method with its tier and status, and
-`tests/methods.rs` checks the enums, the inventory and the pinned export against
-each other.
+`contract/codex-v2.json` is the frozen, versioned Codex v2 contract manifest:
+every pinned stable Codex method with its tier (A, B, C or undecided), status,
+basis and, for selected methods, the upstream variant, params and result types;
+the dispatch rule for each tier; the error codes; and the Codewhale extensions.
+`src/codegen` reads it with the unmodified pinned export and writes
+`src/methods.rs`, `src/v2.rs`, `METHODS.md`,
+`schema/json/codex-v2.schema.json` and `schema/typescript/codex-v2.d.ts`:
+
+```sh
+cargo run -p codewhale-app-server-protocol --bin codewhale-codex-contract -- --write
+```
+
+`--check` compares without writing, and `tests/contract.rs` fails on any drift,
+on any disagreement between the manifest and the pinned method sets, and on
+any selected shape whose typed Rust value does not round-trip an instance the
+pinned schema accepts. `v2::ClientRequestParams`, `v2::ServerNotification`,
+`v2::ServerRequestParams`, `v2::ClientResponse` and `v2::ServerRequestResponse`
+are the typed envelopes; Codex envelopes carry no `jsonrpc` member. A typed
+shape is not a handler: `METHODS.md` status says what main dispatches.
 
 The selected future Codex wire target is official `rust-v0.166.0`, commit
 `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. Its four-variant envelope and initialize/initialized lifecycle serve JSONL
