@@ -72,7 +72,6 @@ fn website_current_terminal_capture() {
         results.contains("Ran 3 tests") && results.contains("\nOK\n"),
         "{results}"
     );
-    tui.type_line("/workbar off").unwrap();
     tui.wait_for_idle(Duration::from_millis(200), WAIT).unwrap();
     assert_website_frame(&mut tui, &workspace);
     capture(&mut tui, "website-home");
@@ -86,8 +85,6 @@ fn website_current_terminal_capture() {
     capture(&mut tui, "website-help");
     tui.send(keys::key::esc()).unwrap();
     tui.resize(32, 100).unwrap();
-    tui.type_line("/workbar bottom").unwrap();
-    wait(&mut tui, "Workbar: bottom placement");
     tui.type_line("/workbar agents").unwrap();
     wait(&mut tui, "Workbar: bottom placement, AGENTS panel");
     wait(&mut tui, "export-review");
