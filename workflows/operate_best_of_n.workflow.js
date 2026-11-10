@@ -138,23 +138,28 @@ export default async function (args) {
         });
         const planning = [];
         for (let step = 1; step <= plan.policy.planning_budget; step++) {
-          const proposed = await task({
-            description: [
-              "Plan one bounded implementation step for this public coding task. Do not edit files.",
-              `BRIEF: ${String(brief)}`,
-              `PUBLIC FEEDBACK: ${String(applied.feedback_packet).slice(0, 10400)}`,
-              `PLANNING PASS: ${step} of ${plan.policy.planning_budget}`,
-            ].join("\n"),
-            label: `planner_${plan.id}_${step}`,
-            type: "explore", model, allowedTools: [], maxSteps: 1,
-            schemaRepairAttempts: 0,
-            writeAuthority: "read_only", worktree: false,
-            responseSchema: {
-              type: "object", additionalProperties: false,
-              required: ["plan"], properties: { plan: { type: "string" } },
-            },
-          });
-          planning.push(String(proposed.plan).slice(0, 3000));
+          try {
+            const proposed = await task({
+              description: [
+                "Plan one bounded implementation step for this public coding task. Do not edit files.",
+                "Reply with one JSON object containing only a plan string. Do not call tools.",
+                `BRIEF: ${String(brief)}`,
+                `PUBLIC FEEDBACK: ${String(applied.feedback_packet).slice(0, 10400)}`,
+                `PLANNING PASS: ${step} of ${plan.policy.planning_budget}`,
+              ].join("\n"),
+              label: `planner_${plan.id}_${step}`,
+              type: "explore", model, allowedTools: [], maxSteps: 1,
+              schemaRepairAttempts: 0,
+              writeAuthority: "read_only", worktree: false,
+              responseSchema: {
+                type: "object", additionalProperties: false,
+                required: ["plan"], properties: { plan: { type: "string" } },
+              },
+            });
+            planning.push(String(proposed.plan).slice(0, 3000));
+          } catch (error) {
+            planning.push(`Planner pass ${step} failed: ${String(error).slice(0, 300)}`);
+          }
         }
         return task({
         description: [
@@ -358,16 +363,21 @@ export default async function (args) {
       });
       const planning = [];
       for (let step = 1; step <= frozen.shadow_policy.planning_budget; step++) {
-        const proposed = await task({
-          description: ["Plan one step for the public coding brief. Do not edit files.",
-            `BRIEF: ${String(brief)}`].join("\n"),
-          label: `planner_${id}_${step}`, type: "explore", model,
-          allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
-          writeAuthority: "read_only", worktree: false,
-          responseSchema: { type: "object", additionalProperties: false,
-            required: ["plan"], properties: { plan: { type: "string" } } },
-        });
-        planning.push(String(proposed.plan).slice(0, 3000));
+        try {
+          const proposed = await task({
+            description: ["Plan one step for the public coding brief. Do not edit files.",
+              "Reply with one JSON object containing only a plan string. Do not call tools.",
+              `BRIEF: ${String(brief)}`].join("\n"),
+            label: `planner_${id}_${step}`, type: "explore", model,
+            allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
+            writeAuthority: "read_only", worktree: false,
+            responseSchema: { type: "object", additionalProperties: false,
+              required: ["plan"], properties: { plan: { type: "string" } } },
+          });
+          planning.push(String(proposed.plan).slice(0, 3000));
+        } catch (error) {
+          planning.push(`Planner pass ${step} failed: ${String(error).slice(0, 300)}`);
+        }
       }
       return task({
       description: [
