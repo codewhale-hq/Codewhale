@@ -44,8 +44,7 @@ export const chrome: ChromeDict = {
   themeAria: "Tema: {mode} (clic para alternar)",
   themeTitle: "Tema · auto / claro / oscuro",
 
-  footerTagline:
-    "El agente de programación de código abierto para tu terminal y los modelos que elijas.",
+  footerTagline: "Usa cualquier modelo con un agente que puedes leer.",
   footerProduct: "Producto",
   footerProject: "Proyecto",
   footerDocs: "Documentación",

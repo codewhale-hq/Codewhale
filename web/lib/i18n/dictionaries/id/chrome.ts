@@ -42,8 +42,7 @@ export const chrome: ChromeDict = {
   themeAria: "Tema: {mode} (klik untuk mengganti)",
   themeTitle: "Tema · otomatis / terang / gelap",
 
-  footerTagline:
-    "Agen pemrograman sumber terbuka untuk terminalmu dan model pilihanmu.",
+  footerTagline: "Gunakan model apa pun lewat agen yang bisa Anda baca.",
   footerProduct: "Produk",
   footerProject: "Proyek",
   footerDocs: "Dokumentasi",

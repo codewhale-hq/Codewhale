@@ -37,7 +37,7 @@ export const dynamic = "force-dynamic";
  *
  * One memorable thing moves: the whale. It breathes, glances toward the
  * pointer, and performs its existing poses. Everything else is still.
- * Reduced motion shows its poster pose.
+ * Reduced motion shows the still drone formation.
  *
  * Public copy resolves through `getHome(locale)`; product names and package
  * channels keep their canonical spelling.

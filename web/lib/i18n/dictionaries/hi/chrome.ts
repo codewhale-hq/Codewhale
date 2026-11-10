@@ -46,8 +46,7 @@ export const chrome: ChromeDict = {
   themeAria: "थीम: {mode} (बदलने के लिए क्लिक करें)",
   themeTitle: "थीम · ऑटो / लाइट / डार्क",
 
-  footerTagline:
-    "आपके टर्मिनल और आपकी पसंद के मॉडल के लिए ओपन-सोर्स कोडिंग एजेंट।",
+  footerTagline: "किसी भी मॉडल का उपयोग ऐसे एजेंट से करें जिसे आप पढ़ सकते हैं.",
   footerProduct: "उत्पाद",
   footerProject: "प्रोजेक्ट",
   footerDocs: "दस्तावेज़ीकरण",

@@ -273,7 +273,7 @@
     "themeDark": "dark",
     "themeAria": "Theme: {mode} (click to cycle)",
     "themeTitle": "Theme · auto / light / dark",
-    "footerTagline": "Build apps. Automate work.",
+    "footerTagline": "Use any model through an agent you can read.",
     "footerProduct": "Product",
     "footerProject": "Project",
     "footerDocs": "Docs",
@@ -514,7 +514,7 @@
             "p": "The hook reads the call from environment variables and answers with JSON on standard output: `allow`, `deny`, or `ask`, plus an optional `reason`, a rewritten input (`updatedInput`), or extra context for the model (`additionalContext`). Exit code 2 always denies. When several hooks answer, deny beats ask, and ask beats allow."
           },
           {
-            "note": "`ask` forces a prompt in Ask and Auto-Review. Full Access never shows approval prompts, so there `ask` does not add one."
+            "note": "`ask` forces a prompt in Ask, Accept Edits and Auto-Review. Full Access does not add approval prompts, so `ask` does not add one there."
           }
         ]
       },
@@ -565,7 +565,7 @@
               ],
               [
                 "mode_change",
-                "When you switch between Plan, Work, and Operate."
+                "When you switch between Plan and Work."
               ],
               [
                 "subagent_spawn / subagent_complete",
@@ -643,7 +643,7 @@
       {
         "href": "/docs/modes",
         "label": "Set modes and approvals",
-        "note": "How hook decisions combine with Ask, Auto-Review, and Full Access."
+        "note": "See how hook decisions combine with your approval setting."
       },
       {
         "href": "/docs/mcp",
@@ -936,7 +936,7 @@
     "metaDescription": "Save roles and models in a Fleet, write a repeatable Workflow, run it as a Lane you can watch and stop, and run batches of tasks with durable workers.",
     "bodyClassName": "text-ink-soft leading-relaxed",
     "title": "Run a workflow",
-    "lede": "For most multi-step work you only need to ask: in Operate, Codewhale plans the steps and runs independent ones in parallel. Write a Workflow when you want the same ordered plan every time — phases, parallel branches, and a summary — with a record of each run.",
+    "lede": "In Work, ask Codewhale to plan a larger task and delegate independent steps to agents. Write a Workflow when you want to repeat an ordered plan with phases, parallel branches and a record of each run.",
     "sections": [
       {
         "id": "fleet",
@@ -1710,7 +1710,7 @@
         "title": "Ask for it",
         "blocks": [
           {
-            "p": "You do not start sub-agents with a command; you ask in plain words. In Operate, Codewhale does this on its own for independent steps. In Work, say what you want split up:"
+            "p": "In Work, ask Codewhale in plain words to delegate independent parts of a task. Say what you want split up:"
           },
           {
             "code": "Use three explore agents in parallel: one maps the auth code,\none maps the billing code, one lists the tests that cover both.\nThen summarize what would break if we changed the session format.",

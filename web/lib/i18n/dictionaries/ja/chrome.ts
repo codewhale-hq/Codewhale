@@ -43,8 +43,7 @@ export const chrome: ChromeDict = {
   themeAria: "テーマ：{mode}（クリックで切り替え）",
   themeTitle: "テーマ · 自動 / ライト / ダーク",
 
-  footerTagline:
-    "ターミナルと好みのモデルで使えるオープンソースのコーディングエージェント。",
+  footerTagline: "中身を読めるエージェントで、どのモデルでも使えます。",
   footerProduct: "製品",
   footerProject: "プロジェクト",
   footerDocs: "ドキュメント",

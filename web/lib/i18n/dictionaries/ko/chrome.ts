@@ -46,8 +46,7 @@ export const chrome: ChromeDict = {
   themeAria: "테마: {mode} (클릭하면 전환)",
   themeTitle: "테마 · 자동 / 밝게 / 어둡게",
 
-  footerTagline:
-    "터미널과 원하는 모델로 사용하는 오픈 소스 코딩 에이전트.",
+  footerTagline: "직접 읽어 볼 수 있는 에이전트로 어떤 모델이든 사용하세요.",
   footerProduct: "제품",
   footerProject: "프로젝트",
   footerDocs: "문서",
