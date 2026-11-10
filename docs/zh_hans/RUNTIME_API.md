@@ -46,7 +46,7 @@ local supervisor / SDK / automation harness
 不代管提供商令牌，也不泄漏任何密钥。
 
 关于线程或回合所做之事的只读记录，请参阅
-[`docs/RECEIPTS.md`](../RECEIPTS.md)：CLI 上的 `codewhale receipts`，以及下文
+[`RECEIPTS.md`](RECEIPTS.md)：CLI 上的 `codewhale receipts`，以及下文
 **线程**下的 `/receipt` 路由。
 
 ## 运行时 API 入口
@@ -600,7 +600,7 @@ app-server 存在的意义是让外部 SDK 无需抓取 TUI
 | 事件流 | `GET /v1/threads/{id}/events`（回放 + 实时 SSE） | 可用 |
 | 回合状态 / 终态分类 | `TurnRecord.status` + 错误摘要 | 可用 |
 | Token 用量 | `TurnRecord.usage`；通过 `GET /v1/usage` 聚合 | 可用 |
-| 动作回执（文件、命令、web/MCP 调用、智能体、审批及由谁决定、失败） | `GET /v1/threads/{id}/receipt`、`GET /v1/threads/{id}/turns/{turn_id}/receipt` | 可用（[RECEIPTS.md](../RECEIPTS.md)） |
+| 动作回执（文件、命令、web/MCP 调用、智能体、审批及由谁决定、失败） | `GET /v1/threads/{id}/receipt`、`GET /v1/threads/{id}/turns/{turn_id}/receipt` | 可用（[RECEIPTS.md](RECEIPTS.md)） |
 
 对于一次性/无头自动化，优先使用 `codewhale exec` 并显式给出
 `--provider <id> --model <id>`，这样一旦失败就能确定是哪一对提供商/模型。
@@ -1015,7 +1015,7 @@ Runtime 前缀恢复验证与后续写入所需的完整文档条件保持独立
 - `POST /v1/threads/{id}/read` — 记录客户端已显示到的最新条目
   （请求体 `{"item_id": "<item id>"}`；见下文“已读标记”）
 - `GET /v1/threads/{id}/receipt` — 线程做了什么，每个动作一条
-  （只读；形态见 [RECEIPTS.md](../RECEIPTS.md)）
+  （只读；形态见 [RECEIPTS.md](RECEIPTS.md)）
 - `GET /v1/threads/{id}/turns/{turn_id}/receipt` — 同上，针对一个回合；
   未知线程或不属于该线程的回合返回 `404`
 
