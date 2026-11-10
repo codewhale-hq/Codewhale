@@ -1636,9 +1636,6 @@ mod tests {
         assert_eq!(file_mention_body("src/main.rs"), "src/main.rs");
     }
 
-    /// #101 regression — workspace-vs-cwd divergence: `@bar.txt` typed from
-    /// the cwd `<root>/sub` MUST resolve to `<root>/sub/bar.txt`, never to
-    /// `<root>/bar.txt` (which doesn't exist).
     #[test]
     fn mention_directly_after_cjk_text_is_recognized() {
         assert_eq!(
@@ -1656,6 +1653,9 @@ mod tests {
         );
     }
 
+    /// #101 regression — workspace-vs-cwd divergence: `@bar.txt` typed from
+    /// the cwd `<root>/sub` MUST resolve to `<root>/sub/bar.txt`, never to
+    /// `<root>/bar.txt` (which doesn't exist).
     #[test]
     fn cwd_pass_resolves_when_workspace_pass_misses() {
         let tmp = TempDir::new().expect("tempdir");

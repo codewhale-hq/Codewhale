@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Edit tool:** when an edit only matches after quote, dash or full-width normalization, the rest of the touched line keeps its original characters instead of being rewritten (`：１００（）` no longer becomes `:100()`), and two adjacent fuzzy edits no longer overlap ([#7257](https://github.com/codewhale-hq/Codewhale/pull/7257)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **File mentions:** an `@` mention typed straight after Chinese or Japanese text, such as `请看@src/main.rs`, now attaches the file, completes with Tab and shows its chip, and full-width closing punctuation after a mention is no longer read as part of the file name; mentioning two line ranges of one file attaches both instead of dropping the second ([#7258](https://github.com/codewhale-hq/Codewhale/pull/7258), [#7259](https://github.com/codewhale-hq/Codewhale/pull/7259)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **Footer context meter:** after `/load`, resume, `/branch` or a fork, the context percentage shows the restored conversation instead of the size of the one you left ([#7256](https://github.com/codewhale-hq/Codewhale/pull/7256)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **Custom commands:** a custom slash command now runs when its arguments follow a full-width space or start on a new line, instead of being reported as unknown ([#7260](https://github.com/codewhale-hq/Codewhale/pull/7260)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
+- **/config:** the detail pane lines its values up in one column in every language, including locales with long or full-width labels such as Ukrainian and Chinese ([#7267](https://github.com/codewhale-hq/Codewhale/pull/7267)). Thanks [@Lstarsky0](https://github.com/Lstarsky0).
+
 - **Website and docs:** installation now leads to a version check and a verifiable first task, article search finds text and commands with section links, and GitHub star links show the fetched count. The hero reuses the generated drone whale, and control/tool references distinguish the unpublished source candidate from v0.10.2; these website changes still await deployment.
 
 - **Chinese docs:** a short setup page for people new to Codewhale ([zh_hans/PROVIDER_QUICKSTART.md](docs/zh_hans/PROVIDER_QUICKSTART.md)) walks through choosing a provider, setting an API key on macOS, Linux or Windows, picking a model and reading `codewhale doctor --probe-api` when the first call fails; the Receipts, Claude plugin compatibility and GitHub review bot pages are now translated into Simplified Chinese and linked from the Chinese index ([#7266](https://github.com/codewhale-hq/Codewhale/pull/7266), [#7264](https://github.com/codewhale-hq/Codewhale/pull/7264), [#7263](https://github.com/codewhale-hq/Codewhale/pull/7263), [#7265](https://github.com/codewhale-hq/Codewhale/pull/7265)). Thanks [@luochen211](https://github.com/luochen211).
