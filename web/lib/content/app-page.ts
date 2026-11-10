@@ -37,8 +37,8 @@ export const APP_COPY = {
     zh: "桌面应用是基于同一个可读智能体的原生应用。",
   },
   lede: {
-    en: "It runs the same engine as the terminal, so what you see in the app is what the agent actually did. It is a development build today, and the browser app is not open yet.",
-    zh: "它与终端运行同一个引擎，因此你在应用里看到的，就是智能体实际做的事。目前它是开发版本，浏览器应用尚未开放。",
+    en: "It runs the same engine as the terminal, so the app and the terminal share one agent. It is a development build today, and the browser app is not open yet.",
+    zh: "它与终端运行同一个引擎，因此应用与终端共用同一个智能体。目前它是开发版本，浏览器应用尚未开放。",
   },
   status: {
     desktop: { en: "Desktop: development build", zh: "桌面端：开发版本" },
@@ -47,14 +47,14 @@ export const APP_COPY = {
   actions: {
     install: { en: "Install the terminal", zh: "安装终端版" },
     guide: { en: "Read the app guide", zh: "阅读应用指南" },
-    signIn: { en: "Sign in", zh: "登录" },
+    signIn: { en: "How sign-in works", zh: "登录方式" },
   },
   guideUrl: "https://docs.codewhale.net",
 
   shotsHeading: { en: "What the development build looks like", zh: "开发版本长什么样" },
   shotsScope: {
-    en: "These are captures of the desktop development build. Details will change before a release.",
-    zh: "以下是桌面开发版本的截图。发布前细节仍会变化。",
+    en: "These are captures of the desktop development build, taken against a test fixture, so some names and text in them are placeholders. Details will change before a release.",
+    zh: "以下是桌面开发版本的截图，取自测试环境，其中部分名称和文字只是占位内容。发布前细节仍会变化。",
   },
   shots: [
     {
@@ -100,8 +100,8 @@ export const APP_COPY = {
 
   accountHeading: { en: "What works without an account, and what an account adds", zh: "无需账号可用的功能，以及账号能带来什么" },
   accountScope: {
-    en: "Codewhale never asks you to sign in up front. It asks beside the control that needs an account, and says what signing in gets you there.",
-    zh: "Codewhale 不会一开始就要求你登录，只会在需要账号的控件旁询问，并说明登录能带来什么。",
+    en: "The app does not ask you to sign in up front. Where a control needs an account, it says so beside that control. Sign-in is not available in every build yet.",
+    zh: "应用不会一开始就要求你登录。需要账号的控件会在旁边说明。并非所有版本都已提供登录。",
   },
   withoutTitle: { en: "Works without an account", zh: "无需账号" },
   without: [
@@ -134,7 +134,7 @@ export const APP_COPY = {
     },
     {
       title: { en: "Cloud computers", zh: "云端计算机" },
-      body: { en: "Send work to a cloud computer. Cloud computers are invite-only right now.", zh: "把任务交给云端计算机。云端计算机目前仅限受邀使用。" },
+      body: { en: "Send work to a cloud computer, where your account has access to one.", zh: "把任务交给云端计算机，前提是你的账号可以使用。" },
     },
     {
       title: { en: "Agents that keep going", zh: "持续工作的智能体" },
@@ -142,8 +142,8 @@ export const APP_COPY = {
     },
   ] satisfies AppRow[],
   signInNote: {
-    en: "If you have an account, the app opens your browser to finish signing in and then returns you to the app. Signing out never touches your folders, conversations or model keys.",
-    zh: "如果你已有账号，应用会打开浏览器完成登录，然后带你回到应用。退出登录不会影响你的文件夹、对话或模型密钥。",
+    en: "When sign-in is available and you have an account, the app opens your browser to finish signing in and then returns you to the app. Signing out leaves your folders, conversations and model keys in place.",
+    zh: "当登录可用且你已有账号时，应用会打开浏览器完成登录，然后带你回到应用。退出登录后，你的文件夹、对话和模型密钥仍会保留。",
   },
 
   runsHeading: { en: "Where Codewhale runs today", zh: "Codewhale 目前在哪里运行" },
@@ -153,7 +153,7 @@ export const APP_COPY = {
 
   closingTitle: { en: "Start with the terminal today.", zh: "今天就从终端开始。" },
   closingBody: {
-    en: "The terminal and codewhale web run the same agent the desktop app is built on. Already have an account? Sign in is described in the account guide.",
-    zh: "终端和 codewhale web 运行的，正是桌面应用所基于的智能体。已有账号？登录方式见账号指南。",
+    en: "The terminal and codewhale web run the same agent the desktop app is built on. If you already have an account, the sign-in guide explains how it works.",
+    zh: "终端和 codewhale web 运行的，正是桌面应用所基于的智能体。如果你已有账号，登录指南会说明具体方式。",
   },
 } as const;

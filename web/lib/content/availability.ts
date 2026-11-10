@@ -81,8 +81,8 @@ export const AVAILABILITY_ROWS: ProductAvailabilityRow[] = [
     tone: "idle",
     pages: ["product", "app"],
     detail: {
-      en: "A native app on the same engine. Review and commit changes, follow work across projects, and edit a message to resend it as a new branch. No public download yet.",
-      zh: "基于同一引擎的原生应用。审阅并提交改动、跨项目跟进工作，还能编辑一条消息并作为新分支重新发送。暂无公开下载。",
+      en: "A native app on the same engine. Review changed files and commit them, and edit an earlier message to continue from it in a new conversation. No public download yet.",
+      zh: "基于同一引擎的原生应用。审阅已更改的文件并提交，还能编辑较早的一条消息，并在新对话中从那里继续。暂无公开下载。",
     },
     href: null,
     linkLabel: null,
