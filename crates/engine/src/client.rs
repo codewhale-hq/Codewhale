@@ -508,7 +508,10 @@ impl TokenBucket {
         if self.refill_per_sec <= 0.0 {
             return Some(Duration::from_secs(1));
         }
-        Some(Duration::from_secs_f64(-self.tokens / self.refill_per_sec))
+        Some(
+            Duration::try_from_secs_f64(-self.tokens / self.refill_per_sec)
+                .unwrap_or(Duration::MAX),
+        )
     }
 }
 

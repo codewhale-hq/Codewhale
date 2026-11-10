@@ -4138,6 +4138,17 @@ impl Config {
                 );
             }
         }
+        if let Some(retry) = &self.retry {
+            for (key, value) in [
+                ("initial_delay", retry.initial_delay),
+                ("max_delay", retry.max_delay),
+                ("exponential_base", retry.exponential_base),
+            ] {
+                if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+                    anyhow::bail!("[retry] {key} must be a finite number of at least 0");
+                }
+            }
+        }
         if let Some(budget) = self.instruction_budget.as_ref() {
             budget
                 .validate()
