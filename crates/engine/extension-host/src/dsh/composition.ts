@@ -223,7 +223,7 @@ class ReviewedTree extends EntryTree {
   }
 
   /** A reviewed composition is input; teardown and self-disposal never rewrite it. */
-  write(): void {}
+  commit(): void {}
 
   override import(name: string): unknown {
     if (name === PERSONA) return reviewedPersonaModule
@@ -375,7 +375,7 @@ function leakedServices(ctx: Context, mount: Fiber): string[] {
   for (const key of Object.getOwnPropertySymbols(ctx.reflect.store)) {
     const impl = ctx.reflect.store[key]
     if (impl === undefined) continue
-    let current = impl.fiber
+    let current = impl.ctx.fiber
     while (current !== mount && current.parent.fiber !== current) current = current.parent.fiber
     if (current === mount && rootIsolate[impl.name] === key) leaked.push(impl.name)
   }

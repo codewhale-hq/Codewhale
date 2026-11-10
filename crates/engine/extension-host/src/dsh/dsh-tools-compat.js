@@ -9,14 +9,14 @@
  * *definition-side* subset only.
  *
  * Lines between the VERBATIM markers are copied unchanged from
- * `@deepseek-ai/dsh-tools@0.2.1-rc.5` `lib/index.js` (lines 8-888 and
- * 2625-2655), MIT License, Copyright (c) 2026 DeepSeek. See
+ * `@deepseek-ai/dsh-tools@0.2.2-rc.1` `lib/shared-DTdn5dXO.js` (lines 22-548 and
+ * 566-596) and `lib/index.js` (lines 7-377), MIT License, Copyright (c) 2026 DeepSeek. See
  * ../../LICENSES.txt. Everything outside the markers is Codewhale's.
  *
  * `ToolRuntime` is deliberately NOT exported: a plugin that tries to provide
  * or construct the DSH tool runtime fails to link, loudly.
  */
-import { assertNever, isJsonValue } from '@deepseek-ai/dsh-util-values'
+import { assertNever, isJsonValue, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 
 /** Local stand-in for `@deepseek-ai/dsh-llm` `HarnessError` (same shape). */
 export class HarnessError extends Error {
@@ -28,7 +28,7 @@ export class HarnessError extends Error {
   }
 }
 
-// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.1-rc.5 lib/index.js:8-888 ----
+// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.2-rc.1 lib/shared-DTdn5dXO.js:22-548 ----
 //#region lib/types/json-schema.js
 /**
 * Enforced JSON Schema subset shared by tool outputs, generated PTC mode
@@ -556,8 +556,11 @@ function validateJsonSchemaValue(schema, value, path = "value") {
 	return checkValue(schema, value, path);
 }
 //#endregion
+// ---- END VERBATIM ----
+
+// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.2-rc.1 lib/index.js:7-377 ----
 //#region lib/types/schema.js
-/** Unified JSON-value schema DSL, inference, compilation, and typed tool helper. @module dsh-tools/schema */
+/** Unified JSON-value schema DSL, inference, compilation, and tool definition helpers. @module dsh-tools/schema */
 const ANNOTATION_KEYS = [
 	"description",
 	"title",
@@ -909,10 +912,27 @@ function defineTool(options) {
 	};
 	return tool;
 }
+/**
+* Omit execution and presentation callbacks from a tool definition.
+* @param definition - visible capability or executor-owned transport.
+* @param detachParameters - copy parameters for a caller-owned inspection result.
+* @returns the model-facing schema fields.
+*/
+function projectToolSchema(definition, detachParameters) {
+	const { name, description, parameters, deferLoading } = definition;
+	const detached = detachParameters ? snapshotJsonValue(parameters) : parameters;
+	if (detached === void 0) throw new Error(`tool "${name}" parameters must be lossless JSON before schema projection`);
+	return {
+		name,
+		description,
+		parameters: detached,
+		...deferLoading === true ? { deferLoading } : {}
+	};
+}
 //#endregion
 // ---- END VERBATIM ----
 
-// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.1-rc.5 lib/index.js:2625-2655 ----
+// ---- VERBATIM @deepseek-ai/dsh-tools@0.2.2-rc.1 lib/shared-DTdn5dXO.js:566-596 ----
 const TOOL_ABORTED = "ABORTED";
 /** Canonical error code for cancellation before a tool body was invoked. */
 const TOOL_ABORTED_BEFORE_DISPATCH = "ABORTED_BEFORE_DISPATCH";

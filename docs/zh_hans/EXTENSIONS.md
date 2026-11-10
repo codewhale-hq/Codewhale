@@ -131,7 +131,7 @@ DSH 定义若声明 `output`，必须同时提供 `output.schema` 和 `output.re
 `timeoutMs` 和 `when` 仍不支持。布尔值 `deferLoading` 仅作为展示提示接受，
 不会改变 Engine 的工具加载策略；非布尔值会被拒绝。共享
 [`compatibility.json`](../../crates/engine/extension-host/src/dsh/compatibility.json)
-记录 DSH 0.2.1-rc.5 定义 API 与服务、模块映射，其内容参与 Native 内容和能力摘要；
+记录 DSH 0.2.2-rc.1 定义 API 与服务、模块映射，其内容参与 Native 内容和能力摘要；
 契约改变后必须重新审查。成功及软失败结果中的 `extension` 元数据由 Rust 写入，
 记录插件、已审查内容、入口、代际、调用方选择、句柄与进程启动身份。
 
