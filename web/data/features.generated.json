@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "c2caf85cd1dd0d95e0b566c12af6ec67b5a476cf5810312bb309d35744d08d3f"
+    "sha256": "e955af4bb404a7b128ee2d8c9c215fa0d47ba99c87c3327cacc3ee1a6d84a36b"
   },
   "features": [
     {
@@ -360,7 +360,7 @@
     {
       "id": "modes",
       "name": "Modes",
-      "summary": "Plan and Work modes set what the agent may do in a session; a finished plan offers to start the work.",
+      "summary": "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
@@ -374,7 +374,7 @@
     {
       "id": "permission-postures",
       "name": "Permission postures",
-      "summary": "Ask, Accept Edits, Auto-Review and Full Access govern approvals; cards default to Deny and preview saved grants.",
+      "summary": "One Shift+Tab dial: Ask, Accept Edits (default), Plan, Auto-Review, Full Access; cards default to Deny.",
       "status": "stable",
       "surfaces": {
         "tui": "stable",
