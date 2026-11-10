@@ -978,7 +978,8 @@ const MAX_EXEC_PROMPT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The effective exec prompt: argv words, a `--prompt-file`, or piped stdin.
 /// A positional `-` stays literal text. When stdin is not a terminal and no
-/// `--prompt-file` is set, a pipe is the prompt, or is appended to argv.
+/// `--prompt-file` is set, piped stdin is the prompt, or is appended to the
+/// argv prompt when it delivers data within `EXEC_STDIN_GRACE`.
 /// `--parent-death-watch` owns stdin and does not read it as a prompt.
 fn resolve_exec_prompt(args: &ExecArgs) -> Result<String> {
     let Some(path) = &args.prompt_file else {
@@ -1067,7 +1068,7 @@ fn resolve_argv_or_piped_prompt(args: &ExecArgs) -> Result<String> {
             Some(piped) => piped,
             None => {
                 eprintln!(
-                    "note: stdin produced no data within {}s; running with the prompt argument alone. Use --prompt-file - to wait for stdin.",
+                    "note: stdin produced no data within {}s; running with the prompt argument alone. To wait for a slow producer, pipe the prompt too: {{ echo \"<prompt>\"; cmd; }} | codewhale exec.",
                     EXEC_STDIN_GRACE.as_secs()
                 );
                 String::new()
