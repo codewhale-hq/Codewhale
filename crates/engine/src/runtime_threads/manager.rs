@@ -18959,21 +18959,12 @@ pub async fn receipt_secret_values(config: Config) -> Result<Vec<String>> {
 }
 
 pub fn summarize_text(text: &str, limit: usize) -> String {
-    let take = limit.saturating_sub(3);
-    let mut count = 0;
-    let mut out = String::new();
-    for ch in text.chars() {
-        if count >= take {
-            out.push_str("...");
-            return out;
-        }
-        if ch.is_control() && ch != '\n' && ch != '\t' {
-            continue;
-        }
-        out.push(ch);
-        count += 1;
-    }
-    out
+    let visible: String = text
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .take(limit.saturating_add(1))
+        .collect();
+    crate::rlm::turn::truncate_text(&visible, limit)
 }
 
 pub(super) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {

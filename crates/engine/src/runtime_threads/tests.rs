@@ -19929,6 +19929,7 @@ async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Resu
 fn summarize_text_truncates() {
     let out = summarize_text("abcdefghijklmnopqrstuvwxyz", 10);
     assert_eq!(out, "abcdefg...");
+    assert_eq!(summarize_text("abcdefgh", 10), "abcdefgh");
 }
 
 #[test]
