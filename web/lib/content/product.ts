@@ -51,8 +51,8 @@ export const PRODUCT_COPY = {
     {
       title: { en: "Work", zh: "Work" },
       body: {
-        en: "Plan, delegate and verify a larger task in Work. In the 0.10.3 source candidate, Operate is a compatibility alias for Work.",
-        zh: "在 Work 中计划、委派并验证较大的任务。在 0.10.3 源码候选版本中，Operate 是 Work 的兼容别名。",
+        en: "Plan, delegate and verify a larger task in Work.",
+        zh: "在 Work 中计划、委派并验证较大的任务。",
       },
       href: "/docs/modes",
       command: "/mode work",

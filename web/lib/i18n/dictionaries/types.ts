@@ -153,60 +153,24 @@ export interface HomeDict {
   /** Accessible name for the hero install command and its platform choice. */
   heroInstallAria: string;
   /** Secondary action → /product, e.g. "Explore the product". */
-  exploreProduct: string;
-
-  /** Screenshot caption, first item of the dot chain, e.g. "Terminal preview". */
   shotPreview: string;
   /** Screenshot alt text for the current media manifest capture. */
   screenshotAlt: string;
 
   /** "Latest release {tag}" */
-  latestRelease: string;
-  releaseUnavailable: string;
   proofContributors: string;
   /** "Source" / "Unreleased" — prepended to `v{version}`. */
-  currentSource: string;
   sourceCandidate: string;
   /** "released" / "unreleased" — the machine-readable source-state label. */
   publishedRelease: string;
 
   /** What a person gains: heading, lede, and three [title, body] rows. */
-  gainHeading: string;
-  gainLede: string;
-  gain: [string, string][];
-
-  /** Running head of the models chapter ("02 / Your models"). */
-  chapterModels: string;
   modelsHeading: string;
-  modelsBody: string;
-  /** Three [route kind, description] rows. */
-  modelsFacts: [string, string][];
   modelsLink: string;
 
   startHeading: string;
-  startLede: string;
-  startGuideLink: string;
-  startVocabularyLink: string;
-
-  /** Running head of the availability chapter ("04 / Where it runs"). */
-  chapterAvailability: string;
-  availabilityHeading: string;
-  availabilityLede: string;
-  availability: [string, string, string, string?][];
-  availabilityNote: string;
-
-  surfacesHeading: string;
-  /** Five [name, description] surfaces. */
-  surfaces: [string, string][];
-  runtimeLink: string;
-
-  installBandHeading: string;
   copy: string;
   copied: string;
-  binaries: string;
-  chinaMirrors: string;
-  installGuideLink: string;
-
   contribute: string;
 }
 

@@ -15,6 +15,13 @@ export const PARTNER_PROMO = {
     en: "Get 30% extra DeepSeek V4.1 Flash credit on each OrcaRouter top-up. One claim per developer, open until November 21, 2026.",
     zh: "在 OrcaRouter 每笔充值可额外获得 30% 的 DeepSeek V4.1 Flash 额度。每位开发者限领 1 份，报名截至 2026 年 11 月 21 日。",
   },
+  bar: {
+    en: "30% extra DeepSeek V4.1 Flash credit on each OrcaRouter top-up, until November 21.",
+    zh: "每笔 OrcaRouter 充值额外获得 30% 的 DeepSeek V4.1 Flash 额度，截至 11 月 21 日。",
+  },
+  daysLeft: { en: "{count} days left", zh: "剩余 {count} 天" },
+  dayLeft: { en: "Last day", zh: "最后一天" },
+  referralTag: { en: "Referral link", zh: "推荐链接" },
   cta: { en: "Claim on OrcaRouter", zh: "在 OrcaRouter 领取" },
   disclosure: {
     en: "Codewhale earns a referral fee from OrcaRouter.",

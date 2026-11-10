@@ -94,6 +94,19 @@ export function LiveStarCount({ initial, numberLocale }: { initial?: number; num
 
 export interface PulseRow { key: "stars" | "contributors" | "pulls" | "issues"; label: string; href: string; value?: string }
 
+export function LiveStarLink({ initial, label, href, numberLocale }: { initial?: number; label: string; href: string; numberLocale: string }) {
+  const live = useLiveRepo(initial === undefined);
+  const stars = initial ?? live?.stars;
+  if (stars === undefined) return null;
+  return (
+    <a href={href} className="section-link home-proof-stars">
+      <span aria-hidden="true">★</span>
+      <span className="tabular">{new Intl.NumberFormat(numberLocale).format(stars)}</span>
+      <span>{label}</span>
+    </a>
+  );
+}
+
 export function LivePulseStats({ rows, numberLocale }: { rows: PulseRow[]; numberLocale: string }) {
   const missing = rows.some((row) => row.value === undefined);
   const live = useLiveRepo(missing);
@@ -109,10 +122,11 @@ export function LivePulseStats({ rows, numberLocale }: { rows: PulseRow[]; numbe
     <dl className="pulse-stats">
       {rows.map((row) => {
         const value = fill(row);
+        if (value === undefined) return null;
         return (
-          <div key={row.key} data-pending={value === undefined ? "" : undefined}>
+          <div key={row.key}>
             <dt>{row.label}</dt>
-            <dd><a href={row.href} className="tabular">{value ?? "—"}</a></dd>
+            <dd><a href={row.href} className="tabular">{value}</a></dd>
           </div>
         );
       })}

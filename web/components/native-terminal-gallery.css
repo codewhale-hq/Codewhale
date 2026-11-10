@@ -88,18 +88,6 @@
   color: var(--muted);
 }
 
-.native-terminal-components-link {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--accent);
-  text-underline-offset: .2em;
-}
-
-.native-terminal-components-link:hover {
-  text-decoration: underline;
-}
-
 @media (max-width: 900px) {
   .native-terminal-scroll-hint {
     display: block;
