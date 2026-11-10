@@ -1661,6 +1661,8 @@ fn dsh_client_closure_is_retained_hashed_and_refuses_ambient_dependencies() {
         ("ambient", "require(\"left-pad\");\n"),
         ("builtin", "require(\"node:fs\");\n"),
         ("computed", "const n = \"x\"; require(n);\n"),
+        ("concat", "const l = \"en\"; require(\"./locale/\" + l);\n"),
+        ("concat-import", "const l = \"en\"; import(\"./a\" + l);\n"),
         ("escape", "require(\"../../outside.js\");\n"),
     ] {
         let bad = make(label, source);

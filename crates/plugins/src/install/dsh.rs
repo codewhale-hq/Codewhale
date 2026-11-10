@@ -1112,8 +1112,6 @@ fn declares_client(manifest: &Value) -> bool {
         .is_some_and(|client| !matches!(client, Value::Null))
 }
 
-/// The reviewed static closure of one package's `dsh.client` entry. Every file
-/// is bytes already copied under `source/`, so each hash is the installed hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DshClientClosure {
     pub package: String,
@@ -1256,7 +1254,7 @@ impl ClientScan<'_> {
         let directory = from.rsplit_once('/').map_or("", |(dir, _)| dir);
         if specifier.starts_with("./") || specifier.starts_with("../") || specifier == "." {
             let base = normalize_slash(&format!("{directory}/{specifier}"))
-                .ok_or_else(|| format!("`{specifier}` leaves the package"))?;
+                .ok_or_else(|| format!("`{specifier}` is outside the reviewed package files"))?;
             return self
                 .probe(&base)
                 .map(Some)
@@ -1323,7 +1321,9 @@ impl ClientScan<'_> {
         let load = pattern(
             r#"(?m)(?:\brequire\s*\(\s*|\bimport\s*\(\s*|(?:^|[;{}])\s*import\s*|\b(?:import|export)\b[^;"'`()]*?\bfrom\b\s*)(?:"([^"\n]*)"|'([^'\n]*)')"#,
         );
-        let dynamic = pattern(r#"\b(?:require|import)\s*\(\s*[^\s"'\)]"#);
+        let dynamic = pattern(
+            r#"\b(?:require|import)\s*\(\s*(?:[^\s"'\)]|"[^"\n]*"\s*[^\s,\)]|'[^'\n]*'\s*[^\s,\)])"#,
+        );
         let mut pending = vec![entry];
         while let Some(path) = pending.pop() {
             if self.closure.contains_key(&path) {
@@ -1361,9 +1361,6 @@ impl ClientScan<'_> {
     }
 }
 
-/// Resolve the client entry of the package whose manifest sits at `root`
-/// (`""` for the bundle root) and return its closed, hashed file set. A
-/// refusal is a reason; the server half is unaffected.
 fn client_closure(
     files: &BTreeMap<String, Vec<u8>>,
     root: &str,
