@@ -985,4 +985,18 @@ describe("post retry durability and generation admission", () => {
     expect(await runDigest({ CURATED_KV: kv, DRAFT_CLAIM_LOCK: broken, DEEPSEEK_API_KEY: "k" })).toMatchObject({ skipped: true });
     expect(reads).not.toHaveBeenCalled(); expect(mocks.agentChat).not.toHaveBeenCalled();
   });
+  it("admits one overlapping digest generation and spends once", async () => {
+    const kv = new FakeKv();
+    const env = { CURATED_KV: kv, DRAFT_CLAIM_LOCK: new FakeDraftClaimLock(), DEEPSEEK_API_KEY: "k" };
+    stubDigestSources();
+    const output = { content: JSON.stringify(DIGEST_MODEL_OUTPUT), usage: { input: 1, output: 1 } };
+    let finish!: (value: unknown) => void;
+    mocks.agentChat.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue(output);
+    const first = runDigest(env);
+    await vi.waitFor(() => expect(mocks.agentChat).toHaveBeenCalledOnce());
+    expect(await runDigest(env)).toMatchObject({ processed: 0, skipped: 1 });
+    finish(output);
+    await first;
+    expect(mocks.agentChat).toHaveBeenCalledOnce();
+  });
 });
