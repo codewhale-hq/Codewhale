@@ -11,7 +11,7 @@ pub enum AppMode {
 }
 
 impl AppMode {
-    pub const CYCLE: [Self; 2] = [Self::Plan, Self::Agent];
+    pub const ALL: [Self; 2] = [Self::Plan, Self::Agent];
 
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
@@ -109,22 +109,6 @@ impl AppMode {
             AppMode::Plan => "Plan mode - research and design before implementing",
         }
     }
-
-    #[must_use]
-    pub fn next(self) -> Self {
-        let Some(index) = Self::CYCLE.iter().position(|mode| *mode == self) else {
-            return Self::Agent;
-        };
-        Self::CYCLE[(index + 1) % Self::CYCLE.len()]
-    }
-
-    #[must_use]
-    pub fn previous(self) -> Self {
-        let Some(index) = Self::CYCLE.iter().position(|mode| *mode == self) else {
-            return Self::Agent;
-        };
-        Self::CYCLE[(index + Self::CYCLE.len() - 1) % Self::CYCLE.len()]
-    }
 }
 
 #[cfg(test)]
@@ -132,7 +116,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_mode_helpers_centralize_parse_labels_and_cycle_order() {
+    fn app_mode_helpers_centralize_parse_and_labels() {
         assert_eq!(AppMode::parse("agent"), Some(AppMode::Agent));
         assert_eq!(AppMode::parse("act"), Some(AppMode::Agent));
         assert_eq!(AppMode::parse("work"), Some(AppMode::Agent));
@@ -169,12 +153,7 @@ mod tests {
         assert_eq!(AppMode::Agent.as_setting(), "agent");
         assert_eq!(AppMode::Plan.display_name(), "Plan");
         assert_eq!(AppMode::Agent.number(), '1');
-        assert_eq!(AppMode::CYCLE, [AppMode::Plan, AppMode::Agent]);
-
-        assert_eq!(AppMode::Plan.next(), AppMode::Agent);
-        assert_eq!(AppMode::Agent.next(), AppMode::Plan);
-        assert_eq!(AppMode::Plan.previous(), AppMode::Agent);
-        assert_eq!(AppMode::Agent.previous(), AppMode::Plan);
+        assert_eq!(AppMode::ALL, [AppMode::Plan, AppMode::Agent]);
     }
 
     /// The durable form of a mode is the `as_setting()` string persisted into
@@ -182,7 +161,7 @@ mod tests {
     /// round-trip that has to hold is string -> mode -> string.
     #[test]
     fn setting_strings_round_trip_for_every_mode() {
-        for mode in AppMode::CYCLE {
+        for mode in AppMode::ALL {
             let setting = mode.as_setting();
             assert_eq!(
                 AppMode::from_setting(setting),
@@ -214,7 +193,7 @@ mod tests {
         assert_eq!(AppMode::Agent.display_name(), "Work");
         assert_eq!(AppMode::Plan.display_name(), "Plan");
 
-        for mode in AppMode::CYCLE {
+        for mode in AppMode::ALL {
             assert!(!mode.description().is_empty());
         }
     }

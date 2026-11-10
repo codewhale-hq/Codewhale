@@ -27,7 +27,7 @@ use codewhale_command_contract::facets::{
 use crate::commands::CommandResult;
 
 const USAGE: &str = "Usage: /plugin marketplace add|list|show|remove|install\n\
-     \x20 add <name> <path>    read a local catalog file (kimi/claude/codex/codewhale)\n\
+     \x20 add <name> <path>    read a local catalog file (kimi/claude/codex/dsh/codewhale)\n\
      \x20 list                 show catalogs and their candidates\n\
      \x20 show <name>          one catalog in detail\n\
      \x20 remove <name>        forget a catalog (installed plugins unaffected)\n\

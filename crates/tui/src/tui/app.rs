@@ -78,9 +78,9 @@ pub(crate) enum RedactionGateNotice {
 }
 pub use types::{
     AppAction, AppModeUi, AutomationAction, ComposerDensity, ComposerSubmitAction,
-    ComposerSubmitChord, InflightSteer, InitialInput, McpUiAction, QueuedMessage, ScreenMode,
-    SettingSelection, ShellJobAction, SubmitDisposition, TaskPanelEntry, TaskPanelEntryKind,
-    ToolCollapseMode, ToolDetailRecord, TranscriptSpacing, TuiOptions, VimMode,
+    ComposerSubmitChord, DialStep, InflightSteer, InitialInput, McpUiAction, QueuedMessage,
+    ScreenMode, SettingSelection, ShellJobAction, SubmitDisposition, TaskPanelEntry,
+    TaskPanelEntryKind, ToolCollapseMode, ToolDetailRecord, TranscriptSpacing, TuiOptions, VimMode,
 };
 pub(crate) use types::{
     CacheReplayTarget, GoalControlIntent, PendingGoalControl, UnansweredSubmission,
@@ -3443,7 +3443,7 @@ impl App {
     }
 
     /// Show the one-time Fleet intro as a status line, the first time the
-    /// user opens `/fleet` or enters Operate — never as a first-run push.
+    /// user opens `/fleet` — never as a first-run push.
     /// It inserts no transcript message: a synthetic history cell would hide
     /// the empty launch surface before the user sends anything.
     pub fn maybe_show_feature_intro(&mut self) {
@@ -3644,8 +3644,8 @@ impl App {
     /// application use it because they are re-installing a mode the user
     /// already chose elsewhere, and re-persisting there would let a restored
     /// session silently rewrite the startup default. Every interactive
-    /// selector (Tab/Shift+Tab cycling, the Alt+A/P shortcuts, the hotbar
-    /// mode actions) goes through here instead, so "I switched to Operate"
+    /// selector (the Shift+Tab permission dial, the Alt+A/P shortcuts, the
+    /// hotbar mode actions) goes through here instead, so "I switched to Plan"
     /// survives a restart (reported by Hunter against v0.9.1). The legacy
     /// YOLO entry points go through [`Self::select_yolo_compat`] instead.
     ///
@@ -3674,8 +3674,8 @@ impl App {
     pub fn select_mode(&mut self, mode: AppMode) -> SettingSelection {
         let changed = self.set_mode(mode);
         // Persist an explicit selection even when it matches the live mode.
-        // A restored session can be Operate while the startup default remains
-        // Act; choosing Operate again is a request to make the visible state
+        // A restored session can be Plan while the startup default remains
+        // Work; choosing Plan again is a request to make the visible state
         // durable, not a no-op.
         self.startup_defaults
             .spawn(crate::tui::startup_defaults::StartupDefaults::mode(
@@ -3835,21 +3835,6 @@ impl App {
             .replace("{setting}", self.tr(subject).as_ref())
     }
 
-    /// Cycle between the two modes: Plan → Work → Plan.
-    pub fn cycle_mode(&mut self) {
-        let next = self.mode.next();
-        let outcome = self.select_mode(next);
-        self.report_mode_selection(next, outcome);
-    }
-
-    /// Cycle through modes in reverse.
-    #[cfg(test)]
-    pub fn cycle_mode_reverse(&mut self) {
-        let next = self.mode.previous();
-        let outcome = self.select_mode(next);
-        self.report_mode_selection(next, outcome);
-    }
-
     /// Show the startup-default receipt for a selection that did not move live
     /// mode. `Changed` and `Refused` already have their own messaging (the mode
     /// chip, and `reject_setting_change_while_busy` respectively).
@@ -3974,12 +3959,48 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Cycle the durable Agent permission posture: Ask → Accept Edits →
-    /// Auto-Review → Full Access.
-    pub fn cycle_approval_posture(&mut self) -> bool {
-        let Some(next) = self.next_approval_posture(false) else {
-            return false;
+    #[must_use]
+    pub fn permission_dial_next(&self) -> (AppMode, ApprovalMode) {
+        if self.mode == AppMode::Plan {
+            return (AppMode::Agent, ApprovalMode::Auto);
+        }
+        match self.approval_mode {
+            ApprovalMode::AcceptEdits => (AppMode::Plan, ApprovalMode::AcceptEdits),
+            current => (AppMode::Agent, current.cycle_permission_next()),
+        }
+    }
+
+    pub fn step_permission_dial(&mut self, root_control: bool) -> DialStep {
+        let (mode, posture) = self.permission_dial_next();
+        let current_posture = if self.mode == AppMode::Plan {
+            self.mode_prefs.agent_approval_mode
+        } else {
+            self.approval_mode
         };
+        let mut step = DialStep::default();
+        if mode != self.mode {
+            step.mode_changed = self.select_mode(mode) == SettingSelection::Changed;
+        }
+        if posture != current_posture {
+            step.posture_changed = if root_control {
+                self.select_root_approval_posture(posture)
+            } else {
+                self.select_approval_posture(posture)
+            };
+            let posture_locked = if root_control {
+                !self.approval_policy_root_editable
+            } else {
+                self.approval_policy_locked()
+            };
+            if !step.posture_changed && !step.mode_changed && posture_locked {
+                step.mode_changed = self.select_mode(AppMode::Plan) == SettingSelection::Changed;
+            }
+        }
+        step
+    }
+
+    /// Set the durable Agent permission posture.
+    pub fn select_approval_posture(&mut self, next: ApprovalMode) -> bool {
         if self.approval_policy_locked() {
             self.push_status_toast(
                 "Permissions are controlled by config or managed requirements".to_string(),
@@ -4002,14 +4023,11 @@ impl App {
         true
     }
 
-    /// Cycle permissions when the only controlling source is the user's
+    /// Set permissions when the only controlling source is the user's
     /// editable root `config.toml` key. Shift+Tab is an explicit request to
     /// adopt the TUI posture, so persist the next setting first, then remove
     /// the shadowing root key. Roll back the setting if that removal fails.
-    pub fn cycle_root_approval_posture(&mut self) -> bool {
-        let Some(next) = self.next_approval_posture(true) else {
-            return false;
-        };
+    pub fn select_root_approval_posture(&mut self, next: ApprovalMode) -> bool {
         if !self.approval_policy_root_editable {
             self.push_status_toast(
                 "Permissions are controlled by a non-editable policy source".to_string(),
@@ -4103,24 +4121,6 @@ impl App {
         Ok(())
     }
 
-    fn next_approval_posture(&mut self, allow_root_policy: bool) -> Option<ApprovalMode> {
-        // Plan used to refuse the change outright, which welded the two axes
-        // together on the keyboard: Tab cycles the mode, Shift+Tab cycles the
-        // posture, and in Plan the second key silently did nothing. They are
-        // independent settings and both must stay settable.
-        //
-        // Nothing is weakened by allowing it. Plan's read-only guarantee is
-        // derived from the mode, not from the posture: `authority` maps
-        // `(Plan, _, Bypass)` to `SandboxPolicy::ReadOnly` (there is a test
-        // pinning exactly that), and `tool_catalog` gates every write tool on
-        // `mode != AppMode::Plan`. Setting the posture here records the
-        // preference that takes effect on the next Act/Operate turn.
-        if allow_root_policy && !self.approval_policy_root_editable {
-            return None;
-        }
-        Some(self.mode_prefs.agent_approval_mode.cycle_permission_next())
-    }
-
     fn approval_posture_setting(mode: ApprovalMode) -> &'static str {
         match mode {
             ApprovalMode::Suggest => "ask",
@@ -4133,7 +4133,7 @@ impl App {
 
     /// Persist the Shift+Tab permission posture.
     ///
-    /// Synchronous on purpose: `cycle_approval_posture` only moves the live
+    /// Synchronous on purpose: `select_approval_posture` only moves the live
     /// posture if this succeeded, so the keystroke already required the write.
     /// It runs inside [`Settings::transact`] so it cannot interleave with a
     /// queued mode/thinking write — the two used to load the same bytes and the

@@ -600,7 +600,11 @@ impl App {
         };
         let configured_approval_mode = explicit_approval_mode
             .or(saved_permission_posture)
-            .unwrap_or_default();
+            .unwrap_or(if approval_policy_locked {
+                ApprovalMode::Suggest
+            } else {
+                ApprovalMode::AcceptEdits
+            });
         let configured_trust_mode = configured_approval_mode == ApprovalMode::Bypass;
         let mode_prefs = ModeSessionPrefs {
             agent_allow_shell: if yolo_compat {

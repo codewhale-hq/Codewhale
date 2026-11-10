@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:95505d84e54d -->
+<!-- source: README.md sha256:fb068568394f -->
 <div align="center">
 
 <picture>
@@ -78,8 +78,8 @@ trouvée qui l’emporte.
 ## Démarrage rapide
 
 1. Commitez ou mettez de côté (stash) votre travail, puis lancez `codewhale` à
-   la racine d’un dépôt git. Par défaut, il demande avant chaque modification de
-   fichier et chaque commande ; appuyez une fois sur `Shift+Tab` pour **Accept Edits** afin qu’il modifie les fichiers du dépôt sans demander.
+   la racine d’un dépôt git. Par défaut (**Accept Edits**), il modifie les fichiers du dépôt sans demander
+   et demande avant chaque commande ; `Shift+Tab` parcourt le cadran des permissions quand vous voulez qu’il demande plus ou moins.
 2. Lancez `/provider` (ou appuyez sur `F3`), choisissez un fournisseur, collez
    sa clé API et choisissez un modèle. DeepSeek est le fournisseur par défaut.
    Sans clé, choisissez plutôt un runtime local. Si aucun fournisseur n’est
@@ -111,12 +111,12 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 ## Modes et permissions
 
-Une nouvelle installation démarre en mode Work avec la permission Ask.
+Une nouvelle installation démarre en mode Work avec la permission Accept Edits. Un seul cadran change les deux : `Shift+Tab` parcourt Ask → Accept Edits → Plan → Auto-Review → Full Access.
 
 | | Changer avec | Options |
 | --- | --- | --- |
-| Mode | `Tab` (quand la saisie est vide) ou `/mode` | **Plan** lit et effectue des recherches, mais ne modifie rien. **Work** modifie des fichiers et exécute des commandes ; lancez un objectif avec `/goal` quand une requête nécessite plus d’un tour. |
-| Permission | `Shift+Tab` | **Ask** demande avant chaque modification de fichier et chaque commande shell qui n’est pas en lecture seule. **Accept Edits** applique sans demander les modifications de fichiers dans votre dépôt git et demande toujours avant les commandes. **Auto-Review** laisse des règles et un modèle de revue approuver les appels courants et refuse ceux à haut risque ; passez en Ask pour les approuver vous-même. **Full Access** ne demande jamais et désactive le bac à sable de Codewhale ; les règles du dépôt et la politique gérée s’appliquent toujours. |
+| Mode | l’étape Plan de `Shift+Tab`, ou `/mode` | **Plan** lit et effectue des recherches, mais ne modifie rien. **Work** (toutes les autres étapes) modifie des fichiers et exécute des commandes ; lancez un objectif avec `/goal` quand une requête nécessite plus d’un tour. |
+| Permission | `Shift+Tab` | **Ask** demande avant chaque modification de fichier et chaque commande shell qui n’est pas en lecture seule. **Accept Edits** applique sans demander les modifications de fichiers dans votre dépôt git et demande toujours avant les commandes. **Auto-Review** laisse des règles et un modèle de revue approuver les appels courants et refuse ceux à haut risque ; passez en Ask pour les approuver vous-même. **Full Access** ne demande jamais, et les commandes peuvent accéder à tout ce qui se trouve sur cet ordinateur ; les règles du dépôt et la politique gérée s’appliquent toujours. |
 
 Le [guide des modes et des permissions](../MODES.md) donne les détails.
 

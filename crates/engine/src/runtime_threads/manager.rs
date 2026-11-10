@@ -7336,7 +7336,7 @@ impl RuntimeThreadManager {
         {
             bail!("thread {thread_id} already has an active turn; stop it before deleting");
         }
-        let (thread, evicted) = self.store.with_job_operations(|transaction| {
+        let (thread, evicted, shell_manager) = self.store.with_job_operations(|transaction| {
             anyhow::ensure!(
                 !transaction
                     .list()?
@@ -7348,7 +7348,7 @@ impl RuntimeThreadManager {
             let _thread_mutation = self.store.thread_mutation.lock();
             let thread = self.store.load_thread(thread_id)?;
             active.lru.retain(|id| id != thread_id);
-            active.shell_managers.remove(thread_id);
+            let shell_manager = active.shell_managers.remove(thread_id);
             let evicted = active.engines.remove(thread_id).map(|state| state.engine);
             for turn in self.store.list_turns_for_thread(thread_id)? {
                 for item_id in &turn.item_ids {
@@ -7360,9 +7360,17 @@ impl RuntimeThreadManager {
             remove_file_if_exists(&self.store.goal_path(thread_id)?)?;
             self.store.remove_seed_journal(thread_id)?;
             self.store.remove_thread(thread_id)?;
-            Ok((thread, evicted))
+            Ok((thread, evicted, shell_manager))
         })?;
         drop(active);
+        if let Some(manager) = shell_manager
+            && let Ok(mut guard) = manager.lock()
+        {
+            guard.kill_all_owned_running();
+        }
+        // Terminal sessions are a Unix PTY surface; the module is absent on
+        // OpenHarmony, where there is no terminal to end.
+        #[cfg(not(target_env = "ohos"))]
         if let Err(error) =
             crate::tools::terminal_session::kill_owner_sessions(&thread.workspace, thread_id)
         {

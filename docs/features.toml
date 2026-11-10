@@ -319,7 +319,7 @@ owner = "crates/engine/src/tools/review_host.rs"
 [[feature]]
 id = "modes"
 name = "Modes"
-summary = "Plan and Work modes set what the agent may do in a session; a finished plan offers to start the work."
+summary = "Plan and Work modes; Plan is a stop on the Shift+Tab dial, Operate parses as Work; a finished plan offers work."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md"
@@ -328,7 +328,7 @@ owner = "crates/config/src/app_mode.rs"
 [[feature]]
 id = "permission-postures"
 name = "Permission postures"
-summary = "Ask, Accept Edits, Auto-Review and Full Access govern approvals; cards default to Deny and preview saved grants."
+summary = "One Shift+Tab dial: Ask, Accept Edits (default), Plan, Auto-Review, Full Access; cards default to Deny."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md#permission-posture"

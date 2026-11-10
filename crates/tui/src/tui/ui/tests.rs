@@ -1133,7 +1133,6 @@ fn shell_binding_probe(id: ShellBindingId) -> KeyEvent {
         ShellBindingId::ExternalEditor => KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE),
         ShellBindingId::ProviderOffer => KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE),
         ShellBindingId::Settings => KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE),
-        ShellBindingId::ModeCycle => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         ShellBindingId::PermissionCycle => KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
         ShellBindingId::ViewCycle => KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
         ShellBindingId::ViewCycleBack => KeyEvent::new(
@@ -1183,8 +1182,8 @@ fn no_shell_binding_changes_meaning_once_the_composer_has_text() {
             .focus
             .admits(crate::tui::shell_key_routing::Focus::Composer)
         {
-            // A chord may serve a different owner: Tab cycles the composer's
-            // mode and switches panes inside pet mode. The modal binding
+            // A chord may serve a different owner: Tab switches panes inside
+            // pet mode. The modal binding
             // itself must never act on the composer draft.
             assert_ne!(
                 on_typed,
@@ -1199,23 +1198,6 @@ fn no_shell_binding_changes_meaning_once_the_composer_has_text() {
             "{:?} must still be live mid-draft",
             binding.id
         );
-
-        // Admission is only half the family: the handler behind a binding
-        // must not re-guess focus from the text either. Tab is the one with
-        // a dispatcher of its own, so press it in both states.
-        if binding.id == ShellBindingId::ModeCycle {
-            let mut empty = focus_test_app();
-            empty.prompt_suggestion = None;
-            let mut typed = focus_test_app();
-            typed.prompt_suggestion = None;
-            typed.input = "draft in progress".to_string();
-            typed.cursor_position = typed.input.chars().count();
-            assert_eq!(
-                dispatch_tab_key(&mut empty, &key, &[], &[]),
-                dispatch_tab_key(&mut typed, &key, &[], &[]),
-                "Tab dispatched differently because the composer has text"
-            );
-        }
     }
 
     // The exception the rule is for: the composer's own editing keys are
@@ -1235,57 +1217,25 @@ fn no_shell_binding_changes_meaning_once_the_composer_has_text() {
 }
 
 #[test]
-fn tab_cycles_the_mode_on_the_launch_screen() {
-    // Founder live-test: "from here tab needs to work". The launch screen's
-    // composer is focused from first paint and the card's rows are arrowed,
-    // so Tab has no focus left to move — it is the shell's mode cycle there,
-    // exactly as in a live session.
-    let mut app = focus_test_app();
-    app.prompt_suggestion = None;
-    app.launch.visible = true;
-    assert_eq!(app.focus(), crate::tui::shell_key_routing::Focus::Launch);
-    let before = app.mode;
+fn tab_never_changes_the_mode() {
+    for (launch, draft) in [(true, ""), (false, ""), (false, "explain this repo")] {
+        let mut app = focus_test_app();
+        app.prompt_suggestion = None;
+        app.launch.visible = launch;
+        app.input = draft.to_string();
+        app.cursor_position = app.input.chars().count();
+        let before = app.mode;
 
-    let dispatch = dispatch_tab_key(
-        &mut app,
-        &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-        &[],
-        &[],
-    );
+        let dispatch = dispatch_tab_key(&mut app, &[], &[]);
 
-    assert!(
-        matches!(dispatch, TabDispatch::ModeCycled { .. }),
-        "Tab on the launch screen dispatched {dispatch:?}"
-    );
-    assert_ne!(app.mode, before, "the mode must actually change");
-}
-
-#[test]
-fn tab_still_cycles_the_mode_after_the_user_has_typed() {
-    // Regression: Tab used to stop working the moment the composer held any
-    // text, which is most of the time you are actually using the product.
-    let mut app = focus_test_app();
-    app.prompt_suggestion = None;
-    app.input = "explain this repo".to_string();
-    app.cursor_position = app.input.chars().count();
-    let before = app.mode;
-
-    let dispatch = dispatch_tab_key(
-        &mut app,
-        &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-        &[],
-        &[],
-    );
-
-    assert!(
-        matches!(dispatch, TabDispatch::ModeCycled { .. }),
-        "Tab with a typed composer dispatched {dispatch:?}"
-    );
-    assert_ne!(app.mode, before, "the session mode must actually change");
-    assert_eq!(
-        app.input, "explain this repo",
-        "cycling the mode must not disturb the draft"
-    );
+        assert_eq!(
+            dispatch,
+            TabDispatch::Ignored,
+            "launch={launch} draft={draft:?}"
+        );
+        assert_eq!(app.mode, before, "launch={launch} draft={draft:?}");
+        assert_eq!(app.input, draft);
+    }
 }
 
 #[test]

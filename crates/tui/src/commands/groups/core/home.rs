@@ -150,7 +150,6 @@ fn render_overview(
             "home_agent_mode_review_tip",
             "home_agent_mode_yolo_tip",
         ],
-        CommandMode::Operate => &["home_operate_mode_tip", "home_operate_mode_fleet_tip"],
         CommandMode::Plan => &["home_plan_mode_tip", "home_plan_mode_checklist_tip"],
     };
     for key in tips {

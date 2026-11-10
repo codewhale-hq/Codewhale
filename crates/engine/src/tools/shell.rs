@@ -3374,6 +3374,33 @@ impl ShellManager {
         Ok(results)
     }
 
+    /// End every background job this manager still owns that is running.
+    ///
+    /// Released shells belong to the user and are left alone; already-finished
+    /// shells are not counted. Used when the owning conversation is deleted so
+    /// its jobs do not outlive the thread record.
+    pub fn kill_all_owned_running(&mut self) -> usize {
+        let ids = self
+            .processes
+            .iter()
+            .filter(|(_, shell)| {
+                shell.status == ShellStatus::Running && shell.ownership != ShellOwnership::Released
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        let mut ended = 0;
+        for id in ids {
+            match self.kill(&id) {
+                Ok(result) if result.status == ShellStatus::Killed => ended += 1,
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(shell_id = %id, %error, "failed to end background job");
+                }
+            }
+        }
+        ended
+    }
+
     pub fn kill_running_for_session(
         &mut self,
         active_session_id: &str,

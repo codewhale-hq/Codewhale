@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:95505d84e54d -->
+<!-- source: README.md sha256:fb068568394f -->
 <div align="center">
 
 <picture>
@@ -74,8 +74,8 @@ bản sẽ cùng nằm trên `PATH` và bản nào đứng trước sẽ đượ
 ## Bắt đầu nhanh
 
 1. Commit hoặc stash công việc của bạn, rồi chạy `codewhale` từ thư mục gốc của
-   một kho git. Theo mặc định, nó hỏi trước mỗi lần chỉnh sửa tệp
-   và mỗi lệnh; nhấn `Shift+Tab` một lần để chọn **Accept Edits** và cho phép nó chỉnh sửa tệp trong kho mà không hỏi.
+   một kho git. Theo mặc định, nó (**Accept Edits**) chỉnh sửa tệp trong kho mà không hỏi
+   và hỏi trước mỗi lệnh; `Shift+Tab` chuyển từng nấc quyền khi bạn muốn nó hỏi nhiều hơn hoặc ít hơn.
 2. Chạy `/provider` (hoặc nhấn `F3`), chọn một nhà cung cấp, dán khóa API của
    nhà cung cấp đó và chọn một mô hình. DeepSeek là nhà cung cấp mặc định. Nếu
    không có khóa, hãy chọn một runtime cục bộ. Nếu chưa cấu hình nhà cung cấp
@@ -107,12 +107,12 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 ## Chế độ và quyền
 
-Bản cài đặt mới khởi động ở chế độ Work với quyền Ask.
+Bản cài đặt mới khởi động ở chế độ Work với quyền Accept Edits. Một nút xoay duy nhất chuyển cả hai: `Shift+Tab` lần lượt chuyển Ask → Accept Edits → Plan → Auto-Review → Full Access.
 
 | | Chuyển bằng | Tùy chọn |
 | --- | --- | --- |
-| Chế độ | `Tab` (khi ô nhập trống) hoặc `/mode` | **Plan** đọc và tìm kiếm nhưng không thay đổi gì. **Work** chỉnh sửa tệp và chạy lệnh; hãy bắt đầu một mục tiêu với `/goal` khi yêu cầu cần nhiều hơn một lượt. |
-| Quyền | `Shift+Tab` | **Ask** hỏi trước mỗi chỉnh sửa tệp và trước mọi lệnh shell không phải chỉ đọc. **Accept Edits** áp dụng các chỉnh sửa tệp trong kho git của bạn mà không hỏi và vẫn hỏi trước khi chạy lệnh. **Auto-Review** để các quy tắc và một mô hình đánh giá phê duyệt các lệnh gọi thông thường, và từ chối các lệnh gọi rủi ro cao; hãy chuyển sang Ask để tự phê duyệt những lệnh gọi đó. **Full Access** không bao giờ hỏi và tắt sandbox của Codewhale; các quy tắc của kho mã và chính sách được quản lý vẫn được áp dụng. |
+| Chế độ | nấc Plan trên `Shift+Tab`, hoặc `/mode` | **Plan** đọc và tìm kiếm nhưng không thay đổi gì. **Work** (mọi nấc khác) chỉnh sửa tệp và chạy lệnh; hãy bắt đầu một mục tiêu với `/goal` khi yêu cầu cần nhiều hơn một lượt. |
+| Quyền | `Shift+Tab` | **Ask** hỏi trước mỗi chỉnh sửa tệp và trước mọi lệnh shell không phải chỉ đọc. **Accept Edits** áp dụng các chỉnh sửa tệp trong kho git của bạn mà không hỏi và vẫn hỏi trước khi chạy lệnh. **Auto-Review** để các quy tắc và một mô hình đánh giá phê duyệt các lệnh gọi thông thường, và từ chối các lệnh gọi rủi ro cao; hãy chuyển sang Ask để tự phê duyệt những lệnh gọi đó. **Full Access** không bao giờ hỏi, và lệnh có thể truy cập mọi thứ trên máy tính này; các quy tắc của kho mã và chính sách được quản lý vẫn được áp dụng. |
 
 Xem chi tiết trong [hướng dẫn về chế độ và quyền](../MODES.md).
 

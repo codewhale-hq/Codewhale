@@ -9076,6 +9076,91 @@ async fn file_revert_route_validates_body_then_ownership() -> Result<()> {
     Ok(())
 }
 
+/// The route's two ownership outcomes on one workspace: a thread that recorded
+/// the restore point restores its file in the default posture, and a second
+/// thread on the same workspace naming that same point is refused with no
+/// bytes changed. This is the route-level half the file-revert trust review
+/// (L3) asked for; the helper test above proves the selection logic.
+#[tokio::test]
+async fn file_revert_route_restores_an_owned_file_and_refuses_a_foreign_receipt() -> Result<()> {
+    // The route opens the snapshot store under the resolved home. Seal the
+    // process environment and own that home, so a concurrent test's temporary
+    // HOME (deleted when it ends) can never host or remove this store mid-request.
+    let _env = lock_test_env();
+    let root = std::env::temp_dir().join(format!("deepseek-file-revert-owner-{}", Uuid::new_v4()));
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", root.join("home"));
+    let sessions_dir = root.join("sessions");
+    let Some((addr, runtime_threads, handle)) =
+        spawn_test_server_with_root(root.clone(), sessions_dir).await?
+    else {
+        return Ok(());
+    };
+    let owner = create_seeded_thread(&addr, &runtime_threads, &root, "Edit a.txt").await?;
+    let other = create_seeded_thread(&addr, &runtime_threads, &root, "Read a.txt").await?;
+
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&workspace)?;
+    let file = workspace.join("a.txt");
+    fs::write(&file, "before")?;
+
+    // A restore point recorded on the owning thread's own turn, exactly as the
+    // engine records one: the receipt carries the snapshot's session tag.
+    let repo = codewhale_snapshot::SnapshotRepo::open_or_init(&workspace)?;
+    let taken = repo.take_snapshot("pre-turn:1", Some("session-owner"))?;
+    let receipt = snapshot_receipt(
+        codewhale_snapshot::WorkspaceSnapshotKind::PreTurn,
+        &taken,
+        "session-owner",
+    );
+    {
+        let store = runtime_threads.test_store();
+        let mut turn = store
+            .list_turns_for_thread(&owner)?
+            .into_iter()
+            .next()
+            .context("the seeded thread has a turn")?;
+        turn.workspace_snapshots.push(receipt);
+        store.save_turn(&turn)?;
+    }
+    fs::write(&file, "after")?;
+    let snapshot_id = repo.list(10)?.remove(0).id.as_str().to_string();
+    let client = codewhale_release::tls::reqwest_client();
+
+    // Another thread on the same workspace naming the same restore point:
+    // refused, and the working tree is untouched.
+    let resp = client
+        .post(format!("http://{addr}/v1/threads/{other}/file-revert"))
+        .json(&json!({
+            "path": "a.txt",
+            "snapshot_id": snapshot_id,
+            "expected_hash": sha256_of(&file),
+        }))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(fs::read_to_string(&file)?, "after");
+
+    // The owning thread, in the default (untrusted) posture, restores it:
+    // the file is inside its own workspace, so no trust mode is required.
+    let resp = client
+        .post(format!("http://{addr}/v1/threads/{owner}/file-revert"))
+        .json(&json!({
+            "path": "a.txt",
+            "snapshot_id": snapshot_id,
+            "expected_hash": sha256_of(&file),
+        }))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await?;
+    assert_eq!(body["path"], "a.txt");
+    assert_eq!(body["action"], "modified");
+    assert_eq!(fs::read_to_string(&file)?, "before");
+
+    handle.abort();
+    Ok(())
+}
+
 /// All three restore routes refuse while a turn is active in an overlapping
 /// workspace, and admit again once it settles. Nothing is changed on refusal.
 #[tokio::test]

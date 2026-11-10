@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:95505d84e54d -->
+<!-- source: README.md sha256:fb068568394f -->
 <div align="center">
 
 <picture>
@@ -75,8 +75,8 @@ inaczej w `PATH` znajdą się dwie kopie i zadziała ta, która jest pierwsza.
 ## Szybki start
 
 1. Zrób commit lub stash swoich zmian, a następnie uruchom `codewhale` w
-   katalogu głównym repozytorium git. Domyślnie pyta przed każdą zmianą w pliku
-   i każdym poleceniem; naciśnij raz `Shift+Tab`, aby włączyć **Accept Edits** i pozwolić mu zmieniać pliki w repozytorium bez pytania.
+   katalogu głównym repozytorium git. Domyślnie (**Accept Edits**) zmienia pliki w repozytorium bez pytania
+   i pyta przed każdym poleceniem; `Shift+Tab` przełącza uprawnienie krok po kroku, gdy chcesz, by pytał częściej lub rzadziej.
 2. Uruchom `/provider` (lub naciśnij `F3`), wybierz dostawcę, wklej jego klucz
    API i wybierz model. Domyślnym dostawcą jest DeepSeek. Jeśli nie masz
    klucza, wybierz zamiast tego lokalne środowisko. Jeśli żaden dostawca nie
@@ -107,12 +107,12 @@ codewhale exec --auto --sandbox workspace-write "fix the failing tests and expla
 
 ## Tryby i uprawnienia
 
-Świeża instalacja startuje w trybie Work z uprawnieniem Ask.
+Świeża instalacja startuje w trybie Work z uprawnieniem Accept Edits. Jedno pokrętło przełącza oba: `Shift+Tab` przechodzi kolejno Ask → Accept Edits → Plan → Auto-Review → Full Access.
 
 | | Przełączanie | Opcje |
 | --- | --- | --- |
-| Tryb | `Tab` (gdy pole wprowadzania jest puste) lub `/mode` | **Plan** czyta i przeszukuje, ale niczego nie zmienia. **Work** edytuje pliki i uruchamia polecenia; uruchom cel poleceniem `/goal`, gdy zlecenie wymaga więcej niż jednej tury. |
-| Uprawnienie | `Shift+Tab` | **Ask** pyta przed każdą zmianą w pliku i przed każdym poleceniem powłoki, które nie jest tylko do odczytu. **Accept Edits** wprowadza zmiany w plikach Twojego repozytorium git bez pytania i nadal pyta przed poleceniami. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania, a wywołania wysokiego ryzyka odrzuca; aby zatwierdzać je samodzielnie, przełącz na Ask. **Full Access** nigdy nie pyta i wyłącza piaskownicę Codewhale; reguły repozytorium i polityka zarządzana nadal obowiązują. |
+| Tryb | pozycja Plan na `Shift+Tab` lub `/mode` | **Plan** czyta i przeszukuje, ale niczego nie zmienia. **Work** (każda inna pozycja) edytuje pliki i uruchamia polecenia; uruchom cel poleceniem `/goal`, gdy zlecenie wymaga więcej niż jednej tury. |
+| Uprawnienie | `Shift+Tab` | **Ask** pyta przed każdą zmianą w pliku i przed każdym poleceniem powłoki, które nie jest tylko do odczytu. **Accept Edits** wprowadza zmiany w plikach Twojego repozytorium git bez pytania i nadal pyta przed poleceniami. **Auto-Review** pozwala regułom i modelowi recenzującemu zatwierdzać rutynowe wywołania, a wywołania wysokiego ryzyka odrzuca; aby zatwierdzać je samodzielnie, przełącz na Ask. **Full Access** nigdy nie pyta, a polecenia mają dostęp do wszystkiego na tym komputerze; reguły repozytorium i polityka zarządzana nadal obowiązują. |
 
 Szczegóły opisuje [przewodnik po trybach i uprawnieniach](../MODES.md).
 

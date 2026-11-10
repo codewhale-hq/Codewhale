@@ -2498,6 +2498,29 @@ fn test_kill() {
 }
 
 #[test]
+fn kill_all_owned_running_ends_every_running_job_once() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let first = execute_shell(&mut manager, &sleep_command(60), None, 5000, true)
+        .expect("first")
+        .task_id
+        .expect("first task id");
+    let second = execute_shell(&mut manager, &sleep_command(60), None, 5000, true)
+        .expect("second")
+        .task_id
+        .expect("second task id");
+
+    assert_eq!(manager.kill_all_owned_running(), 2);
+    for id in [&first, &second] {
+        let job = manager.inspect_job(id).expect("inspect job");
+        assert_eq!(job.snapshot.status, ShellStatus::Killed);
+    }
+    // Finished jobs are not recounted, so a repeat call is a no-op.
+    assert_eq!(manager.kill_all_owned_running(), 0);
+}
+
+#[test]
 fn test_write_stdin_streams_output() {
     let tmp = tempdir().expect("tempdir");
     let mut manager = ShellManager::new(tmp.path().to_path_buf());

@@ -27,7 +27,7 @@
 | 终端里输入 codewhale 提示"不是命令" | 环境变量没配好或终端没重开（见 2.3 节） |
 | 提示"禁止运行脚本" | 先检查 PowerShell 的有效执行策略（见第 3 节） |
 | 配置了 pro 却显示在用 flash | 多半是用了 `/model auto` 并开启了 `[auto] cost_saving`，或配置了 `[auto.router]`，不是 bug（见 7.2 节） |
-| 界面停在奇怪的模式 | 按 `Tab` 切回，或输入 `/mode work` |
+| 界面停在奇怪的模式 | 按 `Shift+Tab` 切回，或输入 `/mode work` |
 | 改完配置突然连不上 | 检查 `provider` 和 `base_url` 是否被改坏，改回默认 |
 | cmd 里运行显示异常或崩溃 | 改用 Windows Terminal（见 2.5 节） |
 | GitHub 打不开/下载失败 | 需要配置系统代理后重试 |
@@ -288,9 +288,9 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ---
 
-## 5. 三种模式：Plan / Work / Operate
+## 5. 两种模式：Plan / Work
 
-按 `Tab` 键循环切换（输入框为空时），或输入 `/mode plan|work|operate` 直接切换（`act` 仍是 Work 的兼容别名）。
+按 `Shift+Tab` 在权限拨盘上逐档切换（Ask → Accept Edits → Plan → Auto-Review → Full Access），Plan 档就是 Plan 模式，其余每一档都是 Work；也可以输入 `/mode plan|work` 直接切换（`act` 仍是 Work 的兼容别名）。`Tab` 只做补全，不切换模式。
 
 ### 5.1 Plan 模式——只读，先出方案
 
@@ -300,29 +300,26 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 ### 5.2 Work 模式——动手干活
 
-- 普通的多步执行模式，能改文件、跑命令；是否弹窗问你，取决于第 6 节的权限姿态（默认 Ask 对需要审批的调用会先问）
+- 普通的多步执行模式，能改文件、跑命令；是否弹窗问你，取决于第 6 节的权限姿态（默认 Accept Edits：仓库内编辑直接执行，命令会先问）
 - 批准一次调用不等于绕过后续的工具路径检查或其他安全限制
 - **新手第二步：方案满意后切到 Work，让它逐项实现**
 
-### 5.3 Operate 模式——当老板派活
+> Operate 模式已退役：旧配置里的 `operate` 会按 Work 加载并提示一次。需要多个智能体并行干活时用 `/fleet`（舰队）。
 
-- 工具和执行权限与 Work 完全一样（不会更宽松），区别在于调度：大任务会先列出步骤、依赖和完成检查，再派出多个智能体并行干
-- **新手现阶段不用碰**，等做大工程再说
-
-> 模式会被记住：切过的模式写进配置，下次启动默认还是它。如果发现界面"停在奇怪的模式"，按 `Tab` 切回或输入 `/mode work`。
+> 模式会被记住：切过的模式写进配置，下次启动默认还是它。如果发现界面"停在奇怪的模式"，按 `Shift+Tab` 切回或输入 `/mode work`。
 
 ---
 
 ## 6. 权限与安全（小白最重要的保护）
 
-按 `Shift+Tab` 循环切换四种权限姿态（permission posture）：
+按 `Shift+Tab` 在拨盘上切换四种权限姿态（permission posture），Plan 档位于 Accept Edits 与 Auto-Review 之间：
 
 | 姿态 | 行为 | 建议 |
 |---|---|---|
-| **Ask** | 每次文件编辑和需要审批的调用都会先询问 | 默认档位 |
-| Accept Edits（接受编辑） | git 仓库内的普通文件编辑直接执行；命令仍会先询问 | 先保留重要文件的备份 |
+| Ask | 每次文件编辑和需要审批的调用都会先询问 | 想逐项确认时用 |
+| **Accept Edits**（接受编辑） | git 仓库内的普通文件编辑直接执行；命令仍会先询问 | 默认档位；先保留重要文件的备份 |
 | Auto-Review | 自动审查工具调用；确定性规则判定安全的操作直接放行，其余可审查的拦截交给一次性模型复核，高风险仍会被拦下。模型仍可为需要你决定的事项提问 | 熟悉后可用 |
-| Full Access（完全访问） | 普通工具调用不再弹审批（仓库规则等硬性拦截仍然生效） | 只用于完全信任的文件夹 |
+| Full Access（完全访问） | 工具不经询问直接运行，命令可以访问这台电脑上的任何内容 | 只用于完全信任的文件夹 |
 
 ---
 
@@ -422,8 +419,8 @@ default_text_model = "deepseek-v4-pro"
 
 | 按键 | 作用 |
 |---|---|
-| `Tab` | 输入框为空时循环模式 Plan → Work → Operate |
-| `Shift+Tab` | 循环权限姿态 Ask → Accept Edits → Auto-Review → Full Access |
+| `Tab` | 补全命令和文件提及 |
+| `Shift+Tab` | 权限拨盘 Ask → Accept Edits → Plan → Auto-Review → Full Access |
 | `Ctrl+T` | 循环思考强度 |
 | `Ctrl+Alt+O` | 打开 Turn Inspector（查看每回合用了哪个模型、为什么） |
 

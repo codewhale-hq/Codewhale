@@ -126,6 +126,20 @@ fn context_pressure_message(usage_percent: f64) -> Option<&'static str> {
     }
 }
 
+fn state_unreachable_reason(error: &anyhow::Error) -> Option<&'static str> {
+    for cause in error.chain() {
+        if let Some(io_error) = cause.downcast_ref::<std::io::Error>() {
+            if codewhale_config::private_directory::error_is_filesystem_loop(io_error) {
+                return Some("is a symlink loop");
+            }
+            if io_error.kind() == std::io::ErrorKind::NotFound {
+                return Some("does not exist");
+            }
+        }
+    }
+    None
+}
+
 fn agent_list_event(manager: &SubAgentManager, active_session_id: &str) -> Event {
     // One clock read shared by every row, so elapsed values in a single
     // listing are consistent with each other (#5479).
@@ -4153,15 +4167,47 @@ impl Engine {
                                 let session_id = active_session_id.clone();
                                 match codewhale_runtime::runtime_control::owner_work(move || {
                                     let mut manager = manager.blocking_write();
-                                    manager.cleanup_for_session(
+                                    let degraded = match manager.cleanup_for_session(
                                         &session_id,
                                         Duration::from_secs(60 * 60),
-                                    )?;
-                                    Ok(agent_list_event(&manager, &session_id))
+                                    ) {
+                                        Ok(_) => None,
+                                        Err(error) => match state_unreachable_reason(&error) {
+                                            Some(reason) => {
+                                                let first = manager.note_state_unreachable();
+                                                let path = manager
+                                                    .state_path()
+                                                    .map(|path| path.display().to_string());
+                                                Some((reason, first, path))
+                                            }
+                                            None => return Err(error),
+                                        },
+                                    };
+                                    Ok((agent_list_event(&manager, &session_id), degraded))
                                 })
                                 .await
                                 {
-                                    Ok(event) => event,
+                                    Ok((event, degraded)) => {
+                                        if let Some((reason, first, path)) = &degraded {
+                                            let path =
+                                                path.as_deref().unwrap_or(".codewhale/state");
+                                            if *first {
+                                                let _ = self
+                                                    .send_event(Event::error(
+                                                        ErrorEnvelope::transient(format!(
+                                                            "Sub-agent state {reason} at {path}; this session continues without durable sub-agent cleanup."
+                                                        )),
+                                                    ))
+                                                    .await;
+                                            } else {
+                                                tracing::warn!(
+                                                    target: "subagent",
+                                                    "sub-agent state {reason} at {path}; cleanup skipped"
+                                                );
+                                            }
+                                        }
+                                        event
+                                    }
                                     Err(error) => {
                                         let _ = self
                                             .send_event(Event::error(ErrorEnvelope::transient(
@@ -6301,8 +6347,11 @@ impl Engine {
                 &self.session.id,
             )
             .await;
+            let mut messages = self.messages_with_turn_metadata();
+            messages
+                .retain(|message| !crate::runtime_handoff::is_operate_contract_message(message));
             Some(SubAgentForkContext {
-                messages: self.messages_with_turn_metadata(),
+                messages,
                 structured_state_block: state.to_system_block(),
                 // Resolve at spawn time so a todo_write earlier in this turn
                 // reaches the child rather than freezing turn-start state.

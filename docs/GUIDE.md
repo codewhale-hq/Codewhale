@@ -370,9 +370,9 @@ For trusted workspaces where you intentionally want actions to proceed without
 approval prompts, select the Full Access permission posture with `Shift+Tab`.
 Do not use Full Access in a repository you do not trust.
 
-Modes are separate from model routing. `Tab` cycles visible modes when the
-composer is idle, while `/model auto` controls model and thinking selection for
-turns.
+Modes are separate from model routing. The `Shift+Tab` permission dial steps
+Ask → Accept Edits → Plan → Auto-Review → Full Access, while `/model auto`
+controls model and thinking selection for turns.
 
 You can also change approval behavior from `/config` by editing the approval
 mode. Use this only when you understand how it changes tool execution.

@@ -21,8 +21,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
-/** Bounded additive projection of dsh-persona 0.2.1-rc.5 (MIT), pinned
- * b830ec950faba0a46dda564be3e2d854afed94f1. Core retains its prompt and
+/** Bounded additive projection of dsh-persona 0.2.2-rc.1 (MIT), pinned
+ * 66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db. Core retains its prompt and
  * runtime context. Prefix/suffix become exact entry-scoped contributions. */
 import { normalizePromptSection, validatePromptTemplate, MAX_PROMPT_SECTION_BYTES } from '../shims/prompt.ts'
 import { ownerStorage } from '../root.ts'

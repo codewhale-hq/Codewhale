@@ -1,5 +1,5 @@
 {
-  "ref": "b830ec950faba0a46dda564be3e2d854afed94f1",
+  "ref": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
   "files": {
     "hook-protocol/src/matcher.ts": {
       "source_sha256": "f2d9cd9640b902ba40be97746ba9c20365aea9de184456976ae64b41dfdbfe0b",
@@ -46,5 +46,5 @@
   },
   "license": "MIT",
   "not_full_index": "Full upstream lifecycle index expects agent/session writers; only pure configuration/matcher/codec/merge are adopted. Core firepoints and scheduling are reused.",
-  "version": "0.2.1-rc.5"
+  "version": "0.2.2-rc.1"
 }

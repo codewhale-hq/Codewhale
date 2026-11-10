@@ -632,14 +632,16 @@ impl SetupRuntimePreset {
 
     pub fn permission_posture(self) -> &'static str {
         match self {
-            Self::AskFirst | Self::NormalAgent => "ask",
+            Self::AskFirst => "ask",
+            Self::NormalAgent => "accept-edits",
             Self::HighTrustLocal => "full-access",
         }
     }
 
     pub fn approval_policy(self) -> Option<&'static str> {
         match self {
-            Self::AskFirst | Self::NormalAgent => Some("on-request"),
+            Self::AskFirst => Some("on-request"),
+            Self::NormalAgent => Some("accept-edits"),
             // Full Access lives in TUI settings; it is intentionally not a
             // top-level approval_policy value.
             Self::HighTrustLocal => None,

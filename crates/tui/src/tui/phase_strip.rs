@@ -614,17 +614,17 @@ mod tests {
 // band — phase·cost on the left, the notice/keys slot on the right.
 // Wired into `ui/frame.rs` as the shell's single footer row: the classic
 // activity band (slot 6) and identity band (slot 8) collapsed into it, with
-// the old header's mode/permission chips carried in the left half per §3.
+// the permission dial chip carried in the left half.
 // ---------------------------------------------------------------------------
 // The posture bar (SHELL-DESIGN-20260901 §2.0 item 3, §2.3b; founder
 // direction 2026-09-02): the first row under the composer, in Claude Code's
 // grammar —
 //
-//    ● full access  Shift+Tab to change   work (Tab)   2 agents, 1 task   Esc to interrupt      rc connected
+//    ● full access  Shift+Tab to change   2 agents, 1 task   Esc to interrupt      rc connected
 //
-// permission chip first (never sheds, #5796), marked `●` so the current
-// permission reads without color (experience mark 8) and followed by what
-// its key does, then the mode, the turn clock, the
+// the permission dial chip first (never sheds, #5796), marked `●` so the
+// current stop reads without color (experience mark 8) and followed by what
+// its key does, then the turn clock, the
 // live counts, the session clock, then the one hint that applies right now;
 // the remote-control state or a live notice pinned right. No cost: the
 // roster owns per-agent elapsed and the metrics line owns the price. The
@@ -635,7 +635,7 @@ mod tests {
 // classic footer until `146ab7f756` deleted that path, and the phase band's
 // `working_detail` until `329960fcbf` (the 0.9.12 mega shell) merged the
 // bands and left the elapsed reading to the transcript's active row. A
-// multi-hour operate session scrolls that row out of sight, so the founder
+// multi-hour session scrolls that row out of sight, so the founder
 // looking straight at the screen had no way to tell how long the session had
 // been working or whether the current turn was stuck. The fixed row is where
 // a glancing user looks; the clock lives here.
@@ -648,17 +648,14 @@ const DEPTH_WARN: &str = "surface soon — /compact";
 /// What the caller owes the posture bar. All injected, deterministic.
 pub struct TidelineFooter<'a> {
     pub theme: &'a codewhale_palette::UiTheme,
-    /// Permission chip (`ask` / `auto` / `full access`, plus the filesystem
-    /// scope notice when it deviates) in its Permission ink. Never sheds.
+    /// Permission dial chip (`ask` / `accept edits` / `plan` / `auto` /
+    /// `Full Access`, plus the filesystem scope notice when it deviates) in
+    /// its ink. Never sheds.
     pub permission_chip: (&'a str, codewhale_palette::ChromeInk),
     /// What the permission key does, when the binding is live for the
     /// current focus and not yet learned (`Shift+Tab to change`). Painted
     /// after the chip in hint ink.
     pub permission_key: Option<&'a str>,
-    /// Mode chip (`work` / `plan` / `operate`) in its Policy ink.
-    pub mode_chip: Option<(&'a str, codewhale_palette::ChromeInk)>,
-    /// The chord that cycles the mode, when the binding is live (`Tab`).
-    pub mode_key: Option<&'a str>,
     /// The turn half of the working clock (`working 1m 15s`): what the
     /// session is doing right now and for how long. `None` between turns.
     pub turn_clock: Option<(&'a str, codewhale_palette::ChromeInk)>,
@@ -683,7 +680,7 @@ pub struct TidelineFooter<'a> {
     pub ascii_safe: bool,
     /// `tui.posture_bar = "compact"` (#5950): start the shed ladder at
     /// the kit's compact rung instead of rung 0, so the row states its posture —
-    /// the permission and mode chips, and the cap warning when it is owed —
+    /// the permission dial chip, and the cap warning when it is owed —
     /// and nothing live. Width sheds the rest exactly as it always did.
     pub compact: bool,
     working_glow: Option<(
@@ -703,8 +700,6 @@ impl<'a> TidelineFooter<'a> {
             theme,
             permission_chip,
             permission_key: None,
-            mode_chip: None,
-            mode_key: None,
             turn_clock: None,
             counts: &[],
             session_clock: None,
@@ -720,18 +715,6 @@ impl<'a> TidelineFooter<'a> {
     #[must_use]
     pub fn permission_key(mut self, key: Option<&'a str>) -> Self {
         self.permission_key = key;
-        self
-    }
-
-    #[must_use]
-    pub fn mode_chip(mut self, chip: Option<(&'a str, codewhale_palette::ChromeInk)>) -> Self {
-        self.mode_chip = chip;
-        self
-    }
-
-    #[must_use]
-    pub fn mode_key(mut self, key: Option<&'a str>) -> Self {
-        self.mode_key = key;
         self
     }
 
@@ -812,8 +795,6 @@ impl<'a> TidelineFooter<'a> {
             .cap_warning(DEPTH_WARN)
             .compact(self.compact);
         bar.permission_key = self.permission_key.map(Into::into);
-        bar.mode = self.mode_chip.map(posture_fact);
-        bar.mode_key = self.mode_key.map(Into::into);
         bar.turn_clock = self.turn_clock.map(posture_fact);
         bar.counts = self
             .counts
@@ -881,8 +862,6 @@ pub(crate) struct TidelineFooterFacts {
     /// `Shift+Tab to change`, localized, while the binding is live and not
     /// yet learned.
     pub permission_key: Option<String>,
-    pub mode_chip: Option<(String, codewhale_palette::ChromeInk)>,
-    pub mode_key: Option<&'static str>,
     pub turn_clock: ClockReading,
     pub counts: Vec<(String, ChromeInk)>,
     pub session_clock: ClockReading,
@@ -909,8 +888,6 @@ impl TidelineFooterFacts {
             (self.permission_chip.0.as_str(), self.permission_chip.1),
         )
         .permission_key(self.permission_key.as_deref())
-        .mode_chip(borrow(&self.mode_chip))
-        .mode_key(self.mode_key)
         .turn_clock(borrow(&self.turn_clock))
         .counts(&self.counts)
         .session_clock(borrow(&self.session_clock))
@@ -1079,20 +1056,8 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
     let tier = ShellTier::for_chrome_width(width);
     let focus = app.focus();
 
-    let (mode_chip, permission_chip) = crate::tui::underwater::posture_chips(app);
-    let permission_chip = permission_chip
-        .map(|(text, ink)| (text.into_owned(), ink))
-        .unwrap_or_else(|| (String::new(), ChromeInk::PermissionAsk));
-    // The mode chip is the one posture fact `/statusline` composes (#5950):
-    // its `StatusItem::Mode` toggle used to be inert. The permission chip,
-    // the working clocks (#5914) and the live counts are the bar's own
-    // posture statement and stay unconditional.
-    let mode_chip = mode_chip
-        .filter(|_| {
-            app.status_items
-                .contains(&codewhale_runtime::config::StatusItem::Mode)
-        })
-        .map(|(text, ink)| (text.into_owned(), ink));
+    let (dial_text, dial_ink) = crate::tui::underwater::dial_chip(app);
+    let permission_chip = (dial_text.into_owned(), dial_ink);
     // Cycle keys come from the binding table and only when that binding is
     // live for the current focus.
     let live_chord = |id: ShellBindingId| -> Option<&'static str> {
@@ -1222,13 +1187,6 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
             .map(|chord| {
                 tr(app.ui_locale, MessageId::FooterPermissionKeyHint).replace("{key}", chord)
             }),
-        mode_chip,
-        mode_key: live_chord(ShellBindingId::ModeCycle).filter(|_| {
-            !crate::tui::footer_hints::retired(
-                &app.footer_hint_uses,
-                crate::tui::footer_hints::MODE_CYCLE,
-            )
-        }),
         turn_clock,
         counts,
         session_clock,

@@ -147,7 +147,7 @@ fn count_rows_containing(rows: &[String], needle: &str) -> usize {
 }
 
 /// Every chrome fact paints in exactly one row of the composed default
-/// frame: the context reading, the mode and permission chips, the model,
+/// frame: the context reading, the permission dial chip, the model,
 /// the cost, the agent count, and the help hint.
 ///
 /// 160 columns joins the blocker sizes so both working-clock halves can
@@ -163,13 +163,10 @@ fn composed_frame_paints_each_fact_in_exactly_one_row() {
         let rows = draw(&mut app, width, height);
         let pct = super::info_context_percent(&app);
         let (_, model) = app.effective_route_identity_display();
-        let (mode, permission) = crate::tui::underwater::posture_chips(&app);
-        let mode = mode.expect("mode chip").0.into_owned();
-        let permission = permission.expect("permission chip").0.into_owned();
+        let permission = crate::tui::underwater::dial_chip(&app).0.into_owned();
         // The context reading paints exactly once, at every fullness
         // (#5950 — it used to go silent below 50%).
         let mut facts = vec![
-            ("mode chip", format!("   {mode} (")),
             // Mark 8: the permission in force is marked `●` and followed by
             // what its key does, not a parenthesised chord.
             ("permission chip", format!("● {permission}")),
@@ -442,9 +439,8 @@ fn row_presets_reclaim_rows_and_quiet_them_in_the_composed_frame() {
     let posture = posture_row(&rows).expect("compact paints the posture bar");
     let metrics = metrics_row(&rows).expect("compact paints the metrics line");
     assert_eq!(metrics, posture + 1);
-    let (mode, permission) = crate::tui::underwater::posture_chips(&app);
-    assert!(rows[posture].contains(permission.expect("permission chip").0.as_ref()));
-    assert!(rows[posture].contains(mode.expect("mode chip").0.as_ref()));
+    let permission = crate::tui::underwater::dial_chip(&app);
+    assert!(rows[posture].contains(permission.0.as_ref()));
     for gone in ["working", "2 agents", "Esc to interrupt"] {
         assert!(
             !rows[posture].contains(gone),

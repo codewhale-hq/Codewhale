@@ -359,7 +359,7 @@ keeps its existing tool-loading policy. Non-boolean values are refused.
 Nonempty registration options, `when`, `projectContent`, `finalizeContent`
 and `timeoutMs` remain unsupported and are refused. The shared
 [`compatibility.json`](../crates/engine/extension-host/src/dsh/compatibility.json)
-pins the definition API to DSH 0.2.1-rc.5 and records service, row-bridge and
+pins the definition API to DSH 0.2.2-rc.1 and records service, row-bridge and
 module mappings. Its bytes participate in Native content and capability review,
 so changing the compatibility contract invalidates prior trust.
 

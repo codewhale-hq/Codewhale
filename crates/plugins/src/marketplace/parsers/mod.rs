@@ -8,6 +8,7 @@
 pub mod claude;
 pub mod codewhale;
 pub mod codex;
+pub mod dsh;
 pub mod kimi;
 
 use serde_json::Value;
@@ -83,6 +84,7 @@ pub fn parse_catalog(document: MarketplaceDocument) -> MarketplaceCatalog {
         MarketplaceFormat::Claude => claude::parse_claude_catalog(document),
         MarketplaceFormat::Codex => codex::parse_codex_catalog(document),
         MarketplaceFormat::Codewhale => codewhale::parse_codewhale_catalog(document),
+        MarketplaceFormat::Dsh => dsh::parse_dsh_catalog(document),
         MarketplaceFormat::Auto => unreachable!("resolved above"),
     };
     flag_duplicate_names(&mut catalog);
@@ -126,6 +128,9 @@ fn flag_duplicate_names(catalog: &mut super::types::MarketplaceCatalog) {
 ///   object.
 /// - **Codewhale**: `plugins[]` entries with `name` + a string `source`
 ///   that is a Codewhale install spec (`github:`, `path:`, URL).
+/// - **DSH**: a top-level numeric `format` (the DSH plugin market index
+///   format; version `1` is the only one defined, and any other value is
+///   reported by the parser rather than guessed).
 ///
 /// Documents matching no documented marker are ambiguous, not guessed.
 fn detect_format(root: &Value) -> Result<MarketplaceFormat, MarketplaceDiagnostic> {
@@ -141,12 +146,20 @@ fn detect_format(root: &Value) -> Result<MarketplaceFormat, MarketplaceDiagnosti
         return Err(MarketplaceDiagnostic::error(
             "UNKNOWN_FORMAT",
             "catalog has no documented marker: expected Kimi `plugins` with `id` entries, \
-             Claude `owner`/`plugins`, Codex `policy`/`interface`, or Codewhale `plugins` \
-             with install-spec sources",
+             Claude `owner`/`plugins`, Codex `policy`/`interface`, DSH `format: 1` with \
+             `versions` entries, or Codewhale `plugins` with install-spec sources",
             None,
             None,
         ));
     };
+
+    // DSH market index: the format declares a numeric `format`, and 1 is the
+    // only version of it. Any numeric `format` routes here so the parser can
+    // report the version it cannot read instead of calling the document
+    // ambiguous. No other supported format declares a numeric `format`.
+    if obj.get("format").is_some_and(Value::is_number) {
+        return Ok(MarketplaceFormat::Dsh);
+    }
 
     // Claude: `owner` and `metadata.pluginRoot` are documented top-level
     // fields no other format defines.

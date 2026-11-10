@@ -1247,7 +1247,7 @@ pub const SETTINGS_SCHEMA: &[SettingDef] = &[
     def(
         "permission_posture",
         SettingKind::Enum(PERMISSION_POSTURE),
-        "ask",
+        "accept-edits",
         ui(
             TAB_TRUST,
             "permissions",

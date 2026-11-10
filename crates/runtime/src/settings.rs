@@ -3599,6 +3599,35 @@ mod tests {
     }
 
     #[test]
+    fn explicit_permission_postures_survive_reload_without_migration_markers() {
+        let _g = config_path_test_guard();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let settings_path = tmp.path().join("settings.toml");
+        let _config_override =
+            EnvVarRestore::set("DEEPSEEK_CONFIG_PATH", tmp.path().join("config.toml"));
+
+        Settings::transact(|settings| settings.set("permission_posture", "ask"))
+            .expect("pick Ask on a new install");
+        let fresh = Settings::load().expect("reload new settings");
+        assert_eq!(fresh.permission_posture.as_deref(), Some("ask"));
+
+        for posture in ["ask", "accept-edits", "auto-review", "full-access"] {
+            std::fs::write(
+                &settings_path,
+                format!("permission_posture = \"{posture}\"\n"),
+            )
+            .expect("preexisting settings");
+            let loaded = Settings::load().expect("load preexisting settings");
+            assert_eq!(loaded.permission_posture.as_deref(), Some(posture));
+        }
+
+        Settings::transact(|settings| settings.set("permission_posture", "ask"))
+            .expect("pick Ask after another posture");
+        let reloaded = Settings::load().expect("reload settings");
+        assert_eq!(reloaded.permission_posture.as_deref(), Some("ask"));
+    }
+
+    #[test]
     fn settings_load_keeps_top_placement_chosen_after_the_bottom_migration() {
         let _g = config_path_test_guard();
         let tmp = tempfile::tempdir().expect("tempdir");

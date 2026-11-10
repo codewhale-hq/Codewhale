@@ -208,15 +208,12 @@ pub(crate) async fn cycle_permission_posture(
         app.config_profile.as_deref(),
         &app.workspace,
     );
-    let changed = if control == codewhale_runtime::config::ApprovalPolicyControl::RootConfig {
-        app.cycle_root_approval_posture()
-    } else {
-        app.cycle_approval_posture()
-    };
-    if changed {
-        if control == codewhale_runtime::config::ApprovalPolicyControl::RootConfig {
-            config.approval_policy = None;
-        }
+    let root_control = control == codewhale_runtime::config::ApprovalPolicyControl::RootConfig;
+    let step = app.step_permission_dial(root_control);
+    if step.posture_changed && root_control {
+        config.approval_policy = None;
+    }
+    if step.changed() {
         sync_mode_update(app, engine_handle).await;
         refresh_config_view_if_open(app, "permission_posture");
     }

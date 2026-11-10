@@ -32,6 +32,19 @@ pub enum SettingSelection {
     Refused,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialStep {
+    pub mode_changed: bool,
+    pub posture_changed: bool,
+}
+
+impl DialStep {
+    #[must_use]
+    pub fn changed(self) -> bool {
+        self.mode_changed || self.posture_changed
+    }
+}
+
 impl SettingSelection {
     /// Whether live state moved — i.e. whether the engine needs resyncing.
     #[must_use]

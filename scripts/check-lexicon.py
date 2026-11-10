@@ -2,8 +2,8 @@
 """check-lexicon.py — warn when user-facing English copy drifts from the lexicon.
 
 The product vocabulary is one word per concept across the TUI, the app, the
-site and the docs: Agent and Fleet; Plan, Work and Operate; Permissions
-(Ask, Auto-Review, Full Access); Tasks panel; Making room; Settings; the
+site and the docs: Agent and Fleet; Plan and Work; Permissions (Ask, Accept
+Edits, Auto-Review, Full Access); Tasks panel; Making room; Settings; the
 presence words; Thinking. This script greps the English sources a person
 actually reads for the words that decision retires, plus the engineering notes experience mark 5 keeps off product
 surfaces (issue keys, HTTP routes, "Ctrl/Cmd").
@@ -64,8 +64,8 @@ RULES: list[tuple[str, str, re.Pattern[str]]] = [
     ("Act", "Work", re.compile(r"\bAct\b|\bACT\b")),
     ("read-only lane", "Plan", re.compile(r"read-only lane", re.I)),
     ("agent mode", "Work", re.compile(r"\bagent mode\b", re.I)),
-    ("Fleet mode", "Operate", re.compile(r"\bfleet mode\b", re.I)),
-    ("operator", "Coordinator (or Operate for the mode)", re.compile(r"\boperator\b", re.I)),
+    ("Fleet mode", "Fleet", re.compile(r"\bfleet mode\b", re.I)),
+    ("operator", "Coordinator", re.compile(r"\boperator\b", re.I)),
     # §19 permissions
     ("posture", "Permissions", re.compile(r"\bpostures?\b", re.I)),
     ("approval policy", "Permissions", re.compile(r"\b(approval|permission) policy\b", re.I)),

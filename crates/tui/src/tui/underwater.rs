@@ -713,26 +713,26 @@ pub(crate) fn header_permission_ink(mode: ApprovalMode) -> ChromeInk {
 /// made of, now carried as merged-footer chips.
 pub(crate) type PostureChip = (Cow<'static, str>, ChromeInk);
 
-/// The posture lockup as two standalone chips for the Tideline merged
-/// footer (spec §3: the old header's mode/permission chips move into the
-/// footer activity segment). Same words, same inks, and the same mapping
-/// the classic header used — [`header_mode_ink`] for the mode word,
-/// [`header_permission_ink`] for the permission phrase. The filesystem
-/// scope notice, when it deviates, folds into the permission chip's text
-/// (the header already painted it in the permission ink).
-pub(crate) fn posture_chips(app: &App) -> (Option<PostureChip>, Option<PostureChip>) {
-    let mode = (
-        mode_label(app.ui_locale, app.mode),
-        header_mode_ink(app.mode),
-    );
-    let mut permission = (
-        permission_label(app),
-        header_permission_ink(app.approval_mode),
-    );
+/// The permission dial stop as the Tideline footer's one posture chip: the
+/// Plan word in [`header_mode_ink`] while planning, otherwise the posture
+/// phrase in [`header_permission_ink`]. The filesystem scope notice, when it
+/// deviates, folds into the chip's text.
+pub(crate) fn dial_chip(app: &App) -> PostureChip {
+    let mut chip = dial_chip_for(app.ui_locale, app.mode, app.approval_mode);
     if let Some(scope) = filesystem_scope_notice(app) {
-        permission.0 = format!("{} · {scope}", permission.0).into();
+        chip.0 = format!("{} · {scope}", chip.0).into();
     }
-    (Some(mode), Some(permission))
+    chip
+}
+
+pub(crate) fn dial_chip_for(locale: Locale, mode: AppMode, approval: ApprovalMode) -> PostureChip {
+    if mode == AppMode::Plan {
+        return (mode_label(locale, mode), header_mode_ink(mode));
+    }
+    (
+        codewhale_engine::core::authority::permission_label_for(locale, mode, approval),
+        header_permission_ink(approval),
+    )
 }
 
 /// Summarize only tools whose lifecycle is actually `Running`. A read label

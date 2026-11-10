@@ -2350,7 +2350,7 @@ impl ConfigView {
                 value: settings
                     .permission_posture
                     .as_deref()
-                    .unwrap_or("ask")
+                    .unwrap_or("accept-edits")
                     .to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
@@ -5455,22 +5455,11 @@ impl ConfigView {
         let approval = value_of("approval_mode")
             .or_else(|| value_of("permission_posture"))
             .and_then(|value| codewhale_execpolicy::ApprovalMode::from_config_value(&value))
-            .unwrap_or(codewhale_execpolicy::ApprovalMode::Suggest);
-        let mode_label = crate::tui::underwater::mode_label(self.locale, mode);
-        let permission =
-            codewhale_engine::core::authority::permission_label_for(self.locale, mode, approval);
-        let footer = crate::tui::phase_strip::TidelineFooter::new(
-            &theme,
-            (
-                permission.as_ref(),
-                crate::tui::underwater::header_permission_ink(approval),
-            ),
-        )
-        .mode_chip(Some((
-            mode_label.as_ref(),
-            crate::tui::underwater::header_mode_ink(mode),
-        )))
-        .context_percent(context_percent);
+            .unwrap_or(codewhale_execpolicy::ApprovalMode::AcceptEdits);
+        let (dial, dial_ink) = crate::tui::underwater::dial_chip_for(self.locale, mode, approval);
+        let footer =
+            crate::tui::phase_strip::TidelineFooter::new(&theme, (dial.as_ref(), dial_ink))
+                .context_percent(context_percent);
         crate::tui::phase_strip::render_tideline_footer(
             Rect {
                 x: area.x.saturating_add(label_width),
@@ -8307,6 +8296,16 @@ consent_version = 1
 
     #[test]
     fn config_view_permission_row_tracks_the_controlling_saved_source() {
+        let _guard = ConfigSettingsEnvGuard::new("");
+        let default_view = ConfigView::new_for_app(&create_test_app());
+        let default_row = default_view
+            .rows
+            .iter()
+            .find(|row| row.key == "permission_posture")
+            .expect("default permission posture row");
+        assert_eq!(default_row.value, "accept-edits");
+        assert!(default_row.editable);
+
         let explicit_dir = TempDir::new().expect("explicit config tempdir");
         let explicit_path = explicit_dir.path().join("config.toml");
         fs::write(&explicit_path, "approval_policy = \"auto\"\n").expect("explicit config");
