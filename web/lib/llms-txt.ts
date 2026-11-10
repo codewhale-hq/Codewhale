@@ -94,7 +94,7 @@ const EXTRA_PAGES: readonly { path: string; title: string; description: string }
     path: "/signin",
     title: "Sign in",
     description:
-      "Sign in to an existing Codewhale account. New accounts are not open; the terminal needs no account.",
+      "Sign in to Codewhale with GitHub, Google or an email code. Cloud computers are invite-only; the terminal needs no account.",
   },
   {
     path: "/legal/terms",

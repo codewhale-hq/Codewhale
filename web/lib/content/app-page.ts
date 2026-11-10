@@ -134,7 +134,7 @@ export const APP_COPY = {
     },
     {
       title: { en: "Cloud computers", zh: "云端计算机" },
-      body: { en: "Send work to a cloud computer, where your account has access to one.", zh: "把任务交给云端计算机，前提是你的账号可以使用。" },
+      body: { en: "Send work to a cloud computer. Cloud computers are invite-only.", zh: "把任务交给云端计算机。云端计算机仅限受邀使用。" },
     },
     {
       title: { en: "Agents that keep going", zh: "持续工作的智能体" },
@@ -153,7 +153,7 @@ export const APP_COPY = {
 
   closingTitle: { en: "Start with the terminal today.", zh: "今天就从终端开始。" },
   closingBody: {
-    en: "The terminal and codewhale web run the same agent the desktop app is built on. If you already have an account, the sign-in guide explains how it works.",
-    zh: "终端和 codewhale web 运行的，正是桌面应用所基于的智能体。如果你已有账号，登录指南会说明具体方式。",
+    en: "The terminal and codewhale web run the same agent the desktop app is built on. The sign-in guide explains how accounts work.",
+    zh: "终端和 codewhale web 运行的，正是桌面应用所基于的智能体。登录指南会说明账户如何使用。",
   },
 } as const;

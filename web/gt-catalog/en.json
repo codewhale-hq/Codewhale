@@ -1989,7 +1989,7 @@
         "title": "Codewhale accounts",
         "blocks": [
           {
-            "p": "A provider key and a Codewhale account are different things. Codewhale never needs an account, and new accounts are not open. Provider keys stay on your machine with `codewhale auth set`."
+            "p": "A provider key and a Codewhale account are different things. Local use never needs an account; anyone can sign in, and cloud computers are invite-only. Provider keys stay on your machine with `codewhale auth set`."
           },
           {
             "rows": [
