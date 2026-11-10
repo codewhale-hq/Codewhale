@@ -1,5 +1,7 @@
 # GitHub review bot
 
+> 阅读简体中文版：[zh_hans/GITHUB_ACTION.md](zh_hans/GITHUB_ACTION.md)
+
 The root `action.yml` runs the existing `codewhale review` command with an
 exact, checksummed release. It needs Node.js 22+, `gh`, Git, and a macOS or
 Linux runner. It fetches Git objects without checking out or executing PR code.

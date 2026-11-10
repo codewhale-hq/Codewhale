@@ -77,6 +77,7 @@
 19. [TELEMETRY.md](./TELEMETRY.md) —— 产品遥测：默认行为与关闭方式
 20. [LSP_PHP_CUSTOM.md](./LSP_PHP_CUSTOM.md) —— LSP：PHP 支持与自定义语言服务器
 21. [TOOL_LIFECYCLE.md](./TOOL_LIFECYCLE.md) —— 工具面生命周期策略（v0.8.53，历史设计记录，非当前运行时文档）
+22. [GITHUB_ACTION.md](./GITHUB_ACTION.md) —— GitHub PR 审查机器人：用 Action 在自己的仓库里搭建代码审查工作流
 
 > 我们强烈建议，成为 Codewhale 贡献者之前，您需要具备一定的英语阅读能力。如果您在英语方面较为薄弱，当然可以使用 LLM 来翻译。但是在 LLM 翻译完原文之后，建议您强忍着看不懂外文的不适，即使皱着眉头，也要审查一遍 LLM 翻译后的语义是否与你的原文语义相同。LLM 幻觉是会把事情搞砸的。
 
