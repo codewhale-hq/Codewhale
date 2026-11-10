@@ -4,9 +4,12 @@
 
 <!-- What does this change, and why? A few sentences is enough. -->
 
-## Related issue (optional)
+## Where this came from
 
-<!-- Closes #N if this finishes it, Refs #N if related. Skip it if there is none.
+<!-- Closes #N if this finishes an issue, Refs #N if related. Translations,
+provider and model updates, docs fixes and bug fixes need no issue: just say
+which it is. For a new feature with no issue yet, opening one first is the
+faster path (CONTRIBUTING.md explains why); we still read this PR either way.
 Please do not write a closing word inside a negation ("this does not close #N"):
 GitHub closes the issue anyway. -->
 

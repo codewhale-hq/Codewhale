@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -224,13 +224,14 @@ Seatbelt，Linux 上則在已安裝 bubblewrap 時使用它。Windows 目前還�
 
 ## 社群
 
-如果缺少某個供應商，或某個工作流程不順手，
-請[提出 issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose)或
-[送出 PR](../../CONTRIBUTING.md)。被合併的成果會保留貢獻者的署名；
-[儲存庫結構](../../CONTRIBUTING.md#project-structure)說明了各部分放在哪裡。
+Codewhale 能有今天，靠的是社群。所有回饋我們都歡迎：一個 bug、一個想法，或者只是某處看起來、用起來不對勁。
+這些都可以[提交 issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose)；新功能也最適合從 issue 開始。
+修正、翻譯、供應商以及已規劃的工作，歡迎直接提交 PR。
+[貢獻指南](../../CONTRIBUTING.md)說明了每種協助該去哪裡，[路線圖](../ROADMAP.md)說明了專案的方向。
+被合併的工作會保留貢獻者的署名；[儲存庫結構](../../CONTRIBUTING.md#project-structure)說明了各部分程式碼所在的位置。
 
 歡迎到 [Discord](https://discord.gg/37gfS3ksug) 交流，或在微信上加維護者 Hunter
-（`hunterbown`）為好友，申請加入 Whale Brothers 群組。
+（`hunterbown`）為好友，申請加入 Whale Brothers 群組。歡迎每一個人。
 
 ## 歷史與授權
 

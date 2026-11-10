@@ -3,6 +3,9 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/codewhale-hq/CodeWhale/security/advisories/new
     about: Please report security problems privately, not in a public issue. See SECURITY.md.
+  - name: Roadmap and where to help
+    url: https://github.com/codewhale-hq/CodeWhale/blob/main/docs/ROADMAP.md
+    about: Where Codewhale is going, what each release covers, and good places to start. 路线图。
   - name: Ask a question
     url: https://github.com/codewhale-hq/CodeWhale/discussions
     about: How-to questions and ideas you want to talk through. 提问和讨论。

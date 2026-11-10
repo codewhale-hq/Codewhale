@@ -68,6 +68,7 @@ is the source. Translations live beside their English page (`*.id.md`) or in
 
 ## Contributing and operating
 
+- [Roadmap](ROADMAP.md): long-term goals, releases and where to help
 - [Contribution guide](../CONTRIBUTING.md) and [agent ethos](AGENT_ETHOS.md)
 - [Voice and terminal charter](VOICE.md), [motion contract](MOTION_CONTRACT.md),
   and [settings picker framework](SETTINGS_PICKER_FRAMEWORK.md)

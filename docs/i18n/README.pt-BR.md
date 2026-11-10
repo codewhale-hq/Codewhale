@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -266,15 +266,14 @@ em [ordem de autorização](../AUTHORIZATION_ORDER.md),
 
 ## Comunidade
 
-Se faltar um provedor ou algum fluxo de trabalho for incômodo,
-[abra uma issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) ou
-[envie um pull request](../../CONTRIBUTING.md). Quem contribui mantém o crédito pelo
-trabalho incorporado, e a
-[estrutura do repositório](../../CONTRIBUTING.md#project-structure) mostra onde fica
-cada coisa.
+O Codewhale é o que é graças à comunidade, e todo feedback é bem-vindo: um bug, uma ideia ou algo que pareceu estranho ao ver ou ao usar.
+[Abra uma issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) para qualquer um deles; uma issue também é o melhor lugar para começar um recurso novo.
+Pull requests são bem-vindos para correções, traduções, provedores e trabalho já planejado.
+O [guia de contribuição](../../CONTRIBUTING.md) mostra para onde vai cada tipo de ajuda, e o [roadmap](../ROADMAP.md) mostra para onde o projeto está indo.
+Quem contribui mantém o crédito pelo trabalho incorporado, e a [estrutura do repositório](../../CONTRIBUTING.md#project-structure) mostra onde fica cada coisa.
 
 Converse no [Discord](https://discord.gg/37gfS3ksug), ou adicione o mantenedor,
-Hunter, no WeChat (`hunterbown`) e peça para entrar no grupo Whale Brothers.
+Hunter, no WeChat (`hunterbown`) e peça para entrar no grupo Whale Brothers. Todas as pessoas são bem-vindas.
 
 ## Histórico e licença
 

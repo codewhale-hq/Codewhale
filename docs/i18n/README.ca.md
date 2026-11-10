@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -266,14 +266,14 @@ Codewhale també comprova a GitHub si hi ha una versió nova; defineix
 
 ## Comunitat
 
-Si falta un proveïdor o un flux de treball és incòmode,
-[obre un issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) o
-[envia un pull request](../../CONTRIBUTING.md). Qui contribueix conserva el crèdit pel
-treball que s’hi integra, i l’[estructura del repositori](../../CONTRIBUTING.md#project-structure)
-mostra on és cada cosa.
+Codewhale és el que és gràcies a la seva comunitat, i tots els comentaris són benvinguts: un error, una idea o alguna cosa que s’ha vist o s’ha sentit estranya.
+[Obre una issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) per a qualsevol d’aquests casos; una issue també és el millor lloc per començar una funció nova.
+Les pull requests són benvingudes per a correccions, traduccions, proveïdors i feina ja planificada.
+La [guia de contribució](../../CONTRIBUTING.md) indica on va cada tipus d’ajuda, i el [full de ruta](../ROADMAP.md) indica cap on va el projecte.
+Qui contribueix conserva el crèdit per la feina integrada, i l’[estructura del repositori](../../CONTRIBUTING.md#project-structure) mostra on és cada cosa.
 
 Xateja al [Discord](https://discord.gg/37gfS3ksug), o afegeix el mantenidor,
-Hunter, a WeChat (`hunterbown`) i demana entrar al grup Whale Brothers.
+Hunter, a WeChat (`hunterbown`) i demana entrar al grup Whale Brothers. Tothom hi és benvingut.
 
 ## Història i llicència
 
