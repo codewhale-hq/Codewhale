@@ -53,7 +53,7 @@ codewhale auth status --provider deepseek     # which key is in use`,
       blocks: [
         {
           rows: [
-            ["Your message appears but nothing answers", "No key is configured, and v0.10.0 does not warn you. Press F3, choose your provider, and paste the key."],
+            ["No answer arrives", "Check `codewhale --version`: in v0.10.2, a missing model keeps your message in the composer and opens provider setup, so connect a model and send it again. If setup is complete, check `codewhale auth status --provider <name>`, then run `codewhale doctor --probe-api` for your selected hosted route or `codewhale doctor --probe-local` for a local model; these probes contact the service."],
             ["`API key not found`", "No key anywhere. Save one with `codewhale auth set --provider <name>`."],
             ["`Authentication Fails … is invalid`", "The key is wrong or revoked. Run `auth status` to see which source is used — a saved key beats an environment variable — then save the right key or `codewhale auth clear --provider <name>`."],
             ["`Network error: SSE stream request failed …`", "Usually no connection to the provider. Check with `curl -sI https://api.deepseek.com` (a 401 means it is reachable). Behind a proxy, export `HTTPS_PROXY`. On Windows or strict proxies, try `CODEWHALE_FORCE_HTTP1=1`."],

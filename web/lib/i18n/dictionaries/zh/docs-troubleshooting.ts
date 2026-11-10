@@ -46,7 +46,7 @@ codewhale auth status --provider deepseek     # which key is in use`,
       blocks: [
         {
           rows: [
-            ["消息发出后一直没有回复", "没有配置密钥，而 v0.10.0 不会提示你。按 F3，选择你的提供商，粘贴密钥。"],
+            ["一直没有回复", "先运行 `codewhale --version` 查看版本：在 v0.10.2 中，未连接模型时消息会保留在输入框，并打开提供商设置，请连接模型后重新发送。如果已完成设置，先用 `codewhale auth status --provider <name>` 查看所选提供商的凭据状态，再用 `codewhale doctor --probe-api` 检查当前托管服务，或用 `codewhale doctor --probe-local` 检查本地模型；这些检查会连接相应服务。"],
             ["`API key not found`", "哪里都找不到密钥。用 `codewhale auth set --provider <name>` 保存一把。"],
             ["`Authentication Fails … is invalid`", "密钥错误或已被吊销。运行 `auth status` 查看用的是哪个来源——已保存的密钥优先于环境变量——然后保存正确的密钥，或运行 `codewhale auth clear --provider <name>`。"],
             ["`Network error: SSE stream request failed …`", "通常是连不上提供商。用 `curl -sI https://api.deepseek.com` 检查（返回 401 说明能连通）。在代理后面时请导出 `HTTPS_PROXY`；在 Windows 或限制严格的代理环境下，可以试试 `CODEWHALE_FORCE_HTTP1=1`。"],
