@@ -15,15 +15,15 @@
  *   - No marketing adjectives. Each description states behavior and boundary.
  *
  * EXTENSION PATH FOR NEW LOCALES (localization lane):
- *   Every user-facing string is a `{ en, zh }` pair. Add the new locale key to
- *   each pair (and widen the `LocalizedText` type) — the consuming components
- *   and tests pick it up without structural changes. The tests assert key
- *   parity across locales, so a missing translation fails deterministically.
+ *   Shared text requires English and Chinese and accepts additional locale
+ *   keys. Migrated content loads those keys from the shared dictionaries;
+ *   untranslated content retains its English fallback.
  */
 
 export interface LocalizedText {
   en: string;
   zh: string;
+  [locale: string]: string | undefined;
 }
 
 export interface ProductTerm {

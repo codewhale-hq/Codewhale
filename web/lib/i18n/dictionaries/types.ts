@@ -746,3 +746,5 @@ export interface ComputerUseDict {
   contributeGuide: string;
   contributeIssue: string;
 }
+
+export type ProjectDict = typeof import("./en/project").project;
