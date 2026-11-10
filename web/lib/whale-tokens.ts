@@ -12,7 +12,7 @@ import { siteCss } from "./site-css";
  * the hex. The contract tests still need the literal color to check parity
  * and contrast, so this reads both files and flattens the alias chains
  * (`--whale-success` -> `--whale-working-green` -> `#9bd66f`,
- * `--paper` -> `--gpui-paper` -> `--gpui-light-bg` -> `#faf8f5`). The Blue Stage light preset's
+ * `--paper` -> `--gpui-paper` -> `--gpui-light-bg` -> its literal). The Blue Stage light preset's
  * `LIGHT_*` consts export as `--light-*` beside them, and the Shoreline
  * redesign's dark/light pair exports as `--shoreline-*` /
  * `--shoreline-light-*`.
