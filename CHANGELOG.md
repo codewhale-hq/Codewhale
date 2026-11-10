@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cancelling or timing out a read-only Git tool (git_status, git_diff, git_commit_plan, git_log, git_show, git_blame, git_merge_tree) now stops the git process and anything it started, instead of leaving it running in the background. Verified on macOS by unit tests; Linux, Windows and hosted CI are not yet run, and the filter-override probe is still not contained.
 - TUI: the launch resume confirmation no longer treats Meta+Enter, Meta+Y or Hyper+Enter as "resume"; only a plain Enter/Y or Shift+Y answers it. Verified by the focused unit tests only; not tried in a terminal that sends Meta or Hyper.
 - TUI: mentioning a huge directory or a far-away line range (`@file:N-M`) now stops after a bounded scan and says the result is partial instead of claiming end of file. Verified by the focused `file_mention` unit tests; no real 64 MiB file was tried.
+- Runtime `patch-undo` now restores a turn's own file changes in the default (Ask) posture without trust mode or Full Access; later edits and changes the turn did not make are still refused with nothing changed, and the `restore_requires_trust` error code is gone ([#6970](https://github.com/codewhale-hq/Codewhale/issues/6970)). Verified by app-server and TUI unit tests on Linux; no Windows `/undo` or process-restart run.
 
 ## [0.10.3] - 2026-11-08
 

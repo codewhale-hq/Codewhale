@@ -1607,7 +1607,7 @@ latest turn and publishes a `thread.permissions_changed` event (`from`, `to`,
 - `POST /v1/threads/{id}/undo` - fork the thread with the last N turns removed (`{"depth": N}`, default 0 = last turn only); returns the forked thread plus `original_user_text` so a GUI can pre-populate the input box. `{"turn_id": "turn_…"}` instead names the user turn to remove, together with every turn after it, and wins over `depth`; the Runtime resolves it under the thread's restore guard, so a turn another client appends meanwhile cannot move the cut. `400` when the turn is not a user turn of that thread
 - `POST /v1/threads/{id}/fork-at-turn` - fork at one named user turn (`{"turn_id": "turn_…"}`, as `GET /v1/threads/{id}` reports it). The fork *keeps* that turn and every turn before it, and drops the turns after it; naming the last turn therefore keeps the whole conversation. The receipt is `/undo`'s (`thread`, `original_user_text`, `original_user_images`), carrying the *first dropped* user turn's prompt — what was asked next, even when a prompt-less turn such as a manual `/compact` sits between — so a client can put it back in the composer for editing. The source thread, its session document and the workspace are untouched, and there is no file rollback: a fork is a sibling conversation, and rewinding the workspace would rewind the branch left behind with it. Clients should name the turn instead of computing a `depth` — the transcript they render and the turn list this cuts are not the same list (steers, image-only prompts and injected handoffs each sit on one side only), and a client-side count that is off by one forks the wrong prefix while answering `201`. `400` when the turn is not a user turn of that thread.
 - `GET /v1/threads/{id}/patch-undo?turn_id=turn_…` - validates the selected restore without changing files or publishing a fork; returns `turn_ids`, the exact dropped range, `paths` needing restoration and an optional no-change `summary`. Requires the `thread_patch_undo_turn_id` capability.
-- `POST /v1/threads/{id}/patch-undo` - rolls back the files the dropped turns changed, then the same fork (`{"depth": N}` or `{"turn_id": "turn_…"}`, with `turn_id` taking precedence); returns `patch_result` (`files_restored`, `summary`, `snapshot_label`) alongside the forked thread. See [Workspace restore endpoints](#workspace-restore-endpoints) for ownership, the trust, admission and abort rules, and the `error.code` values of a refusal.
+- `POST /v1/threads/{id}/patch-undo` - rolls back the files the dropped turns changed, then the same fork (`{"depth": N}` or `{"turn_id": "turn_…"}`, with `turn_id` taking precedence); returns `patch_result` (`files_restored`, `summary`, `snapshot_label`) alongside the forked thread. See [Workspace restore endpoints](#workspace-restore-endpoints) for ownership, the admission and abort rules, and the `error.code` values of a refusal.
 - `POST /v1/threads/{id}/file-revert` - restore exactly one file from one restore point the thread owns (`{"path", "snapshot_id", "expected_hash"}`); never forks the conversation. See [Workspace restore endpoints](#workspace-restore-endpoints).
 - `POST /v1/threads/{id}/retry` - fork with the last N turns removed and immediately start a new turn (`{"depth": N, "prompt": "..."}`; `prompt` overrides the original user text, which is re-used when omitted)
 
@@ -1942,7 +1942,7 @@ admission rule and one safety net, and they differ in scope and trust.
 | Route | Scope | Trust | Forks the thread |
 | --- | --- | --- | --- |
 | `POST /v1/snapshots/{id}/restore` | whole server workspace, or the `thread_id` workspace | bearer token only (operator action) | no |
-| `POST /v1/threads/{id}/patch-undo` | the files the dropped turns changed | thread `trust_mode` or `auto_approve` when files would change | yes |
+| `POST /v1/threads/{id}/patch-undo` | the files the dropped turns changed | none; only files the dropped turns' own tool calls wrote, still holding the bytes the turn left, are restored | yes |
 | `POST /v1/threads/{id}/file-revert` | exactly one regular file | none; the restore point must be one the thread owns and `expected_hash` must match | no |
 
 **Admission.** A restore reserves the same admission the Runtime uses for
@@ -2043,7 +2043,6 @@ changed and no fork is published; `error.code` says why:
 | `restore_point_pruned` | the restore point is no longer in the snapshot store |
 | `path_not_snapshotted` | a dropped file-tool call wrote a path snapshots do not hold (ignored, built-in exclusion, or outside the workspace) |
 | `workspace_changed_since_turn` | a path the turns changed was changed afterwards (or between two dropped turns), a path changed while a dropped turn ran but outside its own tool calls, or a path that is not a regular file |
-| `restore_requires_trust` | there is something to restore and the thread is not in trusted mode or Full Access |
 | `workspace_unavailable` | the workspace directory is not available |
 
 For the first four a client can offer the conversation-only
