@@ -306,6 +306,7 @@ fn session_app() -> App {
     );
     app.onboarding = OnboardingState::None;
     app.launch.visible = false;
+    app.sandbox_backend = None;
     app
 }
 
@@ -341,7 +342,10 @@ fn cycle_keys_show_at_zero_and_one_use_and_go_bare_at_two() {
 
     app.mode = codewhale_config::AppMode::Plan;
     let facts = tideline_footer_from_app(&mut app, 120);
-    assert_eq!(facts.permission_chip.0, "plan");
+    assert_eq!(
+        facts.permission_chip.0,
+        "plan · files: read-only (unenforced)"
+    );
 }
 
 /// A running turn advertises the interrupt affordance until Esc has been
@@ -480,8 +484,9 @@ fn rewind_notice_states_the_file_fact_first_and_names_restore_when_it_fits() {
             .right
             .map(|(text, _)| text)
     };
+    assert_eq!(shown(&mut app, 80).as_deref(), Some("Files not changed."));
     assert_eq!(
-        shown(&mut app, 80).as_deref(),
+        shown(&mut app, 96).as_deref(),
         Some("Files not changed. Use /restore.")
     );
     assert_eq!(

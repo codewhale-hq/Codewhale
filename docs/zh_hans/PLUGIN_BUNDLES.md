@@ -13,7 +13,7 @@ Agent profiles 和 Hooks。遇到不支持的声明，它只把这些声明记�
 [PLUGINS.md](./PLUGINS.md) 负责文件怎么写入磁盘、怎么删除，也就是 v0.9.4（#5182）
 加入的 `/plugin install`、`update`、`uninstall`、`suggest` 上手入口。
 兼容的 Claude Code 插件包使用同一套原生适配器，其支持子集见
-[CLAUDE_PLUGIN_COMPAT.md](../CLAUDE_PLUGIN_COMPAT.md)。
+[CLAUDE_PLUGIN_COMPAT.md](./CLAUDE_PLUGIN_COMPAT.md)。
 可运行的原生示例，以及 OpenCode/DSH 数据如何显式转换，见
 [编写你的第一个插件](./PLUGIN_AUTHORING.md)。
 

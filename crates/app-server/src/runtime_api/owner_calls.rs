@@ -173,10 +173,14 @@ pub(super) async fn execute(state: RuntimeApiState, request: RuntimeOwnerRequest
             binding,
             decision,
         } => {
-            let value =
-                api(
-                    settle_approval_request(&state, approval_id, binding.as_ref(), decision).await,
-                )?;
+            let value = api(settle_approval_request(
+                &state,
+                approval_id,
+                binding.as_ref(),
+                decision,
+                None,
+            )
+            .await)?;
             serde_json::to_value(value)?
         }
         RuntimeOwnerRequest::SubmitUserInput {

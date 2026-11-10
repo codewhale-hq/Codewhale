@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -246,13 +246,14 @@ Windows صندوق حماية لنظام التشغيل بعد، ويوقف Full
 
 ## المجتمع
 
-إذا كان هناك مزوّد مفقود أو سير عمل غير مريح،
-[فافتح issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) أو
-[أرسل pull request](../../CONTRIBUTING.md). يحتفظ المساهمون بالفضل في العمل الذي يُدمج،
-وتوضّح [بنية المستودع](../../CONTRIBUTING.md#project-structure) مكان كل شيء.
+Codewhale هو ما هو عليه اليوم بفضل مجتمعه، ونرحّب بكل الملاحظات: خلل، أو فكرة، أو شيء بدا أو أحسست أنه غير صحيح.
+[افتح issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) لأيٍّ منها؛ وهو أيضًا أفضل مكان لبدء ميزة جديدة.
+نرحّب بطلبات السحب للإصلاحات والترجمات والمزوّدين والعمل المخطَّط له.
+يوضّح [دليل المساهمة](../../CONTRIBUTING.md) أين يذهب كل نوع من المساعدة، وتوضّح [خارطة الطريق](../ROADMAP.md) إلى أين يتجه المشروع.
+يحتفظ المساهمون بنسبة العمل الذي يُدمج إليهم، ويبيّن [هيكل المستودع](../../CONTRIBUTING.md#project-structure) مكان كل شيء.
 
 تواصل معنا على [Discord](https://discord.gg/37gfS3ksug)، أو أضف القائم على صيانة
-المشروع، Hunter، على WeChat (`hunterbown`) واطلب الانضمام إلى مجموعة Whale Brothers.
+المشروع، Hunter، على WeChat (`hunterbown`) واطلب الانضمام إلى مجموعة Whale Brothers. الجميع مرحَّب بهم.
 
 ## التاريخ والترخيص
 

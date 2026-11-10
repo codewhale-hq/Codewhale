@@ -7,6 +7,8 @@ body:
       value: |
         Thanks for the idea. English or 中文 are both fine. Short is good.
 
+        This is the best place to start a feature, even if you plan to build it yourself: agreeing on the shape here makes the pull request small and quick to merge. The [roadmap](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/ROADMAP.md) shows what is already planned.
+
         If someone already asked for this, add a 👍 to their issue instead.
         Want to talk it through first? Use [Discussions](https://github.com/codewhale-hq/CodeWhale/discussions) or [Discord](https://discord.gg/37gfS3ksug).
 
@@ -61,4 +63,4 @@ body:
     attributes:
       label: Contributing
       options:
-        - label: I would like to open a pull request for this. 我愿意提交 PR。
+        - label: I would like to open a pull request for this, once we agree on the shape. 我愿意在方案确定后提交 PR。

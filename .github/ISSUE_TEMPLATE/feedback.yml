@@ -1,0 +1,25 @@
+name: Feedback
+description: Something looked, read or felt off, or you have a thought to share. 反馈与感受。
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        All feedback is welcome, and you do not need a fix or a plan. English or 中文 are both fine.
+
+        First impressions, confusing wording, an awkward step, a screen that looks wrong, something you liked: it all helps.
+        For something broken, the [bug report](https://github.com/codewhale-hq/CodeWhale/issues/new?template=bug_report.yml) form asks for the details we need to reproduce it.
+
+  - type: textarea
+    id: feedback
+    attributes:
+      label: What would you like us to know? 想告诉我们什么？
+      description: What you were doing, and what you noticed. A screenshot helps for anything visual.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Codewhale version (optional) 版本
+      description: Output of `codewhale --version`, if you have it.

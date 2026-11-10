@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -251,14 +251,14 @@ OS सैंडबॉक्स नहीं है, और Full Access सैं
 
 ## समुदाय
 
-अगर कोई प्रोवाइडर मौजूद नहीं है या कोई वर्कफ़्लो असहज है, तो
-[issue खोलें](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) या
-[pull request भेजें](../../CONTRIBUTING.md)। मर्ज होने वाले काम का श्रेय योगदानकर्ताओं के
-पास रहता है, और [रिपॉज़िटरी की संरचना](../../CONTRIBUTING.md#project-structure) बताती है कि
-कौन-सी चीज़ कहाँ है।
+Codewhale आज जो है, अपने समुदाय की वजह से है, और हर फ़ीडबैक का स्वागत है: कोई बग, कोई आइडिया, या कुछ ऐसा जो देखने या इस्तेमाल करने में ठीक न लगा हो।
+इनमें से किसी के लिए भी [issue खोलें](https://github.com/codewhale-hq/CodeWhale/issues/new/choose); नई सुविधा शुरू करने की सबसे अच्छी जगह भी issue ही है।
+फ़िक्स, अनुवाद, प्रोवाइडर और पहले से तय काम के लिए pull request का स्वागत है।
+[योगदान गाइड](../../CONTRIBUTING.md) बताती है कि किस तरह की मदद कहाँ जाती है, और [रोडमैप](../ROADMAP.md) बताता है कि प्रोजेक्ट किस ओर जा रहा है।
+जो काम शामिल होता है उसका श्रेय योगदानकर्ताओं के पास रहता है, और [रिपॉज़िटरी लेआउट](../../CONTRIBUTING.md#project-structure) बताता है कि क्या कहाँ है।
 
 [Discord](https://discord.gg/37gfS3ksug) पर बात करें, या WeChat पर मेंटेनर Hunter
-(`hunterbown`) को जोड़ें और Whale Brothers समूह में शामिल होने के लिए कहें।
+(`hunterbown`) को जोड़ें और Whale Brothers समूह में शामिल होने के लिए कहें। सबका स्वागत है।
 
 ## इतिहास और लाइसेंस
 

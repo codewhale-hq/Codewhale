@@ -88,6 +88,31 @@ tag. Items moved to 0.10.4 by name are marked below.
 
 ### Added
 
+- **Approvals name the client that answered:** `POST /v1/approvals/{id}`
+  accepts an optional `client` (`desktop`, `phone`, `web`, `tui`, `acp`), and
+  the resulting `approval.decided` event carries it as `responder`. The phone
+  and web mirrors and the ACP server send theirs. It is a label the client
+  declares, not an authenticated device identity. Repeated answers from two
+  clients wait for the same saved decision before acknowledging success.
+- **Sessions on your own installed agents:** `POST /v1/threads` with
+  `executor: {kind: "acp", agent_id}` runs a session on an agent CLI already
+  installed and signed in on this computer (OpenCode, Kimi Code, DeepSeek
+  Harness, Antigravity, and Claude or Codex when their ACP adapter is
+  installed). The agent's messages, reasoning, tool calls and plan arrive as
+  ordinary session events, its permission requests are approval cards answered
+  through the usual approvals route under the session's posture (Full Access
+  allows, Plan rejects, Accept Edits allows only edits inside the workspace,
+  everything else asks), stop cancels it and ends a process that does not
+  stop, and the session reopens the same agent session after a restart. The
+  agent keeps its own login; Codewhale never reads, stores or passes its
+  credentials and never downloads an agent or adapter. Refusals carry a code
+  (`not_installed`, `adapter_missing`, `below_min_version`, `needs_sign_in`)
+  beside the sentence, session summary rows name their agent, and the agent's
+  own usage reports are recorded as `agent reported` with cost unknown.
+  Steering, compaction, forking and images are not available in these
+  sessions. Quitting Codewhale, or abandoning a session while its agent is
+  still starting, ends that agent before shutdown finishes. See
+  `docs/RUNTIME_API.md` (CW-7879).
 - **DSH market indexes are readable:** `/plugin marketplace add` and
   `GET /v1/apps/marketplaces` now parse the DeepSeek Harness plugin market
   index (format 1) alongside the Kimi, Claude, Codex and Codewhale catalogs.
@@ -279,11 +304,13 @@ tag. Items moved to 0.10.4 by name are marked below.
 - **Website:** an Enterprise page at `/enterprise` lists what Enterprise will
   deliver, with no pricing or availability claim, and the FAQ is finished.
 - **Runtime API: find the agent CLIs already installed on this computer.**
-  `GET /v1/agents/external` reports Claude, Codex, Gemini CLI, OpenCode, Kimi
-  Code, Mistral Vibe, Qoder, CodeBuddy and Grok, with the version each one
-  reports and whether it answers Agent Client Protocol itself. The probe runs
+  `GET /v1/agents/external` reports Claude, Codex, DeepSeek Harness,
+  Antigravity, OpenCode, Kimi Code, Mistral Vibe, Qoder, CodeBuddy and Grok,
+  with the version each one reports, whether it answers Agent Client Protocol
+  itself, and `runnable` when a thread can run on it now. The probe runs
   `--version` and one `initialize` handshake, gets no Codewhale or provider
-  credentials, and stores nothing. Read-only: it does not start an agent yet.
+  credentials, and stores nothing. Google's agent is Antigravity (`agy acp`,
+  1.5.0 or newer); Gemini CLI is no longer listed.
 - **Runtime API: check a provider key before storing it.**
   `POST /v1/providers/{id}/key/check` asks the provider's own `/models`
   endpoint once whether it accepts a key, and never stores it. A key the

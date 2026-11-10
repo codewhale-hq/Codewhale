@@ -1799,7 +1799,7 @@ function startBrowserClient() {
     try {
       await api(`/v1/approvals/${encodeURIComponent(resolved.approvalId)}`, {
         method: "POST",
-        body: JSON.stringify({ decision, remember }),
+        body: JSON.stringify({ decision, remember, client: "web" }),
       });
       app.threadState.approvals.delete(approvalId);
       showStatus("");

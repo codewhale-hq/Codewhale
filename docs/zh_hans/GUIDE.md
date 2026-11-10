@@ -339,7 +339,7 @@ codewhale receipts --last
 codewhale receipts <session-id> --format json
 ```
 
-回执会说明它自己看不到什么。终端会话的回执，根据每个回合的工作区快照列出命令改动过的文件；Runtime 线程的回执只列出文件工具。终端会话不会保存一次成功命令的退出码，也不会保存每次调用花了多长时间。Codewhale 在开始之前就拦下的调用（Auto-Review、某条策略、无效输入）会被列为已拦截并附上原因，不计入已运行。完整契约见 [RECEIPTS.md](../RECEIPTS.md)。
+回执会说明它自己看不到什么。终端会话的回执，根据每个回合的工作区快照列出命令改动过的文件；Runtime 线程的回执只列出文件工具。终端会话不会保存一次成功命令的退出码，也不会保存每次调用花了多长时间。Codewhale 在开始之前就拦下的调用（Auto-Review、某条策略、无效输入）会被列为已拦截并附上原因，不计入已运行。完整契约见 [RECEIPTS.md](RECEIPTS.md)。
 
 ## 8. 子智能体与并行工作
 
@@ -400,7 +400,7 @@ Codewhale 还可以在 `.codewhale/harness/state.json` 维护一个小型项目�
 
 如果仓库有自己的指令，请把它们当作活动工作的一部分。编辑前先读本地指南，并让你的贡献保持在仓库约定之内。
 
-下一步：见 [SKILLS.md](SKILLS.md) 了解管理器、所有权和来源规则；[CLAUDE_PLUGIN_COMPAT.md](../CLAUDE_PLUGIN_COMPAT.md) 了解 Claude Code 技能/插件兼容性；[CONFIGURATION.md](CONFIGURATION.md) 了解配置路径与项目权威。
+下一步：见 [SKILLS.md](SKILLS.md) 了解管理器、所有权和来源规则；[CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md) 了解 Claude Code 技能/插件兼容性；[CONFIGURATION.md](CONFIGURATION.md) 了解配置路径与项目权威。
 
 ## 10. 获取帮助
 

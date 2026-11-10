@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -265,16 +265,15 @@ Codewhale controlla anche su GitHub se c’è una nuova release; imposta
 
 ## Comunità
 
-Se manca un provider o un workflow è scomodo,
-[apri una issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) o
-[invia una pull request](../../CONTRIBUTING.md). Chi contribuisce mantiene il
-riconoscimento per il lavoro che viene integrato, e la
-[struttura del repository](../../CONTRIBUTING.md#project-structure) mostra dove si
-trova ogni cosa.
+Codewhale è quello che è grazie alla sua comunità, e ogni feedback è benvenuto: un bug, un’idea o qualcosa che è sembrato strano da vedere o da usare.
+[Apri una issue](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) per ognuno di questi casi; una issue è anche il posto migliore per iniziare una nuova funzionalità.
+Le pull request sono benvenute per correzioni, traduzioni, provider e lavoro già pianificato.
+La [guida per contribuire](../../CONTRIBUTING.md) indica dove va ogni tipo di aiuto, e la [roadmap](../ROADMAP.md) indica dove sta andando il progetto.
+Chi contribuisce mantiene il credito per il lavoro integrato, e la [struttura del repository](../../CONTRIBUTING.md#project-structure) mostra dove si trova ogni cosa.
 
 Scrivici su [Discord](https://discord.gg/37gfS3ksug), oppure aggiungi il
 maintainer, Hunter, su WeChat (`hunterbown`) e chiedi di entrare nel gruppo
-Whale Brothers.
+Whale Brothers. Chiunque è benvenuto.
 
 ## Storia e licenza
 

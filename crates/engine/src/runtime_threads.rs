@@ -426,6 +426,76 @@ pub struct ThreadRecord {
     pub saved_session_checkpoint: Option<SavedSessionCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_read: Option<ThreadReadMarker>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<ExecutorRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<ThreadEnvironment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadEnvironment {
+    pub id: String,
+    pub provider_kind: String,
+}
+
+impl ThreadEnvironment {
+    pub fn refusal(&self) -> crate::fleet::agents::ExecutorUnavailable {
+        crate::fleet::agents::ExecutorUnavailable::new(
+            crate::fleet::agents::ExecutorUnavailable::ENVIRONMENT_NOT_SUPPORTED,
+            "This session runs in another environment, which this build of Codewhale cannot serve.",
+        )
+    }
+}
+
+pub const EXECUTOR_RECORD_VERSION: u32 = 1;
+pub const EXECUTOR_KIND_ACP: &str = "acp";
+pub const EXECUTOR_KIND_ENGINE: &str = "engine";
+
+fn default_executor_record_version() -> u32 {
+    EXECUTOR_RECORD_VERSION
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutorRecord {
+    #[serde(default = "default_executor_record_version")]
+    pub version: u32,
+    pub kind: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl ExecutorRecord {
+    pub fn validate(&self) -> Result<()> {
+        use crate::fleet::agents::ExecutorUnavailable;
+        if self.version > EXECUTOR_RECORD_VERSION {
+            return Err(ExecutorUnavailable::new(
+                ExecutorUnavailable::EXECUTOR_NOT_SUPPORTED,
+                format!(
+                    "This session's executor record (version {}) is newer than this build of Codewhale.",
+                    self.version
+                ),
+            )
+            .into());
+        }
+        if self.kind != EXECUTOR_KIND_ACP {
+            let kind: String = self.kind.chars().take(32).collect();
+            return Err(ExecutorUnavailable::new(
+                ExecutorUnavailable::EXECUTOR_NOT_SUPPORTED,
+                format!("Sessions run by `{kind}` are not supported in this build of Codewhale."),
+            )
+            .into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

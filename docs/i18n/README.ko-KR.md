@@ -1,4 +1,4 @@
-<!-- source: README.md sha256:fb068568394f -->
+<!-- source: README.md sha256:a9ec5fb3f3dd -->
 <div align="center">
 
 <picture>
@@ -258,14 +258,14 @@ GitHub에서 새 릴리스도 확인합니다. 이 확인을 건너뛰려면
 
 ## 커뮤니티
 
-빠진 제공업체가 있거나 불편한 작업 흐름이 있으면
-[이슈를 열거나](https://github.com/codewhale-hq/CodeWhale/issues/new/choose)
-[풀 리퀘스트를 보내 주세요](../../CONTRIBUTING.md). 반영된 작업의 기여 이력은
-기여자에게 남으며, 무엇이 어디에 있는지는
-[저장소 구조](../../CONTRIBUTING.md#project-structure)에서 볼 수 있습니다.
+Codewhale이 지금의 모습이 된 것은 커뮤니티 덕분입니다. 버그, 아이디어, 보기에나 쓰기에 어색했던 점까지 모든 피드백을 환영합니다.
+어느 것이든 [이슈를 열어](https://github.com/codewhale-hq/CodeWhale/issues/new/choose) 주세요. 새 기능도 이슈에서 시작하는 것이 가장 좋습니다.
+수정, 번역, 제공업체 추가, 계획된 작업은 풀 리퀘스트를 환영합니다.
+[기여 가이드](../../CONTRIBUTING.md)는 도움의 종류별로 어디로 가면 되는지, [로드맵](../ROADMAP.md)은 프로젝트가 어디로 가는지 알려 줍니다.
+반영된 작업의 크레딧은 기여자에게 남으며, [저장소 구조](../../CONTRIBUTING.md#project-structure)에서 각 부분의 위치를 확인할 수 있습니다.
 
 [Discord](https://discord.gg/37gfS3ksug)에서 이야기하거나, WeChat에서 메인테이너
-Hunter(`hunterbown`)를 추가하고 Whale Brothers 그룹 가입을 요청하세요.
+Hunter(`hunterbown`)를 추가하고 Whale Brothers 그룹 가입을 요청하세요. 누구나 환영합니다.
 
 ## 역사와 라이선스
 

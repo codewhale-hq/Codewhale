@@ -1,208 +1,20 @@
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::Path;
 use std::time::Duration;
 
 use axum::Json;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
-const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROBE_LINE_BYTES: usize = 256 * 1024;
 const MAX_TEXT_CHARS: usize = 80;
 const MAX_AUTH_METHODS: usize = 8;
 
-struct Agent {
-    id: &'static str,
-    name: &'static str,
-    binary: &'static str,
-    acp_args: Option<&'static [&'static str]>,
-    website: &'static str,
-    min_version: Option<&'static str>,
-    upgrade: Option<&'static str>,
-    login: Option<&'static str>,
-    adapter: Option<&'static str>,
-}
-
-const AGENTS: &[Agent] = &[
-    Agent {
-        id: "claude",
-        name: "Claude Agent",
-        binary: "claude",
-        acp_args: None,
-        website: "https://github.com/agentclientprotocol/claude-agent-acp",
-        min_version: Some("2.1.226"),
-        upgrade: Some("npm i -g @anthropic-ai/claude-code@latest"),
-        login: Some("claude auth login"),
-        adapter: Some("@agentclientprotocol/claude-agent-acp"),
-    },
-    Agent {
-        id: "codex",
-        name: "Codex",
-        binary: "codex",
-        acp_args: None,
-        website: "https://github.com/agentclientprotocol/codex-acp",
-        min_version: Some("0.160.0"),
-        upgrade: Some("npm i -g @openai/codex@latest"),
-        login: Some("codex login"),
-        adapter: Some("@agentclientprotocol/codex-acp"),
-    },
-    Agent {
-        id: "dsh",
-        name: "DeepSeek Harness",
-        binary: "dsh",
-        acp_args: Some(&["acp"]),
-        website: "https://github.com/deepseek-ai/deepseek-harness",
-        min_version: None,
-        upgrade: Some("npm i -g @deepseek-ai/dsh@latest"),
-        login: None,
-        adapter: None,
-    },
-    Agent {
-        id: "gemini",
-        name: "Gemini CLI",
-        binary: "gemini",
-        acp_args: Some(&["--acp"]),
-        website: "https://geminicli.com",
-        min_version: Some("0.62.0"),
-        upgrade: Some("npm i -g @google/gemini-cli@latest"),
-        login: None,
-        adapter: None,
-    },
-    Agent {
-        id: "opencode",
-        name: "OpenCode",
-        binary: "opencode",
-        acp_args: Some(&["acp"]),
-        website: "https://opencode.ai",
-        min_version: Some("1.15.5"),
-        upgrade: Some("npm i -g opencode-ai@latest"),
-        login: Some("opencode auth login"),
-        adapter: None,
-    },
-    Agent {
-        id: "kimi",
-        name: "Kimi Code",
-        binary: "kimi",
-        acp_args: Some(&["acp"]),
-        website: "https://moonshotai.github.io/kimi-code/",
-        min_version: None,
-        upgrade: None,
-        login: Some("kimi login"),
-        adapter: None,
-    },
-    Agent {
-        id: "mistral-vibe",
-        name: "Mistral Vibe",
-        binary: "vibe-acp",
-        acp_args: Some(&[]),
-        website: "https://mistral.ai/products/vibe",
-        min_version: None,
-        upgrade: None,
-        login: None,
-        adapter: None,
-    },
-    Agent {
-        id: "qoder",
-        name: "Qoder",
-        binary: "qodercli",
-        acp_args: Some(&["--acp"]),
-        website: "https://qoder.com",
-        min_version: None,
-        upgrade: None,
-        login: None,
-        adapter: None,
-    },
-    Agent {
-        id: "codebuddy",
-        name: "CodeBuddy",
-        binary: "codebuddy",
-        acp_args: Some(&["--acp"]),
-        website: "https://www.codebuddy.cn/cli/",
-        min_version: None,
-        upgrade: None,
-        login: None,
-        adapter: None,
-    },
-    Agent {
-        id: "grok",
-        name: "Grok",
-        binary: "grok",
-        acp_args: Some(&["agent", "stdio"]),
-        website: "https://x.ai/cli",
-        min_version: None,
-        upgrade: None,
-        login: None,
-        adapter: None,
-    },
-];
-
-const USER_BIN_DIRS: &[&str] = &[
-    ".local/bin",
-    ".npm-global/bin",
-    ".opencode/bin",
-    ".kimi-code/bin",
-    ".bun/bin",
-    ".cargo/bin",
-];
-const SYSTEM_BIN_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
-
-async fn resolve(binary: &str) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect())
-        .unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        dirs.extend(USER_BIN_DIRS.iter().map(|dir| home.join(dir)));
-    }
-    dirs.extend(SYSTEM_BIN_DIRS.iter().map(PathBuf::from));
-    for dir in dirs {
-        let candidate = dir.join(binary);
-        if is_executable(&candidate).await {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-#[cfg(unix)]
-async fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    tokio::fs::metadata(path)
-        .await
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-async fn is_executable(path: &Path) -> bool {
-    tokio::fs::metadata(path)
-        .await
-        .is_ok_and(|meta| meta.is_file())
-}
-
-fn foreign_command(path: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new(path);
-    command
-        .args(args)
-        .current_dir(std::env::temp_dir())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    for (name, _) in std::env::vars_os() {
-        let Some(name) = name.to_str() else { continue };
-        if name.starts_with("CODEWHALE_")
-            || name.ends_with("_API_KEY")
-            || name.ends_with("_AUTH_TOKEN")
-            || name.ends_with("_ACCESS_KEY")
-            || name.ends_with("_SECRET_KEY")
-        {
-            command.env_remove(name);
-        }
-    }
-    command
-}
+use codewhale_engine::fleet::agents::{
+    AGENTS, ExecutorUnavailable, ExternalAgent, below_minimum, cli_version, foreign_command,
+    resolve,
+};
 
 fn clean(text: &str) -> String {
     text.chars()
@@ -211,26 +23,6 @@ fn clean(text: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
-}
-
-fn version_token(text: &str) -> Option<String> {
-    text.split(|ch: char| ch.is_whitespace() || ch == '(' || ch == ')' || ch == ',')
-        .map(|token| token.trim_start_matches('v'))
-        .find(|token| {
-            token.chars().next().is_some_and(|ch| ch.is_ascii_digit()) && token.contains('.')
-        })
-        .map(clean)
-}
-
-async fn cli_version(path: &Path) -> Option<String> {
-    let mut command = foreign_command(path, &["--version"]);
-    command.stdin(Stdio::null());
-    let output = tokio::time::timeout(VERSION_TIMEOUT, command.output())
-        .await
-        .ok()?
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    version_token(text.lines().next().unwrap_or_default())
 }
 
 async fn acp_initialize(path: &Path, args: &[&str]) -> Option<Value> {
@@ -258,7 +50,7 @@ async fn acp_initialize(path: &Path, args: &[&str]) -> Option<Value> {
     line.push('\n');
     stdin.write_all(line.as_bytes()).await.ok()?;
     stdin.flush().await.ok()?;
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = crate::stdio::BoundedLines::new(BufReader::new(stdout));
     let reply = tokio::time::timeout(PROBE_TIMEOUT, async {
         while let Ok(Some(line)) = lines.next_line().await {
             if line.len() > MAX_PROBE_LINE_BYTES {
@@ -267,8 +59,13 @@ async fn acp_initialize(path: &Path, args: &[&str]) -> Option<Value> {
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+                return None;
+            }
             if message.get("id") == Some(&json!(1)) {
-                return message.get("result").cloned();
+                let result = message.get("result")?;
+                return (result.get("protocolVersion").and_then(Value::as_u64) == Some(1))
+                    .then(|| result.clone());
             }
         }
         None
@@ -307,25 +104,6 @@ fn auth_methods(result: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-fn parsed_version(text: &str) -> Option<semver::Version> {
-    let core: String = text
-        .trim_start_matches('v')
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
-        .collect();
-    semver::Version::parse(core.trim_end_matches('.')).ok()
-}
-
-fn needs_update(version: Option<&str>, minimum: Option<&str>) -> bool {
-    match (
-        version.and_then(parsed_version),
-        minimum.and_then(parsed_version),
-    ) {
-        (Some(found), Some(floor)) => found < floor,
-        _ => false,
-    }
-}
-
 fn clean_kind(kind: &str) -> &'static str {
     if kind == "terminal" {
         "terminal"
@@ -334,7 +112,7 @@ fn clean_kind(kind: &str) -> &'static str {
     }
 }
 
-async fn describe(agent: &'static Agent) -> Value {
+async fn describe(agent: &'static ExternalAgent) -> Value {
     let Some(path) = resolve(agent.binary).await else {
         return json!({
             "id": agent.id,
@@ -348,16 +126,37 @@ async fn describe(agent: &'static Agent) -> Value {
             "upgrade": agent.upgrade,
             "login": agent.login,
             "adapter": agent.adapter,
+            "adapter_installed": false,
             "needs_update": false,
             "runnable": false,
+            "depth": null,
+            "auth_status": "unknown",
+            "reason_code": ExecutorUnavailable::NOT_INSTALLED,
+            "reason": format!(
+                "{} is not installed.{}",
+                agent.name,
+                agent
+                    .upgrade
+                    .map(|command| format!(" Install it with `{command}`."))
+                    .unwrap_or_default()
+            ),
         });
     };
-    let (version, initialized) = tokio::join!(cli_version(&path), async {
-        match agent.acp_args {
-            Some(args) => acp_initialize(&path, args).await,
-            None => None,
+    let (version, initialized, adapter_installed) = tokio::join!(
+        cli_version(&path),
+        async {
+            match agent.acp_args {
+                Some(args) => acp_initialize(&path, args).await,
+                None => None,
+            }
+        },
+        async {
+            match agent.adapter_binary {
+                Some(binary) => resolve(binary).await.is_some(),
+                None => false,
+            }
         }
-    });
+    );
     let acp = match (&initialized, agent.acp_args) {
         (Some(_), _) => "native",
         (None, Some(_)) => "unreachable",
@@ -369,11 +168,38 @@ async fn describe(agent: &'static Agent) -> Value {
         .and_then(Value::as_str)
         .map(clean);
     let version = reported.or(version);
+    let needs_update = below_minimum(version.as_deref(), agent.min_version);
+    let runnable = !needs_update && (acp == "native" || (acp == "adapter" && adapter_installed));
+    let (reason_code, reason) = if needs_update {
+        (
+            Some(ExecutorUnavailable::BELOW_MIN_VERSION),
+            Some(format!(
+                "Version {} is installed; Codewhale needs {} or newer to drive it.",
+                version.as_deref().unwrap_or("unknown"),
+                agent.min_version.unwrap_or("a newer one")
+            )),
+        )
+    } else if acp == "unreachable" {
+        (
+            Some(ExecutorUnavailable::NO_ACP),
+            Some("It did not answer the Agent Client Protocol handshake.".to_string()),
+        )
+    } else if acp == "adapter" && !adapter_installed {
+        let adapter = agent.adapter.unwrap_or("its ACP adapter");
+        (
+            Some(ExecutorUnavailable::ADAPTER_MISSING),
+            Some(format!(
+                "It runs through the ACP adapter {adapter}, which is not installed. Install it with `npm i -g {adapter}`."
+            )),
+        )
+    } else {
+        (None, None)
+    };
     json!({
         "id": agent.id,
         "name": agent.name,
         "state": "installed",
-        "needs_update": needs_update(version.as_deref(), agent.min_version),
+        "needs_update": needs_update,
         "min_version": agent.min_version,
         "upgrade": agent.upgrade,
         "login": agent.login,
@@ -382,7 +208,12 @@ async fn describe(agent: &'static Agent) -> Value {
         "acp": acp,
         "auth_methods": initialized.as_ref().map(auth_methods).unwrap_or_default(),
         "website": agent.website,
-        "runnable": false,
+        "adapter_installed": adapter_installed,
+        "runnable": runnable,
+        "depth": if runnable { "driven" } else { "observed" },
+        "auth_status": "unknown",
+        "reason_code": reason_code,
+        "reason": reason,
     })
 }
 

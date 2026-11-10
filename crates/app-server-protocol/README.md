@@ -26,6 +26,11 @@ The command writes `schema/json/runtime.schema.json`,
 `--check` compares all three without writing. Normal runtime startup does not
 generate files or enable schema machinery.
 
+`src/methods.rs` holds the typed Tier A and B Codex method enums. `METHODS.md` is the
+committed inventory of every pinned Codex method with its tier and status, and
+`tests/methods.rs` checks the enums, the inventory and the pinned export against
+each other.
+
 The selected future Codex wire target is official `rust-v0.166.0`, commit
 `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`. Its four-variant envelope and initialize/initialized lifecycle serve JSONL
 stdio and WebSocket text messages over the private owner channel. The private
