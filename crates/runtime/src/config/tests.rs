@@ -643,6 +643,23 @@ context_window = 204800
 }
 
 #[test]
+fn negative_retry_delay_is_invalid() {
+    let config: Config = toml::from_str(
+        r#"
+[retry]
+jitter = false
+max_delay = -1.0
+"#,
+    )
+    .expect("a negative delay is syntactically valid TOML");
+
+    let err = config
+        .validate()
+        .expect_err("a negative retry delay should be rejected");
+    assert!(err.to_string().contains("[retry] max_delay"), "{err}");
+}
+
+#[test]
 fn opencode_go_context_window_zero_is_invalid() {
     let config: Config = toml::from_str(
         r#"

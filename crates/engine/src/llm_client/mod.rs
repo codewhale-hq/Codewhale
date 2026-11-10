@@ -1422,7 +1422,7 @@ impl RetryConfig {
             capped_delay
         };
 
-        Duration::from_secs_f64(final_delay)
+        Duration::try_from_secs_f64(final_delay.max(0.0)).unwrap_or(Duration::MAX)
     }
 
     /// Checks if a given HTTP status code should trigger a retry
@@ -2204,6 +2204,18 @@ mod tests {
         // 1.0 * 2^3 = 8.0, but capped at 5.0
         let d3 = config.delay_for_attempt(3);
         assert_eq!(d3, Duration::from_secs_f64(5.0));
+    }
+
+    #[test]
+    fn delay_for_attempt_survives_negative_and_huge_configured_delays() {
+        let negative = RetryConfig::new().with_jitter(false).with_max_delay(-1.0);
+        assert_eq!(negative.delay_for_attempt(0), Duration::ZERO);
+
+        let huge = RetryConfig::new()
+            .with_jitter(false)
+            .with_initial_delay(1e30)
+            .with_max_delay(f64::INFINITY);
+        assert_eq!(huge.delay_for_attempt(0), Duration::MAX);
     }
 
     #[test]
