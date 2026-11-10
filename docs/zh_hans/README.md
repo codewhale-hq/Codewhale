@@ -21,14 +21,15 @@
 
 阅读以下文档，可以帮助你快速入门，掌握 Codewhale 的使用方法
 
-1. [GUIDE.md](./GUIDE.md) —— 最基础的入门教程：首次运行、会话、命令与日常工作流，适用于所有平台
-2. [KEYBINDINGS.md](./KEYBINDINGS.md) —— TUI 页面的快捷键列表，在这里可以了解 Codewhale 的日常操作方式
-3. [MODES.md](./MODES.md) —— 各个模式（Plan / Work / Operate）与权限姿态的说明（强烈建议每个 Codewhale 用户都阅读此项）
-4. [PROVIDERS.md](./PROVIDERS.md) —— 查看你所用模型的提供商是否在 Codewhale 官方支持的列表中，以及各提供商的配置方法
-5. [DOCKER.md](./DOCKER.md) —— 用容器运行 Codewhale，含挂载、权限与常见坑
-6. [ACCESSIBILITY.md](./ACCESSIBILITY.md) —— 无障碍与低动态模式、对比度与屏幕阅读器
-7. [PET_MODE.md](./PET_MODE.md) —— Pet 模式：每个终端一头鲸鱼，一眼看清工作中、等你、完成或失败，按需查看回复与智能体
-8. [RECEIPTS.md](./RECEIPTS.md) —— 回执：查看一个会话改了哪些文件、运行了哪些命令、谁批准了什么，以及哪些操作未经询问就运行
+1. [PROVIDER_QUICKSTART.md](./PROVIDER_QUICKSTART.md) —— 装好以后先读这页：怎么配提供商、API 密钥和模型，拿到第一个回答（中文新手页）
+2. [GUIDE.md](./GUIDE.md) —— 最基础的入门教程：首次运行、会话、命令与日常工作流，适用于所有平台
+3. [KEYBINDINGS.md](./KEYBINDINGS.md) —— TUI 页面的快捷键列表，在这里可以了解 Codewhale 的日常操作方式
+4. [MODES.md](./MODES.md) —— 各个模式（Plan / Work / Operate）与权限姿态的说明（强烈建议每个 Codewhale 用户都阅读此项）
+5. [PROVIDERS.md](./PROVIDERS.md) —— 查看你所用模型的提供商是否在 Codewhale 官方支持的列表中，以及各提供商的配置方法
+6. [DOCKER.md](./DOCKER.md) —— 用容器运行 Codewhale，含挂载、权限与常见坑
+7. [ACCESSIBILITY.md](./ACCESSIBILITY.md) —— 无障碍与低动态模式、对比度与屏幕阅读器
+8. [PET_MODE.md](./PET_MODE.md) —— Pet 模式：每个终端一头鲸鱼，一眼看清工作中、等你、完成或失败，按需查看回复与智能体
+9. [RECEIPTS.md](./RECEIPTS.md) —— 回执：查看一个会话改了哪些文件、运行了哪些命令、谁批准了什么，以及哪些操作未经询问就运行
 
 ## 三、进阶用户（已经有充足了解，追求效率、安全与定制）
 
