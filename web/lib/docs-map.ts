@@ -107,8 +107,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "modes",
     label: { en: "Set modes and approvals", zh: "设置模式与审批" },
     description: {
-      en: "Plan, Work, or Operate for the kind of work; Ask, Auto-Review, or Full Access for when it asks you.",
-      zh: "用 Plan、Work、Operate 选择工作类型，用 Ask、Auto-Review、Full Access 决定它何时问你。",
+      en: "Compare the published release and source-candidate modes, and choose when Codewhale asks for approval.",
+      zh: "比较已发布版本与源码候选版本的模式，并选择 Codewhale 何时询问审批。",
     },
     repoSource: "docs/MODES.md",
     hasPage: true,
@@ -319,8 +319,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "vocabulary",
     label: { en: "Product terms", zh: "产品名词" },
     description: {
-      en: "Fleet, Workflow, Lane, and Runtime; Plan, Work, and Operate — each in one sentence.",
-      zh: "Fleet、Workflow、Lane 与 Runtime；Plan、Work 与 Operate——各用一句话说明。",
+      en: "Understand Fleet, Workflow, Lane and Runtime, plus the source-candidate Plan and Work controls.",
+      zh: "了解 Fleet、Workflow、Lane、Runtime，以及源码候选版本的 Plan 和 Work 控制方式。",
     },
     repoSource: ["docs/FLEET.md", "docs/MODES.md", "docs/public-surface-facts.json"],
     hasPage: true,

@@ -119,8 +119,8 @@ export const GUIDE_NEXT_LINKS: { href: string; label: LocalizedText; note: Local
     href: "/docs/modes",
     label: { en: "Set modes and approvals", zh: "设置模式与审批" },
     note: {
-      en: "Plan, Work, or Operate for the kind of work; Ask, Auto-Review, or Full Access for when it stops to ask you.",
-      zh: "用 Plan、Work、Operate 选择工作类型，用 Ask、Auto-Review、Full Access 决定它什么时候停下来问你。",
+      en: "Compare the published release and source-candidate controls, then choose when Codewhale asks for approval.",
+      zh: "比较已发布版本与源码候选版本的控制方式，再选择 Codewhale 何时询问审批。",
     },
   },
   {

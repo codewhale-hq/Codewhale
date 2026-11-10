@@ -93,7 +93,7 @@ export const docsWork: DocsWorkDict = {
     {
       href: "/docs/modes",
       label: "Set modes and approvals",
-      note: "Operate plans named steps and checks each result.",
+      note: "Choose Plan or Work and decide when Codewhale asks for approval.",
     },
     {
       href: "/docs/review",
