@@ -37,7 +37,7 @@ export const enterprise: EnterpriseDict = {
   today: [
     {
       title: "支持任何模型的智能体",
-      body: "托管服务商、任何 OpenAI 兼容端点，以及你用 vLLM、SGLang 或 Ollama 自行部署的模型。",
+      body: "DeepSeek、Anthropic、OpenAI 和 Google 等托管服务商、任何 OpenAI 兼容端点，以及你自行部署的模型。",
     },
     {
       title: "带回执的已保存会话",

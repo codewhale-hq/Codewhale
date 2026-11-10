@@ -67,11 +67,18 @@ codewhale auth status --provider deepseek`,
           p: "`codewhale auth list` shows the credential state Codewhale reports for each provider. For an API-key route, use `codewhale auth set --provider <name>` or its documented environment variable; OAuth and local routes have their own setup.",
         },
         {
-          p: "Local Ollama, vLLM and SGLang servers need no API key by default. Use a loopback endpoint for a model on your machine, then select the model tag it serves:",
+          p: "Save a key for another hosted provider, then select it and a model:",
         },
         {
-          code: `codewhale auth list
-codewhale --provider ollama --model <model-tag>`,
+          code: `codewhale auth set --provider anthropic
+codewhale --provider anthropic --model claude-sonnet-5-5`,
+          lang: "Terminal",
+        },
+        {
+          p: "A server you run yourself (vLLM, SGLang, Ollama) needs no API key by default. Connect a loopback endpoint, then select the model tag it serves:",
+        },
+        {
+          code: `codewhale --provider vllm --model <model-tag>`,
           lang: "Terminal",
         },
         {

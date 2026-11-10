@@ -56,6 +56,7 @@ export const chrome: ChromeDict = {
   footerReleases: " · 发布：",
   footerReleasesLink: "GitHub 发布页",
   footerSecurity: "安全",
+  footerLegal: "法律",
 
   switcherLabel: "语言",
   switcherSwitchTo: "切换到 {label}",

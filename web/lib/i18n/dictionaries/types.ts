@@ -103,6 +103,7 @@ export interface ChromeDict {
   footerReleasesLink: string;
   /** Link text for the security-contact mailto. */
   footerSecurity: string;
+  footerLegal: string;
 
   /** aria-label for the locale switcher control. */
   switcherLabel: string;

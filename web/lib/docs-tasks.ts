@@ -56,8 +56,8 @@ export const DOC_TASKS: DocTask[] = [
     id: "connect-provider",
     label: { en: "Connect a provider", zh: "连接模型提供商" },
     description: {
-      en: "Save a key for DeepSeek, OpenAI, Anthropic, OpenRouter, or another provider — or run a local model with no key.",
-      zh: "为 DeepSeek、OpenAI、Anthropic、OpenRouter 等提供商保存密钥，或者不用密钥运行本地模型。",
+      en: "Save a key for DeepSeek, Anthropic, OpenAI, Google or another provider, or run a model yourself with no key.",
+      zh: "为 DeepSeek、Anthropic、OpenAI、Google 等提供商保存密钥，或者不用密钥自己运行模型。",
     },
     href: "/docs/auth",
     topicId: "auth",

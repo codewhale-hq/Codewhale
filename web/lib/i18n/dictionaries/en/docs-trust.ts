@@ -42,7 +42,7 @@ export const docsTrust: DocsTrustDict = {
           rows: [
             ["Stays on your machine", "The runtime, your workspace, session history, snapshots, and the audit log."],
             ["Goes to your provider", "The context each turn needs — your messages, the files and tool results Codewhale reads for that turn — goes directly to the provider you selected. There is no Codewhale relay in between."],
-            ["Stays local entirely", "With a local model (Ollama, vLLM, SGLang), inference never leaves your machine."],
+            ["Stays local entirely", "With a model you run yourself, inference never leaves your machine."],
             ["Needs no account", "Installing and running Codewhale locally needs no Codewhale account."],
             ["Plan mode", "Cannot edit files or run shell commands. Research it is allowed to do may still contact outside services."],
           ],

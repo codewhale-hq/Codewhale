@@ -66,6 +66,7 @@ export const chrome: ChromeDict = {
   footerReleases: " · 릴리스: ",
   footerReleasesLink: "GitHub 릴리스",
   footerSecurity: "보안",
+  footerLegal: "법적 고지",
 
   switcherLabel: "언어",
   // "(으)로" is the standard Korean UI hedge when the interpolated noun's

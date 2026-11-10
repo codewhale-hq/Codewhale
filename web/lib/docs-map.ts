@@ -94,8 +94,8 @@ export const DOC_TOPICS: DocTopic[] = [
     slug: "providers",
     label: { en: "Choose a model", zh: "选择模型" },
     description: {
-      en: "Supported providers, switching models, and local runners such as Ollama, vLLM, and SGLang.",
-      zh: "支持的提供商、切换模型，以及 Ollama、vLLM、SGLang 等本地运行器。",
+      en: "Supported providers, switching models, and running a model yourself.",
+      zh: "支持的提供商、切换模型，以及自己运行模型。",
     },
     repoSource: ["docs/PROVIDERS.md", "docs/MODEL_LAB.md"],
     hasPage: true,

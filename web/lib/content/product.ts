@@ -14,7 +14,10 @@
  */
 
 import { AVAILABILITY_ROWS } from "./availability";
+import { FACTS } from "../facts.generated";
 import type { LocalizedText } from "./vocabulary";
+
+const PUBLISHED_TAG = FACTS.latestPublishedRelease?.tag ?? "main";
 
 export interface ProductRow {
   title: LocalizedText;
@@ -66,7 +69,7 @@ export const PRODUCT_COPY = {
         en: "Save steps, parallel work and review gates as a process you can run again.",
         zh: "把步骤、并行工作与审阅关卡保存为可重复运行的流程。",
       },
-      href: "https://github.com/codewhale-hq/Codewhale/blob/v0.10.2/docs/AUTOMATIC_WORKFLOWS.md",
+      href: `https://github.com/codewhale-hq/Codewhale/blob/${PUBLISHED_TAG}/docs/AUTOMATIC_WORKFLOWS.md`,
       command: "codewhale workflow run <workflow>",
     },
     {

@@ -20,17 +20,18 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
 
 export default async function ConstitutionPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
+  const han = locale === "zh";
   const t = getConstitution(locale);
 
   return (
     <>
       <PageHeader
         titleId="constitution-overview"
-        seal="法"
+        seal={han ? "法" : undefined}
         kicker={t.kicker}
         title={t.title}
-        titleAside={t.titleAside}
-        titleAsideLang={t.titleAsideLang}
+        titleAside={han ? t.titleAside : undefined}
+        titleAsideLang={han ? t.titleAsideLang : undefined}
         lede={t.lede}
         pose="read"
       >
@@ -45,7 +46,7 @@ export default async function ConstitutionPage({ params }: { params: Promise<{ l
       <div className="page-body">
         <Section
           id="constitution-rank"
-          seal="序"
+          seal={han ? "序" : undefined}
           title={t.rankTitle}
           scope={t.rankScope}
         >
@@ -70,7 +71,7 @@ export default async function ConstitutionPage({ params }: { params: Promise<{ l
 
         <Section
           id="constitution-trace"
-          seal="证"
+          seal={han ? "证" : undefined}
           title={t.traceTitle}
           scope={t.traceScope}
         >

@@ -68,6 +68,7 @@ export const chrome: ChromeDict = {
   footerReleases: " · Versions: ",
   footerReleasesLink: "Versions de GitHub",
   footerSecurity: "Seguretat",
+  footerLegal: "Legal",
 
   switcherLabel: "Llengua",
   switcherSwitchTo: "Canvia a {label}",

@@ -49,8 +49,8 @@ export const GETTING_STARTED_STEPS: GuideStep[] = [
     id: "connect-provider",
     title: { en: "Connect your model", zh: "连接你的模型" },
     body: {
-      en: "Connect a model API with a valid provider key, or use a running local model such as Ollama without a key. The command below saves a DeepSeek key without echoing it.",
-      zh: "使用有效的提供商密钥连接模型 API，或使用正在运行的 Ollama 等本地模型，无需密钥。下方命令会保存 DeepSeek 密钥，输入时不会回显。",
+      en: "Connect a model API with your provider key. The command below saves a DeepSeek key without echoing it. To run a model yourself, see the provider guide.",
+      zh: "使用你的提供商密钥连接模型 API。下方命令会保存 DeepSeek 密钥，输入时不会回显。若要自己运行模型，请参阅提供商指南。",
     },
     commands: ["codewhale auth set --provider deepseek"],
     link: {

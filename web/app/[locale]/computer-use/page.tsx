@@ -6,6 +6,9 @@ import { getComputerUse, getFeatures } from "@/lib/i18n/dictionaries";
 import { buildPageMetadata } from "@/lib/page-meta";
 import { COMPUTER_USE_REPO, getComputerUseRelease } from "@/lib/computer-use-release";
 import { getEnv } from "@/lib/kv";
+import { FACTS } from "@/lib/facts.generated";
+
+const BUNDLED_CU_CAVEAT_VERSION = "0.10.2";
 
 // Rendered per request rather than through ISR: the download state must be
 // right the moment a release is published, the page must never serve a
@@ -98,7 +101,7 @@ export default async function ComputerUsePage({ params }: { params: Promise<{ lo
         </Section>
 
         <Section id="cu-codewhale" title={t.connectTitle}>
-          <p>{t.connectVersion}</p>
+          {FACTS.latestPublishedRelease?.version === BUNDLED_CU_CAVEAT_VERSION && <p>{t.connectVersion}</p>}
           <p>{t.connectLimit}</p>
           <p>{t.connectRuntime}</p>
           <pre tabIndex={0} className="code-block">{`APP="/Applications/Codewhale Computer Use.app"

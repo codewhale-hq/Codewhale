@@ -59,32 +59,37 @@ export function secondaryNavLinks(locale: string, chrome: ChromeDict): ChromeLin
   ];
 }
 
-/** Footer "Product" column — the in-site discovery links. */
+/** Footer "Product" column: what it is and where to get it. */
 export function footerProductLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
-    { href: `/${locale}/product`, label: chrome.navProduct },
     { href: `/${locale}/computer-use`, label: "Computer Use" },
     { href: `/${locale}/features`, label: chrome.navFeatures },
-    { href: `/${locale}/docs`, label: chrome.footerDocs },
-    { href: `/${locale}/docs/guide`, label: chrome.footerGuide },
-    { href: `/${locale}/install`, label: chrome.footerInstall },
     { href: `/${locale}/models`, label: chrome.footerModels },
     { href: `/${locale}/plugins`, label: chrome.navPlugins },
-    { href: `/${locale}/ratatui`, label: "Ratatui" },
+    { href: `/${locale}/install`, label: chrome.footerInstall },
+  ];
+}
+
+/** Footer "Docs" column: reading material for people building on Codewhale. */
+export function footerDocsLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
+  return [
+    { href: `/${locale}/docs`, label: chrome.footerDocs },
+    { href: `/${locale}/docs/guide`, label: chrome.footerGuide },
     { href: `/${locale}/runtime`, label: chrome.footerRuntime },
-    { href: `/${locale}/faq`, label: chrome.footerFaq },
+    { href: `/${locale}/ratatui`, label: "Ratatui" },
     { href: `/${locale}/changelog`, label: chrome.footerChangelog },
+    { href: `/${locale}/faq`, label: chrome.footerFaq },
   ];
 }
 
 /** Footer "Project" column — GitHub plus the pinned legal link. */
 export function footerProjectLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
+    { href: `/${locale}/roadmap`, label: chrome.footerRoadmap },
+    { href: `/${locale}/contribute`, label: chrome.footerContribute },
     { href: REPO_URL, label: "GitHub" },
     { href: REPO_ISSUES_URL, label: chrome.footerIssues },
     { href: DISCORD_URL, label: "Discord" },
-    { href: `/${locale}/contribute`, label: chrome.footerContribute },
-    { href: `/${locale}/roadmap`, label: chrome.footerRoadmap },
     { href: REPO_LICENSE_URL, label: chrome.footerLicense },
   ];
 }

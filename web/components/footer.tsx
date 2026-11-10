@@ -2,6 +2,7 @@ import Link from "next/link";
 import { GITEE_ENABLED, type Locale } from "@/lib/i18n/config";
 import { getChrome } from "@/lib/i18n/dictionaries";
 import {
+  footerDocsLinks,
   footerLegalLinks,
   footerProductLinks,
   footerProjectLinks,
@@ -13,13 +14,14 @@ import { getStorefrontCopy } from "@/lib/content/merch-storefront";
 
 /**
  * Site footer: the sea below one horizon line, in both appearances.
- * One dictionary path for every routed locale; the Product column carries
- * the full link set everywhere.
+ * One dictionary path for every routed locale; four short link columns
+ * (Product, Docs, Project, Legal) everywhere.
  */
 export function Footer({ locale = "en" }: { locale?: Locale }) {
   const chrome = getChrome(locale);
   const homeHref = `/${locale}`;
   const product = footerProductLinks(locale, chrome);
+  const docs = footerDocsLinks(locale, chrome);
   const project = footerProjectLinks(locale, chrome);
   const legal = footerLegalLinks(locale, chrome);
 
@@ -45,10 +47,24 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
               </div>
             </div>
             <div className="site-footer-group">
+              <span className="site-footer-label">{chrome.footerDocs}</span>
+              <div className="site-footer-list">
+                {docs.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
+              </div>
+            </div>
+            <div className="site-footer-group">
               <span className="site-footer-label">{chrome.footerProject}</span>
               <div className="site-footer-list">
                 {project.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
                 <Link href={`/${locale}/merch`}>{getStorefrontCopy(locale).merch}</Link>
+              </div>
+            </div>
+            <div className="site-footer-group">
+              <span className="site-footer-label">{chrome.footerLegal}</span>
+              <div className="site-footer-list">
+                {legal.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
+                <Link href={`/${locale}/legal/privacy#usage-counting`}>{pickText(USAGE_COUNTING_COPY.footerLink, locale)}</Link>
+                <a href={`mailto:${SITE_SECURITY_EMAIL}`}>{chrome.footerSecurity}</a>
               </div>
             </div>
           </div>
@@ -56,13 +72,10 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
 
         <div className="site-footer-meta">
           <div className="site-footer-meta-links">
-            {legal.map((item) => <Link key={item.href} href={item.href}>{item.label}</Link>)}
             {GITEE_ENABLED && <a href="https://gitee.com/codewhale-hq/CodeWhale">Gitee</a>}
             <a href="https://cnb.cool/codewhale.net/codewhale">CNB</a>
             <a href="https://npmmirror.com/package/codewhale">npmmirror</a>
             <a href={`mailto:${SITE_CONTACT_EMAIL}`}>{SITE_CONTACT_EMAIL}</a>
-            <a href={`mailto:${SITE_SECURITY_EMAIL}`}>{chrome.footerSecurity}</a>
-            <Link href={`/${locale}/legal/privacy#usage-counting`}>{pickText(USAGE_COUNTING_COPY.footerLink, locale)}</Link>
           </div>
           <span>© {new Date().getFullYear()} Codewhale</span>
         </div>

@@ -17,6 +17,7 @@ import { contentLocalesForPath } from "./i18n/content-locales";
 import { getChrome, getHome } from "./i18n/dictionaries";
 import {
   currentNavHref,
+  footerDocsLinks,
   footerLegalLinks,
   footerProductLinks,
   footerProjectLinks,
@@ -237,25 +238,29 @@ describe("navigation parity and accessibility", () => {
   });
 
   it("keeps footer link paths in exact locale-swap parity for every routed locale", () => {
-    const reference = footerProductLinks("en", getChrome("en")).map((l) =>
-      l.href.replace(/^\/en\//, ""),
-    );
-    expect(reference).toContain("product");
+    const reference = [
+      ...footerProductLinks("en", getChrome("en")),
+      ...footerDocsLinks("en", getChrome("en")),
+    ].map((l) => l.href.replace(/^\/en\//, ""));
+    expect(reference).toContain("computer-use");
     expect(reference).toContain("docs/guide");
     expect(reference).toContain("faq");
     for (const locale of locales) {
-      const product = footerProductLinks(locale, getChrome(locale));
+      const product = [
+        ...footerProductLinks(locale, getChrome(locale)),
+        ...footerDocsLinks(locale, getChrome(locale)),
+      ];
       expect(
         product.map((l) => l.href.replace(new RegExp(`^/${locale}/`), "")),
         `${locale} footer product routes`,
       ).toEqual(reference);
       const project = footerProjectLinks(locale, getChrome(locale));
       expect(project.map((l) => l.href), `${locale} footer project routes`).toEqual([
+        `/${locale}/roadmap`,
+        `/${locale}/contribute`,
         "https://github.com/codewhale-hq/CodeWhale",
         "https://github.com/codewhale-hq/CodeWhale/issues",
         "https://discord.gg/37gfS3ksug",
-        `/${locale}/contribute`,
-        `/${locale}/roadmap`,
         "https://github.com/codewhale-hq/CodeWhale/blob/main/LICENSE",
       ]);
       const legal = footerLegalLinks(locale, getChrome(locale));
@@ -345,9 +350,9 @@ describe("navigation parity and accessibility", () => {
     // The link sets moved to lib/i18n/links.ts, so assert the rendered
     // contract for en AND zh rather than scraping literals out of the TSX.
     for (const locale of ["en", "zh"]) {
-      const product = footerProductLinks(locale, getChrome(locale)).map((l) => l.href);
-      expect(product, `${locale} footer product`).toContain(`/${locale}/docs/guide`);
-      expect(product, `${locale} footer product`).toContain(`/${locale}/faq`);
+      const docs = footerDocsLinks(locale, getChrome(locale)).map((l) => l.href);
+      expect(docs, `${locale} footer docs`).toContain(`/${locale}/docs/guide`);
+      expect(docs, `${locale} footer docs`).toContain(`/${locale}/faq`);
     }
     const license = footerProjectLinks("en", getChrome("en")).at(-1);
     expect(license).toEqual({
@@ -360,6 +365,7 @@ describe("navigation parity and accessibility", () => {
       "隐私政策",
     ]);
     expect(footer).toContain("footerProductLinks(locale, chrome)");
+    expect(footer).toContain("footerDocsLinks(locale, chrome)");
     expect(footer).toContain("footerProjectLinks(locale, chrome)");
     expect(footer).toContain("footerLegalLinks(locale, chrome)");
   });
