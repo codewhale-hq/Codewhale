@@ -4888,6 +4888,20 @@ impl SubAgentWorkflowDriver {
             )?;
             None
         };
+        if let Some(experiment) = self
+            .experiment
+            .lock()
+            .map_err(|_| DriverError::Unavailable("experimental search lock poisoned".to_string()))?
+            .clone()
+        {
+            experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .admit(&request)
+                .map_err(DriverError::Rejected)?;
+        }
         // Take a concurrent slot (`max_concurrent` live children per run). A task that
         // has to wait is announced first, so a surface can show it queued
         // instead of leaving it invisible until a slot frees.
@@ -5092,20 +5106,6 @@ impl SubAgentWorkflowDriver {
 #[async_trait]
 impl WorkflowDriver for SubAgentWorkflowDriver {
     async fn spawn_task(&self, mut request: TaskRequest) -> Result<SpawnedTask, DriverError> {
-        let experiment = self
-            .experiment
-            .lock()
-            .map_err(|_| DriverError::Unavailable("experimental search lock poisoned".to_string()))?
-            .clone();
-        if let Some(experiment) = experiment {
-            experiment
-                .lock()
-                .map_err(|_| {
-                    DriverError::Unavailable("experimental search lock poisoned".to_string())
-                })?
-                .admit(&request)
-                .map_err(DriverError::Rejected)?;
-        }
         if request.max_depth.take().is_some() {
             self.progress(ProgressEvent::Log {
                 message: "Ignored model task maxDepth; trusted Fleet, role and parent delegation constraints apply.".to_string(),
@@ -5161,6 +5161,66 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                     DriverError::Unavailable("experimental search lock poisoned".to_string())
                 })
                 .map(|experiment| experiment.summary());
+        }
+        if action == "apply_policy" {
+            let candidate_id = request
+                .get("candidate_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DriverError::Rejected("candidate_id is required".to_string()))?;
+            let generation = request
+                .get("generation")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
+                as u32;
+            let policy = request
+                .get("policy")
+                .ok_or_else(|| DriverError::Rejected("policy is required".to_string()))?;
+            let lineage = request.get("lineage").unwrap_or(&Value::Null);
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .apply_policy(candidate_id, generation, policy, lineage)
+                .map_err(DriverError::Rejected);
+        }
+        if action == "policy_status" {
+            let candidate_id = request
+                .get("candidate_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DriverError::Rejected("candidate_id is required".to_string()))?;
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .policy_status(candidate_id)
+                .map_err(DriverError::Rejected);
+        }
+        if action == "select_generation" {
+            let generation = request
+                .get("generation")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| DriverError::Rejected("generation is required".to_string()))?
+                as u32;
+            let ids = request
+                .get("candidate_ids")
+                .and_then(Value::as_array)
+                .ok_or_else(|| DriverError::Rejected("candidate_ids are required".to_string()))?
+                .iter()
+                .map(|id| {
+                    id.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| DriverError::Rejected("invalid candidate_id".to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return experiment
+                .lock()
+                .map_err(|_| {
+                    DriverError::Unavailable("experimental search lock poisoned".to_string())
+                })?
+                .select_generation(generation, &ids)
+                .map_err(DriverError::Rejected);
         }
         if action != "evaluate" && action != "replay" {
             return Err(DriverError::Rejected(
@@ -5225,6 +5285,14 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
             "status": value.get("status"),
             "reason": value.get("reason"),
             "patch_sha256": value.get("patch_sha256"),
+            "artifact_id": value.get("artifact_id"),
+            "policy_id": value.get("policy_id"),
+            "evaluation_id": value.get("evaluation_id"),
+            "safety_status": value.get("safety_status"),
+            "task_status": value.get("task_status"),
+            "execution_status": value.get("execution_status"),
+            "review_material": value.get("review_material"),
+            "review_complete": value.get("review_complete"),
             "public_failure_feedback": value.get("public_failure_feedback"),
             "changed_paths": value.get("changed_paths"),
             "test_count": value.get("test_count"),
