@@ -25,8 +25,6 @@ export default async function OpengraphImage() {
   const markDataUrl = `data:image/svg+xml;base64,${Buffer.from(markSvg).toString("base64")}`;
   const wordmarkDataUrl = `data:image/svg+xml;base64,${Buffer.from(wordmarkSvg).toString("base64")}`;
 
-  // The ocean: navy rising into the logo's blue, the white mark, the inverted wordmark, and the identity phrase once — the
-  // wordmark is the name, so no second "Codewhale" heading.
   return new ImageResponse(
     (
       <div
