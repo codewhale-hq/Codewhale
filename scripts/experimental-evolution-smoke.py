@@ -2,6 +2,8 @@
 import argparse
 import json
 import os
+import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -40,34 +42,44 @@ def make_baseline(destination, fixtures):
     return run(["git", "-C", str(destination), "rev-parse", "HEAD"], capture_output=True).stdout.strip()
 
 
-def write_manifest(directory, workspace, arm, budget, fixtures, brief):
+def write_manifest(directory, workspace, arm, budget, generations, fixtures, brief, initial_policy):
     public = (fixtures / "public_gate.py").resolve()
     hidden = (fixtures / "heldout_gate.py").resolve()
+    gates = []
+    for source, holdout, minimum in [(public, False, 8), (hidden, True, 6)]:
+        cases = runpy.run_path(str(source))["CASES"]
+        program = re.search(r'sys\.executable,\s*["\'](src/[^"\']+)["\']',
+                            source.read_text(encoding="utf-8"))
+        if program is None or not cases:
+            raise ValueError(f"unsupported process-level gate: {source}")
+        case_path = directory / ("heldout.cases.json" if holdout else "public.cases.json")
+        case_path.write_text(json.dumps([
+            {"input": request, "expected": expected} for request, expected in cases
+        ], separators=(",", ":")) + "\n", encoding="utf-8")
+        gates.append({
+            "candidate_argv": [str(Path(sys.executable).resolve()), program.group(1)],
+            "cases_path": str(case_path.resolve()),
+            "timeout_secs": max(60, len(cases) * 8),
+            "min_tests": minimum,
+            "holdout": holdout,
+        })
     manifest = {
-        "version": 1,
+        "version": 2,
         "objective": brief,
         "public_fixture_path": str((workspace / "README.md").resolve()),
         "hidden_evaluator_path": str(hidden),
         "allowed_write_roots": ["src"],
         "protected_paths": ["README.md", "workflows"],
-        "hard_gates": [
-            {"argv": [sys.executable, str(public)], "timeout_secs": 60, "min_tests": 8, "holdout": False},
-            {"argv": [sys.executable, str(hidden)], "timeout_secs": 60, "min_tests": 6, "holdout": True},
-        ],
+        "hard_gates": gates,
         "requested_provider": "deepseek",
         "requested_model": "deepseek-flash",
         "resolved_provider": "deepseek",
         "resolved_model": "deepseek-flash",
         "max_candidates": 1 if arm == "single" else budget,
-        "max_generations": 2 if arm == "evolution" else 1,
+        "max_generations": generations if arm in ("serial", "fixed_policy", "evolution") else 1,
+        "max_model_turns": (1 if arm == "single" else budget) * 6 + 1,
         "max_wall_secs": 3600,
-        "shadow_policy": {
-            "planning_budget": 1,
-            "max_repair_rounds": 1,
-            "extra_verification": False,
-            "candidate_strategy": "direct",
-            "trace_preference": "evidence_refs",
-        },
+        "shadow_policy": initial_policy,
     }
     path = directory / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -116,23 +128,44 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--codewhale", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--budget", type=int, default=4)
+    parser.add_argument("--budget", type=int, default=6)
+    parser.add_argument("--generations", type=int, choices=[2, 3], default=3)
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURES)
-    parser.add_argument("--arms", nargs="+", choices=["single", "independent", "evolution"],
-                        default=["single", "independent", "evolution"])
+    parser.add_argument("--arms", nargs="+", choices=["single", "independent", "serial", "fixed_policy", "evolution"],
+                        default=["independent", "serial", "fixed_policy", "evolution"])
+    parser.add_argument("--initial-policy-json", type=Path,
+                        help="Frozen genome from a selected DEV receipt for a new-task run")
+    parser.add_argument("--transfer-source-evaluation-id",
+                        help="The verified DEV evaluation that selected the transferred genome")
     args = parser.parse_args()
-    if not 2 <= args.budget <= 16 or args.budget % 2:
-        parser.error("budget must be an even integer from 2 to 16")
+    if not 2 * args.generations <= args.budget <= 16 \
+            or args.budget % args.generations:
+        parser.error("budget must provide at least two candidates per generation, up to 16")
     if not args.codewhale.is_file():
         parser.error("--codewhale must name a built binary")
     if not os.environ.get("DEEPSEEK_API_KEY"):
         parser.error("DEEPSEEK_API_KEY must be exported for real provider runs")
+    initial_policy = {
+        "planning_budget": 1,
+        "max_repair_rounds": 1,
+        "extra_verification": False,
+        "candidate_strategy": "direct",
+        "trace_preference": "evidence_refs",
+    }
+    if args.initial_policy_json:
+        initial_policy = json.loads(args.initial_policy_json.read_text(encoding="utf-8"))
+        if set(initial_policy) != {"planning_budget", "max_repair_rounds", "extra_verification",
+                                   "candidate_strategy", "trace_preference"}:
+            parser.error("transferred genome must contain only the frozen five-gene schema")
     fixtures = args.fixture if args.fixture.is_absolute() else ROOT / args.fixture
     fixtures = fixtures.resolve()
     for required in ("task/README.md", "public_gate.py", "heldout_gate.py"):
         if not (fixtures / required).is_file():
             parser.error(f"fixture missing {required}: {fixtures}")
-    brief = "Implement the CLI exactly as specified in README.md."
+    brief = "Implement the CLI exactly as specified below.\nPUBLIC CONTRACT:\n" \
+        + (fixtures / "task" / "README.md").read_text(encoding="utf-8")
+    for starter in sorted((fixtures / "task" / "src").glob("*.py")):
+        brief += f"\nSTARTER {starter.name}:\n" + starter.read_text(encoding="utf-8")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     baseline = output / "baseline"
@@ -145,23 +178,24 @@ def main():
         directory.mkdir()
         workspace = directory / "workspace"
         run(["git", "clone", "-q", "--local", str(baseline), str(workspace)])
-        manifest = write_manifest(directory, workspace, arm, args.budget, fixtures, brief)
+        manifest = write_manifest(directory, workspace, arm, args.budget,
+                                  args.generations, fixtures, brief, initial_policy)
         payload = {
             "action": "run",
             "source_path": "workflows/operate_best_of_n.workflow.js",
-            "token_budget": (1 if arm == "single" else args.budget) * 30000,
             "args": {
                 "strategy": "search",
                 "brief": brief,
                 "rubric": "Follow README.md. Keep the CLI deterministic and change only src/.",
                 "model": "deepseek-flash",
-                "n": args.budget // 2,
+                "n": args.budget // args.generations,
                 "writeRoots": ["src"],
                 "evolution": {
                     "manifestPath": str(manifest),
                     "arm": arm,
+                    "mode": "solve_task" if arm == "serial" else "learn_policy",
                     "executionBudget": args.budget,
-                    "generations": 2,
+                    "generations": args.generations,
                 },
             },
         }
@@ -199,6 +233,8 @@ def main():
                         receipt_summaries.append(summarize_receipts(destination))
         row = {"arm": arm, "exit_code": completed.returncode, "wall_seconds": elapsed,
                "baseline_sha": baseline_sha, "execution_budget": 1 if arm == "single" else args.budget,
+               "initial_policy": initial_policy,
+               "transfer_source_evaluation_id": args.transfer_source_evaluation_id,
                "evidence": evidence, "receipt_summaries": receipt_summaries,
                "heldout_replay_pass": any(item["heldout_replay_pass"] for item in receipt_summaries)}
         (directory / "run.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")

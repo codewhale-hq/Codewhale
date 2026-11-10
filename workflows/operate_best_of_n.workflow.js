@@ -56,16 +56,17 @@ export default async function (args) {
     if (strategy !== "search" || !args.evolution?.manifestPath || !model || !writeRoots.length) {
       throw new Error("Evolution requires strategy=search, manifestPath, model and writeRoots");
     }
-    const arm = ["single", "independent", "evolution"].includes(args.evolution.arm)
+    const arm = ["single", "independent", "serial", "fixed_policy", "evolution"].includes(args.evolution.arm)
       ? args.evolution.arm : "evolution";
     const evolutionaryPopulation = Math.floor(Math.min(8, Math.max(2, Number(args?.n ?? 4) || 4)));
     const evolutionaryGenerations = args.evolution.generations === 3 ? 3 : 2;
     const executionBudget = Math.floor(Math.min(16, Math.max(2,
       Number(args.evolution.executionBudget ?? evolutionaryPopulation * evolutionaryGenerations) || 8)));
-    const population = arm === "single" ? 1
+    const population = ["single", "serial"].includes(arm) ? 1
       : arm === "independent" ? executionBudget : evolutionaryPopulation;
-    const generations = arm === "evolution" ? evolutionaryGenerations : 1;
-    if (arm === "evolution" && population * generations > executionBudget) {
+    const generations = ["serial", "fixed_policy", "evolution"].includes(arm)
+      ? evolutionaryGenerations : 1;
+    if (population * generations > executionBudget) {
       throw new Error("Evolution population exceeds its frozen execution budget");
     }
     if (args.evolution.policy !== undefined) {
@@ -74,32 +75,55 @@ export default async function (args) {
     const frozen = await task.experimentalSearch({ action: "summary" });
     const basePolicy = Object.freeze({ ...frozen.shadow_policy });
     const all = [];
+    const selections = [];
     let parents = [];
-    const seenFailureSignatures = new Set();
+    const mode = args.evolution.mode === "solve_task" ? "solve_task" : "learn_policy";
+    const chooseDelta = (parent) => {
+      const previous = Object.keys(parent.lineage?.mutation_delta ?? {});
+      if (parent.status === "FAIL" && !previous.includes("planning_budget")
+        && parent.policy.planning_budget < 3) {
+        return { planning_budget: parent.policy.planning_budget + 1 };
+      }
+      if (!previous.includes("max_repair_rounds") && parent.policy.max_repair_rounds < 2) {
+        return { max_repair_rounds: parent.policy.max_repair_rounds + 1 };
+      }
+      if (!previous.includes("extra_verification")) {
+        return { extra_verification: !parent.policy.extra_verification };
+      }
+      return parent.policy.candidate_strategy === "direct"
+        ? { candidate_strategy: "focused" } : { candidate_strategy: "direct" };
+    };
     for (let generation = 0; generation < generations; generation++) {
       if (generation > 0 && !parents.length) break;
+      if (generation > 0 && mode === "solve_task" && all.some((item) => item.receipt.status === "PASS")) break;
       phase(`Evolution generation ${generation}`);
       const plans = Array.from({ length: population }, (_, index) => {
         const id = `candidate_g${generation}_${index + 1}`;
         if (generation === 0) return { id, lineage: {}, policy: basePolicy, parent: null };
         const parent = parents[index % parents.length];
-        const operator = index % 2 === 0
-          ? "targeted_assertion_repair" : "alternate_implementation_strategy";
-        const policy = Object.freeze({
-          ...basePolicy,
-          planning_budget: Math.min(3, basePolicy.planning_budget + (index % 2)),
-          candidate_strategy: index % 2 === 0 ? "focused" : "direct",
-        });
+        const fixed = arm === "serial" || arm === "fixed_policy";
+        const operator = parent.status === "FAIL"
+          ? (fixed ? "fixed_policy_repair" : "targeted_assertion_repair")
+          : (fixed ? "fixed_policy_elite" : "elite_reproduction");
+        const mutationDelta = fixed ? {} : chooseDelta(parent);
+        const policy = Object.freeze({ ...parent.policy, ...mutationDelta });
         return {
           id,
           parent,
           policy,
           lineage: {
             parent_ids: [parent.id],
-            hypothesis: operator === "targeted_assertion_repair"
+            parent_policy: parent.policy,
+            parent_policy_id: parent.policy_id,
+            mutation_delta: mutationDelta,
+            hypothesis: parent.status === "FAIL"
               ? "The verified failing assertion identifies a repairable defect in the parent approach."
-              : "The verified failure suggests replacing the parent's implementation strategy.",
-            predicted_effect: "The public hard gate that failed for the parent will pass on fresh replay.",
+              : "The verified passing parent can seed a shadow policy comparison on the same task.",
+            predicted_effect: fixed
+              ? (parent.status === "FAIL" ? "The frozen policy and verified public feedback will repair this task." : "The frozen policy will preserve task correctness on a fresh baseline.")
+              : parent.status === "FAIL"
+                ? `A fresh attempt using ${Object.keys(mutationDelta)[0]} will repair the parent's public failure.`
+                : `The changed ${Object.keys(mutationDelta)[0]} will preserve task correctness with a measurable execution difference.`,
             mutation_operator: operator,
             evidence_refs: [parent.receipt],
             target_scope: writeRoots,
@@ -107,45 +131,70 @@ export default async function (args) {
           },
         };
       });
-      const replies = await parallel(plans.map((plan) => () => task({
+      const replies = await parallel(plans.map((plan) => async () => {
+        const applied = await task.experimentalSearch({
+          action: "apply_policy", candidate_id: plan.id, generation,
+          policy: plan.policy, lineage: plan.lineage,
+        });
+        const planning = [];
+        for (let step = 1; step <= plan.policy.planning_budget; step++) {
+          const proposed = await task({
+            description: [
+              "Plan one bounded implementation step for this public coding task. Do not edit files.",
+              `BRIEF: ${String(brief)}`,
+              `PUBLIC FEEDBACK: ${String(applied.feedback_packet).slice(0, 10400)}`,
+              `PLANNING PASS: ${step} of ${plan.policy.planning_budget}`,
+            ].join("\n"),
+            label: `planner_${plan.id}_${step}`,
+            type: "explore", model, allowedTools: [], maxSteps: 1,
+            schemaRepairAttempts: 0,
+            writeAuthority: "read_only", worktree: false,
+            responseSchema: {
+              type: "object", additionalProperties: false,
+              required: ["plan"], properties: { plan: { type: "string" } },
+            },
+          });
+          planning.push(String(proposed.plan).slice(0, 3000));
+        }
+        return task({
         description: [
           "You are one isolated Codewhale coding candidate. Implement the brief in this worktree only.",
           "Do not inspect other candidates, hidden tests, evaluator internals or the parent checkout.",
+          "Use only the permitted file-writing tools. The host runs all tests after you finish.",
           "Do not push or merge. Your self_verdict is informational.",
           `BRIEF: ${String(brief)}`,
           `RUBRIC: ${String(rubric)}`,
           `SHADOW POLICY: ${JSON.stringify(plan.policy)}`,
-          `Spend at most ${plan.policy.planning_budget} short planning steps before editing.`,
-          `After a failed local check, make at most ${plan.policy.max_repair_rounds} repair rounds.`,
+          `APPLIED POLICY ID: ${String(applied.effective_policy_id)}`,
+          `HOST PLANNING NOTES: ${JSON.stringify(planning)}`,
           plan.policy.candidate_strategy === "focused"
             ? "Prefer the smallest change that addresses the verified defect."
             : "Implement the brief directly, checking edge cases against the public contract.",
-          plan.policy.extra_verification
-            ? "Run an additional independent local verification before returning."
-            : "Run the relevant local verification before returning.",
+          "Do not execute candidate code or local checks in the worker; the isolated host oracle does that.",
           ...(plan.parent ? [
             `MUTATION DECLARATION: ${JSON.stringify(plan.lineage)}`,
-            `VERIFIED PARENT FAILURE: ${String(plan.parent.feedback).slice(-2400)}`,
-            ...(plan.policy.trace_preference === "evidence_refs"
-              ? [`PARENT PATCH EXCERPT: ${String(plan.parent.patch).slice(0, 6000)}`]
-              : []),
-            plan.lineage.mutation_operator === "targeted_assertion_repair"
+            `HOST FEEDBACK PACKET: ${String(applied.feedback_packet).slice(0, 10400)}`,
+            plan.parent.status === "FAIL"
               ? "Trace the failing assertion to one code path and repair that path."
-              : "Replace the parent approach where the observed failure exposes a design flaw.",
-            "You start from a fresh baseline. Use the parent patch only where it supports the declared repair.",
+              : "Preserve the verified core approach while exploring the declared policy change.",
+            "You start from a fresh baseline. Reuse only public parent material in the host feedback packet.",
           ] : ["Make an independent first-generation attempt."]),
           `CANDIDATE ID: ${plan.id}`,
           "Summarize the files changed and local checks. The host evaluates your worktree.",
         ].join("\n"),
         label: plan.id,
         type: "implementer",
+        allowedTools: ["write_file", "apply_patch"],
+        maxSteps: 4,
+        schemaRepairAttempts: 0,
         model,
         ...(thinking ? { thinking } : {}),
         worktree: true,
         writeAuthority: "worktree_write",
         writeRoots,
         ...(exactFiles.length ? { exactFiles } : {}),
-      })), { mode: "partial" });
+        });
+      }), { mode: "partial" });
       for (let index = 0; index < plans.length; index++) {
         const plan = plans[index];
         let receipt;
@@ -161,30 +210,65 @@ export default async function (args) {
             receipt = { status: "UNKNOWN", reason: String(error) };
           }
         }
-        all.push({ id: plan.id, generation, lineage: plan.lineage, policy: plan.policy, receipt });
+        let devReview = null;
+        if (["PASS", "FAIL"].includes(receipt.status) && plan.policy.extra_verification) {
+          try {
+            devReview = await task({
+              description: [
+                "Review the DEV candidate's complete changed files and public oracle feedback. Do not edit.",
+                `BRIEF: ${String(brief)}`,
+                `CHANGED FILES: ${String(receipt.review_material ?? "INCOMPLETE")}`,
+                `PUBLIC FEEDBACK: ${String(receipt.public_failure_feedback ?? "")}`,
+                "Return a concise structured verdict.",
+              ].join("\n"),
+              label: `dev_review_${plan.id}`, type: "review", model,
+              allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
+              writeAuthority: "read_only", worktree: false,
+              responseSchema: {
+                type: "object", additionalProperties: false,
+                required: ["verdict", "reasons"],
+                properties: {
+                  verdict: { type: "string", enum: ["pass", "fail"] },
+                  reasons: { type: "array", items: { type: "string" } },
+                },
+              },
+            });
+          } catch (error) {
+            devReview = { verdict: "unknown", reasons: [String(error)] };
+          }
+        }
+        const appliedStatus = await task.experimentalSearch({
+          action: "policy_status", candidate_id: plan.id,
+        }).catch((error) => ({ error: String(error) }));
+        all.push({ id: plan.id, generation, lineage: plan.lineage, policy: plan.policy,
+          receipt, devReview, appliedStatus });
       }
-      const failures = all.filter((item) => item.generation === generation
-        && item.receipt.status === "FAIL"
-        && item.receipt.public_failure_feedback);
-      parents = failures.map((item) => ({
+      const selection = await task.experimentalSearch({
+        action: "select_generation", generation,
+        candidate_ids: plans.map((plan) => plan.id),
+      });
+      selections.push(selection);
+      const byId = new Map(all.filter((item) => item.generation === generation)
+        .map((item) => [item.id, item]));
+      parents = selection.body.parent_ids.map((id) => byId.get(id)).filter(Boolean).map((item) => ({
         id: item.id,
         receipt: item.receipt.receipt,
+        status: item.receipt.status,
+        policy: item.policy,
+        policy_id: item.receipt.policy_id,
+        lineage: item.lineage,
         feedback: item.receipt.public_failure_feedback,
-        patch: item.receipt.patch_excerpt,
+        material: item.receipt.review_material,
       }));
-      const signatures = failures.map((item) =>
-        `${item.receipt.reason}:${String(item.receipt.public_failure_feedback).slice(-400)}`);
-      if (generation > 0 && signatures.length
-        && signatures.every((signature) => seenFailureSignatures.has(signature))) break;
-      for (const signature of signatures) seenFailureSignatures.add(signature);
     }
-    const passing = all.filter((item) => item.receipt.status === "PASS");
+    const passing = all.filter((item) => item.receipt.status === "PASS"
+      && (!item.policy.extra_verification || item.devReview?.verdict === "pass"));
     passing.sort((a, b) => {
       const aFootprint = a.receipt.changed_paths?.length ?? Infinity;
       const bFootprint = b.receipt.changed_paths?.length ?? Infinity;
       const aCost = a.receipt.usage?.cost_microusd ?? Infinity;
       const bCost = b.receipt.usage?.cost_microusd ?? Infinity;
-      return aFootprint - bFootprint || aCost - bCost || a.id.localeCompare(b.id);
+      return aCost - bCost || aFootprint - bFootprint || a.id.localeCompare(b.id);
     });
     let winner = null;
     let replay = null;
@@ -196,18 +280,24 @@ export default async function (args) {
         generation: provisional.generation, lineage: provisional.lineage,
         policy: provisional.policy,
       });
-      if (replay.status === "PASS" && replay.patch_sha256 === provisional.receipt.patch_sha256) {
+      if (replay.status === "PASS" && replay.artifact_id === provisional.receipt.artifact_id
+        && provisional.receipt.review_complete) {
         phase("Independent read-only review");
         review = await task({
           description: [
             "Review this verified coding patch adversarially. Do not edit or apply it.",
             `BRIEF: ${String(brief)}`,
-            `PATCH: ${String(provisional.receipt.patch_excerpt).slice(0, 6000)}`,
+            `ARTIFACT ID: ${String(provisional.receipt.artifact_id)}`,
+            `TREE HASH: ${String(provisional.receipt.candidate_tree_hash)}`,
+            `POLICY ID: ${String(provisional.receipt.policy_id)}`,
+            `REVIEW MATERIAL SHA256: ${String(provisional.receipt.review_material_sha256)}`,
+            `COMPLETE CHANGED FILES: ${String(provisional.receipt.review_material)}`,
             `HOST REPLAY: ${JSON.stringify({ status: replay.status, test_count: replay.test_count })}`,
             "Return only the required structured response.",
           ].join("\n"),
           label: "evolution_reviewer",
-          type: "review",
+          type: "review", model,
+          allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
           writeAuthority: "read_only",
           worktree: false,
           responseSchema: {
@@ -219,18 +309,37 @@ export default async function (args) {
             },
           },
         });
+        review = { ...review,
+          artifact_id: provisional.receipt.artifact_id,
+          tree_hash: provisional.receipt.candidate_tree_hash,
+          policy_id: provisional.receipt.policy_id,
+          review_material_sha256: provisional.receipt.review_material_sha256,
+          available_bytes: provisional.receipt.review_material_bytes,
+          unreviewed_scope: [],
+        };
         if (review.verdict === "pass") winner = provisional.id;
       }
     }
     return {
-      scenario: "operate-evolution", strategy, arm, population, generations, executionBudget,
+      scenario: "operate-evolution", strategy, arm, mode, population, generations, executionBudget,
       manifest: frozen.manifest, baseline_sha: frozen.baseline_sha,
       candidates: all.map((item) => ({
         id: item.id, generation: item.generation, status: item.receipt.status,
         reason: item.receipt.reason, patch_sha256: item.receipt.patch_sha256,
+        artifact_id: item.receipt.artifact_id, policy_id: item.receipt.policy_id,
+        evaluation_id: item.receipt.evaluation_id,
         receipt: item.receipt.receipt, lineage: item.lineage, policy: item.policy,
+        dev_review: item.devReview, applied_policy: item.appliedStatus,
       })),
-      winner_id: winner ?? "NONE", replay, review,
+      winner_id: winner ?? "NONE", replay, review, selections,
+      code_selection: { winner_id: winner ?? "NONE", artifact_id:
+        winner ? all.find((item) => item.id === winner)?.receipt.artifact_id : null,
+        basis: winner ? "public_pass_holdout_replay_read_only_review" : "no_qualified_code" },
+      policy_promotion_proposal: { status: "NOT_QUALIFIED", reason:
+        "No frozen new-task policy holdout panel has been evaluated in this run.",
+        proposed_policy_id: winner ? all.find((item) => item.id === winner)?.receipt.policy_id : null,
+        rollback_policy_id: frozen.shadow_policy ?
+          all.find((item) => item.generation === 0)?.receipt.policy_id ?? null : null },
       promotion: "proposal_only",
       apply_policy: "Explicit human review is required before any apply, push or merge.",
     };
@@ -242,24 +351,49 @@ export default async function (args) {
     }
     const frozen = await task.experimentalSearch({ action: "summary" });
     const plans = Array.from({ length: n }, (_, index) => `candidate_g0_${index + 1}`);
-    const replies = await parallel(plans.map((id) => () => task({
+    const replies = await parallel(plans.map((id) => async () => {
+      const applied = await task.experimentalSearch({
+        action: "apply_policy", candidate_id: id, generation: 0,
+        policy: frozen.shadow_policy, lineage: {},
+      });
+      const planning = [];
+      for (let step = 1; step <= frozen.shadow_policy.planning_budget; step++) {
+        const proposed = await task({
+          description: ["Plan one step for the public coding brief. Do not edit files.",
+            `BRIEF: ${String(brief)}`].join("\n"),
+          label: `planner_${id}_${step}`, type: "explore", model,
+          allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
+          writeAuthority: "read_only", worktree: false,
+          responseSchema: { type: "object", additionalProperties: false,
+            required: ["plan"], properties: { plan: { type: "string" } } },
+        });
+        planning.push(String(proposed.plan).slice(0, 3000));
+      }
+      return task({
       description: [
         "Implement the brief independently in this isolated worktree.",
         "Do not inspect other candidates, hidden tests or evaluator internals.",
+        "Use only the permitted file-writing tools. The isolated host runs all checks.",
         `BRIEF: ${String(brief)}`,
+        `APPLIED POLICY ID: ${String(applied.effective_policy_id)}`,
+        `HOST PLANNING NOTES: ${JSON.stringify(planning)}`,
         `RUBRIC: ${String(rubric)}`,
         `CANDIDATE ID: ${id}`,
         "Summarize the files changed and local checks. The host evaluates your worktree.",
       ].join("\n"),
       label: id,
       type: "implementer",
+      allowedTools: ["write_file", "apply_patch"],
+      maxSteps: 4,
+      schemaRepairAttempts: 0,
       model,
       ...(thinking ? { thinking } : {}),
       worktree: true,
       writeAuthority: "worktree_write",
       writeRoots,
       ...(exactFiles.length ? { exactFiles } : {}),
-    })), { mode: "partial" });
+      });
+    }), { mode: "partial" });
     const candidates = [];
     for (let index = 0; index < plans.length; index++) {
       let receipt;
@@ -287,17 +421,19 @@ export default async function (args) {
       replay = await task.experimentalSearch({
         action: "replay", candidate_id: provisional.id, generation: 0, lineage: {},
       });
-      if (replay.status === "PASS" && replay.patch_sha256 === provisional.patch_sha256) {
+      if (replay.status === "PASS" && replay.artifact_id === provisional.artifact_id
+        && provisional.review_complete) {
         review = await task({
           description: [
             "Review this verified patch without editing or applying it.",
             `BRIEF: ${String(brief)}`,
-            `PATCH: ${String(provisional.patch_excerpt).slice(0, 6000)}`,
+            `COMPLETE CHANGED FILES: ${String(provisional.review_material)}`,
             `HOST REPLAY: ${JSON.stringify({ status: replay.status, test_count: replay.test_count })}`,
             "Return only the required structured response.",
           ].join("\n"),
           label: "evaluator_reviewer",
-          type: "review",
+          type: "review", model,
+          allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
           writeAuthority: "read_only",
           worktree: false,
           responseSchema: {
