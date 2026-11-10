@@ -33,7 +33,7 @@ const EN: DocsPageDict = {
       title: "Sign in on the web",
       blocks: [
         {
-          p: "Open `app.codewhale.net/login` and choose how to continue: Continue with GitHub, Continue with Google, or Continue with email. For email, Codewhale sends a code to your address; enter it and press Sign in. The page needs JavaScript.",
+          p: "Open `app.codewhale.net/login` and choose how to continue: Continue with GitHub, Continue with Google, or Continue with email. For email, Codewhale sends a code or a link to your address, depending on how sign-in is set up; follow it to finish. The page needs JavaScript.",
         },
         {
           note: "The hosted browser app at app.codewhale.net is not open yet. Its sign-in page is live, and it is the page where you approve a sign-in that you started from the desktop app or the terminal.",
@@ -57,7 +57,7 @@ const EN: DocsPageDict = {
           ],
         },
         {
-          p: "The request expires after 10 minutes. If it does, the app says \"That took too long. Try again.\" and you start again from the app. Your folders, conversations and model keys stay on your computer either way.",
+          p: "The approval page expires after 10 minutes. The app itself stops waiting after about 2 minutes and says \"That took too long. Try again.\"; either way you start again from the app. Your folders, conversations and model keys stay on your computer either way.",
         },
       ],
     },
@@ -203,7 +203,7 @@ const ZH: DocsPageDict = {
       title: "在网页登录",
       blocks: [
         {
-          p: "打开 `app.codewhale.net/login`，选择登录方式：使用 GitHub 继续、使用 Google 继续，或使用邮箱继续。选择邮箱时，Codewhale 会向你的地址发送验证码，输入验证码后点击登录。该页面需要 JavaScript。",
+          p: "打开 `app.codewhale.net/login`，选择登录方式：使用 GitHub 继续、使用 Google 继续，或使用邮箱继续。选择邮箱时，Codewhale 会根据登录的设置向你的地址发送验证码或链接，按提示完成即可。该页面需要 JavaScript。",
         },
         {
           note: "app.codewhale.net 上的托管浏览器应用尚未开放。它的登录页是可用的，你在桌面应用或终端发起登录后，就是在这个页面批准。",
@@ -227,7 +227,7 @@ const ZH: DocsPageDict = {
           ],
         },
         {
-          p: "请求在 10 分钟后失效。失效后应用会提示登录超时，你需要从应用重新开始。无论成功与否，你的文件夹、对话和模型密钥都保留在你的电脑上。",
+          p: "批准页面在 10 分钟后失效，而应用本身大约等待 2 分钟后就会提示登录超时。无论哪种情况，你都需要从应用重新开始。无论成功与否，你的文件夹、对话和模型密钥都保留在你的电脑上。",
         },
       ],
     },

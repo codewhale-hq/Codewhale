@@ -842,8 +842,7 @@ with `codewhale rc`. Approve the one-time code in the system browser. While the
 lease is active, the browser owns new prompts and approvals and the terminal is
 a readable safety surface. Once connected, the banner and a transcript note
 show the live session link; `/rc open` opens it in your browser and `/rc link`
-prints it. The hosted browser app at app.codewhale.net is not open yet, so
-`/rc` has nothing to connect to until it is. `/rc status`
+prints it. The hosted browser app at app.codewhale.net is not open yet. `/rc status`
 shows ownership, `/rc stop` returns it to the terminal, and interrupt remains
 available. A dropped connection keeps local input locked until the last web
 lease expires so two controllers never race. Every folder you enroll from one
