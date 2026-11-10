@@ -22,7 +22,10 @@ export const docsShell: DocsShellDict = {
   releaseChangelog: "更新日志 →",
 
   searchLabel: "搜索文档",
-  searchPlaceholder: "按任务或主题搜索…（按 / 快速聚焦）",
+  searchPlaceholder: "搜索指南与参考",
+  searchLoading: "正在加载文档索引。搜索词只保留在此浏览器中。",
+  searchUnavailable: "完整索引未能加载。请重试，以搜索正文和参考命令。",
+  searchRetry: "重新加载索引",
   searchClear: "清除",
   searchMatches: "{matched} / {total} 条匹配 “{query}”",
   searchNoMatches: "没有条目匹配 “{query}”",

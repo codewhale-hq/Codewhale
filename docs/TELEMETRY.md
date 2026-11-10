@@ -610,7 +610,7 @@ explicit reader confirmation after running the version check, and
 against the cited file lines. These are self-reported interactions, not verified
 physical installations, model executions or useful outcomes. The four exit
 counters count links toward GitHub stars, issues, help-wanted work and the
-quickstart. The three search counters count search interactions, empty results
+contributing guide. The three search counters count search interactions, empty results
 and result selections without sending search text or result URLs.
 
 No page URL, query, locale identifier, referrer, account, content, credential or

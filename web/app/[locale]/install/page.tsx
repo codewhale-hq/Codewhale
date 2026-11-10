@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { OnboardingCheck } from "@/components/onboarding-check";
 import { HeroInstall } from "@/components/hero-install";
 import { Icon } from "@/components/icon";
 import { InstallCodeBlock } from "@/components/install-code-block";
@@ -51,6 +52,7 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         <h2 className="section-title">{pickText(INSTALL_COPY.verify, locale)}</h2>
         <p>{pickText(INSTALL_COPY.verifyBody, locale)}</p>
         <InstallCodeBlock cmd="codewhale --version" copyLabel={home.copy} copiedLabel={home.copied} copyLocale={locale} />
+        <OnboardingCheck kind="install" locale={locale} />
         <div className="actions">
           <Link href={`/${locale}/docs/guide`} className="btn btn-primary">{pickText(INSTALL_COPY.firstTask, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>
           <Link href={`/${locale}/docs/troubleshooting`} className="section-link">{pickText(INSTALL_COPY.troubleshooting, locale)}</Link>

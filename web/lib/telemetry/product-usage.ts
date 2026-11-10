@@ -1,12 +1,14 @@
+import { readBoundedBody } from "../bounded-body";
+
 /**
  * product-usage.ts — aggregate, default-on, user-disableable usage counting
  * for the website.
  *
  * This is the browser side of the first-party telemetry contract
  * (telemetry-ingest/src/schema.ts, docs/TELEMETRY.md): closed schema version
- * 3 carrying policy notice version 5, one `product_usage` event with thirteen
+ * 5 carrying policy notice version 7, the unchanged `product_usage` event with thirteen
  * unsigned counters, a random v4 install id unrelated to any person and
- * rotated every 90 days, and nothing else — no page, URL, referrer, error
+ * rotated every 90 days, and fixed aggregate `funnel_usage` counters — no URL, referrer, error
  * text, account, or content ever enters the envelope. There is no analytics
  * SDK and no processor token in the browser; the same-origin route
  * (app/api/product-telemetry) forwards a validated batch to the canonical
@@ -26,8 +28,10 @@
  * defaults.
  */
 
-export const SCHEMA_VERSION = 3;
-export const NOTICE_VERSION = 5;
+export const SCHEMA_VERSION = 5;
+export const LEGACY_SCHEMA_VERSION = 3;
+export const NOTICE_VERSION = 7;
+export const LEGACY_NOTICE_VERSION = 5;
 export const INSTALL_ID_ROTATION_MS = 90 * 24 * 60 * 60 * 1000;
 export const MAX_ENVELOPE_BYTES = 4 * 1024;
 /** Counts wait this long after the last interaction before one delivery. */
@@ -37,6 +41,7 @@ export const FLUSH_DELAY_MS = 20_000;
 export const PREFERENCE_STORAGE_KEY = "cw-usage-consent";
 export const INSTALL_STORAGE_KEY = "cw-usage-install";
 export const COUNTERS_STORAGE_KEY = "cw-usage-counters";
+export const FUNNEL_STORAGE_KEY = "cw-usage-funnel-counters";
 
 export const PRODUCT_COUNTER_FIELDS = [
   "page_view",
@@ -53,6 +58,16 @@ export const PRODUCT_COUNTER_FIELDS = [
   "integration_connect",
   "error_shown",
 ] as const;
+
+export const FUNNEL_COUNTER_FIELDS = [
+  "home_view", "install_view", "quickstart_view", "contribute_view",
+  "install_intent", "install_confirmed", "star_exit", "issue_exit",
+  "help_wanted_exit", "guide_exit", "docs_search", "docs_search_empty",
+  "docs_search_result", "quickstart_confirmed",
+] as const;
+
+export type FunnelCounter = (typeof FUNNEL_COUNTER_FIELDS)[number];
+export type FunnelCounters = Record<FunnelCounter, number>;
 
 export type ProductCounter = (typeof PRODUCT_COUNTER_FIELDS)[number];
 export type ProductCounters = Record<ProductCounter, number>;
@@ -76,8 +91,8 @@ export const ENVELOPE_FIELDS = [
 ] as const;
 
 export interface ProductUsageEnvelope {
-  schema_version: 3;
-  notice_version: 5;
+  schema_version: 3 | 5;
+  notice_version: 5 | 7;
   sent_at: string;
   install_id: string;
   app_version: string;
@@ -87,7 +102,7 @@ export interface ProductUsageEnvelope {
   arch: "other";
   libc: "none";
   tty: false;
-  events: [{ event: "product_usage"; counters: ProductCounters }];
+  events: ({ event: "product_usage"; counters: ProductCounters } | { event: "funnel_usage"; counters: FunnelCounters })[];
 }
 
 const U32_MAX = 4294967295;
@@ -97,6 +112,10 @@ const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
 
 export function emptyCounters(): ProductCounters {
   return Object.fromEntries(PRODUCT_COUNTER_FIELDS.map((field) => [field, 0])) as ProductCounters;
+}
+
+export function emptyFunnelCounters(): FunnelCounters {
+  return Object.fromEntries(FUNNEL_COUNTER_FIELDS.map((field) => [field, 0])) as FunnelCounters;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -112,8 +131,8 @@ function keysExactly(value: Record<string, unknown>, expected: readonly string[]
 
 /**
  * The closed-set validator, mirroring the ingest's rules for a browser
- * batch: exact key sets everywhere, constant envelope values, one
- * `product_usage` event, every counter a u32. Unknown keys reject the whole
+ * batch: exact key sets everywhere, constant envelope values, bounded aggregate
+ * `product_usage` and `funnel_usage` events, every counter a u32. Unknown keys reject the whole
  * envelope — there is no sanitising path.
  */
 export function validateEnvelope(
@@ -124,32 +143,35 @@ export function validateEnvelope(
   if (!isPlainObject(value)) return { ok: false, reason: "not an object" };
   const keyError = keysExactly(value, ENVELOPE_FIELDS);
   if (keyError) return { ok: false, reason: `envelope: ${keyError}` };
-  if (value.schema_version !== SCHEMA_VERSION) return { ok: false, reason: "schema_version" };
-  if (value.notice_version !== NOTICE_VERSION) return { ok: false, reason: "notice_version" };
+  const legacy = value.schema_version === LEGACY_SCHEMA_VERSION;
+  if (!legacy && value.schema_version !== SCHEMA_VERSION) return { ok: false, reason: "schema_version" };
+  if (value.notice_version !== (legacy ? LEGACY_NOTICE_VERSION : NOTICE_VERSION)) return { ok: false, reason: "notice_version" };
   if (typeof value.sent_at !== "string" || !SENT_AT_RE.test(value.sent_at)) return { ok: false, reason: "sent_at" };
   if (typeof value.install_id !== "string" || !INSTALL_ID_RE.test(value.install_id)) return { ok: false, reason: "install_id" };
   if (typeof value.app_version !== "string" || value.app_version.length > 64 || !VERSION_RE.test(value.app_version)) {
     return { ok: false, reason: "app_version" };
   }
   if (value.git_sha !== null) return { ok: false, reason: "git_sha" };
-  if (typeof value.surface !== "string" || !surfaces.includes(value.surface as Surface)) return { ok: false, reason: "surface" };
+  if (typeof value.surface !== "string" || !surfaces.includes(value.surface as Surface) || (!legacy && value.surface !== "website")) return { ok: false, reason: "surface" };
   if (value.os !== "other") return { ok: false, reason: "os" };
   if (value.arch !== "other") return { ok: false, reason: "arch" };
   if (value.libc !== "none") return { ok: false, reason: "libc" };
   if (value.tty !== false) return { ok: false, reason: "tty" };
-  if (!Array.isArray(value.events) || value.events.length !== 1) return { ok: false, reason: "events" };
-  const event = value.events[0];
-  if (!isPlainObject(event)) return { ok: false, reason: "event: not an object" };
-  const eventKeyError = keysExactly(event, ["event", "counters"]);
-  if (eventKeyError) return { ok: false, reason: `event: ${eventKeyError}` };
-  if (event.event !== "product_usage") return { ok: false, reason: "event: name" };
-  if (!isPlainObject(event.counters)) return { ok: false, reason: "counters: not an object" };
-  const counterKeyError = keysExactly(event.counters, PRODUCT_COUNTER_FIELDS);
-  if (counterKeyError) return { ok: false, reason: `counters: ${counterKeyError}` };
-  for (const field of PRODUCT_COUNTER_FIELDS) {
-    const item = event.counters[field];
-    if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item > U32_MAX) {
-      return { ok: false, reason: `counters: ${field}` };
+  if (!Array.isArray(value.events) || value.events.length < 1 || value.events.length > (legacy ? 1 : 200)) return { ok: false, reason: "events" };
+  for (const event of value.events) {
+    if (!isPlainObject(event)) return { ok: false, reason: "event: not an object" };
+    const eventKeyError = keysExactly(event, ["event", "counters"]);
+    if (eventKeyError) return { ok: false, reason: `event: ${eventKeyError}` };
+    const fields = event.event === "product_usage" ? PRODUCT_COUNTER_FIELDS : !legacy && event.event === "funnel_usage" ? FUNNEL_COUNTER_FIELDS : null;
+    if (!fields) return { ok: false, reason: "event: name" };
+    if (!isPlainObject(event.counters)) return { ok: false, reason: "counters: not an object" };
+    const counterKeyError = keysExactly(event.counters, fields);
+    if (counterKeyError) return { ok: false, reason: `counters: ${counterKeyError}` };
+    for (const field of fields) {
+      const item = event.counters[field];
+      if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item > U32_MAX) {
+        return { ok: false, reason: `counters: ${field}` };
+      }
     }
   }
   return { ok: true, envelope: value as unknown as ProductUsageEnvelope };
@@ -162,6 +184,7 @@ export function sentAt(now: number): string {
 
 export function buildEnvelope(input: {
   counters: ProductCounters;
+  funnel?: FunnelCounters;
   installId: string;
   appVersion: string;
   surface: Surface;
@@ -179,7 +202,10 @@ export function buildEnvelope(input: {
     arch: "other",
     libc: "none",
     tty: false,
-    events: [{ event: "product_usage", counters: { ...input.counters } }],
+    events: [
+      { event: "product_usage", counters: { ...input.counters } },
+      ...(input.funnel && hasFunnelCounts(input.funnel) ? [{ event: "funnel_usage" as const, counters: { ...input.funnel } }] : []),
+    ],
   };
 }
 
@@ -203,7 +229,7 @@ export type UsagePreference = "on" | "off" | "default";
  * default.
  */
 export function readUsagePreference(raw: string | null | undefined): UsagePreference {
-  if (raw === null || raw === undefined || raw === "") return "default";
+  if (raw === null || raw === undefined) return "default";
   try {
     const parsed = JSON.parse(raw) as Partial<UsagePreferenceRecord>;
     if (!isPlainObject(parsed) || typeof parsed.granted !== "boolean") return "off";
@@ -281,6 +307,24 @@ export function hasCounts(counters: ProductCounters): boolean {
   return PRODUCT_COUNTER_FIELDS.some((field) => counters[field] > 0);
 }
 
+export function readFunnelCounters(raw: string | null | undefined): FunnelCounters {
+  const counters = emptyFunnelCounters();
+  if (!raw) return counters;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isPlainObject(parsed)) return counters;
+    for (const field of FUNNEL_COUNTER_FIELDS) {
+      const value = parsed[field];
+      if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= U32_MAX) counters[field] = value;
+    }
+  } catch {}
+  return counters;
+}
+
+export function hasFunnelCounts(counters: FunnelCounters): boolean {
+  return FUNNEL_COUNTER_FIELDS.some((field) => counters[field] > 0);
+}
+
 // ----------------------------------------------------------------- recorder
 
 export interface StorageLike {
@@ -298,7 +342,7 @@ export interface RecorderOptions {
   now?: () => number;
   randomUuid?: () => string;
   /** Transport; returns whether the batch was accepted. Never retried. */
-  send?: (endpoint: string, body: string) => Promise<boolean>;
+  send?: (endpoint: string, body: string, signal?: AbortSignal) => Promise<boolean>;
   setTimer?: (callback: () => void, delayMs: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   flushDelayMs?: number;
@@ -307,18 +351,21 @@ export interface RecorderOptions {
 export interface UsageRecorder {
   preference(): UsagePreference;
   /** Deliberately turn counting back on after an opt-out. */
-  enable(): void;
+  enable(): boolean;
   /** Record a durable opt-out and clear everything queued in this browser. */
-  disable(): void;
+  disable(): boolean;
   /** Re-read the preference from storage (another tab may have changed it). */
   sync(): void;
   record(counter: ProductCounter): void;
+  recordFunnel(counter: FunnelCounter): void;
+  pendingFunnel(): FunnelCounters;
+  delivery(): "idle" | "accepted" | "rejected";
   /** Deliver whatever is queued now (also used on pagehide). */
   flush(): Promise<void>;
   pending(): ProductCounters;
 }
 
-function browserSend(endpoint: string, body: string): Promise<boolean> {
+function browserSend(endpoint: string, body: string, signal?: AbortSignal): Promise<boolean> {
   if (typeof fetch !== "function") return Promise.resolve(false);
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), 1500) : null;
@@ -329,9 +376,14 @@ function browserSend(endpoint: string, body: string): Promise<boolean> {
     keepalive: true,
     credentials: "omit",
     referrerPolicy: "no-referrer",
-    signal: controller?.signal,
+    signal: signal && controller ? AbortSignal.any([signal, controller.signal]) : signal ?? controller?.signal,
   })
-    .then((response) => response.ok)
+    .then(async (response) => {
+      if (!response.ok) return false;
+      const bytes = await readBoundedBody(response, 512);
+      const receipt: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      return isPlainObject(receipt) && receipt.accepted === true;
+    })
     .catch(() => false)
     .finally(() => {
       if (timer !== null) clearTimeout(timer);
@@ -348,8 +400,12 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
   const { storage } = options;
 
   let counters = emptyCounters();
+  let funnel = emptyFunnelCounters();
+  let deliveryController: AbortController | null = null;
+  let delivery: "idle" | "accepted" | "rejected" = "idle";
   let timer: unknown = null;
   let inFlight = false;
+  let sessionOff = false;
 
   const read = (key: string) => {
     try {
@@ -361,8 +417,9 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
   const write = (key: string, value: string) => {
     try {
       storage.setItem(key, value);
+      return storage.getItem(key) === value;
     } catch {
-      /* storage unavailable: counting stays in memory for this page only */
+      return false;
     }
   };
   const remove = (key: string) => {
@@ -381,12 +438,18 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
   /** Everything queued and every identity goes; nothing pending survives. */
   const clearAll = () => {
     cancelTimer();
+    deliveryController?.abort();
     counters = emptyCounters();
+    funnel = emptyFunnelCounters();
     remove(COUNTERS_STORAGE_KEY);
+    remove(FUNNEL_STORAGE_KEY);
     remove(INSTALL_STORAGE_KEY);
   };
 
-  const preference = () => readUsagePreference(read(PREFERENCE_STORAGE_KEY));
+  const preference = (): UsagePreference => {
+    if (sessionOff) return "off";
+    try { return readUsagePreference(storage.getItem(PREFERENCE_STORAGE_KEY)); } catch { return "off"; }
+  };
   const enabled = () => usageCountingEnabled(preference());
 
   const schedule = () => {
@@ -405,11 +468,17 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
       return;
     }
     const batch = counters;
-    if (!hasCounts(batch)) return;
+    const funnelBatch = funnel;
+    if (!hasCounts(batch) && !hasFunnelCounts(funnelBatch)) return;
     const install = resolveInstallId(read(INSTALL_STORAGE_KEY), now(), randomUuid);
-    if (install.rotated) write(INSTALL_STORAGE_KEY, install.raw);
+    if (install.rotated && !write(INSTALL_STORAGE_KEY, install.raw)) {
+      delivery = "rejected";
+      clearAll();
+      return;
+    }
     const envelope = buildEnvelope({
       counters: batch,
+      funnel: funnelBatch,
       installId: install.id,
       appVersion: options.appVersion,
       surface: options.surface,
@@ -420,12 +489,19 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
     // Discard after one attempt, accepted or not: there is no retry queue,
     // and a count that did not land is not worth remembering.
     counters = emptyCounters();
+    funnel = emptyFunnelCounters();
     remove(COUNTERS_STORAGE_KEY);
+    remove(FUNNEL_STORAGE_KEY);
     inFlight = true;
+    deliveryController = new AbortController();
     try {
-      await send(options.endpoint, body);
+      delivery = await send(options.endpoint, body, deliveryController.signal) ? "accepted" : "rejected";
+    } catch {
+      delivery = "rejected";
     } finally {
+      deliveryController = null;
       inFlight = false;
+      if (enabled() && (hasCounts(counters) || hasFunnelCounts(funnel))) schedule();
     }
   };
 
@@ -433,6 +509,7 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
   // while counting is allowed; otherwise clear them as an opt-out's debris.
   if (enabled()) {
     counters = readCounters(read(COUNTERS_STORAGE_KEY));
+    funnel = readFunnelCounters(read(FUNNEL_STORAGE_KEY));
   } else {
     clearAll();
   }
@@ -440,11 +517,16 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
   return {
     preference,
     enable() {
-      write(PREFERENCE_STORAGE_KEY, usagePreferenceRecord(true, now()));
+      const saved = write(PREFERENCE_STORAGE_KEY, usagePreferenceRecord(true, now()));
+      if (saved) sessionOff = false;
+      return saved;
     },
     disable() {
-      write(PREFERENCE_STORAGE_KEY, usagePreferenceRecord(false, now()));
+      sessionOff = true;
+      const saved = write(PREFERENCE_STORAGE_KEY, usagePreferenceRecord(false, now()));
+      if (saved) sessionOff = false;
       clearAll();
+      return saved;
     },
     sync() {
       if (!enabled()) clearAll();
@@ -458,6 +540,15 @@ export function createUsageRecorder(options: RecorderOptions): UsageRecorder {
       write(COUNTERS_STORAGE_KEY, JSON.stringify(counters));
       schedule();
     },
+    recordFunnel(counter) {
+      if (!enabled()) { clearAll(); return; }
+      if (!(FUNNEL_COUNTER_FIELDS as readonly string[]).includes(counter)) return;
+      if (funnel[counter] < U32_MAX) funnel[counter] += 1;
+      write(FUNNEL_STORAGE_KEY, JSON.stringify(funnel));
+      schedule();
+    },
+    pendingFunnel: () => ({ ...funnel }),
+    delivery: () => delivery,
     flush,
     pending: () => ({ ...counters }),
   };

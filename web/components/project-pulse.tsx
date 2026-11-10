@@ -84,7 +84,7 @@ export function GitHubStar({ stars, locale }: { stars?: number; locale: string }
   const label = pickText(GITHUB_STAR_COPY, locale);
   const count = stars === undefined ? null : new Intl.NumberFormat(getChrome(locale).dateLocale).format(stars);
   return (
-    <a href={REPO_URL} className="btn btn-secondary github-star">
+    <a href={REPO_URL} className="btn btn-secondary github-star" data-funnel="star_exit">
       <span aria-hidden="true">☆</span>
       <span>{label}</span>
       {count !== null && <span className="github-star-count tabular">{count}</span>}

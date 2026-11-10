@@ -25,7 +25,10 @@ export const docsShell: DocsShellDict = {
   releaseChangelog: "Changelog →",
 
   searchLabel: "Search the documentation",
-  searchPlaceholder: "Search by task or topic… (press / to focus)",
+  searchPlaceholder: "Search guides and reference",
+  searchLoading: "Loading the documentation index. Your search stays in this browser.",
+  searchUnavailable: "The full index could not load. Try again to search article text and reference commands.",
+  searchRetry: "Load the index again",
   searchClear: "Clear",
   searchMatches: "{matched} of {total} entries match “{query}”",
   searchNoMatches: "Nothing matches “{query}”",

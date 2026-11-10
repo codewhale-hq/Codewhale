@@ -264,6 +264,9 @@ export interface DocsShellDict {
   // --- task/topic search (components/docs-search.tsx) ---
   searchLabel: string;
   searchPlaceholder: string;
+  searchLoading: string;
+  searchUnavailable: string;
+  searchRetry: string;
   searchClear: string;
   /** "{matched} of {total} entries match “{query}”". */
   searchMatches: string;

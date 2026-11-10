@@ -128,7 +128,7 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
             <ul className="dir-list dir-list-card" role="list">
               {openNow.map((issue) => (
                 <li key={issue.number}>
-                  <a href={issue.url} className="dir-row">
+                  <a href={issue.url} className="dir-row" data-funnel="help_wanted_exit">
                     <span className="dir-mark" aria-hidden="true"><Icon name="sonar" /></span>
                     <span className="dir-text">
                       <span className="dir-title">{issue.title}</span>

@@ -122,8 +122,7 @@ codewhale review --base origin/main --check-receipt`,
         { p: "想保留或分享一次会话的完整记录，可以导出：" },
         {
           code: `/export clipboard                  # a redacted copy of this session
-/export file notes/session.md      # the same, written to a file
-`,
+/export file notes/session.md      # the same, written to a file`,
           lang: "Codewhale",
         },
         { code: "codewhale sessions export <id>", lang: "终端",
