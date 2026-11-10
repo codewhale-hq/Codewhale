@@ -513,6 +513,7 @@ pub struct DshConversion {
     /// Ordinary reviewed Native entry; remains experimental and disabled at install.
     pub requires_native: bool,
     pub native_rows: Vec<String>,
+    pub client_closures: Vec<DshClientClosure>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1111,6 +1112,312 @@ fn declares_client(manifest: &Value) -> bool {
         .is_some_and(|client| !matches!(client, Value::Null))
 }
 
+/// The reviewed static closure of one package's `dsh.client` entry. Every file
+/// is bytes already copied under `source/`, so each hash is the installed hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DshClientClosure {
+    pub package: String,
+    pub root: String,
+    pub entry: String,
+    pub platform: Option<String>,
+    pub inject: Vec<String>,
+    pub host_provided: Vec<String>,
+    pub files: BTreeMap<String, String>,
+    pub bytes: usize,
+}
+
+const CLIENT_JS: [&str; 3] = ["js", "mjs", "cjs"];
+const CLIENT_PROBES: [&str; 8] = [
+    "",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".json",
+    "/index.js",
+    "/index.mjs",
+    "/index.cjs",
+];
+const NODE_BUILTINS: [&str; 24] = [
+    "assert",
+    "buffer",
+    "child_process",
+    "cluster",
+    "crypto",
+    "dgram",
+    "dns",
+    "events",
+    "fs",
+    "http",
+    "http2",
+    "https",
+    "module",
+    "net",
+    "os",
+    "path",
+    "process",
+    "readline",
+    "stream",
+    "tls",
+    "url",
+    "util",
+    "vm",
+    "zlib",
+];
+
+fn normalize_slash(path: &str) -> Option<String> {
+    if path.contains(['\\', '\0']) {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+fn client_entry(manifest: &Value) -> String {
+    let target = manifest
+        .get("exports")
+        .and_then(|exports| exports.get("./client"))
+        .and_then(|export| match export {
+            Value::Str(target) => Some(target.as_str()),
+            Value::Map(_) => ["import", "default", "."]
+                .iter()
+                .find_map(|key| export.get(key).and_then(Value::str)),
+            _ => None,
+        });
+    target.unwrap_or("client.js").to_string()
+}
+
+fn package_target(manifest: &Value, subpath: &str) -> Option<String> {
+    let key = if subpath.is_empty() {
+        ".".to_string()
+    } else {
+        format!("./{subpath}")
+    };
+    let from_exports = manifest.get("exports").and_then(|exports| {
+        let slot = if matches!(exports, Value::Map(_))
+            && exports.keys().iter().any(|name| name.starts_with('.'))
+        {
+            exports.get(&key)
+        } else if subpath.is_empty() {
+            Some(exports)
+        } else {
+            None
+        };
+        match slot? {
+            Value::Str(target) => Some(target.clone()),
+            conditions @ Value::Map(_) => ["import", "browser", "require", "default"]
+                .iter()
+                .find_map(|name| conditions.get(name).and_then(Value::str))
+                .map(str::to_string),
+            _ => None,
+        }
+    });
+    from_exports.or_else(|| {
+        if subpath.is_empty() {
+            Some(
+                manifest
+                    .get("main")
+                    .and_then(Value::str)
+                    .unwrap_or("index.js")
+                    .to_string(),
+            )
+        } else {
+            Some(subpath.to_string())
+        }
+    })
+}
+
+struct ClientScan<'a> {
+    files: &'a BTreeMap<String, Vec<u8>>,
+    closure: BTreeMap<String, String>,
+    host: std::collections::BTreeSet<String>,
+    bytes: usize,
+}
+
+impl ClientScan<'_> {
+    fn probe(&self, base: &str) -> Option<String> {
+        CLIENT_PROBES
+            .iter()
+            .map(|suffix| format!("{base}{suffix}"))
+            .find(|candidate| {
+                candidate.starts_with("source/") && self.files.contains_key(candidate.as_str())
+            })
+    }
+
+    fn resolve(&mut self, from: &str, specifier: &str) -> Result<Option<String>, String> {
+        let directory = from.rsplit_once('/').map_or("", |(dir, _)| dir);
+        if specifier.starts_with("./") || specifier.starts_with("../") || specifier == "." {
+            let base = normalize_slash(&format!("{directory}/{specifier}"))
+                .ok_or_else(|| format!("`{specifier}` leaves the package"))?;
+            return self
+                .probe(&base)
+                .map(Some)
+                .ok_or_else(|| format!("`{specifier}` is not in the reviewed package files"));
+        }
+        if specifier.starts_with('/') || specifier.contains(':') || specifier.is_empty() {
+            return Err(format!(
+                "`{specifier}` is an absolute, URL or built-in specifier"
+            ));
+        }
+        let (name, subpath) = match specifier.split_once('/') {
+            Some((scope, rest)) if scope.starts_with('@') => match rest.split_once('/') {
+                Some((leaf, sub)) => (format!("{scope}/{leaf}"), sub.to_string()),
+                None => (specifier.to_string(), String::new()),
+            },
+            Some((head, sub)) => (head.to_string(), sub.to_string()),
+            None => (specifier.to_string(), String::new()),
+        };
+        if NODE_BUILTINS.contains(&name.as_str()) {
+            return Err(format!("`{specifier}` is a Node built-in"));
+        }
+        let mut current = directory.to_string();
+        loop {
+            let package = format!("{current}/node_modules/{name}");
+            if let Some(bytes) = self.files.get(&format!("{package}/package.json")) {
+                let manifest = std::str::from_utf8(bytes)
+                    .ok()
+                    .and_then(|text| parse_json(text).ok())
+                    .ok_or_else(|| format!("`{name}` has an unreadable package.json"))?;
+                let target = package_target(&manifest, &subpath)
+                    .and_then(|target| normalize_slash(&format!("{package}/{target}")))
+                    .filter(|path| path.starts_with(&format!("{package}/")))
+                    .ok_or_else(|| format!("`{specifier}` has no contained entry"))?;
+                self.note(format!("{package}/package.json"));
+                return self
+                    .probe(&target)
+                    .map(Some)
+                    .ok_or_else(|| format!("`{specifier}` is not in the reviewed package files"));
+            }
+            match current.rsplit_once('/') {
+                Some((parent, _)) => current = parent.to_string(),
+                None => break,
+            }
+        }
+        if name == "react" || name == "react-dom" || name.starts_with("@deepseek-ai/") {
+            self.host.insert(name);
+            return Ok(None);
+        }
+        Err(format!(
+            "`{specifier}` is an ambient dependency that is not in the reviewed bundle"
+        ))
+    }
+
+    fn note(&mut self, path: String) {
+        if let Some(bytes) = self.files.get(&path)
+            && !self.closure.contains_key(&path)
+        {
+            self.bytes += bytes.len();
+            self.closure.insert(path, sha256_hex(bytes));
+        }
+    }
+
+    fn visit(&mut self, entry: String) -> Result<(), String> {
+        let load = pattern(
+            r#"(?m)(?:\brequire\s*\(\s*|\bimport\s*\(\s*|(?:^|[;{}])\s*import\s*|\b(?:import|export)\b[^;"'`()]*?\bfrom\b\s*)(?:"([^"\n]*)"|'([^'\n]*)')"#,
+        );
+        let dynamic = pattern(r#"\b(?:require|import)\s*\(\s*[^\s"'\)]"#);
+        let mut pending = vec![entry];
+        while let Some(path) = pending.pop() {
+            if self.closure.contains_key(&path) {
+                continue;
+            }
+            require(self.closure.len() < MAX_FILES, "too many client files")
+                .map_err(|error| error.to_string())?;
+            self.note(path.clone());
+            let extension = path
+                .rsplit_once('.')
+                .map(|(_, ext)| ext.to_ascii_lowercase());
+            if !extension
+                .as_deref()
+                .is_some_and(|ext| CLIENT_JS.contains(&ext))
+            {
+                continue;
+            }
+            let text = std::str::from_utf8(&self.files[&path])
+                .map_err(|_| format!("`{path}` is not UTF-8"))?
+                .to_string();
+            if dynamic.is_match(&text) {
+                return Err(format!("`{path}` loads a module by a computed specifier"));
+            }
+            for capture in load.captures_iter(&text) {
+                let specifier = capture
+                    .get(1)
+                    .or_else(|| capture.get(2))
+                    .map_or("", |m| m.as_str());
+                if let Some(resolved) = self.resolve(&path, specifier)? {
+                    pending.push(resolved);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Resolve the client entry of the package whose manifest sits at `root`
+/// (`""` for the bundle root) and return its closed, hashed file set. A
+/// refusal is a reason; the server half is unaffected.
+fn client_closure(
+    files: &BTreeMap<String, Vec<u8>>,
+    root: &str,
+    manifest: &Value,
+) -> Result<DshClientClosure, String> {
+    let prefix = if root.is_empty() {
+        "source".to_string()
+    } else {
+        format!("source/{root}")
+    };
+    let raw = client_entry(manifest);
+    let entry = normalize_slash(&format!("{prefix}/{raw}"))
+        .filter(|path| path.starts_with(&format!("{prefix}/")))
+        .ok_or_else(|| format!("client entry `{raw}` leaves the package"))?;
+    if !files.contains_key(&entry) {
+        return Err(format!(
+            "client entry `{raw}` is not in the reviewed package files"
+        ));
+    }
+    let mut scan = ClientScan {
+        files,
+        closure: BTreeMap::new(),
+        host: Default::default(),
+        bytes: 0,
+    };
+    scan.note(format!("{prefix}/package.json"));
+    scan.visit(entry.clone())?;
+    let client = manifest.get("dsh").and_then(|dsh| dsh.get("client"));
+    let inject = match client.and_then(|client| client.get("inject")) {
+        Some(Value::Seq(items)) => items
+            .iter()
+            .filter_map(|item| item.str().map(refusal_text))
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok(DshClientClosure {
+        package: manifest
+            .get("name")
+            .and_then(Value::str)
+            .map(refusal_text)
+            .unwrap_or_default(),
+        root: root.to_string(),
+        entry,
+        platform: client
+            .and_then(|client| client.get("platform"))
+            .and_then(Value::str)
+            .map(refusal_text),
+        inject,
+        host_provided: scan.host.into_iter().collect(),
+        files: scan.closure,
+        bytes: scan.bytes,
+    })
+}
+
 pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
     let manifest_bytes = read_file(&package.contained(Path::new("package.json"))?, MAX_DOCUMENT)
         .map_err(|_| {
@@ -1127,12 +1434,6 @@ pub fn load_bundle(package: &Package) -> Result<LoadedBundle> {
     let admitted = admit_host_compatibility(&manifest)?;
     let dsh_range = admitted.dsh_range.as_deref();
     let mut notes = Vec::new();
-    if declares_client(&manifest) {
-        notes.push(
-            "package declares `dsh.client`; its UI half was not converted and remains disabled because the DSH client runtime is not supported"
-                .to_string(),
-        );
-    }
     let declared: Vec<&Value> = match bundle.and_then(|bundle| bundle.get("patch")) {
         Some(single @ Value::Str(_)) => vec![single],
         Some(Value::Seq(items)) if !items.is_empty() => items.iter().collect(),
@@ -2310,6 +2611,7 @@ fn native_composition_files(
     mut document: Json,
     output: &mut OutputFiles,
     client_outcomes: &mut Vec<DshOutcome>,
+    client_closures: &mut Vec<DshClientClosure>,
     ui: bool,
 ) -> Result<Vec<String>> {
     fn modules(rows: &[Value], names: &mut Vec<String>) -> Result<()> {
@@ -2414,10 +2716,12 @@ fn native_composition_files(
         output.add(format!("source/{relative}"), bytes)
     })?;
     let mut selected_manifests = std::collections::BTreeSet::new();
-    let mut client_paths: Vec<_> = paths
-        .iter()
-        .map(|(name, path)| (name.clone(), path.clone()))
-        .collect();
+    let mut client_paths: Vec<_> = vec![(String::new(), package.root.join("index.js"))];
+    client_paths.extend(
+        paths
+            .iter()
+            .map(|(name, path)| (name.clone(), path.clone())),
+    );
     for name in &names {
         if name == presets::AGENT_PRESETS || host_hook_bridge(name) {
             let manifest = format!("source/node_modules/{name}/package.json");
@@ -2435,7 +2739,7 @@ fn native_composition_files(
             let manifest_path = relative_slash(&parent.join("package.json"), &package.root);
             let key = format!("source/{manifest_path}");
             if let Some(bytes) = output.files.get(&key) {
-                if selected_manifests.insert(manifest_path) {
+                if selected_manifests.insert(manifest_path.clone()) {
                     require(
                         bytes.len() <= MAX_DOCUMENT,
                         "Package manifest exceeds the conversion size limit.",
@@ -2445,18 +2749,52 @@ fn native_composition_files(
                     })?;
                     let manifest = parse_json(text)?;
                     if declares_client(&manifest) {
-                        client_outcomes.push(DshOutcome {
-                            row: Some(refusal_text(&name)),
-                            package: Some(refusal_text(
-                                manifest.get("name").and_then(Value::str).unwrap_or(&name),
-                            )),
-                            kind: "client".into(),
-                            outcome: "skipped".into(),
-                            reason: "Client UI was not converted; the DSH client runtime is not supported."
-                                .into(),
-                            layer: None,
-                            patch: None,
-                        });
+                        let root = manifest_path
+                            .rsplit_once('/')
+                            .map_or("", |(parent, _)| parent);
+                        let row = (!name.is_empty()).then(|| refusal_text(&name));
+                        let package_name = refusal_text(
+                            manifest.get("name").and_then(Value::str).unwrap_or(&name),
+                        );
+                        match client_closure(&output.files, root, &manifest) {
+                            Ok(closure) => {
+                                client_outcomes.push(DshOutcome {
+                                    row,
+                                    package: Some(package_name),
+                                    kind: "client".into(),
+                                    outcome: "retained".into(),
+                                    reason: format!(
+                                        "client closure reviewed and retained: entry {}, {} files, {} bytes{}; it is not served until the Engine client bootstrap admits it",
+                                        refusal_text(&closure.entry),
+                                        closure.files.len(),
+                                        closure.bytes,
+                                        if closure.host_provided.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(
+                                                ", host-provided modules {}",
+                                                refusal_list(closure.host_provided.iter().cloned())
+                                            )
+                                        }
+                                    ),
+                                    layer: None,
+                                    patch: None,
+                                });
+                                client_closures.push(closure);
+                            }
+                            Err(reason) => client_outcomes.push(DshOutcome {
+                                row,
+                                package: Some(package_name),
+                                kind: "client".into(),
+                                outcome: "skipped".into(),
+                                reason: format!(
+                                    "Client UI stays disabled: {}",
+                                    refusal_text(&reason)
+                                ),
+                                layer: None,
+                                patch: None,
+                            }),
+                        }
                     }
                 }
                 break;
@@ -2549,6 +2887,7 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
     let loaded = load_bundle(&package)?;
     let mut output_files = OutputFiles::default();
     let mut client_outcomes = Vec::new();
+    let mut client_closures = Vec::new();
     let ui = declares_client(&loaded.manifest);
     let native_rows = native_composition_files(
         &package,
@@ -2556,6 +2895,7 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         loaded.composition,
         &mut output_files,
         &mut client_outcomes,
+        &mut client_closures,
         ui,
     )?;
     let requires_native = !native_rows.is_empty();
@@ -2783,6 +3123,7 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         requires_node,
         requires_native,
         native_rows,
+        client_closures,
     };
     output_files.add(
         "CONVERSION.md".into(),
@@ -2802,6 +3143,7 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
         "counts": {"skills": conversion.skills.len(), "mcp_servers": components.servers.len(), "native_rows": conversion.native_rows.len()},
         "requires_native": conversion.requires_native,
         "outcomes": conversion.outcomes,
+        "client_closures": conversion.client_closures,
         "diagnostics": conversion.diagnostics,
         "required_manual_ports": conversion.outcomes.iter().filter(|o| o.needs_manual_port()).collect::<Vec<_>>(),
     });
