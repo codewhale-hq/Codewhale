@@ -111,7 +111,7 @@ codewhale lane interrupt <lane-id>`,
       title: "批量运行任务",
       blocks: [
         {
-          p: "如果你手上是一串彼此独立的任务，而不是一套计划，就把它们写成任务文件，作为一次 Fleet 运行来执行。每个任务写明目标、角色和允许写入的路径。完整的 `tasks.json` 示例见[教程](https://github.com/codewhale-hq/CodeWhale/blob/main/docs/FLEET_WORKFLOW_TUTORIAL.md)。",
+          p: "如果你手上是一串彼此独立的任务，而不是一套计划，就把它们写成任务文件，作为一次 Fleet 运行来执行。每个任务写明目标、角色和允许写入的路径。完整的 `tasks.json` 示例见[教程](/docs/workflow-tutorial)。",
         },
         {
           code: `codewhale fleet init
@@ -130,6 +130,7 @@ codewhale fleet stop --all`,
     },
   ],
   next: [
+    { href: "/docs/workflow-tutorial", label: "阅读完整 Fleet 教程", note: "启动 worker 前，验证完整任务文件并了解恢复行为。" },
     {
       href: "/docs/subagents",
       label: "并行运行智能体",

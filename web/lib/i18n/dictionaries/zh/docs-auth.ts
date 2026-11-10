@@ -47,6 +47,7 @@ codewhale auth status --provider deepseek`,
           p: "因此，导出一个新的环境变量并不会替换你之前保存的密钥。如果换过的密钥一直报错，先用 `auth status` 看看生效的是哪个来源，再保存新密钥，或清除已存的旧密钥：",
         },
         { code: "codewhale auth clear --provider deepseek", lang: "终端" },
+        { note: "显示凭据来源不代表提供商已经接受该密钥。`doctor --json` 只做离线结构检查；`doctor --probe-api` 会连接所选服务，可能产生提供商用量。" },
         {
           p: "在 Linux 上，密钥存储是 `~/.codewhale/secrets/` 下的一个私有文件（权限 0600），而不是系统钥匙串。`codewhale doctor --probe-api` 会发起一次测试调用，确认密钥和网络都正常。",
         },
@@ -57,7 +58,7 @@ codewhale auth status --provider deepseek`,
       title: "使用其他提供商或本地模型",
       blocks: [
         {
-          p: "`codewhale auth list` 会列出 Codewhale 支持的所有提供商，以及每个提供商是否已有密钥。所有提供商的用法都一样：`codewhale auth set --provider <name>`，或者设置该提供商的环境变量。",
+          p: "`codewhale auth list` 会列出各提供商报告的凭据状态。API 密钥路由使用 `codewhale auth set --provider <name>` 或文档指定的环境变量；OAuth 与本地路由有各自的设置方式。",
         },
         {
           p: "本地 Ollama、vLLM 和 SGLang 服务默认无需 API 密钥。使用本机模型时，请连接回环地址，再选择该服务提供的准确模型标签：",

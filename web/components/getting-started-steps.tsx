@@ -9,7 +9,8 @@
 
 import Link from "next/link";
 import { GETTING_STARTED_STEPS } from "@/lib/content/getting-started";
-import { pickText } from "@/lib/i18n/dictionaries";
+import { getHome, pickText } from "@/lib/i18n/dictionaries";
+import { InstallCodeBlock } from "./install-code-block";
 import { Icon } from "./icon";
 
 export function GettingStartedSteps({
@@ -20,6 +21,7 @@ export function GettingStartedSteps({
   /** 2 when the steps sit directly under the page title, 3 under a section. */
   headingLevel?: 2 | 3;
 }) {
+  const home = getHome(locale);
   const StepHeading = headingLevel === 2 ? "h2" : "h3";
   const renderStep = (step: (typeof GETTING_STARTED_STEPS)[number], index: number) => (
         <li key={step.id} id={step.id} data-step-id={step.id} className="scroll-mt-32">
@@ -27,9 +29,9 @@ export function GettingStartedSteps({
           <StepHeading className="gs-step-title">{pickText(step.title, locale)}</StepHeading>
           <p>{pickText(step.body, locale)}</p>
           {step.commands.length > 0 && (
-            <pre tabIndex={0} className="code-block gs-step-commands"><code>{step.commands.join("\n")}</code></pre>
+            <InstallCodeBlock cmd={step.commands.join("\n")} copyLabel={home.copy} copiedLabel={home.copied} copyLocale={locale} installIntent={false} />
           )}
-          {step.prompt && <pre tabIndex={0} className="code-block gs-step-commands"><code>{pickText(step.prompt, locale)}</code></pre>}
+          {step.prompt && <InstallCodeBlock cmd={pickText(step.prompt, locale)} copyLabel={home.copy} copiedLabel={home.copied} copyLocale={locale} installIntent={false} />}
           <Link href={`/${locale}${step.link.href}`} className="gs-step-link">
             {pickText(step.link.label, locale)}
             <Icon name="arrow-right" className="icon icon-flip" />

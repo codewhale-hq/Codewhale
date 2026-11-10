@@ -31,6 +31,72 @@ export interface DocTask {
 
 export const DOC_TASKS: DocTask[] = [
   {
+    id: "install",
+    label: { en: "Install Codewhale", zh: "安装 Codewhale" },
+    description: {
+      en: "One command on macOS or Linux; npm, Cargo, release binaries, and the Homebrew tap on Linux also work.",
+      zh: "在 macOS 或 Linux 上只需一条命令；也可以用 npm、Cargo、发布版二进制文件，或在 Linux 上用 Homebrew tap 安装。",
+    },
+    href: "/install",
+    topicId: "install",
+    keywords: { en: "download setup brew npm cargo docker termux binary windows", zh: "下载 安装 二进制 镜像" },
+  },
+  {
+    id: "first-task",
+    label: { en: "Start your first task", zh: "开始第一个任务" },
+    description: {
+      en: "Open Codewhale in a project, look around in Plan, then let it edit in Work.",
+      zh: "在项目中打开 Codewhale，先在 Plan 里了解项目，再让它在 Work 里动手修改。",
+    },
+    href: "/docs/guide",
+    topicId: "guide",
+    keywords: { en: "getting started quickstart tutorial first run", zh: "入门 快速开始 教程 首次运行" },
+  },
+  {
+    id: "connect-provider",
+    label: { en: "Connect a provider", zh: "连接模型提供商" },
+    description: {
+      en: "Save a key for DeepSeek, OpenAI, Anthropic, OpenRouter, or another provider — or run a local model with no key.",
+      zh: "为 DeepSeek、OpenAI、Anthropic、OpenRouter 等提供商保存密钥，或者不用密钥运行本地模型。",
+    },
+    href: "/docs/auth",
+    topicId: "auth",
+    keywords: { en: "api key byok auth set login account ollama vllm sglang local", zh: "密钥 登录 账户 本地模型" },
+  },
+  {
+    id: "choose-model",
+    label: { en: "Choose or switch models", zh: "选择或切换模型" },
+    description: {
+      en: "Supported providers, switching mid-session, and local runners.",
+      zh: "支持的提供商、在会话中切换模型，以及本地运行器。",
+    },
+    href: "/models",
+    topicId: "providers",
+    keywords: { en: "model switch provider openai-compatible", zh: "模型 切换 提供商" },
+  },
+  {
+    id: "set-approvals",
+    label: { en: "Decide what runs without asking", zh: "决定哪些操作无需询问" },
+    description: {
+      en: "Plan, Work, or Operate; Ask, Auto-Review, or Full Access; and how to answer a prompt.",
+      zh: "Plan、Work 或 Operate；Ask、Auto-Review 或 Full Access；以及如何回应审批提示。",
+    },
+    href: "/docs/modes",
+    topicId: "modes",
+    keywords: { en: "mode tab shift+tab ask auto-review full access permission", zh: "模式 审批 权限" },
+  },
+  {
+    id: "review-changes",
+    label: { en: "Review what changed", zh: "查看改动" },
+    description: {
+      en: "See every edit, roll files back to an earlier turn, and get a code review before you push.",
+      zh: "查看每一处修改，把文件回滚到之前的回合，并在推送前做代码审查。",
+    },
+    href: "/docs/review",
+    topicId: "review",
+    keywords: { en: "diff undo restore rollback snapshot code review", zh: "差异 撤销 回滚 快照 审查" },
+  },
+  {
     "id": "preview-request",
     "label": {
       "en": "Inspect the outbound request",
@@ -114,73 +180,6 @@ export const DOC_TASKS: DocTask[] = [
       "en": "claude code alternative import-claude plugin settings migration",
       "zh": "Claude Code 替代 迁移 导入 插件 设置"
     }
-  },
-
-  {
-    id: "install",
-    label: { en: "Install Codewhale", zh: "安装 Codewhale" },
-    description: {
-      en: "One command on macOS or Linux; npm, Cargo, release binaries, and the Homebrew tap on Linux also work.",
-      zh: "在 macOS 或 Linux 上只需一条命令；也可以用 npm、Cargo、发布版二进制文件，或在 Linux 上用 Homebrew tap 安装。",
-    },
-    href: "/install",
-    topicId: "install",
-    keywords: { en: "download setup brew npm cargo docker termux binary windows", zh: "下载 安装 二进制 镜像" },
-  },
-  {
-    id: "first-task",
-    label: { en: "Start your first task", zh: "开始第一个任务" },
-    description: {
-      en: "Open Codewhale in a project, look around in Plan, then let it edit in Work.",
-      zh: "在项目中打开 Codewhale，先在 Plan 里了解项目，再让它在 Work 里动手修改。",
-    },
-    href: "/docs/guide",
-    topicId: "guide",
-    keywords: { en: "getting started quickstart tutorial first run", zh: "入门 快速开始 教程 首次运行" },
-  },
-  {
-    id: "connect-provider",
-    label: { en: "Connect a provider", zh: "连接模型提供商" },
-    description: {
-      en: "Save a key for DeepSeek, OpenAI, Anthropic, OpenRouter, or another provider — or run a local model with no key.",
-      zh: "为 DeepSeek、OpenAI、Anthropic、OpenRouter 等提供商保存密钥，或者不用密钥运行本地模型。",
-    },
-    href: "/docs/auth",
-    topicId: "auth",
-    keywords: { en: "api key byok auth set login account ollama vllm sglang local", zh: "密钥 登录 账户 本地模型" },
-  },
-  {
-    id: "choose-model",
-    label: { en: "Choose or switch models", zh: "选择或切换模型" },
-    description: {
-      en: "Supported providers, switching mid-session, and local runners.",
-      zh: "支持的提供商、在会话中切换模型，以及本地运行器。",
-    },
-    href: "/models",
-    topicId: "providers",
-    keywords: { en: "model switch provider openai-compatible", zh: "模型 切换 提供商" },
-  },
-  {
-    id: "set-approvals",
-    label: { en: "Decide what runs without asking", zh: "决定哪些操作无需询问" },
-    description: {
-      en: "Plan, Work, or Operate; Ask, Auto-Review, or Full Access; and how to answer a prompt.",
-      zh: "Plan、Work 或 Operate；Ask、Auto-Review 或 Full Access；以及如何回应审批提示。",
-    },
-    href: "/docs/modes",
-    topicId: "modes",
-    keywords: { en: "mode tab shift+tab ask auto-review full access permission", zh: "模式 审批 权限" },
-  },
-  {
-    id: "review-changes",
-    label: { en: "Review what changed", zh: "查看改动" },
-    description: {
-      en: "See every edit, roll files back to an earlier turn, and get a code review before you push.",
-      zh: "查看每一处修改，把文件回滚到之前的回合，并在推送前做代码审查。",
-    },
-    href: "/docs/review",
-    topicId: "review",
-    keywords: { en: "diff undo restore rollback snapshot code review", zh: "差异 撤销 回滚 快照 审查" },
   },
   {
     id: "receipts",
@@ -314,6 +313,31 @@ export const DOC_TASKS: DocTask[] = [
     topicId: "trust",
     keywords: { en: "privacy security telemetry data vulnerability report", zh: "隐私 安全 遥测 数据 漏洞" },
   },
+  {
+    id: "runtime-reference",
+    label: { en: "Look up an API route or event", zh: "查找 API 路由或事件" },
+    description: { en: "Search the canonical contract and registered HTTP path inventory for the source candidate.", zh: "搜索源码候选版本的规范约定和已注册 HTTP 路径清单。" },
+    href: "/docs/runtime-reference",
+    topicId: "runtime-reference",
+    keywords: { en: "reference endpoint schema request response fields SSE event replay", zh: "参考 端点 结构 请求 响应 字段 事件 回放" },
+  },
+  {
+    id: "write-plugin",
+    label: { en: "Write and verify a small plugin", zh: "编写并核对一个小插件" },
+    description: { en: "Create a two-file skill bundle and check its explicit greeting marker after review and activation.", zh: "创建包含两个文件的技能包，审阅并启用后，核对明确的问候标记。" },
+    href: "/docs/plugin-authoring",
+    topicId: "plugin-authoring",
+    keywords: { en: "author plugin.json SKILL.md trust hash hello greeting bundle", zh: "编写 插件 技能 信任 哈希 问候 包" },
+  },
+  {
+    id: "fleet-task-spec",
+    label: { en: "Validate a Fleet task specification", zh: "验证 Fleet 任务规范" },
+    description: { en: "Follow the full task file tutorial and validate its structure and configured route before launching workers.", zh: "按照完整任务文件教程，在启动 worker 前验证结构与已配置路由。" },
+    href: "/docs/workflow-tutorial",
+    topicId: "workflow-tutorial",
+    keywords: { en: "fleet tasks.json check validate durable workers resume restart", zh: "任务 检查 验证 持久 恢复 重启" },
+  },
+
 ];
 
 /** The owning topic for a task, or undefined if the registry drifted. */

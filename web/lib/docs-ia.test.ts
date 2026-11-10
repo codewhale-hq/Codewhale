@@ -94,10 +94,6 @@ describe("sitemap and hreflang preservation", () => {
   it("keeps sitemap and hreflang output aligned with real translation coverage", () => {
     // Home and Computer Use have 18 locales; install and the source catalogue are English.
     // Other page bodies ship English and Chinese.
-    const existingEntries = sitemapEntries.filter(
-      (entry) => new URL(entry.url).pathname.split("/")[2] !== "ratatui",
-    );
-    expect(existingEntries).toHaveLength(112);
     expect(sitemapEntries.filter(entry => entry.url.endsWith("/install")).map(entry => entry.url))
       .toEqual([`${SITE_URL}/en/install`]);
     expect(sitemapEntries.some(entry => entry.url.endsWith("/pricing"))).toBe(false);

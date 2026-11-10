@@ -1033,6 +1033,10 @@ codewhale doctor --json
 }
 ```
 
+The mechanically checked [HTTP route inventory](RUNTIME_ROUTES.md) lists literal
+paths and methods registered by current source, including native-client routes
+whose payload contracts are specific to that client.
+
 ## HTTP/SSE runtime API: `codewhale app-server --http`
 
 ```bash

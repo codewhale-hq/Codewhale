@@ -53,6 +53,7 @@ codewhale auth status --provider deepseek`,
           p: "Exporting a new environment variable therefore does not replace a key you saved earlier. If a rotated key keeps failing, run `auth status` to see which source is active, then save the new key or clear the stored one:",
         },
         { code: "codewhale auth clear --provider deepseek", lang: "Terminal" },
+        { note: "A reported credential source is not proof that a key is accepted by the provider. `doctor --json` is an offline structural report; `doctor --probe-api` explicitly contacts the selected service and may incur provider usage." },
         {
           p: "On Linux the secret store is a private file (mode 0600) under `~/.codewhale/secrets/`, not an OS keyring. `codewhale doctor --probe-api` makes one test call to confirm that the key and the network both work.",
         },
@@ -63,7 +64,7 @@ codewhale auth status --provider deepseek`,
       title: "Use another provider or a local model",
       blocks: [
         {
-          p: "`codewhale auth list` shows every provider Codewhale knows and whether each one has a key. The pattern is the same for all of them: `codewhale auth set --provider <name>`, or that provider's environment variable.",
+          p: "`codewhale auth list` shows the credential state Codewhale reports for each provider. For an API-key route, use `codewhale auth set --provider <name>` or its documented environment variable; OAuth and local routes have their own setup.",
         },
         {
           p: "Local Ollama, vLLM and SGLang servers need no API key by default. Use a loopback endpoint for a model on your machine, then select the model tag it serves:",
