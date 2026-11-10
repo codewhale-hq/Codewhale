@@ -3,7 +3,7 @@ import { IDENTITY_PHRASE, SITE_NAME, SITE_URL } from "./page-meta";
 
 export const ORGANIZATION_ID = `${SITE_URL}/#organization`;
 export const WEBSITE_ID = `${SITE_URL}/#website`;
-export const ORGANIZATION_LOGO_URL = `${SITE_URL}/icon.svg`;
+export const ORGANIZATION_LOGO_URL = `${SITE_URL}/icon-512.png`;
 
 /**
  * Site-wide Organization + WebSite graph.
