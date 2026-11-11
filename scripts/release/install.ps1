@@ -1,4 +1,5 @@
 # Archive installation only. Runtime authority remains with Codewhale Core.
+param([switch]$NoModifyPath)
 $ErrorActionPreference = 'Stop'
 $destination = Join-Path $env:USERPROFILE 'bin'
 $names = @('codewhale.exe', 'codew.exe', 'codewhale.bat')
@@ -6,6 +7,38 @@ $receiptName = '.codewhale-install.sha256'
 $optional = $env:CODEWHALE_INSTALL_COMPILED_HOST -eq '1'
 if ($optional) {
     $names += @('codewhale-extension-host.exe', 'codewhale-extension-host.LICENSES.txt', 'codewhale-extension-host.relink-source.tar.gz', 'codewhale-extension-host.release.json')
+}
+function Path-Key([string]$entry) {
+    return [Environment]::ExpandEnvironmentVariables($entry.Trim()).TrimEnd('\', '/').ToLowerInvariant()
+}
+function Ensure-UserPath([string]$directory) {
+    $key = Path-Key $directory
+    $quoted = $directory.Replace("'", "''")
+    $registry = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    try {
+        $current = [string]$registry.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if (@($current -split ';' | Where-Object { $_ -and (Path-Key $_) -eq $key }).Count -gt 0) {
+            Write-Host "$directory is already in your user PATH; it was left as is."
+            return
+        }
+        if (@($env:Path -split ';' | Where-Object { $_ -and (Path-Key $_) -eq $key }).Count -gt 0) {
+            Write-Host "$directory is already on PATH; your user PATH was not changed."
+            return
+        }
+        if ($NoModifyPath -or $env:CODEWHALE_NO_MODIFY_PATH -in @('1', 'true', 'yes')) {
+            Write-Host "Not changing your user PATH (-NoModifyPath). To add it yourself, run once:"
+            Write-Host "  [Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path', 'User') + ';$quoted'), 'User')"
+            return
+        }
+        $updated = if ($current -and !$current.EndsWith(';')) { "$current;$directory" } else { "$current$directory" }
+        $registry.SetValue('Path', $updated, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        try { [Environment]::SetEnvironmentVariable('CODEWHALE_PATH_NOTIFY', $null, 'User') } catch { }
+        Write-Host "Added $directory to your user PATH so new terminals find codewhale (skip this with -NoModifyPath). Only that one entry was added."
+        Write-Host "To undo, run:"
+        Write-Host "  `$p = (Get-Item 'HKCU:\Environment').GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); Set-ItemProperty -Path 'HKCU:\Environment' -Name Path -Type ExpandString -Value (@(`$p -split ';' | Where-Object { `$_ -and `$_.TrimEnd('\') -ine '$quoted' }) -join ';')"
+    } finally {
+        $registry.Close()
+    }
 }
 function File-Hash([string]$file) {
     if (!(Test-Path -LiteralPath $file)) { return $null }
@@ -114,7 +147,7 @@ try {
         Move-Item -LiteralPath $row.Staged -Destination $row.Target -Force:([bool]$row.OldHash)
         $published += $row
     }
-    Write-Host "Installed canonical Codewhale commands to $destination. Add this directory to your user PATH. Node remains the default host. Remove later with: `"$destination\codewhale.exe`" uninstall"
+    Write-Host "Installed canonical Codewhale commands to $destination. Node remains the default host. Remove later with: `"$destination\codewhale.exe`" uninstall"
     $kept = @($published | Where-Object { $_.OldHash -and $_.OldHash -ne $_.NewHash -and (Test-Path -LiteralPath $_.Backup) })
     if ($kept.Count -gt 0) {
         $dataRoot = if ($env:CODEWHALE_HOME -and [IO.Path]::IsPathRooted($env:CODEWHALE_HOME)) { $env:CODEWHALE_HOME } else { Join-Path $env:USERPROFILE '.codewhale' }
@@ -133,6 +166,17 @@ try {
     }
     try { & (Join-Path $destination 'codewhale.exe') doctor --installs --brief 2>$null } catch { }
     Write-Host "Updates install automatically; turn off with: codewhale config set update.mode notify"
+    $onPath = @($env:Path -split ';' | Where-Object { $_ -and (Path-Key $_) -eq (Path-Key $destination) }).Count -gt 0
+    try { Ensure-UserPath $destination } catch { Write-Warning "Could not update your user PATH: $($_.Exception.Message). Add $destination to it yourself." }
+    Write-Host ''
+    if ($onPath) {
+        Write-Host 'Next: codewhale --version'
+    } else {
+        Write-Host 'Use it in this window now (a PATH change does not reach windows that are already open):'
+        Write-Host "  `$env:Path = `"$destination;`$env:Path`""
+        Write-Host 'Then check it:'
+        Write-Host '  codewhale --version'
+    }
 } catch {
     $original = $_
     [array]::Reverse($published)

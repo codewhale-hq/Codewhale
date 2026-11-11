@@ -1,0 +1,24 @@
+{
+  "direction": "core_to_host",
+  "valid": true,
+  "frame": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "tool/call",
+    "params": {
+      "handle": 17,
+      "call_id": "call-2",
+      "input": {},
+      "deadline_ms": 120000,
+      "workspace": "/home/u/project",
+      "ticket": "cwt.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "session_id": "session-1",
+      "broker_tickets": [
+        {
+          "service": "workspace",
+          "ticket": "cwt.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }
+      ]
+    }
+  }
+}

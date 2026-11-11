@@ -122,6 +122,14 @@
 pub mod command;
 pub mod composition_review;
 pub mod core_call;
+pub mod dsh_broker;
+mod dsh_catalog;
+mod dsh_llm;
+mod dsh_network;
+mod dsh_remote;
+mod dsh_settings;
+mod dsh_terminal;
+mod dsh_workspace;
 pub mod execution;
 pub use execution::StockOperation;
 pub mod avatars;
@@ -1009,6 +1017,23 @@ impl HostEvents for Events {
                 shared
                     .core_calls
                     .serve_checkpoint(&shared, self.tier, self.generation, params, cx)
+                    .await
+            }
+            protocol::HostRequest::DshBroker(params) => {
+                let Some(shared) = self.shared.upgrade() else {
+                    return Err(refuse("extension host manager is gone"));
+                };
+                if shared
+                    .tier_runtime(self.tier)
+                    .host_generation
+                    .load(Ordering::SeqCst)
+                    != self.generation
+                {
+                    return Err(refuse("stale host generation"));
+                }
+                shared
+                    .core_calls
+                    .serve_broker(&shared, self.tier, self.generation, params, cx)
                     .await
             }
             protocol::HostRequest::CoreCall(params) => {
