@@ -44,6 +44,7 @@ export const chrome: ChromeDict = {
   footerContribute: "参与贡献",
   footerRoadmap: "路线图",
   footerLicense: "MIT 许可证",
+  footerMerch: "周边商品",
   footerTerms: "服务条款",
   footerPrivacy: "隐私政策",
   footerChangelog: "更新日志",

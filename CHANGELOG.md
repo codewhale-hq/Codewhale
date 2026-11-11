@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plugin activation now says when a requested service belongs to the Codewhale core and is not exposed to plugins yet. No plugin, provider or installed-app run exercised it; checked by the extension-host tests only.
 - Codex App Server v2 contract record (paused, not part of 0.10.3): the selected Codex v2 contract is frozen as a generated manifest in the protocol crate, with typed Rust and TypeScript shapes checked against the pinned Codex schema. It changes no wire behavior and adds no dispatch, so nothing is reachable through it yet.
 - **Website copy:** The site's headline is now "The model can be anyone's. The agent should be yours.", with its subhead, belief and labelled product map in every language.
+- **Website routes:** Pages that repeated each other now redirect to the one page that does the job, the header and footer list only pages that exist under their current names, the sitemap drops redirected and catalogue pages, and machine-drafted translations say so.
 
 ### Fixed
 

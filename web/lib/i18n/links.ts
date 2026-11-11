@@ -65,12 +65,12 @@ export function footerDocsLinks(locale: string, chrome: ChromeDict): ChromeLink[
   ];
 }
 
-export function footerProjectLinks(locale: string, chrome: ChromeDict, merch: string): ChromeLink[] {
+export function footerProjectLinks(locale: string, chrome: ChromeDict): ChromeLink[] {
   return [
     { href: REPO_URL, label: "GitHub" },
     { href: `/${locale}/contribute`, label: chrome.footerContribute },
     { href: DISCORD_URL, label: "Discord" },
-    { href: `/${locale}/merch`, label: merch },
+    { href: `/${locale}/merch`, label: chrome.footerMerch },
     { href: REPO_LICENSE_URL, label: chrome.footerLicense },
   ];
 }

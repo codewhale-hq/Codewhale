@@ -53,6 +53,7 @@ export const chrome: ChromeDict = {
   footerContribute: "Współtwórz",
   footerRoadmap: "Plan rozwoju",
   footerLicense: "Licencja MIT",
+  footerMerch: "Gadżety",
   footerTerms: "Warunki usługi",
   footerPrivacy: "Prywatność",
   footerChangelog: "Dziennik zmian",

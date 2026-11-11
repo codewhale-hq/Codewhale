@@ -79,6 +79,7 @@ export interface ChromeDict {
   footerContribute: string;
   footerRoadmap: string;
   footerLicense: string;
+  footerMerch: string;
   /** Footer link to the terms route, e.g. "Terms". */
   footerTerms: string;
   /** Footer link to the privacy route, e.g. "Privacy". */

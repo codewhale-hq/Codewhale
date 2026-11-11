@@ -47,6 +47,7 @@ export const chrome: ChromeDict = {
   footerContribute: "Участь",
   footerRoadmap: "Дорожня карта",
   footerLicense: "Ліцензія MIT",
+  footerMerch: "Мерч",
   footerTerms: "Умови використання",
   footerPrivacy: "Приватність",
   footerChangelog: "Журнал змін",

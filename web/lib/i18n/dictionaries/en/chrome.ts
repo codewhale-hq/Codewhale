@@ -43,6 +43,7 @@ export const chrome: ChromeDict = {
   footerContribute: "Contribute",
   footerRoadmap: "Roadmap",
   footerLicense: "MIT license",
+  footerMerch: "Merchandise",
   footerTerms: "Terms",
   footerPrivacy: "Privacy",
   footerChangelog: "Changelog",

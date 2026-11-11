@@ -54,6 +54,7 @@ export const chrome: ChromeDict = {
   footerContribute: "योगदान दें",
   footerRoadmap: "रोडमैप",
   footerLicense: "MIT लाइसेंस",
+  footerMerch: "मर्चेंडाइज़",
   footerTerms: "सेवा की शर्तें",
   footerPrivacy: "गोपनीयता",
   footerChangelog: "परिवर्तन लॉग",

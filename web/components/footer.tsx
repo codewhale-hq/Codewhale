@@ -11,7 +11,6 @@ import { SITE_CONTACT_EMAIL } from "@/lib/page-meta";
 import { reviewState } from "@/lib/i18n/review-state";
 import { USAGE_COUNTING_COPY } from "@/lib/content/usage-counting";
 import { pickText } from "@/lib/i18n/dictionaries";
-import { getStorefrontCopy } from "@/lib/content/merch-storefront";
 
 /**
  * Site footer: the sea below one horizon line, in both appearances.
@@ -23,7 +22,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
   const homeHref = `/${locale}`;
   const product = footerProductLinks(locale, chrome);
   const docs = footerDocsLinks(locale, chrome);
-  const project = footerProjectLinks(locale, chrome, getStorefrontCopy(locale).merch);
+  const project = footerProjectLinks(locale, chrome);
   const legal = footerLegalLinks(locale, chrome, pickText(USAGE_COUNTING_COPY.footerLink, locale));
 
   return (

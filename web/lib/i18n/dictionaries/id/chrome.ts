@@ -50,6 +50,7 @@ export const chrome: ChromeDict = {
   footerContribute: "Kontribusi",
   footerRoadmap: "Peta jalan",
   footerLicense: "Lisensi MIT",
+  footerMerch: "Merchandise",
   footerTerms: "Ketentuan layanan",
   footerPrivacy: "Privasi",
   footerChangelog: "Catatan perubahan",

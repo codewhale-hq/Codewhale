@@ -278,7 +278,7 @@ describe("no page links to a missing or gone route", () => {
       signInLink(locale, chrome),
       ...footerProductLinks(locale, chrome),
       ...footerDocsLinks(locale, chrome),
-      ...footerProjectLinks(locale, chrome, "Merch"),
+      ...footerProjectLinks(locale, chrome),
       ...footerLegalLinks(locale, chrome, "Usage"),
     ];
     for (const link of links.filter((l) => l.href.startsWith("/"))) {

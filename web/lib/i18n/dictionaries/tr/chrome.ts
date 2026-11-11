@@ -53,6 +53,7 @@ export const chrome: ChromeDict = {
   footerContribute: "Katkı",
   footerRoadmap: "Yol haritası",
   footerLicense: "MIT lisansı",
+  footerMerch: "Ürünler",
   footerTerms: "Hizmet şartları",
   footerPrivacy: "Gizlilik",
   footerChangelog: "Değişiklik günlüğü",

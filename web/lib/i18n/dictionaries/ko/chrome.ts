@@ -54,6 +54,7 @@ export const chrome: ChromeDict = {
   footerContribute: "기여",
   footerRoadmap: "로드맵",
   footerLicense: "MIT 라이선스",
+  footerMerch: "굿즈",
   footerTerms: "이용약관",
   footerPrivacy: "개인정보처리방침",
   footerChangelog: "변경 로그",

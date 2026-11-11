@@ -556,11 +556,11 @@ done
     // (lib/i18n/links.ts) rather than hardcoded per-locale arrays, so the
     // exact MIT pairing is asserted on the rendered contract for both the
     // English and Chinese editions — same guarantee, one source.
-    expect(footerProjectLinks("en", getChrome("en"), "Merch").at(-1)).toEqual({
+    expect(footerProjectLinks("en", getChrome("en")).at(-1)).toEqual({
       label: "MIT license",
       href: "https://github.com/codewhale-hq/CodeWhale/blob/main/LICENSE",
     });
-    expect(footerProjectLinks("zh", getChrome("zh"), "周边").at(-1)).toEqual({
+    expect(footerProjectLinks("zh", getChrome("zh")).at(-1)).toEqual({
       label: "MIT 许可证",
       href: "https://github.com/codewhale-hq/CodeWhale/blob/main/LICENSE",
     });

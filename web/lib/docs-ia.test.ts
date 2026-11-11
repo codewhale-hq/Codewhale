@@ -237,7 +237,7 @@ describe("navigation parity and accessibility", () => {
         product.map((l) => l.href.replace(new RegExp(`^/${locale}/`), "")),
         `${locale} footer product routes`,
       ).toEqual(reference);
-      const project = footerProjectLinks(locale, getChrome(locale), "Merch");
+      const project = footerProjectLinks(locale, getChrome(locale));
       expect(project.map((l) => l.href), `${locale} footer project routes`).toEqual([
         "https://github.com/codewhale-hq/CodeWhale",
         `/${locale}/contribute`,
@@ -340,7 +340,7 @@ describe("navigation parity and accessibility", () => {
       expect(docs, `${locale} footer docs`).toContain(`/${locale}/docs/guide`);
       expect(docs, `${locale} footer docs`).toContain(`/${locale}/faq`);
     }
-    const license = footerProjectLinks("en", getChrome("en"), "Merch").at(-1);
+    const license = footerProjectLinks("en", getChrome("en")).at(-1);
     expect(license).toEqual({
       label: "MIT license",
       href: "https://github.com/codewhale-hq/CodeWhale/blob/main/LICENSE",
@@ -352,7 +352,7 @@ describe("navigation parity and accessibility", () => {
     ]);
     expect(footer).toContain("footerProductLinks(locale, chrome)");
     expect(footer).toContain("footerDocsLinks(locale, chrome)");
-    expect(footer).toContain("footerProjectLinks(locale, chrome,");
+    expect(footer).toContain("footerProjectLinks(locale, chrome)");
     expect(footer).toContain("footerLegalLinks(locale, chrome,");
   });
 });
