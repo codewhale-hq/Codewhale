@@ -534,7 +534,8 @@ say "  $install_dir/codew"
 if [ -n "$recovery_dir" ]; then
   say "Previous files are kept in $recovery_dir for 30 days. Undo: \"$install_dir/codewhale\" doctor --restore $(basename "$recovery_dir")"
 fi
-"$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
+CODEWHALE_TELEMETRY=0 CODEWHALE_NO_UPDATE_CHECK=1 "$install_dir/codewhale" doctor --installs --brief </dev/null 2>/dev/null || true
+say "Usage reporting is on by default (counts only, never your code or conversations). Turn it off: \"$install_dir/codewhale\" config set telemetry false"
 
 case "$target" in
   macos-*)
