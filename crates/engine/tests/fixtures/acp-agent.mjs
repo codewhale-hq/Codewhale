@@ -111,6 +111,10 @@ function handle(message) {
       result(message.id, { configOptions: [] });
       break;
     case 'session/prompt':
+      if (plan().ignoreCancel) {
+        record('held-prompts.jsonl', { id: message.id });
+        break;
+      }
       if (HANG) {
         pendingPrompt = message;
         break;

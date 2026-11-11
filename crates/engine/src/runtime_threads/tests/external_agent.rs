@@ -1156,6 +1156,51 @@ async fn interrupting_a_pending_approval_answers_the_agents_request_as_cancelled
 }
 
 #[tokio::test]
+async fn an_agent_that_ignores_cancel_is_stopped_after_the_grace_period() -> Result<()> {
+    if !node_available().await {
+        return Ok(());
+    }
+    let _env = crate::test_support::lock_test_env();
+    let _fixture = crate::test_support::EnvVarGuard::set(FIXTURE_AGENT_ENV, fixture_script());
+    let root = tempfile::tempdir()?;
+    let workspace = root.path().join("work");
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(
+        workspace.join("fixture-plan.json"),
+        json!({ "ignoreCancel": true }).to_string(),
+    )?;
+    let manager = test_manager(root.path().join("runtime"))?;
+    let thread = manager
+        .create_thread(fixture_thread_request(&workspace, "ask"))
+        .await?;
+    let turn = manager.start_turn(&thread.id, prompt("never stop")).await?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fixture_lines(&workspace, "held-prompts.jsonl").is_empty() {
+        anyhow::ensure!(Instant::now() < deadline, "the agent never got the prompt");
+        sleep(Duration::from_millis(50)).await;
+    }
+    let interrupted = Instant::now();
+    manager.interrupt_turn(&thread.id, &turn.id).await?;
+    let settled = wait_for_turn(&manager, &turn.id).await?;
+    let waited = interrupted.elapsed();
+    assert_eq!(settled.status, RuntimeTurnStatus::Interrupted);
+    assert!(
+        settled
+            .error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("ended its process")),
+        "the turn did not settle with the killed reason: {:?}",
+        settled.error
+    );
+    assert!(
+        waited >= Duration::from_secs(9) && waited < Duration::from_secs(15),
+        "the forced stop came after {waited:?}, outside the grace period plus five seconds"
+    );
+    manager.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn additional_directories_reach_only_an_agent_that_advertises_them() -> Result<()> {
     if !node_available().await {
         return Ok(());
