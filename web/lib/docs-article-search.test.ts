@@ -44,7 +44,7 @@ describe("article section search", () => {
       }
       const installIds = new Set(INSTALL_GUIDES[locale].guide.anchors);
       for (const path of ["install", "models", "plugins", "constitution"]) {
-        const source = readFileSync(new URL(`../app/[locale]/${path}/page.tsx`, import.meta.url), "utf8");
+        const source = readFileSync(new URL(`../app/[locale]/${path === "constitution" ? "docs/constitution" : path}/page.tsx`, import.meta.url), "utf8");
         const ids = new Set([...source.matchAll(/(?:id|titleId)="([^"]+)"/g)].map(match => match[1]));
         if (path === "install") for (const id of installIds) ids.add(id);
         const pageSections = sections.filter(section => section.href.startsWith(`/${path}#`));

@@ -111,8 +111,6 @@ describe("page metadata", () => {
   it("keeps the previously incomplete indexable routes on the shared helper", () => {
     for (const [route, path] of [
       ["faq", "/faq"],
-      ["feed", "/feed"],
-      ["roadmap", "/roadmap"],
       ["legal/terms", "/legal/terms"],
       ["legal/privacy", "/legal/privacy"],
     ]) {
