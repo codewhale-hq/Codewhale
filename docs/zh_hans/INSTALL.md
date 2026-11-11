@@ -162,8 +162,7 @@ Then check it:
   codewhale --version
 ```
 
-The PATH block is always the last thing the installer prints. When your PATH already
-selects the install, the last line is `Next: codewhale --version`.
+PATH 代码块始终是安装器打印的最后内容。如果你的 PATH 已经选中了这次安装，最后一行是 `Next: codewhale --version`。
 
 ### macOS 说明
 
@@ -175,7 +174,7 @@ selects the install, the last line is `Next: codewhale --version`.
 
 ### 把它加入 PATH
 
-如果安装器提示 `PATH selects no codewhale command`，说明 `~/.local/bin` **在当前 shell 里**不在 PATH 上。此时 `codewhale.net/install.sh` 安装器会根据你的 `$SHELL`（zsh、bash、fish 或 POSIX `sh`），打印下面这个代码块里对应的那一行；对于其他 shell，或者目录名含有引号、`$`、反引号或反斜杠的情况，它会让你自己添加该目录。它自己从不修改 shell 配置文件。发布压缩包内的 `install.sh` 只会打印针对当前 shell 的 `export` 行。在 Ubuntu 和 Debian 上，`~/.profile` 会加入 `~/.local/bin`，但前提是该目录在你*登录*时已经存在。所以：
+如果安装器提示 `PATH selects no codewhale command`，说明 `~/.local/bin` **在当前 shell 里**不在 PATH 上。此时 `codewhale.net/install.sh` 安装器会根据你的 `$SHELL`（zsh、bash、fish 或 POSIX `sh`），打印下面这个代码块里对应的那一行；对于其他 shell，或者目录名含有引号、`$`、反引号或反斜杠的情况，它会让你自己添加该目录。它自己从不修改 shell 配置文件。发布压缩包内的 `install.sh` 只会打印针对当前 shell 的 `export` 行，同样作为它的最后输出。在 Ubuntu 和 Debian 上，`~/.profile` 会加入 `~/.local/bin`，但前提是该目录在你*登录*时已经存在。所以：
 
 * 新开的 SSH 会话或登录 shell 会自动生效；
 * 桌面上新开的终端**窗口**（GNOME Terminal、Ghostty 等）通常不会，要等到你注销再登录。我刚装完就在 Ghostty 里遇到了 `bash: codewhale: command not found`。

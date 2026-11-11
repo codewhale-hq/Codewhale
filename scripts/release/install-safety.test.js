@@ -97,6 +97,34 @@ ${hash}  codew
     f.untouched();
   });
 
+  test(`${kind}: the output ends with the PATH command and the verify command`, t => {
+    const f = fixture(t, kind);
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+    assert.equal(lines.at(-1), "codewhale --version", result.stdout);
+    assert.equal(lines.at(-2), "Then check it:", result.stdout);
+    assert.ok(lines.at(-3).startsWith("export PATH="), result.stdout);
+    assert.ok(lines.at(-3).endsWith("hash -r"), result.stdout);
+    f.untouched();
+  });
+
+  test(`${kind}: on macOS without Node the Computer Use notice precedes the PATH block`, t => {
+    const noNode = ["/usr/bin", "/bin"].every(dir => !fs.existsSync(path.join(dir, "node")));
+    if (!noNode) return t.skip("node is installed in a system directory");
+    const f = fixture(t, kind);
+    f.env.PATH = `${f.bin}:/usr/bin:/bin`;
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    const out = result.stdout;
+    const notice = out.indexOf("Computer Use is included and needs Node.js 20");
+    assert.ok(notice >= 0, out);
+    assert.ok(notice < out.indexOf("PATH selects"), out);
+    assert.ok(notice < out.indexOf("Run this now, in this shell:"), out);
+    assert.equal(out.trim().split("\n").at(-1).trim(), "codewhale --version", out);
+    f.untouched();
+  });
+
   test(`${kind}: rerunning an identical installation preserves its files`, t => {
     const f = fixture(t, kind);
     assert.equal(f.run().status, 0);
