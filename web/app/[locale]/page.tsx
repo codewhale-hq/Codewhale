@@ -134,7 +134,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
   const brand = (text: string) =>
     splitToken(text, "brand").map((part, index) => (
       <Fragment key={index}>
-        {index > 0 ? "Codewhale" : null}
+        {index > 0 ? <bdi>Codewhale</bdi> : null}
         {part}
       </Fragment>
     ));
