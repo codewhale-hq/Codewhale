@@ -145,9 +145,12 @@ def main():
     hidden_gate = fixture / "heldout_gate.py"
     targets = {"host": str(marker), "sibling": str(sibling_marker),
                "hidden": str(hidden_gate)}
-    program = ("import json,subprocess,sys\n"
+    inherited_fd = os.open(marker, os.O_RDONLY)
+    os.set_inheritable(inherited_fd, True)
+    program = ("import json,os,subprocess,sys\n"
                "json.load(sys.stdin)\n"
                f"targets = {targets!r}\n"
+               f"inherited_fd = {inherited_fd}\n"
                "def blocked(path, mode):\n"
                "    try:\n"
                "        with open(path, mode) as stream:\n"
@@ -159,6 +162,11 @@ def main():
                "for label, path in targets.items():\n"
                "    result[label + '_read_blocked'] = blocked(path, 'r')\n"
                "    result[label + '_write_blocked'] = blocked(path, 'w')\n"
+               "result['provider_env_blocked'] = 'DEEPSEEK_API_KEY' not in os.environ\n"
+               "try:\n"
+               "    result['inherited_fd_blocked'] = b'synthetic marker' not in os.read(inherited_fd, 1024)\n"
+               "except OSError:\n"
+               "    result['inherited_fd_blocked'] = True\n"
                "for mode, action in [('r', 'read()'), ('w', \"write('tampered')\")]:\n"
                "    child = subprocess.run([sys.executable, '-c', "
                "f\"open(sys.argv[1], '{mode}').{action}\", targets['host']], "
@@ -169,6 +177,7 @@ def main():
                 for label in ("host", "sibling", "hidden")
                 for action in ("read", "write")}
     expected.update({"child_r_blocked": True, "child_w_blocked": True})
+    expected.update({"provider_env_blocked": True, "inherited_fd_blocked": True})
     for name, count in (("public_gate.py", 8), ("heldout_gate.py", 6)):
         text = ("import sys\nPROGRAM = (sys.executable, \"src/probe.py\")\n"
                 f"CASES = [({{'case': index}}, {expected!r}) "
@@ -217,8 +226,10 @@ def main():
                "--input-json", json.dumps(payload, separators=(",", ":"))]
     try:
         completed = subprocess.run(command, cwd=workspace, env=environment,
-                                   capture_output=True, text=True, check=False, timeout=180)
+                                   capture_output=True, text=True, check=False, timeout=180,
+                                   pass_fds=(inherited_fd,))
     finally:
+        os.close(inherited_fd)
         server.shutdown()
         thread.join(timeout=5)
     (output / "stdout.log").write_text(completed.stdout, encoding="utf-8")
