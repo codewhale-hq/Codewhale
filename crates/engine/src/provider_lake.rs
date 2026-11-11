@@ -1455,6 +1455,24 @@ pub fn configured_catalog_models_for_route(
     ids
 }
 
+pub fn listed_models_for_route(route_config: &Config, identity: &ProviderIdentity) -> Vec<String> {
+    let mut models = configured_catalog_models_for_route(
+        route_config,
+        identity.provider,
+        identity.key.as_str(),
+        &route_config.active_route_base_url(),
+    );
+    if identity.provider != ProviderKind::OpenaiCodex {
+        let default_model = route_config.default_model();
+        if !default_model.is_empty() && !default_model.eq_ignore_ascii_case("auto") {
+            push_unique_model(&mut models, &default_model);
+        }
+        models.sort();
+        models.dedup();
+    }
+    models
+}
+
 /// Look up the **bundled-snapshot** offering for `(provider, wire_model_id)`,
 /// ignoring any live rows merged over it.
 ///
@@ -2219,23 +2237,8 @@ pub async fn run_models(
     route_config
         .scope_to_provider_identity(identity)
         .map_err(anyhow::Error::msg)?;
-    let mut models = configured_catalog_models_for_route(
-        &route_config,
-        identity.provider,
-        identity.key.as_str(),
-        &route_config.active_route_base_url(),
-    );
+    let models = listed_models_for_route(&route_config, identity);
     let default_model = route_config.default_model();
-    if identity.provider != ProviderKind::OpenaiCodex
-        && !default_model.is_empty()
-        && !default_model.eq_ignore_ascii_case("auto")
-    {
-        push_unique_model(&mut models, &default_model);
-    }
-    if identity.provider != ProviderKind::OpenaiCodex {
-        models.sort();
-        models.dedup();
-    }
     if json {
         // Preserve the existing array + AvailableModel field shape.
         let chatgpt_roster = (identity.provider == ProviderKind::OpenaiCodex)
