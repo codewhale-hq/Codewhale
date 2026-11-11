@@ -7,8 +7,9 @@ already keeps. It lists, in order, the files changed, commands run, web and
 MCP calls, agents started, approvals (and who decided each one), and
 failures, with totals on top. It also counts what ran without asking, and
 names the permission posture that let it. Below the totals it carries the
-provider's token counts and the cost line `/cost` prints (see
-[Tokens and cost](#tokens-and-cost)).
+provider's token counts; a terminal session's receipt also carries the cost
+line `/cost` prints, and a Runtime thread's receipt carries token counts only
+(see [Tokens and cost](#tokens-and-cost)).
 
 ```text
 # Receipt: Fix the parser
@@ -286,7 +287,7 @@ totals always cover every action, and `omitted_actions` counts the rest.
     "other_tool_calls": 0
   },
   "usage": {
-    "tokens": { "input": 1200, "output": 90, "total": 1290, "cache_read": 800, "calls": 2 }
+    "tokens": { "input": 1200, "output": 90, "total": 1290, "cache_read": 800 }
   },
   "actions": [
     {

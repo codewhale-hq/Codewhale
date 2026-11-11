@@ -3,7 +3,7 @@
 > 英文原文：[RECEIPTS.md](../RECEIPTS.md)。
 > 最后与英文同步日期（last synced with English revision）：2026-11-11。
 
-回执（receipt）用 Codewhale 已经保存的记录回答“这个会话做了什么？”。它按顺序列出改动的文件、运行的命令、Web 与 MCP 调用、启动的智能体、审批（以及每一项由谁决定）和失败，并在顶部给出汇总。它还会统计哪些操作未经询问就运行了，并写明放行它们的权限姿态。汇总下方还会给出提供商报告的 token 数，以及 `/cost` 打印的同一条费用说明（见[Token 与费用](#token-与费用)）。
+回执（receipt）用 Codewhale 已经保存的记录回答“这个会话做了什么？”。它按顺序列出改动的文件、运行的命令、Web 与 MCP 调用、启动的智能体、审批（以及每一项由谁决定）和失败，并在顶部给出汇总。它还会统计哪些操作未经询问就运行了，并写明放行它们的权限姿态。汇总下方还会给出提供商报告的 token 数；终端会话的回执另有 `/cost` 打印的同一条费用说明，Runtime 线程的回执只给 token 数（见[Token 与费用](#token-与费用)）。
 
 ```text
 # Receipt: Fix the parser
@@ -176,7 +176,7 @@ JSON 中同一部分是 `usage`，费用是一个对象：
     "other_tool_calls": 0
   },
   "usage": {
-    "tokens": { "input": 1200, "output": 90, "total": 1290, "cache_read": 800, "calls": 2 }
+    "tokens": { "input": 1200, "output": 90, "total": 1290, "cache_read": 800 }
   },
   "actions": [
     {

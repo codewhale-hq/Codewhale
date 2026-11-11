@@ -188,20 +188,19 @@ pub fn with_usage(mut receipt: Receipt, usage: ReceiptUsage) -> Receipt {
 
 pub fn thread_tokens(turns: &[&crate::runtime_threads::TurnRecord]) -> Option<ReceiptTokens> {
     let mut tokens = ReceiptTokens::default();
-    let (mut input, mut output, mut calls) = (0u64, 0u64, 0usize);
+    let (mut input, mut output, mut turns_with_usage) = (0u64, 0u64, 0usize);
     for usage in turns.iter().filter_map(|turn| turn.usage.as_ref()) {
         input = input.saturating_add(u64::from(usage.input_tokens));
         output = output.saturating_add(u64::from(usage.output_tokens));
         add(&mut tokens.cache_read, usage.prompt_cache_hit_tokens);
         add(&mut tokens.cache_write, usage.prompt_cache_write_tokens);
         add(&mut tokens.reasoning, usage.reasoning_tokens);
-        calls += 1;
+        turns_with_usage += 1;
     }
-    (calls > 0).then(|| {
+    (turns_with_usage > 0).then(|| {
         tokens.input = Some(input);
         tokens.output = Some(output);
         tokens.total = input.saturating_add(output);
-        tokens.calls = Some(calls);
         tokens
     })
 }

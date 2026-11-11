@@ -490,8 +490,10 @@ fn markdown_and_json_share_one_record() {
         "Changed 1 file (+2 −1) · ran 1 command · made 1 MCP call · 1 approved by you · 1 approved by session rule · 1 ran without asking under Ask · 1 denied by you · 2 other failures"
     ));
     assert!(markdown.contains("\n1. edited `src/parse.rs` (+2 −1)"));
-    assert!(markdown.contains("\nNot recorded:\n- Cost: ")
-        && markdown.contains("\n- Shell file changes:"));
+    assert!(
+        markdown.contains("\nNot recorded:\n- Cost: ")
+            && markdown.contains("\n- Shell file changes:")
+    );
 
     let json: Value = serde_json::from_str(&render_json(&receipt)).expect("json");
     assert_eq!(json["schema_id"], RECEIPT_SCHEMA_ID);
@@ -1281,6 +1283,7 @@ fn thread_receipt_sums_turn_tokens_and_points_to_the_usage_endpoint_for_cost() {
         (tokens.input, tokens.output, tokens.total),
         (Some(100), Some(20), 120)
     );
+    assert_eq!(tokens.calls, None);
     assert!(usage.cost.is_none());
     assert!(
         receipt
