@@ -72,7 +72,9 @@ export default async function (args) {
           "Do not inspect other candidates, rankings, hidden tests, or evaluator internals.",
           "Do not push. Do not merge. Do not touch the parent checkout.",
           "Your self_verdict is informational; only runtime-owned evaluation can pass a hard gate.",
-          "Return only the required structured response.",
+          args?.evaluator
+            ? "Declare actual modified paths under a CHANGES heading, with evidence."
+            : "Return only the required structured response.",
           "",
           "BRIEF:",
           String(brief),
@@ -96,7 +98,7 @@ export default async function (args) {
           "Parent checkout must remain unchanged until apply.",
         ],
         acceptance: ["Return the exact structured candidate contract."],
-        responseSchema: candidateSchema,
+        ...(args?.evaluator ? {} : { responseSchema: candidateSchema }),
       })
     );
   }

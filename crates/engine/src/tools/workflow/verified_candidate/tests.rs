@@ -355,7 +355,7 @@ fn timeout_and_cancellation_do_not_leave_descendants() {
     let fixture = Fixture::new();
     let marker = fixture.temp.path().join("descendant-marker");
     let code = format!(
-        "import subprocess,time\nsubprocess.Popen(['/usr/bin/python3','-c',\"import time; time.sleep(2); open({:?},'w').write('leak')\"])\ntime.sleep(20)\n",
+        "import subprocess,time\nsubprocess.Popen(['/usr/bin/python3','-c','import time; time.sleep(2); open({:?},\"w\").write(\"leak\")'])\ntime.sleep(20)\n",
         marker.to_str().unwrap()
     );
     fs::write(fixture.worktree.join("candidate.py"), code).unwrap();

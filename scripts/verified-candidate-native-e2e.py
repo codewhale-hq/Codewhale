@@ -19,10 +19,10 @@ def git(cwd, *args):
     ).stdout.strip()
 
 
-def sse(content=None, tool=None):
+def sse(content=None, tool=None, tool_name=None, call_id=None):
     delta = {"content": content} if tool is None else {
-        "tool_calls": [{"index": 0, "id": "local-write", "type": "function",
-                        "function": {"name": "write", "arguments": json.dumps(tool)}}]
+        "tool_calls": [{"index": 0, "id": call_id, "type": "function",
+                        "function": {"name": tool_name, "arguments": json.dumps(tool)}}]
     }
     finish = "stop" if tool is None else "tool_calls"
     chunks = [
@@ -66,13 +66,15 @@ def handler(programs, ledger):
                 ledger.append({"candidate": name, "call": call, "path": self.path,
                                "model": request.get("model")})
             if name is not None and call == 0:
-                body = sse(tool={"path": "src/probe.py", "content": programs[name]})
+                body = sse(tool={"path": "src/probe.py"}, tool_name="read",
+                           call_id=f"local-{name}-read")
+            elif name is not None and call == 1:
+                body = sse(tool={"path": "src/probe.py", "content": programs[name]},
+                           tool_name="write", call_id=f"local-{name}-write")
             elif name is not None:
-                body = sse(content=json.dumps({
-                    "candidate_id": name, "hypothesis": "local scripted fixture",
-                    "modified_paths": ["src/probe.py"], "commands_run": [],
-                    "self_verdict": "pass", "known_risks": [], "artifact_refs": []
-                }))
+                body = sse(content=f"### SUMMARY\nScripted {name} candidate.\n\n"
+                           "### CHANGES\n- src/probe.py\n\n"
+                           "### EVIDENCE\n- Read and wrote src/probe.py with host tools.\n")
             else:
                 body = sse(content="Unexpected request in local provider fixture.")
             self.send_response(200)
@@ -95,6 +97,7 @@ def last_workflow(path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--codewhale", type=Path, required=True)
+    parser.add_argument("--workflow-source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-sha", required=True)
     args = parser.parse_args()
@@ -181,7 +184,7 @@ def main():
     config = output / "config.toml"
     config.write_text('provider = "deepseek"\n[providers.deepseek]\n'
                       f'model = "deepseek-flash"\nbase_url = "http://127.0.0.1:{server.server_port}/v1"\n')
-    payload = {"action": "run", "source_path": "workflows/operate_best_of_n.workflow.js",
+    payload = {"action": "run", "script": args.workflow_source.read_text(),
                "args": {"strategy": "search", "brief": "Verify the isolated JSON probe",
                         "n": 2, "model": "deepseek-flash", "writeRoots": ["src"],
                         "evaluator": {"manifestPath": str(spec)}}}
