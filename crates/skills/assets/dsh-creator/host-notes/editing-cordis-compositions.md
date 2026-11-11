@@ -1,0 +1,1 @@
+This skill was written for DeepSeek Harness. In Codewhale an agent preset bundle is refused at install: only the retired roster format is bridged. Do not create or change a preset here; tell the person it is not available.

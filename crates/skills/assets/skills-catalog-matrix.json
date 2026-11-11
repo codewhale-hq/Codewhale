@@ -15,7 +15,7 @@
     "in_model_catalogue": "true when the skill renders as an ambient catalogue line",
     "shadowed_aliases": "aliases that collide with another canonical bundled name; the canonical skill wins resolution"
   },
-  "generation": "20",
+  "generation": "21",
   "skills": [
     {
       "name": "skill-creator",
@@ -408,6 +408,38 @@
     {
       "name": "forget",
       "tier": "core",
+      "invocation": "model+user",
+      "aliases": [],
+      "in_model_catalogue": true,
+      "shadowed_aliases": []
+    },
+    {
+      "name": "cordis-plugin-development",
+      "tier": "tools",
+      "invocation": "model+user",
+      "aliases": [],
+      "in_model_catalogue": true,
+      "shadowed_aliases": []
+    },
+    {
+      "name": "editing-cordis-compositions",
+      "tier": "tools",
+      "invocation": "model+user",
+      "aliases": [],
+      "in_model_catalogue": true,
+      "shadowed_aliases": []
+    },
+    {
+      "name": "cordis-composition-reference",
+      "tier": "tools",
+      "invocation": "model+user",
+      "aliases": [],
+      "in_model_catalogue": true,
+      "shadowed_aliases": []
+    },
+    {
+      "name": "agent-experience",
+      "tier": "tools",
       "invocation": "model+user",
       "aliases": [],
       "in_model_catalogue": true,

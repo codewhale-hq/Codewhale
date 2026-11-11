@@ -22,9 +22,10 @@ pub use roots::{
 #[allow(unused_imports)]
 pub use system::is_exact_bundled_skill;
 pub use system::{
-    BundledSkillTier, BundledSkillsStatus, bundled_skill_tier, bundled_skills_status,
-    canonical_bundled_skill_name, install_system_skills, is_bundled_copy, is_bundled_skill_name,
-    unrecognized_system_skills,
+    BundledSkillLoadContext, BundledSkillTier, BundledSkillsStatus, CREATOR_SKILL_NAMES,
+    bundled_skill_load_context, bundled_skill_tier, bundled_skills_status,
+    canonical_bundled_skill_name, creator_skills_enabled, install_system_skills, is_bundled_copy,
+    is_bundled_skill_name, set_creator_skills_enabled, unrecognized_system_skills,
 };
 
 use std::fs;
@@ -1370,6 +1371,7 @@ fn cached_merged_discovery(
     workspace: Option<PathBuf>,
     policy: &BundledSkillsConfig,
 ) -> SkillRegistry {
+    let policy = &system::effective_bundled_policy(policy);
     let has_policy = [&policy.selected, &policy.disabled, &policy.explicit_only]
         .iter()
         .any(|names| names.as_ref().is_some_and(|names| !names.is_empty()));

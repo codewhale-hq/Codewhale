@@ -291,6 +291,20 @@ fn format_skill_body(skill: &Skill) -> String {
     out.push_str("## SKILL.md\n\n");
     out.push_str(skill.body.trim());
     out.push('\n');
+    if matches!(skill.source, SkillSource::Native)
+        && let Some(context) =
+            codewhale_skills::bundled_skill_load_context(&skill.name, &skill.path)
+    {
+        out.push_str(&format!(
+            "\nBase directory for this skill: `{}`\n",
+            context.base_dir.display()
+        ));
+        if let Some(notes) = context.host_notes {
+            out.push_str("\n## Host notes: Codewhale\n\n");
+            out.push_str(notes.trim());
+            out.push('\n');
+        }
+    }
 
     let companions = collect_companion_files(skill);
     if !companions.is_empty() {
@@ -883,5 +897,33 @@ mod tests {
                 .content
                 .contains("secret steps for model")
         );
+    }
+
+    #[test]
+    fn creator_skill_body_is_followed_by_base_directory_and_host_notes() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().unwrap();
+        let _home =
+            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path().join("home"));
+        let owned = codewhale_runtime::config::owned_skills_dir().unwrap();
+        codewhale_skills::install_system_skills(&owned, &Default::default()).unwrap();
+
+        let registry = SkillRegistry::discover(&owned);
+        let skill = registry.get("cordis-plugin-development").unwrap();
+        let rendered = format_skill_body(skill);
+        let body_end = rendered.find(skill.body.trim()).unwrap() + skill.body.trim().len();
+        let tail = &rendered[body_end..];
+        let base = format!(
+            "\nBase directory for this skill: `{}`\n",
+            owned.join("cordis-plugin-development").display()
+        );
+        let tail = tail.strip_prefix('\n').unwrap();
+        assert!(tail.starts_with(&base), "{tail}");
+        assert!(tail[base.len()..].starts_with("\n## Host notes: Codewhale\n\n"));
+
+        let plain = registry.get("agent-experience").unwrap();
+        let plain = format_skill_body(plain);
+        assert!(plain.contains("Base directory for this skill"));
+        assert!(!plain.contains("Host notes"));
     }
 }
