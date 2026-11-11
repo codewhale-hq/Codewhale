@@ -229,7 +229,7 @@ export default async function (args) {
                 `BRIEF: ${String(brief)}`,
                 `CHANGED FILES: ${String(receipt.review_material ?? "INCOMPLETE")}`,
                 `PUBLIC FEEDBACK: ${String(receipt.public_failure_feedback ?? "")}`,
-                "Return a concise structured verdict.",
+                "Reply as plain JSON text with verdict and reasons. Do not call a tool.",
               ].join("\n"),
               label: `dev_review_${plan.id}`, type: "explore", model,
               allowedTools: [], maxSteps: 1, schemaRepairAttempts: 0,
