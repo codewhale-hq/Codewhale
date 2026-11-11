@@ -354,6 +354,18 @@
         "cache_read_per_m": 0.145
       },
       "reason": "Fireworks hosts DeepSeek V4 Pro at its own published rates, as in the reviewed table in crates/engine/src/pricing.rs; Models.dev lists a flat 1.2/1.2 rate with a 0.6 cache-read rate for this deployment."
+    },
+    {
+      "provider": "google",
+      "id": "gemini-4-argon",
+      "max_output": 65536,
+      "reason": "Google publishes 65,536 output tokens by default for synchronous requests (https://aistudio.google.com/docs/models/gemini-4-argon, read 2026-11-10); Models.dev lists 32768."
+    },
+    {
+      "provider": "google",
+      "id": "gemini-4-carbon",
+      "max_output": 65536,
+      "reason": "Google publishes 65,536 output tokens by default for synchronous requests (https://aistudio.google.com/docs/models/gemini-4-carbon, read 2026-11-10); Models.dev lists 32768."
     }
   ],
   "reviewed": {
@@ -395,7 +407,7 @@
           "reasoning"
         ],
         "reasoning": true,
-        "source": "https://models.dev/catalog.json anthropic/claude-fable-5-2, retrieved 2026-11-10",
+        "source": "official vendor model docs, verified 2026-11-10; see source_receipts",
         "family": "Anthropic"
       },
       "claude-opus-5-5": {
@@ -1629,14 +1641,16 @@
         "family": "Google"
       },
       "gemini-4-argon": {
-        "source": "official vendor model docs, verified 2026-10-17; see source_receipts",
+        "source": "official vendor model docs, verified 2026-11-10; see source_receipts",
         "context_window": 1048576,
+        "max_output": 65536,
+        "reasoning": true,
         "family": "Google"
       },
       "gemini-4-carbon": {
-        "source": "https://models.dev/catalog.json google/gemini-4-carbon, retrieved 2026-11-10",
+        "source": "official vendor model docs, verified 2026-11-10; see source_receipts",
         "context_window": 1048576,
-        "max_output": 32768,
+        "max_output": 65536,
         "reasoning": true,
         "family": "Google"
       },
@@ -4676,7 +4690,12 @@
       "https://developers.openai.com/api/docs/models/gpt-6-sol": "verified 2026-10-17: $2 in / $0.20 cached / $10 out / $2.50 cache write; gpt-6.1-sol $2 / $0.10 / $10 / $2.50 and gpt-6-luna $0.10 / $0.01 / $0.50 per the changelog",
       "https://developers.openai.com/api/docs/deprecations": "verified 2026-10-17: gpt-5.3-codex and gpt-5.1 move to gpt-6-sol and gpt-5.4-nano to gpt-6-luna, all shutting down 2027-04-01; the catalog has no lifecycle field, so the rows stay until shutdown",
       "https://ai.google.dev/gemini-api/docs/changelog": "verified 2026-10-17: gemini-4-argon GA 2026-10-13, gemini-3.8-flash GA 2026-09-02; gemini-3.7-flash (auto-routed to gemini-3.8-flash) and gemini-3.5-flash (auto-routed to gemini-3.6-flash) deprecated 2026-10-08 and kept only as selector aliases",
-      "https://ai.google.dev/gemini-api/docs/models": "verified 2026-10-17: gemini-4-argon and gemini-3.8-flash are stable; argon's 1M context is stated but no output ceiling is, so none is recorded",
+      "https://ai.google.dev/gemini-api/docs/models": "verified 2026-10-17: gemini-4-argon and gemini-3.8-flash are stable; argon's 1M context is stated; the output ceiling is recorded from its own model page (see the aistudio.google.com receipts, verified 2026-11-10)",
+      "https://aistudio.google.com/docs/models/gemini-4-carbon": "verified 2026-11-10: model code gemini-4-carbon, 1,048,576 context, 65,536 output by default (up to 1,048,576 with long decode), thinking levels low, medium and high, function calling, structured outputs, implicit caching only; thought signatures are not mentioned",
+      "https://aistudio.google.com/docs/models/gemini-4-argon": "verified 2026-11-10: model code gemini-4-argon, 1,048,576 context, 65,536 output by default (up to 1,048,576 with long decode), thinking levels low, medium and high",
+      "https://aistudio.google.com/docs/pricing": "verified 2026-11-10: gemini-4-carbon is $2 in / $10 out / $0.10 cached through 2026-11-30 and $4 / $20 / $0.20 from 2026-12-01; the catalog carries one undated price, so the row shows the current rate",
+      "https://platform.claude.com/docs/en/models/fable-5-2/overview": "verified 2026-11-10: claude-fable-5-2, 1M context, 128K output, adaptive thinking always on, $8 in / $40 out, text and image input",
+      "https://platform.claude.com/docs/en/build-with-claude/effort": "verified 2026-11-10: xhigh is its own effort level on Fable 5.2, Mythos 5.2, Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8, Opus 4.7, Sonnet 5.5, Sonnet 5 and Haiku 5.5; not every model that supports max supports xhigh",
       "https://docs.z.ai/guides/vlm/glm-5.3-flash": "verified 2026-10-17: model code glm-5.3-flash, 1M context, 128K output, thinking.type only supports enabled",
       "https://dev.meta.ai/docs/models.md": "verified 2026-10-17: muse-spark-1.3 is recommended for new work, muse-spark-1.2 is the previous version, muse-spark-1.3-contributor has no max effort, muse-wonder-1.0 is a preview; all 1,048,576 context",
       "https://dev.meta.ai/docs/pricing-rate-limits": "verified 2026-10-17: Muse Spark 1.3 and 1.2 $1.25 in / $0.15 cached / $4.25 out, contributor $0.10 / $0.002 / $0.20; Muse Wonder 1.0 $4 / $0.20 / $20; no long-context premium",

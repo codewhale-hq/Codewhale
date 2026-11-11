@@ -42,7 +42,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-11T00:13:26.183Z",
+  "generatedAt": "2026-11-11T02:54:47.829Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -355,7 +355,7 @@ export const FACTS: RepoFacts = {
       "id": "gemini-4-carbon",
       "provider": "Google",
       "contextWindow": 1048576,
-      "maxOutput": 32768,
+      "maxOutput": 65536,
       "reasoning": true,
       "addedAt": "2026-11-10"
     },
@@ -419,8 +419,8 @@ export const FACTS: RepoFacts = {
       "id": "gemini-4-argon",
       "provider": "Google",
       "contextWindow": 1048576,
-      "maxOutput": null,
-      "reasoning": false,
+      "maxOutput": 65536,
+      "reasoning": true,
       "addedAt": "2026-10-17"
     },
     {

@@ -1147,6 +1147,8 @@ mod tests {
         // 65,536 output (verified 2026-08-17, see
         // `known_context_window_for_model`).
         for model in [
+            "gemini-4-carbon",
+            "gemini-4-argon",
             "gemini-3.7-flash",
             "gemini-3.6-flash",
             "gemini-3.5-flash",
