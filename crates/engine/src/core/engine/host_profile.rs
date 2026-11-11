@@ -40,11 +40,61 @@ impl Engine {
         self.host_profile.is_acp() || self.turn_narrowing.is_acp()
     }
 
+    pub(super) async fn acp_turn_tool_build(
+        &mut self,
+        authority: &TurnAuthority,
+        route: &TurnRouteContext,
+        allowed: Option<Vec<String>>,
+        mcp_access: McpAccess,
+    ) -> TurnToolBuild {
+        if let Some(attachment) = self
+            .extension_host
+            .as_ref()
+            .filter(|_| self.config.features.enabled(Feature::ExtensionHost))
+        {
+            if attachment.selection_settled() {
+                attachment.sync_in_background();
+            } else {
+                attachment.sync_within(EXTENSION_FIRST_SYNC_WAIT).await;
+            }
+        }
+        let mcp = if self.config.features.enabled(Feature::Mcp) {
+            if mcp_access.may_connect() {
+                self.wait_for_mcp_boot().await;
+                let tools = self.mcp_tools().await;
+                let server_count = match self.mcp_pool.as_ref() {
+                    Some(pool) => pool.lock().await.connected_servers().len(),
+                    None => 0,
+                };
+                McpToolState::Live {
+                    tools,
+                    server_count,
+                }
+            } else {
+                self.passive_mcp_snapshot().await
+            }
+        } else {
+            McpToolState::Disabled
+        };
+        self.acp_tool_build_with_mcp(authority, route, allowed, mcp)
+    }
+
+    #[cfg(test)]
     pub(super) fn acp_tool_build(
         &self,
         authority: &TurnAuthority,
         route: &TurnRouteContext,
         allowed: Option<Vec<String>>,
+    ) -> TurnToolBuild {
+        self.acp_tool_build_with_mcp(authority, route, allowed, McpToolState::Disabled)
+    }
+
+    fn acp_tool_build_with_mcp(
+        &self,
+        authority: &TurnAuthority,
+        route: &TurnRouteContext,
+        allowed: Option<Vec<String>>,
+        mcp: McpToolState,
     ) -> TurnToolBuild {
         let mut context = self.build_tool_context_for_turn(authority, route);
         let requested = self
@@ -85,6 +135,13 @@ impl Engine {
             builder = builder.with_foreground_shell_tools();
         }
         let mut registry = builder.build(context);
+        let extension_host = self
+            .extension_host
+            .as_ref()
+            .filter(|_| self.config.features.enabled(Feature::ExtensionHost));
+        if let Some(attachment) = extension_host {
+            attachment.manager().note_native_names(registry.names());
+        }
         if let Some(overrides) = self
             .api_config
             .tools
@@ -95,15 +152,24 @@ impl Engine {
                 remove_acp_overridden_builtin(&mut registry, name);
             }
         }
+        let plugin_tool_names: HashSet<String> = extension_host
+            .map(|attachment| attachment.install_tools(&mut registry))
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut mcp_tools = mcp.tools().to_vec();
+        mcp_tools.sort_by(|a, b| a.name.cmp(&b.name));
+        let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|tool| tool.name.clone()).collect();
         let allowed = Some(
             registry
                 .names()
                 .into_iter()
-                .filter(|name| tool_catalog::tool_allowed(allowed.as_deref(), name))
                 .map(str::to_string)
+                .chain(mcp_tool_names.iter().cloned())
+                .filter(|name| tool_catalog::tool_allowed(allowed.as_deref(), name))
                 .collect(),
         );
-        let catalog = self.child_host.as_ref().map_or_else(
+        let mut catalog = self.child_host.as_ref().map_or_else(
             || registry.to_api_tools_with_cache(true),
             |child| {
                 child
@@ -111,6 +177,15 @@ impl Engine {
                     .tools_for_model(&registry, &child.authority.agent_type)
             },
         );
+        for tool in &mut catalog {
+            if plugin_tool_names.contains(&tool.name) {
+                tool.defer_loading = Some(false);
+            }
+        }
+        catalog.extend(mcp_tools.into_iter().map(|mut tool| {
+            tool.defer_loading = Some(false);
+            tool
+        }));
         let always_load = catalog.iter().map(|tool| tool.name.clone()).collect();
         TurnToolBuild {
             surface: ToolSurfacePolicy::new(
@@ -125,11 +200,11 @@ impl Engine {
                 self.config.max_tool_calls,
                 tool_catalog::ToolMode::Direct,
             ),
-            mcp_tool_names: Vec::new(),
-            mcp: McpToolState::Disabled,
+            mcp_tool_names,
+            mcp,
             subagent_runtime_model: None,
             mailbox: None,
-            plugin_tool_names: HashSet::new(),
+            plugin_tool_names,
         }
     }
 }

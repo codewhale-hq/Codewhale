@@ -13,6 +13,7 @@ use codewhale_engine::runtime_threads::{
 };
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_runtime::config::Config;
+use codewhale_runtime::features::Feature;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -1122,13 +1123,14 @@ fn validate_mcp_servers(params: &Value) -> std::result::Result<(), AcpError> {
         None => Ok(()),
         Some(Value::Array(servers)) if servers.is_empty() => Ok(()),
         Some(Value::Array(_)) => Err(AcpError::invalid_params(
-            "Client-supplied MCP servers are unsupported by Codewhale's ACP adapter. Use an empty mcpServers list, or configure MCP through codewhale app-server --http and the Runtime API. ACP v1 stdio MCP support is incomplete.",
+            "Client-supplied MCP servers are unsupported by Codewhale's ACP adapter. Use an empty mcpServers list; sessions use the MCP servers and plugins configured in Codewhale itself.",
         )),
         Some(_) => Err(AcpError::invalid_params("mcpServers must be an array")),
     }
 }
 
 fn initialize_result(client_protocol_version: Option<u64>, config: &Config) -> Value {
+    let features = config.features();
     json!({
         "protocolVersion": client_protocol_version
             .map(|version| version.min(ACP_PROTOCOL_VERSION))
@@ -1144,6 +1146,14 @@ fn initialize_result(client_protocol_version: Option<u64>, config: &Config) -> V
             "mcpCapabilities": {
                 "http": false,
                 "sse": false
+            },
+            "_meta": {
+                "codewhale": {
+                    "plugins": features.enabled(Feature::ExtensionHost)
+                        && codewhale_plugins::activation::extension_host_policy_enabled(),
+                    "configuredMcpServers": features.enabled(Feature::Mcp),
+                    "clientMcpServers": false
+                }
             },
             // ACP `SessionCapabilities` fields are objects, never booleans:
             // `{}` means "supported", absent/null means "not supported"
@@ -1847,6 +1857,36 @@ mod tests {
         let result = initialize_result(Some(1), &Config::default());
 
         assert_eq!(result["agentCapabilities"]["modelSelection"], true);
+    }
+
+    #[test]
+    fn initialize_advertises_configured_plugins_and_mcp_but_not_client_servers() {
+        let _policy = codewhale_plugins::activation::TestPolicyGuard::extension_host(true);
+        let mut config = Config::default();
+        config.set_feature("extension_host", true).unwrap();
+        config.set_feature("mcp", true).unwrap();
+        let result = initialize_result(Some(1), &config);
+        let meta = &result["agentCapabilities"]["_meta"]["codewhale"];
+
+        assert_eq!(meta["plugins"], true);
+        assert_eq!(meta["configuredMcpServers"], true);
+        assert_eq!(meta["clientMcpServers"], false);
+        assert_eq!(
+            result["agentCapabilities"]["mcpCapabilities"]["http"],
+            false
+        );
+
+        config.set_feature("extension_host", false).unwrap();
+        config.set_feature("mcp", false).unwrap();
+        let off = initialize_result(Some(1), &config);
+        assert_eq!(
+            off["agentCapabilities"]["_meta"]["codewhale"]["plugins"],
+            false
+        );
+        assert_eq!(
+            off["agentCapabilities"]["_meta"]["codewhale"]["configuredMcpServers"],
+            false
+        );
     }
 
     #[test]
