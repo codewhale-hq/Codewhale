@@ -48,6 +48,7 @@ def make_cell(root, name, task, genome, passed, price):
                "evaluation_id": digest(f"evaluation:{name}"), "artifact_id": artifact,
                "candidate_tree_hash": tree, "review_material_sha256": material,
                "review_material_bytes": 50, "review_complete": True,
+               "lineage": {},
                "status": "PASS" if passed else "FAIL"}
     write(evaluator / f"{candidate}-evaluation.json", receipt)
     if passed:
@@ -82,9 +83,13 @@ def make_cell(root, name, task, genome, passed, price):
     return {"task_id": task, "seed": "replicate_0", "run_dir": str(directory)}
 
 
-def invoke(plan_path, output_path):
-    return subprocess.run([sys.executable, str(SELECTOR), "--plan", str(plan_path),
-                           "--output", str(output_path)], cwd=ROOT,
+def invoke(plan_path, output_path, holdout=None, proposal=None):
+    command = [sys.executable, str(SELECTOR), "--plan", str(plan_path),
+               "--output", str(output_path)]
+    if holdout is not None:
+        command.extend(("--holdout-dir", str(holdout),
+                        "--promotion-output", str(proposal)))
+    return subprocess.run(command, cwd=ROOT,
                           capture_output=True, text=True, check=False)
 
 
@@ -165,7 +170,66 @@ def main():
         write(different_binary, changed)
         sixth = invoke(plan_path, output)
         assert sixth.returncode != 0 and "different native CLI binaries" in sixth.stderr
-        print(json.dumps({"status": "PASS", "checks": 6,
+        promotion_plan = {"schema_version": 1, "policies": [],
+                          "frozen_holdout_task": "accept-language",
+                          "model_turn_ceiling": 10,
+                          "promotion_criteria": {
+                              "selected_policy_must_differ_from_base": True,
+                              "required_dev_successes": 2,
+                              "required_new_task_holdout_success": True,
+                              "required_review_status": "COMPLETE",
+                              "required_full_cost_complete": True,
+                              "required_binary_identity_match": True,
+                              "result_scope": "proposal_only"}}
+        fixture = ROOT / "examples" / "experimental-evolution-smoke"
+        paths = ("task/README.md", "task/src/accept_language.py",
+                 "public_gate.py", "heldout_gate.py")
+        promotion_plan["holdout_fixture_sha256"] = {
+            path: hashlib.sha256((fixture / path).read_bytes()).hexdigest()
+            for path in paths}
+        for name, genome, outcomes in (("p", base, (True, False)),
+                                       ("q", evolved, (True, True))):
+            cells = [make_cell(root, f"{name}-{task}", task, genome, passed,
+                               (2, 3, 1) if passed else (2, 3))
+                     for task, passed in zip(("alpha", "beta"), outcomes)]
+            identifier = digest(json.dumps({key: genome[key] for key in GENES},
+                                           separators=(",", ":")))
+            promotion_plan["policies"].append({"policy_id": identifier,
+                                                "genome": genome, "cells": cells})
+        holdout = make_cell(root, "policy-holdout", "accept-language", evolved,
+                            True, (2, 3, 1))
+        holdout_dir = Path(holdout["run_dir"])
+        holdout_manifest = holdout_dir / "evaluator" / "codewhale-evolution-policy-holdout" \
+            / "manifest.json"
+        manifest_value = json.loads(holdout_manifest.read_text(encoding="utf-8"))
+        manifest_value["public_fixture_sha256"] = promotion_plan["holdout_fixture_sha256"]["task/README.md"]
+        manifest_value["hidden_evaluator_sha256"] = promotion_plan["holdout_fixture_sha256"]["heldout_gate.py"]
+        write(holdout_manifest, manifest_value)
+        holdout_meta = holdout_dir / "run.json"
+        meta_value = json.loads(holdout_meta.read_text(encoding="utf-8"))
+        source = root / "q-alpha" / "evaluator" / "codewhale-evolution-q-alpha" \
+            / "candidate_g0_1-evaluation.json"
+        meta_value["transfer_source_evaluation_id"] = json.loads(source.read_text())["evaluation_id"]
+        write(holdout_meta, meta_value)
+        write(plan_path, promotion_plan)
+        proposal_path = root / "proposal.json"
+        seventh = invoke(plan_path, output, holdout_dir, proposal_path)
+        assert seventh.returncode == 0, seventh.stderr
+        assert json.loads(proposal_path.read_text())["status"] == "QUALIFIED_FOR_REVIEW"
+        journal = holdout_dir / "workspace" / ".codewhale" / "workflow-runs.jsonl"
+        saved = json.loads(journal.read_text(encoding="utf-8"))
+        saved["run"]["result"]["review"] = None
+        saved["run"]["result"]["winner_id"] = "NONE"
+        write(journal, saved)
+        proposal_path.unlink()
+        eighth = invoke(plan_path, output, holdout_dir, proposal_path)
+        assert eighth.returncode == 0, eighth.stderr
+        assert json.loads(proposal_path.read_text())["status"] == "NOT_QUALIFIED"
+        meta_value["binary_sha256"] = digest("different-cli")
+        write(holdout_meta, meta_value)
+        ninth = invoke(plan_path, output, holdout_dir, proposal_path)
+        assert ninth.returncode != 0 and "binary differs" in ninth.stderr
+        print(json.dumps({"status": "PASS", "checks": 9,
                           "scope": "receipt-contract-fixture-only"}))
 
 

@@ -19,6 +19,10 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def file_hash(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def policy_id(genome):
     if set(genome) != set(GENES):
         raise ValueError("panel policy uses an unknown or missing gene")
@@ -246,15 +250,107 @@ def select(plan):
     return {**body, "selection_id": hashlib.sha256(encoded.encode("utf-8")).hexdigest()}
 
 
+def validate_holdout(plan, selection, directory):
+    expected = select(plan)
+    if selection != expected:
+        raise ValueError("DEV selection differs from frozen panel receipts")
+    selected_id = selection["selected_policy_id"]
+    if selected_id is None:
+        raise ValueError("DEV panel selected no policy for holdout")
+    selected = next(policy for policy in plan["policies"]
+                    if policy["policy_id"] == selected_id)
+    base_id = plan["policies"][0]["policy_id"]
+    if plan.get("frozen_holdout_task") != "accept-language":
+        raise ValueError("unrecognized frozen policy holdout task")
+    fixture = Path(__file__).resolve().parents[1] / "examples" / "experimental-evolution-smoke"
+    hashes = plan.get("holdout_fixture_sha256") or {}
+    required = ("task/README.md", "task/src/accept_language.py",
+                "public_gate.py", "heldout_gate.py")
+    if set(hashes) != set(required) or any(file_hash(fixture / path) != hashes[path]
+                                                for path in required):
+        raise ValueError("frozen holdout fixture content changed")
+    cell = {"task_id": plan["frozen_holdout_task"], "seed": "replicate_0",
+            "run_dir": str(directory)}
+    row = read_cell(cell, selected["genome"], selected_id)
+    run_meta = read_json(directory / "run.json")
+    evaluator = next((directory / "evaluator").glob("codewhale-evolution-*"))
+    manifest = read_json(evaluator / "manifest.json")
+    if row["binary_sha256"] != selection["binary_sha256"]:
+        raise ValueError("holdout native binary differs from DEV panel")
+    if row["budget_ceiling_model_turns"] != selection["equal_model_turn_ceiling"] \
+            or row["budget_ceiling_model_turns"] != plan["model_turn_ceiling"]:
+        raise ValueError("holdout model-turn ceiling differs from frozen DEV panel")
+    if (manifest["public_fixture_sha256"] != hashes["task/README.md"]
+            or manifest["hidden_evaluator_sha256"] != hashes["heldout_gate.py"]):
+        raise ValueError("holdout native oracle identity differs from frozen fixture")
+    route = (manifest["requested_provider"], manifest["requested_model"],
+             manifest["resolved_provider"], manifest["resolved_model"])
+    reference = selection["rows"][0]["task_identity"]
+    if route != tuple(reference[key] for key in ("requested_provider", "requested_model",
+                                                  "resolved_provider", "resolved_model")):
+        raise ValueError("holdout provider route differs from DEV panel")
+    dev_baselines = {item["task_identity"]["baseline_sha"] for item in selection["rows"]}
+    if manifest["baseline_sha"] in dev_baselines:
+        raise ValueError("holdout reused a DEV task baseline")
+    evaluation = read_json(next(evaluator.glob("*-evaluation.json")))
+    if evaluation.get("lineage") != {}:
+        raise ValueError("holdout imported code ancestry instead of only the policy")
+    selected_successes = [item for item in selection["rows"]
+                          if item["policy_id"] == selected_id and item["task_success"]]
+    source_id = run_meta.get("transfer_source_evaluation_id")
+    if not source_id or source_id not in {item["evaluation_id"] for item in selected_successes}:
+        raise ValueError("holdout lacks a selected DEV source evaluation identity")
+    criteria = plan.get("promotion_criteria") or {}
+    if criteria != {"selected_policy_must_differ_from_base": True,
+                    "required_dev_successes": 2,
+                    "required_new_task_holdout_success": True,
+                    "required_review_status": "COMPLETE",
+                    "required_full_cost_complete": True,
+                    "required_binary_identity_match": True,
+                    "result_scope": "proposal_only"}:
+        raise ValueError("promotion criteria differ from frozen plan")
+    dev_rows = [item for item in selection["rows"] if item["policy_id"] == selected_id]
+    reasons = []
+    if selected_id == base_id:
+        reasons.append("selected genome is the unchanged base policy")
+    if len(selected_successes) != criteria["required_dev_successes"]:
+        reasons.append("selected policy did not pass both DEV tasks")
+    if not all(item["full_cost"]["complete"] and item["full_cost"]["token_usage_complete"]
+               for item in dev_rows):
+        reasons.append("DEV cost or token liability is incomplete")
+    if not row["task_success"]:
+        reasons.append("frozen new-task holdout did not pass complete review and replay")
+    if not row["full_cost"]["complete"] or not row["full_cost"]["token_usage_complete"]:
+        reasons.append("holdout cost or token liability is incomplete")
+    proposal = {"schema_version": 1,
+                "status": "NOT_QUALIFIED" if reasons else "QUALIFIED_FOR_REVIEW",
+                "reasons": reasons,
+                "scope": "proposal_only",
+                "selected_policy_id": selected_id,
+                "rollback_policy_id": base_id,
+                "source_dev_evaluation_id": source_id,
+                "selection_id": selection["selection_id"],
+                "binary_sha256": row["binary_sha256"],
+                "holdout": row}
+    proposal["proposal_id"] = hashlib.sha256(json.dumps(proposal, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+    return proposal
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--holdout-dir", type=Path,
+                        help="Completed frozen new-task single arm, validated after DEV selection")
+    parser.add_argument("--promotion-output", type=Path)
     args = parser.parse_args()
+    if bool(args.holdout_dir) != bool(args.promotion_output):
+        parser.error("--holdout-dir and --promotion-output must be supplied together")
     plan = read_json(args.plan)
     result = select(plan)
-    args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n",
-                           encoding="utf-8")
+    encoded = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
+    args.output.write_text(encoded, encoding="utf-8")
     if result["selected_policy_id"]:
         genome = next(policy["genome"] for policy in plan["policies"]
                       if policy["policy_id"] == result["selected_policy_id"])
@@ -262,6 +358,15 @@ def main():
             json.dumps(genome, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: result[key] for key in ("selection_id", "selected_policy_id",
                                                "ranking")}, ensure_ascii=False))
+    if args.holdout_dir:
+        proposal = validate_holdout(plan, result, args.holdout_dir.resolve())
+        encoded = json.dumps(proposal, indent=2, ensure_ascii=False) + "\n"
+        if args.promotion_output.exists() and args.promotion_output.read_text(encoding="utf-8") != encoded:
+            raise ValueError("existing promotion proposal differs from current evidence")
+        args.promotion_output.write_text(encoded, encoding="utf-8")
+        print(json.dumps({"proposal_id": proposal["proposal_id"],
+                          "status": proposal["status"], "reasons": proposal["reasons"]},
+                         ensure_ascii=False))
 
 
 if __name__ == "__main__":
