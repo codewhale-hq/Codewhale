@@ -169,7 +169,7 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
             scope={pickText(PROJECT_COPY.mergedPageScope, locale)}
             link={<Link href="#milestones" className="btn btn-secondary">{pickText(PROJECT_COPY.goalsLink, locale)}<Icon name="arrow-right" className="icon icon-flip" /></Link>}
           >
-            {mergedCount ? <p className="page-meta tabular" title={countAsOf} aria-label={countAsOf ? `${mergedCount} ${countAsOf}` : undefined}>{mergedCount}</p> : null}
+            {mergedCount ? <p className="page-meta tabular" title={countAsOf}>{mergedCount}{countAsOf ? <span className="sr-only"> {countAsOf}</span> : null}</p> : null}
             <MergedList items={pulse.merged} locale={locale} />
           </Section>
         ) : null}
@@ -197,6 +197,7 @@ export default async function ContributePage({ params }: { params: Promise<{ loc
                       <span className="tide-progress" title={countAsOf}>
                         <span className="tide-track" aria-hidden="true"><span style={{ inlineSize: `${Math.round((progress.closed / total) * 100)}%` }} /></span>
                         <span className="tabular">{fill(pickText(PROJECT_COPY.milestoneProgress, locale), { closed: progress.closed, total })}</span>
+                        {countAsOf ? <span className="sr-only">, {countAsOf}</span> : null}
                       </span>
                     ) : null}
                   </dd>

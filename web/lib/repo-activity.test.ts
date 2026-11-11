@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authorsBetween, creditedPairs, releaseCredits } from "../scripts/repo-activity-lib.mjs";
 import ContributePage from "../app/[locale]/contribute/page";
 import HomePage from "../app/[locale]/page";
+import { readAsOf } from "../components/project-pulse";
 import { GET as factsRoute } from "../app/api/facts/route";
 import { ALL_LOCALES } from "./i18n/config";
 import { getContribute } from "./i18n/dictionaries";
@@ -78,6 +79,20 @@ describe("pages with every GitHub call failing", () => {
     const person = view?.people[0];
     expect(html).toContain(`alt="${person?.login}"`);
     expect(html).toContain(view!.pulls[0].url);
+  });
+
+  it("announces the read date of the count and the milestone progress to assistive technology", async () => {
+    const html = await render(ContributePage as Page, "en");
+    const asOf = readAsOf(String(snapshot.readAt), "en");
+    expect(asOf).toBeTruthy();
+    expect(html).toMatch(new RegExp(`<p class="page-meta tabular" title="${asOf}">[^<]+<span class="sr-only"> ${asOf}</span></p>`));
+    const progress = html.match(/<span class="tide-progress"[\s\S]*?<\/dd>/g) ?? [];
+    expect(progress.length).toBeGreaterThan(0);
+    for (const block of progress) {
+      expect(block).toContain(`title="${asOf}"`);
+      expect(block).toContain(`<span class="sr-only">, ${asOf}</span></span></dd>`);
+    }
+    expect(html).not.toMatch(/<p[^>]*aria-label=/);
   });
 });
 

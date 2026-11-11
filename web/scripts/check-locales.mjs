@@ -67,7 +67,6 @@ function extractKeys(source) {
 
 const PLURAL_CATEGORIES = ["zero", "one", "two", "few", "many", "other"];
 
-/** Keys whose value is an object of plural categories (`key: {` then `one: "…"` lines). */
 function extractPluralBlocks(source) {
   const blocks = new Map();
   let key = null;

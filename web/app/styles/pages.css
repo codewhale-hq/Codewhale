@@ -128,13 +128,6 @@
 .feed-column-head h2 { font-size: var(--text-heading); }
 .feed-items > li + li { border-top: 1px solid var(--line); }
 .feed-empty { padding: var(--space-4); }
-.feed-card { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); }
-.feed-card-meta,
-.feed-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); color: var(--muted); font-size: var(--text-caption); }
-.feed-card-time,
-.feed-card-author { margin-inline-start: auto; }
-.feed-card-title { font-size: var(--text-ui); font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
-.feed-card-title a:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 0.2em; }
 .feed-action { border: 1px solid var(--line); border-radius: var(--radius-surface); background: color-mix(in srgb, var(--panel) 72%, transparent); }
 
 /* Account and utility pages: one centred column. */
