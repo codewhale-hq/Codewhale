@@ -179,6 +179,9 @@ def main():
                 if "run" in json.loads(line)]
         result = runs[-1].get("result") or {}
         duplicate = run({"resumeFrom": str(checkpoint)}, "duplicate-resume")
+        third_receipts = [json.loads(path.read_text(encoding="utf-8"))
+                          for path in sorted(root.glob("candidate_g2_*-evaluation.json"))]
+        inherited_genomes = [item.get("shadow_policy") for item in third_receipts]
         receipt = {"schema_version": 1, "first_exit": first.returncode,
                    "resumed_exit": second.returncode, "duplicate_exit": duplicate.returncode,
                    "checkpoint": str(checkpoint), "checkpoint_id": saved.get("checkpoint_id"),
@@ -186,6 +189,7 @@ def main():
                    "negative_rejections": negative_rejections,
                    "first_generation_evaluations": len(list(root.glob("candidate_g[01]_*-evaluation.json"))),
                    "third_generation_evaluations": len(list(root.glob("candidate_g2_*-evaluation.json"))),
+                   "third_generation_genomes": inherited_genomes,
                    "resume_requests": after_resume,
                    "winner_id": result.get("winner_id"),
                    "review_status": (result.get("review") or {}).get("review_status"),
@@ -195,6 +199,10 @@ def main():
                            and duplicate.returncode != 0
                            and receipt["first_generation_evaluations"] == 4
                            and receipt["third_generation_evaluations"] == 2
+                           and all(genome.get("max_repair_rounds") == 2
+                                   and genome.get("extra_verification") is True
+                                   for genome in inherited_genomes)
+                           and receipt["model_turns_reserved"] == saved["model_turns_reserved"]
                            and all(negative_rejections.values())
                            and all(item["candidate"] in ("candidate_g2_1", "candidate_g2_2", "NONE")
                                    for item in after_resume)

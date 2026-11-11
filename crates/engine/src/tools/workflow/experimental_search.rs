@@ -465,12 +465,8 @@ impl ExperimentalSearch {
     ) -> Result<Self, String> {
         let repo = PathBuf::from(git_text(workspace, &["rev-parse", "--show-toplevel"])?);
         let repo = repo.canonicalize().map_err(|error| error.to_string())?;
-        if !git_text(
-            &repo,
-            &["status", "--porcelain", "--untracked-files=normal"],
-        )?
-        .is_empty()
-        {
+        let status = git_text(&repo, &["status", "--porcelain", "--untracked-files=normal"])?;
+        if status.lines().any(|line| line != "?? .codewhale/") {
             return Err("experimental search requires a clean parent checkout".to_string());
         }
         let source = manifest_path
@@ -919,7 +915,7 @@ impl ExperimentalSearch {
             if !matches!(receipt["status"].as_str(), Some("PASS" | "FAIL"))
                 || item["receipt"]["evaluation_id"] != receipt["evaluation_id"]
                 || item["receipt"]["receipt"] != receipt["receipt_path"]
-                || item["status"] != receipt["status"]
+                || item["receipt"]["status"] != receipt["status"]
                 || item["policy"] != receipt["shadow_policy"]
                 || receipt["baseline_sha"] != fresh.baseline_sha
                 || receipt["baseline_id"] != store.baseline_id()
