@@ -14068,6 +14068,13 @@ fn merge_project_config_with_approval_baseline(
         return Err(project_config_unusable(&path, "not a TOML table"));
     };
 
+    if table.contains_key("tool_launcher") {
+        return Err(project_config_unusable(
+            &path,
+            "tool_launcher is read only from the managed configuration",
+        ));
+    }
+
     // #417: dangerous keys are denied at project scope. A malicious
     // `<workspace>/.deepseek/config.toml` could otherwise:
     // * `api_key` / `base_url` / `provider` — exfiltrate prompts to a
@@ -19268,6 +19275,21 @@ max_subagents = -3
         assert!(message.contains("--no-project-config"), "{message}");
         assert!(!message.contains("this is not valid"), "{message}");
         assert_eq!(config.provider.as_deref(), Some("codewhale"));
+    }
+
+    #[test]
+    fn project_overlay_refuses_a_tool_launcher() {
+        let tmp = workspace_with_project_config("tool_launcher = [\"/usr/bin/sudo\", \"-n\"]\n");
+        let mut config = Config::default();
+        let error = merge_project_config_with_approval_baseline(&mut config, tmp.path(), None)
+            .expect_err("a project tool_launcher must stop the launch");
+        assert!(
+            error
+                .to_string()
+                .contains("read only from the managed configuration"),
+            "{error}"
+        );
+        assert_eq!(config.tool_launcher, None);
     }
 
     #[test]

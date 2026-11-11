@@ -12327,3 +12327,54 @@ fn tool_launcher_is_read_from_a_sealed_managed_file() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+fn tool_launcher_is_refused_from_a_managed_file_the_user_config_names() -> Result<()> {
+    struct Sealed;
+    impl Drop for Sealed {
+        fn drop(&mut self) {
+            TEST_TREAT_MANAGED_FILE_AS_SEALED.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let _managed = EnvVarGuard::remove("CODEWHALE_MANAGED_CONFIG_PATH");
+    let _legacy_managed = EnvVarGuard::remove("DEEPSEEK_MANAGED_CONFIG_PATH");
+    let managed_path = temp_root.path().join("elsewhere.toml");
+    fs::write(
+        &managed_path,
+        "sandbox_mode = \"workspace-write\"\ntool_launcher = [\"/usr/bin/sudo\", \"-n\"]\n",
+    )?;
+    let config_path = temp_root.path().join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "managed_config_path = {}\n",
+            toml::Value::String(managed_path.display().to_string())
+        ),
+    )?;
+    TEST_TREAT_MANAGED_FILE_AS_SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _sealed = Sealed;
+    let error = Config::load(Some(config_path.clone()), None).expect_err("refused");
+    assert!(
+        format!("{error:#}")
+            .contains("not CODEWHALE_MANAGED_CONFIG_PATH or the default managed path"),
+        "{error:#}"
+    );
+
+    let _named = EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", &managed_path);
+    fs::write(
+        &managed_path,
+        "tool_launcher = [\"/usr/bin/sudo\", \"-n\"]\n",
+    )?;
+    fs::write(&config_path, "sandbox_mode = \"workspace-write\"\n")?;
+    let error =
+        Config::load(Some(config_path), None).expect_err("user sandbox_mode does not count");
+    assert!(
+        format!("{error:#}").contains("needs `sandbox_mode"),
+        "{error:#}"
+    );
+    Ok(())
+}

@@ -10791,9 +10791,9 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     if managed.network.is_some() {
         merged.network_layer_is_managed = true;
     }
-    if merged.tool_launcher.is_some()
+    if managed.tool_launcher.is_some()
         && !matches!(
-            merged.sandbox_mode.as_deref(),
+            managed.sandbox_mode.as_deref(),
             Some("workspace-write" | "read-only")
         )
     {
@@ -10874,6 +10874,12 @@ fn managed_tool_launcher(path: &Path) -> Result<Option<Vec<String>>> {
                 codewhale_config::quote_os_path(path)
             )
         })?;
+    if !managed_path_is_named_by_host(path) {
+        anyhow::bail!(
+            "`tool_launcher` in {} is not accepted: that file is not CODEWHALE_MANAGED_CONFIG_PATH or the default managed path, and a launcher is read only from one of those",
+            codewhale_config::quote_os_path(path)
+        );
+    }
     if managed_file_is_replaceable(path) {
         anyhow::bail!(
             "`tool_launcher` in {} is not accepted: the Engine's own user can change that file or its directory, so it is not a managed configuration",
@@ -10881,6 +10887,17 @@ fn managed_tool_launcher(path: &Path) -> Result<Option<Vec<String>>> {
         );
     }
     Ok(Some(argv))
+}
+
+fn managed_path_is_named_by_host(path: &Path) -> bool {
+    let from_env = std::env::var("CODEWHALE_MANAGED_CONFIG_PATH")
+        .or_else(|_| std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH"))
+        .ok()
+        .map(|value| expand_path(&value));
+    from_env
+        .into_iter()
+        .chain(default_managed_config_path())
+        .any(|named| named == path)
 }
 
 #[cfg(test)]

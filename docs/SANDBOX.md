@@ -140,11 +140,21 @@ other user, with no-new-privileges, inside the same mounts, masks and network
 namespace a local command gets. `--die-with-parent` stays, so a cancel or
 timeout that kills the launcher ends the whole sandbox.
 
-The key is read only from the managed configuration
-(`CODEWHALE_MANAGED_CONFIG_PATH`, or the default managed path), only on Linux,
-and only when neither that file nor any directory above it can be changed by
-the Engine's own user. Anywhere else (a user `config.toml`, a profile, a
-project config) it is a load error. Without it, nothing on this page changes.
+The key is read only from the managed configuration file named by
+`CODEWHALE_MANAGED_CONFIG_PATH`, or from the default managed path, only on
+Linux, and only when neither that file nor any directory above it can be
+changed by the Engine's own user. A managed file at any other path (for
+example one a user config points at through `managed_config_path`) is refused.
+In a user `config.toml`, a profile or a project config the key is a load
+error. The managed file must also set `sandbox_mode` itself; a sandboxed mode
+from a user config does not count. Without the key, nothing on this page
+changes.
+
+A host that relies on the launcher should set `CODEWHALE_MANAGED_CONFIG_PATH`
+for the Engine's service and check `sandbox.tool_launcher` in
+`GET /v1/runtime/info`: without the variable, a user config can point
+`managed_config_path` at a missing file, and the Engine then starts with no
+launcher.
 
 With a launcher configured:
 
