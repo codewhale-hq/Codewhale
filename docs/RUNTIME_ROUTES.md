@@ -208,6 +208,7 @@ registration index.
 | POST | `/v1/threads/{id}/jobs/{job_id}/resize` |
 | POST | `/v1/threads/{id}/jobs/{job_id}/stdin` |
 | POST | `/v1/threads/{id}/members` |
+| GET | `/v1/threads/{id}/members/operations/{operation_key}` |
 | GET | `/v1/threads/{id}/notices` |
 | DELETE | `/v1/threads/{id}/notices/{notice_id}` |
 | POST | `/v1/threads/{id}/notifications/prepare` |
@@ -259,4 +260,4 @@ registration index.
 | GET / POST | `/v1/worktrees` |
 | POST | `/v1/worktrees/remove` |
 
-The source contains 239 distinct literal paths in this table.
+The source contains 240 distinct literal paths in this table.

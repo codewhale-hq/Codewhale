@@ -21,6 +21,8 @@ mod control_socket_selection;
 #[cfg(unix)]
 mod external_agent_options;
 mod headless_catalog;
+#[cfg(any(unix, windows))]
+mod member_operations;
 #[cfg(unix)]
 mod owner_bootstrap;
 mod profile_constitution;
