@@ -357,20 +357,7 @@ pub fn list_models(
             route_config
                 .scope_to_provider_identity(&identity)
                 .map_err(anyhow::Error::msg)?;
-            let mut models = crate::provider_lake::configured_catalog_models_for_route(
-                &route_config,
-                identity.provider,
-                identity.key.as_str(),
-                &route_config.active_route_base_url(),
-            );
-            if identity.provider != ProviderKind::OpenaiCodex {
-                let default_model = route_config.default_model();
-                if !default_model.is_empty() && !default_model.eq_ignore_ascii_case("auto") {
-                    models.push(default_model);
-                }
-                models.sort();
-                models.dedup();
-            }
+            let models = crate::provider_lake::listed_models_for_route(&route_config, &identity);
             catalogs.push((route, models));
         }
     }
