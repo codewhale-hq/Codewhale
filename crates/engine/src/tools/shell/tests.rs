@@ -6132,3 +6132,64 @@ fn a_tool_launcher_clamps_a_danger_full_access_escalation() {
         "{error:#}"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn every_model_run_shell_command_carries_the_agent_project() {
+    let workspace = tempdir().expect("workspace");
+    let project = workspace.path().to_string_lossy().into_owned();
+    let command = "printf '%s' \"${CODEWHALE_AGENT_PROJECT-unset}\"";
+    let mut sandboxed = ToolContext::new(workspace.path());
+    sandboxed.auto_approve = true;
+    let mut full_access = ToolContext::new(workspace.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
+    full_access.auto_approve = true;
+    for context in [&sandboxed, &full_access] {
+        for tool in [BashTool::new("exec_shell"), BashTool::new("Bash")] {
+            let result = tool
+                .execute(json!({ "command": command }), context)
+                .await
+                .expect("shell runs");
+            assert_eq!(result.content.trim(), project, "{result:?}");
+        }
+        let result = LowercaseBashTool
+            .execute(json!({ "command": command }), context)
+            .await
+            .expect("bash runs");
+        assert_eq!(result.content.trim(), project, "{result:?}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn persistent_terminal_commands_carry_the_agent_project() {
+    use crate::tools::terminal_session::{TerminalResetTool, TerminalRunTool, TerminalSendTool};
+    let workspace = tempdir().expect("workspace");
+    let marked = format!("MARK={}", workspace.path().display());
+    let mut context = ToolContext::new(workspace.path())
+        .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
+    context.auto_approve = true;
+    let session = format!("agent-mark-{}", uuid::Uuid::new_v4().simple());
+    let print = "printf 'MARK=%s\\n' \"${CODEWHALE_AGENT_PROJECT-unset}\"";
+
+    let run = TerminalRunTool
+        .execute(
+            json!({ "command": print, "session": session, "timeout_secs": 30 }),
+            &context,
+        )
+        .await
+        .expect("terminal/run");
+    assert!(run.content.contains(&marked), "{}", run.content);
+
+    let sent = TerminalSendTool
+        .execute(
+            json!({ "session": session, "text": format!("{print}\n"), "wait_ms": 2000 }),
+            &context,
+        )
+        .await
+        .expect("terminal/send");
+    assert!(sent.content.contains(&marked), "{}", sent.content);
+    let _ = TerminalResetTool
+        .execute(json!({ "session": session }), &context)
+        .await;
+}

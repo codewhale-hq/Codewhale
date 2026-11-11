@@ -192,12 +192,14 @@ pub struct PythonRuntime {
     broken: Option<String>,
 }
 
+pub const AGENT_PROJECT_ENV: &str = "CODEWHALE_AGENT_PROJECT";
+
 impl PythonRuntime {
     /// Spawn a REPL with no `context` variable and no LLM helpers wired up.
     /// Used by the agent loop for inline `repl` blocks the model emits in
     /// regular conversation.
-    pub async fn new() -> Result<Self, String> {
-        Self::spawn_inner(None, Some(ROUND_TIMEOUT)).await
+    pub async fn new(project: &Path) -> Result<Self, String> {
+        Self::spawn_inner(None, project, Some(ROUND_TIMEOUT)).await
     }
 
     /// Compatibility shim — older RLM code path used to pass a state file.
@@ -217,12 +219,13 @@ impl PythonRuntime {
 
     /// Spawn a REPL with the long input preloaded from a file. Used by the
     /// RLM turn loop.
-    pub async fn spawn_with_context(context_path: &Path) -> Result<Self, String> {
-        Self::spawn_inner(Some(context_path), None).await
+    pub async fn spawn_with_context(context_path: &Path, project: &Path) -> Result<Self, String> {
+        Self::spawn_inner(Some(context_path), project, None).await
     }
 
     async fn spawn_inner(
         context_path: Option<&Path>,
+        project: &Path,
         round_timeout: Option<Duration>,
     ) -> Result<Self, String> {
         let session_id = Uuid::new_v4().simple().to_string();
@@ -241,14 +244,16 @@ impl PythonRuntime {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let context_env = context_path
-            .map(|path| {
-                vec![(
-                    OsString::from("RLM_CONTEXT_FILE"),
-                    path.as_os_str().to_os_string(),
-                )]
-            })
-            .unwrap_or_default();
+        let mut context_env = vec![(
+            OsString::from(AGENT_PROJECT_ENV),
+            project.as_os_str().to_os_string(),
+        )];
+        if let Some(path) = context_path {
+            context_env.push((
+                OsString::from("RLM_CONTEXT_FILE"),
+                path.as_os_str().to_os_string(),
+            ));
+        }
         child_env::apply_to_tokio_command(&mut cmd, context_env);
 
         let mut child = cmd
@@ -1247,8 +1252,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_command_run_from_the_kernel_carries_the_agent_project() {
+        let project = std::env::temp_dir().join(format!("agent-project-{}", Uuid::new_v4()));
+        let mut rt = PythonRuntime::new(&project).await.expect("spawn");
+        let round = rt
+            .execute(
+                "import subprocess, sys\n\
+                 out = subprocess.run([sys.executable, '-c', \
+                 'import os; print(\"MARK=\" + os.environ.get(\"CODEWHALE_AGENT_PROJECT\", \"unset\"))'], \
+                 capture_output=True, text=True).stdout\n\
+                 print(out)",
+            )
+            .await
+            .expect("execute");
+        assert!(
+            round
+                .stdout
+                .contains(&format!("MARK={}", project.display())),
+            "{}",
+            round.stdout
+        );
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn spawns_and_executes_simple_print() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt.execute("print('hello world')").await.expect("execute");
         assert!(round.stdout.contains("hello world"));
         assert!(!round.has_error);
@@ -1259,7 +1290,9 @@ mod tests {
 
     #[tokio::test]
     async fn non_utf8_stdout_decodes_lossy_and_runtime_survives() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .execute(
                 "import sys\n\
@@ -1277,7 +1310,9 @@ mod tests {
 
     #[tokio::test]
     async fn variables_persist_across_rounds() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         rt.execute("x = [1, 2, 3]").await.expect("r1");
         rt.execute("x.append(99)").await.expect("r2");
         let round = rt.execute("print(x)").await.expect("r3");
@@ -1287,7 +1322,9 @@ mod tests {
 
     #[tokio::test]
     async fn imports_persist_across_rounds() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         rt.execute("import math").await.expect("r1");
         let round = rt.execute("print(math.pi)").await.expect("r2");
         assert!(round.stdout.contains("3.14"));
@@ -1297,7 +1334,7 @@ mod tests {
     #[tokio::test]
     async fn context_loads_from_file() {
         let path = write_temp_context("the quick brown fox");
-        let mut rt = PythonRuntime::spawn_with_context(&path)
+        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1312,7 +1349,7 @@ mod tests {
     #[tokio::test]
     async fn context_aliases_keep_common_content_name_bounded() {
         let path = write_temp_context("aleph-style");
-        let mut rt = PythonRuntime::spawn_with_context(&path)
+        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1325,7 +1362,9 @@ mod tests {
 
     #[tokio::test]
     async fn replacing_context_keeps_kernel_variables_and_refreshes_helpers() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         rt.execute("remembered = {'answer': 42}")
             .await
             .expect("seed persistent variable");
@@ -1351,7 +1390,7 @@ mod tests {
     #[tokio::test]
     async fn context_chunk_helpers_report_full_coverage() {
         let path = write_temp_context("abcdefghijklmnopqrstuvwxyz");
-        let mut rt = PythonRuntime::spawn_with_context(&path)
+        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1369,7 +1408,7 @@ mod tests {
     #[tokio::test]
     async fn bounded_input_helpers_work() {
         let path = write_temp_context("alpha\nbeta needle\ngamma needle\nomega");
-        let mut rt = PythonRuntime::spawn_with_context(&path)
+        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1394,7 +1433,7 @@ mod tests {
     #[tokio::test]
     async fn new_chunk_helper_reports_full_coverage() {
         let path = write_temp_context("abcdefghijklmnopqrstuvwxyz");
-        let mut rt = PythonRuntime::spawn_with_context(&path)
+        let mut rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
             .await
             .expect("spawn");
         let round = rt
@@ -1411,7 +1450,9 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_helper_is_captured_directly() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .execute("finalize('computed answer', confidence='high')")
             .await
@@ -1430,7 +1471,9 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_preserves_json_values_for_handles() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .execute("finalize({'answer': 42, 'items': ['a', 'b']})")
             .await
@@ -1450,7 +1493,9 @@ mod tests {
     #[tokio::test]
     async fn sub_query_accepts_timeout_keyword_for_agent_guesses() {
         let bridge = StubBridge::new();
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .run(
                 "answer = sub_query('summarize', timeout_secs=2)\nprint(answer)",
@@ -1471,7 +1516,7 @@ mod tests {
     #[tokio::test]
     async fn rlm_context_runtime_has_no_fixed_round_timeout() {
         let path = write_temp_context("long input");
-        let rt = PythonRuntime::spawn_with_context(&path)
+        let rt = PythonRuntime::spawn_with_context(&path, &std::env::temp_dir())
             .await
             .expect("spawn");
         assert!(
@@ -1483,7 +1528,9 @@ mod tests {
 
     #[tokio::test]
     async fn timed_out_round_kills_the_interpreter_and_refuses_later_rounds() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         rt.round_timeout = Some(Duration::from_millis(300));
         let error = rt
             .execute("import time\ntime.sleep(30)\nprint('late output')")
@@ -1509,7 +1556,9 @@ mod tests {
 
     #[tokio::test]
     async fn another_rounds_done_sentinel_does_not_end_this_round() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .execute("print(_DONE + '999')\nprint('still this round')")
             .await
@@ -1527,14 +1576,18 @@ mod tests {
 
     #[tokio::test]
     async fn inline_runtime_keeps_bounded_round_timeout() {
-        let rt = PythonRuntime::new().await.expect("spawn");
+        let rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         assert_eq!(rt.round_timeout(), Some(ROUND_TIMEOUT));
         rt.shutdown().await;
     }
 
     #[tokio::test]
     async fn legacy_final_is_captured() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .execute("FINAL('the answer is 42')")
             .await
@@ -1545,7 +1598,9 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_final_var_is_captured() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         rt.execute("answer = 'computed'").await.expect("r1");
         let round = rt.execute("FINAL_VAR('answer')").await.expect("r2");
         assert_eq!(round.final_value.as_deref(), Some("computed"));
@@ -1554,7 +1609,9 @@ mod tests {
 
     #[tokio::test]
     async fn errors_are_reported_without_killing_runtime() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let r1 = rt.execute("raise ValueError('boom')").await.expect("r1");
         assert!(r1.has_error);
         assert!(r1.full_stdout.contains("boom") || r1.stdout.contains("boom"));
@@ -1569,7 +1626,9 @@ mod tests {
         let bridge = StubBridge::new();
         let calls = Arc::clone(&bridge.calls);
 
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .run("print(llm_query('hello'))", Some(&bridge))
             .await
@@ -1624,7 +1683,9 @@ mod tests {
     /// set, so the calling code never saw the text.
     #[tokio::test]
     async fn rlm_query_keeps_partial_answer_from_an_exhausted_child() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .run(
                 "print(rlm_query('go'))\nfor r in rlm_query_batched(['a', 'b'], dependency_mode='independent'):\n    print(r)",
@@ -1649,7 +1710,9 @@ mod tests {
         let bridge = StubBridge::new();
         let calls = Arc::clone(&bridge.calls);
 
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .run("print(sub_query('hello from sub'))", Some(&bridge))
             .await
@@ -1674,7 +1737,9 @@ mod tests {
     #[tokio::test]
     async fn rpc_dispatcher_round_trips_batch() {
         let bridge = StubBridge::new();
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .run(
                 "outs = llm_query_batched(['a','b','c'], dependency_mode='independent', safety_note='same independent classification')\n\
@@ -1693,7 +1758,9 @@ mod tests {
     #[tokio::test]
     async fn batched_helpers_require_independence_declaration() {
         let bridge = StubBridge::new();
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .run(
                 "outs = sub_query_batch('summarize', [{'text': 'a'}, {'text': 'b'}])\n\
@@ -1715,7 +1782,9 @@ mod tests {
     #[tokio::test]
     async fn dependent_batch_mode_points_to_sequence_helper() {
         let bridge = StubBridge::new();
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .run(
                 "outs = llm_query_batched(['migrate A', 'migrate B'], dependency_mode='sequential')\n\
@@ -1739,7 +1808,9 @@ mod tests {
         let bridge = StubBridge::new();
         let calls = Arc::clone(&bridge.calls);
 
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt
             .run(
                 "outs = sub_query_sequence('process this step', [{'text': 'A'}, {'text': 'B'}])\n\
@@ -1766,7 +1837,9 @@ mod tests {
 
     #[tokio::test]
     async fn no_dispatcher_returns_unavailable_sentinel() {
-        let mut rt = PythonRuntime::new().await.expect("spawn");
+        let mut rt = PythonRuntime::new(&std::env::temp_dir())
+            .await
+            .expect("spawn");
         let round = rt.execute("print(llm_query('hi'))").await.expect("execute");
         assert!(
             round.stdout.contains("[llm_query error:") || round.stdout.contains("no LLM bridge"),

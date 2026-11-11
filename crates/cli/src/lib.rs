@@ -234,10 +234,10 @@ enum Commands {
     #[command(about = "Install a plugin bundle without trusting or enabling it")]
     Install(TuiPassthroughArgs),
     #[command(
-        about = "Inspect or restage reviewed plugin bundles",
+        about = "Inspect, review, trust, enable, disable or revoke plugin bundles",
         alias = "plugin",
         override_usage = "codewhale plugins <COMMAND>",
-        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot"
+        after_help = "Commands:\n  status [NAME] [--json]  Inspect plugin status and diagnostics\n  list [NAME] [--json]    Alias of status\n  restage <NAME> [--json]  Restore an eligible reviewed plugin snapshot\n  trust <NAME> [--json]  Show the capability review; in a terminal, then ask\n  trust <NAME> --review-token T [--yes] [--json]  Trust exactly the content the bundle review token names\n  enable <NAME> [--json]  Enable a trusted plugin\n  disable <NAME> [--json]  Disable a plugin, keeping its trust\n  revoke <NAME> [--json]  Revoke trust\n\nThe bundle review token ties trust to exact content; it does not show that anyone read the review,\nand it is not the host-service review token. A --yes trust is recorded as the command line. When\nCODEWHALE_AGENT_PROJECT marks the process, as it does every command the agent runs, trust and enable\nare the agent's, for that project only; that mark is a label the agent could remove in Full Access."
     )]
     Plugins(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.

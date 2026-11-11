@@ -34,6 +34,27 @@ Computer Use 通过官方插件目录安装为普通用户级插件，独立于 
 安装后须审查并启用。Mac 原生助手单独安装，负责系统权限设置和电脑控制指示器。
 详见 [Computer Use 指南](https://github.com/codewhale-hq/codewhale-cu-plugin)。
 
+在 shell 中也可以审查和更改插件状态：`codew plugins trust <name> [--json]` 显示与
+`/plugin trust` 相同的审查和插件包审查令牌，不做任何更改，在终端中随后询问一次是否信任；
+`codew plugins trust <name> --review-token <token> --yes` 仅在该令牌仍与已安装的内容和
+能力集合一致时才信任。插件包审查令牌是 `<content-hash>.<capability-hash>`，把信任绑定到
+确切的内容，但不能证明有人读过审查，也不是宿主服务审查令牌。
+`codew plugins enable|disable|revoke <name> [--json]` 与斜杠命令做同样的更改，信任不会
+启用插件包。
+
+每次信任都会记录批准者，`plugins status` 会显示。agent 运行的每条命令（shell 命令、持久终端、
+验证与测试运行、Python 内核里运行的代码、它用 `start_mcp_server` 启动的 MCP 服务器）都带有 agent 标记
+`CODEWHALE_AGENT_PROJECT`，值为会话所在项目，与沙箱和权限模式无关；钩子、配置文件中的 MCP
+服务器和终端应用里的 `/plugin trust` 不带标记。带有标记时，信任和
+`enable` 都记为该 agent，仅限该项目，即使提示是通过终端回答的也一样，绝不记为本人；agent
+只能信任它从该项目内的文件夹用 `codewhale install` 安装的插件（依据 `.installed-from` 记录，
+它说明文件从哪里来，而不是谁编写的），否则拒绝并交给本人。没有标记时，`--yes` 记为命令行，
+不授予任何宿主服务；在本人终端里回答提示记为本人。agent 运行这两个命令的 shell 命令和其他
+shell 命令一样经过会话审批：Ask 询问本人，Auto-Review 由审查模型判断，Full Access 直接运行，
+所以 Full Access 下的 agent 可以为它自己的项目信任并启用它编写的插件。这个标记只是标签而
+不是锁：在 Full Access 下 agent 可以把它去掉。在适用操作系统沙箱的地方，
+插件状态是只读的，沙箱内的信任会在写入时失败。`disable` 和 `revoke` 从不需要本人批准。
+
 用户级插件优先于工作区级插件。符号链接形式的根目录、清单、组件路径和
 嵌套组件文件一律失败关闭。历史内置快照和回执保留，供旧二进制使用；
 当前 Engine 不再创建或发现内置 Computer Use 副本。

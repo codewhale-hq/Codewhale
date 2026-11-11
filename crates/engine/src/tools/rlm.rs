@@ -423,7 +423,7 @@ impl RlmTool {
             let context_path = tempfile::TempPath::try_from_path(context_path).map_err(|e| {
                 ToolError::execution_failed(format!("rlm_open: failed to own staged context: {e}"))
             })?;
-            let kernel = PythonRuntime::spawn_with_context(&context_path)
+            let kernel = PythonRuntime::spawn_with_context(&context_path, &context.workspace)
                 .await
                 .map_err(|e| ToolError::execution_failed(format!("rlm_open: {e}")))?;
             // PythonRuntime now owns cleanup; a dropped startup kept the TempPath.

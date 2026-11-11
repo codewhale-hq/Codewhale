@@ -71,6 +71,7 @@ use output::{
 };
 
 const READONLY_ENV_MARKER: &str = "CODEWHALE_INTERNAL_READONLY_ARGV";
+pub const AGENT_PROJECT_ENV: &str = "CODEWHALE_AGENT_PROJECT";
 
 #[cfg(unix)]
 static PENDING_PERSISTENT_PROCESS_GROUPS: std::sync::OnceLock<
@@ -2209,13 +2210,19 @@ impl ShellManager {
         program: &str,
         args: Vec<String>,
         cwd: &Path,
+        project: &Path,
         timeout: Duration,
         policy_override: Option<ExecutionSandboxPolicy>,
     ) -> ExecEnv {
         let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
         let spec =
             CommandSpec::program(program, args, cwd.to_path_buf(), timeout).with_policy(policy);
-        self.sandbox_manager.prepare(&spec)
+        let mut exec_env = self.sandbox_manager.prepare(&spec);
+        exec_env.env.insert(
+            AGENT_PROJECT_ENV.to_string(),
+            project.to_string_lossy().into_owned(),
+        );
+        exec_env
     }
 
     pub fn validate_background_job(
@@ -4492,6 +4499,7 @@ pub fn sandboxed_runner_command(
             program,
             args,
             cwd,
+            &context.workspace,
             timeout,
             context.elevated_sandbox_policy.clone(),
         );
@@ -6481,6 +6489,10 @@ impl ToolSpec for BashTool {
             extra_env.insert("GIT_CONFIG_COUNT".to_string(), count.to_string());
             extra_env.insert(READONLY_ENV_MARKER.to_string(), "1".to_string());
         }
+        extra_env.insert(
+            AGENT_PROJECT_ENV.to_string(),
+            context.workspace.to_string_lossy().into_owned(),
+        );
 
         let command_expense = infer_command_expense(command);
         let heavy_permit = acquire_heavy_command_permit(command, context.cancel_token.as_ref())

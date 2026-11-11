@@ -147,7 +147,7 @@ enum Commands {
     SessionDiagnostics(SessionDiagnosticsArgs),
     #[command(about = "Install a local, GitHub or version-pinned npm plugin bundle")]
     Install { source: String },
-    #[command(about = "Inspect or restage reviewed plugin bundles")]
+    #[command(about = "Inspect, review, trust, enable, disable or revoke plugin bundles")]
     Plugins {
         #[command(subcommand)]
         command: PluginsCommand,
@@ -283,6 +283,49 @@ enum PluginsCommand {
         #[arg(value_name = "NAME")]
         name: String,
         #[arg(long)]
+        json: bool,
+    },
+    #[command(
+        about = "Show a plugin's capability review, or trust the exact content a review token names",
+        long_about = "Without --review-token, prints the capability review and its bundle review token and changes nothing; in a terminal it then asks whether to trust. With --review-token, trusts only if the bundle review token still matches the installed content and capability set. That token ties trust to the exact content; it is not a record that anyone read the review, and it is not the host-service review token, which this command never asks for. A trust made with --yes is recorded as the command line, and an answered prompt as you. When the process carries the agent's mark (CODEWHALE_AGENT_PROJECT, set on every command the agent runs), the trust is the agent's, for that project only, and only for a plugin installed from a folder inside it. Trust never enables the plugin."
+    )]
+    Trust {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            help = "The bundle review token (<content-hash>.<capability-hash>) printed by the review; trust is refused if the content or capability set has changed"
+        )]
+        review_token: Option<String>,
+        #[arg(
+            long,
+            short = 'y',
+            help = "Skip the confirmation prompt; needs --review-token"
+        )]
+        yes: bool,
+        #[arg(long, help = "Print the review or the result as JSON; never prompts")]
+        json: bool,
+    },
+    #[command(about = "Enable a trusted plugin")]
+    Enable {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+    #[command(about = "Disable a plugin; its trust is kept")]
+    Disable {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the result as JSON")]
+        json: bool,
+    },
+    #[command(about = "Revoke a plugin's trust; it stays inactive until reviewed again")]
+    Revoke {
+        #[arg(value_name = "NAME", help = "Plugin bundle name")]
+        name: String,
+        #[arg(long, help = "Print the result as JSON")]
         json: bool,
     },
 }
@@ -2762,7 +2805,8 @@ async fn run_async_main_dispatch(
             }
             Commands::Plugins { command } => tokio::task::spawn_blocking(move || {
                 let _config = load_structural_config_from_cli(&cli)?;
-                let workspace = resolve_workspace(&cli);
+                let workspace = crate::commands::groups::plugins::headless::agent_project()
+                    .unwrap_or_else(|| resolve_workspace(&cli));
                 let registry = plugin_discovery.inspect_registry_for_workspace(&workspace);
                 run_plugins_cli(command, registry)
             })
@@ -9356,6 +9400,9 @@ fn plugin_cli_record(plugin: &codewhale_plugins::types::LoadedPlugin) -> serde_j
         "trust": plugin.trust_status.as_str(),
         "enabled": plugin.enabled,
         "active": plugin.active(),
+        "approved_by": plugin.approved_by,
+        "enabled_by": plugin.enabled_by,
+        "outside_reach": plugin.outside_reach,
         "staged": plugin.staged_root.is_some(),
         "applicable": plugin.applicable,
         "compatibility": plugin.compatibility().as_str(),
@@ -9389,6 +9436,7 @@ fn run_plugins_cli(
     command: PluginsCommand,
     mut registry: Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<()> {
+    use crate::commands::groups::plugins::headless;
     use codewhale_localization::{MessageId, resolve_locale, tr};
     let settings = codewhale_runtime::settings::Settings::load_read_only().unwrap_or_default();
     let locale = resolve_locale(&settings.locale);
@@ -9452,6 +9500,14 @@ fn run_plugins_cli(
                         plugin.content_hash,
                         plugin.capability_hash
                     );
+                    if plugin.trusted() {
+                        println!(
+                            "    {}",
+                            codewhale_plugins::host_services::approver_label(
+                                plugin.approved_by.as_ref()
+                            )
+                        );
+                    }
                     for diagnostic in &plugin.diagnostics {
                         print_plugin_cli_diagnostic(diagnostic);
                     }
@@ -9468,6 +9524,43 @@ fn run_plugins_cli(
                 }
             }
         }
+        PluginsCommand::Trust {
+            name,
+            review_token,
+            yes,
+            json,
+        } => headless::trust(
+            &mut registry,
+            locale,
+            headless::TrustRequest {
+                name,
+                review_token,
+                yes,
+                json,
+            },
+            &mut headless::ProcessConsole,
+        )?,
+        PluginsCommand::Enable { name, json } => headless::enable(
+            &mut registry,
+            locale,
+            &name,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
+        PluginsCommand::Disable { name, json } => headless::disable(
+            &mut registry,
+            locale,
+            &name,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
+        PluginsCommand::Revoke { name, json } => headless::revoke(
+            &mut registry,
+            locale,
+            &name,
+            json,
+            &mut headless::ProcessConsole,
+        )?,
         PluginsCommand::Restage { name, json } => {
             Arc::make_mut(&mut registry)
                 .restage(&name)

@@ -2759,6 +2759,42 @@ mod tests {
     }
 
     #[test]
+    fn plugin_trust_and_enable_from_a_shell_follow_the_session_approval() {
+        let policy = AutoReviewPolicy::default();
+        for command in [
+            "codewhale plugins trust demo --review-token a.b --yes",
+            "codewhale plugins enable demo",
+            "codewhale plugins trust demo",
+        ] {
+            for mode in [
+                ApprovalMode::Suggest,
+                ApprovalMode::AcceptEdits,
+                ApprovalMode::Auto,
+            ] {
+                let mut ctx = ctx_for(
+                    "exec_shell",
+                    json!({ "command": command }),
+                    RunOrigin::Interactive,
+                    mode,
+                );
+                ctx.session_runtime_risk = None;
+                let decision = policy.evaluate(&ctx);
+                assert_eq!(decision.action, AutoReviewAction::AskUser, "{command}");
+                assert!(!decision.built_in_safety_gate, "{command}");
+                assert!(!decision.reason.contains("plugin"), "{command}");
+            }
+            let full_access = policy.evaluate(&ctx_for(
+                "exec_shell",
+                json!({ "command": command }),
+                RunOrigin::Interactive,
+                ApprovalMode::Bypass,
+            ));
+            assert!(!full_access.built_in_safety_gate, "{command}");
+            assert_ne!(full_access.action, AutoReviewAction::Block, "{command}");
+        }
+    }
+
+    #[test]
     fn background_test_shell_is_not_held_by_safety_floor() {
         // #3883: an ordinary build/test command flagged background must not
         // trip the durable-review floor — the "Destructive" risk bucket means

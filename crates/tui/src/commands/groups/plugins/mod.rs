@@ -41,6 +41,7 @@ use crate::tui::app::App;
 use crate::tui::app::AppAction;
 
 pub(crate) mod dsh_import;
+pub(crate) mod headless;
 mod kimi_import;
 pub(crate) mod legacy;
 pub(crate) mod marketplace;

@@ -425,7 +425,7 @@ impl Engine {
                 biased;
                 () = cancel.cancelled() => Err("RLM Python startup cancelled by its originating turn".to_string()),
                 () = wait_for_deadline(invocation.deadline) => Err("RLM Python startup exhausted its original wall-clock deadline".to_string()),
-                result = codewhale_repl::PythonRuntime::spawn_with_context(&path) => result,
+                result = codewhale_repl::PythonRuntime::spawn_with_context(&path, &caller.context.workspace) => result,
             };
             match startup {
                 Ok(runtime) => {

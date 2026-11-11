@@ -1069,3 +1069,441 @@ fn doctor_reports_read_only_then_fix_retires_stale_records_with_a_backup() {
     assert!(usage.is_error);
     assert!(usage.message.unwrap().contains("Usage: /plugin doctor"));
 }
+
+#[derive(Default)]
+struct ScriptedConsole {
+    interactive: bool,
+    agent_marked: bool,
+    answer: bool,
+    printed: Vec<String>,
+    prompts: Vec<(String, usize)>,
+}
+
+impl headless::Console for ScriptedConsole {
+    fn interactive(&self) -> bool {
+        self.interactive
+    }
+
+    fn agent_marked(&self) -> bool {
+        self.agent_marked
+    }
+
+    fn print(&mut self, text: &str) {
+        self.printed.push(text.to_string());
+    }
+
+    fn confirm(&mut self, prompt: &str) -> bool {
+        self.prompts.push((prompt.to_string(), self.printed.len()));
+        self.answer
+    }
+}
+
+fn mark_installed_from(bundle: &Path, source: &Path) {
+    fs::create_dir_all(source).unwrap();
+    fs::write(
+        bundle.join(".installed-from"),
+        serde_json::json!({ "spec": format!("path:{}", source.display()) }).to_string(),
+    )
+    .unwrap();
+}
+
+fn write_skill_bundle(root: &Path, name: &str, asks: &str) -> std::path::PathBuf {
+    let bundle = root.join(".codewhale/plugins").join(name);
+    fs::create_dir_all(bundle.join("skills/hello")).unwrap();
+    fs::write(
+        bundle.join("plugin.toml"),
+        format!(
+            "schema_version = 1\n[plugin]\nname = {name:?}\nversion = \"1.0.0\"\n[skills]\npath = \"skills\"\n{asks}"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("skills/hello/SKILL.md"),
+        "---\nname: hello\ndescription: hi\n---\nbody\n",
+    )
+    .unwrap();
+    bundle
+}
+
+fn headless_trust(
+    registry: &mut std::sync::Arc<codewhale_plugins::PluginRegistry>,
+    review_token: Option<&str>,
+    yes: bool,
+    json: bool,
+    console: &mut ScriptedConsole,
+) -> anyhow::Result<()> {
+    headless_trust_named(registry, "review-mcp", review_token, yes, json, console)
+}
+
+fn headless_trust_named(
+    registry: &mut std::sync::Arc<codewhale_plugins::PluginRegistry>,
+    name: &str,
+    review_token: Option<&str>,
+    yes: bool,
+    json: bool,
+    console: &mut ScriptedConsole,
+) -> anyhow::Result<()> {
+    headless::trust(
+        registry,
+        Locale::En,
+        headless::TrustRequest {
+            name: name.to_string(),
+            review_token: review_token.map(str::to_string),
+            yes,
+            json,
+        },
+        console,
+    )
+}
+
+#[test]
+fn headless_review_is_the_terminal_review_and_a_terminal_asks_once() {
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    write_mcp_review_bundle(root.path());
+    let (mut app, _temp) = create_test_app(root.path());
+    let Some(AppAction::OpenCommandReview { content, .. }) =
+        plugins_with_kimi_home_override(&mut app, Some("trust review-mcp"), None).action
+    else {
+        panic!("trust opens a confirmation control");
+    };
+    assert!(content.contains("Activation boundary:"), "{content}");
+    assert!(content.contains("timeouts="), "{content}");
+    let mut registry = app.plugin_registry.clone();
+    let token = registry.get("review-mcp").unwrap().review_token();
+
+    let mut piped = ScriptedConsole::default();
+    headless_trust(&mut registry, None, false, false, &mut piped).unwrap();
+    assert!(piped.prompts.is_empty());
+    assert!(
+        piped.printed[0].starts_with(&content),
+        "{:?}",
+        piped.printed
+    );
+    assert!(piped.printed[0].ends_with(&format!("Bundle review token: {token}")));
+    assert!(piped.printed[1].contains("does not record that anyone read"));
+    assert!(!registry.get("review-mcp").unwrap().trusted());
+
+    let mut declined = ScriptedConsole {
+        interactive: true,
+        ..ScriptedConsole::default()
+    };
+    headless_trust(&mut registry, None, false, false, &mut declined).unwrap();
+    assert_eq!(declined.prompts.len(), 1);
+    assert!(!registry.get("review-mcp").unwrap().trusted());
+
+    let mut missing_yes = ScriptedConsole::default();
+    let error = headless_trust(&mut registry, Some(&token), false, false, &mut missing_yes)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--yes"), "{error}");
+    assert!(missing_yes.prompts.is_empty());
+    let mut json_never_prompts = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    assert!(
+        headless_trust(
+            &mut registry,
+            Some(&token),
+            false,
+            true,
+            &mut json_never_prompts
+        )
+        .is_err()
+    );
+    assert!(json_never_prompts.prompts.is_empty());
+    assert!(!registry.get("review-mcp").unwrap().trusted());
+
+    let mut accepted = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    headless_trust(&mut registry, None, false, false, &mut accepted).unwrap();
+    assert_eq!(accepted.prompts.len(), 1, "one question, one answer");
+    assert_eq!(
+        accepted.prompts[0].1, 1,
+        "the review is printed before the question"
+    );
+    assert!(accepted.printed[0].starts_with(&content));
+    assert!(registry.get("review-mcp").unwrap().trusted());
+    assert!(!registry.get("review-mcp").unwrap().enabled);
+
+    std::sync::Arc::make_mut(&mut registry)
+        .revoke_trust("review-mcp")
+        .unwrap();
+    let mut with_token = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    headless_trust(&mut registry, Some(&token), false, false, &mut with_token).unwrap();
+    assert_eq!(with_token.prompts.len(), 1);
+    assert_eq!(
+        with_token.prompts[0].1, 1,
+        "a token alone never hides the review"
+    );
+    assert!(with_token.printed[0].starts_with(&content));
+    assert!(registry.get("review-mcp").unwrap().trusted());
+}
+
+#[test]
+fn headless_trust_records_the_command_line_the_person_or_the_marked_agent() {
+    use codewhale_plugins::host_services::{PersonVia, PluginApprover};
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    write_mcp_review_bundle(root.path());
+    mark_installed_from(
+        &root.path().join(".codewhale/plugins/review-mcp"),
+        &root.path().join("src/review-mcp"),
+    );
+    let (app, _temp) = create_test_app(root.path());
+    let mut registry = app.plugin_registry.clone();
+    let token = registry.get("review-mcp").unwrap().review_token();
+    let marked_agent = PluginApprover::command_line(Some(registry.workspace()));
+    let approved_by = |registry: &codewhale_plugins::PluginRegistry| {
+        registry.get("review-mcp").unwrap().approved_by.clone()
+    };
+    let enabled_by = |registry: &codewhale_plugins::PluginRegistry| {
+        registry.get("review-mcp").unwrap().enabled_by.clone()
+    };
+
+    let mut unmarked = ScriptedConsole::default();
+    headless_trust(&mut registry, Some(&token), true, false, &mut unmarked).unwrap();
+    assert_eq!(approved_by(&registry), Some(PluginApprover::CommandLine));
+    assert!(
+        unmarked
+            .printed
+            .iter()
+            .any(|line| line.contains("trusted from the command line with --yes")),
+        "{:?}",
+        unmarked.printed
+    );
+    headless::enable(
+        &mut registry,
+        Locale::En,
+        "review-mcp",
+        false,
+        &mut unmarked,
+    )
+    .unwrap();
+    assert_eq!(enabled_by(&registry), Some(PluginApprover::CommandLine));
+
+    let mut person = ScriptedConsole {
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+    headless_trust(&mut registry, None, false, false, &mut person).unwrap();
+    assert_eq!(
+        approved_by(&registry),
+        Some(PluginApprover::person(PersonVia::Terminal))
+    );
+    assert!(!registry.get("review-mcp").unwrap().enabled);
+
+    headless::revoke(
+        &mut registry,
+        Locale::En,
+        "review-mcp",
+        false,
+        &mut unmarked,
+    )
+    .unwrap();
+    let marked = || ScriptedConsole {
+        agent_marked: true,
+        ..ScriptedConsole::default()
+    };
+    let mut review = marked();
+    headless_trust(&mut registry, None, false, false, &mut review).unwrap();
+    assert!(
+        review.printed[1].contains("approved by the agent from a shell command"),
+        "{:?}",
+        review.printed
+    );
+    assert_eq!(approved_by(&registry), None);
+
+    let mut agent = marked();
+    headless_trust(&mut registry, Some(&token), true, true, &mut agent).unwrap();
+    assert_eq!(approved_by(&registry), Some(marked_agent.clone()));
+    assert!(agent.prompts.is_empty());
+    let reported: serde_json::Value = serde_json::from_str(&agent.printed[0]).unwrap();
+    assert_eq!(reported["approved_by"]["kind"], "agent");
+    assert_eq!(reported["approved_by"]["posture"], "command_line");
+    assert_eq!(
+        reported["approved_by"]["workspace"],
+        registry.workspace().to_string_lossy().as_ref()
+    );
+    headless::enable(&mut registry, Locale::En, "review-mcp", false, &mut agent).unwrap();
+    assert_eq!(enabled_by(&registry), Some(marked_agent));
+    assert!(registry.get("review-mcp").unwrap().active());
+
+    headless::disable(&mut registry, Locale::En, "review-mcp", false, &mut agent).unwrap();
+    headless::revoke(&mut registry, Locale::En, "review-mcp", false, &mut agent).unwrap();
+    assert!(!registry.get("review-mcp").unwrap().trusted());
+}
+
+#[test]
+fn headless_trust_passes_the_host_service_token_only_for_the_marked_agent() {
+    use codewhale_plugins::host_services::{HostService, PluginApprover, TestOffer};
+    let _lock = crate::test_support::lock_test_env();
+    let _offer = TestOffer::only(&[HostService::Network]);
+    let root = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    let bundle = write_skill_bundle(
+        root.path(),
+        "asks-network",
+        "[capabilities]\nhost_services = [\"network\"]\n",
+    );
+    mark_installed_from(&bundle, &root.path().join("src/asks-network"));
+    let (app, _temp) = create_test_app(root.path());
+    let mut registry = app.plugin_registry.clone();
+    let plugin = registry.get("asks-network").unwrap();
+    assert_eq!(plugin.inventory.host_services, vec![HostService::Network]);
+    let token = plugin.review_token();
+    let host_service_token = registry
+        .host_service_review_for("asks-network", &PluginApprover::CommandLine)
+        .unwrap()
+        .token;
+    assert_ne!(token, host_service_token);
+
+    let mut unmarked = ScriptedConsole::default();
+    headless_trust_named(
+        &mut registry,
+        "asks-network",
+        None,
+        false,
+        false,
+        &mut unmarked,
+    )
+    .unwrap();
+    let review = &unmarked.printed[0];
+    assert!(review.contains("Network"), "{review}");
+    assert!(
+        review.contains("grants none of these host services"),
+        "{review}"
+    );
+    assert!(
+        review.contains(&format!("Bundle review token: {token}")),
+        "{review}"
+    );
+    assert!(!review.contains(&host_service_token), "{review}");
+
+    headless_trust_named(
+        &mut registry,
+        "asks-network",
+        Some(&token),
+        true,
+        false,
+        &mut unmarked,
+    )
+    .unwrap();
+    let plugin = registry.get("asks-network").unwrap();
+    assert_eq!(plugin.approved_by, Some(PluginApprover::CommandLine));
+    assert!(plugin.host_services.is_empty());
+
+    headless::revoke(
+        &mut registry,
+        Locale::En,
+        "asks-network",
+        false,
+        &mut unmarked,
+    )
+    .unwrap();
+    let mut marked = ScriptedConsole {
+        agent_marked: true,
+        ..ScriptedConsole::default()
+    };
+    headless_trust_named(
+        &mut registry,
+        "asks-network",
+        Some(&token),
+        true,
+        false,
+        &mut marked,
+    )
+    .unwrap();
+    let plugin = registry.get("asks-network").unwrap();
+    assert_eq!(
+        plugin.approved_by,
+        Some(PluginApprover::command_line(Some(registry.workspace())))
+    );
+    assert_eq!(plugin.host_services, vec![HostService::Network]);
+}
+
+#[test]
+fn headless_marked_trust_needs_an_install_from_a_folder_in_the_project() {
+    use codewhale_plugins::host_services::PluginApprover;
+    let _lock = crate::test_support::lock_test_env();
+    let root = TempDir::new().unwrap();
+    let elsewhere = TempDir::new().unwrap();
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", root.path().join("home"));
+    write_skill_bundle(root.path(), "hand-placed", "");
+    let outside = write_skill_bundle(root.path(), "from-outside", "");
+    mark_installed_from(&outside, &elsewhere.path().join("src"));
+    let remote = write_skill_bundle(root.path(), "from-github", "");
+    fs::write(
+        remote.join(".installed-from"),
+        r#"{"spec":"github:someone/plugin"}"#,
+    )
+    .unwrap();
+    let inside = write_skill_bundle(root.path(), "from-inside", "");
+    mark_installed_from(&inside, &root.path().join("src/from-inside"));
+    let (app, _temp) = create_test_app(root.path());
+    let mut registry = app.plugin_registry.clone();
+    let marked = || ScriptedConsole {
+        agent_marked: true,
+        interactive: true,
+        answer: true,
+        ..ScriptedConsole::default()
+    };
+
+    for name in ["hand-placed", "from-outside", "from-github"] {
+        let token = registry.get(name).unwrap().review_token();
+        for review_token in [Some(token.as_str()), None] {
+            let error = headless_trust_named(
+                &mut registry,
+                name,
+                review_token,
+                review_token.is_some(),
+                false,
+                &mut marked(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("ask the person"), "{name}: {error}");
+            assert!(!registry.get(name).unwrap().trusted(), "{name}");
+        }
+        headless_trust_named(
+            &mut registry,
+            name,
+            Some(&token),
+            true,
+            false,
+            &mut ScriptedConsole::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            registry.get(name).unwrap().approved_by,
+            Some(PluginApprover::CommandLine)
+        );
+    }
+
+    let token = registry.get("from-inside").unwrap().review_token();
+    headless_trust_named(
+        &mut registry,
+        "from-inside",
+        Some(&token),
+        true,
+        false,
+        &mut marked(),
+    )
+    .unwrap();
+    assert_eq!(
+        registry.get("from-inside").unwrap().approved_by,
+        Some(PluginApprover::command_line(Some(registry.workspace())))
+    );
+}

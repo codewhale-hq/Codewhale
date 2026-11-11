@@ -26,7 +26,11 @@ files or use the network.
    its answer in the transcript with its origin, `extension:hello-extension`.
 
 An authoring agent should stop after installation and validation and present
-the review to the person. Do not trust or enable a bundle automatically.
+the review to the person, unless it runs in Full Access and the plugin is one
+it wrote and installed from a folder in its project: then it may trust and
+enable it for that project with `codewhale plugins trust` and `enable`. Those
+shell commands go through the session's approval like any other: Ask asks the
+person, Auto-Review's reviewer judges, and Full Access runs them.
 
 ## Locations, installation and trust
 
@@ -646,13 +650,23 @@ a plugin's trust shows it:
 
 | Approver | How it happens | Reach |
 | --- | --- | --- |
-| You | the Plugins page, `/plugin trust`, or an approval card | every project |
+| You | the Plugins page, `/plugin trust`, an approval card, or the prompt of `codewhale plugins trust` in your terminal | every project |
 | The agent, in Full Access or Auto-Review | the agent's plugin tool, bound to the token of the review composed for that call and to the thread, turn and tool call that made it | only the project named in the record |
 | The agent, from a shell command | `codewhale plugins trust … --yes` run by a process that carries the agent's mark | only the project named in the record |
 | The command line | `codewhale plugins trust … --yes` without the mark: no review was shown there, so it grants no service | every project |
 
-The agent's mark is a label on the agent's shell commands, not a lock: in Full
-Access the agent can remove it, and the record then says "the command line".
+The agent's mark is `CODEWHALE_AGENT_PROJECT`, which Codewhale sets to the
+session's project on every command the agent runs (shell, persistent terminal,
+verifier and test runs, the Python kernel, MCP servers it starts), whatever the sandbox or
+permission mode. Hooks, MCP servers from your configuration and the terminal
+app's `/plugin trust` carry no mark. With it, the command records the agent, even for a prompt
+answered through a terminal, and trusts only a plugin installed from a folder
+inside that project (the bundle's `.installed-from` record). It is a label, not
+a lock: in Full Access the agent could remove it, and the record then says "the
+command line". The `--review-token` that the command
+takes is the bundle review token (`<content-hash>.<capability-hash>`), not the
+host-service review token: an unmarked trust passes no host-service token, and
+a marked one passes the token of the review composed for the agent.
 A plugin the agent approved is active only in the project its record names,
 and its code does not run in the host process of the plugins you reviewed:
 until it has a host of its own, its native code is refused with a diagnostic

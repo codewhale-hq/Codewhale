@@ -3845,7 +3845,7 @@ fn portable_mcp_server(
 }
 
 /// Convert a TUI-owned loaded plugin into the portable full detail.
-fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginDetail {
+pub(crate) fn portable_detail(plugin: &codewhale_plugins::types::LoadedPlugin) -> PluginDetail {
     let mcp_servers = plugin
         .manifest
         .mcp_servers

@@ -26,6 +26,18 @@
    命令、监听器和提示词片段，保留计数。
 
 协助编写插件的 agent 应在安装和验证后把审查交给本人，不应自动信任或启用插件。
+运行 `codewhale plugins trust` 或 `codewhale plugins enable` 的 shell 命令和其他
+shell 命令一样经过会话审批：Ask 询问本人，Auto-Review 由审查模型判断，Full Access
+直接运行，因此 Full Access 下的 agent 可以信任并启用它自己编写的插件。每次信任都记录
+批准者。agent 运行的每条命令（shell 命令、持久终端、验证与测试运行、Python 内核里运行的代码、它用
+`start_mcp_server` 启动的 MCP 服务器）都带有 agent 标记 `CODEWHALE_AGENT_PROJECT`，值为会话
+所在项目，与沙箱和权限模式无关；钩子、配置文件中的 MCP 服务器和终端应用里的 `/plugin trust`
+不带标记。带有标记时，信任和启用都记为该 agent，仅限该项目，即使
+提示是通过终端回答的也一样，绝不记为本人；而且只能信任从该项目内的文件夹用
+`codewhale install` 安装的插件（依据插件包的 `.installed-from` 记录），否则拒绝并交给本人。
+没有标记时，`--yes` 记为命令行，不授予任何宿主服务；在本人终端里回答提示记为本人。这个
+标记只是标签而不是锁：在 Full Access 下 agent 可以把它去掉，此时记录显示为命令行。`--review-token` 是插件包审查令牌
+（`<content-hash>.<capability-hash>`），不是宿主服务审查令牌。
 
 ## 入口、审查与生命周期
 
