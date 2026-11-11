@@ -67,6 +67,7 @@
 //!   tool's `core/call`s run beside it, not through the lock.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -264,7 +265,8 @@ pub struct Invocation {
     calls: CodemodeInvoker,
     gate: NestedCallGate,
     root_caller: Option<SessionCheckpointCaller>,
-    broker_session: Option<String>,
+    broker: Option<BrokerScope>,
+    broker_core_calls: AtomicU32,
     tickets: Vec<Ticket>,
     caller_tools: Vec<String>,
     activations: Mutex<
@@ -280,6 +282,64 @@ pub struct Invocation {
     /// Fires when the invocation ends or is revoked: withdraws every
     /// `core/call` still waiting or running for it.
     cancel: CancellationToken,
+}
+
+struct BrokerScope {
+    session_id: String,
+    context: Arc<ToolContext>,
+}
+
+pub struct BrokerContext {
+    invocation: Arc<Invocation>,
+    tool: Arc<ToolContext>,
+    service: DshService,
+    cancel: CancellationToken,
+}
+
+impl BrokerContext {
+    #[must_use]
+    pub fn tool(&self) -> &ToolContext {
+        &self.tool
+    }
+
+    #[must_use]
+    pub fn cancel(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    pub async fn core_call(
+        &self,
+        name: &str,
+        input: Value,
+    ) -> Result<ToolCallResponse, BrokerRefusal> {
+        if self.cancel.is_cancelled() {
+            return Err(BrokerRefusal::nested(
+                self.service,
+                NestedFailure::Unavailable("the broker call was withdrawn".to_string()),
+            ));
+        }
+        if self
+            .invocation
+            .broker_core_calls
+            .fetch_add(1, Ordering::SeqCst)
+            >= MAX_CALLS_PER_INVOCATION
+        {
+            return Err(BrokerRefusal::nested(
+                self.service,
+                NestedFailure::Rejected {
+                    decision: NestedDecision::Refused,
+                    message: format!(
+                        "an invocation's brokers may make at most {MAX_CALLS_PER_INVOCATION} core tool calls"
+                    ),
+                },
+            ));
+        }
+        self.invocation
+            .calls
+            .call(name.to_string(), input, Some(&self.cancel))
+            .await
+            .map_err(|failure| BrokerRefusal::nested(self.service, failure))
+    }
 }
 
 /// The tickets and invocations of one manager.
@@ -416,23 +476,36 @@ impl CoreCalls {
         let broker_tickets: Vec<(DshService, Ticket)> = broker_session
             .iter()
             .flat_map(|session| {
-                DshService::ALL.into_iter().map(move |service| {
-                    (
-                        service,
-                        self.tickets.mint(Grant {
-                            kind: TicketKind::Invocation,
-                            tier,
-                            host_generation,
-                            owner: owner.clone(),
-                            method: dsh_broker::ticket_method(service),
-                            target: json!({ "call_id": call_id, "session_id": session }),
-                            ttl: TICKET_TTL,
-                            uses: MAX_CALLS_PER_INVOCATION,
-                        }),
-                    )
-                })
+                DshService::ALL
+                    .into_iter()
+                    .filter(|service| dsh_broker::granted(*service))
+                    .map(move |service| {
+                        (
+                            service,
+                            self.tickets.mint(Grant {
+                                kind: TicketKind::Invocation,
+                                tier,
+                                host_generation,
+                                owner: owner.clone(),
+                                method: dsh_broker::ticket_method(service),
+                                target: json!({ "call_id": call_id, "session_id": session }),
+                                ttl: TICKET_TTL,
+                                uses: MAX_CALLS_PER_INVOCATION,
+                            }),
+                        )
+                    })
             })
             .collect();
+        let broker = broker_session
+            .filter(|_| !broker_tickets.is_empty())
+            .map(|session_id| {
+                let mut context = context.clone();
+                context.execution.nested_call_gate = None;
+                BrokerScope {
+                    session_id,
+                    context: Arc::new(context),
+                }
+            });
         let caller_tools = specs
             .iter()
             .map(|spec| spec.name().to_string())
@@ -453,7 +526,8 @@ impl CoreCalls {
             calls,
             gate: gate.clone(),
             root_caller,
-            broker_session,
+            broker,
+            broker_core_calls: AtomicU32::new(0),
             tickets: std::iter::once(ticket.clone())
                 .chain(checkpoint_ticket.iter().cloned())
                 .chain(question_ticket.iter().cloned())
@@ -1154,10 +1228,14 @@ impl CoreCalls {
                 &cx,
             )
             .map_err(|error| dsh_broker::coded(error, dsh_broker::TICKET_REFUSED))?;
-        let session_id = invocation
-            .broker_session
-            .clone()
+        let (session_id, tool) = invocation
+            .broker
+            .as_ref()
+            .map(|scope| (scope.session_id.clone(), Arc::clone(&scope.context)))
             .ok_or_else(|| refused("dsh/broker requires an invocation in a session".into()))?;
+        if !dsh_broker::granted(service) {
+            return Err(BrokerRefusal::NotAvailable(service).wire());
+        }
         let arm = dsh_broker::arm_in(table, service)
             .ok_or_else(|| BrokerRefusal::NotAvailable(service).wire())?;
         let withdraw = invocation.cancel.child_token();
@@ -1168,6 +1246,12 @@ impl CoreCalls {
             service,
             method: params.method,
             input: params.input,
+            context: BrokerContext {
+                invocation: Arc::clone(&invocation),
+                tool,
+                service,
+                cancel: withdraw.clone(),
+            },
         };
         let outcome = tokio::select! {
             biased;
