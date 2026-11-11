@@ -15899,6 +15899,7 @@ var init_protocol_generated = __esm({
       { name: "subagent/start", direction: "host_to_core", request: true, params: "SubagentStartParams", tiers: ["plugin", "builtin"] },
       { name: "subagent/result", direction: "host_to_core", request: true, params: "SubagentHandleParams", tiers: ["plugin", "builtin"] },
       { name: "subagent/dispose", direction: "host_to_core", request: true, params: "SubagentHandleParams", tiers: ["plugin", "builtin"] },
+      { name: "dsh/broker", direction: "host_to_core", request: true, params: "DshBrokerParams", tiers: ["plugin", "builtin"] },
       { name: "proc/launch", direction: "host_to_core", request: true, params: "ProcLaunchParams", tiers: ["builtin"] },
       { name: "proc/read", direction: "host_to_core", request: true, params: "ProcSessionParams", tiers: ["builtin"] },
       { name: "proc/write", direction: "host_to_core", request: true, params: "ProcWriteParams", tiers: ["builtin"] },
@@ -15938,6 +15939,16 @@ var init_protocol_generated = __esm({
         strict: false,
         required: { owner: { ref: "OwnerRef" } },
         optional: { entry: { ref: "EntryRef" } }
+      },
+      DshBrokerParams: {
+        strict: true,
+        required: { owner: { ref: "OwnerRef" }, ticket: "string", service: "string", method: "string", input: "json" },
+        optional: {}
+      },
+      DshBrokerTicketWire: {
+        strict: true,
+        required: { service: "string", ticket: "string" },
+        optional: {}
       },
       EmptyParams: {
         strict: true,
@@ -16102,7 +16113,7 @@ var init_protocol_generated = __esm({
       ToolCallParams: {
         strict: false,
         required: { handle: "uint", call_id: "string", input: "json", deadline_ms: "uint" },
-        optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", question_ticket: "string", subagent_ticket: "string", caller_tools: { items: "string" }, session_id: "string", agent_id: "string", origin_turn_id: "string" }
+        optional: { workspace: "string", ticket: "string", checkpoint_ticket: "string", question_ticket: "string", subagent_ticket: "string", broker_tickets: { items: { ref: "DshBrokerTicketWire" } }, caller_tools: { items: "string" }, session_id: "string", agent_id: "string", origin_turn_id: "string" }
       },
       UnregisterParams: {
         strict: true,
@@ -17816,7 +17827,13 @@ var init_root = __esm({
             const owner = ctx[OWNER];
             return invocation && invocation.active && !invocation.signal.aborted && owner !== void 0 && invocation.owner === owner && owner.state === "active" && !owner.disposing ? invocation : void 0;
           },
-          log: (level, message, owner) => host2.log(level, message, owner)
+          log: (level, message, owner) => host2.log(level, message, owner),
+          broker: async (ctx, service, method, input) => {
+            const invocation = adapterHost.liveInvocation(ctx);
+            const ticket = invocation?.brokerTickets.get(service);
+            if (invocation === void 0 || ticket === void 0) throw new RpcError(ErrorCode.NotAvailable, `the ${String(service).slice(0, 64)} broker is only available to a live tool invocation the core gave a ticket for it`);
+            return rpc2.request("dsh/broker", { owner: invocation.owner.ref, ticket, service, method, input }, invocation.signal);
+          }
         };
         const shims = /* @__PURE__ */ new Map([
           ["tools", ToolsShim],
@@ -18114,6 +18131,7 @@ var init_root = __esm({
           agent,
           questionTicket: identity?.question_ticket,
           subagentTicket: identity?.subagent_ticket,
+          brokerTickets: new Map((identity?.broker_tickets ?? []).map(({ service, ticket: ticket2 }) => [service, ticket2])),
           callerTools: Object.freeze([...identity?.caller_tools ?? []]),
           delegated: identity?.agent_id !== void 0,
           ticket: identity?.checkpoint_ticket,

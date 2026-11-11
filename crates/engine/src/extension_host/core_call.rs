@@ -75,9 +75,10 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::ManagerShared;
+use super::dsh_broker::{self, Arm, BrokerCall, BrokerRefusal};
 use super::protocol::{
-    ContentBlockWire, CoreCallParams, RpcErrorWire, SessionCheckpointParams, ToolResultWire,
-    UserQuestionParams, error_code,
+    ContentBlockWire, CoreCallParams, DshBrokerParams, DshBrokerTicketWire, DshService,
+    RpcErrorWire, SessionCheckpointParams, ToolResultWire, UserQuestionParams, error_code,
 };
 use super::supervisor::HostRequestContext;
 use super::ticket::{Grant, Presented, Ticket, TicketKind};
@@ -263,6 +264,7 @@ pub struct Invocation {
     calls: CodemodeInvoker,
     gate: NestedCallGate,
     root_caller: Option<SessionCheckpointCaller>,
+    broker_session: Option<String>,
     tickets: Vec<Ticket>,
     caller_tools: Vec<String>,
     activations: Mutex<
@@ -405,6 +407,32 @@ impl CoreCalls {
                 uses: MAX_CALLS_PER_INVOCATION,
             })
         });
+        let broker_session = context
+            .execution
+            .session_objects
+            .as_ref()
+            .map(|session| session.session_id.clone())
+            .filter(|id| !id.is_empty());
+        let broker_tickets: Vec<(DshService, Ticket)> = broker_session
+            .iter()
+            .flat_map(|session| {
+                DshService::ALL.into_iter().map(move |service| {
+                    (
+                        service,
+                        self.tickets.mint(Grant {
+                            kind: TicketKind::Invocation,
+                            tier,
+                            host_generation,
+                            owner: owner.clone(),
+                            method: dsh_broker::ticket_method(service),
+                            target: json!({ "call_id": call_id, "session_id": session }),
+                            ttl: TICKET_TTL,
+                            uses: MAX_CALLS_PER_INVOCATION,
+                        }),
+                    )
+                })
+            })
+            .collect();
         let caller_tools = specs
             .iter()
             .map(|spec| spec.name().to_string())
@@ -425,10 +453,12 @@ impl CoreCalls {
             calls,
             gate: gate.clone(),
             root_caller,
+            broker_session,
             tickets: std::iter::once(ticket.clone())
                 .chain(checkpoint_ticket.iter().cloned())
                 .chain(question_ticket.iter().cloned())
                 .chain(subagent_ticket.iter().cloned())
+                .chain(broker_tickets.iter().map(|(_, ticket)| ticket.clone()))
                 .collect(),
             caller_tools,
             activations: Mutex::new(HashMap::new()),
@@ -457,7 +487,14 @@ impl CoreCalls {
                 Arc::clone(&invocation),
             );
         }
+        for (_, broker_ticket) in &broker_tickets {
+            self.invocations
+                .lock()
+                .expect("invocations lock")
+                .insert(broker_ticket.expose().to_string(), Arc::clone(&invocation));
+        }
         Some(InvocationGuard {
+            broker_tickets,
             question_ticket,
             subagent_ticket,
             checkpoint_ticket,
@@ -1063,6 +1100,105 @@ impl CoreCalls {
         result
     }
 
+    pub async fn serve_broker(
+        &self,
+        shared: &ManagerShared,
+        tier: HostTier,
+        host_generation: u64,
+        params: DshBrokerParams,
+        cx: HostRequestContext,
+    ) -> Result<Value, RpcErrorWire> {
+        self.serve_broker_in(dsh_broker::TABLE, shared, tier, host_generation, params, cx)
+            .await
+    }
+
+    pub(super) async fn serve_broker_in(
+        &self,
+        table: &[(DshService, Arm)],
+        shared: &ManagerShared,
+        tier: HostTier,
+        host_generation: u64,
+        params: DshBrokerParams,
+        cx: HostRequestContext,
+    ) -> Result<Value, RpcErrorWire> {
+        let refused = |message: String| {
+            dsh_broker::coded(
+                RpcErrorWire {
+                    code: error_code::REFUSED,
+                    message,
+                    data: None,
+                },
+                dsh_broker::TICKET_REFUSED,
+            )
+        };
+        let cancelled = |message: &str| {
+            dsh_broker::coded(
+                RpcErrorWire {
+                    code: error_code::CANCELLED,
+                    message: message.to_string(),
+                    data: None,
+                },
+                dsh_broker::CANCELLED,
+            )
+        };
+        let service = DshService::parse(&params.service)
+            .ok_or_else(|| BrokerRefusal::UnknownService(params.service.clone()).wire())?;
+        let invocation = self
+            .redeem_invocation(
+                shared,
+                tier,
+                host_generation,
+                &params.owner,
+                &params.ticket,
+                dsh_broker::ticket_method(service),
+                &cx,
+            )
+            .map_err(|error| dsh_broker::coded(error, dsh_broker::TICKET_REFUSED))?;
+        let session_id = invocation
+            .broker_session
+            .clone()
+            .ok_or_else(|| refused("dsh/broker requires an invocation in a session".into()))?;
+        let arm = dsh_broker::arm_in(table, service)
+            .ok_or_else(|| BrokerRefusal::NotAvailable(service).wire())?;
+        let withdraw = invocation.cancel.child_token();
+        let _withdraw_guard = withdraw.clone().drop_guard();
+        let call = BrokerCall {
+            owner: params.owner.clone(),
+            session_id,
+            service,
+            method: params.method,
+            input: params.input,
+        };
+        let outcome = tokio::select! {
+            biased;
+            () = cx.cancel.cancelled() => return Err(cancelled("dsh/broker was cancelled by its host")),
+            () = withdraw.cancelled() => return Err(cancelled("dsh/broker invocation ended")),
+            outcome = arm(call) => outcome,
+        };
+        if shared
+            .registry
+            .lock()
+            .expect("registry lock")
+            .tier_of(&params.owner)
+            != Some(tier)
+        {
+            return Err(refused("dsh/broker owner is no longer current".into()));
+        }
+        shared
+            .check_selection(
+                invocation
+                    .plugins
+                    .as_ref()
+                    .and_then(|plugins| plugins.caller_selection()),
+                invocation.plugins.as_deref(),
+                &params.owner.plugin_id,
+                &invocation.content_hash,
+                invocation.scope.as_ref(),
+            )
+            .map_err(refused)?;
+        outcome.map_err(BrokerRefusal::wire)
+    }
+
     /// Redeem `params` presented by `tier`'s host process `host_generation`
     /// and run the call. An invalid presentation is a refusal, and a burst of
     /// them a violation `cx` reports.
@@ -1191,6 +1327,7 @@ pub struct InvocationGuard {
     checkpoint_ticket: Option<Ticket>,
     question_ticket: Option<Ticket>,
     subagent_ticket: Option<Ticket>,
+    broker_tickets: Vec<(DshService, Ticket)>,
     invocation: Arc<Invocation>,
 }
 
@@ -1210,6 +1347,18 @@ impl InvocationGuard {
 
     pub fn subagent_ticket(&self) -> Option<&str> {
         self.subagent_ticket.as_ref().map(Ticket::expose)
+    }
+
+    pub fn broker_tickets(&self) -> Option<Vec<DshBrokerTicketWire>> {
+        (!self.broker_tickets.is_empty()).then(|| {
+            self.broker_tickets
+                .iter()
+                .map(|(service, ticket)| DshBrokerTicketWire {
+                    service: service.name().to_string(),
+                    ticket: ticket.expose().to_string(),
+                })
+                .collect()
+        })
     }
 
     pub fn caller_tools(&self) -> Option<Vec<String>> {

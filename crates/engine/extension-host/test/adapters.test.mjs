@@ -57,3 +57,15 @@ test('an adapter may not replace a service the root already provides', () => {
   assert.throws(() => new HostRoot(rpc, 'plugin', [adapterFor('storage')]), /duplicates a service the host root already provides/)
   assert.throws(() => new HostRoot(rpc, 'plugin', [...DSH_ADAPTERS, adapterFor('sessions')]), /duplicates a service/)
 })
+
+test('the adapter broker refuses locally, without sending, when no live invocation holds a ticket for the service', async () => {
+  const sent = []
+  const peer = { ...rpc, request: async (method, params) => { sent.push([method, params]); return {} } }
+  let host
+  const capture = { service: 'llm', define: (adapterHost) => { host = adapterHost; return adapterFor('llm').define() } }
+  assert.throws(() => new HostRoot(peer, 'plugin', [capture]), /not declared in compatibility\.json/)
+  for (const service of ['workspace', 'llm', 'vault']) {
+    await assert.rejects(host.broker({}, service, 'read', {}), (error) => error.code === -32001 && /broker is only available to a live tool invocation/.test(error.message))
+  }
+  assert.deepEqual(sent, [])
+})

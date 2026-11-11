@@ -382,6 +382,7 @@ impl ToolSpec for HostToolSpec {
             subagent_ticket: invocation
                 .as_ref()
                 .and_then(|i| i.subagent_ticket().map(str::to_string)),
+            broker_tickets: invocation.as_ref().and_then(|i| i.broker_tickets()),
             caller_tools: invocation.as_ref().and_then(|i| i.caller_tools()),
             session_id: context
                 .execution
