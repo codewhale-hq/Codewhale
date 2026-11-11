@@ -1,116 +1,116 @@
-# Workflow Experimental Search
+# Workflow experimental search
 
-Experimental search is an option for **Workflow**, not a fourth mode and not a
-second scheduler. Fleet owns the roster and deterministic member selection.
-Runtime owns execution routes, concurrency, leases, and receipts. Workflow owns
-the frozen order: independent generation, evaluation, selection, repair, and
-verification.
+Workflow remains the scheduler; Fleet and Runtime still own child routing and
+worktrees. The checked-in `workflows/operate_best_of_n.workflow.js` has an
+optional host evaluator for completed search candidates. With no `evaluator`
+argument, its existing Best-of-N generation and reviewer path runs as before.
 
-The product vocabulary is Fleet (roster and selected member), Workflow (what
-order), Lane (one running Workflow), Runtime (where/how/authority), and Operate
-(the mode). Do not introduce
-"WhaleFlow" as a current synonym.
+## Verified candidate slice
 
-## Current foundation
+The version 1 JSON spec freezes a clean Git HEAD, objective, write scope,
+protected paths, trusted case bundles, Linux bubblewrap policy, and wall-time
+bound. Keep the spec and case bundles outside the candidate repository. A case
+bundle is an array of `{"input": ..., "expected": ...}` objects. At least one
+public and one held-out gate must each require a nonzero number of cases.
 
-- The imperative Workflow VM admits at most 1,000 tasks per run and 64 live
-  tasks at once by default. The host's per-run concurrency gate is a semaphore
-  sized from `[workflow] max_concurrent` (default 64) and clamped to
-  `WORKFLOW_MAX_CONCURRENT = 128` (`codewhale-workflow-js`); additional
-  `task()` spawns block on that gate until a live slot frees, then route
-  through fleet. A larger declared population therefore queues at the gate,
-  not through fleet itself.
-- There is no typed search spec in the runtime today. A Rust prototype
-  (`WorkflowSearchSpec`) validated and froze the TOML shape below, but nothing
-  consumed it, so it was removed in 0.10.1 (#6517) rather than left to read as
-  live infrastructure. The evaluator host described below should reintroduce a
-  spec together with its first real caller.
-- `operate_best_of_n.workflow.js` supports `strategy: "search"` for 2–16
-  structured independent candidates and one read-only reviewer. The stable
-  shared instructions precede the candidate-specific suffix to favor provider
-  prefix caching.
-- `BranchTournament` preserves its historical cost-first default but now
-  supports explicit score-first ordering. Pareto selection remains available
-  in the typed Workflow core.
-
-## Security and truth boundary
-
-The JS starter does not own the shell or evaluator. It therefore cannot turn a
-command mentioned in a prompt into a hidden, runtime-owned gate. Candidate
-self-verdicts and claimed commands are untrusted. Until the evaluator host seam
-lands, the starter produces generation and review evidence only.
-
-The evaluator host must:
-
-1. freeze a real Git baseline and evaluator before admitting candidates;
-2. give every writer its own worktree and the same public evidence;
-3. revoke writer authority before injecting hidden tests or scorer details;
-4. apply each patch to a clean baseline, reject forbidden/test changes, then
-   run hard gates before performance scoring;
-5. record commands, exit codes, environment, token/cache/cost usage, artifacts,
-   promotion reasons, and failures on top of fleet receipts;
-6. replay the provisional winner cleanly and run an independent read-only
-   adversarial review; and
-7. return `NONE` when all candidates fail and never apply or merge a winner
-   without a later explicit user action.
-
-## Provider presets
-
-The abstraction remains provider-neutral. A DeepSeek Flash preset can exploit
-its automatically managed prefix cache by keeping shared instructions,
-experiment rules, repository evidence, and the response contract stable, with
-the candidate id last. Preliminary scouts can use lower effort while promoted
-implementers/finalists use high or max effort.
-
-Record both the requested API model id and the resolved provider version.
-Provider account concurrency is not Runtime worker concurrency: the runtime keeps its
-16-live-worker ceiling, handles 429 responses and keep-alives outside the
-deterministic VM, and stops new admissions when the shared budget is exhausted.
-
-## Proposed authoring shape
-
-```toml
-name = "speed-up-certificate"
-objective = "Reduce runtime without changing exact results"
-population = 32
-rounds = [32, 8, 3, 1]
-concurrency = 16
-integration_policy = "review_only"
-
-[worker]
-provider = "deepseek"
-model = "deepseek-v4-flash"
-reasoning_effort = "high"
-write_authority = "worktree_write"
-write_roots = ["code"]
-
-[budget]
-max_cost_microusd = 5000000
-max_tokens = 10000000
-
-[hard_gates]
-commands = [
-  "PYTHONWARNINGS=error python certificate.py",
-  "git diff --exit-code -- expected_result.json",
-]
-forbid_test_changes = true
-protected_paths = ["tests", "expected_result.json"]
-
-[score]
-command = "./scripts/benchmark_candidate.sh"
-direction = "minimize"
-metric = "median_runtime_ms"
-trials = 5
-tie_breakers = ["diff_lines", "cost_microusd"]
-
-[selection]
-policy = "pareto"
-retain_diversity = true
+```json
+{
+  "version": 1,
+  "objective": "Increment the input integer",
+  "baseline_sha": "<full output of git rev-parse HEAD>",
+  "allowed_write_roots": ["candidate.py"],
+  "protected_paths": ["tests"],
+  "isolation_backend": "linux-bwrap",
+  "max_wall_secs": 60,
+  "hard_gates": [
+    {
+      "candidate_argv": ["/usr/bin/python3", "candidate.py"],
+      "cases_path": "/trusted/public.json",
+      "timeout_secs": 10,
+      "min_tests": 1,
+      "holdout": false
+    },
+    {
+      "candidate_argv": ["/usr/bin/python3", "candidate.py"],
+      "cases_path": "/trusted/heldout.json",
+      "timeout_secs": 10,
+      "min_tests": 1,
+      "holdout": true
+    }
+  ]
+}
 ```
 
-This shape is a design proposal: nothing parses it today and it is not a
-runnable CLI promise. The next runtime slice is the evaluator host and
-aggregate receipt, which must freeze the baseline, requested and resolved
-model ids, public evidence hash, evaluator hash, and the complete spec before
-admitting candidates; after that, the natural-language authoring layer can
-safely compile a user's request into this shape.
+Invoke the existing `workflow` tool with a checked-in source path, or use the
+CLI `workflow-tool --input-json` equivalent:
+
+```json
+{
+  "action": "run",
+  "source_path": "workflows/operate_best_of_n.workflow.js",
+  "args": {
+    "strategy": "search",
+    "brief": "Increment the input integer",
+    "n": 2,
+    "writeRoots": ["candidate.py"],
+    "evaluator": {"manifestPath": "/trusted/evaluator.json"}
+  }
+}
+```
+
+The ordinary model and provider configuration still controls candidate writers.
+The host freezes the evaluator before starting the Workflow. Once a candidate
+task has terminated successfully, the host verifies its Git common directory
+and starting HEAD, seals its complete tree difference, and runs the public
+cases. A public PASS is independently materialized and replayed against public
+and held-out cases. The Workflow returns each receipt with
+`promotion: "proposal_only"`; it does not choose, apply, push, or merge code.
+
+The case bundles are the trusted oracle. The candidate command receives one
+JSON input on stdin and emits one JSON value on stdout. The host compares that
+value with the frozen expected value and counts the cases it actually ran.
+Candidate self-verdicts, shell output, and claimed test counts are never the
+oracle. The oracle is read by the host, not imported into the candidate
+process.
+
+## Isolation and retained evidence
+
+Candidate commands run only on Linux with the strict bubblewrap backend.
+The capability probe must establish a private network namespace, inaccessible
+host marker, writable private scratch, and read-only sealed source mount.
+The process owner applies CPU, address-space, file-size, descriptor, and process
+limits. The evaluator clears the host environment and closes inherited file
+descriptors before the sandbox starts. Missing bubblewrap or an unsuccessful
+probe rejects the run.
+
+The run-owned directory is reported as `run_root` and named
+`codewhale-evaluator-workflow_*` in the system temporary directory. It retains
+the frozen baseline blobs, sealed artifact manifests and blobs, manifest,
+receipts, and bounded stdout/stderr logs so evidence remains reviewable after
+the writer worktree disappears. Each evaluation's materialized candidate and
+scratch directories use temporary directory ownership and are removed when
+the evaluation ends, including on failure or cancellation. An unsuccessful
+freeze removes the new run directory. After archiving evidence, the operator
+may delete that exact run directory; restart cleanup must identify the
+`manifest.json` run id before removing anything. There is no automatic
+cross-process replay API in this slice.
+
+The full sealed artifact records added, modified, deleted, binary, and
+executable-mode changes. Its tree hash is separate from the artifact manifest
+hash. Receipts bind spec, baseline Git SHA and tree identity, case bundle
+hashes, artifact and candidate tree hashes, sandbox probe, and native binary
+SHA256. Replays compare these against the frozen spec and prior receipt.
+Missing or conflicting evidence yields `UNKNOWN`, `REJECTED`, or an explicit
+error, never a PASS.
+
+Limits are 4 MiB per file, 64 MiB for the baseline or candidate tree, 8 MiB
+of changed content, 4,096 files, 256 cases per gate, and at most 12 gates.
+The sandbox has per-process and per-case bounds; there is no aggregate scratch
+or host-memory quota. Windows, macOS, and Linux hosts without working
+bubblewrap are unsupported for this evaluator. A candidate can run only an
+absolute executable with one repo-relative program path argument in this
+version. These restrictions deliberately keep the trusted execution surface
+small.
+
+Policy genomes, mutation, selection, strategy transfer, model-turn planning,
+and promotion research remain separate from this evaluator.

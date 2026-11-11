@@ -3,10 +3,10 @@
  *
  * Set strategy="search" for a bounded 2-16 candidate search. This remains a
  * Workflow recipe, not a new mode or scheduler. Runtime-owned command gates
- * and clean-baseline scoring require the typed search/evaluator host seam.
+ * and clean-baseline scoring use the optional verified candidate host seam.
  *
  * Run: /workflow run workflows/operate_best_of_n.workflow.js
- * Args: { brief, n?, strategy?, rubric?, model?, thinking?, targetFiles?, writeRoots? }
+ * Args: { brief, n?, strategy?, rubric?, model?, thinking?, targetFiles?, writeRoots?, evaluator? }
  */
 export default async function (args) {
   const brief =
@@ -51,6 +51,10 @@ export default async function (args) {
       artifact_refs: { type: "array", items: { type: "string" } },
     },
   };
+
+  const frozen = args?.evaluator
+    ? await task.verifyCandidate({ action: "summary" })
+    : null;
 
   phase("Candidates");
   const candidateFns = [];
@@ -97,6 +101,38 @@ export default async function (args) {
     );
   }
   const candidates = await parallel(candidateFns);
+
+  if (frozen) {
+    phase("Host verification");
+    const receipts = [];
+    for (let index = 0; index < n; index++) {
+      const candidate_id = `candidate_${index + 1}`;
+      try {
+        const evaluation = await task.verifyCandidate({
+          action: "evaluate", candidate_id,
+        });
+        let replay = null;
+        if (evaluation.status === "PASS") {
+          replay = await task.verifyCandidate({
+            action: "replay", candidate_id,
+          });
+        }
+        receipts.push({ candidate_id, evaluation, replay });
+      } catch (error) {
+        receipts.push({
+          candidate_id,
+          evaluation: { status: "UNKNOWN", reason: String(error) },
+          replay: null,
+        });
+      }
+    }
+    return {
+      scenario: "operate-verified-search",
+      strategy, n, brief, rubric, candidates, frozen, receipts,
+      promotion: "proposal_only",
+      apply_policy: "Explicit human review is required before any apply, push or merge.",
+    };
+  }
 
   phase("Review");
   const review = await task({

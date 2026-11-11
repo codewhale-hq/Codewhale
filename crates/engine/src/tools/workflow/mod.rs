@@ -4,6 +4,7 @@
 //! driver that turns each `task(...)` call into a real `SubAgentManager` spawn.
 
 mod plan_schema;
+mod verified_candidate;
 #[cfg(test)]
 mod shortlist_tests;
 
@@ -56,6 +57,7 @@ use crate::work_graph::{
 };
 use codewhale_agent_contract::role::{FleetRole, public_role_label};
 use codewhale_util::utils::spawn_supervised;
+use verified_candidate::VerifiedCandidateEvaluator;
 
 /// Keep promoted artifacts compact without clipping ordinary evidence reports.
 /// A 900-character cap cut six-line source receipts in half during live Fleet
@@ -1423,6 +1425,38 @@ async fn start_workflow(
         WorkflowFleetBinding::None
     };
     let run_id = format!("workflow_{}", &Uuid::new_v4().to_string()[..8]);
+    let evaluator = if let Some(request) = args.get("evaluator") {
+        if args.get("strategy").and_then(Value::as_str) != Some("search")
+            || source.source
+                != include_str!("../../../../../workflows/operate_best_of_n.workflow.js")
+        {
+            return Err(ToolError::invalid_input(
+                "verified evaluator requires the checked-in search Workflow",
+            ));
+        }
+        let manifest = request
+            .get("manifestPath")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::invalid_input("evaluator.manifestPath is required"))?;
+        let brief = args
+            .get("brief")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::invalid_input("evaluator requires an explicit brief"))?;
+        let path = PathBuf::from(manifest);
+        let workspace = context.workspace.clone();
+        let id = run_id.clone();
+        let brief = brief.to_owned();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                VerifiedCandidateEvaluator::freeze(&path, &workspace, &id, &brief)
+            })
+            .await
+            .map_err(|error| ToolError::execution_failed(error.to_string()))?
+            .map_err(ToolError::invalid_input)?,
+        )
+    } else {
+        None
+    };
     let gate_specs = source
         .spec
         .as_ref()
@@ -1532,6 +1566,13 @@ async fn start_workflow(
         gate_specs,
         context.workspace.clone(),
     );
+    if let Some(evaluator) = evaluator {
+        *driver
+            .evaluator
+            .lock()
+            .map_err(|_| ToolError::execution_failed("evaluator lock poisoned"))? =
+            Some(Arc::new(Mutex::new(evaluator)));
+    }
     let vm_cancel = WorkflowRunCancel::new();
     let controller = Arc::new(
         WorkflowRunController::new(driver.clone(), vm_cancel.clone()).with_parent_completion(!wait),
@@ -4018,6 +4059,7 @@ struct SubAgentWorkflowDriver {
     /// Workspace root, for durable `responseSchema` raw-output artifacts
     /// written beside the run report (#5583).
     workspace: PathBuf,
+    evaluator: Mutex<Option<Arc<Mutex<VerifiedCandidateEvaluator>>>>,
 }
 
 /// A single-consumer handoff remains reserved during admission. If routing,
@@ -4102,6 +4144,7 @@ impl SubAgentWorkflowDriver {
             fleet_name,
             fleet,
             workspace,
+            evaluator: Mutex::new(None),
         });
         spawn_completion_pump(driver.clone(), completion_rx);
         driver
@@ -5058,6 +5101,81 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
             self.record_dispatch_failure(label, phase, err.to_string(), queue_ticket);
         }
         result
+    }
+
+    async fn verify_candidate(&self, request: Value) -> Result<Value, DriverError> {
+        let evaluator = self
+            .evaluator
+            .lock()
+            .map_err(|_| DriverError::Unavailable("evaluator lock poisoned".to_string()))?
+            .clone()
+            .ok_or_else(|| {
+                DriverError::Rejected("evaluator was not frozen before Workflow start".to_string())
+            })?;
+        let action = request
+            .get("action")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DriverError::Rejected("evaluator action is required".to_string()))?;
+        if action == "summary" {
+            return evaluator
+                .lock()
+                .map_err(|_| DriverError::Unavailable("evaluator lock poisoned".to_string()))
+                .map(|evaluator| evaluator.summary());
+        }
+        if action != "evaluate" && action != "replay" {
+            return Err(DriverError::Rejected("unsupported evaluator action".to_string()));
+        }
+        let id = request
+            .get("candidate_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DriverError::Rejected("candidate_id is required".to_string()))?
+            .to_owned();
+        let record = if action == "evaluate" {
+            let records = self
+                .task_records
+                .lock()
+                .map_err(|_| DriverError::Unavailable("task ledger lock poisoned".to_string()))?;
+            let matches = records
+                .values()
+                .filter(|record| record.label.as_deref() == Some(id.as_str()))
+                .collect::<Vec<_>>();
+            if matches.len() != 1 || matches[0].status != IrWorkflowRunStatus::Succeeded {
+                return Err(DriverError::Rejected(
+                    "candidate task did not complete uniquely".to_string(),
+                ));
+            }
+            Some(matches[0].clone())
+        } else {
+            None
+        };
+        let manager = self.manager.clone();
+        let cancel = self.runtime.cancel_token.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut evaluator = evaluator
+                .lock()
+                .map_err(|_| "evaluator lock poisoned".to_string())?;
+            if let Some(record) = record {
+                let result = manager
+                    .blocking_read()
+                    .get_result(&record.agent_id)
+                    .map_err(|error| error.to_string())?;
+                let workspace = result
+                    .workspace
+                    .as_ref()
+                    .ok_or("completed worker has no worktree receipt")?;
+                evaluator.evaluate(
+                    &id,
+                    workspace,
+                    matches!(result.status, SubAgentStatus::Completed),
+                    &cancel,
+                )
+            } else {
+                evaluator.replay(&id, &cancel)
+            }
+        })
+        .await
+        .map_err(|error| DriverError::Unavailable(error.to_string()))?
+        .map_err(DriverError::Rejected)
     }
 
     fn cancel_all(&self) {
