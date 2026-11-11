@@ -85,6 +85,29 @@ file and run a different task baseline with
 `--transfer-source-evaluation-id ID`. Cross-task workers receive the
 policy, never the previous task's code artifact.
 
+## R3 policy panel and restart checks
+
+The receipt selector in `scripts/experimental-evolution-r3-policy-panel.py`
+requires two policies on the same two DEV task/replicate cells. It reads the
+native evaluator receipts and complete Workflow task ledgers, including
+planner, writer and DEV-review costs. A missing receipt makes that cell fail.
+The selected genome is then frozen for a fresh task. Its promotion receipt
+can be `NOT_QUALIFIED` even when the new task passes; no policy is installed.
+Use `scripts/experimental-evolution-r3-policy-panel-e2e.py` to exercise the
+selection and provenance contract without a provider request.
+
+A completed nonfinal generation can write a checkpoint and pause. Pass its
+`checkpoint-gN.json` as `resumeFrom` in a new Workflow process. Resume checks
+the binary, frozen baseline/oracle/policy, prior artifact blobs, selection
+history, request events and consumed budget before any new model request.
+Unknown work after the checkpoint rejects resume. A prior winner is replayed
+from its sealed artifact; new candidate evaluation still needs a completed
+current-process Fleet worker. The native
+`scripts/experimental-evolution-r3-native-resume-e2e.py` runs G1/G2, exits,
+resumes G3 and checks the five identity refusals with a local scripted
+provider. The native isolation, CAS, backend and cancellation E2Es in
+`scripts/experimental-evolution-r3-native-*-e2e.py` use the same local route.
+
 ## Replay without provider or original worker checkout
 
 ```bash
@@ -104,7 +127,9 @@ nor a provider key. Use an existing PASS candidate ID from the named bundle.
 
 The host enforces request, model-turn, candidate, generation, repair and wall
 ceilings and records reported usage. It does not enforce a provider token or
-currency cap. Model-reported usage can be missing. A complete crash-resumable
-multi-task policy fitness ledger and an untouched task-family promotion panel
-remain outside this draft. Report those gaps with any pilot result; do not
-promote a shadow policy from task-local held-out cases alone.
+currency cap or aggregate scratch/memory quota. Model-reported usage can be
+missing. Recovery is limited to completed generation boundaries. A complete
+crash-resumable multi-task policy fitness ledger, mid-request settlement and
+an untouched task-family promotion panel remain outside this draft. Report
+those gaps with any pilot result; do not promote a shadow policy from
+task-local held-out cases alone.
