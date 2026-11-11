@@ -2168,6 +2168,14 @@ impl ShellManager {
         self.sandbox_manager.set_prefer_bwrap(prefer);
     }
 
+    pub fn set_tool_launcher(&mut self, launcher: Option<Vec<String>>) {
+        self.sandbox_manager.set_tool_launcher(launcher);
+    }
+
+    pub fn tool_launcher_active(&self) -> bool {
+        self.sandbox_manager.tool_launcher_active()
+    }
+
     /// Move the fallback working directory. Callers that pass an explicit
     /// `working_dir` are unaffected; this only keeps `None` honest when a
     /// thread's workspace changes while its jobs are still tracked here.
@@ -2226,7 +2234,10 @@ impl ShellManager {
         )
         .with_policy(policy.clone())
         .with_env(env.clone());
-        let prepared = self.sandbox_manager.prepare(&spec);
+        let prepared = self
+            .sandbox_manager
+            .try_prepare(&spec)
+            .map_err(anyhow::Error::msg)?;
         if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. }) {
             require_native_readonly_execution(&prepared)?;
         }
@@ -2462,7 +2473,11 @@ impl ShellManager {
             CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
         };
         let spec = spec.with_policy(policy).with_env(extra_env);
-        let exec_env = self.sandbox_manager.prepare(&spec);
+        let exec_env = self.sandbox_manager.try_prepare(&spec).map_err(|message| {
+            anyhow::Error::msg(message.clone())
+                .context(ShellLaunchNotStarted)
+                .context(message)
+        })?;
         if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. })
             && readonly_workspace.is_none()
         {
@@ -2534,7 +2549,10 @@ impl ShellManager {
         let spec = CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
             .with_policy(policy)
             .with_env(extra_env);
-        let exec_env = self.sandbox_manager.prepare(&spec);
+        let exec_env = self
+            .sandbox_manager
+            .try_prepare(&spec)
+            .map_err(anyhow::Error::msg)?;
         if matches!(spec.sandbox_policy, ExecutionSandboxPolicy::ReadOnly { .. }) {
             require_native_readonly_execution(&exec_env)?;
         }
@@ -6043,6 +6061,25 @@ impl ToolSpec for BashTool {
         input: &serde_json::Value,
         context: &ToolContext,
     ) -> Option<ToolResult> {
+        if input
+            .get("sandbox_permissions")
+            .and_then(serde_json::Value::as_str)
+            == Some("danger-full-access")
+            && context
+                .shell_manager
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .tool_launcher_active()
+        {
+            return Some(ToolResult {
+                content: "BLOCKED: this host runs tool commands as another user, and only inside the sandbox, so a danger-full-access escalation cannot run. Retry without sandbox_permissions.".to_string(),
+                success: false,
+                metadata: Some(json!({
+                    "blocked": true,
+                    "reason": "tool_launcher_requires_sandbox",
+                })),
+            });
+        }
         if context.auto_approve {
             return None;
         }

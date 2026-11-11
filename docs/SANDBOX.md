@@ -82,7 +82,10 @@ wrapper derives its mounts and network namespace from the resolved
 ```
 
 The sandbox always gets a private `/dev` (fresh device nodes, so `>/dev/null`
-works), a private `/proc`, and a tmpfs `/tmp` (#5410). Two optional top-level
+works), a private `/proc`, and a tmpfs `/tmp` (#5410). A `workspace-write`
+policy then binds the host `/tmp` (and `TMPDIR`) over that tmpfs unless it
+excludes them, so by default a sandboxed command shares the host's `/tmp`,
+writable, with the usual sticky-bit rules. Two optional top-level
 config keys extend the mounts: `bwrap_ro_roots` (extra host paths bind-mounted
 read-only, applied last so they can narrow a policy-writable path) and
 `bwrap_dev_roots` (host character/block device nodes bind-mounted read-write;
@@ -116,6 +119,63 @@ Install bubblewrap separately to get enforcement on Linux:
 - Arch: `pacman -S bubblewrap`
 
 Codewhale does not vendor bubblewrap.
+
+### Running tools as another user
+
+A host that must keep tool commands away from the Engine's own files (a cloud
+computer, for example) can run every sandboxed command as a separate Linux
+user. The managed configuration sets an argv prefix that changes user, and
+pins a sandboxed mode beside it:
+
+```toml
+sandbox_mode = "workspace-write"
+tool_launcher = ["/usr/bin/sudo", "-n", "-u", "agent", "--", "/usr/local/bin/agent-exec"]
+```
+
+The launcher goes in front of bubblewrap, not inside it: every unprivileged
+confinement sets no-new-privileges, and a setuid program started under it
+cannot switch user. The command becomes
+`<launcher...> /usr/bin/bwrap ... -- <program> <args>`, so the tool runs as the
+other user, with no-new-privileges, inside the same mounts, masks and network
+namespace a local command gets. `--die-with-parent` stays, so a cancel or
+timeout that kills the launcher ends the whole sandbox.
+
+The key is read only from the managed configuration
+(`CODEWHALE_MANAGED_CONFIG_PATH`, or the default managed path), only on Linux,
+and only when neither that file nor any directory above it can be changed by
+the Engine's own user. Anywhere else (a user `config.toml`, a profile, a
+project config) it is a load error. Without it, nothing on this page changes.
+
+With a launcher configured:
+
+- **Fail closed.** A command runs under bubblewrap or not at all. The Engine
+  probes the launcher (its user and groups, then one wrapped `/bin/true` with
+  the deny masks) before the first command; a failed probe,
+  `prefer_bwrap = false`, or a policy that would skip the sandbox
+  (`danger-full-access`, `external-sandbox`, including an approved per-command
+  escalation) refuses the command with the reason, and nothing runs. The
+  managed `sandbox_mode` must be `workspace-write` or `read-only`.
+- **Masks for the other user.** Bubblewrap creates each mask as the
+  launcher's user, so every command's masks and binds are computed for that
+  user: a denied path below a directory it cannot search is masked at the
+  highest such directory, and a bind it cannot reach is dropped. The built-in
+  deny list stays on; it also guards the Engine's own file tools.
+- **Private `/tmp`.** Each command gets a fresh tmpfs `/tmp`; the host `/tmp`
+  and `TMPDIR` are not bound, so the tool user cannot leave files there for the
+  Engine's user. Scratch files that must outlive one command belong in the
+  workspace.
+- **Network** follows the policy as everywhere else: a managed
+  `sandbox_network_access = true` adds `--share-net`, and then only the host's
+  own firewall rules for the tool user fence it.
+- **Runtime info.** `GET /v1/runtime/info` reports `sandbox.kind`
+  (`linux-bwrap` once the launcher probe passed) and `sandbox.tool_launcher`.
+
+Limits: only commands the sandbox manager prepares (shell commands, terminal
+sessions, workspace runners) go through the launcher. In-process file tools,
+MCP servers, hooks, LSP servers and the extension host still run as the
+Engine's user. Deny-list exceptions are not applied under a launcher. Search
+rights come from mode bits and group membership, not ACLs. Processes keep
+running after the Engine itself dies, until bubblewrap's parent exits.
 
 ## Windows: no advertised OS sandbox
 

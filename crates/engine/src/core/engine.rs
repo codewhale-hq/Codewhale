@@ -566,6 +566,7 @@ pub struct EngineConfig {
     /// When true and `/usr/bin/bwrap` is executable on Linux, route exec_shell
     /// through bubblewrap (#2184).
     pub prefer_bwrap: bool,
+    pub tool_launcher: Option<Vec<String>>,
     /// User-configured bwrap mount extensions (#5410): extra read-only roots
     /// and writable device nodes such as `/dev/null`.
     pub bwrap_extensions: codewhale_sandbox::BwrapMountExtensions,
@@ -700,6 +701,7 @@ impl Default for EngineConfig {
             goal_max_steps: None,
             // Mirrors `Config::prefers_bwrap`: on unless explicitly opted out.
             prefer_bwrap: true,
+            tool_launcher: None,
             bwrap_extensions: codewhale_sandbox::BwrapMountExtensions::default(),
             // Fail-closed (F7): `Engine::new` unconditionally installs this
             // list process-wide via `read_guard::set_active`, so a default
@@ -2541,12 +2543,14 @@ impl Engine {
             match shell_manager.lock() {
                 Ok(mut manager) => {
                     manager.set_prefer_bwrap(config.prefer_bwrap);
+                    manager.set_tool_launcher(config.tool_launcher.clone());
                     manager.set_bwrap_extensions(config.bwrap_extensions.clone());
                     manager.set_denied_read_subpaths(config.read_denylist.subtree_paths());
                 }
                 Err(poisoned) => {
                     let mut manager = poisoned.into_inner();
                     manager.set_prefer_bwrap(config.prefer_bwrap);
+                    manager.set_tool_launcher(config.tool_launcher.clone());
                     manager.set_bwrap_extensions(config.bwrap_extensions.clone());
                     manager.set_denied_read_subpaths(config.read_denylist.subtree_paths());
                 }

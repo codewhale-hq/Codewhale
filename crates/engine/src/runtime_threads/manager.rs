@@ -14738,6 +14738,7 @@ source_usage_records: Default::default(),
                     cfg.subagent_heartbeat_timeout_secs_for_provider(&route_identity),
                 ),
                 prefer_bwrap: cfg.prefers_bwrap(),
+                tool_launcher: cfg.tool_launcher.clone(),
                 bwrap_extensions: codewhale_sandbox::BwrapMountExtensions {
                     read_only_roots: cfg.bwrap_ro_roots.clone(),
                     device_roots: cfg.bwrap_dev_roots.clone(),
@@ -15155,10 +15156,11 @@ source_usage_records: Default::default(),
         if let Some(environment) = thread.environment.as_ref() {
             return Err(environment.refusal().into());
         }
-        let (prefer_bwrap, bwrap_extensions, denied_read_paths) = {
+        let (prefer_bwrap, tool_launcher, bwrap_extensions, denied_read_paths) = {
             let cfg = self.read_config();
             (
                 cfg.prefers_bwrap(),
+                cfg.tool_launcher.clone(),
                 codewhale_sandbox::BwrapMountExtensions {
                     read_only_roots: cfg.bwrap_ro_roots.clone(),
                     device_roots: cfg.bwrap_dev_roots.clone(),
@@ -15173,6 +15175,7 @@ source_usage_records: Default::default(),
                 let manager = new_shared_shell_manager(thread.workspace.clone());
                 if let Ok(mut guard) = manager.lock() {
                     guard.set_prefer_bwrap(prefer_bwrap);
+                    guard.set_tool_launcher(tool_launcher);
                     guard.set_bwrap_extensions(bwrap_extensions);
                     guard.set_denied_read_subpaths(denied_read_paths);
                 }

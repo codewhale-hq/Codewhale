@@ -157,6 +157,149 @@ pub fn is_available() -> bool {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchIdentity {
+    pub uid: u32,
+    pub gids: Vec<u32>,
+}
+
+#[cfg(target_os = "linux")]
+impl LaunchIdentity {
+    fn can_search(&self, dir: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(metadata) = std::fs::metadata(dir) else {
+            return false;
+        };
+        if self.uid == 0 {
+            return true;
+        }
+        let mode = metadata.mode();
+        if metadata.uid() == self.uid {
+            mode & 0o100 != 0
+        } else if self.gids.contains(&metadata.gid()) {
+            mode & 0o010 != 0
+        } else {
+            mode & 0o001 != 0
+        }
+    }
+
+    pub(crate) fn reaches(&self, path: &Path) -> bool {
+        path.ancestors().skip(1).all(|dir| self.can_search(dir))
+    }
+
+    pub(crate) fn mask_target(&self, path: &Path) -> PathBuf {
+        let mut ancestors: Vec<&Path> = path.ancestors().skip(1).collect();
+        ancestors.reverse();
+        ancestors
+            .into_iter()
+            .find(|dir| *dir != Path::new("/") && !self.can_search(dir))
+            .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
+    }
+
+    fn parse(output: &str) -> Option<Self> {
+        let mut lines = output.lines();
+        let uid = lines.next()?.trim().parse().ok()?;
+        let gids = lines
+            .next()?
+            .split_whitespace()
+            .map(str::parse)
+            .collect::<Result<Vec<u32>, _>>()
+            .ok()?;
+        Some(Self { uid, gids })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_probe(argv: &[String]) -> Result<String, String> {
+    use std::io::Read as _;
+    use wait_timeout::ChildExt as _;
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| "empty probe command".to_string())?;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{program} could not start: {error}"))?;
+    let status = match child.wait_timeout(PROBE_DEADLINE) {
+        Ok(Some(status)) => status,
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "{program} did not finish within {}s",
+                PROBE_DEADLINE.as_secs()
+            ));
+        }
+    };
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    if status.success() {
+        return Ok(stdout);
+    }
+    let reason = super::bwrap_setup_failure(&stderr)
+        .or_else(|| stderr.lines().map(str::trim).find(|line| !line.is_empty()))
+        .map_or_else(|| format!("{program} exited with {status}"), str::to_string);
+    Err(reason.chars().take(400).collect())
+}
+
+#[cfg(target_os = "linux")]
+pub fn probe_launcher(
+    launcher: &[String],
+    denied_read_subpaths: &[PathBuf],
+) -> Result<LaunchIdentity, String> {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    type Key = (Vec<String>, Vec<PathBuf>);
+    static READY: LazyLock<Mutex<HashMap<Key, LaunchIdentity>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let key = (launcher.to_vec(), denied_read_subpaths.to_vec());
+    if let Some(identity) = READY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+    {
+        return Ok(identity.clone());
+    }
+    if !is_executable(Path::new(BWRAP_PATH)) {
+        return Err(format!("{BWRAP_PATH} is not installed"));
+    }
+    let mut id_command = launcher.to_vec();
+    id_command.extend(["/bin/sh", "-c", "id -u && id -G"].map(str::to_string));
+    let identity = LaunchIdentity::parse(&run_probe(&id_command)?)
+        .ok_or_else(|| "the launcher did not report its user and groups".to_string())?;
+    let mut bwrap_command = launcher.to_vec();
+    bwrap_command.extend(build_bwrap_command_with_read_paths(
+        Path::new("/"),
+        "/bin/true",
+        &[],
+        &[],
+        false,
+        &crate::BwrapMountExtensions::default(),
+        denied_read_subpaths,
+        &[],
+        None,
+        Some(&identity),
+    ));
+    run_probe(&bwrap_command)?;
+    READY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, identity.clone());
+    Ok(identity)
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
@@ -211,6 +354,7 @@ pub fn build_bwrap_command(
         denied_read_subpaths,
         denied_read_exceptions,
         None,
+        None,
     )
 }
 
@@ -226,9 +370,22 @@ pub(crate) fn build_bwrap_command_with_read_paths(
     denied_read_subpaths: &[std::path::PathBuf],
     denied_read_exceptions: &[std::path::PathBuf],
     readable_paths: Option<&[PathBuf]>,
+    launch_identity: Option<&LaunchIdentity>,
 ) -> Vec<String> {
-    let (writable_mounts, read_only_mounts) = safe_mounts(writable_roots);
-    let (extra_read_only, device_mounts) = extensions.resolve();
+    let reachable = |path: &PathBuf| launch_identity.is_none_or(|identity| identity.reaches(path));
+    let (mut writable_mounts, mut read_only_mounts) = safe_mounts(writable_roots);
+    let (mut extra_read_only, mut device_mounts) = extensions.resolve();
+    writable_mounts.retain(reachable);
+    read_only_mounts.retain(reachable);
+    extra_read_only.retain(reachable);
+    device_mounts.retain(reachable);
+    let readable_paths: Option<Vec<PathBuf>> = readable_paths.map(|paths| {
+        paths
+            .iter()
+            .filter(|path| reachable(path))
+            .cloned()
+            .collect()
+    });
     let mut cmd: Vec<String> =
         Vec::with_capacity(10 + args.len() + 3 * (writable_mounts.len() + read_only_mounts.len()));
 
@@ -263,7 +420,7 @@ pub(crate) fn build_bwrap_command_with_read_paths(
     cmd.push("--tmpfs".to_string());
     cmd.push("/tmp".to_string());
 
-    if let Some(paths) = readable_paths {
+    if let Some(paths) = &readable_paths {
         for path in paths {
             cmd.push("--ro-bind".to_string());
             cmd.push(path.to_string_lossy().into_owned());
@@ -310,8 +467,22 @@ pub(crate) fn build_bwrap_command_with_read_paths(
     // re-exposes a denied path: an existing directory is masked with an empty
     // tmpfs, an existing file with a bind of /dev/null. Non-existent paths
     // are skipped — there is nothing to deny.
+    let mut lifted_masks: Vec<PathBuf> = Vec::new();
     for denied in denied_read_subpaths {
-        cmd.extend(super::bwrap_mask_args(denied));
+        let lifted = launch_identity.and_then(|identity| {
+            let resolved = std::fs::canonicalize(denied).ok()?;
+            let target = identity.mask_target(&resolved);
+            (target != resolved).then_some(target)
+        });
+        match lifted {
+            Some(target) if lifted_masks.contains(&target) => {}
+            Some(target) => {
+                cmd.push("--tmpfs".to_string());
+                cmd.push(target.to_string_lossy().into_owned());
+                lifted_masks.push(target);
+            }
+            None => cmd.extend(super::bwrap_mask_args(denied)),
+        }
     }
 
     // Exceptions inside a masked directory (the extension host's own files
@@ -646,6 +817,85 @@ mod tests {
         assert!(mask[0] < exception[0], "{cmd:?}");
         assert!(data_binds.last() > Some(&exception[0]), "{cmd:?}");
         assert!(!cmd.iter().any(|arg| arg.ends_with("/plugins")), "{cmd:?}");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_deny_path_the_launcher_user_cannot_reach_is_masked_at_its_highest_closed_ancestor() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir_in("/tmp").expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical tempdir");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let closed = root.join("engine-home");
+        let secret = closed.join(".codewhale/secrets");
+        std::fs::create_dir_all(&secret).expect("secret dir");
+        std::fs::create_dir_all(closed.join("work")).expect("closed work dir");
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let open = root.join("workspace");
+        let open_secret = open.join(".env");
+        std::fs::create_dir_all(&open).expect("workspace");
+        std::fs::write(&open_secret, b"x").expect("open secret");
+        let stranger = LaunchIdentity {
+            uid: u32::MAX - 7,
+            gids: vec![u32::MAX - 7],
+        };
+        assert_eq!(stranger.mask_target(&secret), closed);
+        assert_eq!(stranger.mask_target(&open_secret), open_secret);
+        assert!(stranger.reaches(&open));
+        assert!(!stranger.reaches(&closed.join("work")));
+
+        let cmd = build_bwrap_command_with_read_paths(
+            &open,
+            "true",
+            &[],
+            &[
+                WritableRoot::new(open.clone()),
+                WritableRoot::new(closed.join("work")),
+            ],
+            false,
+            &crate::BwrapMountExtensions::default(),
+            &[
+                secret.clone(),
+                closed.join(".ssh-missing"),
+                open_secret.clone(),
+            ],
+            &[],
+            None,
+            Some(&stranger),
+        );
+        let masks: Vec<&[String]> = cmd
+            .windows(2)
+            .filter(|args| args[0] == "--tmpfs" && args[1] != "/tmp")
+            .collect();
+        assert_eq!(masks.len(), 1, "{cmd:?}");
+        assert_eq!(masks[0][1], closed.to_string_lossy());
+        assert!(!cmd.iter().any(|arg| arg.ends_with("/secrets")), "{cmd:?}");
+        assert!(has_mount(&cmd, "--bind", &open));
+        assert!(!cmd.iter().any(|arg| arg.ends_with("/work")), "{cmd:?}");
+        assert!(
+            cmd.windows(3).any(|args| args[0] == "--ro-bind"
+                && args[1] == "/dev/null"
+                && args[2] == open_secret.to_string_lossy()),
+            "{cmd:?}"
+        );
+        assert!(cmd.iter().any(|arg| arg == "--die-with-parent"));
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn launch_identity_parses_id_output() {
+        assert_eq!(
+            LaunchIdentity::parse("1001\n1001 27 100\n"),
+            Some(LaunchIdentity {
+                uid: 1001,
+                gids: vec![1001, 27, 100],
+            })
+        );
+        assert_eq!(
+            LaunchIdentity::parse("sudo: a password is required\n"),
+            None
+        );
     }
 
     #[cfg(target_os = "linux")]

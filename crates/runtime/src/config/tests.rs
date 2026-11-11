@@ -12192,3 +12192,138 @@ fn custom_provider_responses_profile_round_trips() {
     let rendered = toml::to_string(entry).expect("serialize");
     assert!(rendered.contains("responses_profile = \"standard\""));
 }
+
+#[test]
+fn tool_launcher_is_refused_outside_the_managed_layer() -> Result<()> {
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let _managed = EnvVarGuard::set(
+        "CODEWHALE_MANAGED_CONFIG_PATH",
+        temp_root.path().join("absent-managed.toml"),
+    );
+    let config_path = temp_root.path().join("config.toml");
+    for document in [
+        "tool_launcher = [\"/usr/bin/sudo\", \"-n\", \"-u\", \"agent\", \"--\"]\n",
+        "[profiles.work]\ntool_launcher = [\"/usr/bin/sudo\"]\n",
+    ] {
+        fs::write(&config_path, document)?;
+        let error = Config::load(Some(config_path.clone()), None)
+            .expect_err("user-layer tool_launcher is a load error");
+        assert!(
+            format!("{error:#}").contains("read only from the managed configuration"),
+            "{error:#}"
+        );
+    }
+    fs::write(&config_path, "prefer_bwrap = true\n")?;
+    assert_eq!(Config::load(Some(config_path), None)?.tool_launcher, None);
+    Ok(())
+}
+
+#[test]
+fn tool_launcher_is_refused_from_a_managed_file_the_engine_can_write() -> Result<()> {
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let managed_path = temp_root.path().join("managed.toml");
+    fs::write(
+        &managed_path,
+        "sandbox_mode = \"workspace-write\"\ntool_launcher = [\"/usr/bin/sudo\", \"-n\"]\n",
+    )?;
+    let _managed = EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", &managed_path);
+    let config_path = temp_root.path().join("config.toml");
+    fs::write(&config_path, "")?;
+    let error = Config::load(Some(config_path), None).expect_err("refused");
+    let expected = if cfg!(all(target_os = "linux", not(target_env = "ohos"))) {
+        "the Engine's own user can change that file"
+    } else {
+        "supported only on Linux"
+    };
+    assert!(format!("{error:#}").contains(expected), "{error:#}");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_managed_file_is_replaceable_through_any_writable_ancestor() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let temp_root = tempfile::tempdir()?;
+    let sealed_dir = temp_root.path().join("etc");
+    fs::create_dir(&sealed_dir)?;
+    let file = sealed_dir.join("managed.toml");
+    fs::write(&file, "")?;
+    assert!(engine_can_replace(&file));
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o444))?;
+    fs::set_permissions(&sealed_dir, fs::Permissions::from_mode(0o555))?;
+    let through_grandparent = engine_can_replace(&file);
+    fs::set_permissions(&sealed_dir, fs::Permissions::from_mode(0o755))?;
+    assert!(through_grandparent);
+    if !engine_can_replace(Path::new("/")) {
+        assert!(!engine_can_replace(Path::new("/etc/passwd")));
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+fn tool_launcher_is_read_from_a_sealed_managed_file() -> Result<()> {
+    struct Sealed;
+    impl Drop for Sealed {
+        fn drop(&mut self) {
+            TEST_TREAT_MANAGED_FILE_AS_SEALED.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let managed_path = temp_root.path().join("managed.toml");
+    let config_path = temp_root.path().join("config.toml");
+    fs::write(&config_path, "")?;
+    let _managed = EnvVarGuard::set("CODEWHALE_MANAGED_CONFIG_PATH", &managed_path);
+    TEST_TREAT_MANAGED_FILE_AS_SEALED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _sealed = Sealed;
+
+    fs::write(
+        &managed_path,
+        "sandbox_mode = \"workspace-write\"\nsandbox_network_access = true\ntool_launcher = [\"/usr/bin/sudo\", \"-n\", \"-u\", \"agent\", \"--\", \"/opt/exec\"]\n",
+    )?;
+    let config = Config::load(Some(config_path.clone()), None)?;
+    assert_eq!(
+        config.tool_launcher.as_deref(),
+        Some(
+            ["/usr/bin/sudo", "-n", "-u", "agent", "--", "/opt/exec"]
+                .map(str::to_string)
+                .as_slice()
+        )
+    );
+    assert_eq!(config.sandbox_mode.as_deref(), Some("workspace-write"));
+    assert_eq!(config.sandbox_network_access, Some(true));
+
+    for (document, expected) in [
+        (
+            "tool_launcher = [\"/usr/bin/sudo\"]\n",
+            "needs `sandbox_mode",
+        ),
+        (
+            "sandbox_mode = \"danger-full-access\"\ntool_launcher = [\"/usr/bin/sudo\"]\n",
+            "needs `sandbox_mode",
+        ),
+        (
+            "sandbox_mode = \"workspace-write\"\ntool_launcher = [\"sudo\"]\n",
+            "absolute program path",
+        ),
+        (
+            "sandbox_mode = \"workspace-write\"\ntool_launcher = \"/usr/bin/sudo\"\n",
+            "absolute program path",
+        ),
+        (
+            "sandbox_mode = \"workspace-write\"\n[profiles.work]\ntool_launcher = [\"/usr/bin/sudo\"]\n",
+            "not in a profile",
+        ),
+    ] {
+        fs::write(&managed_path, document)?;
+        let error = Config::load(Some(config_path.clone()), None).expect_err(document);
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+    }
+    Ok(())
+}

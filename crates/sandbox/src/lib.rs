@@ -354,25 +354,21 @@ impl ExecEnv {
         let mut command = portable_pty::CommandBuilder::new(self.program());
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         if self.sandbox_type == SandboxType::LinuxBubblewrap {
+            let (bwrap_index, separator) = bwrap_target_split(&self.command)
+                .ok_or_else(|| anyhow::anyhow!("sandboxed PTY command is missing its target"))?;
             anyhow::ensure!(
-                self.program() == bwrap::BWRAP_PATH,
+                bwrap_index < separator,
                 "sandboxed PTY requires the configured bubblewrap wrapper"
             );
-            let args = self.args();
-            let separator = args
-                .iter()
-                .position(|arg| arg == "--")
-                .filter(|index| index + 1 < args.len())
-                .ok_or_else(|| anyhow::anyhow!("sandboxed PTY command is missing its target"))?;
             let setsid = ["/usr/bin/setsid", "/bin/setsid"]
                 .into_iter()
                 .find(|path| bwrap::is_executable(std::path::Path::new(path)))
                 .ok_or_else(|| {
                     anyhow::anyhow!("sandboxed PTY requires util-linux setsid; install util-linux")
                 })?;
-            command.args(&args[..=separator]);
+            command.args(&self.command[1..=separator]);
             command.args([setsid, "--ctty", "--wait", "--"]);
-            command.args(&args[separator + 1..]);
+            command.args(&self.command[separator + 1..]);
             command.set_controlling_tty(false);
         } else {
             command.args(self.args());
@@ -443,6 +439,17 @@ pub fn get_platform_sandbox_with_bwrap_preference(prefer_bwrap: bool) -> Option<
 #[cfg(test)]
 pub fn is_sandbox_available() -> bool {
     get_platform_sandbox().is_some()
+}
+
+#[cfg(any(test, all(target_os = "linux", not(target_env = "ohos"))))]
+fn bwrap_target_split(command: &[String]) -> Option<(usize, usize)> {
+    let bwrap_index = command.iter().position(|arg| arg == "/usr/bin/bwrap")?;
+    let separator = command[bwrap_index + 1..]
+        .iter()
+        .position(|arg| arg == "--")
+        .map(|offset| bwrap_index + 1 + offset)
+        .filter(|index| index + 1 < command.len())?;
+    Some((bwrap_index, separator))
 }
 
 pub fn bwrap_setup_failure(stderr: &str) -> Option<&str> {
@@ -652,6 +659,8 @@ pub struct SandboxManager {
         all(target_os = "linux", not(target_env = "ohos"))
     ))]
     readable_paths: Option<Vec<PathBuf>>,
+
+    tool_launcher: Option<Vec<String>>,
 }
 
 impl SandboxManager {
@@ -751,6 +760,38 @@ impl SandboxManager {
         let _ = paths;
     }
 
+    /// Run every prepared command through `launcher`, an argv prefix that
+    /// changes the user commands run as (for example
+    /// `sudo -n -u <user> -- <exec-wrapper>`). It stands in front of
+    /// bubblewrap, because every unprivileged confinement sets
+    /// no-new-privileges and a setuid launcher inside it cannot switch user.
+    /// Only the managed configuration layer can set it (`Config::tool_launcher`).
+    ///
+    /// With a launcher, a command always runs under bubblewrap or not at all:
+    /// a policy that would leave it unwrapped (`danger-full-access`, an
+    /// external sandbox), `prefer_bwrap = false`, a failed probe through the
+    /// launcher, or a non-Linux host refuses the command. Masks and binds are
+    /// computed for the launcher's user on every command: a path whose
+    /// ancestors that user cannot search is masked at the highest such
+    /// ancestor, or dropped when it is a bind. Each command gets a private
+    /// `/tmp` instead of the host's.
+    ///
+    /// Known limitations: it covers only commands prepared here (shell
+    /// commands, PTY sessions and workspace runners). In-process file tools,
+    /// MCP servers, hooks, LSP servers and the extension host still run as the
+    /// Engine's own user. Deny-list exceptions are not applied, so a denied
+    /// directory stays masked whole. Search rights are read from mode bits and
+    /// group membership; ACLs are not consulted. Processes still run after the
+    /// Engine itself dies, until bubblewrap's parent exits.
+    pub fn set_tool_launcher(&mut self, launcher: Option<Vec<String>>) {
+        self.tool_launcher = launcher.filter(|argv| !argv.is_empty());
+        self.sandbox_available = None;
+    }
+
+    pub fn tool_launcher_active(&self) -> bool {
+        self.tool_launcher.is_some()
+    }
+
     /// Test-only view of the resolved deny-list (post home-expansion and
     /// canonicalization).
     #[cfg(test)]
@@ -771,7 +812,30 @@ impl SandboxManager {
 
     /// Return the wrapper this manager is configured and able to apply.
     pub fn configured_sandbox(&self) -> Option<SandboxType> {
+        if self.tool_launcher.is_some() {
+            #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+            return self
+                .launcher_identity()
+                .ok()
+                .map(|_| SandboxType::LinuxBubblewrap);
+            #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
+            return None;
+        }
         get_platform_sandbox_with_bwrap_preference(self.prefer_bwrap)
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    fn launcher_identity(&self) -> Result<bwrap::LaunchIdentity, String> {
+        let launcher = self
+            .tool_launcher
+            .as_deref()
+            .ok_or_else(|| "no tool launcher is configured".to_string())?;
+        if !self.prefer_bwrap {
+            return Err(
+                "tool_launcher needs bubblewrap, and prefer_bwrap = false turns it off".to_string(),
+            );
+        }
+        bwrap::probe_launcher(launcher, &self.denied_read_subpaths)
     }
 
     /// Select the appropriate sandbox type for the given policy.
@@ -795,19 +859,72 @@ impl SandboxManager {
     /// specification and returns the actual command to run, which may
     /// include sandbox wrapper commands.
     pub fn prepare(&self, spec: &CommandSpec) -> ExecEnv {
+        self.try_prepare(spec)
+            .unwrap_or_else(|reason| Self::prepare_refusal(spec, &reason))
+    }
+
+    /// Like [`Self::prepare`], but a command that must not run (a tool
+    /// launcher whose sandbox cannot be applied) is an error naming why.
+    pub fn try_prepare(&self, spec: &CommandSpec) -> Result<ExecEnv, String> {
+        if self.tool_launcher.is_some() {
+            return self.prepare_launched(spec);
+        }
         let sandbox_type = self.select_sandbox(&spec.sandbox_policy);
 
-        match sandbox_type {
+        Ok(match sandbox_type {
             SandboxType::None => Self::prepare_unsandboxed(spec),
 
             #[cfg(target_os = "macos")]
             SandboxType::MacosSeatbelt => self.prepare_seatbelt(spec),
 
             #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-            SandboxType::LinuxBubblewrap => self.prepare_bwrap(spec),
+            SandboxType::LinuxBubblewrap => self.prepare_bwrap(spec, None),
 
             #[cfg(target_os = "windows")]
             SandboxType::Windows => Self::prepare_windows(spec),
+        })
+    }
+
+    fn prepare_launched(&self, spec: &CommandSpec) -> Result<ExecEnv, String> {
+        if !spec.sandbox_policy.should_sandbox() {
+            return Err(format!(
+                "this host runs tool commands as another user, and only inside the sandbox; the {} policy would run this command without it, so nothing was run",
+                spec.sandbox_policy.posture_label()
+            ));
+        }
+        #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+        {
+            let identity = self.launcher_identity().map_err(|error| {
+                format!(
+                    "this host runs tool commands as another user, and the sandbox cannot start through its launcher, so nothing was run: {error}"
+                )
+            })?;
+            let mut env = self.prepare_bwrap(spec, Some(&identity));
+            let mut command = self.tool_launcher.clone().unwrap_or_default();
+            command.append(&mut env.command);
+            env.command = command;
+            Ok(env)
+        }
+        #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
+        {
+            Err("tool_launcher works only on Linux, so nothing was run".to_string())
+        }
+    }
+
+    fn prepare_refusal(spec: &CommandSpec, reason: &str) -> ExecEnv {
+        ExecEnv {
+            command: vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf 'codewhale: %s\\n' \"$1\" >&2; exit 126".to_string(),
+                "codewhale-refusal".to_string(),
+                reason.to_string(),
+            ],
+            cwd: spec.cwd.clone(),
+            env: HashMap::new(),
+            timeout: spec.timeout,
+            sandbox_type: SandboxType::None,
+            policy: spec.sandbox_policy.clone(),
         }
     }
 
@@ -876,19 +993,45 @@ impl SandboxManager {
     /// inherited through the read-only root bind reject `open(O_WRONLY)`
     /// with `EROFS` — `foo >/dev/null` was the original report — and
     /// without `/proc`, toolchains that read process tables misbehave.
-    /// `/tmp` is writable-but-isolated (tmpfs) so linkers and test
-    /// harnesses have scratch space without widening the filesystem
-    /// policy. User-configured extensions (extra read-only roots,
-    /// writable device nodes) apply after the defaults.
+    /// `/tmp` starts as a private tmpfs; a `workspace-write` policy binds the
+    /// host `/tmp` and `TMPDIR` over it unless it excludes them, except under
+    /// a tool launcher, where `/tmp` stays private. User-configured
+    /// extensions (extra read-only roots, writable device nodes) apply after
+    /// the defaults.
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-    fn prepare_bwrap(&self, spec: &CommandSpec) -> ExecEnv {
+    fn prepare_bwrap(
+        &self,
+        spec: &CommandSpec,
+        launch_identity: Option<&bwrap::LaunchIdentity>,
+    ) -> ExecEnv {
         let writable_roots = if self.readable_paths.is_some() {
             vec![policy::WritableRoot::new(spec.cwd.clone())]
         } else {
             if matches!(spec.sandbox_policy, SandboxPolicy::WorkspaceWrite { .. }) {
                 let _ = std::fs::create_dir(spec.cwd.join(".codewhale"));
             }
-            spec.sandbox_policy.get_writable_roots(&spec.cwd)
+            match (&spec.sandbox_policy, launch_identity) {
+                (
+                    SandboxPolicy::WorkspaceWrite {
+                        writable_roots,
+                        network_access,
+                        ..
+                    },
+                    Some(_),
+                ) => SandboxPolicy::WorkspaceWrite {
+                    writable_roots: writable_roots.clone(),
+                    network_access: *network_access,
+                    exclude_tmpdir: true,
+                    exclude_slash_tmp: true,
+                }
+                .get_writable_roots(&spec.cwd),
+                _ => spec.sandbox_policy.get_writable_roots(&spec.cwd),
+            }
+        };
+        let denied_read_exceptions: &[PathBuf] = if launch_identity.is_some() {
+            &[]
+        } else {
+            &self.denied_read_exceptions
         };
         let command = bwrap::build_bwrap_command_with_read_paths(
             &spec.cwd,
@@ -898,8 +1041,9 @@ impl SandboxManager {
             spec.sandbox_policy.has_network_access(),
             &self.bwrap_extensions,
             &self.denied_read_subpaths,
-            &self.denied_read_exceptions,
+            denied_read_exceptions,
             self.readable_paths.as_deref(),
+            launch_identity,
         );
 
         let mut env = spec.env.clone();
@@ -1623,5 +1767,135 @@ mod tests {
             let env = manager.prepare(&spec);
             assert_eq!(env.policy, *policy);
         }
+    }
+
+    #[test]
+    fn pty_separator_is_found_after_a_launcher_prefix() {
+        let command: Vec<String> = [
+            "/usr/bin/sudo",
+            "-n",
+            "-u",
+            "agent",
+            "--",
+            "/opt/exec",
+            "/usr/bin/bwrap",
+            "--unshare-all",
+            "--die-with-parent",
+            "--",
+            "/bin/sh",
+            "-c",
+            "id",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        assert_eq!(bwrap_target_split(&command), Some((6, 9)));
+        assert_eq!(bwrap_target_split(&command[..10]), None);
+        assert_eq!(bwrap_target_split(&command[6..]), Some((0, 3)));
+    }
+
+    #[test]
+    fn a_launcher_refuses_policies_that_skip_the_sandbox() {
+        let mut manager = SandboxManager::with_bwrap_preference(true);
+        manager.set_tool_launcher(Some(vec!["/usr/bin/env".to_string()]));
+        for policy in [
+            SandboxPolicy::DangerFullAccess,
+            SandboxPolicy::ExternalSandbox {
+                network_access: true,
+            },
+        ] {
+            let spec = CommandSpec::shell("id", PathBuf::from("/tmp"), Duration::from_secs(5))
+                .with_policy(policy);
+            let error = manager.try_prepare(&spec).expect_err("refused");
+            assert!(error.contains("nothing was run"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_launcher_without_bubblewrap_refuses_instead_of_running_unwrapped() {
+        let mut manager = SandboxManager::with_bwrap_preference(false);
+        manager.set_tool_launcher(Some(vec!["/usr/bin/env".to_string()]));
+        let spec = CommandSpec::shell("id", PathBuf::from("/tmp"), Duration::from_secs(5))
+            .with_policy(SandboxPolicy::default());
+        let error = manager.try_prepare(&spec).expect_err("refused");
+        assert!(error.contains("nothing was run"), "{error}");
+        assert_eq!(manager.configured_sandbox(), None);
+
+        let refusal = manager.prepare(&spec);
+        assert_eq!(refusal.sandbox_type, SandboxType::None);
+        assert!(!refusal.command.iter().any(|arg| arg == "id"));
+        #[cfg(unix)]
+        {
+            let output = std::process::Command::new(refusal.program())
+                .args(refusal.args())
+                .output()
+                .expect("refusal runs");
+            assert_eq!(output.status.code(), Some(126));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("nothing was run"));
+        }
+
+        manager.set_tool_launcher(Some(vec!["/nonexistent/launcher".to_string()]));
+        manager.set_prefer_bwrap(true);
+        let error = manager
+            .try_prepare(&spec)
+            .expect_err("broken launcher refused");
+        assert!(error.contains("nothing was run"), "{error}");
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    fn a_launcher_prefixes_the_bubblewrap_command_and_runs_it_confined() {
+        if !bwrap::is_available() {
+            eprintln!("skipped: bubblewrap cannot run on this host");
+            return;
+        }
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut manager = SandboxManager::with_bwrap_preference(true);
+        manager.set_tool_launcher(Some(vec!["/usr/bin/env".to_string()]));
+        assert_eq!(
+            manager.configured_sandbox(),
+            Some(SandboxType::LinuxBubblewrap)
+        );
+        let spec = CommandSpec::program(
+            "/bin/sh",
+            vec![
+                "-c".to_string(),
+                "grep NoNewPrivs /proc/self/status; echo ok > written".to_string(),
+            ],
+            workspace.path().to_path_buf(),
+            Duration::from_secs(15),
+        )
+        .with_policy(SandboxPolicy::WorkspaceWrite {
+            writable_roots: vec![],
+            network_access: true,
+            exclude_tmpdir: false,
+            exclude_slash_tmp: false,
+        });
+        let env = manager.try_prepare(&spec).expect("prepared");
+        assert_eq!(env.sandbox_type, SandboxType::LinuxBubblewrap);
+        assert_eq!(env.command[0], "/usr/bin/env");
+        assert_eq!(env.command[1], bwrap::BWRAP_PATH);
+        for flag in ["--unshare-all", "--die-with-parent", "--share-net"] {
+            assert!(env.command.iter().any(|arg| arg == flag), "{flag}");
+        }
+        assert!(
+            !env.command
+                .windows(3)
+                .any(|args| args[0] == "--bind" && args[1] == "/tmp"),
+            "{:?}",
+            env.command
+        );
+        let output = std::process::Command::new(env.program())
+            .args(env.args())
+            .current_dir(&env.cwd)
+            .output()
+            .expect("run prepared command");
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("NoNewPrivs:\t1"));
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("written"))
+                .unwrap()
+                .trim(),
+            "ok"
+        );
     }
 }

@@ -864,6 +864,38 @@ mod tests {
     }
 
     #[test]
+    fn a_managed_network_grant_survives_the_ask_posture_and_shares_the_network() {
+        let workspace = Path::new("/srv/workspace");
+        for approval_mode in [ApprovalMode::Suggest, ApprovalMode::Bypass] {
+            let policy = sandbox_policy_for_turn(
+                AppMode::Agent,
+                approval_mode,
+                Some("workspace-write"),
+                workspace,
+                SandboxNetworkAccess::from_config(Some(true)),
+            );
+            assert!(
+                matches!(
+                    policy,
+                    SandboxPolicy::WorkspaceWrite {
+                        network_access: true,
+                        ..
+                    }
+                ),
+                "{approval_mode:?}: {policy:?}"
+            );
+        }
+        let unset = sandbox_policy_for_turn(
+            AppMode::Agent,
+            ApprovalMode::Suggest,
+            Some("workspace-write"),
+            workspace,
+            SandboxNetworkAccess::from_config(None),
+        );
+        assert!(!unset.has_network_access(), "{unset:?}");
+    }
+
+    #[test]
     fn write_carve_out_posture_is_exactly_accept_edits() {
         assert!(write_carve_out_posture(
             AppMode::Agent,

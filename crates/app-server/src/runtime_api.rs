@@ -1578,8 +1578,39 @@ struct RuntimeInfoResponse {
     job_operation_store_id: Option<String>,
     account: RuntimeAccountInfo,
     experimental: RuntimeExperimentalCapabilities,
+    sandbox: RuntimeSandboxInfo,
     // Backward-compatible alias kept for existing clients.
     version: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeSandboxInfo {
+    kind: String,
+    tool_launcher: bool,
+}
+
+async fn runtime_sandbox_info(state: &RuntimeApiState) -> RuntimeSandboxInfo {
+    let (prefer_bwrap, tool_launcher, denied_read_paths) = {
+        let cfg = state.config.read();
+        (
+            cfg.prefers_bwrap(),
+            cfg.tool_launcher.clone(),
+            codewhale_sandbox::read_guard::ReadDenylist::from_config(&cfg).subtree_paths(),
+        )
+    };
+    let launcher_configured = tool_launcher.is_some();
+    let kind = tokio::task::spawn_blocking(move || {
+        let mut manager = codewhale_sandbox::SandboxManager::with_bwrap_preference(prefer_bwrap);
+        manager.set_tool_launcher(tool_launcher);
+        manager.set_denied_read_subpaths(denied_read_paths);
+        manager.configured_sandbox().unwrap_or_default().to_string()
+    })
+    .await
+    .unwrap_or_else(|_| codewhale_sandbox::SandboxType::None.to_string());
+    RuntimeSandboxInfo {
+        kind,
+        tool_launcher: launcher_configured,
+    }
 }
 
 fn default_runtime_capabilities() -> RuntimeCapabilities {
@@ -7083,6 +7114,7 @@ async fn runtime_info(
     capabilities.fleet_run_create = !session_only;
     capabilities.fleet_run_start = !session_only;
     capabilities.fleet_local_target = !session_only;
+    let sandbox = runtime_sandbox_info(&state).await;
     Json(RuntimeInfoResponse {
         service: "codewhale-runtime-api",
         runtime_api_version: RUNTIME_API_VERSION,
@@ -7097,6 +7129,7 @@ async fn runtime_info(
             .then(|| state.runtime_threads.job_operation_store_id().to_string()),
         account,
         experimental: RuntimeExperimentalCapabilities::default(),
+        sandbox,
         version,
     })
 }

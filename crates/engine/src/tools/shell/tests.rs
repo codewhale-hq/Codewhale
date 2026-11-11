@@ -6085,3 +6085,50 @@ async fn a_foreground_command_past_its_wait_moves_to_the_background_alive() {
     );
     assert!(manager.processes.get(&task_id).expect("tracked").background);
 }
+
+#[test]
+fn a_tool_launcher_clamps_a_danger_full_access_escalation() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let escalation = json!({
+        "command": "id",
+        "sandbox_permissions": "danger-full-access",
+        "justification": "needs the host",
+    });
+    let tool = BashTool::new("bash");
+    assert!(tool.refusal_before_approval(&escalation, &ctx).is_none());
+
+    ctx.shell_manager
+        .lock()
+        .unwrap()
+        .set_tool_launcher(Some(vec!["/usr/bin/env".to_string()]));
+    let refusal = tool
+        .refusal_before_approval(&escalation, &ctx)
+        .expect("escalation refused before approval");
+    assert!(!refusal.success);
+    assert!(
+        refusal.content.contains("danger-full-access"),
+        "{}",
+        refusal.content
+    );
+
+    let error = ctx
+        .shell_manager
+        .lock()
+        .unwrap()
+        .execute_with_options_env(
+            "id",
+            Some(&tmp.path().to_string_lossy()),
+            1_000,
+            false,
+            None,
+            false,
+            Some(ExecutionSandboxPolicy::DangerFullAccess),
+            HashMap::new(),
+        )
+        .expect_err("an approved escalation still never runs unwrapped");
+    assert!(
+        format!("{error:#}").contains("nothing was run"),
+        "{error:#}"
+    );
+}

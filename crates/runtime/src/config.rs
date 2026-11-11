@@ -2159,6 +2159,8 @@ pub struct Config {
     /// NOT vendor bwrap.
     #[serde(alias = "preferBwrap")]
     pub prefer_bwrap: Option<bool>,
+    #[serde(skip)]
+    pub tool_launcher: Option<Vec<String>>,
     /// Additional host paths to bind read-only inside the bubblewrap sandbox
     /// (Linux, `prefer_bwrap = true`, #5410). The default root bind already
     /// exposes the host filesystem read-only; these cover setups where a
@@ -3965,6 +3967,7 @@ impl Config {
                 if let Some(msg) = warn_on_misplaced_top_level_keys(&contents) {
                     tracing::warn!("{msg}");
                 }
+                reject_unmanaged_tool_launcher(&contents, path)?;
                 parsed
             } else {
                 apply_profile(ConfigFile::default(), profile)?;
@@ -10172,6 +10175,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         sandbox_url: override_cfg.sandbox_url.or(base.sandbox_url),
         sandbox_api_key: override_cfg.sandbox_api_key.or(base.sandbox_api_key),
         prefer_bwrap: override_cfg.prefer_bwrap.or(base.prefer_bwrap),
+        tool_launcher: override_cfg.tool_launcher.or(base.tool_launcher),
         bwrap_ro_roots: if override_cfg.bwrap_ro_roots.is_empty() {
             base.bwrap_ro_roots
         } else {
@@ -10727,6 +10731,7 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     }
     let mut managed = load_single_config_file(&path)?;
     strip_external_credential_consent(&mut managed);
+    managed.tool_launcher = managed_tool_launcher(&path)?;
     let prior_route = config
         .active_provider_identity()
         .map_err(anyhow::Error::msg)?;
@@ -10786,8 +10791,149 @@ fn apply_managed_overrides(config: &mut Config) -> Result<()> {
     if managed.network.is_some() {
         merged.network_layer_is_managed = true;
     }
+    if merged.tool_launcher.is_some()
+        && !matches!(
+            merged.sandbox_mode.as_deref(),
+            Some("workspace-write" | "read-only")
+        )
+    {
+        anyhow::bail!(
+            "`tool_launcher` in the managed configuration {} needs `sandbox_mode = \"workspace-write\"` or `\"read-only\"` beside it: commands run through the launcher only inside the sandbox",
+            codewhale_config::quote_os_path(&path)
+        );
+    }
     *config = merged;
     Ok(())
+}
+
+fn tool_launcher_layer_error(path: &Path) -> anyhow::Error {
+    anyhow::anyhow!(
+        "`tool_launcher` in {} is not accepted: it is read only from the managed configuration (CODEWHALE_MANAGED_CONFIG_PATH, or the default managed path), in a file the Engine cannot write",
+        codewhale_config::quote_os_path(path)
+    )
+}
+
+fn tool_launcher_in_profiles(document: &toml::Value) -> bool {
+    document
+        .get("profiles")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|profiles| {
+            profiles
+                .values()
+                .any(|profile| profile.get("tool_launcher").is_some())
+        })
+}
+
+fn reject_unmanaged_tool_launcher(raw: &str, path: &Path) -> Result<()> {
+    let Ok(document) = toml::from_str::<toml::Value>(raw) else {
+        return Ok(());
+    };
+    if document.get("tool_launcher").is_some() || tool_launcher_in_profiles(&document) {
+        return Err(tool_launcher_layer_error(path));
+    }
+    Ok(())
+}
+
+fn managed_tool_launcher(path: &Path) -> Result<Option<Vec<String>>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+    let Ok(document) = toml::from_str::<toml::Value>(&raw) else {
+        return Ok(None);
+    };
+    if tool_launcher_in_profiles(&document) {
+        anyhow::bail!(
+            "`tool_launcher` in {} belongs at the top level of the managed configuration, not in a profile",
+            codewhale_config::quote_os_path(path)
+        );
+    }
+    let Some(value) = document.get("tool_launcher") else {
+        return Ok(None);
+    };
+    if !cfg!(all(target_os = "linux", not(target_env = "ohos"))) {
+        anyhow::bail!(
+            "`tool_launcher` in {} is supported only on Linux",
+            codewhale_config::quote_os_path(path)
+        );
+    }
+    let argv = value
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| item.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+        })
+        .filter(|argv| {
+            argv.first()
+                .is_some_and(|program| Path::new(program).is_absolute())
+                && argv.iter().all(|arg| !arg.is_empty() && !arg.contains('\0'))
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "`tool_launcher` in {} must be a list of strings whose first entry is an absolute program path",
+                codewhale_config::quote_os_path(path)
+            )
+        })?;
+    if managed_file_is_replaceable(path) {
+        anyhow::bail!(
+            "`tool_launcher` in {} is not accepted: the Engine's own user can change that file or its directory, so it is not a managed configuration",
+            codewhale_config::quote_os_path(path)
+        );
+    }
+    Ok(Some(argv))
+}
+
+#[cfg(test)]
+static TEST_TREAT_MANAGED_FILE_AS_SEALED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn managed_file_is_replaceable(path: &Path) -> bool {
+    #[cfg(test)]
+    if TEST_TREAT_MANAGED_FILE_AS_SEALED.load(std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    engine_can_replace(path)
+}
+
+#[cfg(unix)]
+fn engine_can_replace(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::MetadataExt as _;
+    fn writable(path: &Path) -> bool {
+        let Ok(spelled) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return true;
+        };
+        // SAFETY: `spelled` is a valid NUL-terminated path for the call's duration.
+        unsafe { libc::access(spelled.as_ptr(), libc::W_OK) == 0 }
+    }
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    let replaceable = |file: &Path| {
+        if writable(file) {
+            return true;
+        }
+        let mut child = file;
+        while let Some(dir) = child.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+            if writable(dir) {
+                let sticky = std::fs::metadata(dir).is_ok_and(|meta| meta.mode() & 0o1000 != 0);
+                let child_is_ours =
+                    std::fs::symlink_metadata(child).map_or(true, |meta| meta.uid() == euid);
+                if !sticky || child_is_ours {
+                    return true;
+                }
+            }
+            child = dir;
+        }
+        false
+    };
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize().unwrap_or_else(|_| absolute.clone());
+    replaceable(&absolute) || replaceable(&canonical)
+}
+
+#[cfg(not(unix))]
+fn engine_can_replace(_path: &Path) -> bool {
+    true
 }
 
 /// Organization-managed overlays may constrain routing and policy, but they

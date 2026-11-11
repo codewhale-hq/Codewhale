@@ -13536,6 +13536,7 @@ fn run_sandbox_command(config: &Config, args: SandboxArgs) -> Result<()> {
         CommandSpec::program(program, args.to_vec(), cwd.clone(), timeout).with_policy(policy);
     let mut manager = SandboxManager::new();
     manager.set_prefer_bwrap(config.prefers_bwrap());
+    manager.set_tool_launcher(config.tool_launcher.clone());
     manager.set_bwrap_extensions(codewhale_sandbox::BwrapMountExtensions {
         read_only_roots: config.bwrap_ro_roots.clone(),
         device_roots: config.bwrap_dev_roots.clone(),
@@ -13543,7 +13544,7 @@ fn run_sandbox_command(config: &Config, args: SandboxArgs) -> Result<()> {
     manager.set_denied_read_subpaths(
         codewhale_sandbox::read_guard::ReadDenylist::from_config(config).subtree_paths(),
     );
-    let exec_env = manager.prepare(&spec);
+    let exec_env = manager.try_prepare(&spec).map_err(anyhow::Error::msg)?;
     if spec.sandbox_policy.should_sandbox() && !exec_env.is_sandboxed() {
         bail!(
             "no OS sandbox can enforce the {} policy on this host; nothing was run",
