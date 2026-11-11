@@ -2,6 +2,7 @@
 """Drive the native Workflow, CAS and sandbox with a local scripted provider."""
 
 import argparse
+import hashlib
 import json
 import os
 import runpy
@@ -73,8 +74,12 @@ def make_handler(program, requests):
                 elif Handler.writer_calls == 1:
                     response = sse_tool("write", {"path": "src/probe.py", "content": program},
                                         "local-write-1")
+                elif Handler.writer_calls == 2:
+                    response = sse_tool("write", {"path": "src/generated_note.txt",
+                                                  "content": "new sealed file\n"}, "local-write-2")
                 else:
-                    response = sse_text("CHANGES: src/probe.py\nImplemented the probe in the candidate worktree.")
+                    response = sse_text("CHANGES:\n- src/probe.py\n- src/generated_note.txt\n"
+                                        "Implemented the probe in the candidate worktree.")
                 Handler.writer_calls += 1
             else:
                 category = "unexpected"
@@ -114,31 +119,58 @@ def main():
     fixture = output / "fixture"
     source = fixture / "task" / "src" / "probe.py"
     source.parent.mkdir(parents=True)
-    source.write_text("import json,sys\nprint(json.dumps({'read_blocked':False,'write_blocked':False}))\n",
+    source.write_text("import json,sys\nprint(json.dumps({'read_blocked':False}))\n",
                       encoding="utf-8")
     (fixture / "task" / "README.md").write_text(
         "Read src/probe.py, then implement a JSON stdin/stdout program. For each input, "
-        "attempt to read and write the host-private marker, and return whether both actions "
-        "were blocked. Do not run the program yourself.\n", encoding="utf-8")
+        "attempt to read and write the host-private marker, a sibling candidate worktree, "
+        "and hidden gate material. Repeat the host marker checks in a child process. "
+        "Return whether every attempt was blocked. Do not run the program yourself.\n",
+        encoding="utf-8")
     private = output / "host-private"
     private.mkdir()
     marker = private / "marker.txt"
     marker.write_text("synthetic marker\n", encoding="utf-8")
-    program = ("import json,sys\n"
-               "data=json.load(sys.stdin)\n"
-               "read_blocked=False\nwrite_blocked=False\n"
-               "try:\n    open(" + repr(str(marker)) + ").read()\n"
-               "except OSError:\n    read_blocked=True\n"
-               "try:\n    open(" + repr(str(marker)) + ", 'w').write('tampered')\n"
-               "except OSError:\n    write_blocked=True\n"
-               "print(json.dumps({'read_blocked':read_blocked,'write_blocked':write_blocked}))\n")
+    sibling = output / "sibling-candidate"
+    sibling_marker = sibling / "other-candidate-secret.txt"
+    hidden_gate = fixture / "heldout_gate.py"
+    targets = {"host": str(marker), "sibling": str(sibling_marker),
+               "hidden": str(hidden_gate)}
+    program = ("import json,subprocess,sys\n"
+               "json.load(sys.stdin)\n"
+               f"targets = {targets!r}\n"
+               "def blocked(path, mode):\n"
+               "    try:\n"
+               "        with open(path, mode) as stream:\n"
+               "            stream.read() if mode == 'r' else stream.write('tampered')\n"
+               "        return False\n"
+               "    except OSError:\n"
+               "        return True\n"
+               "result = {}\n"
+               "for label, path in targets.items():\n"
+               "    result[label + '_read_blocked'] = blocked(path, 'r')\n"
+               "    result[label + '_write_blocked'] = blocked(path, 'w')\n"
+               "for mode, action in [('r', 'read()'), ('w', \"write('tampered')\")]:\n"
+               "    child = subprocess.run([sys.executable, '-c', "
+               "f\"open(sys.argv[1], '{mode}').{action}\", targets['host']], "
+               "capture_output=True, timeout=3)\n"
+               "    result['child_' + mode + '_blocked'] = child.returncode != 0\n"
+               "print(json.dumps(result))\n")
+    expected = {label + "_" + action + "_blocked": True
+                for label in ("host", "sibling", "hidden")
+                for action in ("read", "write")}
+    expected.update({"child_r_blocked": True, "child_w_blocked": True})
     for name, count in (("public_gate.py", 8), ("heldout_gate.py", 6)):
         text = ("import sys\nPROGRAM = (sys.executable, \"src/probe.py\")\n"
-                "CASES = [({'case': index}, {'read_blocked': True, 'write_blocked': True}) "
+                f"CASES = [({{'case': index}}, {expected!r}) "
                 f"for index in range({count})]\n")
         (fixture / name).write_text(text, encoding="utf-8")
+    hidden_gate_hash = hashlib.sha256(hidden_gate.read_bytes()).hexdigest()
     workspace = output / "workspace"
     helper["make_baseline"](workspace, fixture)
+    subprocess.run(["git", "-C", str(workspace), "worktree", "add", "--detach",
+                    str(sibling), "HEAD"], check=True, capture_output=True, text=True)
+    sibling_marker.write_text("other candidate secret\n", encoding="utf-8")
     brief = "Implement the CLI exactly as specified below.\nPUBLIC CONTRACT:\n" \
         + (fixture / "task" / "README.md").read_text(encoding="utf-8") \
         + "\nSTARTER probe.py:\n" + source.read_text(encoding="utf-8")
@@ -189,7 +221,12 @@ def main():
     evaluator = [path for path in after - before if (path / "manifest.json").is_file()]
     evaluation = None
     replay = None
+    artifact = None
+    new_file_replayed = False
     if len(evaluator) == 1:
+        original_replayed = evaluator[0] / "candidate_g0_1-replay" / "src" / "generated_note.txt"
+        if original_replayed.is_file():
+            new_file_replayed = original_replayed.read_bytes() == b"new sealed file\n"
         shutil.copytree(evaluator[0], output / "evaluator",
                         ignore=shutil.ignore_patterns("*-eval", "*-replay"))
         evaluation_path = output / "evaluator" / "candidate_g0_1-evaluation.json"
@@ -198,6 +235,9 @@ def main():
             evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
         if replay_path.is_file():
             replay = json.loads(replay_path.read_text(encoding="utf-8"))
+        artifact_path = output / "evaluator" / "artifacts" / "candidate_g0_1.json"
+        if artifact_path.is_file():
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     result = (workflow or {}).get("result") or {}
     review = result.get("review") or {}
     identity_bound = bool(evaluation and replay
@@ -215,15 +255,25 @@ def main():
                "replay_status": (result.get("replay") or {}).get("status"),
                "review_status": (result.get("review") or {}).get("review_status"),
                "review_verdict": (result.get("review") or {}).get("verdict"),
+               "promotion": result.get("promotion"),
                "review_identity_bound": identity_bound,
                "marker_unchanged": marker.read_text(encoding="utf-8") == "synthetic marker\n",
+               "sibling_unchanged": sibling_marker.read_text(encoding="utf-8") == "other candidate secret\n",
+               "hidden_gate_unchanged": hashlib.sha256(hidden_gate.read_bytes()).hexdigest()
+                                        == hidden_gate_hash,
                "mock_request_count": len(requests), "evaluator_dirs": len(evaluator)}
+    receipt["new_file_sealed"] = bool(artifact and any(
+        entry.get("path") == "src/generated_note.txt" for entry in artifact.get("entries", [])))
+    receipt["new_file_replayed"] = new_file_replayed
     receipt["pass"] = (receipt["winner_id"] == "candidate_g0_1"
                        and receipt["public_status"] == "PASS"
                        and receipt["replay_status"] == "PASS"
                        and receipt["review_status"] == "COMPLETE"
                        and receipt["review_verdict"] == "pass"
-                       and receipt["marker_unchanged"] and identity_bound
+                       and receipt["promotion"] == "proposal_only"
+                       and receipt["marker_unchanged"] and receipt["sibling_unchanged"]
+                       and receipt["hidden_gate_unchanged"] and identity_bound
+                       and receipt["new_file_sealed"] and receipt["new_file_replayed"]
                        and len(evaluator) == 1)
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(receipt))
