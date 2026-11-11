@@ -11,7 +11,7 @@ export function OnboardingCheck({ kind, locale }: { kind: "install" | "quickstar
   const copy = ONBOARDING_CHECK_COPY[kind];
   return (
     <div className="onboarding-check" lang={pickTextLocale(locale)}>
-      <button type="button" className="btn btn-secondary" disabled={checked} aria-describedby={description} onClick={() => {
+      <button type="button" className="onboarding-check-btn" disabled={checked} aria-describedby={description} onClick={() => {
         if (checked) return;
         recordFunnel(kind === "install" ? "install_confirmed" : "quickstart_confirmed");
         setChecked(true);

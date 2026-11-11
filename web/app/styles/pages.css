@@ -276,4 +276,8 @@
 .github-star-count { border-inline-start: 1px solid var(--line-strong); padding-inline-start: var(--space-3); font-family: var(--font-mono); }
 
 .onboarding-check { display: grid; gap: var(--space-2); margin-block: var(--space-4); max-inline-size: 100%; }
-.onboarding-check .btn { white-space: normal; max-inline-size: 100%; padding-block: var(--space-2); text-align: start; justify-self: start; }
+.onboarding-check .onboarding-check-btn { all: unset; box-sizing: border-box; cursor: pointer; justify-self: start; max-inline-size: 100%; color: var(--accent); font-size: var(--text-ui); text-decoration: underline; text-underline-offset: 0.2em; border-radius: var(--radius-control); }
+.onboarding-check .onboarding-check-btn:focus-visible { box-shadow: var(--glow-focus); }
+.onboarding-check .onboarding-check-btn:disabled { cursor: default; color: var(--muted); text-decoration: none; }
+.install-channel { margin-block: var(--space-6); }
+.install-channel h3 { margin-top: 0; }

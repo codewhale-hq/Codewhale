@@ -37,11 +37,12 @@ export function InstallCodeBlock({ cmd, copyLabel = "Copy", copiedLabel = "Copie
     }
   };
 
+  const pipeAt = cmd.includes("\n") ? -1 : cmd.indexOf(" | ");
   const copiedWord = copiedLabel.replace(/\s*✓\s*$/u, "");
 
   return (
     <div className="code">
-      <pre tabIndex={0} className="code-block">{cmd}</pre>
+      <pre tabIndex={0} className="code-block">{pipeAt < 0 ? cmd : (<><span className="code-seg">{cmd.slice(0, pipeAt)}</span><span className="code-seg code-seg-pipe">{cmd.slice(pipeAt)}</span></>)}</pre>
       <button
         type="button"
         lang={copyLocale}

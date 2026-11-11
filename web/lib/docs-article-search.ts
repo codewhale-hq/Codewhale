@@ -5,12 +5,11 @@ import {
   getDocsHooks, getDocsMcp, getDocsModes, getDocsPet, getDocsReview,
   getDocsRuntimeApi, getDocsSandbox, getDocsSkills, getDocsSubagents,
   getDocsTroubleshooting, getDocsTrust, getDocsWeb, getDocsWork,
-  getDocsGuide, getDocsVocabulary, getConstitution, getChrome, fill, pickText, pickTextLocale,
+  getDocsGuide, getDocsVocabulary, getConstitution, getChrome, getHome, fill, pickText, pickTextLocale,
 } from "./i18n/dictionaries";
 import type { DocsBlock, DocsPageDict } from "./i18n/dictionaries/types";
 import { GETTING_STARTED_STEPS } from "./content/getting-started";
-import { INSTALL_COPY, INSTALL_COMMANDS } from "./content/install";
-import { INSTALL_GUIDES } from "./install-guide.generated";
+import { INSTALL_COPY, INSTALL_COMMANDS, INSTALL_PAGE_COMMANDS } from "./content/install";
 import { FACTS } from "./facts.generated";
 import { MODELS_COPY, formatModelTokens, formatModelDate } from "./content/models";
 import { PLUGINS_COPY, PLUGIN_KINDS, CATALOG_FEATURED, PLUGIN_SOURCES, PLUGIN_COMMANDS, PLUGIN_COMPATIBILITY } from "./content/plugins";
@@ -87,23 +86,42 @@ function getCustomDocSearchSections(locale: string): DocSearchSection[] {
   const section = (path: string, id: string, pageTitle: string, title: string, text: string[]): DocSearchSection => ({
     href: `${path}#${id}`, pageTitle, title, text: text.join(" "),
   });
-  const installTitle = t(INSTALL_COPY.heading);
+  const installTitle = getHome(locale).sectionStartHeading;
   const modelTitle = t(MODELS_COPY.modelsTitle);
   const pluginTitle = t(PLUGINS_COPY.title);
   const constitution = getConstitution(locale);
   const sections = [
     section("/install", "install-overview", installTitle, installTitle, [
-      t(INSTALL_COPY.lead), ...Object.values(INSTALL_COMMANDS), t(INSTALL_COPY.windowsNote),
-      t(INSTALL_COPY.cargoNote), t(INSTALL_COPY.source), t(INSTALL_COPY.translationNotice),
+      getHome(locale).sectionStartBody, ...Object.values(INSTALL_COMMANDS), t(INSTALL_COPY.windowsNote),
+      t(INSTALL_COPY.cargoNote), t(INSTALL_COPY.scriptLink),
     ]),
-    section("/install", "install-verify", installTitle, t(INSTALL_COPY.verify), [
-      t(INSTALL_COPY.verifyBody), "codewhale --version", t(INSTALL_COPY.firstTask),
-      t(INSTALL_COPY.firstTaskBody), t(INSTALL_COPY.troubleshooting),
+    section("/install", "install-path", installTitle, t(INSTALL_COPY.pathTitle), [
+      t(INSTALL_COPY.pathPlaces), t(INSTALL_COPY.pathBlockAfter), t(INSTALL_COPY.pathOptOut), t(INSTALL_COPY.pathManualIntro),
+      INSTALL_PAGE_COMMANDS.pathBlock, INSTALL_PAGE_COMMANDS.pathNow, INSTALL_PAGE_COMMANDS.noModifyPath,
     ]),
-    section("/install", "install-full-guide", installTitle, t(INSTALL_COPY.fullGuide), [t(INSTALL_COPY.configuration)]),
-    ...INSTALL_GUIDES[pickTextLocale(locale)].guide.searchSections.map(({ id, title, text }) => ({
-      href: `/install#${id}`, pageTitle: installTitle, title, text, lang: pickTextLocale(locale),
-    })),
+    section("/install", "install-verify", installTitle, t(INSTALL_COPY.verifyTitle), [
+      t(INSTALL_COPY.verifyBodyUnknown), INSTALL_PAGE_COMMANDS.version,
+    ]),
+    section("/install", "install-first-task", installTitle, t(INSTALL_COPY.firstTitle), [
+      t(INSTALL_COPY.firstStep1), t(INSTALL_COPY.firstStep2), t(INSTALL_COPY.firstStep3),
+    ]),
+    section("/install", "install-usage", installTitle, t(INSTALL_COPY.usageTitle), [
+      t(INSTALL_COPY.usageBody), t(INSTALL_COPY.usageInstaller), INSTALL_PAGE_COMMANDS.installTelemetryOff,
+    ]),
+    section("/install", "install-update", installTitle, t(INSTALL_COPY.updateTitle), [t(INSTALL_COPY.updateBody)]),
+    section("/install", "install-remove", installTitle, t(INSTALL_COPY.removeTitle), [
+      t(INSTALL_COPY.removePath), t(INSTALL_COPY.removeData), INSTALL_PAGE_COMMANDS.removeFiles, INSTALL_PAGE_COMMANDS.removeData,
+    ]),
+    section("/install", "install-troubleshooting", installTitle, t(INSTALL_COPY.troubleTitle), [
+      t(INSTALL_COPY.troubleNotFound), t(INSTALL_COPY.troubleQueued), t(INSTALL_COPY.troubleLegacy),
+    ]),
+    section("/install", "install-channels", installTitle, t(INSTALL_COPY.channelsTitle), [
+      t(INSTALL_COPY.windowsPackage), t(INSTALL_COPY.windowsSandbox), t(INSTALL_COPY.npmBody), t(INSTALL_COPY.cargoBody),
+      t(INSTALL_COPY.brewBody), INSTALL_PAGE_COMMANDS.brewInstall, INSTALL_PAGE_COMMANDS.npmUpdate,
+    ]),
+    section("/install", "mirrors", installTitle, t(INSTALL_COPY.mirrorsTitle), [
+      t(INSTALL_COPY.mirrorsNpm), t(INSTALL_COPY.mirrorsCnb), INSTALL_PAGE_COMMANDS.cnbVerify,
+    ]),
     section("/models", "models-overview", modelTitle, t(MODELS_COPY.title), [t(MODELS_COPY.lead)]),
     section("/models", "models-setup", modelTitle, t(MODELS_COPY.setupTitle), [
       t(MODELS_COPY.setupLead), t(MODELS_COPY.providerDocs),

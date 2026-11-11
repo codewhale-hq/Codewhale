@@ -1,7 +1,7 @@
 export const ONBOARDING_CHECK_COPY = {
   install: {
     label: { en: "I ran the version command successfully", zh: "我已成功运行版本命令" },
-    detail: { en: "Mark this only after the command prints a Codewhale version. This is your confirmation, not an automatic installation test.", zh: "请在命令显示 Codewhale 版本后再确认。这是你的自行确认，不是自动安装测试。" },
+    detail: { en: "Optional. Mark this only after the command prints a Codewhale version. This is your confirmation, not an automatic installation test.", zh: "可选。请在命令显示 Codewhale 版本后再确认。这是你的自行确认，不是自动安装测试。" },
   },
   quickstart: {
     label: { en: "I checked the cited lines and the answer matched", zh: "我已检查引用的行，回答与内容一致" },
