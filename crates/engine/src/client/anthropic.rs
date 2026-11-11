@@ -220,9 +220,22 @@ impl CodewhaleClient {
             Some(level) if thinking_capable && supports_adaptive => {
                 body["thinking"] = json!({ "type": "adaptive" });
                 if !is_minimax {
+                    let row_lists_xhigh = self
+                        .route_facts
+                        .as_ref()
+                        .filter(|facts| facts.wire_model_id == request.model)
+                        .is_some_and(|facts| {
+                            facts.reasoning_options.iter().any(|option| {
+                                option.get("type").and_then(Value::as_str) == Some("effort")
+                                    && option.get("values").and_then(Value::as_array).is_some_and(
+                                        |values| values.iter().any(|v| v.as_str() == Some("xhigh")),
+                                    )
+                            })
+                        });
                     let mapped = match level {
                         "low" | "minimal" => "low",
                         "medium" | "mid" => "medium",
+                        "xhigh" if row_lists_xhigh => "xhigh",
                         "max" | "xhigh" | "highest" => "max",
                         _ => "high",
                     };
@@ -1656,6 +1669,36 @@ mod tests {
             body.pointer("/output_config/effort")
                 .and_then(Value::as_str),
             Some("max")
+        );
+
+        let offering = |model: &str| {
+            client
+                .catalog_facts_for_model(model)
+                .unwrap_or_else(|| panic!("bundled catalog carries {model}"))
+        };
+        let mut xhigh_client = test_client();
+        xhigh_client.route_facts = Some(offering("claude-opus-4-8"));
+        let body = xhigh_client.build_anthropic_body(
+            &request_with("claude-opus-4-8", Some("xhigh"), None, None),
+            true,
+        );
+        assert_eq!(
+            body.pointer("/output_config/effort")
+                .and_then(Value::as_str),
+            Some("xhigh"),
+            "a row that lists xhigh is sent xhigh: {body}"
+        );
+        let mut no_xhigh_client = test_client();
+        no_xhigh_client.route_facts = Some(offering("claude-sonnet-4-6"));
+        let body = no_xhigh_client.build_anthropic_body(
+            &request_with("claude-sonnet-4-6", Some("xhigh"), None, None),
+            true,
+        );
+        assert_eq!(
+            body.pointer("/output_config/effort")
+                .and_then(Value::as_str),
+            Some("max"),
+            "a row without xhigh keeps the max mapping: {body}"
         );
 
         let body = client.build_anthropic_body(
