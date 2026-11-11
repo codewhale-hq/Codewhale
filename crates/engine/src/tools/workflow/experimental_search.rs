@@ -9,9 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use artifact::{Artifact, ArtifactStore};
+use codewhale_sandbox::SandboxResourceLimits;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 use codewhale_sandbox::{CommandSpec, SandboxManager, SandboxPolicy, SandboxType};
-use codewhale_sandbox::SandboxResourceLimits;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
