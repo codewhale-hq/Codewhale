@@ -4,10 +4,10 @@ import type { HomeDict } from "../types";
 
 export const home: HomeDict = {
   metaTitle: "Codewhale · Model herkesin olabilir. Ajan sizin olmalı.",
-  metaDescription: "Codewhale, birçok ajanla, istediğiniz modelle, kendi bilgisayarınızda ve bulutta yazılım geliştirdiğiniz açık ortam hâline geliyor. Bugün terminalinizde ve tarayıcınızda başlıyor; açık kaynaklı ve okumak size ait.",
+  metaDescription: "Codewhale, terminaliniz için Rust ile yazılmış açık kaynaklı bir kodlama ajanıdır. Her modelle çalışır, bir görevi birkaç ajana bölebilir ve her satırını okuyabilirsiniz.",
   heroTitle: "Model herkesin olabilir. Ajan sizin olmalı.",
   heroTitleLead: "Model herkesin olabilir.",
-  heroIntro: "{brand}, birçok ajanla, istediğiniz modelle, kendi bilgisayarınızda ve bulutta yazılım geliştirdiğiniz açık ortam hâline geliyor. Bugün terminalinizde ve tarayıcınızda başlıyor; açık kaynaklı ve okumak size ait.",
+  heroIntro: "{brand}, terminaliniz için Rust ile yazılmış açık kaynaklı bir kodlama ajanıdır. Her modelle çalışır, bir görevi birkaç ajana bölebilir ve her satırını okuyabilirsiniz.",
   readTheCode: "Kodu okuyun",
   installNote: "{version} sürümü yayımlandı ve hesap gerektirmez.",
   captionDevelopment: "Gerçek bir terminalde geliştirme sürümü: düzenlemeler ve testler gerçekten çalıştı, model ise senaryolu bir gösterim.",
@@ -31,14 +31,10 @@ export const home: HomeDict = {
   copy: "Kopyala",
   copied: "Kopyalandı ✓",
 
-  belief: "Kullandığınız model çoğunlukla başkasınındır. Onu kiralarsınız ve siz bir şey yapmadan değişir. Ajan farklıdır. Dosyalarınızı okur, komutlarınızı çalıştırır, üzerinde çalıştığınız işi tutar ve sizin adınıza hareket eder; bu yüzden size ait olmalıdır. Codewhale bu ajandır. Açık kaynaklıdır; bu yüzden her satırını okuyabilir ya da kendini size okumasını isteyebilirsiniz. Seçtiğiniz her modelle çalışır, sormadan neler yapabileceğine siz karar verirsiniz ve okuyabileceğiniz bir kayıt bırakır. Onu, sizin ve birçok ajanın birlikte yazılım yaptığı tek bir yere dönüştürüyoruz; terminalinizden buluttaki bir bilgisayara kadar, ve yol boyunca sizin kalır.",
-
   sectionModelHeading: "Her model, ajanınız üzerinden çalışabilir.",
   sectionModelBody: "Yerleşik bir sağlayıcı, OpenAI uyumlu herhangi bir uç nokta veya kendi makinenizdeki bir model kullanın ve turlar arasında model değiştirin. Codewhale hesap olmadan deponuzda çalışır ve `codewhale web` ile kendi makinenizde tarayıcınızda onunla çalışabilirsiniz.",
   sectionControlHeading: "Ajanınız size hesap verir.",
   sectionControlBody: "Codewhale'in sormadan neler yapabileceğine siz karar verirsiniz ve komutları macOS ve Linux'ta bir korumalı alanda çalışabilir. Her oturum; değiştirdiği dosyaların, çalıştırdığı komutların ve her adımı kimin onayladığının makbuzunu bırakır.",
-  sectionAgentsHeading: "Birden çok ajan bir görevi sizinle paylaşabilir.",
-  sectionAgentsBody: "Codewhale bir işi kaşif, uygulayıcı ve gözden geçirici gibi rollere sahip ajanlara böler; her birini izleyebilir, inceleyebilir ve durdurabilirsiniz. Bir Fleet defter tutar, böylece bir çalıştırma yeniden başlatmadan sonra kaldığı yerden sürebilir.",
   sectionDirectionHeading: "Ajanınız buraya gidiyor.",
   sectionDirectionBody: "Codewhale; terminalinizi, bir masaüstü uygulamasını, tarayıcıyı ve bulut bilgisayarlarını kapsayan tek bir ortam hâline geliyor; hepsi tek bir motorla çalışıyor, böylece işiniz aralarında geçebiliyor ve sizin kalıyor. Aşağıdaki her bölüm, bugün nerede durduğunu söyler.",
   sectionOpenHeading: "Codewhale, onu kullanan insanlar tarafından açıkta geliştirilir.",
@@ -49,6 +45,17 @@ export const home: HomeDict = {
   contributorsCount: {
     one: "{n} katkıda bulunan",
     other: "{n} katkıda bulunan",
+  },
+  factsLabel: "Bir bakışta Codewhale",
+  factRust: "Rust ile yazıldı",
+  factLicense: "Açık kaynak, {license} lisansı",
+  factProviders: {
+    one: "{n} sağlayıcı rotası",
+    other: "{n} sağlayıcı rotası",
+  },
+  factModels: {
+    one: "{n} model",
+    other: "{n} model",
   },
 
   mapHeading: "Tek bir motor",

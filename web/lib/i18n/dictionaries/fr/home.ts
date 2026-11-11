@@ -4,10 +4,10 @@ import type { HomeDict } from "../types";
 
 export const home: HomeDict = {
   metaTitle: "Codewhale · Le modèle peut être à n’importe qui. L’agent devrait être à vous.",
-  metaDescription: "Codewhale devient l’environnement ouvert où vous créez des logiciels avec de nombreux agents, sur n’importe quel modèle, sur votre propre ordinateur et dans le cloud. Il commence aujourd’hui dans votre terminal et votre navigateur, open source et à lire par vous-même.",
+  metaDescription: "Codewhale est un agent de code open source pour votre terminal, écrit en Rust. Il fonctionne avec n’importe quel modèle, peut répartir une tâche entre plusieurs agents, et chaque ligne de son code est à lire par vous.",
   heroTitle: "Le modèle peut être à n’importe qui. L’agent devrait être à vous.",
   heroTitleLead: "Le modèle peut être à n’importe qui.",
-  heroIntro: "{brand} devient l’environnement ouvert où vous créez des logiciels avec de nombreux agents, sur n’importe quel modèle, sur votre propre ordinateur et dans le cloud. Il commence aujourd’hui dans votre terminal et votre navigateur, open source et à lire par vous-même.",
+  heroIntro: "{brand} est un agent de code open source pour votre terminal, écrit en Rust. Il fonctionne avec n’importe quel modèle, peut répartir une tâche entre plusieurs agents, et chaque ligne de son code est à lire par vous.",
   readTheCode: "Lire le code",
   installNote: "La version {version} est publiée et ne demande aucun compte.",
   captionDevelopment: "Une version de développement dans un vrai terminal : les modifications et les tests ont réellement été exécutés, et le modèle est une démonstration scénarisée.",
@@ -31,14 +31,10 @@ export const home: HomeDict = {
   copy: "Copier",
   copied: "Copié ✓",
 
-  belief: "Le modèle que vous utilisez appartient le plus souvent à quelqu’un d’autre. Vous le louez, et il change sans que vous l’ayez décidé. L’agent, lui, est différent. Il lit vos fichiers, exécute vos commandes, garde ce sur quoi vous travaillez et agit en votre nom : il doit donc vous appartenir. Codewhale est cet agent. Il est open source, vous pouvez donc en lire chaque ligne, ou lui demander de se lire lui-même pour vous. Il fonctionne avec n’importe quel modèle de votre choix, vous décidez ce qu’il peut faire sans demander, et il laisse une trace que vous pouvez lire. Nous le construisons pour qu’il devienne un lieu unique où vous et de nombreux agents créez des logiciels ensemble, de votre terminal jusqu’à un ordinateur dans le cloud, et il reste à vous tout au long du chemin.",
-
   sectionModelHeading: "N’importe quel modèle peut travailler par l’intermédiaire de votre agent.",
   sectionModelBody: "Utilisez un fournisseur intégré, n’importe quel point d’accès compatible OpenAI ou un modèle sur votre propre machine, et changez de modèle entre deux tours. Codewhale s’exécute dans votre dépôt sans compte, et `codewhale web` vous permet de travailler avec lui dans votre navigateur, sur votre propre machine.",
   sectionControlHeading: "Votre agent vous répond.",
   sectionControlBody: "Vous décidez de ce que Codewhale peut faire sans demander, et ses commandes peuvent s’exécuter dans un bac à sable sous macOS et Linux. Chaque session laisse un reçu des fichiers modifiés, des commandes exécutées et de la personne qui a approuvé chaque étape.",
-  sectionAgentsHeading: "Plusieurs agents peuvent partager une tâche avec vous.",
-  sectionAgentsBody: "Codewhale répartit un travail entre des agents ayant des rôles tels qu’explorateur, implémenteur et relecteur, et vous pouvez suivre, inspecter et arrêter chacun d’eux. Une Fleet tient un registre, de sorte qu’une exécution peut reprendre après un redémarrage.",
   sectionDirectionHeading: "Voici où va votre agent.",
   sectionDirectionBody: "Codewhale devient un seul environnement qui couvre votre terminal, une application de bureau, le navigateur et des ordinateurs dans le cloud, le tout animé par un seul moteur, pour que votre travail puisse passer de l’un à l’autre et rester à vous. Chaque partie ci-dessous indique où elle en est aujourd’hui.",
   sectionOpenHeading: "Codewhale est construit au grand jour par les personnes qui l’utilisent.",
@@ -49,6 +45,19 @@ export const home: HomeDict = {
   contributorsCount: {
     one: "{n} contributeur",
     other: "{n} contributeurs",
+  },
+  factsLabel: "Codewhale en bref",
+  factRust: "Écrit en Rust",
+  factLicense: "Open source, licence {license}",
+  factProviders: {
+    one: "{n} route de fournisseur",
+    many: "{n} de routes de fournisseurs",
+    other: "{n} routes de fournisseurs",
+  },
+  factModels: {
+    one: "{n} modèle",
+    many: "{n} de modèles",
+    other: "{n} modèles",
   },
 
   mapHeading: "Un seul moteur",

@@ -4,10 +4,10 @@ import type { HomeDict } from "../types";
 
 export const home: HomeDict = {
   metaTitle: "Codewhale · Il modello può essere di chiunque. L’agente dovrebbe essere tuo.",
-  metaDescription: "Codewhale sta diventando l’ambiente aperto in cui costruisci software con molti agenti, su qualsiasi modello, sul tuo computer e nel cloud. Oggi parte dal tuo terminale e dal tuo browser, open source e tuo da leggere.",
+  metaDescription: "Codewhale è un agente di programmazione open source per il tuo terminale, scritto in Rust. Funziona con qualsiasi modello, può dividere un compito tra più agenti e puoi leggerne ogni riga.",
   heroTitle: "Il modello può essere di chiunque. L’agente dovrebbe essere tuo.",
   heroTitleLead: "Il modello può essere di chiunque.",
-  heroIntro: "{brand} sta diventando l’ambiente aperto in cui costruisci software con molti agenti, su qualsiasi modello, sul tuo computer e nel cloud. Oggi parte dal tuo terminale e dal tuo browser, open source e tuo da leggere.",
+  heroIntro: "{brand} è un agente di programmazione open source per il tuo terminale, scritto in Rust. Funziona con qualsiasi modello, può dividere un compito tra più agenti e puoi leggerne ogni riga.",
   readTheCode: "Leggi il codice",
   installNote: "La versione {version} è pubblicata e non richiede un account.",
   captionDevelopment: "Una build di sviluppo in un vero terminale: le modifiche e i test sono stati eseguiti davvero, e il modello è una dimostrazione con copione.",
@@ -31,14 +31,10 @@ export const home: HomeDict = {
   copy: "Copia",
   copied: "Copiato ✓",
 
-  belief: "Il modello che usi di solito è di qualcun altro. Lo noleggi, e cambia sotto i tuoi piedi. L’agente è diverso. Legge i tuoi file, esegue i tuoi comandi, tiene traccia di ciò su cui lavori e agisce a tuo nome, quindi dovrebbe appartenerti. Codewhale è quell’agente. È open source, quindi puoi leggerne ogni riga, oppure chiedergli di leggersi da solo per te. Funziona con qualsiasi modello tu scelga, sei tu a decidere cosa può fare senza chiedere, e lascia una registrazione che puoi leggere. Lo stiamo costruendo come un unico luogo in cui tu e molti agenti create software insieme, dal tuo terminale a un computer nel cloud, e resta tuo per tutto il percorso.",
-
   sectionModelHeading: "Qualsiasi modello può lavorare attraverso il tuo agente.",
   sectionModelBody: "Usa un provider integrato, qualsiasi endpoint compatibile con OpenAI o un modello sulla tua macchina, e cambia modello tra un turno e l’altro. Codewhale funziona nel tuo repository senza account, e `codewhale web` ti permette di lavorarci nel browser, sulla tua macchina.",
   sectionControlHeading: "Il tuo agente risponde a te.",
   sectionControlBody: "Sei tu a decidere cosa Codewhale può fare senza chiedere, e i suoi comandi possono essere eseguiti in una sandbox su macOS e Linux. Ogni sessione lascia una ricevuta dei file modificati, dei comandi eseguiti e di chi ha approvato ogni passaggio.",
-  sectionAgentsHeading: "Più agenti possono condividere un compito con te.",
-  sectionAgentsBody: "Codewhale divide un lavoro tra agenti con ruoli come esploratore, implementatore e revisore, e puoi osservare, ispezionare e fermare ciascuno di essi. Una Fleet tiene un registro, così un’esecuzione può riprendere dopo un riavvio.",
   sectionDirectionHeading: "Ecco dove sta andando il tuo agente.",
   sectionDirectionBody: "Codewhale sta diventando un unico ambiente che copre il tuo terminale, un’app desktop, il browser e i computer nel cloud, tutto guidato da un solo motore, così il tuo lavoro può spostarsi tra di essi e restare tuo. Ogni parte qui sotto dice a che punto si trova oggi.",
   sectionOpenHeading: "Codewhale è costruito alla luce del sole da chi lo usa.",
@@ -49,6 +45,19 @@ export const home: HomeDict = {
   contributorsCount: {
     one: "{n} contributore",
     other: "{n} contributori",
+  },
+  factsLabel: "Codewhale in breve",
+  factRust: "Scritto in Rust",
+  factLicense: "Open source, licenza {license}",
+  factProviders: {
+    one: "{n} percorso di provider",
+    many: "{n} di percorsi di provider",
+    other: "{n} percorsi di provider",
+  },
+  factModels: {
+    one: "{n} modello",
+    many: "{n} di modelli",
+    other: "{n} modelli",
   },
 
   mapHeading: "Un solo motore",

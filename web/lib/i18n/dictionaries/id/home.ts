@@ -4,10 +4,10 @@ import type { HomeDict } from "../types";
 
 export const home: HomeDict = {
   metaTitle: "Codewhale · Model boleh milik siapa saja. Agen seharusnya milik Anda.",
-  metaDescription: "Codewhale sedang menjadi lingkungan terbuka tempat Anda membangun perangkat lunak bersama banyak agen, dengan model apa pun, di komputer Anda sendiri dan di cloud. Hari ini ia dimulai di terminal dan browser Anda, bersumber terbuka dan bisa Anda baca sendiri.",
+  metaDescription: "Codewhale adalah agen pemrograman bersumber terbuka untuk terminal Anda, ditulis dalam Rust. Ia bekerja dengan model apa pun, dapat membagi satu tugas ke beberapa agen, dan setiap barisnya bisa Anda baca.",
   heroTitle: "Model boleh milik siapa saja. Agen seharusnya milik Anda.",
   heroTitleLead: "Model boleh milik siapa saja.",
-  heroIntro: "{brand} sedang menjadi lingkungan terbuka tempat Anda membangun perangkat lunak bersama banyak agen, dengan model apa pun, di komputer Anda sendiri dan di cloud. Hari ini ia dimulai di terminal dan browser Anda, bersumber terbuka dan bisa Anda baca sendiri.",
+  heroIntro: "{brand} adalah agen pemrograman bersumber terbuka untuk terminal Anda, ditulis dalam Rust. Ia bekerja dengan model apa pun, dapat membagi satu tugas ke beberapa agen, dan setiap barisnya bisa Anda baca.",
   readTheCode: "Baca kodenya",
   installNote: "Versi {version} sudah dirilis dan tidak memerlukan akun.",
   captionDevelopment: "Build pengembangan di terminal sungguhan: pengeditan dan pengujian benar-benar dijalankan, dan modelnya adalah demo berskrip.",
@@ -31,14 +31,10 @@ export const home: HomeDict = {
   copy: "Salin",
   copied: "Tersalin ✓",
 
-  belief: "Model yang Anda pakai biasanya milik pihak lain. Anda menyewanya, dan ia berubah tanpa Anda minta. Agen berbeda. Ia membaca berkas Anda, menjalankan perintah Anda, menyimpan apa yang sedang Anda kerjakan, dan bertindak atas nama Anda, sehingga ia seharusnya menjadi milik Anda. Codewhale adalah agen itu. Ia bersumber terbuka, jadi Anda bisa membaca setiap barisnya, atau memintanya membacakan dirinya sendiri kepada Anda. Ia bekerja dengan model apa pun yang Anda pilih, Anda yang menentukan apa yang boleh ia lakukan tanpa bertanya, dan ia meninggalkan catatan yang bisa Anda baca. Kami sedang membangunnya menjadi satu tempat di mana Anda dan banyak agen membuat perangkat lunak bersama, dari terminal Anda sampai komputer di cloud, dan ia tetap milik Anda sepanjang jalan.",
-
   sectionModelHeading: "Model apa pun bisa bekerja lewat agen Anda.",
   sectionModelBody: "Gunakan penyedia bawaan, endpoint apa pun yang kompatibel dengan OpenAI, atau model di mesin Anda sendiri, dan ganti model di antara giliran. Codewhale berjalan di repositori Anda tanpa akun, dan `codewhale web` memungkinkan Anda memakainya di browser di mesin Anda sendiri.",
   sectionControlHeading: "Agen Anda bertanggung jawab kepada Anda.",
   sectionControlBody: "Anda yang menentukan apa yang boleh dilakukan Codewhale tanpa bertanya, dan perintahnya dapat berjalan di sandbox pada macOS dan Linux. Setiap sesi meninggalkan tanda terima berisi berkas yang diubah, perintah yang dijalankan, dan siapa yang menyetujui setiap langkah.",
-  sectionAgentsHeading: "Beberapa agen dapat berbagi satu tugas bersama Anda.",
-  sectionAgentsBody: "Codewhale membagi pekerjaan ke beberapa agen dengan peran seperti penjelajah, pelaksana, dan peninjau, dan Anda dapat memantau, memeriksa, dan menghentikan masing-masing. Sebuah Fleet menyimpan buku catatan, sehingga proses dapat dilanjutkan setelah restart.",
   sectionDirectionHeading: "Ke sinilah agen Anda menuju.",
   sectionDirectionBody: "Codewhale sedang menjadi satu lingkungan yang mencakup terminal Anda, aplikasi desktop, browser, dan komputer cloud, semuanya dijalankan oleh satu mesin, sehingga pekerjaan Anda dapat berpindah di antaranya dan tetap milik Anda. Setiap bagian di bawah menyebutkan posisinya hari ini.",
   sectionOpenHeading: "Codewhale dibangun secara terbuka oleh orang-orang yang memakainya.",
@@ -48,6 +44,15 @@ export const home: HomeDict = {
 
   contributorsCount: {
     other: "{n} kontributor",
+  },
+  factsLabel: "Sekilas tentang Codewhale",
+  factRust: "Ditulis dalam Rust",
+  factLicense: "Sumber terbuka, lisensi {license}",
+  factProviders: {
+    other: "{n} rute penyedia",
+  },
+  factModels: {
+    other: "{n} model",
   },
 
   mapHeading: "Satu mesin",

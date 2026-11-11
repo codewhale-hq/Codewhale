@@ -4,10 +4,10 @@ import type { HomeDict } from "../types";
 
 export const home: HomeDict = {
   metaTitle: "Codewhale · El modelo puede ser de cualquiera. El agente debería ser tuyo.",
-  metaDescription: "Codewhale se está convirtiendo en el entorno abierto donde construyes software con muchos agentes, con cualquier modelo, en tu propio ordenador y en la nube. Empieza hoy en tu terminal y en tu navegador, de código abierto y tuyo para leer.",
+  metaDescription: "Codewhale es un agente de programación de código abierto para tu terminal, escrito en Rust. Funciona con cualquier modelo, puede repartir una tarea entre varios agentes y puedes leer cada línea de su código.",
   heroTitle: "El modelo puede ser de cualquiera. El agente debería ser tuyo.",
   heroTitleLead: "El modelo puede ser de cualquiera.",
-  heroIntro: "{brand} se está convirtiendo en el entorno abierto donde construyes software con muchos agentes, con cualquier modelo, en tu propio ordenador y en la nube. Empieza hoy en tu terminal y en tu navegador, de código abierto y tuyo para leer.",
+  heroIntro: "{brand} es un agente de programación de código abierto para tu terminal, escrito en Rust. Funciona con cualquier modelo, puede repartir una tarea entre varios agentes y puedes leer cada línea de su código.",
   readTheCode: "Lee el código",
   installNote: "La versión {version} está publicada y no necesita cuenta.",
   captionDevelopment: "Una versión de desarrollo en un terminal real: las ediciones y las pruebas se ejecutaron de verdad, y el modelo es una demostración con guion.",
@@ -31,14 +31,10 @@ export const home: HomeDict = {
   copy: "Copiar",
   copied: "Copiado ✓",
 
-  belief: "El modelo que usas suele ser de otra persona. Lo alquilas y cambia sin que lo decidas. El agente es distinto. Lee tus archivos, ejecuta tus comandos, guarda lo que estás haciendo y actúa en tu nombre, así que debería pertenecerte. Codewhale es ese agente. Es de código abierto, así que puedes leer cada línea, o pedirle que se lea a sí mismo para ti. Funciona con cualquier modelo que elijas, tú decides lo que puede hacer sin preguntar, y deja un registro que puedes leer. Lo estamos construyendo para que sea un solo lugar donde tú y muchos agentes hacéis software juntos, desde tu terminal hasta un ordenador en la nube, y siga siendo tuyo en todo el camino.",
-
   sectionModelHeading: "Cualquier modelo puede trabajar a través de tu agente.",
   sectionModelBody: "Usa un proveedor integrado, cualquier endpoint compatible con OpenAI o un modelo en tu propia máquina, y cambia de modelo entre turnos. Codewhale se ejecuta en tu repositorio sin cuenta, y `codewhale web` te permite trabajar con él en tu navegador, en tu propia máquina.",
   sectionControlHeading: "Tu agente responde ante ti.",
   sectionControlBody: "Tú decides lo que Codewhale puede hacer sin preguntar, y sus comandos pueden ejecutarse en un sandbox en macOS y Linux. Cada sesión deja un recibo con los archivos que cambió, los comandos que ejecutó y quién aprobó cada paso.",
-  sectionAgentsHeading: "Varios agentes pueden compartir una tarea contigo.",
-  sectionAgentsBody: "Codewhale reparte un trabajo entre agentes con roles como explorador, implementador y revisor, y puedes observar, inspeccionar y detener a cada uno. Una Fleet mantiene un registro, de modo que una ejecución puede continuar tras un reinicio.",
   sectionDirectionHeading: "Hacia aquí va tu agente.",
   sectionDirectionBody: "Codewhale se está convirtiendo en un único entorno que abarca tu terminal, una aplicación de escritorio, el navegador y ordenadores en la nube, todo gobernado por un solo motor, para que tu trabajo pueda moverse entre ellos y seguir siendo tuyo. Cada parte de abajo indica en qué punto está hoy.",
   sectionOpenHeading: "Codewhale se construye en abierto por las personas que lo usan.",
@@ -49,6 +45,19 @@ export const home: HomeDict = {
   contributorsCount: {
     one: "{n} colaborador",
     other: "{n} colaboradores",
+  },
+  factsLabel: "Codewhale de un vistazo",
+  factRust: "Escrito en Rust",
+  factLicense: "Código abierto, licencia {license}",
+  factProviders: {
+    one: "{n} ruta de proveedor",
+    many: "{n} de rutas de proveedor",
+    other: "{n} rutas de proveedor",
+  },
+  factModels: {
+    one: "{n} modelo",
+    many: "{n} de modelos",
+    other: "{n} modelos",
   },
 
   mapHeading: "Un solo motor",

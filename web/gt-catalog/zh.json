@@ -314,10 +314,10 @@
   },
   "home": {
     "metaTitle": "Codewhale · 模型可以是任何人的。智能体应当属于你。",
-    "metaDescription": "Codewhale 正在成为一个开放的环境：你可以在自己的电脑上和云端，使用任意模型，与许多智能体一起构建软件。今天，它从你的终端和浏览器开始，开源，代码任你阅读。",
+    "metaDescription": "Codewhale 是一个运行在终端里的开源编程智能体，用 Rust 编写。它支持任意模型，可以把一项任务分给多个智能体，而且它的每一行代码都任你阅读。",
     "heroTitle": "模型可以是任何人的。智能体应当属于你。",
     "heroTitleLead": "模型可以是任何人的。",
-    "heroIntro": "{brand} 正在成为一个开放的环境：你可以在自己的电脑上和云端，使用任意模型，与许多智能体一起构建软件。今天，它从你的终端和浏览器开始，开源，代码任你阅读。",
+    "heroIntro": "{brand} 是一个运行在终端里的开源编程智能体，用 Rust 编写。它支持任意模型，可以把一项任务分给多个智能体，而且它的每一行代码都任你阅读。",
     "readTheCode": "阅读代码",
     "installNote": "版本 {version} 已发布，无需账号。",
     "captionDevelopment": "开发版本在真实终端中的运行：编辑和测试都是真实执行的，模型是脚本化的演示。",
@@ -339,13 +339,10 @@
     "screenshotAlt": "Codewhale v{version} 的终端实录画面，包含对话、消息输入框与会话控制。",
     "copy": "复制",
     "copied": "已复制 ✓",
-    "belief": "你使用的模型通常是别人的。你租用它，它会在你不知情时发生变化。智能体则不同。它读取你的文件，运行你的命令，记住你正在做的工作，并以你的名义行事，所以它应当属于你。Codewhale 就是这样的智能体。它是开源的，所以你可以阅读它的每一行代码，也可以让它把自己读给你听。它支持你选择的任意模型，由你决定它可以在不询问的情况下做什么，并且它会留下一份你能读懂的记录。我们正在把它建设成一个地方，让你和许多智能体在这里一起开发软件，从你的终端一直到云端的一台计算机，而且它自始至终都属于你。",
     "sectionModelHeading": "任何模型都可以通过你的智能体工作。",
     "sectionModelBody": "使用内置提供商、任意 OpenAI 兼容端点，或你自己机器上的模型，并且可以在两轮对话之间更换模型。Codewhale 在你的仓库中运行，无需账号，而 `codewhale web` 让你在自己机器上的浏览器里使用它。",
     "sectionControlHeading": "你的智能体对你负责。",
     "sectionControlBody": "由你决定 Codewhale 可以在不询问的情况下做什么，它的命令可以在 macOS 和 Linux 上的沙箱中运行。每次会话都会留下一份回执，记录它修改的文件、运行的命令，以及每一步由谁批准。",
-    "sectionAgentsHeading": "多个智能体可以与你共同完成一项任务。",
-    "sectionAgentsBody": "Codewhale 把一项工作分给多个智能体，各有探索者、实施者和审查者等角色，你可以查看、检查并停止其中每一个。Fleet 会保存一份账本，所以重启之后，运行可以接着继续。",
     "sectionDirectionHeading": "这是你的智能体将要去的地方。",
     "sectionDirectionBody": "Codewhale 正在成为横跨你的终端、桌面应用、浏览器和云端计算机的统一环境，全部由同一个引擎驱动，所以你的工作可以在它们之间转移，并始终属于你。下面每个部分都说明了它今天所处的状态。",
     "sectionOpenHeading": "Codewhale 由使用它的人公开构建。",
@@ -354,6 +351,15 @@
     "sectionStartBody": "安装 Codewhale，并在一个仓库中使用你已有的模型密钥，或你自己电脑上的模型来运行它。你无需账号，`codewhale update` 会让它保持最新。",
     "contributorsCount": {
       "other": "{n} 位贡献者"
+    },
+    "factsLabel": "Codewhale 一览",
+    "factRust": "用 Rust 编写",
+    "factLicense": "开源，{license} 许可证",
+    "factProviders": {
+      "other": "{n} 条提供商路由"
+    },
+    "factModels": {
+      "other": "{n} 个模型"
     },
     "mapHeading": "一个引擎",
     "mapStateReleased": "已发布",

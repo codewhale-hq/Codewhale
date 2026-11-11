@@ -1,20 +1,17 @@
 /* ------------------------------------------------------------------ */
-/*  Home — the route                                                    */
+/*  Home                                                                */
 /* ------------------------------------------------------------------ */
 /*
- * The whole product is drawn as one route on the horizon under the headline:
- * solid through what is released, dashed and dotted through what is not, and
- * off the edge of the page. Line style, station shape and a word carry each
- * state; colour never does alone. The whale rests where the solid line ends.
- * Everything sits on one column, the site container, shared with the header
- * and the footer.
+ * The first screen does one job: say what Codewhale is, show it running and
+ * give the install command. Proof follows in the order a person meets the
+ * product, and what is not released yet is one calm section further down,
+ * drawn as a route whose line style, station shape and word carry each state.
  */
 
 .home {
-  --home-gap: clamp(5rem, 9vw, 8.5rem);
+  --home-gap: clamp(5rem, 9vw, 8rem);
   --home-band: #dceef3;
-  --road-leader: 0.6rem;
-  --whale-w: clamp(6.25rem, 9.7vw, 8.75rem);
+  --whale-w: 4.5rem;
   --whale-rise: var(--brand-light);
   --whale-deep: var(--brand-deep);
   --whale-pouch: #dcebf7;
@@ -31,8 +28,6 @@
   --whale-pleat: #2b70d5;
 }
 
-/* The sky is the page ground itself, so the header above it paints the same
-   water and there is no seam under it. */
 body:has(.home) { --ground: var(--home-sky); }
 body:has(.home) .site-nav { border-bottom-color: transparent; }
 
@@ -42,6 +37,7 @@ body:has(.home) .site-nav { border-bottom-color: transparent; }
   font-size: clamp(2.375rem, 5.28vw, 4.75rem);
   line-height: 1.053;
   letter-spacing: -0.03em;
+  text-wrap: balance;
 }
 .home-title > span { display: block; }
 .home-title-lead { font-weight: 420; color: var(--muted); }
@@ -51,11 +47,11 @@ body:has(.home) .site-nav { border-bottom-color: transparent; }
 :lang(ko) .home-title { line-height: 1.16; letter-spacing: -0.01em; line-break: strict; }
 
 .home-subhead {
-  max-width: 35rem;
+  max-width: 38rem;
   margin: 1.5rem 0 0;
   color: var(--text);
-  font-size: clamp(1rem, 1.32vw, 1.1875rem);
-  line-height: 1.58;
+  font-size: clamp(1.0625rem, 1.39vw, 1.25rem);
+  line-height: 1.55;
   text-wrap: pretty;
 }
 .home-h2 {
@@ -64,41 +60,61 @@ body:has(.home) .site-nav { border-bottom-color: transparent; }
   font-weight: 650;
   line-height: 1.083;
   letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.home-h3 {
+  margin: 0;
+  font-size: clamp(1.375rem, 2vw, 1.75rem);
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
 }
 :lang(zh) .home-h2,
 :lang(ja) .home-h2,
 :lang(ko) .home-h2 { line-height: 1.2; letter-spacing: -0.01em; }
 .home-body {
   max-width: 36em;
-  margin: 1.5rem 0 0;
+  margin: 1.25rem 0 0;
   color: var(--text);
   font-size: 1.125rem;
   line-height: 1.667;
   text-wrap: pretty;
 }
 .home-caption {
-  max-width: 34em;
+  max-width: 40em;
   margin: 0;
   color: var(--muted);
   font-size: var(--text-label);
   line-height: 1.44;
 }
 
-/* ---------- actions and the install box ---------- */
-.home-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
-.home-btn { min-height: 3rem; padding-inline: 1.375rem; font-size: 1rem; font-weight: 550; }
-.home-btn-secondary { border-color: var(--line-strong); }
-.home-btn-secondary:hover { background: var(--hover); }
-
+/* ---------- the install box ---------- */
 .home-install { min-width: 0; }
-.home-version { margin: var(--space-2) 0 0; padding-inline-start: 2px; color: var(--muted); font-size: var(--text-label); line-height: 1.44; }
-/* Copy sits in the choice row, so the command has the whole line. */
+.home-version {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: var(--space-2) 0 0;
+  padding-inline-start: 2px;
+  color: var(--muted);
+  font-size: var(--text-label);
+  line-height: 1.44;
+}
+.home-version-link {
+  color: var(--text);
+  font-weight: 550;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 0.2em;
+}
+.home-version-link:hover { text-decoration-color: currentColor; }
 .home .hero-install {
   position: relative;
   gap: var(--space-2);
   padding: var(--space-2);
   background: var(--panel);
   border-radius: var(--radius-surface);
+  text-align: start;
 }
 .home .hero-install .segmented {
   justify-self: start;
@@ -135,10 +151,87 @@ body:has(.home) .site-nav { border-bottom-color: transparent; }
   .home .hero-install .code pre.code-block-single { padding-inline-start: calc(0.375rem + 2ch); }
 }
 
-/* ---------- the sky: headline, route, the hanging terminal ---------- */
-.home-sky { padding-top: clamp(1.5rem, 2.5vw, 2.25rem); }
-.home-intro { width: var(--container); margin-inline: auto; }
+/* ---------- the first screen ---------- */
+.home-hero { width: var(--container); margin-inline: auto; padding-top: clamp(2.5rem, 6vw, 5.5rem); }
+.home-hero-shot { min-width: 0; margin-top: clamp(2.5rem, 5vw, 4rem); }
 
+.home-hero[data-hero="center"] .home-hero-text { display: grid; justify-items: center; text-align: center; }
+.home-hero[data-hero="center"] .home-subhead { margin-inline: auto; }
+.home-hero[data-hero="center"] .home-install { width: min(100%, 36rem); margin-top: 2rem; }
+.home-hero[data-hero="center"] .home-version { justify-content: center; }
+.home-hero[data-hero="center"] .home-session { max-width: 60rem; margin-inline: auto; }
+.home-hero[data-hero="center"] .home-session-tabs { justify-content: center; }
+.home-hero[data-hero="center"] .home-session-caption { justify-items: center; text-align: center; }
+
+/* The facts: short, linked, and every number from data. */
+.home-facts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem 2.5rem;
+  margin: clamp(2.5rem, 5vw, 3.5rem) 0 0;
+  padding: 1.25rem 0;
+  list-style: none;
+  border-block: 1px solid var(--line);
+}
+.home-facts a {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3em;
+  min-height: 2.75rem;
+  align-items: center;
+  color: var(--muted);
+  font-size: 1rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.home-facts a:hover { color: var(--text); }
+.home-facts strong { color: var(--text); font-weight: 650; }
+
+/* ---------- the terminal session ---------- */
+.home-frame {
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--radius-surface);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.home-frame .term-capture-scroll { background: none; }
+.home-frame .term-capture { padding: 1.1em 1.3em; font-size: calc(100cqi / (var(--cols, 100) * 0.61 + 2.6)); }
+.home-frame .term-capture-scroll:focus-visible { outline-offset: -3px; }
+.home-figure { display: grid; gap: var(--space-3); min-width: 0; margin: 0; }
+
+.home-session { display: grid; gap: var(--space-3); min-width: 0; margin: 0; }
+.home-session-tabs { display: flex; flex-wrap: wrap; gap: 0 var(--space-1); border-bottom: 1px solid var(--line); }
+.home-session-tabs [role="tab"] {
+  min-height: 2.75rem;
+  margin-bottom: -1px;
+  padding-inline: var(--space-3);
+  color: var(--muted);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color var(--dur-state) var(--ease-out);
+}
+.home-session-tabs [role="tab"]:hover { color: var(--text); }
+.home-session-tabs [role="tab"][aria-selected="true"] { color: var(--text); font-weight: 650; border-bottom-color: var(--accent); }
+.home-session-caption { display: grid; gap: var(--space-2); }
+@media (forced-colors: active) {
+  .home-session-tabs [role="tab"][aria-selected="true"] { border-color: Highlight; }
+}
+
+.home-only-wide { display: none; }
+
+/* ---------- the sections ---------- */
+.home-sections,
+.home-direction-head,
+.home-start-inner,
+.road-tree { width: var(--container); margin-inline: auto; }
+.home-section { padding-top: var(--home-gap); }
+.home-figure,
+.home-people { margin-top: 2.5rem; }
+
+/* ---------- what is on the way ---------- */
 .road { position: relative; }
 .road-stops { margin: 0; padding: 0; list-style: none; }
 .road-name { color: var(--text); font-size: 0.9375rem; font-weight: 600; line-height: 1.25; }
@@ -181,14 +274,6 @@ body:has(.home) .site-nav { border-bottom-color: transparent; }
   transform: translateY(-73%);
   pointer-events: none;
 }
-.road-tick {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  inset-inline-start: var(--today);
-  width: 1px;
-  background: var(--muted);
-}
 .road-whale { display: block; width: 100%; height: auto; overflow: visible; }
 .road-whale-rise { stop-color: var(--whale-rise); }
 .road-whale-deep { stop-color: var(--whale-deep); }
@@ -199,86 +284,16 @@ body:has(.home) .site-nav { border-bottom-color: transparent; }
 .road-whale-flukes { transform-box: view-box; transform-origin: 27.7px 18.6px; }
 .road-whale-swim { transform-box: view-box; transform-origin: 87px 31px; }
 
-.road-compact { --whale-w: clamp(4.75rem, 23cqi, 7.5rem); container-type: inline-size; }
-.road-compact .road-stops { display: grid; }
-.road-compact .road-stop { min-width: 0; }
-.road-origin { height: 1.25rem; margin-bottom: 2.375rem; }
-.road-compact .road-rail { position: absolute; inset: 2.125rem 0 auto; height: 1.25rem; }
-.road-solid { display: flex; margin-top: -0.4375rem; padding-block: 0.4375rem 0.375rem; }
-.road-stair {
-  display: grid;
-  justify-items: end;
-  padding-block: 0 0.5rem;
-  padding-inline-end: calc(100% - var(--x) + 0.625rem);
-  text-align: end;
-}
-.road-stair .road-name { font-size: 0.8125rem; }
-.road-stair .road-state { text-align: end; }
-
-.home-hang { position: relative; }
-.home-frame {
-  min-width: 0;
-  overflow: hidden;
-  border-radius: var(--radius-surface);
-  box-shadow: 0 0 0 1px var(--line);
-}
-.home-frame .term-capture-scroll { background: none; }
-.home-frame .term-capture { padding: 1.1em 1.3em; font-size: calc(100cqi / (var(--cols, 100) * 0.61 + 2.6)); }
-.home-frame .term-capture-scroll:focus-visible { outline-offset: -3px; }
-.home-figure { display: grid; gap: var(--space-3); min-width: 0; margin: 0; }
-
-.home-session { display: grid; gap: var(--space-3); min-width: 0; margin: 0; }
-.home-session-tabs { display: flex; flex-wrap: wrap; gap: 0 var(--space-1); border-bottom: 1px solid var(--line); }
-.home-session-tabs [role="tab"] {
-  min-height: 2.75rem;
-  margin-bottom: -1px;
-  padding-inline: var(--space-3);
-  color: var(--muted);
-  font-size: 0.9375rem;
-  font-weight: 500;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition: color var(--dur-state) var(--ease-out);
-}
-.home-session-tabs [role="tab"]:hover { color: var(--text); }
-.home-session-tabs [role="tab"][aria-selected="true"] { color: var(--text); font-weight: 650; border-bottom-color: var(--accent); }
-.home-session-caption { display: grid; gap: var(--space-2); }
-@media (forced-colors: active) {
-  .home-session-tabs [role="tab"][aria-selected="true"] { border-color: Highlight; }
-}
-
-.home-only-wide { display: none; }
-
-/* ---------- the sections ---------- */
-.home-sections,
-.home-direction-head,
-.home-start-inner,
-.road-tree,
-.home-belief p { width: var(--container); margin-inline: auto; }
-.home-section { padding-top: var(--home-gap); }
-.home-station::before {
-  content: "";
-  display: block;
-  width: 3.5rem;
-  height: 0.75rem;
-  margin-bottom: 1.5rem;
-  background:
-    radial-gradient(circle at 0.375rem 50%, var(--text) 0 0.34rem, transparent 0.375rem),
-    linear-gradient(var(--text), var(--text)) center / 100% 3px no-repeat;
-}
-[dir="rtl"] .home-station::before { transform: scaleX(-1); }
-.home-figure,
-.home-people { margin-top: 2.5rem; }
-
 .home-direction {
   margin-top: var(--home-gap);
-  padding-block: clamp(4rem, 8vw, 6.5rem);
+  padding-block: clamp(3.5rem, 7vw, 5.5rem);
   background: linear-gradient(180deg, var(--bg), var(--home-band) 50%, var(--bg));
 }
+.home-direction-head .home-body { max-width: 40em; font-size: 1rem; }
 .road-map { display: none; }
-.road-sentence { display: block; color: var(--text); font-size: 0.9375rem; line-height: 1.6; }
+.road-sentence { display: block; color: var(--text); font-size: 0.875rem; line-height: 1.6; }
 
-.road-tree { margin-top: 2.5rem; }
+.road-tree { margin-top: 2rem; }
 .road-tree-root { margin: 0; color: var(--text); font-size: 0.9375rem; font-weight: 650; line-height: 1.25; }
 .road-tree ul { margin: var(--space-2) 0 0; padding: 0; list-style: none; }
 .road-tree li { position: relative; padding-block: 0.625rem; padding-inline-start: 1.5rem; }
@@ -300,18 +315,7 @@ a.road-name {
 }
 a.road-name:hover { text-decoration-color: currentColor; }
 
-.home-belief { position: relative; padding-top: clamp(1.5rem, 4vw, 3rem); }
-.home-belief p {
-  padding-bottom: clamp(3rem, 6vw, 4.5rem);
-  padding-inline-end: max(0px, calc(var(--container) - 30em));
-  color: var(--text);
-  font-size: clamp(1.375rem, 2.08vw, 1.875rem);
-  line-height: 1.467;
-  text-wrap: pretty;
-}
-.home-belief-lead { color: var(--muted); }
-.home-belief::after { content: ""; position: absolute; inset: auto 0 0; height: 1px; background: var(--line-strong); }
-
+/* ---------- built in the open ---------- */
 .home-count { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-3); margin: 0; }
 .home-count-number {
   color: var(--text);
@@ -349,38 +353,23 @@ a.road-name:hover { text-decoration-color: currentColor; }
 [dir="rtl"] .home-merged-title { text-align: right; }
 .home-merged-title:hover { text-decoration: underline; text-underline-offset: 0.2em; }
 
+/* ---------- the close ---------- */
 .home-start { padding-block: var(--home-gap); }
-.home-start .home-actions { margin-top: 2rem; }
-.home-start .home-install { margin-top: 1.5rem; }
+.home-start .home-install { margin-top: 2rem; }
 
-/* ---------- phone and tablet: one column, the compact route ---------- */
+/* ---------- phone and tablet ---------- */
 @media (max-width: 63.99rem) {
-  .home-sky { display: flex; flex-direction: column; }
-  .home-intro { display: contents; }
-  .home-title,
-  .home-subhead,
-  .home-actions,
-  .home-install,
-  .road-compact,
-  .home-hang { width: var(--container); margin-inline: auto; }
-  .home-title { order: 1; }
-  .home-subhead { order: 2; max-width: none; margin-top: 1rem; padding-inline-end: max(0px, calc(var(--container) - 35rem)); }
-  .road-compact { order: 3; margin-top: 1.5rem; }
-  .home-install { order: 4; margin-top: 1rem; }
-  .home-actions { order: 5; margin-top: 1.25rem; }
-  .home-hang { order: 6; margin-top: 2.5rem; }
-  .road-hero { display: none; }
   .home-session,
-  .home-figure,
-  .home-install > * { max-width: 30rem; }
-  .home-start .home-actions,
-  .home-start .home-install { width: auto; margin-inline: 0; }
+  .home-figure { max-width: 34rem; }
+  .home-hero .home-session { max-width: 34rem; margin-inline: auto; }
+  .home-install { max-width: 34rem; }
 }
 @media (max-width: 40rem) {
   .home-title { font-size: 2.375rem; line-height: 1.105; }
-  .home-subhead { line-height: 1.56; }
   .home-body { font-size: 1.0625rem; line-height: 1.647; }
-  .home-actions { flex-direction: column; align-items: stretch; }
+  .home-facts { justify-content: flex-start; gap: 0 1.5rem; padding-block: 0.5rem; }
+  .home-facts li { flex: 1 1 40%; }
+  .home-facts a { font-size: 0.9375rem; white-space: normal; }
   .home .hero-install .code .code-copy-label {
     position: absolute;
     width: 1px;
@@ -394,70 +383,12 @@ a.road-name:hover { text-decoration-color: currentColor; }
   .home-count-number { font-size: 4.5rem; }
 }
 
-/* ---------- desktop: the horizon ---------- */
+/* ---------- desktop ---------- */
 @media (min-width: 64rem) {
   .home-only-wide { display: block; }
   .home-only-narrow { display: none; }
 
-  .home-intro {
-    display: grid;
-    grid-template-columns: minmax(0, 35rem) minmax(0, 33.75rem);
-    justify-content: space-between;
-    column-gap: 3rem;
-    align-items: start;
-  }
-  .home-title { grid-column: 1 / -1; }
-  .home-subhead { grid-column: 1; grid-row: 2; }
-  .home-intro .home-actions { grid-column: 1; grid-row: 3; margin-top: 1.5rem; }
-  .home-intro .home-install { grid-column: 2; grid-row: 2 / span 2; margin-top: 1.75rem; }
-
-  .road-compact { display: none; }
-  .road-hero { margin-top: 2rem; padding-inline-start: calc((100% - var(--container)) / 2); }
-  .road-hero .road-stops { display: grid; grid-template-rows: auto auto; }
-  .road-hero .road-stop {
-    display: grid;
-    grid-row: span 2;
-    grid-template-rows: subgrid;
-    row-gap: 0.25rem;
-    justify-items: start;
-    min-width: 0;
-    padding-bottom: 0.875rem;
-    padding-inline-end: 0.75rem;
-  }
-  .road-hero .road-name { align-self: end; }
-  .road-hero .road-stop[data-today] > * { max-width: calc(var(--split) - var(--whale-w) + 0.5rem); }
-  .road-hero .road-stop:last-child { padding-inline-end: 1rem; }
-  .road-hero .road-rail,
-  .road-map .road-rail { margin-inline-start: 0.375rem; }
-
-  .home-hang {
-    --hang-x: calc((100% - var(--container)) / 2 + (100% + var(--container)) / 2 * var(--hang));
-    padding-top: 1.25rem;
-    padding-inline: calc(var(--hang-x) - 1.5rem) calc((100% - var(--container)) / 2);
-  }
-  .home-hang::before {
-    content: "";
-    position: absolute;
-    top: -0.75rem;
-    inset-inline-start: calc(var(--hang-x) + 0.34375rem);
-    width: 1px;
-    height: 2rem;
-    background: var(--line-strong);
-  }
-  .home-session { grid-template-columns: minmax(0, 27.5rem) minmax(0, 17rem); grid-template-rows: auto 1fr; column-gap: 2rem; row-gap: var(--space-5); }
-  .home-session-panel { grid-column: 1; grid-row: 1 / span 2; }
-  .home-session-tabs { grid-column: 2; grid-row: 1; flex-direction: column; align-items: flex-start; gap: 0; border-bottom: 0; }
-  .home-session-tabs [role="tab"] {
-    min-height: 2.25rem;
-    margin-bottom: 0;
-    border-bottom: 0;
-    border-inline-start: 2px solid var(--line);
-  }
-  .home-session-tabs [role="tab"][aria-selected="true"] { border-inline-start-color: var(--accent); }
-  .home-session-caption { grid-column: 2; grid-row: 2; align-content: start; }
-
   .home-split,
-  .home-pair,
   .home-start-inner {
     display: grid;
     grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -469,12 +400,9 @@ a.road-name:hover { text-decoration-color: currentColor; }
   .home-split > .home-people { grid-column: 8 / -1; margin-top: 0.5rem; }
   .home-split-flip > .home-text { grid-column: 8 / -1; grid-row: 1; }
   .home-split-flip > .home-figure { grid-column: 1 / span 6; grid-row: 1; max-width: 33rem; }
-  .home-pair > .home-h2 { grid-column: 1 / span 6; }
-  .home-pair > .home-body { grid-column: 8 / -1; margin-top: 0.375rem; }
 
-  .home-direction-head .home-body { max-width: 40em; }
   .road-tree { display: none; }
-  .road-map { display: block; width: var(--container); margin: 3.5rem auto 0; }
+  .road-map { display: block; width: var(--container); margin: 3rem auto 0; }
   .road-map .road-stops { display: grid; grid-template-rows: auto auto auto; margin-top: 1.125rem; }
   .road-map .road-stop {
     display: grid;
@@ -485,41 +413,25 @@ a.road-name:hover { text-decoration-color: currentColor; }
     min-width: 0;
     padding-inline-end: 1.25rem;
   }
-  .road-map .road-name { align-self: end; font-size: 1.125rem; }
-  .road-map .road-sentence { margin-top: 0.375rem; }
+  .road-map .road-name { align-self: end; }
+  .road-map .road-rail { margin-inline-start: 0.375rem; }
+  .road-map .road-sentence { margin-top: 0.25rem; }
 
   .home-merged li { grid-template-columns: auto minmax(0, 9rem) minmax(0, 1fr); }
   .home-merged img { grid-row: auto; }
   .home-merged-login { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .home-merged-title { grid-column: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .home-start-inner > .home-h2 { grid-column: 1 / span 8; }
-  .home-start-inner > .home-body { grid-column: 1 / span 6; }
-  .home-start-inner > .home-actions { grid-column: 1 / span 6; grid-row: 3; }
-  .home-start-inner > .home-install { grid-column: 8 / -1; grid-row: 3; margin-top: 2rem; }
+  .home-start-inner > .home-text { grid-column: 1 / span 6; }
+  .home-start-inner > .home-install { grid-column: 8 / -1; margin-top: 0.5rem; }
 }
 
 /* ---------- motion ---------- */
-@keyframes road-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
-@keyframes road-fade { from { opacity: 0; } to { opacity: 1; } }
-@keyframes road-arrive { from { opacity: 0; translate: -1.5rem 0; } to { opacity: 1; translate: 0 0; } }
-@keyframes road-arrive-rtl { from { opacity: 0; translate: 1.5rem 0; } to { opacity: 1; translate: 0 0; } }
 @keyframes road-fluke { 0%, 100% { transform: rotate(-7deg); } 50% { transform: rotate(7deg); } }
 @keyframes road-bob { 0%, 100% { transform: translateY(-0.9px) rotate(-0.6deg); } 50% { transform: translateY(0.9px) rotate(0.6deg); } }
 @keyframes road-blink { 0%, 93%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.1); } }
 
 @media (prefers-reduced-motion: no-preference) {
-  .road-rail[data-draw] .road-line[data-line="released"] {
-    stroke-dasharray: 1;
-    animation: road-draw 150ms var(--ease-out) both;
-    animation-delay: calc(var(--i) * 150ms);
-  }
-  .road-rail[data-draw] .road-line:not([data-line="released"]),
-  .road-rail[data-draw] .road-station:not([data-state="released"], [data-state="engine"]) {
-    animation: road-fade var(--dur-spring) var(--ease-out) 600ms both;
-  }
-  .road-rail[data-draw] .road-today { animation: road-arrive var(--dur-arrive) var(--ease-out) 600ms both; }
-  [dir="rtl"] .road-rail[data-draw] .road-today { animation-name: road-arrive-rtl; }
   .road-whale-flukes { animation: road-fluke 2.4s ease-in-out infinite; }
   .road-whale-swim { animation: road-bob 4.2s ease-in-out infinite; }
   .road-whale-eye { animation: road-blink 4.6s linear infinite; }
@@ -527,9 +439,6 @@ a.road-name:hover { text-decoration-color: currentColor; }
 
 @media (forced-colors: active) {
   .home-direction { background: none; }
-  .road-tick,
-  .home-hang::before,
-  .home-belief::after { background: CanvasText; }
 }
 
 /* ---------- release cards (the changelog's update block) ---------- */

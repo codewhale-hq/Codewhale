@@ -4,10 +4,10 @@ import type { HomeDict } from "../types";
 
 export const home: HomeDict = {
   metaTitle: "Codewhale · Das Modell kann jedem gehören. Der Agent sollte dir gehören.",
-  metaDescription: "Codewhale wird zu der offenen Umgebung, in der du Software mit vielen Agenten baust, mit jedem Modell, auf deinem eigenen Computer und in der Cloud. Heute beginnt es in deinem Terminal und in deinem Browser, quelloffen und für dich zum Lesen.",
+  metaDescription: "Codewhale ist ein quelloffener Coding-Agent für dein Terminal, geschrieben in Rust. Er arbeitet mit jedem Modell, kann eine Aufgabe auf mehrere Agenten verteilen, und du kannst jede Zeile davon lesen.",
   heroTitle: "Das Modell kann jedem gehören. Der Agent sollte dir gehören.",
   heroTitleLead: "Das Modell kann jedem gehören.",
-  heroIntro: "{brand} wird zu der offenen Umgebung, in der du Software mit vielen Agenten baust, mit jedem Modell, auf deinem eigenen Computer und in der Cloud. Heute beginnt es in deinem Terminal und in deinem Browser, quelloffen und für dich zum Lesen.",
+  heroIntro: "{brand} ist ein quelloffener Coding-Agent für dein Terminal, geschrieben in Rust. Er arbeitet mit jedem Modell, kann eine Aufgabe auf mehrere Agenten verteilen, und du kannst jede Zeile davon lesen.",
   readTheCode: "Code lesen",
   installNote: "Version {version} ist veröffentlicht und braucht kein Konto.",
   captionDevelopment: "Ein Entwicklungs-Build in einem echten Terminal: Die Änderungen und Tests wurden wirklich ausgeführt, und das Modell ist eine Demo nach Drehbuch.",
@@ -31,14 +31,10 @@ export const home: HomeDict = {
   copy: "Kopieren",
   copied: "Kopiert ✓",
 
-  belief: "Das Modell, das du nutzt, gehört meist jemand anderem. Du mietest es, und es verändert sich unter dir. Der Agent ist anders. Er liest deine Dateien, führt deine Befehle aus, hält fest, woran du arbeitest, und handelt in deinem Namen, also sollte er dir gehören. Codewhale ist dieser Agent. Er ist quelloffen, sodass du jede Zeile von ihm lesen oder ihn bitten kannst, sich selbst vorzulesen. Er arbeitet mit jedem Modell, das du wählst, du entscheidest, was er ohne Nachfrage tun darf, und er hinterlässt eine Aufzeichnung, die du lesen kannst. Wir bauen ihn zu einem Ort aus, an dem du und viele Agenten gemeinsam Software entwickeln, von deinem Terminal bis zu einem Computer in der Cloud, und er bleibt auf dem ganzen Weg deiner.",
-
   sectionModelHeading: "Jedes Modell kann über deinen Agenten arbeiten.",
   sectionModelBody: "Nutze einen eingebauten Anbieter, einen beliebigen OpenAI-kompatiblen Endpunkt oder ein Modell auf deinem eigenen Rechner, und wechsle zwischen den Zügen das Modell. Codewhale läuft ohne Konto in deinem Repository, und mit `codewhale web` arbeitest du im Browser auf deinem eigenen Rechner damit.",
   sectionControlHeading: "Dein Agent steht dir Rede und Antwort.",
   sectionControlBody: "Du entscheidest, was Codewhale ohne Nachfrage tun darf, und seine Befehle können unter macOS und Linux in einer Sandbox laufen. Jede Sitzung hinterlässt einen Beleg über die geänderten Dateien, die ausgeführten Befehle und darüber, wer jeden Schritt freigegeben hat.",
-  sectionAgentsHeading: "Mehrere Agenten können sich mit dir eine Aufgabe teilen.",
-  sectionAgentsBody: "Codewhale verteilt eine Arbeit auf Agenten mit Rollen wie Erkunder, Umsetzer und Prüfer, und du kannst jeden beobachten, untersuchen und stoppen. Eine Fleet führt ein Protokollbuch, sodass ein Lauf nach einem Neustart wieder aufgenommen werden kann.",
   sectionDirectionHeading: "Hier geht dein Agent hin.",
   sectionDirectionBody: "Codewhale wird zu einer einzigen Umgebung über dein Terminal, eine Desktop-App, den Browser und Cloud-Computer hinweg, alles von einer Engine betrieben, damit deine Arbeit zwischen ihnen wechseln kann und deine bleibt. Jeder Teil unten sagt, wo er heute steht.",
   sectionOpenHeading: "Codewhale wird offen von den Menschen gebaut, die es nutzen.",
@@ -49,6 +45,17 @@ export const home: HomeDict = {
   contributorsCount: {
     one: "{n} mitwirkende Person",
     other: "{n} Mitwirkende",
+  },
+  factsLabel: "Codewhale auf einen Blick",
+  factRust: "Geschrieben in Rust",
+  factLicense: "Quelloffen, {license}-Lizenz",
+  factProviders: {
+    one: "{n} Anbieter-Route",
+    other: "{n} Anbieter-Routen",
+  },
+  factModels: {
+    one: "{n} Modell",
+    other: "{n} Modelle",
   },
 
   mapHeading: "Eine Engine",

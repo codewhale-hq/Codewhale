@@ -4,10 +4,10 @@ import type { HomeDict } from "../types";
 
 export const home: HomeDict = {
   metaTitle: "Codewhale · 모델은 누구의 것이어도 됩니다. 에이전트는 당신의 것이어야 합니다.",
-  metaDescription: "Codewhale은 많은 에이전트와 함께, 원하는 모델로, 내 컴퓨터와 클라우드에서 소프트웨어를 만드는 열린 환경이 되어 가고 있습니다. 오늘은 터미널과 브라우저에서 시작하며, 오픈 소스이므로 직접 읽어 볼 수 있습니다.",
+  metaDescription: "Codewhale는 터미널에서 쓰는 오픈 소스 코딩 에이전트이며 Rust로 작성되었습니다. 어떤 모델과도 함께 작동하고, 하나의 작업을 여러 에이전트에게 나눌 수 있으며, 코드 한 줄 한 줄을 직접 읽을 수 있습니다.",
   heroTitle: "모델은 누구의 것이어도 됩니다. 에이전트는 당신의 것이어야 합니다.",
   heroTitleLead: "모델은 누구의 것이어도 됩니다.",
-  heroIntro: "{brand}은 많은 에이전트와 함께, 원하는 모델로, 내 컴퓨터와 클라우드에서 소프트웨어를 만드는 열린 환경이 되어 가고 있습니다. 오늘은 터미널과 브라우저에서 시작하며, 오픈 소스이므로 직접 읽어 볼 수 있습니다.",
+  heroIntro: "{brand}는 터미널에서 쓰는 오픈 소스 코딩 에이전트이며 Rust로 작성되었습니다. 어떤 모델과도 함께 작동하고, 하나의 작업을 여러 에이전트에게 나눌 수 있으며, 코드 한 줄 한 줄을 직접 읽을 수 있습니다.",
   readTheCode: "코드 읽기",
   installNote: "버전 {version}은(는) 릴리스되었으며 계정이 필요 없습니다.",
   captionDevelopment: "실제 터미널에서 실행한 개발 빌드입니다. 편집과 테스트는 실제로 실행되었고, 모델은 대본에 따른 시연입니다.",
@@ -31,14 +31,10 @@ export const home: HomeDict = {
   copy: "복사",
   copied: "복사됨 ✓",
 
-  belief: "당신이 쓰는 모델은 대개 다른 누군가의 것입니다. 빌려 쓰는 것이고, 모르는 사이에 바뀝니다. 에이전트는 다릅니다. 에이전트는 당신의 파일을 읽고, 명령을 실행하고, 작업 중인 내용을 기억하며, 당신의 이름으로 행동하므로 당신의 것이어야 합니다. Codewhale이 그런 에이전트입니다. 오픈 소스이므로 모든 줄을 직접 읽을 수 있고, 에이전트에게 자신을 읽어 달라고 할 수도 있습니다. 당신이 고른 어떤 모델과도 작동하고, 묻지 않고 무엇을 해도 되는지는 당신이 정하며, 읽을 수 있는 기록을 남깁니다. 우리는 이것을 당신과 많은 에이전트가 함께 소프트웨어를 만드는 하나의 공간으로 만들고 있습니다. 터미널에서 클라우드의 컴퓨터까지, 끝까지 당신의 것으로 남습니다.",
-
   sectionModelHeading: "어떤 모델이든 당신의 에이전트를 통해 일할 수 있습니다.",
   sectionModelBody: "내장 제공업체, OpenAI 호환 엔드포인트, 또는 내 컴퓨터의 모델을 사용할 수 있고, 턴 사이에 모델을 바꿀 수 있습니다. Codewhale은 계정 없이 당신의 저장소에서 실행되며, `codewhale web`으로 내 컴퓨터의 브라우저에서 함께 작업할 수 있습니다.",
   sectionControlHeading: "당신의 에이전트는 당신에게 응답합니다.",
   sectionControlBody: "묻지 않고 Codewhale이 무엇을 해도 되는지는 당신이 정하며, 명령은 macOS와 Linux에서 샌드박스 안에서 실행될 수 있습니다. 모든 세션은 변경한 파일, 실행한 명령, 각 단계를 누가 승인했는지를 담은 영수증을 남깁니다.",
-  sectionAgentsHeading: "여러 에이전트가 당신과 하나의 작업을 나눌 수 있습니다.",
-  sectionAgentsBody: "Codewhale은 탐색자, 구현자, 검토자 같은 역할을 가진 에이전트들에게 작업을 나누고, 당신은 각각을 지켜보고, 살펴보고, 멈출 수 있습니다. Fleet은 원장을 유지하므로 재시작 후에도 실행을 이어갈 수 있습니다.",
   sectionDirectionHeading: "당신의 에이전트가 가는 곳은 여기입니다.",
   sectionDirectionBody: "Codewhale은 터미널, 데스크톱 앱, 브라우저, 클라우드 컴퓨터를 아우르는 하나의 환경이 되어 가고 있으며, 모두 하나의 엔진으로 돌아갑니다. 그래서 작업이 그 사이를 오가면서도 당신의 것으로 남습니다. 아래의 각 부분은 오늘 어느 단계에 있는지 알려 줍니다.",
   sectionOpenHeading: "Codewhale은 쓰는 사람들이 공개적으로 만듭니다.",
@@ -48,6 +44,15 @@ export const home: HomeDict = {
 
   contributorsCount: {
     other: "기여자 {n}명",
+  },
+  factsLabel: "한눈에 보는 Codewhale",
+  factRust: "Rust로 작성",
+  factLicense: "오픈 소스, {license} 라이선스",
+  factProviders: {
+    other: "제공자 경로 {n}개",
+  },
+  factModels: {
+    other: "모델 {n}개",
   },
 
   mapHeading: "하나의 엔진",

@@ -4,10 +4,10 @@ import type { HomeDict } from "../types";
 
 export const home: HomeDict = {
   metaTitle: "Codewhale · Mô hình có thể là của bất kỳ ai. Agent nên là của bạn.",
-  metaDescription: "Codewhale đang trở thành môi trường mở để bạn xây dựng phần mềm cùng nhiều agent, trên bất kỳ mô hình nào, ngay trên máy tính của bạn và trên đám mây. Hôm nay nó bắt đầu trong terminal và trình duyệt của bạn, mã nguồn mở và do bạn tự đọc được.",
+  metaDescription: "Codewhale là một agent lập trình mã nguồn mở cho terminal của bạn, được viết bằng Rust. Nó làm việc với bất kỳ mô hình nào, có thể chia một nhiệm vụ cho nhiều agent, và bạn có thể đọc từng dòng mã của nó.",
   heroTitle: "Mô hình có thể là của bất kỳ ai. Agent nên là của bạn.",
   heroTitleLead: "Mô hình có thể là của bất kỳ ai.",
-  heroIntro: "{brand} đang trở thành môi trường mở để bạn xây dựng phần mềm cùng nhiều agent, trên bất kỳ mô hình nào, ngay trên máy tính của bạn và trên đám mây. Hôm nay nó bắt đầu trong terminal và trình duyệt của bạn, mã nguồn mở và do bạn tự đọc được.",
+  heroIntro: "{brand} là một agent lập trình mã nguồn mở cho terminal của bạn, được viết bằng Rust. Nó làm việc với bất kỳ mô hình nào, có thể chia một nhiệm vụ cho nhiều agent, và bạn có thể đọc từng dòng mã của nó.",
   readTheCode: "Đọc mã",
   installNote: "Phiên bản {version} đã phát hành và không cần tài khoản.",
   captionDevelopment: "Một bản dựng phát triển trong terminal thật: các chỉnh sửa và bài kiểm thử đã chạy thật, còn mô hình là bản trình diễn theo kịch bản.",
@@ -31,14 +31,10 @@ export const home: HomeDict = {
   copy: "Sao chép",
   copied: "Đã sao chép ✓",
 
-  belief: "Mô hình bạn dùng thường là của người khác. Bạn thuê nó, và nó thay đổi mà bạn không quyết định. Agent thì khác. Nó đọc tệp của bạn, chạy lệnh của bạn, giữ lại việc bạn đang làm và hành động nhân danh bạn, nên nó phải thuộc về bạn. Codewhale là agent đó. Nó là mã nguồn mở, nên bạn có thể đọc từng dòng của nó, hoặc nhờ nó tự đọc cho bạn nghe. Nó làm việc với bất kỳ mô hình nào bạn chọn, bạn quyết định nó được làm gì mà không cần hỏi, và nó để lại một bản ghi mà bạn đọc được. Chúng tôi đang xây dựng nó thành một nơi duy nhất để bạn và nhiều agent cùng làm phần mềm, từ terminal của bạn đến một máy tính trên đám mây, và nó vẫn là của bạn suốt chặng đường.",
-
   sectionModelHeading: "Mọi mô hình đều có thể làm việc qua agent của bạn.",
   sectionModelBody: "Dùng nhà cung cấp tích hợp sẵn, bất kỳ endpoint tương thích OpenAI nào hoặc một mô hình trên máy của bạn, và đổi mô hình giữa các lượt. Codewhale chạy trong kho mã của bạn mà không cần tài khoản, và `codewhale web` cho phép bạn làm việc với nó trong trình duyệt trên chính máy của bạn.",
   sectionControlHeading: "Agent của bạn chịu trách nhiệm trước bạn.",
   sectionControlBody: "Bạn quyết định Codewhale được làm gì mà không cần hỏi, và các lệnh của nó có thể chạy trong sandbox trên macOS và Linux. Mỗi phiên để lại một biên nhận ghi các tệp nó đã thay đổi, các lệnh nó đã chạy và ai đã phê duyệt từng bước.",
-  sectionAgentsHeading: "Nhiều agent có thể cùng bạn chia sẻ một nhiệm vụ.",
-  sectionAgentsBody: "Codewhale chia một công việc cho nhiều agent với các vai trò như người khám phá, người triển khai và người đánh giá, và bạn có thể theo dõi, kiểm tra và dừng từng agent. Một Fleet giữ sổ ghi, nên một lần chạy có thể tiếp tục sau khi khởi động lại.",
   sectionDirectionHeading: "Đây là nơi agent của bạn đang hướng tới.",
   sectionDirectionBody: "Codewhale đang trở thành một môi trường duy nhất trải khắp terminal, ứng dụng máy tính, trình duyệt và máy tính đám mây của bạn, tất cả chạy bằng một động cơ, để công việc của bạn có thể di chuyển giữa chúng và vẫn là của bạn. Mỗi phần bên dưới cho biết hôm nay nó đang ở đâu.",
   sectionOpenHeading: "Codewhale được xây dựng công khai bởi những người dùng nó.",
@@ -48,6 +44,15 @@ export const home: HomeDict = {
 
   contributorsCount: {
     other: "{n} người đóng góp",
+  },
+  factsLabel: "Codewhale trong nháy mắt",
+  factRust: "Viết bằng Rust",
+  factLicense: "Mã nguồn mở, giấy phép {license}",
+  factProviders: {
+    other: "{n} tuyến nhà cung cấp",
+  },
+  factModels: {
+    other: "{n} mô hình",
   },
 
   mapHeading: "Một động cơ",

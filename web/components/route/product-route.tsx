@@ -21,29 +21,12 @@ interface Geometry {
   solidEnd: number;
 }
 
-const HERO_WEIGHT: Record<ProductMapId, number> = {
-  terminal: 1.12,
-  localBrowser: 1.6,
-  manyAgents: 1.05,
-  desktop: 2.12,
-  cloud: 1.42,
-  oneSession: 2.22,
-};
-const HERO_ENGINE_WEIGHT = 1;
-const HERO_TODAY_WEIGHT = 2.8;
-const HERO_TODAY_SPLIT = 0.88;
-
 const pct = (value: number) => `${(value * 100).toFixed(3)}%`;
 const vars = (values: Record<string, string | number>) => values as CSSProperties;
 
 function releasedCount(parts: readonly RoutePart[]): number {
   const first = parts.findIndex((part) => part.state !== "released");
   return first < 0 ? parts.length : first;
-}
-
-function heroWeights(parts: readonly RoutePart[]): number[] {
-  const today = releasedCount(parts);
-  return [HERO_ENGINE_WEIGHT, ...parts.map((part, index) => HERO_WEIGHT[part.id] + (index + 1 === today ? HERO_TODAY_WEIGHT : 0))];
 }
 
 function geometryFrom(xs: readonly number[], parts: readonly RoutePart[], split: number): Geometry {
@@ -55,37 +38,6 @@ function geometryFrom(xs: readonly number[], parts: readonly RoutePart[], split:
     today: solidEnd,
     solidEnd: today === parts.length ? 1 : solidEnd,
   };
-}
-
-function heroGeometry(parts: readonly RoutePart[]): Geometry {
-  const weights = heroWeights(parts);
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  let run = 0;
-  const xs = weights.map((weight) => {
-    const x = run / total;
-    run += weight;
-    return x;
-  });
-  return geometryFrom(xs, parts, HERO_TODAY_SPLIT);
-}
-
-export function heroHang(parts: readonly RoutePart[], id: ProductMapId): number | null {
-  const index = parts.findIndex((part) => part.id === id);
-  return index < 0 ? null : heroGeometry(parts).stops[index + 1].x;
-}
-
-function compactGeometry(parts: readonly RoutePart[]): Geometry {
-  const today = releasedCount(parts);
-  const later = parts.length - today;
-  const start = 0.02;
-  const step = 0.105;
-  const gap = 0.33;
-  const end = 0.93;
-  const xs: number[] = [];
-  for (let index = 0; index <= today; index += 1) xs.push(start + index * step);
-  const from = start + today * step + gap;
-  for (let index = 0; index < later; index += 1) xs.push(later === 1 ? from : from + ((end - from) * index) / (later - 1));
-  return geometryFrom(xs, parts, later > 0 ? 0.8 : 0.5);
 }
 
 function mapGeometry(parts: readonly RoutePart[]): Geometry {
@@ -122,7 +74,7 @@ function MarkShape({ state }: { state: MarkState }) {
   return <circle r="4.25" className="road-mark-ring road-mark-dashed" />;
 }
 
-function Rail({ geometry, today, draw = false }: { geometry: Geometry; today: "whale" | "tick"; draw?: boolean }) {
+function Rail({ geometry }: { geometry: Geometry }) {
   const id = useId().replace(/[^a-z0-9]/gi, "");
   const mask = `road-mask-${id}`;
   const fade = `road-fade-${id}`;
@@ -152,7 +104,7 @@ function Rail({ geometry, today, draw = false }: { geometry: Geometry; today: "w
     } else lines.push(line(stop.x, end, into, `l${index}`));
   });
   return (
-    <div className="road-rail" aria-hidden="true" data-draw={draw ? "" : undefined} style={vars({ "--today": pct(geometry.today) })}>
+    <div className="road-rail" aria-hidden="true" style={vars({ "--today": pct(geometry.today) })}>
       <svg className="road-drawing" focusable="false">
         <linearGradient id={fade} className="road-fade" data-state={tail.state} gradientUnits="userSpaceOnUse" x1={pct(Math.max(tail.x, 0.92))} x2="100%">
           <stop className="road-fade-near" />
@@ -173,13 +125,9 @@ function Rail({ geometry, today, draw = false }: { geometry: Geometry; today: "w
           </svg>
         ))}
       </svg>
-      {today === "whale" ? (
-        <span className="road-today">
-          <RouteWhale />
-        </span>
-      ) : (
-        <span className="road-tick" />
-      )}
+      <span className="road-today">
+        <RouteWhale />
+      </span>
     </div>
   );
 }
@@ -190,76 +138,6 @@ function StateWord({ part }: { part: RoutePart }) {
       <StateMark state={part.state} />
       {part.stateWord}
     </span>
-  );
-}
-
-function leaderLayers(xs: readonly number[], own: number | null, rtl: boolean): CSSProperties {
-  const at = (x: number) => pct(rtl ? 1 - x : x);
-  const layers = xs.map((x, index) => ({ x, full: own === null || index > own })).filter((layer, index) => layer.full || index === own);
-  if (layers.length === 0) return {};
-  return {
-    backgroundImage: layers.map(() => "linear-gradient(var(--line-strong), var(--line-strong))").join(", "),
-    backgroundSize: layers.map((layer) => `1px ${layer.full ? "100%" : "var(--road-leader)"}`).join(", "),
-    backgroundPosition: layers.map((layer) => `${at(layer.x)} 0`).join(", "),
-    backgroundRepeat: "no-repeat",
-  };
-}
-
-export function HeroRoute({ parts, engine, label, rtl }: { parts: RoutePart[]; engine: string; label: string; rtl: boolean }) {
-  const wide = heroGeometry(parts);
-  const compact = compactGeometry(parts);
-  const today = releasedCount(parts);
-  const released = parts.slice(0, today);
-  const later = parts.slice(today);
-  const laterX = compact.stops.slice(today + 1).map((stop) => stop.x);
-  return (
-    <>
-      <div className="road road-hero">
-        <ol className="road-stops" aria-label={label} style={{ gridTemplateColumns: heroWeights(parts).map((weight) => `minmax(0, ${weight}fr)`).join(" ") }}>
-          <li className="road-stop" data-state="engine">
-            <span className="road-name">{engine}</span>
-          </li>
-          {parts.map((part, index) => (
-            <li
-              key={part.id}
-              className="road-stop"
-              data-state={part.state}
-              data-today={index + 1 === today && later.length > 0 ? "" : undefined}
-              style={index + 1 === today ? vars({ "--split": pct(HERO_TODAY_SPLIT) }) : undefined}
-            >
-              <span className="road-name">{part.name}</span>{" "}
-              <StateWord part={part} />
-            </li>
-          ))}
-        </ol>
-        <Rail geometry={wide} today="whale" draw />
-      </div>
-      <div className="road road-compact">
-        <ol className="road-stops" aria-label={label}>
-          <li className="road-stop road-origin">
-            <span className="road-name">{engine}</span>
-          </li>
-          {released.map((part, index) => (
-            <li key={part.id} className={index === 0 ? "road-stop road-solid" : "sr-only"} style={index === 0 ? leaderLayers(laterX, null, rtl) : undefined}>
-              <span className="sr-only">{part.name}</span>{" "}
-              <StateWord part={part} />
-            </li>
-          ))}
-          {later.map((part, index) => (
-            <li
-              key={part.id}
-              className="road-stop road-stair"
-              data-state={part.state}
-              style={{ ...leaderLayers(laterX, index, rtl), ...vars({ "--x": pct(laterX[index]) }) }}
-            >
-              <span className="road-name">{part.name}</span>{" "}
-              <StateWord part={part} />
-            </li>
-          ))}
-        </ol>
-        <Rail geometry={compact} today="whale" />
-      </div>
-    </>
   );
 }
 
@@ -278,7 +156,7 @@ export function RouteMap({ parts, engine, label, locale }: { parts: RoutePart[];
   return (
     <>
       <div className="road road-map">
-        <Rail geometry={mapGeometry(parts)} today="tick" />
+        <Rail geometry={mapGeometry(parts)} />
         <ol className="road-stops" aria-label={label} style={{ gridTemplateColumns: `repeat(${parts.length + 1}, minmax(0, 1fr))` }}>
           <li className="road-stop" data-state="engine">
             <span className="road-name">{engine}</span>

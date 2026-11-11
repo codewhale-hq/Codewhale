@@ -189,14 +189,20 @@ export interface HomeDict {
 
   /** `{n}` is the contributor count; pick the form with `pluralText`. */
   contributorsCount: PluralForms;
+  /** Accessible name for the home's short list of facts. */
+  factsLabel: string;
+  factRust: string;
+  /** `{license}` is the licence name from the generated facts. */
+  factLicense: string;
+  /** `{n}` is the provider route count of the published release. */
+  factProviders: PluralForms;
+  /** `{n}` is the catalog model count of the published release. */
+  factModels: PluralForms;
 
-  belief: string;
   sectionModelHeading: string;
   sectionModelBody: string;
   sectionControlHeading: string;
   sectionControlBody: string;
-  sectionAgentsHeading: string;
-  sectionAgentsBody: string;
   sectionDirectionHeading: string;
   sectionDirectionBody: string;
   sectionOpenHeading: string;
