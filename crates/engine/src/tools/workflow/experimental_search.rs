@@ -349,6 +349,21 @@ fn run_isolated(
         .stdin(Stdio::from(stdin))
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                // The evaluator command needs only stdin/stdout/stderr. Close
+                // every inherited host descriptor before bubblewrap starts.
+                let result = libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32);
+                if result != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     let started = Instant::now();
     let mut child = env
         .spawn_background_limited(
