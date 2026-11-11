@@ -373,7 +373,11 @@ print(json.dumps({'secret_blocked':blocked[0],
         code.to_string(),
         secret.to_string_lossy().into_owned(),
     ];
-    args.extend(denied_paths.iter().map(|path| path.to_string_lossy().into_owned()));
+    args.extend(
+        denied_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned()),
+    );
     let env = isolated_command(
         &source,
         &scratch,
@@ -612,6 +616,7 @@ impl VerifiedCandidateEvaluator {
     }
 
     fn verify_frozen_inputs(&self) -> Result<(), String> {
+        self.store.verify_baseline()?;
         if hash(&fs::read(&self.spec_path).map_err(|error| error.to_string())?) != self.spec_hash
             || hash(&fs::read(self.root.join("manifest.json")).map_err(|error| error.to_string())?)
                 != self.manifest_hash
@@ -721,12 +726,23 @@ impl VerifiedCandidateEvaluator {
             ("baseline_id", self.store.baseline_id()),
             ("baseline_sha", self.spec.baseline_sha.as_str()),
             ("spec_sha256", self.spec_hash.as_str()),
+            ("frozen_manifest_sha256", self.manifest_hash.as_str()),
+            ("native_binary_sha256", self.binary_hash.as_str()),
         ] {
             if original.get(key).and_then(Value::as_str) != Some(expected) {
                 return Err(format!(
                     "original receipt {key} differs from frozen spec/artifact"
                 ));
             }
+        }
+        if original.get("oracle_sha256") != Some(&json!(self.case_hashes))
+            || original.get("executable_sha256") != Some(&json!(self.executable_hashes))
+            || original.get("sandbox_probe") != Some(&self.sandbox_probe)
+        {
+            return Err(
+                "original receipt oracle or execution identity differs from frozen spec"
+                    .to_string(),
+            );
         }
         self.run_candidate(id, &artifact, true, cancel)
     }
@@ -791,6 +807,7 @@ impl VerifiedCandidateEvaluator {
             "execution_status": execution_status,
             "reason": reason,
             "spec_sha256": self.spec_hash,
+            "frozen_manifest_sha256": self.manifest_hash,
             "baseline_sha": self.spec.baseline_sha,
             "baseline_id": self.store.baseline_id(),
             "artifact_id": artifact.artifact_id,

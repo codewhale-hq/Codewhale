@@ -232,6 +232,16 @@ impl ArtifactStore {
         &self.baseline_id
     }
 
+    pub(super) fn verify_baseline(&self) -> Result<(), String> {
+        let bytes = fs::read(self.root.join("baseline.json")).map_err(|error| error.to_string())?;
+        let recorded: Vec<FileEntry> =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        if canonical_hash(&recorded)? != self.baseline_id {
+            return Err("frozen baseline manifest changed".to_string());
+        }
+        Ok(())
+    }
+
     pub(super) fn capture(
         &self,
         workspace: &Path,
