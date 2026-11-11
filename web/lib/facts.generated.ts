@@ -42,7 +42,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-11-11T02:54:47.829Z",
+  "generatedAt": "2026-11-11T04:33:00.951Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.3",
@@ -368,12 +368,52 @@ export const FACTS: RepoFacts = {
       "addedAt": "2026-11-09"
     },
     {
+      "id": "mistral-large-4",
+      "provider": "Mistral",
+      "contextWindow": 1048576,
+      "maxOutput": 262144,
+      "reasoning": true,
+      "addedAt": "2026-11-05"
+    },
+    {
       "id": "tencent/hy4",
       "provider": "OpenRouter",
       "contextWindow": 1048576,
       "maxOutput": 65536,
       "reasoning": true,
       "addedAt": "2026-11-05"
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "provider": "OpenAI",
+      "contextWindow": 1050000,
+      "maxOutput": 128000,
+      "reasoning": true,
+      "addedAt": "2026-10-26"
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 1048576,
+      "maxOutput": 1048576,
+      "reasoning": true,
+      "addedAt": "2026-10-23"
+    },
+    {
+      "id": "kimi-k3.1-pro-highspeed",
+      "provider": "Moonshot/Kimi",
+      "contextWindow": 1048576,
+      "maxOutput": 1048576,
+      "reasoning": true,
+      "addedAt": "2026-10-23"
+    },
+    {
+      "id": "MiniMax-M3.1-Flash",
+      "provider": "MiniMax",
+      "contextWindow": 1000000,
+      "maxOutput": null,
+      "reasoning": true,
+      "addedAt": "2026-10-19"
     },
     {
       "id": "claude-fable-5-1",

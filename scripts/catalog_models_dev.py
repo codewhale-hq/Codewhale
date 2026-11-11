@@ -1290,6 +1290,23 @@ def append_spec_model(spec_text: str, provider_id: str, model_id: str) -> str:
     return spec_text[:end] + f'  "{model_id}",\n' + spec_text[end:]
 
 
+VENDOR_FAMILY = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAi",
+    "google": "Google",
+    "deepseek": "DeepSeek",
+    "xai": "Xai",
+    "moonshotai": "Moonshot",
+    "zai": "Zai",
+    "minimax": "Minimax",
+    "alibaba": "Qwen",
+    "mistral": "Mistral",
+    "meta": "Meta",
+    "xiaomi": "XiaomiMimo",
+    "stepfun": "Stepfun",
+}
+
+
 def apply_discoveries(
     found: list[dict[str, Any]],
     corrections: dict[str, Any],
@@ -1307,7 +1324,7 @@ def apply_discoveries(
         if item["max_output"]:
             intrinsic["max_output"] = item["max_output"]
         intrinsic["reasoning"] = item["reasoning"]
-        intrinsic["family"] = item["label"]
+        intrinsic["family"] = VENDOR_FAMILY[item["vendor"]]
         reviewed["intrinsic"][item["id"].lower()] = intrinsic
         reviewed["public_models"].append(
             {

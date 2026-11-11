@@ -1886,6 +1886,40 @@
       },
       "qwen3.6-35b-a3b": {
         "source": "preserved public presentation facts, not route availability"
+      },
+      "mistral-large-4": {
+        "source": "models.dev mistral/mistral-large-4, discovered 2026-11-11; unreviewed",
+        "context_window": 1048576,
+        "max_output": 262144,
+        "reasoning": true,
+        "family": "Mistral"
+      },
+      "minimax-m3.1-flash": {
+        "source": "models.dev minimax/MiniMax-M3.1-Flash, discovered 2026-11-11; unreviewed",
+        "context_window": 1000000,
+        "reasoning": true,
+        "family": "Minimax"
+      },
+      "kimi-k3.1-pro": {
+        "source": "models.dev moonshotai/kimi-k3.1-pro, discovered 2026-11-11; unreviewed",
+        "context_window": 1048576,
+        "max_output": 1048576,
+        "reasoning": true,
+        "family": "Moonshot"
+      },
+      "kimi-k3.1-pro-highspeed": {
+        "source": "models.dev moonshotai/kimi-k3.1-pro-highspeed, discovered 2026-11-11; unreviewed",
+        "context_window": 1048576,
+        "max_output": 1048576,
+        "reasoning": true,
+        "family": "Moonshot"
+      },
+      "gpt-6.1-terra": {
+        "source": "models.dev openai/gpt-6.1-terra, discovered 2026-11-11; unreviewed",
+        "context_window": 1050000,
+        "max_output": 128000,
+        "reasoning": true,
+        "family": "OpenAi"
       }
     },
     "official_deepseek_aliases": {
@@ -4534,6 +4568,46 @@
         "added_at": "2026-03-02",
         "aliases": [
           "deepseek-reasoner"
+        ]
+      },
+      {
+        "id": "mistral-large-4",
+        "label": "Mistral",
+        "added_at": "2026-11-05",
+        "aliases": [
+          "mistral-large-4"
+        ]
+      },
+      {
+        "id": "MiniMax-M3.1-Flash",
+        "label": "MiniMax",
+        "added_at": "2026-10-19",
+        "aliases": [
+          "MiniMax-M3.1-Flash"
+        ]
+      },
+      {
+        "id": "kimi-k3.1-pro",
+        "label": "Moonshot/Kimi",
+        "added_at": "2026-10-23",
+        "aliases": [
+          "kimi-k3.1-pro"
+        ]
+      },
+      {
+        "id": "kimi-k3.1-pro-highspeed",
+        "label": "Moonshot/Kimi",
+        "added_at": "2026-10-23",
+        "aliases": [
+          "kimi-k3.1-pro-highspeed"
+        ]
+      },
+      {
+        "id": "gpt-6.1-terra",
+        "label": "OpenAI",
+        "added_at": "2026-10-26",
+        "aliases": [
+          "gpt-6.1-terra"
         ]
       }
     ],

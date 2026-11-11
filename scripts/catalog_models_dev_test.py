@@ -385,6 +385,18 @@ class SeedDiscoverTests(unittest.TestCase):
         self.assertEqual(found[0]["label"], "Anthropic")
         self.assertIsNone(found[1]["spec_provider"])
 
+    def test_discovered_family_is_a_model_family_variant(self) -> None:
+        import re
+
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import catalog_models_dev as mod
+
+        source = (ROOT / "crates" / "config" / "src" / "catalog" / "reviewed.rs").read_text()
+        body = re.search(r"pub enum ModelFamily \{(.*?)\}", source, re.S).group(1)
+        variants = set(re.findall(r"^\s*(\w+),", body, re.M))
+        self.assertEqual(set(mod.DISCOVER_VENDORS), set(mod.VENDOR_FAMILY))
+        self.assertLessEqual(set(mod.VENDOR_FAMILY.values()), variants)
+
     def test_spec_append_targets_one_provider_array(self) -> None:
         sys.path.insert(0, str(ROOT / "scripts"))
         import catalog_models_dev as mod

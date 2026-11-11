@@ -26,7 +26,7 @@ url = "https://models.dev/catalog.json"
 # a maintainer decided not to list, so the scheduled job stops proposing them.
 [discover]
 since_days = 45
-skip = []
+skip = ["mistral-large-4-0-8"]
 
 [meta]
 about = "Offline fallback Models.dev-shaped catalog snapshot for Codewhale (#3385, demoted by #4188, generated since #6396)."
