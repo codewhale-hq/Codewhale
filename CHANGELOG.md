@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Website docs truth:** Documentation pages now describe the released version first and show what exists only in source in a labelled section that switches on when a release carries it.
 - **Website Arabic pages:** On Arabic pages, English text that has no translation yet keeps its own direction and language, so punctuation, commands and dates no longer appear reversed.
 - A DSH plugin whose package includes a `.gitignore` at its root now installs instead of being refused as a hidden file; nested `.gitignore` files, other hidden files, credential files and links are still refused. (CW-8023)
+- `install.bat` in the Windows release archive now passes its arguments to `install.ps1`, so `install.bat -NoModifyPath` declines the user PATH edit like the PowerShell installer does, and the install guide says so. It has not been run on Windows. The batch file reaches people in the next release archive, and the guide sentence when the website is next deployed, because the site serves the guide but not `install.bat`. (CW-8046)
 
 ## [0.10.3] - 2026-11-08
 

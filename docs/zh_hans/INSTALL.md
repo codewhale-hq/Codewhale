@@ -1055,7 +1055,7 @@ NSIS 安装器目前包含 Windows x64 二进制。Windows ARM64 用户应通过
 
 卸载会移除二进制、`codewhale.bat`、开始菜单快捷方式和用户 `PATH` 条目。
 
-自 0.10.3 起，发布压缩包里的 `install.ps1` 默认把 `%USERPROFILE%\bin` 加入**用户** PATH（只写注册表值 `HKCU\Environment\Path`，不动系统 PATH），打印加了什么以及只移除该条目的 PowerShell 命令；目录已在 PATH 上时什么都不做；加 `-NoModifyPath`（或 `CODEWHALE_NO_MODIFY_PATH=1`）可跳过，此时改为打印命令；重复运行不会重复添加。已打开的窗口看不到这个改动，所以最后几行给出当前窗口用的命令和 `codewhale --version`。v0.10.2 的 `install.ps1` 不做这些，只提示你自行添加目录。该路径尚未在 Windows 主机上运行过。
+自 0.10.3 起，发布压缩包里的 `install.ps1` 默认把 `%USERPROFILE%\bin` 加入**用户** PATH（只写注册表值 `HKCU\Environment\Path`，不动系统 PATH），打印加了什么以及只移除该条目的 PowerShell 命令；目录已在 PATH 上时什么都不做；加 `-NoModifyPath`（或 `CODEWHALE_NO_MODIFY_PATH=1`）可跳过（`install.bat -NoModifyPath` 会把该参数传给它），此时改为打印命令；重复运行不会重复添加。已打开的窗口看不到这个改动，所以最后几行给出当前窗口用的命令和 `codewhale --version`。v0.10.2 的 `install.ps1` 不做这些，只提示你自行添加目录。该路径尚未在 Windows 主机上运行过。
 
 **静默安装**（供 IT 管理员、SCCM、Intune 使用）：
 
