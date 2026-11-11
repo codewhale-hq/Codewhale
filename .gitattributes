@@ -65,6 +65,12 @@ crates/engine/extension-host/dist/** text eol=lf
 crates/engine/tests/fixtures/extension_host/** text eol=lf
 crates/engine/extension-host/src/dsh/dsh-message-compat.js text eol=lf
 
+# DeepSeek Harness creator pins are compared byte for byte against recorded
+# SHA-256 values (UPSTREAM.json) and embedded with include_bytes!(); a CRLF
+# Windows checkout must not rewrite any of them.
+crates/skills/assets/dsh-creator/** text eol=lf
+crates/engine/extension-host/src/dsh/upstream/creator/** text eol=lf
+
 # Rustfmt writes LF; keep Rust sources stable across Windows/Linux/macOS.
 *.rs text eol=lf
 

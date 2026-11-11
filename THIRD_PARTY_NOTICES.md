@@ -164,6 +164,44 @@ The host bundle's own copy of these notices is `dist/LICENSES.txt`, generated
 from the bundler's metafile; Codewhale writes it beside the bundle it
 materialises (`~/.codewhale/extension-host/<sha256>/LICENSES.txt`).
 
+## DeepSeek Harness Creator files (`dsh-agent-preset` skills, `dsh-plugin-manager`, `dsh-tool-cordis`, `dsh-sandbox`) — MIT
+
+Codewhale ships, unmodified, the four authoring skills of
+`@deepseek-ai/dsh-agent-preset` 0.2.2-rc.1
+(`crates/skills/assets/dsh-creator/`), and keeps byte-for-byte copies of
+`@deepseek-ai/dsh-plugin-manager` 0.2.2-rc.1 `lib/types/tools.js` and
+`@deepseek-ai/dsh-tool-cordis` 0.2.2-rc.1 `lib/index.js`
+(`crates/engine/extension-host/src/dsh/upstream/creator/`).
+`@deepseek-ai/dsh-sandbox` 0.2.2-rc.1 is named for the approval excerpt that
+slice will add. Each package is published under the licence text below, and
+each pin's `UPSTREAM.json` records the SHA-256 of every file.
+
+Upstream: <https://github.com/deepseek-ai/deepseek-harness>
+
+```
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Model Context Protocol SDK and bundled dependencies
 
 The pinned builtin MCP bundle (`crates/engine/extension-host/dist/builtin/mcp.mjs`)
