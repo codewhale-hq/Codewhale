@@ -262,7 +262,9 @@ export default async function (args) {
       selections.push(selection);
       const selectionCosts = new Map((selection.body.candidates ?? [])
         .map((row) => [row.id, { cost_complete: row.cost_complete,
-          full_cost_microusd: row.full_cost_microusd }]));
+          full_cost_microusd: row.full_cost_microusd,
+          token_usage_complete: row.token_usage_complete,
+          full_provider_tokens: row.full_provider_tokens }]));
       for (const item of all.filter((item) => item.generation === generation)) {
         item.selectionCost = selectionCosts.get(item.id) ?? null;
       }
@@ -284,9 +286,14 @@ export default async function (args) {
     passing.sort((a, b) => {
       const aFootprint = a.receipt.changed_paths?.length ?? Infinity;
       const bFootprint = b.receipt.changed_paths?.length ?? Infinity;
-      const aCost = a.selectionCost?.cost_complete ? a.selectionCost.full_cost_microusd : Infinity;
-      const bCost = b.selectionCost?.cost_complete ? b.selectionCost.full_cost_microusd : Infinity;
-      return aCost - bCost || aFootprint - bFootprint || a.id.localeCompare(b.id);
+      const rank = (item) => item.selectionCost?.cost_complete
+        ? [0, item.selectionCost.full_cost_microusd]
+        : item.selectionCost?.token_usage_complete
+          ? [1, item.selectionCost.full_provider_tokens] : [2, Infinity];
+      const [aBasis, aUsage] = rank(a);
+      const [bBasis, bUsage] = rank(b);
+      return aBasis - bBasis || aUsage - bUsage || aFootprint - bFootprint
+        || a.id.localeCompare(b.id);
     });
     let winner = null;
     let replay = null;

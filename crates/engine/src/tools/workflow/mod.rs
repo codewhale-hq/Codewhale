@@ -5234,6 +5234,7 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                 dev_reviews.insert(id.clone(), verdict.to_string());
             }
             let mut task_costs = HashMap::new();
+            let mut task_tokens = HashMap::new();
             let mut task_succeeded = HashMap::new();
             for record in self
                 .task_records
@@ -5244,6 +5245,10 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                 .values()
             {
                 if let Some(label) = &record.label {
+                    task_tokens.insert(
+                        label.clone(),
+                        record.usage.as_ref().and_then(|usage| usage.total_tokens),
+                    );
                     if task_costs
                         .insert(
                             label.clone(),
@@ -5266,7 +5271,9 @@ impl WorkflowDriver for SubAgentWorkflowDriver {
                 .map_err(|_| {
                     DriverError::Unavailable("experimental search lock poisoned".to_string())
                 })?
-                .select_generation(generation, &ids, &task_costs, &task_succeeded, &dev_reviews)
+                .select_generation(
+                    generation, &ids, &task_costs, &task_tokens, &task_succeeded, &dev_reviews,
+                )
                 .map_err(DriverError::Rejected);
         }
         if action != "evaluate" && action != "replay" {

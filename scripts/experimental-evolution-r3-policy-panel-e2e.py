@@ -62,11 +62,15 @@ def make_cell(root, name, task, genome, passed, price):
         task_id = f"agent_{index}"
         events.extend([{"type": "task_started", "task_id": task_id, "label": label},
                        {"type": "task_completed", "task_id": task_id,
-                        "status": "succeeded", "usage": {"cost_microusd": price[index]}}])
+                        "status": "succeeded", "usage": {"cost_microusd": price[index],
+                            "input_tokens": price[index] * 4,
+                            "output_tokens": price[index] * 6,
+                            "total_tokens": price[index] * 10}}])
     workflow = {"run_id": f"workflow_{name}", "status": "completed",
                 "dispatch_failure_count": 0,
                 "events": events,
-                "usage": {"cost_microusd": sum(price[:len(labels)])},
+                "usage": {"cost_microusd": sum(price[:len(labels)]),
+                          "total_tokens": sum(price[:len(labels)]) * 10},
                 "result": {"baseline_sha": baseline,
                            "winner_id": candidate if passed else "NONE", "review": review}}
     write(directory / "workspace" / ".codewhale" / "workflow-runs.jsonl", {"run": workflow})
@@ -117,7 +121,33 @@ def main():
         write(manifest, changed)
         third = invoke(plan_path, output)
         assert third.returncode != 0 and "different task or oracle identities" in third.stderr
-        print(json.dumps({"status": "PASS", "checks": 3,
+        fallback = {"schema_version": 1, "policies": []}
+        for name, genome, prices in (
+            ("c", base, ((1, 2, 1), (1, 2, 1))),
+            ("d", evolved, ((3, 5, 2), (3, 5, 2))),
+        ):
+            cells = [make_cell(root, f"{name}-{task}", task, genome, True, price)
+                     for task, price in zip(("alpha", "beta"), prices)]
+            identifier = digest(json.dumps({key: genome[key] for key in GENES},
+                                           separators=(",", ":")))
+            fallback["policies"].append({"policy_id": identifier,
+                                         "genome": genome, "cells": cells})
+            for cell in cells:
+                journal = Path(cell["run_dir"]) / "workspace" / ".codewhale" / "workflow-runs.jsonl"
+                saved = json.loads(journal.read_text(encoding="utf-8"))
+                saved["run"]["usage"].pop("cost_microusd")
+                for event in saved["run"]["events"]:
+                    if event["type"] == "task_completed":
+                        event["usage"].pop("cost_microusd")
+                write(journal, saved)
+        write(plan_path, fallback)
+        fourth = invoke(plan_path, output)
+        assert fourth.returncode == 0, fourth.stderr
+        selected = json.loads(output.read_text())
+        assert selected["selected_policy_id"] == fallback["policies"][0]["policy_id"]
+        assert selected["ranking"][0]["token_usage_complete"] is True
+        assert selected["ranking"][0]["cost_complete"] is False
+        print(json.dumps({"status": "PASS", "checks": 4,
                           "scope": "receipt-contract-fixture-only"}))
 
 

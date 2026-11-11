@@ -56,7 +56,9 @@ async function execute(options = {}) {
       parent_ids: request.candidate_ids.slice(0, 1),
       candidates: request.candidate_ids.map((id) => ({ id,
         full_cost_microusd: options.fullCosts?.[id] ?? 7,
-        cost_complete: true })),
+        cost_complete: options.fullCosts?.[id] !== null,
+        full_provider_tokens: options.fullTokens?.[id] ?? 70,
+        token_usage_complete: true })),
     } };
     if (request.action === "replay") {
       const value = { ...state.raw[request.candidate_id], test_count: 54 };
@@ -114,6 +116,14 @@ const checks = [
     const { result, error } = await execute({
       writerCosts: { candidate_g0_1: 1, candidate_g0_2: 100 },
       fullCosts: { candidate_g0_1: 200, candidate_g0_2: 150 },
+    });
+    assert.equal(error, null);
+    assert.equal(result.winner_id, "candidate_g0_2", JSON.stringify(result.candidates));
+  }],
+  ["final_candidate_uses_all_provider_tokens_without_prices", async () => {
+    const { result, error } = await execute({
+      fullCosts: { candidate_g0_1: null, candidate_g0_2: null },
+      fullTokens: { candidate_g0_1: 200, candidate_g0_2: 150 },
     });
     assert.equal(error, null);
     assert.equal(result.winner_id, "candidate_g0_2", JSON.stringify(result.candidates));

@@ -54,14 +54,27 @@ def full_cost(run):
                 raise ValueError("duplicate or missing task-completion identity")
             completions[task_id] = event
     unknown = []
+    unknown_tokens = []
     subtotal = 0
+    token_total = 0
+    input_total = 0
+    output_total = 0
     for task_id, label in starts.items():
         event = completions.get(task_id)
-        charge = (event or {}).get("usage", {}).get("cost_microusd")
+        usage = (event or {}).get("usage") or {}
+        charge = usage.get("cost_microusd")
         if not isinstance(charge, int) or isinstance(charge, bool) or charge < 0:
             unknown.append(label or task_id)
         else:
             subtotal += charge
+        values = [usage.get(key) for key in ("input_tokens", "output_tokens", "total_tokens")]
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+               for value in values) or values[0] + values[1] != values[2]:
+            unknown_tokens.append(label or task_id)
+        else:
+            input_total += values[0]
+            output_total += values[1]
+            token_total += values[2]
     if set(completions) - set(starts):
         raise ValueError("completion without an admitted task")
     if run.get("child_ids") is not None and set(run["child_ids"]) != set(starts):
@@ -69,8 +82,16 @@ def full_cost(run):
     reported = (run.get("usage") or {}).get("cost_microusd")
     if not unknown and reported is not None and reported != subtotal:
         raise ValueError("Workflow usage total disagrees with child ledger")
+    reported_tokens = (run.get("usage") or {}).get("total_tokens")
+    if not unknown_tokens and reported_tokens is not None and reported_tokens != token_total:
+        raise ValueError("Workflow token total disagrees with child ledger")
     return {"known_cost_microusd": subtotal, "complete": not unknown,
             "unknown_liability_labels": unknown,
+            "known_provider_tokens": token_total,
+            "known_input_tokens": input_total,
+            "known_output_tokens": output_total,
+            "token_usage_complete": not unknown_tokens,
+            "unknown_token_usage_labels": unknown_tokens,
             "started_tasks": len(starts),
             "dispatch_failure_count": run.get("dispatch_failure_count", 0)}
 
@@ -185,14 +206,22 @@ def select(plan):
         subset = [row for row in rows if row["policy_id"] == identifier]
         successes = sum(row["task_success"] for row in subset)
         complete_cost = all(row["full_cost"]["complete"] for row in subset)
+        complete_tokens = all(row["full_cost"]["token_usage_complete"] for row in subset)
         cost = sum(row["full_cost"]["known_cost_microusd"] for row in subset)
+        tokens = sum(row["full_cost"]["known_provider_tokens"] for row in subset)
         rejects = sum(row["full_cost"]["dispatch_failure_count"] for row in subset)
         ranks.append({"policy_id": identifier, "task_successes": successes,
                       "task_count": len(subset), "cost_complete": complete_cost,
-                      "known_cost_microusd": cost, "dispatch_failures": rejects})
+                      "known_cost_microusd": cost,
+                      "token_usage_complete": complete_tokens,
+                      "known_provider_tokens": tokens,
+                      "dispatch_failures": rejects})
     ranks.sort(key=lambda row: (-row["task_successes"], row["dispatch_failures"],
-                                not row["cost_complete"], row["known_cost_microusd"]
-                                if row["cost_complete"] else float("inf"), row["policy_id"]))
+                                0 if row["cost_complete"] else
+                                1 if row["token_usage_complete"] else 2,
+                                row["known_cost_microusd"] if row["cost_complete"] else
+                                row["known_provider_tokens"] if row["token_usage_complete"]
+                                else float("inf"), row["policy_id"]))
     selected = ranks[0]["policy_id"] if ranks[0]["task_successes"] else None
     body = {"schema_version": 1, "panel": "two_policy_two_task_dev",
             "provider_seed_control": "unavailable", "task_seed_labels": sorted(identities),

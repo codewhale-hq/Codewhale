@@ -649,7 +649,7 @@ impl ExperimentalSearch {
             "max_model_turns": spec.max_model_turns,
             "max_wall_secs": spec.max_wall_secs,
             "shadow_policy": spec.shadow_policy,
-            "selection_rule": "public FAIL repair slot, DEV-reviewed PASS elite slot, then public passed cases or complete planner-worker-DEV cost",
+            "selection_rule": "public FAIL repair slot, DEV-reviewed PASS elite slot, then public passed cases or full planner-worker-DEV usage (money if reported, otherwise provider tokens)",
             "integration_policy": "review_only"
         });
         fs::write(
@@ -1056,6 +1056,7 @@ impl ExperimentalSearch {
         generation: u32,
         candidate_ids: &[String],
         task_costs: &HashMap<String, Option<u64>>,
+        task_tokens: &HashMap<String, Option<u64>>,
         task_succeeded: &HashMap<String, bool>,
         dev_reviews: &HashMap<String, String>,
     ) -> Result<Value, String> {
@@ -1084,6 +1085,14 @@ impl ExperimentalSearch {
                     let label = event.get("label")?.as_str()?;
                     let charge = task_costs.get(label).and_then(|value| *value)?;
                     Some(total.saturating_add(charge))
+                })
+            });
+            let tokens = applied.and_then(|policy| {
+                (!policy.events.is_empty()).then_some(())?;
+                policy.events.iter().try_fold(0u64, |total, event| {
+                    let label = event.get("label")?.as_str()?;
+                    let observed = task_tokens.get(label).and_then(|value| *value)?;
+                    Some(total.saturating_add(observed))
                 })
             });
             let reserved_turns = applied.map(|policy| {
@@ -1117,6 +1126,7 @@ impl ExperimentalSearch {
             rows.push(json!({
                 "id": id, "candidate_id": id, "status": status,
                 "full_cost_microusd": cost, "cost_complete": cost.is_some(),
+                "full_provider_tokens": tokens, "token_usage_complete": tokens.is_some(),
                 "cost_scope": "planner_writer_dev_review",
                 "reserved_model_turns": reserved_turns,
                 "dev_review_verdict": dev_review,
@@ -1127,7 +1137,7 @@ impl ExperimentalSearch {
                 "missing": receipt.is_none(),
             }));
             match status {
-                "PASS" if dev_gate_pass => passing.push((id.clone(), cost.unwrap_or(u64::MAX))),
+                "PASS" if dev_gate_pass => passing.push((id.clone(), cost, tokens)),
                 "FAIL"
                     if receipt
                         .and_then(|value| value.get("public_failure_feedback"))
@@ -1140,27 +1150,35 @@ impl ExperimentalSearch {
             }
         }
         failed.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        passing.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        passing.sort_by(|a, b| {
+            let rank = |cost: Option<u64>, tokens: Option<u64>| match (cost, tokens) {
+                (Some(value), _) => (0, value),
+                (None, Some(value)) => (1, value),
+                (None, None) => (2, u64::MAX),
+            };
+            rank(a.1, a.2).cmp(&rank(b.1, b.2)).then_with(|| a.0.cmp(&b.0))
+        });
         let mut parent_ids = Vec::new();
         if let Some((id, _)) = failed.first() {
             parent_ids.push(id.clone());
         }
-        if let Some((id, _)) = passing.first() {
+        if let Some((id, _, _)) = passing.first() {
             parent_ids.push(id.clone());
         }
         for (id, _) in failed.iter().skip(1) {
             parent_ids.push(id.clone());
         }
-        for (id, _) in passing.iter().skip(1) {
+        for (id, _, _) in passing.iter().skip(1) {
             parent_ids.push(id.clone());
         }
         let body = json!({
             "schema_version": 1, "generation": generation,
             "panel": "same_frozen_dev_task_and_seed",
-            "selection_rule": "public FAIL repair slot, DEV-reviewed PASS elite slot, then public passed cases or complete planner-worker-DEV cost",
+            "selection_rule": "public FAIL repair slot, DEV-reviewed PASS elite slot, then public passed cases or full planner-worker-DEV usage (money if reported, otherwise provider tokens)",
             "candidates": rows, "parent_ids": parent_ids,
-            "provisional_winner_id": passing.first().map(|(id, _)| id.as_str()),
-            "unknown_cost_count": passing.iter().filter(|(_, cost)| *cost == u64::MAX).count(),
+            "provisional_winner_id": passing.first().map(|(id, _, _)| id.as_str()),
+            "unknown_cost_count": passing.iter().filter(|(_, cost, _)| cost.is_none()).count(),
+            "unknown_token_usage_count": passing.iter().filter(|(_, _, tokens)| tokens.is_none()).count(),
         });
         let selection_id = hash(&serde_json::to_vec(&body).map_err(|error| error.to_string())?);
         let path = self.root.join(format!("selection-g{generation}.json"));
