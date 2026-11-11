@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { releaseView } from "@/lib/capabilities";
 import { BUILD_FACTS, getFactsWithProvenance, type RepoFacts } from "@/lib/facts";
 import { cloudFactsSummary } from "@/lib/cloud-facts";
 import { getEnv } from "@/lib/kv";
@@ -36,6 +37,7 @@ export async function GET() {
         reason: resolution.reason,
       },
       latestPublishedRelease: resolution.facts.latestPublishedRelease,
+      releaseCounts: releaseView(resolution.facts).counts,
       cloudFacts,
     },
     {

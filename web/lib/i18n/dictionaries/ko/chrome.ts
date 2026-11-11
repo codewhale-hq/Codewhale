@@ -83,6 +83,7 @@ export const chrome: ChromeDict = {
   stateInviteOnly: "초대 전용",
   stateNotOpen: "아직 열리지 않음",
   stateNotPublic: "비공개",
+  stateInSource: "소스에 있으며 아직 출시되지 않음",
   numbersAsOf: "{date} 기준",
   downloadMacos: "macOS용 다운로드",
   downloadVersion: "버전 {version}",

@@ -35,11 +35,3 @@ export function compareVersions(left: string, right: string): number | null {
   }
   return 0;
 }
-
-export function publishedFeatureNames(version: string): string[] {
-  return FEATURE_CATALOGUE.features.filter((feature) => {
-    if (feature.status !== "stable" || !feature.since) return false;
-    const comparison = compareVersions(feature.since, version);
-    return comparison !== null && comparison <= 0;
-  }).map((feature) => feature.name);
-}

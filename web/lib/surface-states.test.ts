@@ -131,7 +131,7 @@ describe("today's surface states", () => {
 
 describe("founder-set switches", () => {
   it("default to off, each with the decision that set it", () => {
-    expect(FOUNDER_SWITCH_VALUES).toEqual({ cloudInvitationsOpen: false, plansPublished: false });
+    expect(FOUNDER_SWITCH_VALUES).toEqual({ cloudInvitationsOpen: false, plansPublished: false, cloudComputersBeyondInvite: false, namedVendorAgentsOverAcp: false });
     for (const entry of Object.values(FOUNDER_SWITCHES)) expect(entry.decision).toMatch(/§\d/);
   });
 
@@ -141,7 +141,7 @@ describe("founder-set switches", () => {
   });
 
   it("open a request path only for cloud computers and only when the cloud switch is on", () => {
-    const on = { cloudInvitationsOpen: true, plansPublished: false };
+    const on = { ...FOUNDER_SWITCH_VALUES, cloudInvitationsOpen: true };
     expect(surfaceCapabilities("cloud-computers").requestAccess).toBe(false);
     expect(surfaceCapabilities("cloud-computers", { switches: on }).requestAccess).toBe(true);
     for (const id of SURFACE_IDS.filter((candidate) => candidate !== "cloud-computers")) {

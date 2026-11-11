@@ -77,6 +77,7 @@ export const chrome: ChromeDict = {
   stateInviteOnly: "Hanya undangan",
   stateNotOpen: "Belum dibuka",
   stateNotPublic: "Belum publik",
+  stateInSource: "Ada di kode sumber, belum dirilis",
   numbersAsOf: "Per {date}",
   downloadMacos: "Unduh untuk macOS",
   downloadVersion: "Versi {version}",

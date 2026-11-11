@@ -1,5 +1,5 @@
 import type { PublishedReleaseFact } from "./facts";
-import { publishedFeatureNames } from "./features";
+import { releasedFeatureNames } from "./capabilities";
 import { REPO_URL } from "./i18n/links";
 import { IDENTITY_PHRASE, SITE_NAME, SITE_URL } from "./page-meta";
 import { ORGANIZATION_ID } from "./site-schema";
@@ -24,7 +24,7 @@ export function buildSoftwareApplicationJsonLd(
     applicationCategory: "DeveloperApplication",
     operatingSystem: "macOS, Linux, Windows, Android",
     ...(publishedRelease?.version ? { softwareVersion: publishedRelease.version } : {}),
-    ...(publishedRelease?.version ? { featureList: publishedFeatureNames(publishedRelease.version) } : {}),
+    ...(publishedRelease?.version ? { featureList: releasedFeatureNames(publishedRelease.version) } : {}),
     ...(publishedRelease?.version && publishedRelease.url ? { releaseNotes: publishedRelease.url } : {}),
     ...(publishedRelease?.version && publishedRelease.publishedAt ? { dateModified: publishedRelease.publishedAt } : {}),
     isAccessibleForFree: true,

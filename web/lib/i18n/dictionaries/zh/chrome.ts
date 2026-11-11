@@ -71,6 +71,7 @@ export const chrome: ChromeDict = {
   stateInviteOnly: "仅限受邀",
   stateNotOpen: "暂未开放",
   stateNotPublic: "未公开",
+  stateInSource: "已在源码中，尚未发布",
   numbersAsOf: "截至 {date}",
   downloadMacos: "下载 macOS 版",
   downloadVersion: "版本 {version}",

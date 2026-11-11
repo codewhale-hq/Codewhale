@@ -81,6 +81,7 @@ export const chrome: ChromeDict = {
   stateInviteOnly: "केवल आमंत्रण से",
   stateNotOpen: "अभी खुला नहीं है",
   stateNotPublic: "सार्वजनिक नहीं",
+  stateInSource: "स्रोत में है, अभी जारी नहीं हुआ",
   numbersAsOf: "{date} तक",
   downloadMacos: "macOS के लिए डाउनलोड करें",
   downloadVersion: "संस्करण {version}",

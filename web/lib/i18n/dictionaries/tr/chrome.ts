@@ -80,6 +80,7 @@ export const chrome: ChromeDict = {
   stateInviteOnly: "Yalnızca davetle",
   stateNotOpen: "Henüz açık değil",
   stateNotPublic: "Herkese açık değil",
+  stateInSource: "Kaynakta var, henüz yayımlanmadı",
   numbersAsOf: "{date} itibarıyla",
   downloadMacos: "macOS için indir",
   downloadVersion: "Sürüm {version}",

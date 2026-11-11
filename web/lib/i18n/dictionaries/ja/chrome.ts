@@ -78,6 +78,7 @@ export const chrome: ChromeDict = {
   stateInviteOnly: "招待制",
   stateNotOpen: "まだ公開していません",
   stateNotPublic: "非公開",
+  stateInSource: "ソースにあり、未リリース",
   numbersAsOf: "{date} 時点",
   downloadMacos: "macOS 版をダウンロード",
   downloadVersion: "バージョン {version}",

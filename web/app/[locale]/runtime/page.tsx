@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Icon } from "@/components/icon";
 import { PageHeader, Section } from "@/components/page-header";
 import { Status } from "@/components/status-badge";
+import { releaseView } from "@/lib/capabilities";
 import { getFacts } from "@/lib/facts";
 import { getChrome, getRuntime, pickText } from "@/lib/i18n/dictionaries";
 import { buildPageMetadata } from "@/lib/page-meta";
@@ -25,6 +26,7 @@ export default async function RuntimePage({ params }: { params: Promise<{ locale
   const chrome = getChrome(locale);
   const t = getRuntime(locale);
   const facts = await getFacts();
+  const releasedTools = releaseView(facts).counts?.tools ?? null;
 
   return (
     <>
@@ -83,10 +85,12 @@ export default async function RuntimePage({ params }: { params: Promise<{ locale
               <dt>{t.version}</dt>
               <dd className="tabular">{facts.version ?? "—"}</dd>
             </div>
-            <div>
-              <dt>{t.toolCount}</dt>
-              <dd className="tabular">{facts.toolCount ?? "—"}</dd>
-            </div>
+            {releasedTools !== null && (
+              <div>
+                <dt>{t.toolCount}</dt>
+                <dd className="tabular">{releasedTools}</dd>
+              </div>
+            )}
             <div>
               <dt>{t.sandboxBackends}</dt>
               <dd>{facts.sandboxBackends.length ? facts.sandboxBackends.join(" · ") : "—"}</dd>
