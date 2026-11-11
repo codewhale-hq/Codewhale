@@ -86,7 +86,8 @@ def main():
                                                        "content": "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'ok':True}))\n"},
                                                    f"{candidate}-write")
                 else:
-                    response = support["sse_text"]("Implemented src/probe.py")
+                    response = support["sse_text"]("CHANGES:\n- src/probe.py\n"
+                                                   "Implemented the bounded probe.")
                 Handler.writer_calls[candidate] = count + 1
             else:
                 category = "unexpected"
