@@ -126,10 +126,9 @@ machine-translated to the same standard as the rest of each pack and are
 
 Remaining website scope for the partial locales (next wave): per-page body
 copy and `generateMetadata` titles/descriptions beyond the home page, the
-`{ en, zh }` shared-content modules under `web/lib/content/`, the
-TerminalPlayer scene excerpts in `web/components/thinking-trace.tsx`, and
-the `KIND_LABEL` pairs in `web/components/feed-card.tsx`. The dictionary
-layer, routing, hreflang, and switcher already cover them, so filling in a
+`{ en, zh }` shared-content modules under `web/lib/content/`, and the
+TerminalPlayer scene excerpts in `web/components/thinking-trace.tsx`. The
+dictionary layer, routing, hreflang, and switcher already cover them, so filling in a
 page is a dictionary edit, not plumbing. That remaining English is exactly
 what the `(partial)` badge is honest about.
 

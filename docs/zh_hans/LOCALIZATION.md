@@ -112,8 +112,7 @@ JSON 写回网站的词典 TS。`translate` 一律失败关闭，除非环境里
 
 partial 区域设置在网站上还差的范围（下一波）：首页之外的逐页正文，以及
 `generateMetadata` 的标题和描述；`web/lib/content/` 下 `{ en, zh }` 的共享内容模块；
-`web/components/thinking-trace.tsx` 里的 TerminalPlayer 场景片段；还有
-`web/components/feed-card.tsx` 里的 `KIND_LABEL` 键值对。词典层、路由、hreflang
+以及 `web/components/thinking-trace.tsx` 里的 TerminalPlayer 场景片段。词典层、路由、hreflang
 和切换器都已经覆盖它们，所以补一个页面只是改词典，不用动管道。
 剩下的那些英文，正是 `(partial)` 标记如实说明的部分。
 

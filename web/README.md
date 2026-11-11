@@ -122,9 +122,6 @@ web/
 │   ├── native-terminal-gallery.tsx  six captured native terminal views
 │   ├── nav.tsx                 sticky header w/ date strip + CJK accents
 │   ├── footer.tsx              dense 5-column footer
-│   ├── whale.tsx               shared Codewhale mark
-│   ├── ticker.tsx              live wire: merges, issues, releases + handles
-│   ├── feed-card.tsx           one issue/PR card
 │   ├── locale-switcher.tsx     N-locale dropdown; partial packs grouped last
 │   └── install-*.tsx           install page blocks (binary, code block, tiles)
 ├── lib/
